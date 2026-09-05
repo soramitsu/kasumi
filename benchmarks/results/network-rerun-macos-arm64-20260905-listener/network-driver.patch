@@ -1,0 +1,27 @@
+--- scripts/run_benchmark_matrix.py
++++ target/run_network_listener_matrix.py
+@@ -1,5 +1,5 @@
+ #!/usr/bin/env python3
+-"""Run isolated 1/100/1000-tenant measurements with a stable-source/quiet-host gate.
++"""Repeat only network measurements after the TLS-only correction; preserve all standard resource and identity guards.
+ 
+ No results are renamed as final on failure. Only process groups and temporary
+ files created by this driver are stopped/removed. Process arguments, environment
+@@ -18,7 +18,7 @@
+ import tempfile
+ import time
+ 
+-ROOT = Path(__file__).resolve().parent.parent
++ROOT = next(parent for parent in Path(__file__).resolve().parents if (parent / 'scripts/run_benchmark_matrix.py').is_file())
+ COMPETING = {"cargo", "rustc", "clang", "clang++", "cc1", "ld", "ld.lld", "rust-lld", "qemu-system-aarch64", "qemu-system-x86_64", "qemu-system-arm", "com.apple.Virtualization.VirtualMachine", "VirtualBoxVM", "vmware-vmx", "dsymutil"}
+ 
+ 
+@@ -206,7 +206,7 @@
+                 environment = os.environ.copy()
+                 environment["TMPDIR"] = temporary
+                 for count in tenants:
+-                    commands = [(f"{mode}-{count}", [str(executables[0]),"--documents",str(options.documents),"--operations",str(options.operations),"--tenants",str(count),"--modes",mode,"--output",str(output/f"{mode}-{count}.json"),"--work-parent",temporary]) for mode in ("raw","local","replicated","text")]
++                    commands = [(f"{mode}-{count}", [str(executables[0]),"--documents",str(options.documents),"--operations",str(options.operations),"--tenants",str(count),"--modes",mode,"--output",str(output/f"{mode}-{count}.json"),"--work-parent",temporary]) for mode in ()]
+                     commands.append((f"network-{count}",[str(executables[1]),"--documents",str(options.documents),"--operations",str(options.operations),"--tenants",str(count),"--output-prefix",str(output/"network")]))
+                     for name, command in commands:
+                         sample()

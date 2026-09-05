@@ -1,0 +1,12 @@
+{
+  "format": 1,
+  "scope": "three prose-only clarifications; no numerical derivation, validation, raw artifact or product source change",
+  "before_sha256": "f7c5722a56a6f33363b8ceed8c9972e0f88aa4b770c18228cad0463446caf0b9",
+  "after_sha256": "f2b6a77fa7f5c41c3324199389ecc1047ba7f17389da470ae60eba1867794fa1",
+  "earlier_derived_files": "pre-wording",
+  "changes": [
+    "one selected observation per case",
+    "resident voter column instead of ambiguous voter groups",
+    "one logical data Raft group per tenant, three resident voter instances in replicated rows"
+  ]
+}

@@ -1,0 +1,339 @@
+//! Durable byte-command replication. Application outcomes are encoded in response bytes;
+//! backend errors are fatal materialization failures, never replica-local rejections.
+
+mod lifetime;
+mod network;
+mod snapshot_buffer;
+mod storage;
+mod timing;
+
+use anyhow::{Context, Result, ensure};
+use kasumi_store::TenantStore;
+use lifetime::StorageDrain;
+pub use network::{
+    InProcessRouter, RaftTransport, RpcPayloadTooLarge, RpcRequest, RpcResponse, dispatch_rpc,
+};
+pub use openraft::{BasicNode, Config, LogId, SnapshotPolicy};
+pub use snapshot_buffer::SnapshotBuffer;
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap},
+    sync::{
+        Arc, LazyLock, Mutex, Weak,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
+pub use storage::{LogStore, StateMachine};
+pub use timing::server_config;
+
+#[derive(Clone, Debug)]
+pub struct RaftLimits {
+    pub max_snapshot_bytes: u64,
+}
+impl Default for RaftLimits {
+    fn default() -> Self {
+        Self {
+            max_snapshot_bytes: 2 * 1024 * 1024 * 1024,
+        }
+    }
+}
+
+openraft::declare_raft_types!(
+    pub TypeConfig:
+        D = Vec<u8>,
+        R = Vec<u8>,
+        NodeId = u64,
+        Node = BasicNode,
+        SnapshotData = SnapshotBuffer,
+);
+
+pub type Raft = openraft::Raft<TypeConfig>;
+
+/// Only the Raft adapter may call mutation methods after the group starts.
+/// `apply` must publish the complete command atomically; business errors belong in
+/// its returned bytes. `restore` must validate before atomically replacing state.
+pub trait StateMachineBackend: Send + Sync + 'static {
+    fn apply(&self, index: u64, command: &[u8]) -> Result<Vec<u8>>;
+    fn snapshot(&self) -> Result<Vec<u8>>;
+    /// Validate the complete logical snapshot without modifying published state.
+    /// Called before durable installation; malformed snapshots must never replace
+    /// the last recoverable durable snapshot.
+    fn validate_snapshot(&self, bytes: &[u8]) -> Result<()>;
+    fn restore(&self, bytes: &[u8]) -> Result<()>;
+}
+
+#[derive(Clone)]
+pub struct RaftGroup {
+    raft: Raft,
+    machine_failed: Arc<AtomicBool>,
+    storage_drain: StorageDrain,
+    store: Arc<TenantStore>,
+    ownership: Arc<AtomicBool>,
+}
+
+// NodeStore holds an exclusive OS file lock and returns one TenantStore per tenant.
+// Keep this claim alive in the backend too: dropping a public handle does not
+// prove that OpenRaft's background tasks have stopped using its durable store.
+static LIVE_GROUPS: LazyLock<Mutex<HashMap<usize, Weak<AtomicBool>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+struct OwnedBackend {
+    inner: Arc<dyn StateMachineBackend>,
+    _ownership: Arc<AtomicBool>,
+}
+impl StateMachineBackend for OwnedBackend {
+    fn apply(&self, index: u64, command: &[u8]) -> Result<Vec<u8>> {
+        self.inner.apply(index, command)
+    }
+    fn snapshot(&self) -> Result<Vec<u8>> {
+        self.inner.snapshot()
+    }
+    fn validate_snapshot(&self, bytes: &[u8]) -> Result<()> {
+        self.inner.validate_snapshot(bytes)
+    }
+    fn restore(&self, bytes: &[u8]) -> Result<()> {
+        self.inner.restore(bytes)
+    }
+}
+
+fn claim_store(store: &Arc<TenantStore>) -> Result<Arc<AtomicBool>> {
+    let mut groups = LIVE_GROUPS
+        .lock()
+        .map_err(|_| anyhow::anyhow!("group ownership unavailable"))?;
+    groups.retain(|_, owner| owner.strong_count() > 0);
+    let key = Arc::as_ptr(store) as usize;
+    ensure!(
+        !groups
+            .get(&key)
+            .and_then(Weak::upgrade)
+            .is_some_and(|owner| owner.load(Ordering::Acquire)),
+        "tenant store already has a live Raft group; shut it down before reopening"
+    );
+    let owner = Arc::new(AtomicBool::new(true));
+    groups.insert(key, Arc::downgrade(&owner));
+    Ok(owner)
+}
+
+impl RaftGroup {
+    /// Opens existing durable state without changing membership. `Raft::new`
+    /// replays through the persisted committed cursor before returning.
+    pub async fn open(
+        id: u64,
+        group: String,
+        store: Arc<TenantStore>,
+        backend: Arc<dyn StateMachineBackend>,
+        transport: Arc<dyn RaftTransport>,
+        config: Config,
+    ) -> Result<Self> {
+        Self::open_with_limits(
+            id,
+            group,
+            store,
+            backend,
+            transport,
+            config,
+            RaftLimits::default(),
+        )
+        .await
+    }
+
+    pub async fn open_with_limits(
+        id: u64,
+        group: String,
+        store: Arc<TenantStore>,
+        backend: Arc<dyn StateMachineBackend>,
+        transport: Arc<dyn RaftTransport>,
+        mut config: Config,
+        limits: RaftLimits,
+    ) -> Result<Self> {
+        ensure!(
+            limits.max_snapshot_bytes > 0,
+            "snapshot limit must be positive"
+        );
+        config.cluster_name = group.clone();
+        let config = Arc::new(config.validate()?);
+        let ownership = claim_store(&store)?;
+        let backend = Arc::new(OwnedBackend {
+            inner: backend,
+            _ownership: ownership.clone(),
+        });
+        let (storage_drain, lease) = StorageDrain::new();
+        let log = LogStore::open_tracked(store.clone(), id, lease.clone()).await?;
+        log.bind_group(group.clone()).await?;
+        let machine =
+            StateMachine::open_tracked(store.clone(), backend, limits, lease.clone()).await?;
+        let machine_failed = machine.failure_flag();
+        let raft = Raft::new(
+            id,
+            config,
+            network::NetworkFactory::new(id, group, transport),
+            log,
+            machine,
+        )
+        .await?;
+        drop(lease);
+        Ok(Self {
+            raft,
+            machine_failed,
+            storage_drain,
+            store,
+            ownership,
+        })
+    }
+
+    /// Creates/opens a one-voter group. It never rewrites an existing membership.
+    pub async fn local(
+        id: u64,
+        group: String,
+        store: Arc<TenantStore>,
+        backend: Arc<dyn StateMachineBackend>,
+    ) -> Result<Self> {
+        let router = Arc::new(InProcessRouter::default());
+        let instance = Self::open(
+            id,
+            group.clone(),
+            store,
+            backend,
+            router.clone(),
+            Config::default(),
+        )
+        .await?;
+        router.register(group, id, instance.raft.clone());
+        if !instance.raft.is_initialized().await? {
+            instance
+                .initialize(BTreeMap::from([(id, BasicNode::new("local"))]))
+                .await?;
+        }
+        instance
+            .raft
+            .wait(Some(Duration::from_secs(10)))
+            .current_leader(id, "local leader")
+            .await?;
+        instance.linearizable_barrier().await?;
+        Ok(instance)
+    }
+
+    pub fn raft(&self) -> &Raft {
+        &self.raft
+    }
+
+    pub async fn initialize(&self, members: BTreeMap<u64, BasicNode>) -> Result<()> {
+        self.check_access()?;
+        ensure!(!members.is_empty(), "membership cannot be empty");
+        self.raft
+            .initialize(members)
+            .await
+            .context("initialize raft membership")?;
+        Ok(())
+    }
+
+    /// Success means quorum persistence followed by local atomic application.
+    /// Timeout/cancellation does not imply rollback: retry with an application idempotency key.
+    pub async fn write(&self, command: Vec<u8>) -> Result<Vec<u8>> {
+        self.check_access()?;
+        let response = self.raft.client_write(command).await?;
+        self.check_access()?;
+        Ok(response.data)
+    }
+
+    pub async fn linearizable_barrier(&self) -> Result<Option<LogId<u64>>> {
+        self.check_access()?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let initial_term = self.raft.metrics().borrow().current_term;
+        let mut seals = self.store.seal_notifications();
+        tokio::time::timeout_at(deadline, async {
+            loop {
+                self.check_access()?;
+                ensure!(
+                    self.raft.metrics().borrow().current_term == initial_term,
+                    "leadership term changed during read barrier"
+                );
+                // OpenRaft 0.9.25 bounds each leadership probe by one heartbeat
+                // interval (250 ms in the server profile). A transient scheduling
+                // or storage stall need not consume the whole API deadline.
+                // Every round establishes a fresh quorum and waits for local
+                // application; failed rounds grant no authority to read.
+                let result = tokio::select! {
+                    result = self.raft.ensure_linearizable() => result,
+                    _ = seals.changed() => {
+                        self.check_access()?;
+                        anyhow::bail!("key authorization changed during read barrier");
+                    }
+                };
+                match result {
+                    Ok(id) => {
+                        self.check_access()?;
+                        ensure!(
+                            self.raft.metrics().borrow().current_term == initial_term,
+                            "leadership term changed during read barrier"
+                        );
+                        return Ok(id);
+                    }
+                    Err(openraft::error::RaftError::APIError(
+                        openraft::error::CheckIsLeaderError::QuorumNotEnough(_),
+                    )) => {
+                        self.check_access()?;
+                        // Immediate transport rejection must not busy-loop. The
+                        // original deadline bounds all probes and backoff together.
+                        tokio::select! {
+                            _ = tokio::time::sleep(Duration::from_millis(10)) => {},
+                            _ = seals.changed() => {
+                                self.check_access()?;
+                                anyhow::bail!("key authorization changed during read barrier");
+                            }
+                        }
+                    }
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        })
+        .await
+        .context("read quorum deadline exceeded")?
+    }
+
+    pub async fn add_learner(&self, id: u64, node: BasicNode) -> Result<()> {
+        self.check_access()?;
+        self.raft.add_learner(id, node, true).await?;
+        Ok(())
+    }
+
+    pub async fn change_membership(&self, voters: BTreeSet<u64>) -> Result<()> {
+        self.check_access()?;
+        ensure!(!voters.is_empty(), "membership cannot be empty");
+        self.raft.change_membership(voters, false).await?;
+        Ok(())
+    }
+
+    pub async fn snapshot(&self) -> Result<()> {
+        self.check_access()?;
+        self.raft.trigger().snapshot().await?;
+        Ok(())
+    }
+
+    pub fn check_access(&self) -> Result<()> {
+        ensure!(
+            self.ownership.load(Ordering::Acquire),
+            "Raft group has shut down"
+        );
+        self.store.check_access()?;
+        ensure!(
+            self.raft.metrics().borrow().running_state.is_ok(),
+            "Raft core failed; recovery required"
+        );
+        ensure!(
+            !self.machine_failed.load(Ordering::Acquire),
+            "state machine unavailable; recovery required"
+        );
+        Ok(())
+    }
+
+    pub async fn shutdown(&self) -> Result<()> {
+        let result = self.raft.shutdown().await;
+        // OpenRaft 0.9.25 joins the core/ticker, but its state-machine,
+        // snapshot, and replication workers can still own storage. Do not
+        // release the group claim until every such owner and blocking job ends.
+        self.storage_drain.wait().await;
+        self.ownership.store(false, Ordering::Release);
+        result.map_err(Into::into)
+    }
+}

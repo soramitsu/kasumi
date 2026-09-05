@@ -1,0 +1,54 @@
+Attempt 1
+
+running 1 test
+test runtime::lifecycle_tests::three_runtime_nodes_replicate_with_control_quorum_over_audited_pinned_mtls ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 32 filtered out; finished in 8.33s
+
+Attempt 2
+
+running 1 test
+test runtime::lifecycle_tests::three_runtime_nodes_replicate_with_control_quorum_over_audited_pinned_mtls ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 32 filtered out; finished in 8.11s
+
+Attempt 3
+
+running 1 test
+test runtime::lifecycle_tests::three_runtime_nodes_replicate_with_control_quorum_over_audited_pinned_mtls ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 32 filtered out; finished in 11.92s
+
+Attempt 4
+
+running 1 test
+test runtime::lifecycle_tests::three_runtime_nodes_replicate_with_control_quorum_over_audited_pinned_mtls ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 32 filtered out; finished in 8.51s
+
+Attempt 5
+
+running 1 test
+test runtime::lifecycle_tests::three_runtime_nodes_replicate_with_control_quorum_over_audited_pinned_mtls ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 32 filtered out; finished in 8.35s
+
+Attempt 6
+
+running 1 test
+test runtime::lifecycle_tests::three_runtime_nodes_replicate_with_control_quorum_over_audited_pinned_mtls ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 32 filtered out; finished in 12.89s
+
+
+Final bounded quorum-readiness regression with intentional isolated target
+   Compiling kasumi-server v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.64s
+     Running unittests src/lib.rs (target/debug/deps/kasumi_server-f9bbd95a596f778b)
+
+running 1 test
+intentional restore quorum loss: APIError(QuorumNotEnough(QuorumNotEnough { cluster: "{voters:[{1:BasicNode { addr: \"https://localhost:65017/\" },2:BasicNode { addr: \"https://localhost:65021/\" },3:BasicNode { addr: \"https://localhost:65025/\" }}], learners:[]}", got: {1} }))
+test runtime::lifecycle_tests::three_runtime_nodes_replicate_with_control_quorum_over_audited_pinned_mtls ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 32 filtered out; finished in 12.21s
+

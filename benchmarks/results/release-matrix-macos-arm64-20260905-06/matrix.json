@@ -1,0 +1,389 @@
+{
+  "format": 1,
+  "status": "completed_with_failures",
+  "source_sha256": "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2",
+  "executable_sha256": {
+    "target/release/kasumi-bench": "a1f93ade86ddfe7096bb0afccc9ae72b4f196254657595d4f6409525f0be52b7",
+    "target/release/kasumi-bench-loopback": "30cd9438a07549b296d86a101d1efbf64a536449107dec9b8f59946c4733adb2",
+    "target/release/kasumi-bench-network": "f1b7f8493eff2b03170854237845fa0bf026fff3d0f88dcb9dbdcf79284f273c",
+    "target/release/kasumid": "5ecf74b71ffaa6bd1897927ed0dff7f0f73a5863757044b595326cc1f351bf16"
+  },
+  "git_status": [
+    " M .gitignore",
+    " M README.md",
+    "?? Cargo.lock",
+    "?? Cargo.toml",
+    "?? benchmarks/",
+    "?? crates/",
+    "?? deploy/",
+    "?? docs/",
+    "?? scripts/"
+  ],
+  "host": {
+    "uname": {
+      "sysname": "Darwin",
+      "release": "25.6.0",
+      "version": "Darwin Kernel Version 25.6.0: Fri Jul 31 19:17:26 PDT 2026; root:xnu-12377.161.14~5/RELEASE_ARM64_T6041",
+      "machine": "arm64"
+    },
+    "logical_cpus": 16,
+    "rustc": "rustc 1.94.1 (e408947bf 2026-03-25)"
+  },
+  "options": {
+    "documents": 1000000,
+    "operations": 1000,
+    "tenants": "1,100,1000",
+    "output_directory": "/Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-06",
+    "skip_build": false,
+    "allow_host_load": true,
+    "quiet_seconds": 60,
+    "max_background_cpu": 100,
+    "max_initial_load": 4.0,
+    "min_free_gib": 30
+  },
+  "statistics": "One sequential closed-loop run per case. Nearest-rank p99 at 1000 operations has about 10 tail observations; no repeatability confidence interval is claimed. Extended runs can set --operations 10000.",
+  "quietness_policy": "Configured OS load/process-CPU observations and absence of compiler/linker/VM processes are screening evidence, not proof of exclusive hardware ownership. Background changes abort unless --allow-host-load explicitly records unqualified observations. No unrelated process is stopped.",
+  "cases": [
+    {
+      "name": "raw-1",
+      "started_unix_seconds": 1788603834.233556,
+      "elapsed_seconds": 5.091385126113892,
+      "command": [
+        "/Users/takemiyamakoto/dev/kasumi/target/release/kasumi-bench",
+        "--documents",
+        "1000000",
+        "--operations",
+        "1000",
+        "--tenants",
+        "1",
+        "--modes",
+        "raw",
+        "--output",
+        "/Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-06/raw-1.json",
+        "--work-parent",
+        "/var/folders/7l/w31n0ppj4zg874c4szhllss00000gn/T/kasumi-matrix-y00i2uf0"
+      ],
+      "status": "passed",
+      "exit_code": 0,
+      "result_sha256": "8bb8b7a23426818098563ddda7fd418ed4bcf007606c52afa0693f5c0cb80dee"
+    },
+    {
+      "name": "local-1",
+      "started_unix_seconds": 1788603839.409528,
+      "elapsed_seconds": 265.9391858577728,
+      "command": [
+        "/Users/takemiyamakoto/dev/kasumi/target/release/kasumi-bench",
+        "--documents",
+        "1000000",
+        "--operations",
+        "1000",
+        "--tenants",
+        "1",
+        "--modes",
+        "local",
+        "--output",
+        "/Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-06/local-1.json",
+        "--work-parent",
+        "/var/folders/7l/w31n0ppj4zg874c4szhllss00000gn/T/kasumi-matrix-y00i2uf0"
+      ],
+      "status": "passed",
+      "exit_code": 0,
+      "result_sha256": "81c25fe8892a0858c36880225216ba992ae1428ae827c2130ab0c71ef91393d8"
+    },
+    {
+      "name": "replicated-1",
+      "started_unix_seconds": 1788604105.439175,
+      "elapsed_seconds": 677.6468842029572,
+      "command": [
+        "/Users/takemiyamakoto/dev/kasumi/target/release/kasumi-bench",
+        "--documents",
+        "1000000",
+        "--operations",
+        "1000",
+        "--tenants",
+        "1",
+        "--modes",
+        "replicated",
+        "--output",
+        "/Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-06/replicated-1.json",
+        "--work-parent",
+        "/var/folders/7l/w31n0ppj4zg874c4szhllss00000gn/T/kasumi-matrix-y00i2uf0"
+      ],
+      "status": "passed",
+      "exit_code": 0,
+      "result_sha256": "97b966bcfff78ce790d6ce4db24aa7da7a4597f78f46a9d537f376bc565118f7"
+    },
+    {
+      "name": "text-1",
+      "started_unix_seconds": 1788604783.1580532,
+      "elapsed_seconds": 468.46883487701416,
+      "command": [
+        "/Users/takemiyamakoto/dev/kasumi/target/release/kasumi-bench",
+        "--documents",
+        "1000000",
+        "--operations",
+        "1000",
+        "--tenants",
+        "1",
+        "--modes",
+        "text",
+        "--output",
+        "/Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-06/text-1.json",
+        "--work-parent",
+        "/var/folders/7l/w31n0ppj4zg874c4szhllss00000gn/T/kasumi-matrix-y00i2uf0"
+      ],
+      "status": "passed",
+      "exit_code": 0,
+      "result_sha256": "8a7b0f9656421dacb6725b49d607aac7351535c3c2a1a8aa1bd32b021af5167a"
+    },
+    {
+      "name": "network-1",
+      "started_unix_seconds": 1788605251.680811,
+      "elapsed_seconds": 571.950361251831,
+      "command": [
+        "/Users/takemiyamakoto/dev/kasumi/target/release/kasumi-bench-loopback",
+        "--documents",
+        "1000000",
+        "--operations",
+        "1000",
+        "--tenants",
+        "1",
+        "--output-prefix",
+        "/Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-06/network"
+      ],
+      "status": "passed",
+      "exit_code": 0,
+      "result_sha256": "70dab3b230dc07219c5989f9c761d1a982ff633bfe7147ec95cfa1dd8cf8723e"
+    },
+    {
+      "name": "raw-100",
+      "started_unix_seconds": 1788605823.691616,
+      "elapsed_seconds": 5.077294111251831,
+      "command": [
+        "/Users/takemiyamakoto/dev/kasumi/target/release/kasumi-bench",
+        "--documents",
+        "1000000",
+        "--operations",
+        "1000",
+        "--tenants",
+        "100",
+        "--modes",
+        "raw",
+        "--output",
+        "/Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-06/raw-100.json",
+        "--work-parent",
+        "/var/folders/7l/w31n0ppj4zg874c4szhllss00000gn/T/kasumi-matrix-y00i2uf0"
+      ],
+      "status": "passed",
+      "exit_code": 0,
+      "result_sha256": "c01d88f56d5842bbe4949ba593e9c74f9fbe13b68fef6a3c954695c922455e20"
+    },
+    {
+      "name": "local-100",
+      "started_unix_seconds": 1788605828.831464,
+      "elapsed_seconds": 264.15197587013245,
+      "command": [
+        "/Users/takemiyamakoto/dev/kasumi/target/release/kasumi-bench",
+        "--documents",
+        "1000000",
+        "--operations",
+        "1000",
+        "--tenants",
+        "100",
+        "--modes",
+        "local",
+        "--output",
+        "/Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-06/local-100.json",
+        "--work-parent",
+        "/var/folders/7l/w31n0ppj4zg874c4szhllss00000gn/T/kasumi-matrix-y00i2uf0"
+      ],
+      "status": "passed",
+      "exit_code": 0,
+      "result_sha256": "14d36a6babdf76b921c9c42236c829d31b88d8f7b78712344ca6551da6775075"
+    },
+    {
+      "name": "replicated-100",
+      "started_unix_seconds": 1788606093.056673,
+      "elapsed_seconds": 682.7004737854004,
+      "command": [
+        "/Users/takemiyamakoto/dev/kasumi/target/release/kasumi-bench",
+        "--documents",
+        "1000000",
+        "--operations",
+        "1000",
+        "--tenants",
+        "100",
+        "--modes",
+        "replicated",
+        "--output",
+        "/Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-06/replicated-100.json",
+        "--work-parent",
+        "/var/folders/7l/w31n0ppj4zg874c4szhllss00000gn/T/kasumi-matrix-y00i2uf0"
+      ],
+      "status": "passed",
+      "exit_code": 0,
+      "result_sha256": "b41391f4925cda0755f36a8895dbcb5ebc04c9a28f9ec1fa555977e0926393c0"
+    },
+    {
+      "name": "text-100",
+      "started_unix_seconds": 1788606775.813816,
+      "elapsed_seconds": 366.08694982528687,
+      "command": [
+        "/Users/takemiyamakoto/dev/kasumi/target/release/kasumi-bench",
+        "--documents",
+        "1000000",
+        "--operations",
+        "1000",
+        "--tenants",
+        "100",
+        "--modes",
+        "text",
+        "--output",
+        "/Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-06/text-100.json",
+        "--work-parent",
+        "/var/folders/7l/w31n0ppj4zg874c4szhllss00000gn/T/kasumi-matrix-y00i2uf0"
+      ],
+      "status": "passed",
+      "exit_code": 0,
+      "result_sha256": "9aa4b539a7c2601864ce82dce8412ef3c3c03cb52efb7893430e00cfbc9f2dad"
+    },
+    {
+      "name": "network-100",
+      "started_unix_seconds": 1788607141.959668,
+      "elapsed_seconds": 601.7333180904388,
+      "command": [
+        "/Users/takemiyamakoto/dev/kasumi/target/release/kasumi-bench-loopback",
+        "--documents",
+        "1000000",
+        "--operations",
+        "1000",
+        "--tenants",
+        "100",
+        "--output-prefix",
+        "/Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-06/network"
+      ],
+      "status": "passed",
+      "exit_code": 0,
+      "result_sha256": "0b61f2dd4d1b6c3fd60ea4870c9d8d1693028cfcce065ead33610dcd51cbcf13"
+    },
+    {
+      "name": "raw-1000",
+      "started_unix_seconds": 1788607743.7546,
+      "elapsed_seconds": 5.066457986831665,
+      "command": [
+        "/Users/takemiyamakoto/dev/kasumi/target/release/kasumi-bench",
+        "--documents",
+        "1000000",
+        "--operations",
+        "1000",
+        "--tenants",
+        "1000",
+        "--modes",
+        "raw",
+        "--output",
+        "/Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-06/raw-1000.json",
+        "--work-parent",
+        "/var/folders/7l/w31n0ppj4zg874c4szhllss00000gn/T/kasumi-matrix-y00i2uf0"
+      ],
+      "status": "passed",
+      "exit_code": 0,
+      "result_sha256": "10c0747e7ea42c3c3385ad443579df7d9e42e714021d4cc4c34a94ca5dfaae7a"
+    },
+    {
+      "name": "local-1000",
+      "started_unix_seconds": 1788607748.881793,
+      "elapsed_seconds": 500.9790389537811,
+      "command": [
+        "/Users/takemiyamakoto/dev/kasumi/target/release/kasumi-bench",
+        "--documents",
+        "1000000",
+        "--operations",
+        "1000",
+        "--tenants",
+        "1000",
+        "--modes",
+        "local",
+        "--output",
+        "/Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-06/local-1000.json",
+        "--work-parent",
+        "/var/folders/7l/w31n0ppj4zg874c4szhllss00000gn/T/kasumi-matrix-y00i2uf0"
+      ],
+      "status": "passed",
+      "exit_code": 0,
+      "result_sha256": "a4d375869c8391abcd85d1728b541211671836f0c828c8c8a7d2cdb48a1f1537"
+    },
+    {
+      "name": "replicated-1000",
+      "started_unix_seconds": 1788608249.947315,
+      "elapsed_seconds": 1290.9655940532684,
+      "command": [
+        "/Users/takemiyamakoto/dev/kasumi/target/release/kasumi-bench",
+        "--documents",
+        "1000000",
+        "--operations",
+        "1000",
+        "--tenants",
+        "1000",
+        "--modes",
+        "replicated",
+        "--output",
+        "/Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-06/replicated-1000.json",
+        "--work-parent",
+        "/var/folders/7l/w31n0ppj4zg874c4szhllss00000gn/T/kasumi-matrix-y00i2uf0"
+      ],
+      "status": "passed",
+      "exit_code": 0,
+      "result_sha256": "9e8159266d6294d3905c17f90203afb05a6e6cf41030eebd0a7b39525c43edf0"
+    },
+    {
+      "name": "text-1000",
+      "started_unix_seconds": 1788609541.010088,
+      "elapsed_seconds": 700.1528949737549,
+      "command": [
+        "/Users/takemiyamakoto/dev/kasumi/target/release/kasumi-bench",
+        "--documents",
+        "1000000",
+        "--operations",
+        "1000",
+        "--tenants",
+        "1000",
+        "--modes",
+        "text",
+        "--output",
+        "/Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-06/text-1000.json",
+        "--work-parent",
+        "/var/folders/7l/w31n0ppj4zg874c4szhllss00000gn/T/kasumi-matrix-y00i2uf0"
+      ],
+      "status": "passed",
+      "exit_code": 0,
+      "result_sha256": "c4f04c1ff9e60c342f2c7cd5cb011822833cbbab175c7fca73aec812cdcf5747"
+    },
+    {
+      "name": "network-1000",
+      "started_unix_seconds": 1788610241.2617579,
+      "elapsed_seconds": 170.11465406417847,
+      "command": [
+        "/Users/takemiyamakoto/dev/kasumi/target/release/kasumi-bench-loopback",
+        "--documents",
+        "1000000",
+        "--operations",
+        "1000",
+        "--tenants",
+        "1000",
+        "--output-prefix",
+        "/Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-06/network"
+      ],
+      "status": "failed",
+      "exit_code": 1,
+      "result_sha256": "76bcdb1e365f8fd5a7778d071af526eb7cb900276580ff370a3609adae399f3d"
+    }
+  ],
+  "failures": [
+    "network-1000 failed with exit 1; see network-1000.log"
+  ],
+  "host_load_violation_counts": {
+    "competing compiler/linker or virtual machine process present": 1314
+  },
+  "passed_quietness_screening": false,
+  "finished_unix_seconds": 1788610411.4889228
+}

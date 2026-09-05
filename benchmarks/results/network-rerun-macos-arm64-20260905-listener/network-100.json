@@ -1,0 +1,241 @@
+{
+  "architecture": "aarch64",
+  "build_profile": "release",
+  "cases": [
+    {
+      "configured_targets": 1000,
+      "connection_seconds": 0.002236125,
+      "credentials": 100,
+      "endpoint": "https://localhost:50845",
+      "measurements": [
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 13.127669791,
+            "max_microseconds": 40047.833,
+            "operations": 1000,
+            "p50_microseconds": 12897.166,
+            "p99_microseconds": 26356.5,
+            "throughput_ops_per_second": 76.17498123586067
+          },
+          "name": "authenticated_point_get",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 48.172033333,
+            "max_microseconds": 2270859.125,
+            "operations": 1000,
+            "p50_microseconds": 38028.875,
+            "p99_microseconds": 70313.25,
+            "throughput_ops_per_second": 20.758932741893524
+          },
+          "name": "durable_single_document_write",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 20.765082583,
+            "max_microseconds": 1894133.916,
+            "operations": 1000,
+            "p50_microseconds": 13512.708,
+            "p99_microseconds": 55766.875,
+            "throughput_ops_per_second": 48.157766577758856
+          },
+          "name": "read_heavy_90_read_10_write",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 34.189340167,
+            "max_microseconds": 1904063.375,
+            "operations": 1000,
+            "p50_microseconds": 33628.917,
+            "p99_microseconds": 49636.833,
+            "throughput_ops_per_second": 29.248882696051947
+          },
+          "name": "balanced_50_read_50_write",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 13.221172833,
+            "max_microseconds": 26849.709,
+            "operations": 1000,
+            "p50_microseconds": 12928.333,
+            "p99_microseconds": 21985.0,
+            "throughput_ops_per_second": 75.63625501544036
+          },
+          "name": "authenticated_query_complete_pages",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        }
+      ],
+      "name": "grpc-100-tenants",
+      "phase": "completed",
+      "protocol": "grpc",
+      "warmup_seconds": 11.154152333
+    },
+    {
+      "configured_targets": 1000,
+      "connection_seconds": 0.000132292,
+      "credentials": 100,
+      "endpoint": "https://localhost:50844/mcp",
+      "measurements": [
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 17.284455834,
+            "max_microseconds": 702093.666,
+            "operations": 1000,
+            "p50_microseconds": 12845.5,
+            "p99_microseconds": 34358.375,
+            "throughput_ops_per_second": 57.85545171939487
+          },
+          "name": "authenticated_point_get",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 54.862401333,
+            "max_microseconds": 2730858.75,
+            "operations": 1000,
+            "p50_microseconds": 38105.291,
+            "p99_microseconds": 113350.833,
+            "throughput_ops_per_second": 18.227419429387883
+          },
+          "name": "durable_single_document_write",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 23.797519,
+            "max_microseconds": 1148346.416,
+            "operations": 1000,
+            "p50_microseconds": 13895.166,
+            "p99_microseconds": 92085.583,
+            "throughput_ops_per_second": 42.021187166611774
+          },
+          "name": "read_heavy_90_read_10_write",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 89.1146045,
+            "max_microseconds": 3121688.375,
+            "operations": 1000,
+            "p50_microseconds": 45182.417,
+            "p99_microseconds": 497253.042,
+            "throughput_ops_per_second": 11.221505224769302
+          },
+          "name": "balanced_50_read_50_write",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 16.04749475,
+            "max_microseconds": 64998.541,
+            "operations": 1000,
+            "p50_microseconds": 14147.167,
+            "p99_microseconds": 49413.459,
+            "throughput_ops_per_second": 62.31502272340672
+          },
+          "name": "authenticated_query_complete_pages",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        }
+      ],
+      "name": "mcp-100-tenants",
+      "phase": "completed",
+      "protocol": "mcp",
+      "warmup_seconds": 1.310441125
+    }
+  ],
+  "created_unix_ms": 1788612922778,
+  "evidence_status": "Preliminary development measurement; repeat on quiet host with stable server/client source",
+  "executable_sha256": "f1b7f8493eff2b03170854237845fa0bf026fff3d0f88dcb9dbdcf79284f273c",
+  "failures": [],
+  "fixture": {
+    "access_checks": "native invalid JWT and signed unconfigured tenant rejected; MCP invalid JWT rejected before measurement",
+    "collection_setup_seconds": 7.9607980000000005,
+    "database": "real separate kasumid NodeRuntime process",
+    "deployment": "local one voter, durable mutation, authentication and engine denial audits enabled; one independently encrypted security audit shared by all node tenants; strict read audit disabled",
+    "documents": 1000000,
+    "issuer": "ephemeral signed Ed25519 access tokens and real TLS JWKS requests",
+    "kms": "real local OpenBao 2.6.2 TLS Transit, separate wrapping keys and scoped tokens for data/control/security",
+    "load_seconds": 327.79790425,
+    "network": "loopback TCP/TLS1.3, native mTLS, warm persistent connections; not a physical distributed network",
+    "payload_bytes_each": 1024,
+    "phase": "completed",
+    "recovery_contract": "Shutdown measures SIGTERM through successful kasumid process exit. Recovery starts after shutdown and measures a fresh kasumid process spawn, index reconstruction, key access, readiness and one authenticated native read per tenant. The encrypted database is retained; issuer and OpenBao remain running. Final cleanup and crash tests are separate.",
+    "recovery_seconds": 19.265642,
+    "runtime_open_seconds": 33.059541084,
+    "security_audit_stores": 1,
+    "server_after_recovery_rss_bytes": 4335845376,
+    "server_after_workload_rss_bytes": 4640112640,
+    "server_disk_bytes": 3456110592,
+    "server_empty_index_rss_bytes": 42614784,
+    "server_empty_rss_bytes": 37748736,
+    "server_executable_sha256": "55d88df05e3602ad3ba482351bcf896a58130deed12c6a22c249aaf70cf183c0",
+    "server_profile": "release",
+    "server_resident_rss_bytes": 4498833408,
+    "shutdown_seconds": 0.6573425,
+    "tenants": 100
+  },
+  "format": 1,
+  "logical_cpus": 16,
+  "notes": [
+    "Real authenticated TLS 1.3 network requests. Native RPC additionally requires mTLS and pins the server certificate against the configured CA.",
+    "Credentials and document/query values are omitted from this report. Credential count is configured token sources, not a claim of verified distinct tenants.",
+    "Connections and one warmup point read per credential are excluded from measured API latency. Requests are sequential and no automatic retries are attempted.",
+    "Server replication, KMS, hardware, and audit configuration must be disclosed separately for comparison; this client does not infer their guarantees.",
+    "Writes occur only with --allow-writes and a replacement body on every dedicated target. Query measurements consume all historical pages."
+  ],
+  "os": "macos"
+}

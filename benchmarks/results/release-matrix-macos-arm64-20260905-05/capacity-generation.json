@@ -1,0 +1,46 @@
+{
+  "format": 1,
+  "generated_at_utc": "2026-09-05T09:52:09.846578+00:00",
+  "command": [
+    "/opt/homebrew/opt/python@3.14/bin/python3.14",
+    "/Users/takemiyamakoto/dev/kasumi/scripts/report_benchmark_capacity.py",
+    "/Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-05"
+  ],
+  "exit_code": 0,
+  "report_script_sha256": "a4404dd2ec3f6c1a9e4a22623e9d26dfff6f5bc645e61c114d446890f707bf5e",
+  "raw_and_run_files_unchanged": true,
+  "retained_file_sha256": {
+    "RUN_NOTES.md": "a66bbfc24d9ab94229e958ac028b90dce791f6add3ba93a7d439a0cb2a778893",
+    "STOP_REQUEST.json": "599e1b9529db05a4a48c63efe651ae186257662f951315f5a3d26938b4fd9eae",
+    "driver.log": "4c5a6784e61a59d1b7c0e309ac1ec88c401784558331b5800b30182a2d9149a5",
+    "execution-wrapper.py": "16ab37c27e36cfc46f9fc08e5a3eabcdd7a4571b91af474235299cdc0f2d9d32",
+    "execution.json": "4a1de80505b2b5833fa5eae6d8ea788b5ddca059dedbe573328d8f5a2d876977",
+    "host-samples.jsonl": "bee3afa3be4884d84db1fa0f64cf3d56e40f391ab5793b911e571db919c9c78c",
+    "launch-verification.json": "0c537ce46eabb29dd3ea6fbdf98898c51a8b646e223dbf8282e9c1d23e2e168e",
+    "local-1.json": "f9e63b8e14a7a65f03b33e9bc6e5ec50eddc98fb0898eefa5f6532afc4fd5bd5",
+    "local-1.log": "f7c54a92c3a561f6d62f4f875b2cffb8d482a1ad79b8af3a0a45dffcfd692309",
+    "matrix.json": "19c9d1a6cae873e0fdecefcdc67d4d27dd557a2812a2ddf42d36c318a4b02004",
+    "raw-1.json": "41367c0cb34f2304430fc450933b5ac3e867a4b71103d6b0495251895052778d",
+    "raw-1.log": "f15d09b9d1a8fd863c752ae4886d9edaf82bb28a0bd5ae58894edb7d5000fefd",
+    "replicated-1.json": "55565d94e841cb5a130fe94cbae472b4e8dcb5bbcb61844b17012676fc66bbe8",
+    "replicated-1.log": "24e47461053a33af7b39bb83d247cbee6d58bc325e0050fb8eecab8fcf85a219",
+    "source-manifest.json": "cd5b25b6ea8d47565fc289828116da98ffec29944875f57ec529c8cf21e03cc1"
+  },
+  "terminal_process_verification": {
+    "command": [
+      "ps",
+      "-p",
+      "83269,83271",
+      "-o",
+      "pid=,ppid=,stat=,command="
+    ],
+    "exit_code": 1,
+    "stdout": "",
+    "scope": "Recorded wrapper PID 83269 and driver PID 83271 were both absent before capacity generation."
+  },
+  "generated_files": {
+    "capacity.json": "8d35077d000ef2ddd0f2683750ab60200c5264efeb10f4840c47df501a60363f",
+    "capacity.md": "eb0081a78ea97311248c8da3f3f43b7c4b59b209155dbcc0438bbe2bd4251509"
+  },
+  "scope": "Derived partial report only. Raw workload, execution, matrix, stop request and host observations are unchanged. Replicated recovered checkpoint remains unqualified because normal case completion was interrupted; historical embedded security-store costs are not retrofitted."
+}

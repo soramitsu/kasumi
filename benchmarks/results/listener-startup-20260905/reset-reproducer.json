@@ -1,0 +1,32 @@
+{
+  "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+  "observed_unix_seconds": 1788610727.287554,
+  "scenario": "client reset queued before accept; configure accepted socket TCP_NODELAY",
+  "observations": [
+    {
+      "delay_seconds": 0.01,
+      "result": {
+        "success": false,
+        "errno": 22,
+        "message": "Invalid argument"
+      }
+    },
+    {
+      "delay_seconds": 0.1,
+      "result": {
+        "success": false,
+        "errno": 22,
+        "message": "Invalid argument"
+      }
+    },
+    {
+      "delay_seconds": 0.5,
+      "result": {
+        "success": false,
+        "errno": 22,
+        "message": "Invalid argument"
+      }
+    }
+  ],
+  "scope": "reproduces matching OS error; original benchmark did not record its syscall"
+}

@@ -1,0 +1,14 @@
+{
+  "argv": [
+    "/usr/bin/caffeinate",
+    "-i",
+    "/opt/homebrew/bin/python3",
+    "/Users/takemiyamakoto/dev/kasumi/target/run-minio-listener-gate.py",
+    "28aeb80168d3ab02a0eec7bf2a0163a7cb99dbfd74adf596e849de17e1fa3c1d"
+  ],
+  "launcher_pid": 19085,
+  "process_group": 19085,
+  "launched_unix_seconds": 1788611620.830771,
+  "regular_log": "minio-orchestration.log",
+  "start_new_session": true
+}

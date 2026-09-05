@@ -1,0 +1,12 @@
+    Finished `release` profile [optimized] target(s) in 0.74s
+running raw-1
+running local-1
+running replicated-1
+Traceback (most recent call last):
+  File "/Users/takemiyamakoto/dev/kasumi/scripts/run_benchmark_matrix.py", line 250, in <module>
+    main()
+    ~~~~^^
+  File "/Users/takemiyamakoto/dev/kasumi/scripts/run_benchmark_matrix.py", line 219, in main
+    time.sleep(5)
+    ~~~~~~~~~~^^^
+KeyboardInterrupt

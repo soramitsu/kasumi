@@ -1,0 +1,34 @@
+{
+  "format": 1,
+  "command": [
+    "/usr/bin/caffeinate",
+    "-i",
+    "/opt/homebrew/bin/python3",
+    "scripts/run_benchmark_matrix.py",
+    "--output-directory",
+    "benchmarks/results/release-matrix-macos-arm64-20260905-02",
+    "--documents",
+    "1000000",
+    "--tenants",
+    "1,100,1000",
+    "--operations",
+    "1000",
+    "--allow-host-load"
+  ],
+  "cwd": "/Users/takemiyamakoto/dev/kasumi",
+  "started_unix_seconds": 1788583383.842565,
+  "validated_source_sha256": "a36dd4e69700ea7e20aec5784106c0034f306d50edfec8939ad2b46ba439a63f",
+  "validation": "167 workspace tests each on macOS and Linux, strict Clippy and formatting; Linux live OpenBao passed. Dedicated validation VM stopped before dispatch.",
+  "python": "3.14.7",
+  "sleep_inhibition": "caffeinate -i prevents automatic idle system sleep only for driver lifetime; no display wake or global power settings changed. Explicit sleep can still fail key leases or benchmark cases.",
+  "measurement_classification": "Unrelated host activity is explicitly recorded; no quiet-machine or external speed-comparison claim.",
+  "failures": "First failed attempt stops only its workload; successful/failed/unattempted counts and durations remain. Independent cases continue; failures produce nonzero overall exit.",
+  "interruption": {
+    "unix_seconds": 1788583843.6825652,
+    "stage": "transitioned to local-1 during interrupt dispatch",
+    "completed_cases": 1,
+    "reason": "Disk guard could be masked by allowed background activity. The driver was observed in checking_host, but raw-1 completed and local-1 began before SIGINT arrived. Both outcomes and partial local progress are preserved. Corrected guard and regression tests precede fresh03.",
+    "action": "SIGINT sent only to this driver PID17092 after final release build completed.",
+    "observed_stage_before_signal": "checking_host with no cases"
+  }
+}

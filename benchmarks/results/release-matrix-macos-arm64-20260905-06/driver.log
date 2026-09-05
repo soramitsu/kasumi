@@ -1,0 +1,18 @@
+    Finished `release` profile [optimized] target(s) in 0.48s
+running raw-1
+running local-1
+running replicated-1
+running text-1
+running network-1
+running raw-100
+running local-100
+running replicated-100
+running text-100
+running network-100
+running raw-1000
+running local-1000
+running replicated-1000
+running text-1000
+running network-1000
+/Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-06/capacity.json
+/Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-06/matrix.json

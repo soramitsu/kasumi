@@ -1,0 +1,11 @@
+{
+  "format": 1,
+  "wrapper_pid": 20863,
+  "started_unix_seconds": 1788611824.51233,
+  "cwd": "/Users/takemiyamakoto/dev/kasumi",
+  "source_sha256": "28aeb80168d3ab02a0eec7bf2a0163a7cb99dbfd74adf596e849de17e1fa3c1d",
+  "stdout": "driver.log",
+  "stderr": "driver.log",
+  "stdin": "/dev/null",
+  "new_session": true
+}

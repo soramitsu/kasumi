@@ -1,0 +1,86 @@
+OpenBao v2.6.2 (dd9c19c37a878cf4a81b18efb8d6f0599c7da923), committed 2026-08-18T15:48:21Z
+   Compiling stable_deref_trait v1.2.1
+   Compiling syn v2.0.119
+   Compiling syn v3.0.5
+   Compiling getrandom v0.2.17
+   Compiling cc v1.4.5
+   Compiling tracing v0.1.44
+   Compiling futures-task v0.3.34
+   Compiling rand_core v0.6.4
+   Compiling hashbrown v0.17.1
+   Compiling futures-util v0.3.34
+   Compiling crypto-common v0.1.7
+   Compiling futures-channel v0.3.34
+   Compiling indexmap v2.14.1
+   Compiling serde v1.0.229
+   Compiling rustls v0.23.43
+   Compiling ring v0.17.14
+   Compiling serde_json v1.0.151
+   Compiling time-macros v0.2.32
+   Compiling getrandom v0.4.3
+   Compiling deranged v0.5.8
+   Compiling synstructure v0.13.2
+   Compiling digest v0.10.7
+   Compiling universal-hash v0.5.1
+   Compiling aead v0.5.2
+   Compiling poly1305 v0.8.0
+   Compiling zerofrom-derive v0.1.7
+   Compiling yoke-derive v0.8.2
+   Compiling zeroize_derive v1.5.0
+   Compiling zerovec-derive v0.11.6
+   Compiling displaydoc v0.2.7
+   Compiling zeroize v1.9.0
+   Compiling tokio-macros v2.7.2
+   Compiling rustls-pki-types v1.15.1
+   Compiling serde_derive v1.0.229
+   Compiling webpki-roots v1.0.9
+   Compiling cipher v0.4.4
+   Compiling time v0.3.55
+   Compiling chacha20 v0.9.1
+   Compiling zerofrom v0.1.8
+   Compiling yoke v0.8.3
+   Compiling base64 v0.23.1
+   Compiling zerovec v0.11.8
+   Compiling zerotrie v0.2.5
+   Compiling tinystr v0.8.4
+   Compiling potential_utf v0.1.6
+   Compiling icu_collections v2.3.0
+   Compiling icu_locale_core v2.3.0
+   Compiling rustls-webpki v0.103.15
+   Compiling tempfile v3.27.0
+   Compiling tokio v1.53.1
+   Compiling axum-core v0.5.6
+   Compiling icu_provider v2.3.1
+   Compiling icu_normalizer v2.3.0
+   Compiling icu_properties v2.3.0
+   Compiling yasna v0.6.0
+   Compiling pem v4.0.0
+   Compiling idna_adapter v1.2.2
+   Compiling sha2 v0.10.9
+   Compiling chacha20poly1305 v0.10.1
+   Compiling idna v1.1.0
+   Compiling async-trait v0.1.92
+   Compiling uuid v1.26.0
+   Compiling tokio-util v0.7.19
+   Compiling tower v0.5.3
+   Compiling h2 v0.4.19
+   Compiling serde_urlencoded v0.7.1
+   Compiling tokio-rustls v0.26.5
+   Compiling url v2.5.8
+   Compiling hmac v0.12.1
+   Compiling rcgen v0.14.10
+   Compiling tower-http v0.6.11
+   Compiling hyper v1.11.1
+   Compiling hyper-util v0.1.20
+   Compiling hyper-rustls v0.27.9
+   Compiling axum v0.8.9
+   Compiling reqwest v0.12.28
+   Compiling kasumi-store v0.1.0 (/workspace/crates/kasumi-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 21.60s
+     Running tests/openbao_live.rs (target/linux-validation/debug/deps/openbao_live-ca82205d67550be5)
+
+running 1 test
+test actual_openbao_transit_roundtrip_rotation_backups_and_warm_revocation ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+

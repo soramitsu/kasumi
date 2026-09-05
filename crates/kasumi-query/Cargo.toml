@@ -1,0 +1,23 @@
+[package]
+name = "kasumi-query"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+kasumi-types.workspace = true
+serde.workspace = true
+sha2.workspace = true
+serde_json.workspace = true
+imbl = { version = "7.0.1", features = ["serde"] }
+bigdecimal = "0.4.10"
+jsonschema = { version = "0.52.1", default-features = false, features = ["arbitrary-precision"] }
+tantivy = { version = "0.26.1", default-features = false, features = ["lz4-compression"] }
+lindera = { version = "5.0.1", features = ["embed-ipadic"] }
+lindera-tantivy = { version = "5.0.1", features = ["embed-ipadic"] }
+unicode-normalization = "0.1"
+levenshtein_automata = "0.2"
+tantivy-fst = "0.5"
+
+[dev-dependencies]
+tempfile.workspace = true

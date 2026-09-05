@@ -1,0 +1,401 @@
+{
+  "format": "kasumi-measurement-cohort-v1",
+  "status": "completed_under_host_load",
+  "artifact_path_base": "repository root",
+  "measurement_coverage_complete": true,
+  "single_execution": false,
+  "current_source_sha256": "28aeb80168d3ab02a0eec7bf2a0163a7cb99dbfd74adf596e849de17e1fa3c1d",
+  "source_sha256": null,
+  "source_identities": [
+    "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2",
+    "28aeb80168d3ab02a0eec7bf2a0163a7cb99dbfd74adf596e849de17e1fa3c1d"
+  ],
+  "documents_per_case": 1000000,
+  "tenant_counts": [
+    1,
+    100,
+    1000
+  ],
+  "operations_per_workload": 1000,
+  "reused_engine_executable_sha256": "a1f93ade86ddfe7096bb0afccc9ae72b4f196254657595d4f6409525f0be52b7",
+  "reuse_rule": "Exactly matching engine executable and complete source manifests differing only in server tls.rs. Raw origins remain unchanged.",
+  "selected_cases": [
+    {
+      "case": "raw-1",
+      "directory": "benchmarks/results/release-matrix-macos-arm64-20260905-06",
+      "source_sha256": "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2",
+      "status": "passed",
+      "exit_code": 0,
+      "result_sha256": "8bb8b7a23426818098563ddda7fd418ed4bcf007606c52afa0693f5c0cb80dee",
+      "executable_sha256": {
+        "target/release/kasumi-bench": "a1f93ade86ddfe7096bb0afccc9ae72b4f196254657595d4f6409525f0be52b7",
+        "target/release/kasumi-bench-loopback": "30cd9438a07549b296d86a101d1efbf64a536449107dec9b8f59946c4733adb2",
+        "target/release/kasumi-bench-network": "f1b7f8493eff2b03170854237845fa0bf026fff3d0f88dcb9dbdcf79284f273c",
+        "target/release/kasumid": "5ecf74b71ffaa6bd1897927ed0dff7f0f73a5863757044b595326cc1f351bf16"
+      }
+    },
+    {
+      "case": "local-1",
+      "directory": "benchmarks/results/release-matrix-macos-arm64-20260905-06",
+      "source_sha256": "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2",
+      "status": "passed",
+      "exit_code": 0,
+      "result_sha256": "81c25fe8892a0858c36880225216ba992ae1428ae827c2130ab0c71ef91393d8",
+      "executable_sha256": {
+        "target/release/kasumi-bench": "a1f93ade86ddfe7096bb0afccc9ae72b4f196254657595d4f6409525f0be52b7",
+        "target/release/kasumi-bench-loopback": "30cd9438a07549b296d86a101d1efbf64a536449107dec9b8f59946c4733adb2",
+        "target/release/kasumi-bench-network": "f1b7f8493eff2b03170854237845fa0bf026fff3d0f88dcb9dbdcf79284f273c",
+        "target/release/kasumid": "5ecf74b71ffaa6bd1897927ed0dff7f0f73a5863757044b595326cc1f351bf16"
+      }
+    },
+    {
+      "case": "replicated-1",
+      "directory": "benchmarks/results/release-matrix-macos-arm64-20260905-06",
+      "source_sha256": "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2",
+      "status": "passed",
+      "exit_code": 0,
+      "result_sha256": "97b966bcfff78ce790d6ce4db24aa7da7a4597f78f46a9d537f376bc565118f7",
+      "executable_sha256": {
+        "target/release/kasumi-bench": "a1f93ade86ddfe7096bb0afccc9ae72b4f196254657595d4f6409525f0be52b7",
+        "target/release/kasumi-bench-loopback": "30cd9438a07549b296d86a101d1efbf64a536449107dec9b8f59946c4733adb2",
+        "target/release/kasumi-bench-network": "f1b7f8493eff2b03170854237845fa0bf026fff3d0f88dcb9dbdcf79284f273c",
+        "target/release/kasumid": "5ecf74b71ffaa6bd1897927ed0dff7f0f73a5863757044b595326cc1f351bf16"
+      }
+    },
+    {
+      "case": "text-1",
+      "directory": "benchmarks/results/release-matrix-macos-arm64-20260905-06",
+      "source_sha256": "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2",
+      "status": "passed",
+      "exit_code": 0,
+      "result_sha256": "8a7b0f9656421dacb6725b49d607aac7351535c3c2a1a8aa1bd32b021af5167a",
+      "executable_sha256": {
+        "target/release/kasumi-bench": "a1f93ade86ddfe7096bb0afccc9ae72b4f196254657595d4f6409525f0be52b7",
+        "target/release/kasumi-bench-loopback": "30cd9438a07549b296d86a101d1efbf64a536449107dec9b8f59946c4733adb2",
+        "target/release/kasumi-bench-network": "f1b7f8493eff2b03170854237845fa0bf026fff3d0f88dcb9dbdcf79284f273c",
+        "target/release/kasumid": "5ecf74b71ffaa6bd1897927ed0dff7f0f73a5863757044b595326cc1f351bf16"
+      }
+    },
+    {
+      "case": "network-1",
+      "directory": "benchmarks/results/network-rerun-macos-arm64-20260905-listener",
+      "source_sha256": "28aeb80168d3ab02a0eec7bf2a0163a7cb99dbfd74adf596e849de17e1fa3c1d",
+      "status": "passed",
+      "exit_code": 0,
+      "result_sha256": "5270ef123e80b899cd0de95d84e56079cbcc4719833b1518e07210e41bdde7a2",
+      "executable_sha256": {
+        "target/release/kasumi-bench": "a1f93ade86ddfe7096bb0afccc9ae72b4f196254657595d4f6409525f0be52b7",
+        "target/release/kasumi-bench-loopback": "788550dfa5f1d75535ab37fc63f3675959c98cc38a12628d99dd22c9ff716e1d",
+        "target/release/kasumi-bench-network": "f1b7f8493eff2b03170854237845fa0bf026fff3d0f88dcb9dbdcf79284f273c",
+        "target/release/kasumid": "55d88df05e3602ad3ba482351bcf896a58130deed12c6a22c249aaf70cf183c0"
+      }
+    },
+    {
+      "case": "raw-100",
+      "directory": "benchmarks/results/release-matrix-macos-arm64-20260905-06",
+      "source_sha256": "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2",
+      "status": "passed",
+      "exit_code": 0,
+      "result_sha256": "c01d88f56d5842bbe4949ba593e9c74f9fbe13b68fef6a3c954695c922455e20",
+      "executable_sha256": {
+        "target/release/kasumi-bench": "a1f93ade86ddfe7096bb0afccc9ae72b4f196254657595d4f6409525f0be52b7",
+        "target/release/kasumi-bench-loopback": "30cd9438a07549b296d86a101d1efbf64a536449107dec9b8f59946c4733adb2",
+        "target/release/kasumi-bench-network": "f1b7f8493eff2b03170854237845fa0bf026fff3d0f88dcb9dbdcf79284f273c",
+        "target/release/kasumid": "5ecf74b71ffaa6bd1897927ed0dff7f0f73a5863757044b595326cc1f351bf16"
+      }
+    },
+    {
+      "case": "local-100",
+      "directory": "benchmarks/results/release-matrix-macos-arm64-20260905-06",
+      "source_sha256": "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2",
+      "status": "passed",
+      "exit_code": 0,
+      "result_sha256": "14d36a6babdf76b921c9c42236c829d31b88d8f7b78712344ca6551da6775075",
+      "executable_sha256": {
+        "target/release/kasumi-bench": "a1f93ade86ddfe7096bb0afccc9ae72b4f196254657595d4f6409525f0be52b7",
+        "target/release/kasumi-bench-loopback": "30cd9438a07549b296d86a101d1efbf64a536449107dec9b8f59946c4733adb2",
+        "target/release/kasumi-bench-network": "f1b7f8493eff2b03170854237845fa0bf026fff3d0f88dcb9dbdcf79284f273c",
+        "target/release/kasumid": "5ecf74b71ffaa6bd1897927ed0dff7f0f73a5863757044b595326cc1f351bf16"
+      }
+    },
+    {
+      "case": "replicated-100",
+      "directory": "benchmarks/results/release-matrix-macos-arm64-20260905-06",
+      "source_sha256": "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2",
+      "status": "passed",
+      "exit_code": 0,
+      "result_sha256": "b41391f4925cda0755f36a8895dbcb5ebc04c9a28f9ec1fa555977e0926393c0",
+      "executable_sha256": {
+        "target/release/kasumi-bench": "a1f93ade86ddfe7096bb0afccc9ae72b4f196254657595d4f6409525f0be52b7",
+        "target/release/kasumi-bench-loopback": "30cd9438a07549b296d86a101d1efbf64a536449107dec9b8f59946c4733adb2",
+        "target/release/kasumi-bench-network": "f1b7f8493eff2b03170854237845fa0bf026fff3d0f88dcb9dbdcf79284f273c",
+        "target/release/kasumid": "5ecf74b71ffaa6bd1897927ed0dff7f0f73a5863757044b595326cc1f351bf16"
+      }
+    },
+    {
+      "case": "text-100",
+      "directory": "benchmarks/results/release-matrix-macos-arm64-20260905-06",
+      "source_sha256": "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2",
+      "status": "passed",
+      "exit_code": 0,
+      "result_sha256": "9aa4b539a7c2601864ce82dce8412ef3c3c03cb52efb7893430e00cfbc9f2dad",
+      "executable_sha256": {
+        "target/release/kasumi-bench": "a1f93ade86ddfe7096bb0afccc9ae72b4f196254657595d4f6409525f0be52b7",
+        "target/release/kasumi-bench-loopback": "30cd9438a07549b296d86a101d1efbf64a536449107dec9b8f59946c4733adb2",
+        "target/release/kasumi-bench-network": "f1b7f8493eff2b03170854237845fa0bf026fff3d0f88dcb9dbdcf79284f273c",
+        "target/release/kasumid": "5ecf74b71ffaa6bd1897927ed0dff7f0f73a5863757044b595326cc1f351bf16"
+      }
+    },
+    {
+      "case": "network-100",
+      "directory": "benchmarks/results/network-rerun-macos-arm64-20260905-listener",
+      "source_sha256": "28aeb80168d3ab02a0eec7bf2a0163a7cb99dbfd74adf596e849de17e1fa3c1d",
+      "status": "passed",
+      "exit_code": 0,
+      "result_sha256": "28c5b7c3dee622e263c1637feba9a592dce0adcaff6fb6724ccc4af0d74dcc65",
+      "executable_sha256": {
+        "target/release/kasumi-bench": "a1f93ade86ddfe7096bb0afccc9ae72b4f196254657595d4f6409525f0be52b7",
+        "target/release/kasumi-bench-loopback": "788550dfa5f1d75535ab37fc63f3675959c98cc38a12628d99dd22c9ff716e1d",
+        "target/release/kasumi-bench-network": "f1b7f8493eff2b03170854237845fa0bf026fff3d0f88dcb9dbdcf79284f273c",
+        "target/release/kasumid": "55d88df05e3602ad3ba482351bcf896a58130deed12c6a22c249aaf70cf183c0"
+      }
+    },
+    {
+      "case": "raw-1000",
+      "directory": "benchmarks/results/release-matrix-macos-arm64-20260905-06",
+      "source_sha256": "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2",
+      "status": "passed",
+      "exit_code": 0,
+      "result_sha256": "10c0747e7ea42c3c3385ad443579df7d9e42e714021d4cc4c34a94ca5dfaae7a",
+      "executable_sha256": {
+        "target/release/kasumi-bench": "a1f93ade86ddfe7096bb0afccc9ae72b4f196254657595d4f6409525f0be52b7",
+        "target/release/kasumi-bench-loopback": "30cd9438a07549b296d86a101d1efbf64a536449107dec9b8f59946c4733adb2",
+        "target/release/kasumi-bench-network": "f1b7f8493eff2b03170854237845fa0bf026fff3d0f88dcb9dbdcf79284f273c",
+        "target/release/kasumid": "5ecf74b71ffaa6bd1897927ed0dff7f0f73a5863757044b595326cc1f351bf16"
+      }
+    },
+    {
+      "case": "local-1000",
+      "directory": "benchmarks/results/release-matrix-macos-arm64-20260905-06",
+      "source_sha256": "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2",
+      "status": "passed",
+      "exit_code": 0,
+      "result_sha256": "a4d375869c8391abcd85d1728b541211671836f0c828c8c8a7d2cdb48a1f1537",
+      "executable_sha256": {
+        "target/release/kasumi-bench": "a1f93ade86ddfe7096bb0afccc9ae72b4f196254657595d4f6409525f0be52b7",
+        "target/release/kasumi-bench-loopback": "30cd9438a07549b296d86a101d1efbf64a536449107dec9b8f59946c4733adb2",
+        "target/release/kasumi-bench-network": "f1b7f8493eff2b03170854237845fa0bf026fff3d0f88dcb9dbdcf79284f273c",
+        "target/release/kasumid": "5ecf74b71ffaa6bd1897927ed0dff7f0f73a5863757044b595326cc1f351bf16"
+      }
+    },
+    {
+      "case": "replicated-1000",
+      "directory": "benchmarks/results/release-matrix-macos-arm64-20260905-06",
+      "source_sha256": "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2",
+      "status": "passed",
+      "exit_code": 0,
+      "result_sha256": "9e8159266d6294d3905c17f90203afb05a6e6cf41030eebd0a7b39525c43edf0",
+      "executable_sha256": {
+        "target/release/kasumi-bench": "a1f93ade86ddfe7096bb0afccc9ae72b4f196254657595d4f6409525f0be52b7",
+        "target/release/kasumi-bench-loopback": "30cd9438a07549b296d86a101d1efbf64a536449107dec9b8f59946c4733adb2",
+        "target/release/kasumi-bench-network": "f1b7f8493eff2b03170854237845fa0bf026fff3d0f88dcb9dbdcf79284f273c",
+        "target/release/kasumid": "5ecf74b71ffaa6bd1897927ed0dff7f0f73a5863757044b595326cc1f351bf16"
+      }
+    },
+    {
+      "case": "text-1000",
+      "directory": "benchmarks/results/release-matrix-macos-arm64-20260905-06",
+      "source_sha256": "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2",
+      "status": "passed",
+      "exit_code": 0,
+      "result_sha256": "c4f04c1ff9e60c342f2c7cd5cb011822833cbbab175c7fca73aec812cdcf5747",
+      "executable_sha256": {
+        "target/release/kasumi-bench": "a1f93ade86ddfe7096bb0afccc9ae72b4f196254657595d4f6409525f0be52b7",
+        "target/release/kasumi-bench-loopback": "30cd9438a07549b296d86a101d1efbf64a536449107dec9b8f59946c4733adb2",
+        "target/release/kasumi-bench-network": "f1b7f8493eff2b03170854237845fa0bf026fff3d0f88dcb9dbdcf79284f273c",
+        "target/release/kasumid": "5ecf74b71ffaa6bd1897927ed0dff7f0f73a5863757044b595326cc1f351bf16"
+      }
+    },
+    {
+      "case": "network-1000",
+      "directory": "benchmarks/results/network-rerun-macos-arm64-20260905-listener",
+      "source_sha256": "28aeb80168d3ab02a0eec7bf2a0163a7cb99dbfd74adf596e849de17e1fa3c1d",
+      "status": "passed",
+      "exit_code": 0,
+      "result_sha256": "b4692d7842fb899e5f76852cb81de9c13de21b89af3a4ebe2212c656e23e1828",
+      "executable_sha256": {
+        "target/release/kasumi-bench": "a1f93ade86ddfe7096bb0afccc9ae72b4f196254657595d4f6409525f0be52b7",
+        "target/release/kasumi-bench-loopback": "788550dfa5f1d75535ab37fc63f3675959c98cc38a12628d99dd22c9ff716e1d",
+        "target/release/kasumi-bench-network": "f1b7f8493eff2b03170854237845fa0bf026fff3d0f88dcb9dbdcf79284f273c",
+        "target/release/kasumid": "55d88df05e3602ad3ba482351bcf896a58130deed12c6a22c249aaf70cf183c0"
+      }
+    }
+  ],
+  "excluded_prior_network_cases": [
+    {
+      "name": "network-1",
+      "started_unix_seconds": 1788605251.680811,
+      "elapsed_seconds": 571.950361251831,
+      "command": [
+        "/Users/takemiyamakoto/dev/kasumi/target/release/kasumi-bench-loopback",
+        "--documents",
+        "1000000",
+        "--operations",
+        "1000",
+        "--tenants",
+        "1",
+        "--output-prefix",
+        "/Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-06/network"
+      ],
+      "status": "passed",
+      "exit_code": 0,
+      "result_sha256": "70dab3b230dc07219c5989f9c761d1a982ff633bfe7147ec95cfa1dd8cf8723e",
+      "origin_directory": "benchmarks/results/release-matrix-macos-arm64-20260905-06",
+      "source_sha256": "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2"
+    },
+    {
+      "name": "network-100",
+      "started_unix_seconds": 1788607141.959668,
+      "elapsed_seconds": 601.7333180904388,
+      "command": [
+        "/Users/takemiyamakoto/dev/kasumi/target/release/kasumi-bench-loopback",
+        "--documents",
+        "1000000",
+        "--operations",
+        "1000",
+        "--tenants",
+        "100",
+        "--output-prefix",
+        "/Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-06/network"
+      ],
+      "status": "passed",
+      "exit_code": 0,
+      "result_sha256": "0b61f2dd4d1b6c3fd60ea4870c9d8d1693028cfcce065ead33610dcd51cbcf13",
+      "origin_directory": "benchmarks/results/release-matrix-macos-arm64-20260905-06",
+      "source_sha256": "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2"
+    },
+    {
+      "name": "network-1000",
+      "started_unix_seconds": 1788610241.2617579,
+      "elapsed_seconds": 170.11465406417847,
+      "command": [
+        "/Users/takemiyamakoto/dev/kasumi/target/release/kasumi-bench-loopback",
+        "--documents",
+        "1000000",
+        "--operations",
+        "1000",
+        "--tenants",
+        "1000",
+        "--output-prefix",
+        "/Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-06/network"
+      ],
+      "status": "failed",
+      "exit_code": 1,
+      "result_sha256": "76bcdb1e365f8fd5a7778d071af526eb7cb900276580ff370a3609adae399f3d",
+      "origin_directory": "benchmarks/results/release-matrix-macos-arm64-20260905-06",
+      "source_sha256": "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "benchmarks/results/release-matrix-macos-arm64-20260905-06/matrix.json",
+      "sha256": "ea57faf5f23157b76b9ca4e5190ee123b583905cab8b32512d40fed7ce1a5a5a"
+    },
+    {
+      "path": "benchmarks/results/release-matrix-macos-arm64-20260905-06/execution.json",
+      "sha256": "782740f589c7d46bdd0ef653368ee6cb6473e41cc2c3109a871944feb7ac3f9a"
+    },
+    {
+      "path": "benchmarks/results/release-matrix-macos-arm64-20260905-06/capacity.json",
+      "sha256": "f86e76305155dd7ccab7f0330593dd1e77793294944a76511e32b2991eb2561e"
+    },
+    {
+      "path": "benchmarks/results/release-matrix-macos-arm64-20260905-06/source-manifest.json",
+      "sha256": "f4495221b02f346d1cff99b3bdbbdec1d6c5b8e3f4d4460f4631111bd41a6643"
+    },
+    {
+      "path": "benchmarks/results/release-matrix-macos-arm64-20260905-06/RUN_NOTES.md",
+      "sha256": "c9a3588f5cd4ef74066ab16905c416b8ea8ea3b3c83cb2749e8efa29e5622e6b"
+    },
+    {
+      "path": "benchmarks/results/release-matrix-macos-arm64-20260905-06/host-samples.jsonl",
+      "sha256": "1ca5d513f011647274dfd86b24e5d65dfaa636b7279cf1244ebd82700f610154"
+    },
+    {
+      "path": "benchmarks/results/network-rerun-macos-arm64-20260905-listener/matrix.json",
+      "sha256": "3bd8775f04564172510dc7ab6992acc5e5f2721f11d6cd2439070e47c1294bc8"
+    },
+    {
+      "path": "benchmarks/results/network-rerun-macos-arm64-20260905-listener/execution.json",
+      "sha256": "7282e3211cbc6609dec43af85618e02cfd1731b7cb8ae043b0b4b1c5114503f6"
+    },
+    {
+      "path": "benchmarks/results/network-rerun-macos-arm64-20260905-listener/capacity.json",
+      "sha256": "7d6fb11b67e705d871fadbff9d05a8ce7c5f87f3a6c2412bc3801bb4b672db9f"
+    },
+    {
+      "path": "benchmarks/results/network-rerun-macos-arm64-20260905-listener/source-manifest.json",
+      "sha256": "7faafde1826b18a5e03ff9938fc4f3ab830760c3cc6a8d605763fbb8a69adf37"
+    },
+    {
+      "path": "benchmarks/results/network-rerun-macos-arm64-20260905-listener/RUN_NOTES.md",
+      "sha256": "18f2bb01a8f9b1175a48fc2345a2147cb46bd130aaaf2ad087c281ecdac12bb9"
+    },
+    {
+      "path": "benchmarks/results/network-rerun-macos-arm64-20260905-listener/host-samples.jsonl",
+      "sha256": "e6a97533f644de7d18e6298d211095f57742d914c647ff65f5657b6a59d838b7"
+    },
+    {
+      "path": "benchmarks/results/listener-startup-20260905/source-change.json",
+      "sha256": "85a5556eb8360219f20a099af00ef5929b68d1f22030e212b57a9635ac664677"
+    },
+    {
+      "path": "benchmarks/results/macos-validation-20260905-listener/release-build.json",
+      "sha256": "9363f9355640a499244d6e06f7d2133d12c4c131a122b2fdf1aa1b05ce0345cc"
+    },
+    {
+      "path": "benchmarks/results/macos-validation-20260905-listener/evidence.json",
+      "sha256": "c8458998dc944f7d8c3c7a549941fc27bf8094cb7455f7f4f0b3863a07df1ebe"
+    },
+    {
+      "path": "benchmarks/results/linux-validation-20260905-listener/evidence.json",
+      "sha256": "1a036d2a492aec6cabba1ac1a05ba3bee90a5424cacfe52b10a59a1ee8f28814"
+    },
+    {
+      "path": "benchmarks/results/linux-validation-20260905-listener/minio-evidence.json",
+      "sha256": "699090f0b69b5e6cb7121c91d822c61075b6d8bdcfd9a0db92e253dd3c0792f2"
+    }
+  ],
+  "source_host_qualification": {
+    "benchmarks/results/release-matrix-macos-arm64-20260905-06": {
+      "passed_quietness_screening": false,
+      "host_load_violation_counts": {
+        "competing compiler/linker or virtual machine process present": 1314
+      }
+    },
+    "benchmarks/results/network-rerun-macos-arm64-20260905-listener": {
+      "passed_quietness_screening": false,
+      "host_load_violation_counts": {
+        "competing compiler/linker or virtual machine process present": 474
+      }
+    }
+  },
+  "derived_capacity": {
+    "path": "benchmarks/results/release-cohort-macos-arm64-20260905-listener/capacity.json",
+    "sha256": "dce52902a81d84759214a723fbe2c4ba9be564c354c058e56af57ec6bf97db0b"
+  },
+  "renderers": [
+    {
+      "path": "benchmarks/results/release-cohort-macos-arm64-20260905-listener/tooling/render_release_report.py",
+      "sha256": "f7c5722a56a6f33363b8ceed8c9972e0f88aa4b770c18228cad0463446caf0b9"
+    },
+    {
+      "path": "benchmarks/results/release-cohort-macos-arm64-20260905-listener/tooling/release_cohort.py",
+      "sha256": "fd80a5823c43bdd68f13b8252361cc957bbca65c2e5836e6bdcb33aef9317f5c"
+    },
+    {
+      "path": "benchmarks/results/release-cohort-macos-arm64-20260905-listener/tooling/render_completed_release_report.py",
+      "sha256": "e0376d830ff037c9ea6b8c7b36d409961ccbd18684e631c4232886922d32b8c2"
+    }
+  ]
+}

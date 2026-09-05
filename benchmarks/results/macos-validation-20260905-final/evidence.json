@@ -1,0 +1,67 @@
+{
+  "format": 1,
+  "status": "passed",
+  "source_sha256_before": "358b623bee1e6a9189cdec2aeadbe047b4e1499e179386be4613b3684708db44",
+  "host": [
+    "Darwin",
+    "takemiyamakotonoMacBook-Pro.local",
+    "25.6.0",
+    "Darwin Kernel Version 25.6.0: Fri Jul 31 19:17:26 PDT 2026; root:xnu-12377.161.14~5/RELEASE_ARM64_T6041",
+    "arm64"
+  ],
+  "rustc": "rustc 1.94.1 (e408947bf 2026-03-25)",
+  "started_unix_seconds": 1788568514.396191,
+  "commands": [
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "--workspace",
+        "--all-features",
+        "--all-targets",
+        "--locked"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 87.14826798439026,
+      "log": "1-test.log",
+      "log_sha256": "4283321588788dc4c9d2ed4b5f6753c4dc047ad700d1ee9229c25aa90fcb537d",
+      "test_entry_counts": {
+        "passed": 157,
+        "failed": 0,
+        "ignored": 2
+      }
+    },
+    {
+      "argv": [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--all-features",
+        "--all-targets",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 21.82297134399414,
+      "log": "2-clippy.log",
+      "log_sha256": "dcdef67dda9a198969ee2257c9090f6557c7f981cd1b69f2f6391ee8dcb20a3c"
+    },
+    {
+      "argv": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.2184290885925293,
+      "log": "3-fmt.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "source_sha256_after": "358b623bee1e6a9189cdec2aeadbe047b4e1499e179386be4613b3684708db44",
+  "finished_unix_seconds": 1788568623.604054
+}

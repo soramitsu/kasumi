@@ -1,0 +1,17 @@
+{
+  "format": 1,
+  "status": "passed",
+  "command": [
+    "systemd-analyze",
+    "verify",
+    "/workspace/deploy/kasumi.service"
+  ],
+  "verifier": "systemd 252.39-1~deb12u2",
+  "platform": "Debian 12 Linux aarch64 disposable container",
+  "exit_code": 0,
+  "unit_file": "deploy/kasumi.service",
+  "unit_sha256": "bc0f74e04affbb09da16e28c44e1d331f8e5700b59d435da4ab2cbdfd3e43cf0",
+  "log": "linux-systemd-validation.log",
+  "log_sha256": "51e116dd4f4c9c43676d6e8bb71e7b1ec893c47281ce91fb0b6f42f05496f629",
+  "scope": "Static verification; no service or system daemon started."
+}

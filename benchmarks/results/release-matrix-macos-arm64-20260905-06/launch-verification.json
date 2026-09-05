@@ -1,0 +1,29 @@
+{
+  "observed_unix_seconds": 1788603803.0175202,
+  "execution_wrapper_sha256": "bd4aa5ddec7a061957f91ded1ece668c5d810f1eb620c31979dd4970000e2336",
+  "commands": [
+    {
+      "argv": [
+        "ps",
+        "-p",
+        "41576,41577",
+        "-o",
+        "pid=,ppid=,pgid=,stat=,comm="
+      ],
+      "output": "41576     1 41576 Ss   /opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python\n41577 41576 41576 S    /opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python\n"
+    },
+    {
+      "argv": [
+        "lsof",
+        "-a",
+        "-p",
+        "41576,41577",
+        "-d",
+        "0,1,2",
+        "-F",
+        "pftn"
+      ],
+      "output": "p41576\nf0\ntCHR\nn/dev/null\nf1\ntREG\nn/Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-06/driver.log\nf2\ntREG\nn/Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-06/driver.log\np41577\nf0\ntCHR\nn/dev/null\nf1\ntREG\nn/Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-06/driver.log\nf2\ntREG\nn/Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-06/driver.log\n"
+    }
+  ]
+}

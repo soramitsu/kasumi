@@ -1,0 +1,9 @@
+{
+  "format": 1,
+  "status": "prepared_not_launched",
+  "scope": "network only, 1/100/1000 tenants, 1000000 documents each, 1000 operations per workload",
+  "original_driver_sha256": "78e62293768a5db0ebba133c865cb91c43185412086a9f11f4d138e64bcd668f",
+  "network_driver_sha256": "9fd666e6d3028051495f57588c8ad0d0335e1a2335708eac447dc6b459eddd6d",
+  "wrapper_sha256": "71386fc7470e24c64b7c8906117da4eb332c1f8c8a360493092cff66b598313e",
+  "reason": "tls.rs-only listener correction; retain original run06 raw results and source identities"
+}

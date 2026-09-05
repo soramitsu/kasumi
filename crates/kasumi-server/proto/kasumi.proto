@@ -1,0 +1,54 @@
+syntax = "proto3";
+package kasumi.v1;
+
+// Every call requires its own Authorization: Bearer token. Tenant identity comes
+// from that verified token. Service and cluster listeners additionally require mTLS.
+// JSON payloads are UTF-8 bytes so numeric literals never pass through protobuf's
+// double-valued google.protobuf.Struct representation.
+service KasumiData {
+  rpc Get(GetRequest) returns (Document);
+  rpc Query(QueryRequest) returns (QueryResponse);
+  rpc Mutate(MutateRequest) returns (WriteReceipt);
+  rpc Collections(CollectionsRequest) returns (CollectionsResponse);
+  rpc Receipt(ReceiptRequest) returns (ReceiptResponse);
+}
+
+// Bind only to the administrative listener. These methods still enforce the
+// current tenant/collection admin policy in consensus order.
+service KasumiAdmin {
+  rpc CreateCollection(CollectionDefinitionRequest) returns (WriteReceipt);
+  rpc ReplaceCollection(CollectionDefinitionRequest) returns (WriteReceipt);
+  rpc SetPolicy(SetPolicyRequest) returns (WriteReceipt);
+  rpc SetLimits(SetLimitsRequest) returns (WriteReceipt);
+  rpc SetSuspended(SetSuspendedRequest) returns (WriteReceipt);
+  // Closed, versioned administrative command enum; destinations are configured
+  // server-side names. No request carries a tenant override or filesystem path.
+  rpc Manage(ManagementRequest) returns (ManagementResponse);
+}
+
+message GetRequest { string collection = 1; string id = 2; }
+message Document { string id = 1; uint64 version = 2; bytes body_json = 3; }
+message QueryRequest { bytes query_json = 1; }
+message QueryRow { Document document = 1; optional float score = 2; }
+message QueryResponse {
+  uint64 revision = 1;
+  repeated QueryRow rows = 2;
+  repeated bytes aggregates_json = 3;
+  optional string cursor = 4;
+}
+message MutateRequest { bytes batch_json = 1; }
+message WriteReceipt { uint64 revision = 1; map<string, uint64> versions = 2; }
+message CollectionsRequest {}
+message CollectionsResponse { repeated bytes definitions_json = 1; }
+message ReceiptRequest { string idempotency_key = 1; }
+message DatabaseError { string code = 1; string message = 2; }
+message ReceiptResponse {
+  // Neither outcome set means there is no retained receipt for this principal/key.
+  oneof outcome { WriteReceipt committed = 1; DatabaseError rejected = 2; }
+}
+message CollectionDefinitionRequest { bytes definition_json = 1; }
+message SetPolicyRequest { bytes policy_json = 1; }
+message SetLimitsRequest { bytes limits_json = 1; }
+message SetSuspendedRequest { bool suspended = 1; }
+message ManagementRequest { bytes command_json = 1; }
+message ManagementResponse { bytes result_json = 1; }

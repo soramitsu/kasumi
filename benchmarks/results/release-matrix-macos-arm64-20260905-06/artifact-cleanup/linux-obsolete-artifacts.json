@@ -1,0 +1,543 @@
+{
+  "format": 1,
+  "operation": "read_only_candidate_audit_no_deletion",
+  "created_unix_seconds": 1788603391.543208,
+  "lane": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug",
+  "bounded_scope": "One debug/deps directory; no incremental/dependency traversal or deletion. Stopped after identifying the available superseded test executables.",
+  "current_full_gate": "/Users/takemiyamakoto/dev/kasumi/benchmarks/results/linux-validation-20260905-embedded-audit/evidence.json",
+  "current_source_sha256": "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2",
+  "passing_gate_log_sha256": "800edc9f5e50601483d654cb2cbd40d45539790bc3311038fabdd1f85b1ffc8e",
+  "protected_current_executables": [
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/admission-fd1c8df9a7ecc60c",
+      "inode": 1395242517,
+      "bytes": 349797360,
+      "modified_unix_seconds": 1788602529.5855708
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/cluster-373f20e69bd6d686",
+      "inode": 1395048545,
+      "bytes": 129279832,
+      "modified_unix_seconds": 1788599684.5522726
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/cluster_transport-67895f6a188a51f8",
+      "inode": 1395262574,
+      "bytes": 369018320,
+      "modified_unix_seconds": 1788602598.411792
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/concurrent_pagination-87c4b947ad89f677",
+      "inode": 1395265929,
+      "bytes": 352511184,
+      "modified_unix_seconds": 1788602632.587348
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/contracts-8c921a19a34b6d36",
+      "inode": 1395265475,
+      "bytes": 351604720,
+      "modified_unix_seconds": 1788602630.3543472
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/control-d67042ab04056975",
+      "inode": 1395263490,
+      "bytes": 346311864,
+      "modified_unix_seconds": 1788602610.3889012
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/embedded_audit-c223238f081df0e7",
+      "inode": 1395253165,
+      "bytes": 354582056,
+      "modified_unix_seconds": 1788602554.7847345
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/kasumi_bench-4e7638168a9d9d64",
+      "inode": 1395262825,
+      "bytes": 43482480,
+      "modified_unix_seconds": 1788602566.6776168
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/kasumi_bench-9d02836c5bff464f",
+      "inode": 1395261447,
+      "bytes": 353524008,
+      "modified_unix_seconds": 1788602594.0109162
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/kasumi_bench_loopback-4a25469a9caac957",
+      "inode": 1395261484,
+      "bytes": 6355120,
+      "modified_unix_seconds": 1788602536.7845929
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/kasumi_bench_network-168cb53b1645e3a4",
+      "inode": 1395258686,
+      "bytes": 6355112,
+      "modified_unix_seconds": 1788602522.1375837
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/kasumi_engine-e3143eba249da240",
+      "inode": 1395241609,
+      "bytes": 333341920,
+      "modified_unix_seconds": 1788602520.002115
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/kasumi_query-1e1b65e66f0f1b0b",
+      "inode": 1395239478,
+      "bytes": 224259664,
+      "modified_unix_seconds": 1788602486.0789156
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/kasumi_raft-7865f59d3b3b8e0b",
+      "inode": 1394982886,
+      "bytes": 103165104,
+      "modified_unix_seconds": 1788599551.4388537
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/kasumi_server-ceff94ee096dec17",
+      "inode": 1395267747,
+      "bytes": 482336024,
+      "modified_unix_seconds": 1788602646.3207629
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/kasumi_store-bdc0f94e0abc636a",
+      "inode": 1394977989,
+      "bytes": 109584560,
+      "modified_unix_seconds": 1788599553.8206046
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/kasumi_types-e3e1d76dfdf3cf07",
+      "inode": 1395238024,
+      "bytes": 9681480,
+      "modified_unix_seconds": 1788602467.975743
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/kasumictl-d9b913c36b10ddd2",
+      "inode": 1395258714,
+      "bytes": 6355104,
+      "modified_unix_seconds": 1788602523.7820609
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/kasumid-627e4c0999ada9b6",
+      "inode": 1395258749,
+      "bytes": 6355072,
+      "modified_unix_seconds": 1788602532.0095394
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/openbao_live-ca82205d67550be5",
+      "inode": 1395050609,
+      "bytes": 86635544,
+      "modified_unix_seconds": 1788599761.2411015
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/openbao_live-fe59337c5fe6f451",
+      "inode": 1394979447,
+      "bytes": 88274152,
+      "modified_unix_seconds": 1788599543.8484418
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/read_barrier-aada2354a8e754f7",
+      "inode": 1395046477,
+      "bytes": 126862232,
+      "modified_unix_seconds": 1788599673.9663026
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/replicated-45b757283ba29014",
+      "inode": 1395242718,
+      "bytes": 352683984,
+      "modified_unix_seconds": 1788602534.376077
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/response_release-41ba17b4136d551b",
+      "inode": 1395264027,
+      "bytes": 344082192,
+      "modified_unix_seconds": 1788602623.475021
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/shutdown-003fa7ca735f2339",
+      "inode": 1395242520,
+      "bytes": 349953920,
+      "modified_unix_seconds": 1788602529.1153486
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/shutdown-5639250006dcc67a",
+      "inode": 1394989794,
+      "bytes": 127047568,
+      "modified_unix_seconds": 1788599570.8129644
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/snapshot_budget-01f22f6ed2bb1ef7",
+      "inode": 1395264559,
+      "bytes": 318801832,
+      "modified_unix_seconds": 1788602620.853626
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/storage_conformance-e8d55793415af043",
+      "inode": 1394989046,
+      "bytes": 118005200,
+      "modified_unix_seconds": 1788599560.8438497
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/tls_listener-f52d60660a3044fd",
+      "inode": 1395261754,
+      "bytes": 422006624,
+      "modified_unix_seconds": 1788602596.8103487
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/examples/map_sharing-388e36d57a057f00",
+      "inode": 1395264885,
+      "bytes": 6355392,
+      "modified_unix_seconds": 1788602599.1769743
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/kasumid",
+      "inode": 1395257393,
+      "bytes": 474872928,
+      "modified_unix_seconds": 1788602584.1754918
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/kasumictl",
+      "inode": 1395261454,
+      "bytes": 339439112,
+      "modified_unix_seconds": 1788602580.7963965
+    }
+  ],
+  "preserved_entire_directories": [
+    "incremental",
+    "build",
+    ".fingerprint"
+  ],
+  "preserved_file_kinds": [
+    ".rlib",
+    ".rmeta",
+    ".d",
+    ".so",
+    "all non-executable files",
+    "all hardlinked executables",
+    "all executables modified during/after current gate"
+  ],
+  "candidate_count": 24,
+  "allocated_bytes_total": 5111308288,
+  "allocated_gib_total": 4.760276794433594,
+  "candidates": [
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/kasumi_server-9d9cc83dff6e001d",
+      "kind": "superseded_hashed_ELF_test_executable",
+      "bytes": 472633112,
+      "allocated_bytes": 472633344,
+      "inode": 1393994848,
+      "links": 1,
+      "modified_unix_seconds": 1788567141.5454962,
+      "current_passing_gate_executables": [
+        "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/kasumi_server-ceff94ee096dec17"
+      ],
+      "reason": "Older distinct single-link test executable for a target represented in the current passing Linux gate; not a dependency, current gate inode, or top-level executable."
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/kasumid-76bf47df459829a7",
+      "kind": "superseded_hashed_ELF_test_executable",
+      "bytes": 471121488,
+      "allocated_bytes": 471121920,
+      "inode": 1393992077,
+      "links": 1,
+      "modified_unix_seconds": 1788567140.8965185,
+      "current_passing_gate_executables": [
+        "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/kasumid-627e4c0999ada9b6",
+        "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/kasumid"
+      ],
+      "reason": "Older distinct single-link test executable for a target represented in the current passing Linux gate; not a dependency, current gate inode, or top-level executable."
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/tls_listener-00e7348c03f3ebef",
+      "kind": "superseded_hashed_ELF_test_executable",
+      "bytes": 418105376,
+      "allocated_bytes": 418107392,
+      "inode": 1393986115,
+      "links": 1,
+      "modified_unix_seconds": 1788567130.2100344,
+      "current_passing_gate_executables": [
+        "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/tls_listener-f52d60660a3044fd"
+      ],
+      "reason": "Older distinct single-link test executable for a target represented in the current passing Linux gate; not a dependency, current gate inode, or top-level executable."
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/cluster_transport-56d6667d12996730",
+      "kind": "superseded_hashed_ELF_test_executable",
+      "bytes": 365859936,
+      "allocated_bytes": 365862912,
+      "inode": 1393988589,
+      "links": 1,
+      "modified_unix_seconds": 1788567129.9643414,
+      "current_passing_gate_executables": [
+        "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/cluster_transport-67895f6a188a51f8"
+      ],
+      "reason": "Older distinct single-link test executable for a target represented in the current passing Linux gate; not a dependency, current gate inode, or top-level executable."
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/replicated-489496ab5e08a9f0",
+      "kind": "superseded_hashed_ELF_test_executable",
+      "bytes": 348019552,
+      "allocated_bytes": 348020736,
+      "inode": 1393615602,
+      "links": 1,
+      "modified_unix_seconds": 1788565947.0563571,
+      "current_passing_gate_executables": [
+        "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/replicated-45b757283ba29014"
+      ],
+      "reason": "Older distinct single-link test executable for a target represented in the current passing Linux gate; not a dependency, current gate inode, or top-level executable."
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/contracts-064b455af3c4a302",
+      "kind": "superseded_hashed_ELF_test_executable",
+      "bytes": 346930424,
+      "allocated_bytes": 346931200,
+      "inode": 1393621583,
+      "links": 1,
+      "modified_unix_seconds": 1788565967.1329527,
+      "current_passing_gate_executables": [
+        "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/contracts-8c921a19a34b6d36"
+      ],
+      "reason": "Older distinct single-link test executable for a target represented in the current passing Linux gate; not a dependency, current gate inode, or top-level executable."
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/admission-b1025326857c9d5c",
+      "kind": "superseded_hashed_ELF_test_executable",
+      "bytes": 345843136,
+      "allocated_bytes": 345845760,
+      "inode": 1393607231,
+      "links": 1,
+      "modified_unix_seconds": 1788565871.8498514,
+      "current_passing_gate_executables": [
+        "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/admission-fd1c8df9a7ecc60c"
+      ],
+      "reason": "Older distinct single-link test executable for a target represented in the current passing Linux gate; not a dependency, current gate inode, or top-level executable."
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/control-625f5940918e5b6e",
+      "kind": "superseded_hashed_ELF_test_executable",
+      "bytes": 342724744,
+      "allocated_bytes": 342728704,
+      "inode": 1393621035,
+      "links": 1,
+      "modified_unix_seconds": 1788565962.7808352,
+      "current_passing_gate_executables": [
+        "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/control-d67042ab04056975"
+      ],
+      "reason": "Older distinct single-link test executable for a target represented in the current passing Linux gate; not a dependency, current gate inode, or top-level executable."
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/response_release-70b31cdbdbf93370",
+      "kind": "superseded_hashed_ELF_test_executable",
+      "bytes": 340166736,
+      "allocated_bytes": 340168704,
+      "inode": 1393606999,
+      "links": 1,
+      "modified_unix_seconds": 1788565870.8430119,
+      "current_passing_gate_executables": [
+        "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/response_release-41ba17b4136d551b"
+      ],
+      "reason": "Older distinct single-link test executable for a target represented in the current passing Linux gate; not a dependency, current gate inode, or top-level executable."
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/kasumictl-4e0e9b826a4a318d",
+      "kind": "superseded_hashed_ELF_test_executable",
+      "bytes": 336557560,
+      "allocated_bytes": 336560128,
+      "inode": 1393989919,
+      "links": 1,
+      "modified_unix_seconds": 1788567113.2630994,
+      "current_passing_gate_executables": [
+        "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/kasumictl-d9b913c36b10ddd2",
+        "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/kasumictl"
+      ],
+      "reason": "Older distinct single-link test executable for a target represented in the current passing Linux gate; not a dependency, current gate inode, or top-level executable."
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/kasumi_engine-ca02c5cbd9cd3672",
+      "kind": "superseded_hashed_ELF_test_executable",
+      "bytes": 320629600,
+      "allocated_bytes": 320630784,
+      "inode": 1393605893,
+      "links": 1,
+      "modified_unix_seconds": 1788565865.2473657,
+      "current_passing_gate_executables": [
+        "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/kasumi_engine-e3143eba249da240"
+      ],
+      "reason": "Older distinct single-link test executable for a target represented in the current passing Linux gate; not a dependency, current gate inode, or top-level executable."
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/snapshot_budget-d6d86490847a9d81",
+      "kind": "superseded_hashed_ELF_test_executable",
+      "bytes": 318296600,
+      "allocated_bytes": 318300160,
+      "inode": 1393606794,
+      "links": 1,
+      "modified_unix_seconds": 1788565865.52633,
+      "current_passing_gate_executables": [
+        "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/snapshot_budget-01f22f6ed2bb1ef7"
+      ],
+      "reason": "Older distinct single-link test executable for a target represented in the current passing Linux gate; not a dependency, current gate inode, or top-level executable."
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/cluster-b248d55a94ee961e",
+      "kind": "superseded_hashed_ELF_test_executable",
+      "bytes": 128812736,
+      "allocated_bytes": 128815104,
+      "inode": 1393464508,
+      "links": 1,
+      "modified_unix_seconds": 1788565557.8631892,
+      "current_passing_gate_executables": [
+        "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/cluster-373f20e69bd6d686"
+      ],
+      "reason": "Older distinct single-link test executable for a target represented in the current passing Linux gate; not a dependency, current gate inode, or top-level executable."
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/storage_conformance-e4c9b6ee43746896",
+      "kind": "superseded_hashed_ELF_test_executable",
+      "bytes": 117255072,
+      "allocated_bytes": 117256192,
+      "inode": 1393463603,
+      "links": 1,
+      "modified_unix_seconds": 1788565554.447939,
+      "current_passing_gate_executables": [
+        "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/storage_conformance-e8d55793415af043"
+      ],
+      "reason": "Older distinct single-link test executable for a target represented in the current passing Linux gate; not a dependency, current gate inode, or top-level executable."
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/kasumi_store-674deb291696986a",
+      "kind": "superseded_hashed_ELF_test_executable",
+      "bytes": 108056768,
+      "allocated_bytes": 108060672,
+      "inode": 1393493610,
+      "links": 1,
+      "modified_unix_seconds": 1788565626.1033416,
+      "current_passing_gate_executables": [
+        "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/kasumi_store-bdc0f94e0abc636a"
+      ],
+      "reason": "Older distinct single-link test executable for a target represented in the current passing Linux gate; not a dependency, current gate inode, or top-level executable."
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/kasumi_store-c2773c80a5ceca0a",
+      "kind": "superseded_hashed_ELF_test_executable",
+      "bytes": 107249432,
+      "allocated_bytes": 107249664,
+      "inode": 1393814998,
+      "links": 1,
+      "modified_unix_seconds": 1788566493.6045532,
+      "current_passing_gate_executables": [
+        "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/kasumi_store-bdc0f94e0abc636a"
+      ],
+      "reason": "Older distinct single-link test executable for a target represented in the current passing Linux gate; not a dependency, current gate inode, or top-level executable."
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/kasumi_raft-f0c7d8714abb84ac",
+      "kind": "superseded_hashed_ELF_test_executable",
+      "bytes": 97051888,
+      "allocated_bytes": 97054720,
+      "inode": 1393463598,
+      "links": 1,
+      "modified_unix_seconds": 1788565552.861286,
+      "current_passing_gate_executables": [
+        "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/kasumi_raft-7865f59d3b3b8e0b"
+      ],
+      "reason": "Older distinct single-link test executable for a target represented in the current passing Linux gate; not a dependency, current gate inode, or top-level executable."
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/openbao_live-c81513c259c0dae3",
+      "kind": "superseded_hashed_ELF_test_executable",
+      "bytes": 87814592,
+      "allocated_bytes": 87818240,
+      "inode": 1393465109,
+      "links": 1,
+      "modified_unix_seconds": 1788565555.070323,
+      "current_passing_gate_executables": [
+        "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/openbao_live-ca82205d67550be5",
+        "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/openbao_live-fe59337c5fe6f451"
+      ],
+      "reason": "Older distinct single-link test executable for a target represented in the current passing Linux gate; not a dependency, current gate inode, or top-level executable."
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/kasumi_bench-2f3ea2a3f1dfb142",
+      "kind": "superseded_hashed_ELF_test_executable",
+      "bytes": 6355040,
+      "allocated_bytes": 6356992,
+      "inode": 1393982777,
+      "links": 1,
+      "modified_unix_seconds": 1788567079.3760965,
+      "current_passing_gate_executables": [
+        "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/kasumi_bench-4e7638168a9d9d64",
+        "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/kasumi_bench-9d02836c5bff464f"
+      ],
+      "reason": "Older distinct single-link test executable for a target represented in the current passing Linux gate; not a dependency, current gate inode, or top-level executable."
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/kasumi_bench_network-1742397793220a66",
+      "kind": "superseded_hashed_ELF_test_executable",
+      "bytes": 6355112,
+      "allocated_bytes": 6356992,
+      "inode": 1393982889,
+      "links": 1,
+      "modified_unix_seconds": 1788567082.3705935,
+      "current_passing_gate_executables": [
+        "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/kasumi_bench_network-168cb53b1645e3a4"
+      ],
+      "reason": "Older distinct single-link test executable for a target represented in the current passing Linux gate; not a dependency, current gate inode, or top-level executable."
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/kasumi_bench_loopback-f24ecfec5462ee5f",
+      "kind": "superseded_hashed_ELF_test_executable",
+      "bytes": 6355120,
+      "allocated_bytes": 6356992,
+      "inode": 1393981832,
+      "links": 1,
+      "modified_unix_seconds": 1788567078.7805996,
+      "current_passing_gate_executables": [
+        "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/kasumi_bench_loopback-4a25469a9caac957"
+      ],
+      "reason": "Older distinct single-link test executable for a target represented in the current passing Linux gate; not a dependency, current gate inode, or top-level executable."
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/kasumi_bench-43467f28c01f8706",
+      "kind": "superseded_hashed_ELF_test_executable",
+      "bytes": 6355048,
+      "allocated_bytes": 6356992,
+      "inode": 1393980273,
+      "links": 1,
+      "modified_unix_seconds": 1788567078.3915954,
+      "current_passing_gate_executables": [
+        "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/kasumi_bench-4e7638168a9d9d64",
+        "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/kasumi_bench-9d02836c5bff464f"
+      ],
+      "reason": "Older distinct single-link test executable for a target represented in the current passing Linux gate; not a dependency, current gate inode, or top-level executable."
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/kasumid-457026bb29dae917",
+      "kind": "superseded_hashed_ELF_test_executable",
+      "bytes": 6355072,
+      "allocated_bytes": 6356992,
+      "inode": 1393980251,
+      "links": 1,
+      "modified_unix_seconds": 1788567077.9968636,
+      "current_passing_gate_executables": [
+        "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/kasumid-627e4c0999ada9b6",
+        "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/kasumid"
+      ],
+      "reason": "Older distinct single-link test executable for a target represented in the current passing Linux gate; not a dependency, current gate inode, or top-level executable."
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/kasumictl-3121bf86c20c1178",
+      "kind": "superseded_hashed_ELF_test_executable",
+      "bytes": 6355104,
+      "allocated_bytes": 6356992,
+      "inode": 1393980253,
+      "links": 1,
+      "modified_unix_seconds": 1788567078.030429,
+      "current_passing_gate_executables": [
+        "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/deps/kasumictl-d9b913c36b10ddd2",
+        "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/kasumictl"
+      ],
+      "reason": "Older distinct single-link test executable for a target represented in the current passing Linux gate; not a dependency, current gate inode, or top-level executable."
+    }
+  ],
+  "caveat": "Allocated size is st_blocks and actual filesystem space reclaimed may differ. Candidate paths are disposable older executable outputs only; source, warm current sessions, dependencies, and current proof binaries remain untouched."
+}

@@ -1,0 +1,24 @@
+{
+  "format": 1,
+  "command": [
+    "/usr/bin/caffeinate",
+    "-i",
+    "/opt/homebrew/bin/python3",
+    "scripts/run_benchmark_matrix.py",
+    "--output-directory",
+    "benchmarks/results/release-matrix-macos-arm64-20260905-01",
+    "--documents",
+    "1000000",
+    "--tenants",
+    "1,100,1000",
+    "--operations",
+    "1000",
+    "--allow-host-load"
+  ],
+  "cwd": "/Users/takemiyamakoto/dev/kasumi",
+  "started_unix_seconds": 1788575695.972576,
+  "validated_source_sha256": "358b623bee1e6a9189cdec2aeadbe047b4e1499e179386be4613b3684708db44",
+  "python": "3.14.7",
+  "sleep_inhibition": "caffeinate -i prevents automatic idle system sleep only for driver lifetime; no display wake or global power settings changed. Explicit sleep can still fail key leases or a benchmark case.",
+  "measurement_classification": "Remaining unrelated host activity is explicitly recorded; no quiet-machine or external speed-comparison claim."
+}

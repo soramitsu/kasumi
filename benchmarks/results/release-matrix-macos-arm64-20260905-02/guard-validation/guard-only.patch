@@ -1,0 +1,40 @@
+--- before/scripts/run_benchmark_matrix.py
++++ after/scripts/run_benchmark_matrix.py
+@@ -103,6 +103,9 @@
+     return stat.st_dev,stat.st_ino,stat.st_size,stat.st_mtime_ns
+ 
+ def violation(sample, options, initial=False):
++    # Resource safety is independent of optional host-load qualification.
++    if sample["free_disk_bytes"] < options.min_free_gib * 2**30:
++        return "free disk space below configured minimum"
+     if sample["competing_processes"]:
+         return "competing compiler/linker or virtual machine process present"
+     if sample["background_cpu_percent"] > options.max_background_cpu:
+@@ -111,8 +114,6 @@
+     # aggregate load gate only before starting, and classify process CPU while running.
+     if initial and sample["load_average"][0] > options.max_initial_load:
+         return "initial one-minute load threshold exceeded"
+-    if sample["free_disk_bytes"] < options.min_free_gib * 2**30:
+-        return "free disk space below configured minimum"
+     return None
+ 
+ 
+--- before/scripts/test_benchmark_matrix.py
++++ after/scripts/test_benchmark_matrix.py
+@@ -61,6 +61,16 @@
+         self.assertEqual(len(result["failures"]),1)
+         self.assertTrue((self.output/"capacity.json").exists())
+ 
++    def test_low_disk_remains_fatal_when_host_load_is_allowed(self):
++        loaded=dict(self.sample,competing_processes=[{"name":"qemu-system-aarch64-headless"}],background_cpu_percent=999,free_disk_bytes=1)
++        with patch.object(driver,"ROOT",self.root),patch.object(sys,"argv",self.argv+["--allow-host-load"]),patch.object(driver,"host_sample",return_value=loaded):
++            with self.assertRaisesRegex(RuntimeError,"free disk space"):
++                driver.main()
++        result=json.loads((self.output/"matrix.json").read_text())
++        self.assertEqual(result["status"],"failed")
++        self.assertEqual(result["cases"],[])
++        self.assertEqual(result["host_load_violation_counts"],{})
++
+     def test_source_change_still_aborts_before_cases(self):
+         calls=0
+         def identity():

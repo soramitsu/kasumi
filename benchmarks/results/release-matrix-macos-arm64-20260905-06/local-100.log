@@ -1,0 +1,43 @@
+starting mode=local tenants=100 documents=1000000 operations=1000
+checkpoint mode=local tenants=100 stage=opening
+opened 100/100 tenant groups
+checkpoint mode=local tenants=100 stage=collection_setup
+loaded 100 batches (local, tenant 3)
+loaded 300 batches (local, tenant 8)
+loaded 500 batches (local, tenant 13)
+loaded 700 batches (local, tenant 18)
+loaded 900 batches (local, tenant 23)
+loaded 1100 batches (local, tenant 28)
+loaded 1300 batches (local, tenant 33)
+loaded 1500 batches (local, tenant 38)
+loaded 1700 batches (local, tenant 43)
+loaded 1900 batches (local, tenant 48)
+loaded 2100 batches (local, tenant 53)
+loaded 2300 batches (local, tenant 58)
+loaded 2500 batches (local, tenant 63)
+loaded 2700 batches (local, tenant 68)
+loaded 2900 batches (local, tenant 73)
+loaded 3100 batches (local, tenant 78)
+loaded 3300 batches (local, tenant 83)
+loaded 3500 batches (local, tenant 88)
+loaded 3700 batches (local, tenant 93)
+loaded 3900 batches (local, tenant 98)
+loaded tenant 100/100 (local)
+checkpoint mode=local tenants=100 stage=embedded_authorized_owned_point_get
+checkpoint mode=local tenants=100 stage=measured_workload workload=embedded_authorized_owned_point_get success=1000 failed=0 unattempted=0
+checkpoint mode=local tenants=100 stage=embedded_authorized_shared_point_get workload=embedded_authorized_owned_point_get success=1000 failed=0 unattempted=0
+checkpoint mode=local tenants=100 stage=measured_workload workload=embedded_authorized_shared_point_get success=1000 failed=0 unattempted=0
+checkpoint mode=local tenants=100 stage=durable_single_document_write workload=embedded_authorized_shared_point_get success=1000 failed=0 unattempted=0
+checkpoint mode=local tenants=100 stage=measured_workload workload=durable_single_document_write success=1000 failed=0 unattempted=0
+checkpoint mode=local tenants=100 stage=read_heavy_90_read_10_write workload=durable_single_document_write success=1000 failed=0 unattempted=0
+checkpoint mode=local tenants=100 stage=measured_workload workload=read_heavy_90_read_10_write success=1000 failed=0 unattempted=0
+checkpoint mode=local tenants=100 stage=balanced_50_read_50_write workload=read_heavy_90_read_10_write success=1000 failed=0 unattempted=0
+checkpoint mode=local tenants=100 stage=measured_workload workload=balanced_50_read_50_write success=1000 failed=0 unattempted=0
+checkpoint mode=local tenants=100 stage=measured_query workload=structured_indexed_equality success=1000 failed=0 unattempted=0
+checkpoint mode=local tenants=100 stage=shutting_down workload=structured_indexed_equality success=1000 failed=0 unattempted=0
+checkpoint mode=local tenants=100 stage=recovering workload=structured_indexed_equality success=1000 failed=0 unattempted=0
+opened 100/100 tenant groups
+checkpoint mode=local tenants=100 stage=recovered workload=structured_indexed_equality success=1000 failed=0 unattempted=0
+completed mode=local tenants=100 load=160.800s
+checkpoint mode=local tenants=100 stage=completed
+benchmark report: /Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-06/local-100.json

@@ -1,0 +1,164 @@
+{
+  "architecture": "aarch64",
+  "build_profile": "debug",
+  "cases": [
+    {
+      "configured_targets": 1,
+      "connection_seconds": 0.025074042,
+      "credentials": 1,
+      "endpoint": "https://localhost:59641",
+      "measurements": [
+        {
+          "latency": {
+            "elapsed_seconds": 0.821345625,
+            "max_microseconds": 38235.5,
+            "operations": 32,
+            "p50_microseconds": 24173.292,
+            "p99_microseconds": 38235.5,
+            "throughput_ops_per_second": 38.96045589820972
+          },
+          "name": "authenticated_point_get"
+        },
+        {
+          "latency": {
+            "elapsed_seconds": 1.471472917,
+            "max_microseconds": 92513.416,
+            "operations": 32,
+            "p50_microseconds": 43688.5,
+            "p99_microseconds": 92513.416,
+            "throughput_ops_per_second": 21.746917412004258
+          },
+          "name": "durable_single_document_write"
+        },
+        {
+          "latency": {
+            "elapsed_seconds": 0.603923875,
+            "max_microseconds": 50069.459,
+            "operations": 32,
+            "p50_microseconds": 16376.875,
+            "p99_microseconds": 50069.459,
+            "throughput_ops_per_second": 52.986810630727256
+          },
+          "name": "read_heavy_90_read_10_write"
+        },
+        {
+          "latency": {
+            "elapsed_seconds": 0.923785875,
+            "max_microseconds": 49324.75,
+            "operations": 32,
+            "p50_microseconds": 18033.25,
+            "p99_microseconds": 49324.75,
+            "throughput_ops_per_second": 34.64006201653603
+          },
+          "name": "balanced_50_read_50_write"
+        },
+        {
+          "latency": {
+            "elapsed_seconds": 0.488328208,
+            "max_microseconds": 23815.416,
+            "operations": 32,
+            "p50_microseconds": 14923.667,
+            "p99_microseconds": 23815.416,
+            "throughput_ops_per_second": 65.52969800999085
+          },
+          "name": "authenticated_query_complete_pages"
+        }
+      ],
+      "name": "grpc-1-tenants",
+      "protocol": "grpc",
+      "warmup_seconds": 0.058116291
+    },
+    {
+      "configured_targets": 1,
+      "connection_seconds": 0.001421458,
+      "credentials": 1,
+      "endpoint": "https://localhost:59640/mcp",
+      "measurements": [
+        {
+          "latency": {
+            "elapsed_seconds": 0.511240417,
+            "max_microseconds": 25712.459,
+            "operations": 32,
+            "p50_microseconds": 15030.084,
+            "p99_microseconds": 25712.459,
+            "throughput_ops_per_second": 62.592860298054255
+          },
+          "name": "authenticated_point_get"
+        },
+        {
+          "latency": {
+            "elapsed_seconds": 1.42735875,
+            "max_microseconds": 55292.458,
+            "operations": 32,
+            "p50_microseconds": 43787.291,
+            "p99_microseconds": 55292.458,
+            "throughput_ops_per_second": 22.419030954901842
+          },
+          "name": "durable_single_document_write"
+        },
+        {
+          "latency": {
+            "elapsed_seconds": 0.574605,
+            "max_microseconds": 47811.167,
+            "operations": 32,
+            "p50_microseconds": 14960.083,
+            "p99_microseconds": 47811.167,
+            "throughput_ops_per_second": 55.69043081769215
+          },
+          "name": "read_heavy_90_read_10_write"
+        },
+        {
+          "latency": {
+            "elapsed_seconds": 1.018274334,
+            "max_microseconds": 54850.459,
+            "operations": 32,
+            "p50_microseconds": 28474.375,
+            "p99_microseconds": 54850.459,
+            "throughput_ops_per_second": 31.425715970171943
+          },
+          "name": "balanced_50_read_50_write"
+        },
+        {
+          "latency": {
+            "elapsed_seconds": 0.497440291,
+            "max_microseconds": 20967.167,
+            "operations": 32,
+            "p50_microseconds": 15398.875,
+            "p99_microseconds": 20967.167,
+            "throughput_ops_per_second": 64.32932872339447
+          },
+          "name": "authenticated_query_complete_pages"
+        }
+      ],
+      "name": "mcp-1-tenants",
+      "protocol": "mcp",
+      "warmup_seconds": 0.033208
+    }
+  ],
+  "created_unix_ms": 1788563423154,
+  "failures": [],
+  "fixture": {
+    "database": "real separate kasumid NodeRuntime process",
+    "deployment": "local one voter, durable mutation and service authentication audits enabled, strict read audit disabled",
+    "documents": 100,
+    "issuer": "ephemeral signed Ed25519 access tokens and real TLS JWKS requests",
+    "kms": "real local OpenBao 2.6.2 TLS Transit, separate wrapping keys and scoped tokens for data/control/security",
+    "load_seconds": 0.255595625,
+    "network": "loopback TCP/TLS1.3, native mTLS, warm persistent connections; not a physical distributed network",
+    "payload_bytes_each": 1024,
+    "runtime_open_seconds": 0.969816208,
+    "server_profile": "debug",
+    "server_resident_rss_bytes": 44105728,
+    "tenants": 1
+  },
+  "format": 1,
+  "notes": [
+    "Real authenticated TLS 1.3 network requests. Native RPC additionally requires mTLS and pins the server certificate against the configured CA.",
+    "Credentials and document/query values are omitted from this report. Credential count is configured token sources, not a claim of verified distinct tenants.",
+    "Connections and one warmup point read per target are excluded from measured API latency. Requests are sequential and no automatic retries are attempted.",
+    "Server replication, KMS, hardware, and audit configuration must be disclosed separately for comparison; this client does not infer their guarantees.",
+    "Writes occur only with --allow-writes and a replacement body on every dedicated target. Query measurements consume all historical pages."
+  ],
+  "os": "macos",
+  "evidence_status": "Preliminary development measurement; concurrent source edits and build/test activity may influence results. Repeat with stable code on quiet host for publication."
+}

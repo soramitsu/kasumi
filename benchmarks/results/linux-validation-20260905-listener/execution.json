@@ -1,0 +1,16 @@
+{
+  "argv": [
+    "/usr/bin/caffeinate",
+    "-i",
+    "/opt/homebrew/bin/python3",
+    "/Users/takemiyamakoto/dev/kasumi/target/run-linux-listener-gate.py",
+    "28aeb80168d3ab02a0eec7bf2a0163a7cb99dbfd74adf596e849de17e1fa3c1d"
+  ],
+  "launcher_pid": 16032,
+  "process_group": 16032,
+  "launched_unix_seconds": 1788611317.617603,
+  "stdin": "DEVNULL",
+  "stdout_stderr": "orchestration.log regular file",
+  "start_new_session": true,
+  "idle_sleep_inhibition": "per-process caffeinate -i"
+}

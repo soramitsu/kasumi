@@ -1,0 +1,10 @@
+   Compiling kasumi-raft v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 38.43s
+     Running tests/concurrent_pagination.rs (target/debug/deps/concurrent_pagination-133d862ef90e11da)
+
+running 1 test
+test snapshot_pages_overlap_atomic_writers_and_current_policy_revocation ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.22s
+

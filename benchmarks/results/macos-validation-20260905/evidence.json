@@ -1,0 +1,31 @@
+{
+  "format": 1,
+  "status": "failed",
+  "source_sha256_before": "8f3814e28ca65e48353ec00fe78ec59a09262edac77ca852396a0c104ac6c154",
+  "host": [
+    "Darwin",
+    "takemiyamakotonoMacBook-Pro.local",
+    "25.6.0",
+    "Darwin Kernel Version 25.6.0: Fri Jul 31 19:17:26 PDT 2026; root:xnu-12377.161.14~5/RELEASE_ARM64_T6041",
+    "arm64"
+  ],
+  "rustc": "rustc 1.94.1 (e408947bf 2026-03-25)",
+  "started_unix_seconds": 1788567733.748158,
+  "commands": [
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "--workspace",
+        "--all-features",
+        "--all-targets",
+        "--locked"
+      ],
+      "exit_code": 101,
+      "elapsed_seconds": 78.78415083885193,
+      "log": "1-test.log",
+      "log_sha256": "ad2d27424e303f693827f2998c12a12aa79d6fb71d8522e4760c67c82197201d"
+    }
+  ],
+  "source_sha256_after": "8f3814e28ca65e48353ec00fe78ec59a09262edac77ca852396a0c104ac6c154"
+}

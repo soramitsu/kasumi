@@ -1,0 +1,184 @@
+{
+  "format": 1,
+  "created_unix_ms": 1788566661959,
+  "options": {
+    "documents": 100,
+    "tenants": [
+      1,
+      3
+    ],
+    "operations": 32,
+    "modes": [
+      "raw",
+      "local",
+      "replicated",
+      "text"
+    ],
+    "output": "benchmarks/results/smoke-capacity-complete-macos-debug.json",
+    "work_parent": null
+  },
+  "os": "macos",
+  "architecture": "aarch64",
+  "build_profile": "debug",
+  "rustc": "rustc 1.94.1 (e408947bf 2026-03-25)",
+  "source_sha256": "d40aa02b5ec5a01b684187d9f5823beaa4f22cc5f68b17d3edb34c0363630edf",
+  "executable_sha256": "47f29038bceb5bdc147ceeee854c5b80fb337e32d309885661ecc033a731cad7",
+  "git_status": [
+    " M README.md",
+    "?? Cargo.lock",
+    "?? Cargo.toml",
+    "?? benchmarks/",
+    "?? crates/",
+    "?? deploy/",
+    "?? docs/",
+    "?? scripts/"
+  ],
+  "logical_cpus": 16,
+  "evidence_status": "Preliminary development measurement; repeat on a quiet host with stable source for publication",
+  "guarantees": [
+    "Raw lookup, authorized resident reads, and durable writes are reported separately; no 50x comparison is inferred.",
+    "RSS is process resident memory; peak RSS covers the whole process lifetime. Sequential cases may retain allocator pages; run one case per process for independent capacity estimates.",
+    "Source hash records files at process start, executable hash identifies actual compiled bytes; use quiet stable checkout for publication.",
+    "All datasets are deterministic and total approximately 1 KiB of exact JSON per document across all tenants.",
+    "Latency samples include each API operation; throughput additionally includes driver identity, ID preparation and leader selection."
+  ],
+  "not_measured": [
+    "Authenticated gRPC/MCP wire latency (use a separately configured TLS endpoint benchmark)",
+    "Physically distributed quorum network/disk/failure-domain behavior",
+    "Live OpenBao/Vault request latency and production Linux behavior when this report is run on macOS"
+  ],
+  "cases": [
+    {
+      "mode": "raw",
+      "tenants": 1,
+      "documents": 100,
+      "replicas": 1,
+      "payload_bytes": 102400,
+      "open_seconds": 0.000041459,
+      "baseline_rss_bytes": 122290176,
+      "empty_rss_bytes": 122388480,
+      "collection_setup_seconds": null,
+      "empty_index_rss_bytes": null,
+      "load_seconds": 0.003145959,
+      "resident_rss_bytes": 123125760,
+      "after_workload_rss_bytes": 123125760,
+      "after_recovery_rss_bytes": null,
+      "peak_rss_bytes": 123125760,
+      "disk_bytes": 0,
+      "recovery_seconds": null,
+      "measurements": [
+        {
+          "name": "raw_hashmap_borrowed_lookup",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 0.000010125,
+            "throughput_ops_per_second": 3160493.8271604935,
+            "p50_microseconds": 0.208,
+            "p99_microseconds": 0.791,
+            "max_microseconds": 0.791
+          }
+        }
+      ],
+      "notes": [
+        "Borrowed map lookup only: no authentication, cloning, schema checks, consistency barrier, indexing, or durability. Timer overhead is included."
+      ]
+    },
+    {
+      "mode": "local",
+      "tenants": 1,
+      "documents": 100,
+      "replicas": 1,
+      "payload_bytes": 102400,
+      "open_seconds": 0.25352425,
+      "baseline_rss_bytes": 123371520,
+      "empty_rss_bytes": 132694016,
+      "collection_setup_seconds": 0.051537917,
+      "empty_index_rss_bytes": 138002432,
+      "load_seconds": 0.140348833,
+      "resident_rss_bytes": 139935744,
+      "after_workload_rss_bytes": 140722176,
+      "after_recovery_rss_bytes": 141246464,
+      "peak_rss_bytes": 140722176,
+      "disk_bytes": 897024,
+      "recovery_seconds": 0.163812916,
+      "measurements": [
+        {
+          "name": "embedded_authorized_owned_point_get",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 0.000244292,
+            "throughput_ops_per_second": 130990.78152375027,
+            "p50_microseconds": 4.25,
+            "p99_microseconds": 21.709,
+            "max_microseconds": 21.709
+          }
+        },
+        {
+          "name": "embedded_authorized_shared_point_get",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 0.00017525,
+            "throughput_ops_per_second": 182596.2910128388,
+            "p50_microseconds": 3.208,
+            "p99_microseconds": 4.375,
+            "max_microseconds": 4.375
+          }
+        },
+        {
+          "name": "durable_single_document_write",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 1.173966375,
+            "throughput_ops_per_second": 27.25802091222587,
+            "p50_microseconds": 33894.917,
+            "p99_microseconds": 92142.083,
+            "max_microseconds": 92142.083
+          }
+        },
+        {
+          "name": "read_heavy_90_read_10_write",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 0.092061084,
+            "throughput_ops_per_second": 347.5952987909636,
+            "p50_microseconds": 4.667,
+            "p99_microseconds": 35915.917,
+            "max_microseconds": 35915.917
+          }
+        },
+        {
+          "name": "balanced_50_read_50_write",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 0.581350625,
+            "throughput_ops_per_second": 55.04423427772181,
+            "p50_microseconds": 107.208,
+            "p99_microseconds": 77127.667,
+            "max_microseconds": 77127.667
+          }
+        },
+        {
+          "name": "structured_indexed_equality",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 0.014550708,
+            "throughput_ops_per_second": 2199.205701880623,
+            "p50_microseconds": 190.541,
+            "p99_microseconds": 3253.625,
+            "max_microseconds": 3253.625
+          }
+        }
+      ],
+      "notes": [
+        "Actual Database API: tenant RBAC, read barrier, schema validation, persistent indexes, encrypted redb immediate two-phase durability, and mutation audit/receipt retention are active.",
+        "Each initial load batch has at most 256 documents; measured writes contain one document. Setup establishes a real quorum barrier before readiness. Measured operations are never retried; no additional warmup samples are discarded after loading.",
+        "One real OpenRaft voter; no network protocol overhead.",
+        "Test-only authenticated key wrapping excludes Transit network latency. No successful-read strict audit; mutation audits remain enabled.",
+        "Recovery measures clean full process-state closure/reopen plus one verified point read per tenant; crash safety is validated separately."
+      ]
+    }
+  ],
+  "failures": [
+    "mode=replicated tenants=1: UnknownOutcome: write task failed; resolve or retry with the same idempotency key"
+  ]
+}

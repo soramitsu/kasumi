@@ -1,0 +1,4 @@
+{"name":"default","status":"Stopped","arch":"aarch64","cpus":2,"memory":2147483648,"disk":10737418240,"runtime":"docker"}
+{"name":"kasumi-validation","status":"Stopped","arch":"aarch64","cpus":6,"memory":17179869184,"disk":42949672960,"runtime":"docker"}
+{"name":"nevo-exact","status":"Stopped","arch":"aarch64","cpus":8,"memory":34359738368,"disk":64424509440,"runtime":"docker"}
+{"name":"nevo-rosetta","status":"Stopped","arch":"aarch64","cpus":8,"memory":34359738368,"disk":64424509440,"runtime":"docker"}

@@ -1,0 +1,250 @@
+#!/usr/bin/env python3
+"""Run isolated 1/100/1000-tenant measurements with a stable-source/quiet-host gate.
+
+No results are renamed as final on failure. Only process groups and temporary
+files created by this driver are stopped/removed. Process arguments, environment
+values, credentials, document bodies and query values are never sampled.
+"""
+from __future__ import annotations
+import argparse
+import hashlib
+import json
+import os
+import re
+from pathlib import Path
+import shutil
+import signal
+import subprocess
+import tempfile
+import time
+
+ROOT = Path(__file__).resolve().parent.parent
+COMPETING = {"cargo", "rustc", "clang", "clang++", "cc1", "ld", "ld.lld", "rust-lld", "qemu-system-aarch64", "qemu-system-x86_64", "qemu-system-arm", "com.apple.Virtualization.VirtualMachine", "VirtualBoxVM", "vmware-vmx", "dsymutil"}
+
+
+def competing_process(name):
+    return name in COMPETING or name.startswith("qemu-system-")
+
+
+def digest(path):
+    with path.open("rb") as source:
+        return hashlib.file_digest(source, "sha256").hexdigest()
+
+
+def source_identity():
+    files = [ROOT / "Cargo.toml", ROOT / "Cargo.lock"]
+    for name in ("crates", "scripts", ".cargo"):
+        directory = ROOT / name
+        if directory.exists():
+            files.extend(p for p in directory.rglob("*") if p.is_file() and p.suffix in {".rs", ".toml", ".proto", ".py", ".sh", ".json", ".pem", ".der"})
+    files.extend(p for p in (ROOT / "rust-toolchain.toml", ROOT / "rust-toolchain") if p.is_file())
+    source = hashlib.sha256()
+    for path in sorted(set(files)):
+        source.update(str(path.relative_to(ROOT)).encode())
+        source.update(b"\0")
+        source.update(path.read_bytes())
+    return source.hexdigest()
+
+
+def host_sample(benchmark_group=None):
+    output = subprocess.check_output(["ps", "-Ao", "pid=,pcpu=,rss=,comm="], text=True)
+    processes = []
+    own_pid = os.getpid()
+    for line in output.splitlines():
+        fields = line.strip().split(maxsplit=3)
+        if len(fields) != 4:
+            continue
+        try:
+            pid, cpu = int(fields[0]), float(fields[1])
+            group = os.getpgid(pid)
+        except (ValueError, ProcessLookupError, PermissionError):
+            continue
+        name = Path(fields[3]).name
+        if pid == own_pid or name == "ps":
+            continue
+        processes.append({"pid": pid, "cpu_percent": cpu, "name": name, "resident_bytes": int(fields[2]) * 1024, "benchmark": benchmark_group is not None and group == benchmark_group})
+    background = [p for p in processes if not p["benchmark"]]
+    return {
+        "unix_seconds": time.time(), "load_average": os.getloadavg(),
+        "background_cpu_percent": sum(p["cpu_percent"] for p in background),
+        "competing_processes": [p for p in background if competing_process(p["name"])],
+        "background_process_count": len(background),
+        "competing_process_count": sum(competing_process(p["name"]) for p in background),
+        "top_processes": sorted(processes, key=lambda p: p["cpu_percent"], reverse=True)[:12],
+        "benchmark_processes": [p for p in processes if p["benchmark"]],
+        "free_disk_bytes": shutil.disk_usage(ROOT).free,
+        "memory": memory_sample(),
+    }
+
+
+def memory_sample():
+    if Path("/proc/meminfo").exists():
+        values={}
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            key,value=line.split(":",1)
+            if key in {"MemTotal","MemFree","MemAvailable","Buffers","Cached","SwapTotal","SwapFree"}:
+                values[key+"_bytes"]=int(value.strip().split()[0])*1024
+        return values
+    if os.uname().sysname == "Darwin":
+        output=subprocess.check_output(["vm_stat"],text=True)
+        size=re.search(r"page size of (\d+) bytes",output)
+        values={"page_size_bytes":int(size.group(1)) if size else None, "physical_memory_bytes":int(subprocess.check_output(["sysctl","-n","hw.memsize"],text=True).strip())}
+        for line in output.splitlines()[1:]:
+            if ":" in line:
+                key,value=line.rsplit(":",1)
+                value=value.strip().rstrip(".")
+                if value.isdigit():values[key]=int(value)
+        return values
+    return {"unavailable":True}
+
+
+def file_identity(path):
+    stat=path.stat()
+    return stat.st_dev,stat.st_ino,stat.st_size,stat.st_mtime_ns
+
+def violation(sample, options, initial=False):
+    # Resource safety is independent of optional host-load qualification.
+    if sample["free_disk_bytes"] < options.min_free_gib * 2**30:
+        return "free disk space below configured minimum"
+    if sample["competing_processes"]:
+        return "competing compiler/linker or virtual machine process present"
+    if sample["background_cpu_percent"] > options.max_background_cpu:
+        return "background CPU threshold exceeded"
+    # During a case the database itself contributes to load average. Use the
+    # aggregate load gate only before starting, and classify process CPU while running.
+    if initial and sample["load_average"][0] > options.max_initial_load:
+        return "initial one-minute load threshold exceeded"
+    return None
+
+
+def store_json(path, value):
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(value, indent=2) + "\n")
+    temporary.replace(path)
+
+
+def stop(child):
+    if child.poll() is not None:
+        return
+    os.killpg(child.pid, signal.SIGTERM)
+    try:
+        child.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        os.killpg(child.pid, signal.SIGKILL)
+        child.wait()
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--documents", type=int, default=1_000_000)
+    parser.add_argument("--operations", type=int, default=1000)
+    parser.add_argument("--tenants", default="1,100,1000")
+    parser.add_argument("--output-directory", type=Path, required=True)
+    parser.add_argument("--skip-build", action="store_true")
+    parser.add_argument("--allow-host-load", action="store_true", help="Record competing load without calling results quiet; source/executable/disk guards still fail closed")
+    parser.add_argument("--quiet-seconds", type=float, default=60)
+    parser.add_argument("--max-background-cpu", type=float, default=100)
+    parser.add_argument("--max-initial-load", type=float, default=max(1, (os.cpu_count() or 1) / 4))
+    parser.add_argument("--min-free-gib", type=float, default=30)
+    options = parser.parse_args()
+    if options.quiet_seconds < 0 or options.max_background_cpu <= 0 or options.max_initial_load <= 0 or options.min_free_gib < 0:
+        parser.error("quietness thresholds must be nonnegative with positive CPU/load limits")
+    tenants = [int(value) for value in options.tenants.split(",")]
+    if not 1 <= options.documents <= 1_000_000 or not 1 <= options.operations <= 1_000_000 or not tenants or any(not 1 <= value <= min(options.documents,1000) for value in tenants):
+        parser.error("invalid document/operation/tenant count")
+    output = options.output_directory.resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    manifest_path = output / "matrix.json"
+    if manifest_path.exists():
+        parser.error("matrix.json already exists; choose a fresh output directory to preserve prior evidence")
+    identity = source_identity()
+    executables = [ROOT / "target/release" / name for name in ("kasumi-bench", "kasumi-bench-loopback", "kasumi-bench-network", "kasumid")]
+    if not options.skip_build:
+        subprocess.run(["cargo", "build", "--locked", "--release", "-p", "kasumi-server", "-p", "kasumi-bench", "--features", "kasumi-bench/loopback", "--bins"], cwd=ROOT, check=True)
+    if source_identity() != identity:
+        raise RuntimeError("source changed during build; freeze source and restart")
+    binaries = {str(path.relative_to(ROOT)): digest(path) for path in executables}
+    binary_stats={path:file_identity(path) for path in executables}
+    manifest = {
+        "format": 1, "status": "checking_host", "source_sha256": identity,
+        "executable_sha256": binaries,
+        "git_status": subprocess.check_output(["git","status","--porcelain"], cwd=ROOT,text=True).splitlines(),
+        "host": {"uname": {key:getattr(os.uname(),key) for key in ("sysname","release","version","machine")}, "logical_cpus": os.cpu_count(), "rustc": subprocess.check_output(["rustc","--version"],text=True).strip()},
+        "options": {key: str(value) if isinstance(value,Path) else value for key,value in vars(options).items()},
+        "statistics": "One sequential closed-loop run per case. Nearest-rank p99 at 1000 operations has about 10 tail observations; no repeatability confidence interval is claimed. Extended runs can set --operations 10000.",
+        "quietness_policy": "Configured OS load/process-CPU observations and absence of compiler/linker/VM processes are screening evidence, not proof of exclusive hardware ownership. Background changes abort unless --allow-host-load explicitly records unqualified observations. No unrelated process is stopped.",
+        "cases": [], "failures": [], "host_load_violation_counts": {},
+    }
+    store_json(manifest_path, manifest)
+    with (output / "host-samples.jsonl").open("w") as samples:
+        def sample(group=None, initial=False):
+            value = host_sample(group)
+            samples.write(json.dumps(value) + "\n")
+            samples.flush()
+            reason = violation(value, options, initial)
+            if reason:
+                if options.allow_host_load and reason != "free disk space below configured minimum":
+                    counts=manifest["host_load_violation_counts"]
+                    counts[reason]=counts.get(reason,0)+1
+                else:
+                    raise RuntimeError(reason)
+            if source_identity() != identity:
+                raise RuntimeError("source changed during matrix")
+            for path in executables:
+                if file_identity(path) != binary_stats[path]:
+                    raise RuntimeError("executable changed during matrix")
+        try:
+            deadline = time.monotonic() + options.quiet_seconds
+            while True:
+                sample(initial=True)
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(min(5, max(0, deadline-time.monotonic())))
+            manifest["status"] = "running"
+            store_json(manifest_path, manifest)
+            with tempfile.TemporaryDirectory(prefix="kasumi-matrix-") as temporary:
+                environment = os.environ.copy()
+                environment["TMPDIR"] = temporary
+                for count in tenants:
+                    commands = [(f"{mode}-{count}", [str(executables[0]),"--documents",str(options.documents),"--operations",str(options.operations),"--tenants",str(count),"--modes",mode,"--output",str(output/f"{mode}-{count}.json"),"--work-parent",temporary]) for mode in ("raw","local","replicated","text")]
+                    commands.append((f"network-{count}",[str(executables[1]),"--documents",str(options.documents),"--operations",str(options.operations),"--tenants",str(count),"--output-prefix",str(output/"network")]))
+                    for name, command in commands:
+                        sample()
+                        print(f"running {name}", flush=True)
+                        started=time.time()
+                        with (output/f"{name}.log").open("w") as log:
+                            child = subprocess.Popen(command,cwd=ROOT,env=environment,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
+                            try:
+                                while child.poll() is None:
+                                    time.sleep(5)
+                                    sample(child.pid)
+                            finally:
+                                stop(child)
+                        result_path=output/f"{name}.json"
+                        case_status="failed" if child.returncode else "passed"
+                        if child.returncode:
+                            manifest["failures"].append(f"{name} failed with exit {child.returncode}; see {name}.log")
+                        manifest["cases"].append({"name":name,"started_unix_seconds":started,"elapsed_seconds":time.time()-started,"command":command,"status":case_status,"exit_code":child.returncode,"result_sha256":digest(result_path) if result_path.exists() else None})
+                        store_json(manifest_path,manifest)
+            for path in executables:
+                if digest(path) != binaries[str(path.relative_to(ROOT))]:
+                    raise RuntimeError("executable content changed during matrix")
+            if source_identity() != identity:
+                raise RuntimeError("source changed at matrix completion")
+            manifest["status"] = "completed_with_failures" if manifest["failures"] else ("completed_under_host_load" if manifest["host_load_violation_counts"] else "completed")
+            manifest["passed_quietness_screening"] = not bool(manifest["host_load_violation_counts"])
+            manifest["finished_unix_seconds"] = time.time()
+        except BaseException as error:
+            manifest["status"] = "failed"
+            manifest["failures"].append(str(error))
+            store_json(manifest_path,manifest)
+            raise
+    store_json(manifest_path,manifest)
+    subprocess.run([os.sys.executable,str(ROOT/"scripts/report_benchmark_capacity.py"),str(output)],check=True)
+    print(manifest_path)
+    if manifest["failures"]:
+        raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    main()

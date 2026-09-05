@@ -1,0 +1,43 @@
+{
+  "format": 1,
+  "status": "failed",
+  "wrapper_pid": 32304,
+  "wrapper_pgid": 32304,
+  "command": [
+    "/usr/bin/caffeinate",
+    "-i",
+    "/opt/homebrew/opt/python@3.14/bin/python3.14",
+    "scripts/run_benchmark_matrix.py",
+    "--output-directory",
+    "/Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-04",
+    "--documents",
+    "1000000",
+    "--tenants",
+    "1,100,1000",
+    "--operations",
+    "1000",
+    "--allow-host-load"
+  ],
+  "cwd": "/Users/takemiyamakoto/dev/kasumi",
+  "started_unix_seconds": 1788585364.186372,
+  "source_sha256_before": "c55682adadd4c92e499f8a252a6f8fdb496184b4b0f693fe53a6e49195728f58",
+  "log": "driver.log",
+  "stdio": "regular file stdout/stderr; stdin is /dev/null",
+  "wrapper_source": "execution-wrapper.py",
+  "wrapper_sha256": "b8a3fe3409e981e93c20eefa3fe672ed47046ece4145f2f64ef671108a4837da",
+  "continuation_survival": "Outer wrapper is a separate OS session. No output pipe depends on the initiating tool handle.",
+  "sleep_inhibition": "caffeinate -i for driver lifetime; no global power settings changed",
+  "validation": [
+    "../macos-validation-20260905-barrier/evidence.json",
+    "../linux-validation-20260905-barrier/evidence.json",
+    "../macos-validation-20260905-barrier/python-guard-evidence.json",
+    "../linux-validation-20260905-barrier/python-guard-evidence.json"
+  ],
+  "source_proof": "../release-matrix-macos-arm64-20260905-02/guard-validation/source-manifest.json",
+  "host_qualification": "Unrelated host activity is recorded; no isolated-host performance or external speed comparison claim.",
+  "driver_pid": 32306,
+  "exit_code": -2,
+  "finished_unix_seconds": 1788586554.076917,
+  "source_sha256_after": "c55682adadd4c92e499f8a252a6f8fdb496184b4b0f693fe53a6e49195728f58",
+  "log_sha256": "f402549d58a7677c3286b6aa1d5cc311c8d520ac2e712be73683ca0f5f232ec5"
+}

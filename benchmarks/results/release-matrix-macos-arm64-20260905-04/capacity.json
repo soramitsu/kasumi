@@ -1,0 +1,665 @@
+{
+  "format": 1,
+  "matrix_status": "failed",
+  "source_sha256": "c55682adadd4c92e499f8a252a6f8fdb496184b4b0f693fe53a6e49195728f58",
+  "passed_quietness_screening": false,
+  "host_load_violation_counts": {
+    "competing compiler/linker or virtual machine process present": 237
+  },
+  "configured_documents": 1000000,
+  "configured_tenants": [
+    1,
+    100,
+    1000
+  ],
+  "footprints": [
+    {
+      "id": "raw-1",
+      "source_file": "raw-1.json",
+      "result_sha256": "c94dfd12482f9d4b67bea833ec2b59082f7509be9e8fe4fb6d1f7480f22453a0",
+      "completed_and_identity_verified": true,
+      "deployment": "raw",
+      "documents": 1000000,
+      "tenants": 1,
+      "replicas_per_tenant": 1,
+      "resident_data_raft_groups": 0,
+      "resident_control_raft_groups": 0,
+      "additional_service_security_store": false,
+      "baseline_rss_bytes": 71892992,
+      "empty_groups_rss_bytes": 71892992,
+      "empty_indexes_rss_bytes": null,
+      "loaded_rss_bytes": 2114174976,
+      "after_workload_rss_bytes": 2114174976,
+      "after_recovery_rss_bytes": null,
+      "process_lifetime_peak_rss_bytes": 2114174976,
+      "disk_file_bytes": 0,
+      "unique_logical_payload_bytes": 1024000000,
+      "loaded_rss_per_unique_payload_byte": 2.064624,
+      "loaded_rss_per_resident_payload_byte": 2.064624,
+      "open_seconds": 3.33e-07,
+      "collection_setup_seconds": null,
+      "load_seconds": 1.012873791,
+      "clean_shutdown_seconds": null,
+      "clean_recovery_seconds": null,
+      "sampling_scope": "entire harness process including all voters and driver allocations"
+    },
+    {
+      "id": "local-1",
+      "source_file": "local-1.json",
+      "result_sha256": "534bfabfa108d266b267eab5884483a6d41ca177942ce8882a16fdbd256dfc9d",
+      "completed_and_identity_verified": true,
+      "deployment": "local",
+      "documents": 1000000,
+      "tenants": 1,
+      "replicas_per_tenant": 1,
+      "resident_data_raft_groups": 1,
+      "resident_control_raft_groups": 0,
+      "additional_service_security_store": false,
+      "baseline_rss_bytes": 71909376,
+      "empty_groups_rss_bytes": 75300864,
+      "empty_indexes_rss_bytes": 78774272,
+      "loaded_rss_bytes": 4382572544,
+      "after_workload_rss_bytes": 5372641280,
+      "after_recovery_rss_bytes": 8261877760,
+      "process_lifetime_peak_rss_bytes": 7703166976,
+      "disk_file_bytes": 4294971392,
+      "unique_logical_payload_bytes": 1024000000,
+      "loaded_rss_per_unique_payload_byte": 4.279856,
+      "loaded_rss_per_resident_payload_byte": 4.279856,
+      "open_seconds": 0.193226916,
+      "collection_setup_seconds": 0.030359458,
+      "load_seconds": 150.968309125,
+      "clean_shutdown_seconds": null,
+      "clean_recovery_seconds": 28.989864125,
+      "sampling_scope": "entire harness process including all voters and driver allocations"
+    },
+    {
+      "id": "replicated-1",
+      "source_file": "replicated-1.json",
+      "result_sha256": "98256228b53794029c56cabf6cb059cab5e13855d000768d4eb2230f2530e539",
+      "completed_and_identity_verified": false,
+      "deployment": "replicated",
+      "documents": 1000000,
+      "tenants": 1,
+      "replicas_per_tenant": 3,
+      "resident_data_raft_groups": 3,
+      "resident_control_raft_groups": 0,
+      "additional_service_security_store": false,
+      "baseline_rss_bytes": null,
+      "empty_groups_rss_bytes": 76316672,
+      "empty_indexes_rss_bytes": 79904768,
+      "loaded_rss_bytes": 13199622144,
+      "after_workload_rss_bytes": null,
+      "after_recovery_rss_bytes": null,
+      "process_lifetime_peak_rss_bytes": null,
+      "disk_file_bytes": null,
+      "unique_logical_payload_bytes": 1024000000,
+      "loaded_rss_per_unique_payload_byte": 12.890256,
+      "loaded_rss_per_resident_payload_byte": 4.296752,
+      "open_seconds": 0.581956666,
+      "collection_setup_seconds": null,
+      "load_seconds": 369.6616355,
+      "clean_shutdown_seconds": null,
+      "clean_recovery_seconds": null,
+      "sampling_scope": "entire harness process including all voters and driver allocations"
+    },
+    {
+      "id": "text-1",
+      "source_file": "text-1.json",
+      "result_sha256": "d41be25765df07430ac485691b15778a1426787ddc6f2a4c9286badaa90ab9fa",
+      "completed_and_identity_verified": false,
+      "deployment": "text",
+      "documents": 1000000,
+      "tenants": 1,
+      "replicas_per_tenant": 1,
+      "resident_data_raft_groups": 1,
+      "resident_control_raft_groups": 0,
+      "additional_service_security_store": false,
+      "baseline_rss_bytes": null,
+      "empty_groups_rss_bytes": 75497472,
+      "empty_indexes_rss_bytes": 85131264,
+      "loaded_rss_bytes": 5372116992,
+      "after_workload_rss_bytes": null,
+      "after_recovery_rss_bytes": null,
+      "process_lifetime_peak_rss_bytes": null,
+      "disk_file_bytes": null,
+      "unique_logical_payload_bytes": 1024000000,
+      "loaded_rss_per_unique_payload_byte": 5.246208,
+      "loaded_rss_per_resident_payload_byte": 5.246208,
+      "open_seconds": 0.273612584,
+      "collection_setup_seconds": null,
+      "load_seconds": 222.73909725,
+      "clean_shutdown_seconds": null,
+      "clean_recovery_seconds": null,
+      "sampling_scope": "entire harness process including all voters and driver allocations"
+    }
+  ],
+  "layers": [
+    {
+      "layer": "raw_hashmap",
+      "tenants": 1,
+      "footprint_id": "raw-1",
+      "measurements": [
+        {
+          "name": "raw_hashmap_borrowed_lookup",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.000427,
+            "throughput_ops_per_second": 2341920.3747072597,
+            "p50_microseconds": 0.375,
+            "p99_microseconds": 0.583,
+            "max_microseconds": 0.75
+          },
+          "failed_attempts": []
+        }
+      ],
+      "status": "observed"
+    },
+    {
+      "layer": "embedded_access",
+      "tenants": 1,
+      "footprint_id": "local-1",
+      "measurements": [
+        {
+          "name": "embedded_authorized_owned_point_get",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.0032655,
+            "throughput_ops_per_second": 306231.81748583674,
+            "p50_microseconds": 1.625,
+            "p99_microseconds": 5.333,
+            "max_microseconds": 10.709
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "embedded_authorized_shared_point_get",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.001699375,
+            "throughput_ops_per_second": 588451.6366311144,
+            "p50_microseconds": 0.542,
+            "p99_microseconds": 0.833,
+            "max_microseconds": 2.625
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "structured_indexed_equality",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.015784083,
+            "throughput_ops_per_second": 63354.96335137112,
+            "p50_microseconds": 12.833,
+            "p99_microseconds": 28.917,
+            "max_microseconds": 68.458
+          },
+          "failed_attempts": []
+        }
+      ],
+      "status": "observed"
+    },
+    {
+      "layer": "local_durable_writes",
+      "tenants": 1,
+      "footprint_id": "local-1",
+      "measurements": [
+        {
+          "name": "durable_single_document_write",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 29.322846291,
+            "throughput_ops_per_second": 34.10310138640695,
+            "p50_microseconds": 25188.375,
+            "p99_microseconds": 33105.334,
+            "max_microseconds": 1298347.958
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "read_heavy_90_read_10_write",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 7.437883834,
+            "throughput_ops_per_second": 134.4468429889705,
+            "p50_microseconds": 1.833,
+            "p99_microseconds": 28697.125,
+            "max_microseconds": 1405075.917
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "balanced_50_read_50_write",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 20.61983725,
+            "throughput_ops_per_second": 48.496988015751676,
+            "p50_microseconds": 40.792,
+            "p99_microseconds": 372202.375,
+            "max_microseconds": 561597.084
+          },
+          "failed_attempts": []
+        }
+      ],
+      "status": "observed"
+    },
+    {
+      "layer": "replicated_durable_access",
+      "tenants": 1,
+      "footprint_id": "replicated-1",
+      "measurements": [
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 0.020229958,
+            "max_microseconds": 61.958,
+            "operations": 1000,
+            "p50_microseconds": 17.334,
+            "p99_microseconds": 31.709,
+            "throughput_ops_per_second": 49431.63994705278
+          },
+          "name": "embedded_authorized_owned_point_get",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 0.017372417,
+            "max_microseconds": 40.041,
+            "operations": 1000,
+            "p50_microseconds": 15.166,
+            "p99_microseconds": 26.0,
+            "throughput_ops_per_second": 57562.51418556209
+          },
+          "name": "embedded_authorized_shared_point_get",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 103.079746667,
+            "max_microseconds": 3121730.958,
+            "operations": 1000,
+            "p50_microseconds": 70482.208,
+            "p99_microseconds": 293248.25,
+            "throughput_ops_per_second": 9.701226791238716
+          },
+          "name": "durable_single_document_write",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 13.573999666,
+            "max_microseconds": 1331005.625,
+            "operations": 1000,
+            "p50_microseconds": 24.875,
+            "p99_microseconds": 220181.458,
+            "throughput_ops_per_second": 73.67025376498194
+          },
+          "name": "read_heavy_90_read_10_write",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 11,
+          "failed_attempts": [
+            {
+              "elapsed_microseconds": 5001772.0,
+              "error_code": "UNAVAILABLE",
+              "message": "Unavailable: read quorum unavailable",
+              "operation_index": 10
+            }
+          ],
+          "failed_operations": 1,
+          "latency": {
+            "elapsed_seconds": 18.364412625,
+            "max_microseconds": 4809892.542,
+            "operations": 10,
+            "p50_microseconds": 667838.416,
+            "p99_microseconds": 4809892.542,
+            "throughput_ops_per_second": 0.5445314371986346
+          },
+          "name": "balanced_50_read_50_write",
+          "requested_operations": 1000,
+          "successful_operations": 10,
+          "unattempted_operations": 989
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 0.111434417,
+            "max_microseconds": 46636.667,
+            "operations": 1000,
+            "p50_microseconds": 40.542,
+            "p99_microseconds": 520.125,
+            "throughput_ops_per_second": 8973.888201882906
+          },
+          "name": "structured_indexed_equality",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        }
+      ],
+      "status": "observed_with_failures"
+    },
+    {
+      "layer": "authenticated_grpc",
+      "tenants": 1,
+      "footprint_id": "network-1",
+      "measurements": [],
+      "status": "not_measured"
+    },
+    {
+      "layer": "authenticated_mcp",
+      "tenants": 1,
+      "footprint_id": "network-1",
+      "measurements": [],
+      "status": "not_measured"
+    },
+    {
+      "layer": "raw_hashmap",
+      "tenants": 100,
+      "footprint_id": "raw-100",
+      "measurements": [],
+      "status": "not_measured"
+    },
+    {
+      "layer": "embedded_access",
+      "tenants": 100,
+      "footprint_id": "local-100",
+      "measurements": [],
+      "status": "not_measured"
+    },
+    {
+      "layer": "local_durable_writes",
+      "tenants": 100,
+      "footprint_id": "local-100",
+      "measurements": [],
+      "status": "not_measured"
+    },
+    {
+      "layer": "replicated_durable_access",
+      "tenants": 100,
+      "footprint_id": "replicated-100",
+      "measurements": [],
+      "status": "not_measured"
+    },
+    {
+      "layer": "authenticated_grpc",
+      "tenants": 100,
+      "footprint_id": "network-100",
+      "measurements": [],
+      "status": "not_measured"
+    },
+    {
+      "layer": "authenticated_mcp",
+      "tenants": 100,
+      "footprint_id": "network-100",
+      "measurements": [],
+      "status": "not_measured"
+    },
+    {
+      "layer": "raw_hashmap",
+      "tenants": 1000,
+      "footprint_id": "raw-1000",
+      "measurements": [],
+      "status": "not_measured"
+    },
+    {
+      "layer": "embedded_access",
+      "tenants": 1000,
+      "footprint_id": "local-1000",
+      "measurements": [],
+      "status": "not_measured"
+    },
+    {
+      "layer": "local_durable_writes",
+      "tenants": 1000,
+      "footprint_id": "local-1000",
+      "measurements": [],
+      "status": "not_measured"
+    },
+    {
+      "layer": "replicated_durable_access",
+      "tenants": 1000,
+      "footprint_id": "replicated-1000",
+      "measurements": [],
+      "status": "not_measured"
+    },
+    {
+      "layer": "authenticated_grpc",
+      "tenants": 1000,
+      "footprint_id": "network-1000",
+      "measurements": [],
+      "status": "not_measured"
+    },
+    {
+      "layer": "authenticated_mcp",
+      "tenants": 1000,
+      "footprint_id": "network-1000",
+      "measurements": [],
+      "status": "not_measured"
+    }
+  ],
+  "supplemental_workloads": [
+    {
+      "workload": "english_japanese_indexed_text",
+      "tenants": 1,
+      "footprint_id": "text-1",
+      "measurements": [
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 0.002861416,
+            "max_microseconds": 5.542,
+            "operations": 1000,
+            "p50_microseconds": 1.667,
+            "p99_microseconds": 2.083,
+            "throughput_ops_per_second": 349477.3217176391
+          },
+          "name": "embedded_authorized_owned_point_get",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 0.001618167,
+            "max_microseconds": 2.083,
+            "operations": 1000,
+            "p50_microseconds": 0.458,
+            "p99_microseconds": 0.625,
+            "throughput_ops_per_second": 617983.1871494104
+          },
+          "name": "embedded_authorized_shared_point_get",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 60.846895667,
+            "max_microseconds": 1610439.041,
+            "operations": 1000,
+            "p50_microseconds": 40074.25,
+            "p99_microseconds": 159777.417,
+            "throughput_ops_per_second": 16.43469217349645
+          },
+          "name": "durable_single_document_write",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 7.7066525,
+            "max_microseconds": 1898242.417,
+            "operations": 1000,
+            "p50_microseconds": 2.625,
+            "p99_microseconds": 118410.542,
+            "throughput_ops_per_second": 129.75802399290743
+          },
+          "name": "read_heavy_90_read_10_write",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 23.490916583,
+            "max_microseconds": 1228473.417,
+            "operations": 1000,
+            "p50_microseconds": 17.583,
+            "p99_microseconds": 435840.208,
+            "throughput_ops_per_second": 42.56964586574216
+          },
+          "name": "balanced_50_read_50_write",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 0.014195833,
+            "max_microseconds": 39.666,
+            "operations": 1000,
+            "p50_microseconds": 12.417,
+            "p99_microseconds": 18.583,
+            "throughput_ops_per_second": 70443.2068199168
+          },
+          "name": "structured_indexed_equality",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 1.490194292,
+            "max_microseconds": 10190.167,
+            "operations": 1000,
+            "p50_microseconds": 1402.459,
+            "p99_microseconds": 2556.5,
+            "throughput_ops_per_second": 671.0534360307428
+          },
+          "name": "text_english_Phrase_complete_pages",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        }
+      ],
+      "status": "observed"
+    },
+    {
+      "workload": "english_japanese_indexed_text",
+      "tenants": 100,
+      "footprint_id": "text-100",
+      "measurements": [],
+      "status": "not_measured"
+    },
+    {
+      "workload": "english_japanese_indexed_text",
+      "tenants": 1000,
+      "footprint_id": "text-1000",
+      "measurements": [],
+      "status": "not_measured"
+    }
+  ],
+  "tenant_overhead_estimates": [],
+  "issues": [
+    "replicated-1: incomplete, mismatched, or not bound to matrix result/executable hashes; observed values are not used for overhead derivation",
+    "text-1: incomplete, mismatched, or not bound to matrix result/executable hashes; observed values are not used for overhead derivation",
+    "network-1: no result file",
+    "raw-100: no result file",
+    "local-100: no result file",
+    "replicated-100: no result file",
+    "text-100: no result file",
+    "network-100: no result file",
+    "raw-1000: no result file",
+    "local-1000: no result file",
+    "replicated-1000: no result file",
+    "text-1000: no result file",
+    "network-1000: no result file"
+  ],
+  "limits": [
+    "One sequential closed-loop observation per workload; no saturation throughput, confidence interval, or launch SLA is inferred.",
+    "API-layer rows share footprints. Never sum embedded/local or native/MCP footprint references.",
+    "Resident/payload ratios include whole-process infrastructure and replicated copies, not just document heap overhead.",
+    "RSS snapshots and five-second host samples can miss transient peaks; network process-lifetime peak is not measured here.",
+    "Shutdown is timed separately through complete database closure or successful server process exit. Recovery starts after shutdown and covers reopen/spawn through verified reads; final cleanup is excluded. OpenBao and issuer remain running for network restart. These are not crash/power-loss measurements.",
+    "Three voters are in one process on one host. Independent failure domains and remote network latency are not measured.",
+    "An observed fit does not establish maximum capacity; budgets require headroom for staged indexes, snapshots, cursors, receipts, auditing, background work and OS memory."
+  ]
+}

@@ -1,0 +1,37 @@
+[package]
+name = "kasumi-store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[features]
+test-utils = []
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+sha2.workspace = true
+hex.workspace = true
+uuid.workspace = true
+tempfile.workspace = true
+redb = "4.2"
+chacha20poly1305 = "0.10"
+base64 = "0.22"
+hmac = "0.12"
+getrandom = "0.3"
+zeroize = { version = "1", features = ["derive"] }
+parking_lot = "0.12"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+libc = "0.2"
+time = { version = "0.3", features = ["formatting", "macros"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+axum = "0.8"
+rcgen = "0.14"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+tokio-rustls = { version = "0.26", default-features = false }
+hyper-util = { version = "0.1", features = ["tokio", "server-auto", "service"] }

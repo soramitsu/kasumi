@@ -1,0 +1,104 @@
+   Compiling kasumi-store v0.1.0 (/workspace/crates/kasumi-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.81s
+     Running unittests src/lib.rs (target/linux-validation/debug/deps/kasumi_store-c2773c80a5ceca0a)
+
+running 30 tests
+test backup::minio_live::actual_minio_tls_sigv4_encrypted_roundtrip_create_only_and_access_denial ... ignored, requires explicit KASUMI_MINIO_DOCKER_HOST, KASUMI_MINIO_DOCKER_CONFIG and KASUMI_MINIO_WORKDIR; official pinned image must be pre-pulled
+test backup::tests::destination_byte_limits_and_untrusted_format_are_rejected ... ok
+test backup::s3_tests::aws_published_signature_v4_get_object_vector ... ok
+test backup::tests::historical_backup_keeps_original_key_dependencies_after_rewrap ... ok
+test backup::tests::removal_of_an_inactive_backup_key_dependency_breaks_authentication ... ok
+test keys::tests::transit_origin_path_and_wrapped_version_validation ... ok
+test backup::s3_tests::s3_tls_round_trip_signed_session_token_create_only_and_bounded_download ... ok
+test keys::tests::transit_rejects_missing_trust_tls12_redirects_malformed_and_oversized_responses ... ok
+test backup::tests::encrypted_bundle_round_trip_filesystem_reopen_and_tamper_rejection ... ok
+test keys::tests::transit_tls_generation_fresh_decrypt_rewrap_context_and_revocation ... ok
+test tests::a_late_success_cannot_undo_an_explicit_seal ... ok
+test tests::a_fresh_probe_covers_every_retained_version_and_revocation_seals_warm_state ... ok
+test tests::delayed_probe_cannot_extend_a_lease_past_sixty_seconds_from_start ... ok
+test tests::atomic_batches_and_cross_namespace_isolation_survive_reopen ... ok
+test tests::ciphertext_corruption_swapping_and_wrong_tenant_are_rejected ... ok
+test tests::different_tenants_do_not_share_a_slow_key_service_open_gate ... ok
+test tests::expiry_during_fsync_reports_unknown_outcome_and_preserves_committed_batch ... ok
+test tests::expiry_during_key_catalog_fsync_does_not_acknowledge_rotation ... ok
+test tests::faulty_provider_rewrap_cannot_replace_data_keys_or_break_recovery ... ok
+test tests::invalid_batch_does_not_apply_earlier_operations ... ok
+test tests::every_injected_commit_failure_recovers_whole_batch_or_previous_state ... ok
+test tests::periodic_probes_start_every_twenty_seconds_despite_provider_latency ... ok
+test tests::rewrap_preserves_documents_after_retiring_old_wrapping_versions ... ok
+test tests::sixty_second_suspend_aware_expiry_and_explicit_recovery ... ok
+test tests::names_keys_and_values_are_absent_from_disk_and_nonce_changes_on_overwrite ... ok
+test tests::wrapping_catalog_is_atomic_across_every_injected_commit_failure ... ok
+test catalog_budget::catalog_byte_quota_rejects_initialization_rotation_and_rewrap_before_persistence ... ok
+test catalog_budget::exact_catalog_boundary_leaves_room_for_worst_case_manifest_tenant_encoding ... ok
+test tests::expiry_watchdog_discards_keys_and_notifies_without_an_incoming_request ... ok
+test keys::tests::transit_timeout_is_bounded_and_seals_existing_plaintext ... ok
+
+test result: ok. 29 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 5.04s
+
+    Checking stable_deref_trait v1.2.1
+    Checking getrandom v0.2.17
+    Checking zerofrom v0.1.8
+    Checking zeroize v1.9.0
+    Checking tokio v1.53.1
+    Checking tracing v0.1.44
+    Checking futures-task v0.3.34
+    Checking yoke v0.8.3
+    Checking rand_core v0.6.4
+    Checking rustls-pki-types v1.15.1
+    Checking hashbrown v0.17.1
+    Checking ring v0.17.14
+    Checking crypto-common v0.1.7
+    Checking zerovec v0.11.8
+    Checking zerotrie v0.2.5
+    Checking futures-util v0.3.34
+    Checking futures-channel v0.3.34
+    Checking tinystr v0.8.4
+    Checking potential_utf v0.1.6
+    Checking indexmap v2.14.1
+    Checking icu_collections v2.3.0
+    Checking icu_locale_core v2.3.0
+   Compiling time-macros v0.2.32
+    Checking serde v1.0.229
+    Checking rustls-webpki v0.103.15
+    Checking icu_provider v2.3.1
+    Checking deranged v0.5.8
+    Checking serde_urlencoded v0.7.1
+    Checking rustls v0.23.43
+    Checking icu_properties v2.3.0
+    Checking icu_normalizer v2.3.0
+    Checking serde_json v1.0.151
+    Checking digest v0.10.7
+    Checking cipher v0.4.4
+    Checking idna_adapter v1.2.2
+    Checking getrandom v0.4.3
+    Checking idna v1.1.0
+    Checking webpki-roots v1.0.9
+    Checking universal-hash v0.5.1
+    Checking chacha20 v0.9.1
+    Checking poly1305 v0.8.0
+    Checking aead v0.5.2
+    Checking url v2.5.8
+    Checking base64 v0.23.1
+    Checking tempfile v3.27.0
+    Checking pem v4.0.0
+    Checking time v0.3.55
+    Checking chacha20poly1305 v0.10.1
+    Checking axum-core v0.5.6
+    Checking sha2 v0.10.9
+    Checking uuid v1.26.0
+    Checking hmac v0.12.1
+    Checking tokio-util v0.7.19
+    Checking tower v0.5.3
+    Checking h2 v0.4.19
+    Checking tower-http v0.6.11
+    Checking yasna v0.6.0
+    Checking tokio-rustls v0.26.5
+    Checking rcgen v0.14.10
+    Checking hyper v1.11.1
+    Checking hyper-util v0.1.20
+    Checking hyper-rustls v0.27.9
+    Checking axum v0.8.9
+    Checking reqwest v0.12.28
+    Checking kasumi-store v0.1.0 (/workspace/crates/kasumi-store)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.97s

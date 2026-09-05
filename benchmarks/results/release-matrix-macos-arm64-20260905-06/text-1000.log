@@ -1,0 +1,54 @@
+starting mode=text tenants=1000 documents=1000000 operations=1000
+checkpoint mode=text tenants=1000 stage=opening
+opened 100/1000 tenant groups
+opened 200/1000 tenant groups
+opened 300/1000 tenant groups
+opened 400/1000 tenant groups
+opened 500/1000 tenant groups
+opened 600/1000 tenant groups
+opened 700/1000 tenant groups
+opened 800/1000 tenant groups
+opened 900/1000 tenant groups
+opened 1000/1000 tenant groups
+checkpoint mode=text tenants=1000 stage=collection_setup
+loaded tenant 100/1000 (text)
+loaded tenant 200/1000 (text)
+loaded tenant 300/1000 (text)
+loaded tenant 400/1000 (text)
+loaded tenant 500/1000 (text)
+loaded tenant 600/1000 (text)
+loaded tenant 700/1000 (text)
+loaded tenant 800/1000 (text)
+loaded tenant 900/1000 (text)
+loaded tenant 1000/1000 (text)
+checkpoint mode=text tenants=1000 stage=embedded_authorized_owned_point_get
+checkpoint mode=text tenants=1000 stage=measured_workload workload=embedded_authorized_owned_point_get success=1000 failed=0 unattempted=0
+checkpoint mode=text tenants=1000 stage=embedded_authorized_shared_point_get workload=embedded_authorized_owned_point_get success=1000 failed=0 unattempted=0
+checkpoint mode=text tenants=1000 stage=measured_workload workload=embedded_authorized_shared_point_get success=1000 failed=0 unattempted=0
+checkpoint mode=text tenants=1000 stage=durable_single_document_write workload=embedded_authorized_shared_point_get success=1000 failed=0 unattempted=0
+checkpoint mode=text tenants=1000 stage=measured_workload workload=durable_single_document_write success=1000 failed=0 unattempted=0
+checkpoint mode=text tenants=1000 stage=read_heavy_90_read_10_write workload=durable_single_document_write success=1000 failed=0 unattempted=0
+checkpoint mode=text tenants=1000 stage=measured_workload workload=read_heavy_90_read_10_write success=1000 failed=0 unattempted=0
+checkpoint mode=text tenants=1000 stage=balanced_50_read_50_write workload=read_heavy_90_read_10_write success=1000 failed=0 unattempted=0
+checkpoint mode=text tenants=1000 stage=measured_workload workload=balanced_50_read_50_write success=1000 failed=0 unattempted=0
+checkpoint mode=text tenants=1000 stage=measured_query workload=structured_indexed_equality success=1000 failed=0 unattempted=0
+checkpoint mode=text tenants=1000 stage=measured_text_query workload=text_english_Phrase_complete_pages success=1000 failed=0 unattempted=0
+checkpoint mode=text tenants=1000 stage=measured_text_query workload=text_english_Prefix_complete_pages success=1000 failed=0 unattempted=0
+checkpoint mode=text tenants=1000 stage=measured_text_query workload=text_english_Fuzzy_complete_pages success=1000 failed=0 unattempted=0
+checkpoint mode=text tenants=1000 stage=measured_text_query workload=text_japanese_Terms_complete_pages success=1000 failed=0 unattempted=0
+checkpoint mode=text tenants=1000 stage=shutting_down workload=text_japanese_Terms_complete_pages success=1000 failed=0 unattempted=0
+checkpoint mode=text tenants=1000 stage=recovering workload=text_japanese_Terms_complete_pages success=1000 failed=0 unattempted=0
+opened 100/1000 tenant groups
+opened 200/1000 tenant groups
+opened 300/1000 tenant groups
+opened 400/1000 tenant groups
+opened 500/1000 tenant groups
+opened 600/1000 tenant groups
+opened 700/1000 tenant groups
+opened 800/1000 tenant groups
+opened 900/1000 tenant groups
+opened 1000/1000 tenant groups
+checkpoint mode=text tenants=1000 stage=recovered workload=text_japanese_Terms_complete_pages success=1000 failed=0 unattempted=0
+completed mode=text tenants=1000 load=271.754s
+checkpoint mode=text tenants=1000 stage=completed
+benchmark report: /Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-06/text-1000.json

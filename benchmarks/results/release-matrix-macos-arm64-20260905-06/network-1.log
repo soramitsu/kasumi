@@ -1,0 +1,5 @@
+starting live loopback benchmark tenants=1, documents=1000000
+network fixture loaded tenant 1/1
+running network case grpc-1-tenants
+running network case mcp-1-tenants
+network benchmark report: /Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-06/network-1.json

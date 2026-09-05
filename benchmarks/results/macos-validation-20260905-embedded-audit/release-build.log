@@ -1,0 +1,6 @@
+   Compiling kasumi-types v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-types)
+   Compiling kasumi-query v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-query)
+   Compiling kasumi-engine v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-engine)
+   Compiling kasumi-server v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-server)
+   Compiling kasumi-bench v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-bench)
+    Finished `release` profile [optimized] target(s) in 3m 55s

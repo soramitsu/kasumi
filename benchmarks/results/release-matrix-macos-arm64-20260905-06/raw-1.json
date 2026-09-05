@@ -1,0 +1,103 @@
+{
+  "format": 1,
+  "created_unix_ms": 1788603834242,
+  "options": {
+    "documents": 1000000,
+    "tenants": [
+      1
+    ],
+    "operations": 1000,
+    "modes": [
+      "raw"
+    ],
+    "output": "/Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-06/raw-1.json",
+    "work_parent": "/var/folders/7l/w31n0ppj4zg874c4szhllss00000gn/T/kasumi-matrix-y00i2uf0"
+  },
+  "os": "macos",
+  "architecture": "aarch64",
+  "build_profile": "release",
+  "rustc": "rustc 1.94.1 (e408947bf 2026-03-25)",
+  "source_sha256": "658d5d157c76a9f03ff986f87f95747618a2f86e22996ad7698d8e060d7bf572",
+  "executable_sha256": "a1f93ade86ddfe7096bb0afccc9ae72b4f196254657595d4f6409525f0be52b7",
+  "git_status": [
+    " M .gitignore",
+    " M README.md",
+    "?? Cargo.lock",
+    "?? Cargo.toml",
+    "?? benchmarks/",
+    "?? crates/",
+    "?? deploy/",
+    "?? docs/",
+    "?? scripts/"
+  ],
+  "logical_cpus": 16,
+  "evidence_status": "Preliminary development measurement; repeat on a quiet host with stable source for publication",
+  "guarantees": [
+    "Raw lookup, authorized resident reads, and durable writes are reported separately; no 50x comparison is inferred.",
+    "RSS is process resident memory; peak RSS covers the whole process lifetime. Sequential cases may retain allocator pages; run one case per process for independent capacity estimates.",
+    "Source hash records files at process start, executable hash identifies actual compiled bytes; use quiet stable checkout for publication.",
+    "All datasets are deterministic and total approximately 1 KiB of exact JSON per document across all tenants.",
+    "Latency samples include each API operation; throughput additionally includes driver identity, ID preparation and leader selection."
+  ],
+  "not_measured": [
+    "Authenticated gRPC/MCP wire latency (use a separately configured TLS endpoint benchmark)",
+    "Physically distributed quorum network/disk/failure-domain behavior",
+    "Live OpenBao/Vault request latency and production Linux behavior when this report is run on macOS"
+  ],
+  "cases": [
+    {
+      "mode": "raw",
+      "tenants": 1,
+      "documents": 1000000,
+      "replicas": 1,
+      "security_audit_stores": 0,
+      "raft_timing_milliseconds": null,
+      "payload_bytes": 1024000000,
+      "open_seconds": 6.67e-7,
+      "baseline_rss_bytes": 71974912,
+      "empty_rss_bytes": 71974912,
+      "collection_setup_seconds": null,
+      "empty_index_rss_bytes": null,
+      "load_seconds": 1.34580925,
+      "resident_rss_bytes": 2114207744,
+      "after_workload_rss_bytes": 2114207744,
+      "after_recovery_rss_bytes": null,
+      "peak_rss_bytes": 2114207744,
+      "disk_bytes": 0,
+      "shutdown_seconds": null,
+      "recovery_seconds": null,
+      "measurements": [
+        {
+          "name": "raw_hashmap_borrowed_lookup",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.000388959,
+            "throughput_ops_per_second": 2570965.063155757,
+            "p50_microseconds": 0.375,
+            "p99_microseconds": 0.542,
+            "max_microseconds": 1.75
+          },
+          "failed_attempts": []
+        }
+      ],
+      "notes": [
+        "Borrowed map lookup only: no authentication, cloning, schema checks, consistency barrier, indexing, or durability. Timer overhead is included."
+      ]
+    }
+  ],
+  "progress": [
+    {
+      "details": {},
+      "measurements": [],
+      "mode": "raw",
+      "stage": "completed",
+      "tenants": 1
+    }
+  ],
+  "failures": []
+}

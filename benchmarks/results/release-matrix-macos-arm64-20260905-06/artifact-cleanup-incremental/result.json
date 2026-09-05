@@ -1,0 +1,14 @@
+{
+  "status": "completed",
+  "started_unix_seconds": 1788607957.361619,
+  "source_sha256_before": "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2",
+  "free_disk_bytes_before": 37373558784,
+  "selected_units": 207,
+  "retained_compiled_files": 130488,
+  "cache_tradeoff": "Some future changed-source compilations lose incremental acceleration; current compiled artifacts and the existing warm target directories remain.",
+  "finished_unix_seconds": 1788607994.871082,
+  "free_disk_bytes_after": 46212558848,
+  "source_sha256_after": "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2",
+  "compiled_artifacts_unchanged": true,
+  "observed_free_disk_change_bytes": 8839000064
+}

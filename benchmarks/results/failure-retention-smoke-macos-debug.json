@@ -1,0 +1,551 @@
+{
+  "format": 1,
+  "created_unix_ms": 1788581236345,
+  "options": {
+    "documents": 100,
+    "tenants": [
+      1
+    ],
+    "operations": 8,
+    "modes": [
+      "local",
+      "replicated",
+      "text"
+    ],
+    "output": "benchmarks/results/failure-retention-smoke-macos-debug.json",
+    "work_parent": null
+  },
+  "os": "macos",
+  "architecture": "aarch64",
+  "build_profile": "debug",
+  "rustc": "rustc 1.94.1 (e408947bf 2026-03-25)",
+  "source_sha256": "58d2da6a2807d6faa30b4238c38a562e4eec180c88e01f1719ceeb7daa43d79d",
+  "executable_sha256": "ea371f53190ab18af09e7540e6d8ed44bb2f9971801da1bf8d7898920dc701c8",
+  "git_status": [
+    " M .gitignore",
+    " M README.md",
+    "?? Cargo.lock",
+    "?? Cargo.toml",
+    "?? benchmarks/",
+    "?? crates/",
+    "?? deploy/",
+    "?? docs/",
+    "?? scripts/"
+  ],
+  "logical_cpus": 16,
+  "evidence_status": "Preliminary development measurement; repeat on a quiet host with stable source for publication",
+  "guarantees": [
+    "Raw lookup, authorized resident reads, and durable writes are reported separately; no 50x comparison is inferred.",
+    "RSS is process resident memory; peak RSS covers the whole process lifetime. Sequential cases may retain allocator pages; run one case per process for independent capacity estimates.",
+    "Source hash records files at process start, executable hash identifies actual compiled bytes; use quiet stable checkout for publication.",
+    "All datasets are deterministic and total approximately 1 KiB of exact JSON per document across all tenants.",
+    "Latency samples include each API operation; throughput additionally includes driver identity, ID preparation and leader selection."
+  ],
+  "not_measured": [
+    "Authenticated gRPC/MCP wire latency (use a separately configured TLS endpoint benchmark)",
+    "Physically distributed quorum network/disk/failure-domain behavior",
+    "Live OpenBao/Vault request latency and production Linux behavior when this report is run on macOS"
+  ],
+  "cases": [
+    {
+      "mode": "local",
+      "tenants": 1,
+      "documents": 100,
+      "replicas": 1,
+      "raft_timing_milliseconds": {
+        "election_timeout_max": 300,
+        "election_timeout_min": 150,
+        "heartbeat_interval": 50,
+        "install_snapshot_timeout": 200
+      },
+      "payload_bytes": 102400,
+      "open_seconds": 0.217639292,
+      "baseline_rss_bytes": 123830272,
+      "empty_rss_bytes": 134086656,
+      "collection_setup_seconds": 0.036619458,
+      "empty_index_rss_bytes": 139984896,
+      "load_seconds": 0.10118225,
+      "resident_rss_bytes": 142065664,
+      "after_workload_rss_bytes": 142442496,
+      "after_recovery_rss_bytes": 142819328,
+      "peak_rss_bytes": 142442496,
+      "disk_bytes": 647168,
+      "recovery_seconds": 0.102816833,
+      "measurements": [
+        {
+          "name": "embedded_authorized_owned_point_get",
+          "requested_operations": 8,
+          "attempted_operations": 8,
+          "successful_operations": 8,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 8,
+            "elapsed_seconds": 0.000121292,
+            "throughput_ops_per_second": 65956.53464366982,
+            "p50_microseconds": 5.333,
+            "p99_microseconds": 44.583,
+            "max_microseconds": 44.583
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "embedded_authorized_shared_point_get",
+          "requested_operations": 8,
+          "attempted_operations": 8,
+          "successful_operations": 8,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 8,
+            "elapsed_seconds": 0.000055,
+            "throughput_ops_per_second": 145454.54545454544,
+            "p50_microseconds": 3.791,
+            "p99_microseconds": 9.5,
+            "max_microseconds": 9.5
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "durable_single_document_write",
+          "requested_operations": 8,
+          "attempted_operations": 8,
+          "successful_operations": 8,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 8,
+            "elapsed_seconds": 0.22295075,
+            "throughput_ops_per_second": 35.88236415441527,
+            "p50_microseconds": 27057.042,
+            "p99_microseconds": 30985.541,
+            "max_microseconds": 30985.541
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "read_heavy_90_read_10_write",
+          "requested_operations": 8,
+          "attempted_operations": 8,
+          "successful_operations": 8,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 8,
+            "elapsed_seconds": 0.00008975,
+            "throughput_ops_per_second": 89136.49025069638,
+            "p50_microseconds": 4.958,
+            "p99_microseconds": 22.625,
+            "max_microseconds": 22.625
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "balanced_50_read_50_write",
+          "requested_operations": 8,
+          "attempted_operations": 8,
+          "successful_operations": 8,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 8,
+            "elapsed_seconds": 0.108270833,
+            "throughput_ops_per_second": 73.88878221709074,
+            "p50_microseconds": 18.583,
+            "p99_microseconds": 31355.084,
+            "max_microseconds": 31355.084
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "structured_indexed_equality",
+          "requested_operations": 8,
+          "attempted_operations": 8,
+          "successful_operations": 8,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 8,
+            "elapsed_seconds": 0.000575375,
+            "throughput_ops_per_second": 13903.97566804258,
+            "p50_microseconds": 53.042,
+            "p99_microseconds": 143.333,
+            "max_microseconds": 143.333
+          },
+          "failed_attempts": []
+        }
+      ],
+      "notes": [
+        "Actual Database API: tenant RBAC, read barrier, schema validation, persistent indexes, encrypted redb immediate two-phase durability, and mutation audit/receipt retention are active.",
+        "Each initial load batch has at most 256 documents; measured writes contain one document. Setup establishes a real quorum barrier before readiness. Measured operations are never retried; no additional warmup samples are discarded after loading.",
+        "One real OpenRaft voter; no network protocol overhead.",
+        "Test-only authenticated key wrapping excludes Transit network latency. No successful-read strict audit; mutation audits remain enabled.",
+        "Recovery measures clean full process-state closure/reopen plus one verified point read per tenant; crash safety is validated separately."
+      ]
+    },
+    {
+      "mode": "replicated",
+      "tenants": 1,
+      "documents": 100,
+      "replicas": 3,
+      "raft_timing_milliseconds": {
+        "election_timeout_max": 3000,
+        "election_timeout_min": 1500,
+        "heartbeat_interval": 250,
+        "install_snapshot_timeout": 30000
+      },
+      "payload_bytes": 102400,
+      "open_seconds": 0.535786334,
+      "baseline_rss_bytes": 142835712,
+      "empty_rss_bytes": 143572992,
+      "collection_setup_seconds": 0.062384708,
+      "empty_index_rss_bytes": 143704064,
+      "load_seconds": 0.163726209,
+      "resident_rss_bytes": 146178048,
+      "after_workload_rss_bytes": 146669568,
+      "after_recovery_rss_bytes": 147472384,
+      "peak_rss_bytes": 146669568,
+      "disk_bytes": 1798144,
+      "recovery_seconds": 0.300811084,
+      "measurements": [
+        {
+          "name": "embedded_authorized_owned_point_get",
+          "requested_operations": 8,
+          "attempted_operations": 8,
+          "successful_operations": 8,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 8,
+            "elapsed_seconds": 0.0007745,
+            "throughput_ops_per_second": 10329.244673983214,
+            "p50_microseconds": 69.792,
+            "p99_microseconds": 214.708,
+            "max_microseconds": 214.708
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "embedded_authorized_shared_point_get",
+          "requested_operations": 8,
+          "attempted_operations": 8,
+          "successful_operations": 8,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 8,
+            "elapsed_seconds": 0.000521167,
+            "throughput_ops_per_second": 15350.166069609166,
+            "p50_microseconds": 56.667,
+            "p99_microseconds": 89.0,
+            "max_microseconds": 89.0
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "durable_single_document_write",
+          "requested_operations": 8,
+          "attempted_operations": 8,
+          "successful_operations": 8,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 8,
+            "elapsed_seconds": 0.54245075,
+            "throughput_ops_per_second": 14.747882641880393,
+            "p50_microseconds": 66089.875,
+            "p99_microseconds": 76527.875,
+            "max_microseconds": 76527.875
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "read_heavy_90_read_10_write",
+          "requested_operations": 8,
+          "attempted_operations": 8,
+          "successful_operations": 8,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 8,
+            "elapsed_seconds": 0.000696583,
+            "throughput_ops_per_second": 11484.63284346589,
+            "p50_microseconds": 67.375,
+            "p99_microseconds": 162.084,
+            "max_microseconds": 162.084
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "balanced_50_read_50_write",
+          "requested_operations": 8,
+          "attempted_operations": 8,
+          "successful_operations": 8,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 8,
+            "elapsed_seconds": 0.257186833,
+            "throughput_ops_per_second": 31.10579148505631,
+            "p50_microseconds": 127.167,
+            "p99_microseconds": 66776.208,
+            "max_microseconds": 66776.208
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "structured_indexed_equality",
+          "requested_operations": 8,
+          "attempted_operations": 8,
+          "successful_operations": 8,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 8,
+            "elapsed_seconds": 0.001424959,
+            "throughput_ops_per_second": 5614.1966189904415,
+            "p50_microseconds": 142.459,
+            "p99_microseconds": 364.375,
+            "max_microseconds": 364.375
+          },
+          "failed_attempts": []
+        }
+      ],
+      "notes": [
+        "Actual Database API: tenant RBAC, read barrier, schema validation, persistent indexes, encrypted redb immediate two-phase durability, and mutation audit/receipt retention are active.",
+        "Each initial load batch has at most 256 documents; measured writes contain one document. Setup establishes a real quorum barrier before readiness. Measured operations are never retried; no additional warmup samples are discarded after loading.",
+        "Three real OpenRaft voters use separate redb files in one process; this measures local quorum persistence, not independent physical failure domains, TLS or network latency.",
+        "Test-only authenticated key wrapping excludes Transit network latency. No successful-read strict audit; mutation audits remain enabled.",
+        "Recovery measures clean full process-state closure/reopen plus one verified point read per tenant; crash safety is validated separately."
+      ]
+    },
+    {
+      "mode": "text",
+      "tenants": 1,
+      "documents": 100,
+      "replicas": 1,
+      "raft_timing_milliseconds": {
+        "election_timeout_max": 300,
+        "election_timeout_min": 150,
+        "heartbeat_interval": 50,
+        "install_snapshot_timeout": 200
+      },
+      "payload_bytes": 102400,
+      "open_seconds": 0.373168459,
+      "baseline_rss_bytes": 147472384,
+      "empty_rss_bytes": 147521536,
+      "collection_setup_seconds": 0.057726875,
+      "empty_index_rss_bytes": 154157056,
+      "load_seconds": 0.168864834,
+      "resident_rss_bytes": 161333248,
+      "after_workload_rss_bytes": 167280640,
+      "after_recovery_rss_bytes": 170655744,
+      "peak_rss_bytes": 167280640,
+      "disk_bytes": 897024,
+      "recovery_seconds": 0.311054958,
+      "measurements": [
+        {
+          "name": "embedded_authorized_owned_point_get",
+          "requested_operations": 8,
+          "attempted_operations": 8,
+          "successful_operations": 8,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 8,
+            "elapsed_seconds": 0.000122167,
+            "throughput_ops_per_second": 65484.13237617359,
+            "p50_microseconds": 5.541,
+            "p99_microseconds": 37.833,
+            "max_microseconds": 37.833
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "embedded_authorized_shared_point_get",
+          "requested_operations": 8,
+          "attempted_operations": 8,
+          "successful_operations": 8,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 8,
+            "elapsed_seconds": 0.00007425,
+            "throughput_ops_per_second": 107744.10774410774,
+            "p50_microseconds": 4.0,
+            "p99_microseconds": 16.25,
+            "max_microseconds": 16.25
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "durable_single_document_write",
+          "requested_operations": 8,
+          "attempted_operations": 8,
+          "successful_operations": 8,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 8,
+            "elapsed_seconds": 0.465476083,
+            "throughput_ops_per_second": 17.186704735590034,
+            "p50_microseconds": 57030.125,
+            "p99_microseconds": 80843.042,
+            "max_microseconds": 80843.042
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "read_heavy_90_read_10_write",
+          "requested_operations": 8,
+          "attempted_operations": 8,
+          "successful_operations": 8,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 8,
+            "elapsed_seconds": 0.000096709,
+            "throughput_ops_per_second": 82722.39398608195,
+            "p50_microseconds": 4.958,
+            "p99_microseconds": 26.292,
+            "max_microseconds": 26.292
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "balanced_50_read_50_write",
+          "requested_operations": 8,
+          "attempted_operations": 8,
+          "successful_operations": 8,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 8,
+            "elapsed_seconds": 0.154958958,
+            "throughput_ops_per_second": 51.62657327626067,
+            "p50_microseconds": 23.209,
+            "p99_microseconds": 39089.709,
+            "max_microseconds": 39089.709
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "structured_indexed_equality",
+          "requested_operations": 8,
+          "attempted_operations": 8,
+          "successful_operations": 8,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 8,
+            "elapsed_seconds": 0.000760833,
+            "throughput_ops_per_second": 10514.79102510012,
+            "p50_microseconds": 72.958,
+            "p99_microseconds": 179.917,
+            "max_microseconds": 179.917
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "text_english_Phrase_complete_pages",
+          "requested_operations": 8,
+          "attempted_operations": 8,
+          "successful_operations": 8,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 8,
+            "elapsed_seconds": 0.001159416,
+            "throughput_ops_per_second": 6900.025530094462,
+            "p50_microseconds": 120.583,
+            "p99_microseconds": 270.333,
+            "max_microseconds": 270.333
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "text_english_Prefix_complete_pages",
+          "requested_operations": 8,
+          "attempted_operations": 8,
+          "successful_operations": 8,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 8,
+            "elapsed_seconds": 0.004238875,
+            "throughput_ops_per_second": 1887.2932086933445,
+            "p50_microseconds": 474.75,
+            "p99_microseconds": 663.916,
+            "max_microseconds": 663.916
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "text_english_Fuzzy_complete_pages",
+          "requested_operations": 8,
+          "attempted_operations": 8,
+          "successful_operations": 8,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 8,
+            "elapsed_seconds": 0.002613291,
+            "throughput_ops_per_second": 3061.2740793122543,
+            "p50_microseconds": 304.958,
+            "p99_microseconds": 426.875,
+            "max_microseconds": 426.875
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "text_japanese_Terms_complete_pages",
+          "requested_operations": 8,
+          "attempted_operations": 8,
+          "successful_operations": 8,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 8,
+            "elapsed_seconds": 0.000933084,
+            "throughput_ops_per_second": 8573.718979213018,
+            "p50_microseconds": 97.958,
+            "p99_microseconds": 204.5,
+            "max_microseconds": 204.5
+          },
+          "failed_attempts": []
+        }
+      ],
+      "notes": [
+        "Actual Database API: tenant RBAC, read barrier, schema validation, persistent indexes, encrypted redb immediate two-phase durability, and mutation audit/receipt retention are active.",
+        "Each initial load batch has at most 256 documents; measured writes contain one document. Setup establishes a real quorum barrier before readiness. Measured operations are never retried; no additional warmup samples are discarded after loading.",
+        "One real OpenRaft voter; no network protocol overhead.",
+        "Test-only authenticated key wrapping excludes Transit network latency. No successful-read strict audit; mutation audits remain enabled.",
+        "Recovery measures clean full process-state closure/reopen plus one verified point read per tenant; crash safety is validated separately."
+      ]
+    }
+  ],
+  "progress": [
+    {
+      "details": {},
+      "measurements": [],
+      "mode": "local",
+      "stage": "completed",
+      "tenants": 1
+    },
+    {
+      "details": {},
+      "measurements": [],
+      "mode": "replicated",
+      "stage": "completed",
+      "tenants": 1
+    },
+    {
+      "details": {},
+      "measurements": [],
+      "mode": "text",
+      "stage": "completed",
+      "tenants": 1
+    }
+  ],
+  "failures": []
+}

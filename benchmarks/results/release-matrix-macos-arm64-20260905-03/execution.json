@@ -1,0 +1,26 @@
+{
+  "format": 1,
+  "command": [
+    "/usr/bin/caffeinate",
+    "-i",
+    "/opt/homebrew/bin/python3",
+    "scripts/run_benchmark_matrix.py",
+    "--output-directory",
+    "benchmarks/results/release-matrix-macos-arm64-20260905-03",
+    "--documents",
+    "1000000",
+    "--tenants",
+    "1,100,1000",
+    "--operations",
+    "1000",
+    "--allow-host-load"
+  ],
+  "cwd": "/Users/takemiyamakoto/dev/kasumi",
+  "started_unix_seconds": 1788584208.75104,
+  "validated_source_sha256": "c55682adadd4c92e499f8a252a6f8fdb496184b4b0f693fe53a6e49195728f58",
+  "validation": "167 workspace tests each on macOS and Linux, strict Clippy and formatting for unchanged Rust source; Mac/Linux3Python tests and full source diff proof for disk guard correction. Dedicated validation VM stopped before dispatch.",
+  "validation_supplement": "../release-matrix-macos-arm64-20260905-02/guard-validation/source-manifest.json",
+  "sleep_inhibition": "caffeinate -i inhibits automatic idle system sleep only during this driver; no global power setting or display wake.",
+  "measurement_classification": "Unrelated host activity remains recorded. No quiet-machine, repeatability or external database speed-comparison claim.",
+  "failure_contract": "Each workload stops at first failure without hidden retry. Prior successes, failure duration/code and unattempted counts remain. Independent cases continue; any failure produces a nonzero final exit."
+}

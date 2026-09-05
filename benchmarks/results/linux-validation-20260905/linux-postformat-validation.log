@@ -1,0 +1,102 @@
+   Compiling kasumi-store v0.1.0 (/workspace/crates/kasumi-store)
+   Compiling kasumi-raft v0.1.0 (/workspace/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/workspace/crates/kasumi-engine)
+   Compiling kasumi-server v0.1.0 (/workspace/crates/kasumi-server)
+   Compiling kasumi-bench v0.1.0 (/workspace/crates/kasumi-bench)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 21s
+     Running unittests src/lib.rs (target/linux-validation/debug/deps/kasumi_bench-2f3ea2a3f1dfb142)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/linux-validation/debug/deps/kasumi_bench-43467f28c01f8706)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/loopback.rs (target/linux-validation/debug/deps/kasumi_bench_loopback-f24ecfec5462ee5f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/network.rs (target/linux-validation/debug/deps/kasumi_bench_network-1742397793220a66)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/linux-validation/debug/deps/kasumi_server-9d9cc83dff6e001d)
+
+running 31 tests
+test administration::tests::generation_paths_cannot_inherit_tenant_traversal ... ok
+test administration::tests::closed_commands_reject_path_and_tenant_overrides ... ok
+test api::tests::native_status_bounds_worst_case_header_escaping ... ok
+test api::tests::current_mcp_discovery_and_tool_catalog_work_without_initialize ... ok
+test api::tests::mcp_rejects_legacy_mismatched_metadata_bad_origins_and_unauthenticated_calls ... ok
+test api::tests::both_adapters_reject_wrong_identity_tenant_scope_and_admin_escalation ... ok
+test api::tests::native_and_mcp_share_exact_data_receipts_query_and_authorization ... ok
+test api::tests::protected_resource_metadata_and_challenges_advertise_only_configured_issuer ... ok
+test auth::tests::config_rejects_cleartext_credentials_and_symmetric_algorithms ... ok
+test auth::tests::identity_and_tenant_come_only_from_verified_access_token ... ok
+test auth::tests::missing_audit_sink_blocks_valid_tokens_and_cannot_be_reconfigured ... ok
+test auth::tests::rejects_wrong_audience_issuer_expiry_not_before_and_id_tokens ... ok
+test auth::tests::untrusted_signatures_and_unknown_keys_never_gain_access ... ok
+test api::tests::private_native_control_route_can_raise_a_full_audit_budget ... ok
+test api::tests::required_audit_failure_blocks_dispatch_and_preserves_authentication_denials ... ok
+test api::tests::required_service_audits_are_durable_and_exclude_unverified_identity_and_payloads ... ok
+test api::tests::reserved_control_and_security_tenants_are_never_data_routes ... ok
+test mcp::response_tests::envelope_accounting_includes_large_request_ids_and_bounds_errors ... ok
+test runtime::tests::admin_client_requires_https_server_pin_and_runtime_token_reference ... ok
+test runtime::tests::operator_example_is_valid_secret_free_and_rejects_inline_credentials ... ok
+test runtime::tests::private_key_file_permissions_are_checked_on_opened_file ... ok
+test runtime::tests::rejects_cleartext_credential_urls_ambient_variable_names_and_missing_administrators ... ok
+test runtime::tests::rejects_shared_wrapping_keys_reserved_tenants_and_ambiguous_listeners ... ok
+test runtime::tests::replication_is_explicit_three_voters_with_unique_pins_and_domains ... ok
+test runtime::lifecycle_tests::local_runtime_opens_real_transit_tls_publishes_control_serves_and_reopens_durable_state ... ok
+test runtime::tests::staged_topology_permits_supersets_but_rejects_changed_pins_and_removed_routes ... ok
+test runtime::tests::service_audit_survives_reopen_and_tenant_sealing_and_fails_closed_at_quota ... ok
+test api::tests::long_schema_property_errors_match_native_mcp_and_durable_receipts ... ok
+test mcp::response_tests::quoted_payload_stays_within_wire_limit_without_redundant_text_copy ... ok
+test runtime::lifecycle_tests::runtime_catches_up_spare_and_replaces_three_voters_through_admin_control ... ok
+test runtime::lifecycle_tests::three_runtime_nodes_replicate_with_control_quorum_over_audited_pinned_mtls ... ok
+
+test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 11.25s
+
+     Running unittests src/bin/kasumictl.rs (target/linux-validation/debug/deps/kasumictl-3121bf86c20c1178)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/kasumid.rs (target/linux-validation/debug/deps/kasumid-457026bb29dae917)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/cluster_transport.rs (target/linux-validation/debug/deps/cluster_transport-56d6667d12996730)
+
+running 2 tests
+test peer_requests_bind_certificate_source_candidate_target_and_group_and_limit_body ... ok
+test real_three_node_raft_replicates_over_pinned_mutual_tls_http ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running tests/tls_listener.rs (target/linux-validation/debug/deps/tls_listener-00e7348c03f3ebef)
+
+running 4 tests
+test oauth_listener_allows_tls_without_client_cert_but_peer_pins_fail_before_http ... ok
+test native_grpc_channel_uses_pinned_tls13_and_http2_with_no_plaintext_fallback ... ok
+test mutual_tls_requires_trusted_client_and_rejects_tls12 ... ok
+test authentication_audit_failure_or_timeout_never_releases_http_requests ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+    Checking kasumi-raft v0.1.0 (/workspace/crates/kasumi-raft)
+    Checking kasumi-engine v0.1.0 (/workspace/crates/kasumi-engine)
+    Checking kasumi-server v0.1.0 (/workspace/crates/kasumi-server)
+    Checking kasumi-bench v0.1.0 (/workspace/crates/kasumi-bench)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.13s

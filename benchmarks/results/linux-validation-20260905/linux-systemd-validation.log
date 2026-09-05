@@ -1,0 +1,107 @@
+Get:1 http://deb.debian.org/debian bookworm InRelease [151 kB]
+Get:2 http://deb.debian.org/debian bookworm-updates InRelease [55.4 kB]
+Get:3 http://deb.debian.org/debian-security bookworm-security InRelease [34.8 kB]
+Get:4 http://deb.debian.org/debian bookworm/main arm64 Packages [8689 kB]
+Get:5 http://deb.debian.org/debian bookworm-updates/main arm64 Packages [6936 B]
+Get:6 http://deb.debian.org/debian-security bookworm-security/main arm64 Packages [334 kB]
+Fetched 9272 kB in 7s (1300 kB/s)
+Reading package lists...
+Reading package lists...
+Building dependency tree...
+Reading state information...
+The following additional packages will be installed:
+  dmsetup libapparmor1 libargon2-1 libcryptsetup12 libdevmapper1.02.1
+  libfdisk1 libip4tc2 libjson-c5 libkmod2 libsystemd-shared libsystemd0
+  libudev1
+Suggested packages:
+  systemd-container systemd-homed systemd-userdbd systemd-boot
+  systemd-resolved libqrencode4 libtss2-esys-3.0.2-0 libtss2-mu0 libtss2-rc0
+  polkitd | policykit-1
+Recommended packages:
+  default-dbus-system-bus | dbus-system-bus systemd-timesyncd | time-daemon
+The following NEW packages will be installed:
+  dmsetup libapparmor1 libargon2-1 libcryptsetup12 libdevmapper1.02.1
+  libfdisk1 libip4tc2 libjson-c5 libkmod2 libsystemd-shared systemd
+The following packages will be upgraded:
+  libsystemd0 libudev1
+2 upgraded, 11 newly installed, 0 to remove and 96 not upgraded.
+Need to get 5512 kB of archives.
+After this operation, 21.7 MB of additional disk space will be used.
+Get:1 http://deb.debian.org/debian bookworm/main arm64 libargon2-1 arm64 0~20171227-0.3+deb12u1 [18.7 kB]
+Get:2 http://deb.debian.org/debian bookworm/main arm64 libudev1 arm64 252.39-1~deb12u2 [103 kB]
+Get:3 http://deb.debian.org/debian bookworm/main arm64 dmsetup arm64 2:1.02.185-2 [75.2 kB]
+Get:4 http://deb.debian.org/debian bookworm/main arm64 libdevmapper1.02.1 arm64 2:1.02.185-2 [115 kB]
+Get:5 http://deb.debian.org/debian bookworm/main arm64 libjson-c5 arm64 0.16-2 [42.9 kB]
+Get:6 http://deb.debian.org/debian bookworm/main arm64 libcryptsetup12 arm64 2:2.6.1-4~deb12u2 [205 kB]
+Get:7 http://deb.debian.org/debian bookworm/main arm64 libfdisk1 arm64 2.38.1-5+deb12u3 [182 kB]
+Get:8 http://deb.debian.org/debian bookworm/main arm64 libkmod2 arm64 30+20221128-1 [54.4 kB]
+Get:9 http://deb.debian.org/debian bookworm/main arm64 libapparmor1 arm64 3.0.8-3 [40.3 kB]
+Get:10 http://deb.debian.org/debian bookworm/main arm64 libip4tc2 arm64 1.8.9-2 [18.5 kB]
+Get:11 http://deb.debian.org/debian bookworm/main arm64 libsystemd-shared arm64 252.39-1~deb12u2 [1508 kB]
+Get:12 http://deb.debian.org/debian bookworm/main arm64 libsystemd0 arm64 252.39-1~deb12u2 [309 kB]
+Get:13 http://deb.debian.org/debian bookworm/main arm64 systemd arm64 252.39-1~deb12u2 [2840 kB]
+debconf: delaying package configuration, since apt-utils is not installed
+Fetched 5512 kB in 1min 19s (70.1 kB/s)
+Selecting previously unselected package libargon2-1:arm64.
+(Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 26846 files and directories currently installed.)
+Preparing to unpack .../libargon2-1_0~20171227-0.3+deb12u1_arm64.deb ...
+Unpacking libargon2-1:arm64 (0~20171227-0.3+deb12u1) ...
+Preparing to unpack .../libudev1_252.39-1~deb12u2_arm64.deb ...
+Unpacking libudev1:arm64 (252.39-1~deb12u2) over (252.39-1~deb12u1) ...
+Setting up libudev1:arm64 (252.39-1~deb12u2) ...
+Selecting previously unselected package dmsetup.
+(Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 26851 files and directories currently installed.)
+Preparing to unpack .../0-dmsetup_2%3a1.02.185-2_arm64.deb ...
+Unpacking dmsetup (2:1.02.185-2) ...
+Selecting previously unselected package libdevmapper1.02.1:arm64.
+Preparing to unpack .../1-libdevmapper1.02.1_2%3a1.02.185-2_arm64.deb ...
+Unpacking libdevmapper1.02.1:arm64 (2:1.02.185-2) ...
+Selecting previously unselected package libjson-c5:arm64.
+Preparing to unpack .../2-libjson-c5_0.16-2_arm64.deb ...
+Unpacking libjson-c5:arm64 (0.16-2) ...
+Selecting previously unselected package libcryptsetup12:arm64.
+Preparing to unpack .../3-libcryptsetup12_2%3a2.6.1-4~deb12u2_arm64.deb ...
+Unpacking libcryptsetup12:arm64 (2:2.6.1-4~deb12u2) ...
+Selecting previously unselected package libfdisk1:arm64.
+Preparing to unpack .../4-libfdisk1_2.38.1-5+deb12u3_arm64.deb ...
+Unpacking libfdisk1:arm64 (2.38.1-5+deb12u3) ...
+Selecting previously unselected package libkmod2:arm64.
+Preparing to unpack .../5-libkmod2_30+20221128-1_arm64.deb ...
+Unpacking libkmod2:arm64 (30+20221128-1) ...
+Selecting previously unselected package libapparmor1:arm64.
+Preparing to unpack .../6-libapparmor1_3.0.8-3_arm64.deb ...
+Unpacking libapparmor1:arm64 (3.0.8-3) ...
+Selecting previously unselected package libip4tc2:arm64.
+Preparing to unpack .../7-libip4tc2_1.8.9-2_arm64.deb ...
+Unpacking libip4tc2:arm64 (1.8.9-2) ...
+Selecting previously unselected package libsystemd-shared:arm64.
+Preparing to unpack .../8-libsystemd-shared_252.39-1~deb12u2_arm64.deb ...
+Unpacking libsystemd-shared:arm64 (252.39-1~deb12u2) ...
+Preparing to unpack .../9-libsystemd0_252.39-1~deb12u2_arm64.deb ...
+Unpacking libsystemd0:arm64 (252.39-1~deb12u2) over (252.39-1~deb12u1) ...
+Setting up libsystemd0:arm64 (252.39-1~deb12u2) ...
+Selecting previously unselected package systemd.
+(Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 26920 files and directories currently installed.)
+Preparing to unpack .../systemd_252.39-1~deb12u2_arm64.deb ...
+Unpacking systemd (252.39-1~deb12u2) ...
+Setting up libip4tc2:arm64 (1.8.9-2) ...
+Setting up libapparmor1:arm64 (3.0.8-3) ...
+Setting up libargon2-1:arm64 (0~20171227-0.3+deb12u1) ...
+Setting up libfdisk1:arm64 (2.38.1-5+deb12u3) ...
+Setting up libjson-c5:arm64 (0.16-2) ...
+Setting up libkmod2:arm64 (30+20221128-1) ...
+Setting up libsystemd-shared:arm64 (252.39-1~deb12u2) ...
+Setting up libdevmapper1.02.1:arm64 (2:1.02.185-2) ...
+Setting up dmsetup (2:1.02.185-2) ...
+Setting up libcryptsetup12:arm64 (2:2.6.1-4~deb12u2) ...
+Setting up systemd (252.39-1~deb12u2) ...
+Created symlink /etc/systemd/system/getty.target.wants/getty@tty1.service → /lib/systemd/system/getty@.service.
+Created symlink /etc/systemd/system/multi-user.target.wants/remote-fs.target → /lib/systemd/system/remote-fs.target.
+Created symlink /etc/systemd/system/sysinit.target.wants/systemd-pstore.service → /lib/systemd/system/systemd-pstore.service.
+Initializing machine ID from random generator.
+Creating group 'systemd-journal' with GID 999.
+Creating group 'systemd-network' with GID 998.
+Creating user 'systemd-network' (systemd Network Management) with UID 998 and GID 998.
+Processing triggers for libc-bin (2.36-9+deb12u13) ...
+systemd 252 (252.39-1~deb12u2)
++PAM +AUDIT +SELINUX +APPARMOR +IMA +SMACK +SECCOMP +GCRYPT -GNUTLS +OPENSSL +ACL +BLKID +CURL +ELFUTILS +FIDO2 +IDN2 -IDN +IPTC +KMOD +LIBCRYPTSETUP +LIBFDISK +PCRE2 -PWQUALITY +P11KIT +QRENCODE +TPM2 +BZIP2 +LZ4 +XZ +ZLIB +ZSTD -BPF_FRAMEWORK -XKBCOMMON +UTMP +SYSVINIT default-hierarchy=unified

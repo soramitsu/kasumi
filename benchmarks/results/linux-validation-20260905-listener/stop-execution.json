@@ -1,0 +1,13 @@
+{
+  "argv": [
+    "colima",
+    "stop",
+    "--profile",
+    "kasumi-validation"
+  ],
+  "wrapper_pid": 19563,
+  "started_unix_seconds": 1788611652.016802,
+  "client_pid": 19564,
+  "exit_code": 0,
+  "finished_unix_seconds": 1788611654.714967
+}

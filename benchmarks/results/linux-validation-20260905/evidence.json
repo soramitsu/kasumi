@@ -1,0 +1,87 @@
+{
+  "platform": {
+    "os": "Debian GNU/Linux 12 container",
+    "architecture": "aarch64",
+    "kernel": "6.8.0-117-generic",
+    "rustc": "1.94.1 (e408947bf 2026-03-25)",
+    "cargo": "1.94.1 (29ea6fb6a 2026-03-24)",
+    "image": "sha256:67b357ce730a064aab665277d0dfaece94ab2ca0407ba4fe818b9f2d7fb40861",
+    "container_cpu_limit": 6,
+    "container_memory_bytes": 15032385536,
+    "container_memory_swap_bytes": 15032385536
+  },
+  "results": {
+    "initial_workspace_tests": {
+      "passed": 143,
+      "failed": 0,
+      "following_clippy": "missing component; image subsequently fixed",
+      "log": "linux-validation-output.log"
+    },
+    "second_workspace_tests": {
+      "passed": 147,
+      "failed": 0,
+      "following_clippy": "server onboarding patch was incomplete during active source edits; final rerun pending",
+      "log": "linux-validation-final-20260905.log"
+    },
+    "current_store": {
+      "passed": 29,
+      "failed": 0,
+      "ignored": 1,
+      "clippy": "passed --all-features --all-targets -D warnings",
+      "log": "linux-store-validation.log"
+    },
+    "openbao_live": {
+      "passed": 1,
+      "failed": 0,
+      "version": "2.6.2",
+      "archive_sha256": "1b408e01f3565ac0cbcb88d637dca271d0515148fb72efdeff4473a34fa50c4e",
+      "log": "linux-openbao-validation-retry.log"
+    },
+    "systemd_unit": {
+      "verifier": "systemd-analyze 252.39-1~deb12u2",
+      "exit_code": 0,
+      "scope": "static verification only; no daemon or service started",
+      "log": "linux-systemd-validation.log"
+    },
+    "full_workspace_gate": {
+      "workspace_passed": 154,
+      "failed": 0,
+      "ignored_external_service_entries": 2,
+      "clippy": "passed --workspace --all-features --all-targets -D warnings",
+      "openbao_passed": 1,
+      "exit_code": 0,
+      "log": "linux-validation-complete-20260905.log",
+      "source_changes_during_run": [
+        "crates/kasumi-bench/src/bin/network.rs",
+        "crates/kasumi-bench/src/main.rs",
+        "crates/kasumi-server/src/runtime.rs",
+        "scripts/run_benchmark_matrix.py"
+      ]
+    },
+    "postformat_server_and_bench": {
+      "passed": 37,
+      "failed": 0,
+      "fmt": "passed",
+      "clippy": "strict workspace all-features/all-targets passed",
+      "exit_code": 0,
+      "log": "linux-postformat-validation.log"
+    }
+  },
+  "complete_workspace_gate": "Final source passed; see ../linux-validation-20260905-final/evidence.json",
+  "artifact_sha256": {
+    "linux-openbao-validation-retry.log": "621fc67a597ea365f26e93f43d1b1dea9774cae72ede0865daf533acaa5f8fe4",
+    "linux-openbao-validation.log": "ce88ac0dc57a649cb8fbb60c0200e0184189151726ceea26ed8b41ffc9157133",
+    "linux-postformat-validation.log": "0f60d5bc3aef12df6aa1833b9ad8b9c236277814df042d2404aff3b4dd026953",
+    "linux-store-validation.log": "0ef98884c39a56da4a28c880b2ab07ddb1e4d68d951f2b6ab0f604645d28a257",
+    "linux-systemd-validation.log": "51e116dd4f4c9c43676d6e8bb71e7b1ec893c47281ce91fb0b6f42f05496f629",
+    "linux-validation-complete-20260905.log": "15cd06ad7e0243ea4e89ef71d0ee9940628f8d43a322ae6799b0e1bd88a52a82",
+    "linux-validation-final-20260905.log": "8feb77554dfa222f048e74bbddeb732da8be3bfa158051f1c9b7e72e8f362b16",
+    "linux-validation-output.log": "6cd86d178ce2139d4943dfebddf365f321095738d7f610b817efa17d669d2415",
+    "linux-validation-source-before.json": "244880c8d45f455bb244400ccff9a169ef2161bee1293270a3d277eb99bd8c1c",
+    "linux-validation-source-final-before.json": "888e75748b2a1da8e4849b352df6f68eaa2817281b8b41cb865148e0ed6e8190",
+    "linux-validation-source-postformat-before.json": "70082a611970ccf9f81580de29e6ad31c2751cfc8ec69d2a3fe22be198d08ae3",
+    "linux-validation-toolchain.txt": "d5277646df63f21f6f0a7e47db6a9d6330308924192cd774f1d6e378630ee4af",
+    "source-after-full-gate.json": "925d3f11b9e95f379122dc1f60fd02fea2355cf345ed17a35d3601f6dfaad7d4",
+    "store-source-manifest.json": "d2b29b0f397e6426bc9fda4a93e8b62d0aa153fde34d82b9a34d4230127b5c0a"
+  }
+}

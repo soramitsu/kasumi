@@ -1,0 +1,11 @@
+   Compiling kasumi-raft v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-engine)
+   Compiling kasumi-server v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 16.46s
+     Running unittests src/lib.rs (target/debug/deps/kasumi_server-f9bbd95a596f778b)
+
+running 1 test
+test api::tests::native_and_mcp_lost_committed_responses_resolve_without_reapplying ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.74s
+

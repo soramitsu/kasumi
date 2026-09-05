@@ -1,0 +1,110 @@
+{
+  "architecture": "aarch64",
+  "documents": 100000,
+  "limitations": "Microbenchmark excludes validation, Raft, redb durability and index updates. Existing 1000-tenant baseline group creation ran concurrently; timing is exploratory, not publication capacity evidence. RandomState is identical within a run but randomized between runs.",
+  "mechanism": "imbl 7.0.1 immutable-generation leaf updates; identical RandomState cloned across variants",
+  "os": "macos",
+  "results": [
+    {
+      "arc_median_ns_per_update": 1355.1839599609375,
+      "arc_samples_ns": [
+        12094583,
+        10642292,
+        11117000,
+        10248917,
+        11101667
+      ],
+      "batch_operations": 1,
+      "document_target_bytes": 1024,
+      "owned_median_ns_per_update": 7534.9884033203125,
+      "owned_samples_ns": [
+        68582125,
+        61956417,
+        61726625,
+        58038791,
+        57809166
+      ],
+      "ratio_owned_over_arc": 5.560122187055331
+    },
+    {
+      "arc_median_ns_per_update": 856.689453125,
+      "arc_samples_ns": [
+        9045042,
+        6880417,
+        9115417,
+        6876417,
+        7018000
+      ],
+      "batch_operations": 256,
+      "document_target_bytes": 1024,
+      "owned_median_ns_per_update": 6235.3973388671875,
+      "owned_samples_ns": [
+        50101916,
+        50598250,
+        51335417,
+        57086084,
+        51080375
+      ],
+      "ratio_owned_over_arc": 7.278480336278142
+    },
+    {
+      "arc_median_ns_per_update": 1321.721435546875,
+      "arc_samples_ns": [
+        10834375,
+        9903125,
+        10827542,
+        10652417,
+        11165333
+      ],
+      "batch_operations": 1,
+      "document_target_bytes": 8192,
+      "owned_median_ns_per_update": 10941.9658203125,
+      "owned_samples_ns": [
+        111822125,
+        89636584,
+        90330500,
+        88851500,
+        89615583
+      ],
+      "ratio_owned_over_arc": 8.278571812512942
+    },
+    {
+      "arc_median_ns_per_update": 850.0823974609375,
+      "arc_samples_ns": [
+        7701166,
+        6918458,
+        6830875,
+        6963875,
+        7299000
+      ],
+      "batch_operations": 256,
+      "document_target_bytes": 8192,
+      "owned_median_ns_per_update": 9917.780517578125,
+      "owned_samples_ns": [
+        85198500,
+        82420291,
+        81246458,
+        81132542,
+        80597791
+      ],
+      "ratio_owned_over_arc": 11.666846116565848
+    }
+  ],
+  "samples": 5,
+  "untimed_deep_clone_diagnostics": [
+    {
+      "arc_payload_clones": 0,
+      "batch_operations": 1,
+      "owned_payload_clones": 70266,
+      "owned_payload_clones_per_update": 8.577392578125
+    },
+    {
+      "arc_payload_clones": 0,
+      "batch_operations": 256,
+      "owned_payload_clones": 66040,
+      "owned_payload_clones_per_update": 8.0615234375
+    }
+  ],
+  "updates_per_sample": 8192,
+  "competing_work": "A 1000-tenant Kasumi baseline was opening groups; other Cargo/rustc builds were active on the machine. This is exploratory mechanism evidence, not isolated capacity measurement."
+}

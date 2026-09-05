@@ -1,0 +1,698 @@
+rustc 1.94.1 (e408947bf 2026-03-25)
+cargo 1.94.1 (29ea6fb6a 2026-03-24)
+Linux f869c0eec5b8 6.8.0-117-generic #117-Ubuntu SMP PREEMPT_DYNAMIC Thu May  7 17:26:37 UTC 2026 aarch64 GNU/Linux
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.24
+   Compiling libc v0.2.189
+   Compiling cfg-if v1.0.4
+   Compiling serde_core v1.0.229
+   Compiling memchr v2.8.3
+   Compiling itoa v1.0.18
+   Compiling once_cell v1.21.4
+   Compiling serde v1.0.229
+   Compiling bytes v1.12.1
+   Compiling find-msvc-tools v0.1.12
+   Compiling shlex v2.0.1
+   Compiling equivalent v1.0.2
+   Compiling log v0.4.34
+   Compiling autocfg v1.5.1
+   Compiling pin-project-lite v0.2.17
+   Compiling smallvec v1.16.0
+   Compiling futures-core v0.3.34
+   Compiling zmij v1.0.23
+   Compiling allocator-api2 v0.2.21
+   Compiling stable_deref_trait v1.2.1
+   Compiling syn v3.0.5
+   Compiling syn v2.0.119
+   Compiling jobserver v0.1.35
+   Compiling foldhash v0.2.0
+   Compiling getrandom v0.2.17
+   Compiling cc v1.4.5
+   Compiling futures-sink v0.3.34
+   Compiling hashbrown v0.17.1
+   Compiling parking_lot_core v0.9.12
+   Compiling bitflags v2.13.1
+   Compiling num-traits v0.2.19
+   Compiling version_check v0.9.5
+   Compiling slab v0.4.12
+   Compiling serde_json v1.0.151
+   Compiling scopeguard v1.2.0
+   Compiling subtle v2.6.1
+   Compiling percent-encoding v2.3.2
+   Compiling untrusted v0.9.0
+   Compiling lock_api v0.4.14
+   Compiling futures-channel v0.3.34
+   Compiling parking_lot v0.12.5
+   Compiling futures-task v0.3.34
+   Compiling rustix v1.1.4
+   Compiling synstructure v0.13.2
+   Compiling futures-io v0.3.34
+   Compiling anyhow v1.0.104
+   Compiling linux-raw-sys v0.12.1
+   Compiling rustls v0.23.43
+   Compiling serde_derive v1.0.229
+   Compiling futures-macro v0.3.34
+   Compiling zerovec-derive v0.11.6
+   Compiling zerofrom-derive v0.1.7
+   Compiling yoke-derive v0.8.2
+   Compiling errno v0.3.14
+   Compiling ryu v1.0.23
+   Compiling signal-hook-registry v1.4.8
+   Compiling tokio-macros v2.7.2
+   Compiling futures-util v0.3.34
+   Compiling displaydoc v0.2.7
+   Compiling indexmap v2.14.1
+   Compiling zerofrom v0.1.8
+   Compiling yoke v0.8.3
+   Compiling zerovec v0.11.8
+   Compiling socket2 v0.6.5
+   Compiling mio v1.2.3
+   Compiling heck v0.5.0
+   Compiling either v1.18.0
+   Compiling thiserror v2.0.20
+   Compiling rand_core v0.10.1
+   Compiling tokio v1.53.1
+   Compiling tracing-attributes v0.1.31
+   Compiling thiserror-impl v2.0.20
+   Compiling generic-array v0.14.7
+   Compiling tracing-core v0.1.36
+   Compiling byteorder v1.5.0
+   Compiling zeroize_derive v1.5.0
+   Compiling rand_core v0.6.4
+   Compiling http v1.5.0
+   Compiling typenum v1.20.1
+   Compiling tinystr v0.8.4
+   Compiling litemap v0.8.3
+   Compiling time-core v0.1.9
+   Compiling num-conv v0.2.2
+   Compiling fnv v1.0.7
+   Compiling writeable v0.6.4
+   Compiling time-macros v0.2.32
+   Compiling icu_locale_core v2.3.0
+   Compiling http-body v1.1.0
+   Compiling tracing v0.1.44
+   Compiling zerotrie v0.2.5
+   Compiling zeroize v1.9.0
+   Compiling potential_utf v0.1.6
+   Compiling deranged v0.5.8
+   Compiling powerfmt v0.2.0
+   Compiling icu_properties_data v2.3.0
+   Compiling base64 v0.22.1
+   Compiling icu_normalizer_data v2.3.0
+   Compiling utf8_iter v1.0.4
+   Compiling icu_collections v2.3.0
+   Compiling tokio-util v0.7.19
+   Compiling icu_provider v2.3.1
+   Compiling ring v0.17.14
+   Compiling form_urlencoded v1.2.2
+   Compiling crypto-common v0.1.7
+   Compiling async-trait v0.1.92
+   Compiling tower-service v0.3.3
+   Compiling strsim v0.11.1
+   Compiling time v0.3.55
+   Compiling crossbeam-utils v0.8.22
+   Compiling icu_properties v2.3.0
+   Compiling icu_normalizer v2.3.0
+   Compiling rustls-pki-types v1.15.1
+   Compiling fastrand v2.5.0
+   Compiling getrandom v0.4.3
+   Compiling httparse v1.10.1
+   Compiling idna_adapter v1.2.2
+   Compiling ptr_meta_derive v0.3.2
+   Compiling atomic-waker v1.1.2
+   Compiling try-lock v0.2.5
+   Compiling zerocopy v0.8.56
+   Compiling crossbeam-epoch v0.9.20
+   Compiling want v0.3.1
+   Compiling h2 v0.4.19
+   Compiling idna v1.1.0
+   Compiling itertools v0.14.0
+   Compiling ptr_meta v0.3.2
+   Compiling getrandom v0.3.4
+   Compiling crossbeam-deque v0.8.7
+   Compiling httpdate v1.0.3
+   Compiling rancor v0.1.3
+   Compiling url v2.5.8
+   Compiling http-body-util v0.1.5
+   Compiling bytecheck_derive v0.8.3
+   Compiling hyper v1.11.1
+   Compiling sync_wrapper v1.0.2
+   Compiling tower-layer v0.3.3
+   Compiling simdutf8 v0.1.5
+   Compiling ipnet v2.12.1
+   Compiling rayon-core v1.13.0
+   Compiling bytecheck v0.8.3
+   Compiling hyper-util v0.1.20
+   Compiling munge_macro v0.4.7
+   Compiling regex-syntax v0.8.11
+   Compiling rustls-webpki v0.103.15
+   Compiling rend v0.5.4
+   Compiling tower v0.5.3
+   Compiling munge v0.4.7
+   Compiling uuid v1.26.0
+   Compiling block-buffer v0.10.4
+   Compiling strum_macros v0.28.0
+   Compiling rkyv_derive v0.8.18
+   Compiling num-integer v0.1.47
+   Compiling csv-core v0.1.13
+   Compiling pkg-config v0.3.34
+   Compiling crc32fast v1.5.1
+   Compiling zstd-sys v2.1.0+zstd.1.5.7
+   Compiling tokio-rustls v0.26.5
+   Compiling digest v0.10.7
+   Compiling rayon v1.12.0
+   Compiling tempfile v3.27.0
+   Compiling serde_urlencoded v0.7.1
+   Compiling strum v0.28.0
+   Compiling memmap2 v0.9.11
+   Compiling encoding_rs v0.8.35
+   Compiling base64 v0.23.1
+   Compiling ident_case v1.0.1
+   Compiling adler2 v2.0.1
+   Compiling simd-adler32 v0.3.10
+   Compiling semver v1.0.28
+   Compiling miniz_oxide v0.9.1
+   Compiling ureq-proto v0.6.1
+   Compiling darling_core v0.24.1
+   Compiling encoding_rs_io v0.1.8
+   Compiling num-bigint v0.4.8
+   Compiling webpki-roots v1.0.9
+   Compiling inout v0.1.4
+   Compiling xattr v1.6.1
+   Compiling cpufeatures v0.2.17
+   Compiling filetime v0.2.29
+   Compiling glob v0.3.4
+   Compiling iana-time-zone v0.1.65
+   Compiling utf8-zero v0.8.1
+   Compiling crunchy v0.2.4
+   Compiling daachorse v4.0.0
+   Compiling crawdad v0.3.0
+   Compiling tar v0.4.46
+   Compiling sha2 v0.10.9
+   Compiling cipher v0.4.4
+   Compiling flate2 v1.1.10
+   Compiling darling_macro v0.24.1
+   Compiling rkyv v0.8.18
+   Compiling csv v1.4.0
+   Compiling universal-hash v0.5.1
+   Compiling rand v0.10.2
+   Compiling ureq v3.4.0
+   Compiling pin-project-internal v1.1.13
+   Compiling aho-corasick v1.1.5
+   Compiling utf8parse v0.2.2
+   Compiling md5 v0.8.1
+   Compiling opaque-debug v0.3.1
+   Compiling redb v4.2.0
+   Compiling ref-cast v1.0.27
+   Compiling zstd-safe v7.3.0
+   Compiling pin-project v1.1.13
+   Compiling regex-automata v0.4.18
+   Compiling lindera-dictionary v5.3.0
+   Compiling poly1305 v0.8.0
+   Compiling darling v0.24.1
+   Compiling anstyle-parse v1.0.0
+   Compiling hyper-rustls v0.27.9
+   Compiling chacha20 v0.9.1
+   Compiling rustc_version v0.4.1
+   Compiling tower-http v0.6.11
+   Compiling aead v0.5.2
+   Compiling ref-cast-impl v1.0.27
+   Compiling ownedbytes v0.9.0
+   Compiling colorchoice v1.0.5
+   Compiling typeid v1.0.3
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling anstyle-query v1.1.5
+   Compiling rust_decimal v1.43.0
+   Compiling prettyplease v0.3.0
+   Compiling anstyle v1.0.14
+   Compiling anstream v1.0.0
+   Compiling reqwest v0.12.28
+   Compiling tantivy-common v0.11.0
+   Compiling chacha20poly1305 v0.10.1
+   Compiling heapless v0.7.17
+   Compiling bitpacking v0.9.3
+   Compiling lindera-ipadic v5.3.0
+   Compiling chrono v0.4.45
+   Compiling hmac v0.12.1
+   Compiling ppv-lite86 v0.2.21
+   Compiling futures-executor v0.3.34
+   Compiling ahash v0.8.12
+   Compiling utf8-ranges v1.0.5
+   Compiling hex v0.4.3
+   Compiling arrayvec v0.7.8
+   Compiling clap_lex v1.1.0
+   Compiling thiserror v1.0.69
+   Compiling erased-serde v0.4.10
+   Compiling rustversion v1.0.23
+   Compiling unicode-xid v0.2.6
+   Compiling bytemuck v1.25.2
+   Compiling derive_more-impl v1.0.0
+   Compiling safe_arch v0.7.4
+   Compiling clap_builder v4.6.6
+   Compiling tantivy-fst v0.5.0
+   Compiling futures v0.3.34
+   Compiling rand_chacha v0.3.1
+   Compiling tantivy-bitpacker v0.10.0
+   Compiling regex v1.13.1
+   Compiling num-rational v0.4.2
+   Compiling num-iter v0.1.46
+   Compiling hash32 v0.2.1
+   Compiling anyerror v0.1.13
+   Compiling clap_derive v4.6.4
+   Compiling thiserror-impl v1.0.69
+   Compiling num-complex v0.4.6
+   Compiling minimal-lexical v0.2.1
+   Compiling utf8-width v0.1.9
+   Compiling bitmaps v3.2.1
+   Compiling rand_core v0.9.5
+   Compiling typetag v0.2.23
+   Compiling tinyvec_macros v0.1.1
+   Compiling murmurhash32 v0.3.1
+   Compiling tantivy-stacker v0.7.0
+   Compiling tinyvec v1.13.2
+   Compiling imbl-sized-chunks v0.1.3
+   Compiling rand_xoshiro v0.7.0
+   Compiling byte-unit v5.2.5
+   Compiling nom v7.1.3
+   Compiling num v0.4.3
+   Compiling validit v0.2.6
+   Compiling bon-macros v3.10.0
+   Compiling clap v4.6.6
+   Compiling openraft-macros v0.9.25
+   Compiling derive_more v1.0.0
+   Compiling rand v0.8.8
+   Compiling wide v0.7.33
+   Compiling kasumi-store v0.1.0 (/workspace/crates/kasumi-store)
+   Compiling tracing-futures v0.2.5
+   Compiling cobs v0.3.0
+   Compiling typetag-impl v0.2.23
+   Compiling ordered-float v5.5.0
+   Compiling hashbrown v0.16.1
+   Compiling unicode-general-category v1.1.0
+   Compiling borrow-or-share v0.2.4
+   Compiling downcast-rs v2.0.2
+   Compiling inventory v0.3.24
+   Compiling bit-vec v0.8.0
+   Compiling bitflags v1.3.2
+   Compiling unsafe-libyaml v0.2.11
+   Compiling libm v0.2.16
+   Compiling maplit v1.0.2
+   Compiling fastdivide v0.4.2
+   Compiling archery v1.2.3
+   Compiling openraft v0.9.25
+   Compiling imbl v7.0.1
+   Compiling serde_yaml_ng v0.10.0
+   Compiling bon v3.10.0
+   Compiling kanaria v0.2.0
+   Compiling bit-set v0.8.0
+   Compiling fluent-uri v0.4.1
+   Compiling lru v0.16.4
+   Compiling tantivy-query-grammar v0.26.0
+   Compiling postcard v1.1.3
+   Compiling arc-swap v1.9.2
+   Compiling fraction v0.17.0
+   Compiling zstd v0.13.3
+   Compiling tantivy-sstable v0.7.0
+   Compiling unicode-normalization v0.1.25
+   Compiling tantivy-columnar v0.7.0
+   Compiling crossbeam-channel v0.5.16
+   Compiling tantivy-tokenizer-api v0.7.0
+   Compiling rust-stemmers v1.2.0
+   Compiling sketches-ddsketch v0.4.1
+   Compiling fs4 v0.13.1
+   Compiling bigdecimal v0.4.10
+   Compiling measure_time v0.9.0
+   Compiling outref v0.5.2
+   Compiling levenshtein_automata v0.2.1
+   Compiling datasketches v0.2.0
+   Compiling lz4_flex v0.13.1
+   Compiling unicode-blocks v0.1.10
+   Compiling unicode-segmentation v1.13.3
+   Compiling micromap v0.3.0
+   Compiling vsimd v0.8.0
+   Compiling rustc-hash v2.1.3
+   Compiling census v0.4.2
+   Compiling htmlescape v0.3.1
+   Compiling bytecount v0.6.9
+   Compiling num-cmp v0.1.0
+   Compiling oneshot v0.1.13
+   Compiling uuid-simd v0.8.0
+   Compiling jsonschema-value v0.52.1
+   Compiling tantivy v0.26.1
+   Compiling referencing v0.52.1
+   Compiling fancy-regex v0.19.0
+   Compiling jsonschema-regex v0.52.1
+   Compiling email_address v0.2.9
+   Compiling data-encoding v2.11.1
+   Compiling kasumi-raft v0.1.0 (/workspace/crates/kasumi-raft)
+   Compiling kasumi-types v0.1.0 (/workspace/crates/kasumi-types)
+   Compiling prost-derive v0.14.4
+   Compiling pulldown-cmark v0.13.4
+   Compiling prettyplease v0.2.37
+   Compiling mime v0.3.17
+   Compiling unicase v2.9.0
+   Compiling foldhash v0.1.5
+   Compiling hashbrown v0.15.5
+   Compiling prost v0.14.4
+   Compiling axum-core v0.5.6
+   Compiling serde_path_to_error v0.1.20
+   Compiling fixedbitset v0.5.7
+   Compiling matchit v0.8.4
+   Compiling axum v0.8.9
+   Compiling petgraph v0.8.3
+   Compiling pulldown-cmark-to-cmark v22.0.1
+   Compiling prost-types v0.14.4
+   Compiling multimap v0.10.1
+   Compiling tonic-build v0.14.6
+   Compiling prost-build v0.14.4
+   Compiling tokio-stream v0.1.19
+   Compiling serde_derive_internals v0.30.0
+   Compiling protoc-bin-vendored-win32 v3.2.0
+   Compiling protoc-bin-vendored-linux-s390_64 v3.2.0
+   Compiling protoc-bin-vendored-macos-x86_64 v3.2.0
+   Compiling protoc-bin-vendored-macos-aarch_64 v3.2.0
+   Compiling protoc-bin-vendored-linux-aarch_64 v3.2.0
+   Compiling protoc-bin-vendored-linux-ppcle_64 v3.2.0
+   Compiling protoc-bin-vendored-linux-x86_32 v3.2.0
+   Compiling protoc-bin-vendored-linux-x86_64 v3.2.0
+   Compiling schemars_derive v1.2.2
+   Compiling protoc-bin-vendored v3.2.0
+   Compiling tonic-prost-build v0.14.6
+   Compiling hyper-timeout v0.5.2
+   Compiling chacha20 v0.10.2
+   Compiling dyn-clone v1.0.20
+   Compiling rmcp v3.2.0
+   Compiling kasumi-server v0.1.0 (/workspace/crates/kasumi-server)
+   Compiling tonic v0.14.6
+   Compiling schemars v1.2.2
+   Compiling jsonschema v0.52.1
+   Compiling rmcp-macros v3.2.0
+   Compiling simple_asn1 v0.6.4
+   Compiling lindera v5.3.0
+   Compiling sse-stream v0.2.6
+   Compiling lindera-analysis v5.3.0
+   Compiling pem v3.0.6
+   Compiling pastey v0.2.3
+   Compiling jsonwebtoken v9.3.1
+   Compiling lindera-tantivy v5.0.1
+   Compiling tonic-prost v0.14.6
+   Compiling pem v4.0.0
+   Compiling yasna v0.6.0
+   Compiling rustls-pemfile v2.2.0
+   Compiling kasumi-query v0.1.0 (/workspace/crates/kasumi-query)
+   Compiling kasumi-engine v0.1.0 (/workspace/crates/kasumi-engine)
+   Compiling rcgen v0.14.10
+   Compiling kasumi-bench v0.1.0 (/workspace/crates/kasumi-bench)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 40s
+     Running unittests src/lib.rs (target/linux-validation/debug/deps/kasumi_bench-2f3ea2a3f1dfb142)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/linux-validation/debug/deps/kasumi_bench-43467f28c01f8706)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/loopback.rs (target/linux-validation/debug/deps/kasumi_bench_loopback-f24ecfec5462ee5f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/network.rs (target/linux-validation/debug/deps/kasumi_bench_network-1742397793220a66)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/linux-validation/debug/deps/kasumi_engine-ca02c5cbd9cd3672)
+
+running 7 tests
+test admission::tests::retained_cursor_releases_operation_slot_but_keeps_bytes_until_last_owner ... ok
+test admission::tests::suspend_invalidates_old_measurement_and_slow_or_failed_probe_denies ... ok
+test admission::tests::pressure_cancels_queries_but_never_changes_write_work_and_uses_hysteresis ... ok
+test admission::tests::result_release_rechecks_pressure_after_suspend_even_for_completed_work ... ok
+test admission::tests::real_process_rss_and_physical_capacity_are_measured ... ok
+test admission::tests::cancelled_detached_worker_keeps_semaphore_and_reservation_until_exit ... ok
+test state::restore_budget_tests::restored_identity_metadata_is_validated_before_bootstrap_persistence ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/admission.rs (target/linux-validation/debug/deps/admission-b1025326857c9d5c)
+
+running 2 tests
+test pressure_rejects_new_proposals_and_queries_but_committed_raft_work_still_applies ... ok
+test explicit_local_bootstrap_reads_the_complete_committed_generation ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/contracts.rs (target/linux-validation/debug/deps/contracts-064b455af3c4a302)
+
+running 17 tests
+test durable_engine_worker ... ok
+test batch_failure_leaves_no_partial_document_or_index_effects ... ok
+test authorization_is_rechecked_before_idempotency_response ... ok
+test concurrent_cas_has_exactly_one_winner ... ok
+test audit_budget_blocks_effects_and_can_be_increased_without_losing_records ... ok
+test receipts_survive_snapshot_and_precede_changed_schema_and_cas ... ok
+test receipt_expiry_index_obeys_exact_boundary_and_rebuilds_from_snapshot ... ok
+test retirement_is_terminal_and_survives_snapshot_recovery ... ok
+test key_revocation_fences_and_evicts_resident_state ... ok
+test actual_raft_writes_queries_and_snapshot_pagination ... ok
+test tampered_snapshot_never_changes_current_generation ... ok
+test unique_index_swap_is_atomic_and_old_generation_remains_coherent ... ok
+test strict_empty_discovery_is_audited_and_failed_audit_persistence_blocks_results ... ok
+test shared_get_uses_the_same_audit_and_authorization_and_keeps_historical_values ... ok
+test strict_read_audit_is_committed_before_return_and_tied_to_data_revision ... ok
+test killed_process_recovers_acknowledged_documents_receipts_and_bootstrap_policy ... ok
+test logical_backup_restores_suspended_with_new_incarnation_and_increasing_revisions ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running tests/control.rs (target/linux-validation/debug/deps/control-625f5940918e5b6e)
+
+running 2 tests
+test placement_rejects_shared_domains_unknown_nodes_duplicate_identities_and_cleartext ... ok
+test control_updates_require_operator_authority_cas_and_survive_reopen ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests/replicated.rs (target/linux-validation/debug/deps/replicated-489496ab5e08a9f0)
+
+running 3 tests
+test deployment_modes_and_live_store_ownership_cannot_be_overridden ... ok
+test replicated_restore_has_identical_genesis_and_requires_quorum_audit_before_activation ... ok
+test replicated_service_preserves_batches_receipts_and_cursor_fences_across_partition_and_restart ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.89s
+
+     Running tests/response_release.rs (target/linux-validation/debug/deps/response_release-70b31cdbdbf93370)
+
+running 1 test
+test encoded_response_is_fenced_by_policy_changes_and_actual_key_denial ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/snapshot_budget.rs (target/linux-validation/debug/deps/snapshot_budget-d6d86490847a9d81)
+
+running 4 tests
+test oversize_effects_become_a_durable_rejected_receipt_without_partial_documents ... ok
+test recovery_and_limit_changes_cannot_admit_state_above_snapshot_format_or_tenant_budget ... ok
+test exact_incremental_accounting_covers_documents_receipts_expiry_schemas_policy_and_restore ... ok
+test full_audit_byte_budget_still_advances_rejections_and_can_be_raised ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running unittests examples/map_sharing.rs (target/linux-validation/debug/examples/map_sharing-02d5c3697878c55a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/linux-validation/debug/deps/kasumi_query-1e1b65e66f0f1b0b)
+
+running 32 tests
+test cancellation::tests::cancellation_during_sort_stops_comparisons ... ok
+test tests::average_is_half_even_at_requested_scale_including_negative_ties ... ok
+test cancellation::tests::sort_matches_reference_with_duplicates ... ok
+test tests::aggregate_validation_and_empty_collection_are_data_independent ... ok
+test tests::declared_indexes_and_explicit_scan_admission_are_enforced ... ok
+test tests::candidate_group_and_response_budgets_fail_closed ... ok
+test tests::engine_owns_pagination_and_query_does_not_truncate_snapshot ... ok
+test tests::decimal_sort_range_and_sum_preserve_more_than_f64_precision ... ok
+test tests::groups_distinguish_absent_and_null_and_skip_empty_numeric_inputs ... ok
+test tests::english_terms_stem_but_prefix_uses_surface_tokens_and_phrase_has_positions ... ok
+test tests::incremental_unique_indexes_allow_atomic_swaps_and_reject_conflicts ... ok
+test tests::cooperative_cancellation_stops_text_postings_and_term_expansion ... ok
+test tests::invalid_queries_fail_without_hits_and_json_recursion_is_bounded ... ok
+test tests::cooperative_cancellation_discards_partial_index_scan_sort_and_projection_results ... ok
+test tests::json_pointer_escapes_and_invalid_pointers ... ok
+test tests::missing_null_empty_array_and_projection_remain_distinct ... ok
+test tests::oversized_text_is_rejected_during_document_validation ... ok
+test tests::schema_202012_local_refs_and_exact_numeric_constraints ... ok
+test tests::schemas_never_resolve_remote_or_file_resources_or_rebase_fragments ... ok
+test tests::shared_document_representation_preserves_snapshot_bytes_and_historical_values ... ok
+test tests::fuzzy_distance_and_expansion_limits_are_enforced ... ok
+test tests::indexed_boolean_filters_match_independent_reference_evaluator ... ok
+test tests::text_planned_postings_are_bounded_even_when_intersection_has_no_hits ... ok
+test tests::japanese_lindera_terms_phrases_and_fuzzy_typos ... ok
+test tests::unique_indexes_are_compound_exact_and_sparse_only_for_missing ... ok
+test tests::text_generation_is_immutable_and_reader_is_ready_when_published ... ok
+test tests::validator_cache_does_not_retain_tenant_plaintext_after_generation_drop ... ok
+test tests::unicode_nfkc_and_case_normalization_and_ranked_results ... ok
+test tests::text_writer_rejects_stale_branches_without_damaging_published_reader ... ok
+test tests::unrelated_document_fields_reuse_text_reader_and_definition_change_rebuilds ... ok
+test tests::incremental_text_updates_reuse_index_and_preserve_every_old_snapshot ... ok
+test tests::incremental_postings_match_rebuild_and_share_unchanged_roots ... ok
+
+test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.99s
+
+     Running unittests src/lib.rs (target/linux-validation/debug/deps/kasumi_raft-f0c7d8714abb84ac)
+
+running 4 tests
+test storage::tests::invalid_backend_snapshot_never_replaces_durable_recoverable_state ... ok
+test storage::tests::snapshot_install_power_loss_at_every_storage_operation_keeps_whole_old_or_new_snapshot ... ok
+test storage::tests::eight_mib_command_uses_compact_log_record_and_replays_after_reopen ... ok
+test storage::tests::snapshots_larger_than_store_record_limit_are_chunked_and_recovered ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.70s
+
+     Running tests/cluster.rs (target/linux-validation/debug/deps/cluster-b248d55a94ee961e)
+
+running 7 tests
+test raft_crash_worker ... ok
+test fatal_snapshot_capture_blocks_even_local_generation_access ... ok
+test one_voter_acknowledgment_recovers_without_a_snapshot ... ok
+test acknowledged_one_voter_write_survives_sigkill_without_graceful_shutdown ... ok
+test oversized_replication_backlog_shrinks_and_catches_up_without_changing_membership ... ok
+test partition_rejects_minority_reads_and_writes_and_recovers_after_full_restart ... ok
+test snapshot_catches_up_partitioned_follower_and_replaces_a_voter ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.21s
+
+     Running tests/storage_conformance.rs (target/linux-validation/debug/deps/storage_conformance-e4c9b6ee43746896)
+
+running 5 tests
+test snapshot_buffer_caps_total_size_and_sparse_seeks ... ok
+test snapshot_survives_reopen_and_failed_apply_makes_replica_unavailable ... ok
+test log_vote_and_committed_cursor_survive_full_reopen ... ok
+test committed_log_replay_survives_every_append_and_commit_io_failure ... ok
+test openraft_storage_conformance_suite ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.75s
+
+     Running unittests src/lib.rs (target/linux-validation/debug/deps/kasumi_server-9d9cc83dff6e001d)
+
+running 25 tests
+test administration::tests::generation_paths_cannot_inherit_tenant_traversal ... ok
+test administration::tests::closed_commands_reject_path_and_tenant_overrides ... ok
+test api::tests::protected_resource_metadata_and_challenges_advertise_only_configured_issuer ... ok
+test api::tests::required_audit_failure_blocks_dispatch_and_preserves_authentication_denials ... ok
+test api::tests::current_mcp_discovery_and_tool_catalog_work_without_initialize ... ok
+test auth::tests::config_rejects_cleartext_credentials_and_symmetric_algorithms ... ok
+test auth::tests::identity_and_tenant_come_only_from_verified_access_token ... ok
+test auth::tests::missing_audit_sink_blocks_valid_tokens_and_cannot_be_reconfigured ... ok
+test auth::tests::rejects_wrong_audience_issuer_expiry_not_before_and_id_tokens ... ok
+test auth::tests::untrusted_signatures_and_unknown_keys_never_gain_access ... ok
+test api::tests::mcp_rejects_legacy_mismatched_metadata_bad_origins_and_unauthenticated_calls ... ok
+test api::tests::native_and_mcp_share_exact_data_receipts_query_and_authorization ... ok
+test api::tests::both_adapters_reject_wrong_identity_tenant_scope_and_admin_escalation ... ok
+test runtime::tests::admin_client_requires_https_server_pin_and_runtime_token_reference ... ok
+test runtime::tests::operator_example_is_valid_secret_free_and_rejects_inline_credentials ... ok
+test runtime::tests::private_key_file_permissions_are_checked_on_opened_file ... ok
+test runtime::tests::rejects_cleartext_credential_urls_ambient_variable_names_and_missing_administrators ... ok
+test runtime::tests::rejects_shared_wrapping_keys_reserved_tenants_and_ambiguous_listeners ... ok
+test runtime::tests::replication_is_explicit_three_voters_with_unique_pins_and_domains ... ok
+test runtime::tests::service_audit_survives_reopen_and_tenant_sealing_and_fails_closed_at_quota ... ok
+test api::tests::reserved_control_and_security_tenants_are_never_data_routes ... ok
+test api::tests::required_service_audits_are_durable_and_exclude_unverified_identity_and_payloads ... ok
+test runtime::lifecycle_tests::local_runtime_opens_real_transit_tls_publishes_control_serves_and_reopens_durable_state ... ok
+test runtime::lifecycle_tests::runtime_catches_up_spare_and_replaces_three_voters_through_admin_control ... ok
+test runtime::lifecycle_tests::three_runtime_nodes_replicate_with_control_quorum_over_audited_pinned_mtls ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.18s
+
+     Running unittests src/bin/kasumictl.rs (target/linux-validation/debug/deps/kasumictl-3121bf86c20c1178)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/kasumid.rs (target/linux-validation/debug/deps/kasumid-457026bb29dae917)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/cluster_transport.rs (target/linux-validation/debug/deps/cluster_transport-56d6667d12996730)
+
+running 2 tests
+test peer_requests_bind_certificate_source_candidate_target_and_group_and_limit_body ... ok
+test real_three_node_raft_replicates_over_pinned_mutual_tls_http ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+     Running tests/tls_listener.rs (target/linux-validation/debug/deps/tls_listener-00e7348c03f3ebef)
+
+running 4 tests
+test oauth_listener_allows_tls_without_client_cert_but_peer_pins_fail_before_http ... ok
+test mutual_tls_requires_trusted_client_and_rejects_tls12 ... ok
+test native_grpc_channel_uses_pinned_tls13_and_http2_with_no_plaintext_fallback ... ok
+test authentication_audit_failure_or_timeout_never_releases_http_requests ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running unittests src/lib.rs (target/linux-validation/debug/deps/kasumi_store-674deb291696986a)
+
+running 27 tests
+test backup::minio_live::actual_minio_tls_sigv4_encrypted_roundtrip_create_only_and_access_denial ... ignored, requires explicit KASUMI_MINIO_DOCKER_HOST, KASUMI_MINIO_DOCKER_CONFIG and KASUMI_MINIO_WORKDIR; official pinned image must be pre-pulled
+test backup::tests::destination_byte_limits_and_untrusted_format_are_rejected ... ok
+test keys::tests::transit_origin_path_and_wrapped_version_validation ... ok
+test backup::s3_tests::aws_published_signature_v4_get_object_vector ... ok
+test keys::tests::transit_rejects_missing_trust_tls12_redirects_malformed_and_oversized_responses ... ok
+test backup::s3_tests::s3_tls_round_trip_signed_session_token_create_only_and_bounded_download ... ok
+test backup::tests::removal_of_an_inactive_backup_key_dependency_breaks_authentication ... ok
+test backup::tests::historical_backup_keeps_original_key_dependencies_after_rewrap ... ok
+test backup::tests::encrypted_bundle_round_trip_filesystem_reopen_and_tamper_rejection ... ok
+test tests::a_late_success_cannot_undo_an_explicit_seal ... ok
+test keys::tests::transit_tls_generation_fresh_decrypt_rewrap_context_and_revocation ... ok
+test tests::a_fresh_probe_covers_every_retained_version_and_revocation_seals_warm_state ... ok
+test tests::atomic_batches_and_cross_namespace_isolation_survive_reopen ... ok
+test tests::delayed_probe_cannot_extend_a_lease_past_sixty_seconds_from_start ... ok
+test tests::different_tenants_do_not_share_a_slow_key_service_open_gate ... ok
+test tests::ciphertext_corruption_swapping_and_wrong_tenant_are_rejected ... ok
+test tests::expiry_during_fsync_reports_unknown_outcome_and_preserves_committed_batch ... ok
+test tests::expiry_during_key_catalog_fsync_does_not_acknowledge_rotation ... ok
+test tests::invalid_batch_does_not_apply_earlier_operations ... ok
+test tests::faulty_provider_rewrap_cannot_replace_data_keys_or_break_recovery ... ok
+test tests::sixty_second_suspend_aware_expiry_and_explicit_recovery ... ok
+test tests::rewrap_preserves_documents_after_retiring_old_wrapping_versions ... ok
+test tests::every_injected_commit_failure_recovers_whole_batch_or_previous_state ... ok
+test tests::names_keys_and_values_are_absent_from_disk_and_nonce_changes_on_overwrite ... ok
+test tests::wrapping_catalog_is_atomic_across_every_injected_commit_failure ... ok
+test tests::expiry_watchdog_discards_keys_and_notifies_without_an_incoming_request ... ok
+test keys::tests::transit_timeout_is_bounded_and_seals_existing_plaintext ... ok
+
+test result: ok. 26 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 5.03s
+
+     Running tests/openbao_live.rs (target/linux-validation/debug/deps/openbao_live-c81513c259c0dae3)
+
+running 1 test
+test actual_openbao_transit_roundtrip_rotation_backups_and_warm_revocation ... ignored, requires KASUMI_OPENBAO_BIN pointing to a verified local OpenBao release
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/linux-validation/debug/deps/kasumi_types-e3e1d76dfdf3cf07)
+
+running 2 tests
+test tests::exact_number_wire_round_trip ... ok
+test tests::remote_mutation_fields_are_closed ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: 'cargo-clippy' is not installed for the toolchain '1.94.1-aarch64-unknown-linux-gnu'.
+help: run `rustup component add clippy` to install it

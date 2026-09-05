@@ -1,0 +1,55 @@
+starting mode=text tenants=1 documents=1000000 operations=1000
+checkpoint mode=text tenants=1 stage=opening
+checkpoint mode=text tenants=1 stage=collection_setup
+loaded 100 batches (text, tenant 1)
+loaded 200 batches (text, tenant 1)
+loaded 300 batches (text, tenant 1)
+loaded 400 batches (text, tenant 1)
+loaded 500 batches (text, tenant 1)
+loaded 600 batches (text, tenant 1)
+loaded 700 batches (text, tenant 1)
+loaded 800 batches (text, tenant 1)
+loaded 900 batches (text, tenant 1)
+loaded 1000 batches (text, tenant 1)
+loaded 1100 batches (text, tenant 1)
+loaded 1200 batches (text, tenant 1)
+loaded 1300 batches (text, tenant 1)
+loaded 1400 batches (text, tenant 1)
+loaded 1500 batches (text, tenant 1)
+loaded 1600 batches (text, tenant 1)
+loaded 1700 batches (text, tenant 1)
+loaded 1800 batches (text, tenant 1)
+loaded 1900 batches (text, tenant 1)
+loaded 2000 batches (text, tenant 1)
+loaded 2100 batches (text, tenant 1)
+loaded 2200 batches (text, tenant 1)
+loaded 2300 batches (text, tenant 1)
+loaded 2400 batches (text, tenant 1)
+loaded 2500 batches (text, tenant 1)
+loaded 2600 batches (text, tenant 1)
+loaded 2700 batches (text, tenant 1)
+loaded 2800 batches (text, tenant 1)
+loaded 2900 batches (text, tenant 1)
+loaded 3000 batches (text, tenant 1)
+loaded 3100 batches (text, tenant 1)
+loaded 3200 batches (text, tenant 1)
+loaded 3300 batches (text, tenant 1)
+loaded 3400 batches (text, tenant 1)
+loaded 3500 batches (text, tenant 1)
+loaded 3600 batches (text, tenant 1)
+loaded 3700 batches (text, tenant 1)
+loaded 3800 batches (text, tenant 1)
+loaded 3900 batches (text, tenant 1)
+loaded tenant 1/1 (text)
+checkpoint mode=text tenants=1 stage=embedded_authorized_owned_point_get
+checkpoint mode=text tenants=1 stage=measured_workload workload=embedded_authorized_owned_point_get success=1000 failed=0 unattempted=0
+checkpoint mode=text tenants=1 stage=embedded_authorized_shared_point_get workload=embedded_authorized_owned_point_get success=1000 failed=0 unattempted=0
+checkpoint mode=text tenants=1 stage=measured_workload workload=embedded_authorized_shared_point_get success=1000 failed=0 unattempted=0
+checkpoint mode=text tenants=1 stage=durable_single_document_write workload=embedded_authorized_shared_point_get success=1000 failed=0 unattempted=0
+checkpoint mode=text tenants=1 stage=measured_workload workload=durable_single_document_write success=1000 failed=0 unattempted=0
+checkpoint mode=text tenants=1 stage=read_heavy_90_read_10_write workload=durable_single_document_write success=1000 failed=0 unattempted=0
+checkpoint mode=text tenants=1 stage=measured_workload workload=read_heavy_90_read_10_write success=1000 failed=0 unattempted=0
+checkpoint mode=text tenants=1 stage=balanced_50_read_50_write workload=read_heavy_90_read_10_write success=1000 failed=0 unattempted=0
+checkpoint mode=text tenants=1 stage=measured_workload workload=balanced_50_read_50_write success=1000 failed=0 unattempted=0
+checkpoint mode=text tenants=1 stage=measured_query workload=structured_indexed_equality success=1000 failed=0 unattempted=0
+checkpoint mode=text tenants=1 stage=measured_text_query workload=text_english_Phrase_complete_pages success=1000 failed=0 unattempted=0

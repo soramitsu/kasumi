@@ -1,0 +1,33 @@
+{
+  "format": 1,
+  "generated_at_utc": "2026-09-05T08:59:37.930748+00:00",
+  "command": [
+    "/opt/homebrew/opt/python@3.14/bin/python3.14",
+    "/Users/takemiyamakoto/dev/kasumi/scripts/report_benchmark_capacity.py",
+    "/Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-04"
+  ],
+  "exit_code": 0,
+  "report_script_sha256": "460ffa71262bb0847bd55fa594a94b34d37362e01051014b2f090aa1620d4760",
+  "raw_and_run_files_unchanged": true,
+  "retained_file_sha256": {
+    "replicated-1.json": "98256228b53794029c56cabf6cb059cab5e13855d000768d4eb2230f2530e539",
+    "RUN_NOTES.md": "b2b707b473065837c250a940fc610b5e354ff8e40547e2653dc3192a90a93865",
+    "execution-wrapper.py": "b8a3fe3409e981e93c20eefa3fe672ed47046ece4145f2f64ef671108a4837da",
+    "replicated-1.log": "c448cb59a4dc9139db98792e3909a90e9c1f78d6bb61b8ddd1bb3aa96b6b7b1b",
+    "host-samples.jsonl": "38830404549897773590202fabebcea54acda80a4349f7485ce45715b3d70c2a",
+    "text-1.log": "41871cebf1c67bb8e8d5dd0ca342c757f977ea5e363b2da46256a87b3c818d57",
+    "raw-1.log": "bd9051c97b211746c76f85a77c3d9eb094813a41dfc46d430a099d560dc46013",
+    "matrix.json": "c00b52f14cac5bc68005ee3001b2732375703c93903745a02734ed82ca1e441c",
+    "driver.log": "f402549d58a7677c3286b6aa1d5cc311c8d520ac2e712be73683ca0f5f232ec5",
+    "local-1.json": "534bfabfa108d266b267eab5884483a6d41ca177942ce8882a16fdbd256dfc9d",
+    "raw-1.json": "c94dfd12482f9d4b67bea833ec2b59082f7509be9e8fe4fb6d1f7480f22453a0",
+    "execution.json": "5b920a9e42dc34f3c445c63bb9b7305068f8b397d1fe966a039ef93a43f03b82",
+    "local-1.log": "745a3295054c4e0f2a7f57b46a966e52b6c3c9fa232b84016366fe60cb97966b",
+    "text-1.json": "d41be25765df07430ac485691b15778a1426787ddc6f2a4c9286badaa90ab9fa"
+  },
+  "generated_files": {
+    "capacity.json": "2751d3cdba61b26e9330c90292e1cfe18416582f5a2c4d7db234560496dc5a29",
+    "capacity.md": "0a5bbd0f6cf7d85402d84a351b99c8c4a9786b252fc39d19691d474b4e0952dc"
+  },
+  "scope": "Derived partial report only. Raw workload, execution, matrix and host observations are unchanged; missing lifecycle measurements remain null."
+}

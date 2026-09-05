@@ -1,0 +1,211 @@
+--- a/crates/kasumi-server/src/tls.rs
++++ b/crates/kasumi-server/src/tls.rs
+@@ -333,7 +333,16 @@
+     audit: Arc<dyn TlsHandshakeAudit>,
+     shutdown: watch::Receiver<bool>,
+ ) -> Result<()> {
+-    serve_tls_source(listener, config, router, limits, audit, shutdown).await
++    serve_tls_source(
++        listener,
++        config,
++        router,
++        limits,
++        audit,
++        shutdown,
++        |socket| socket.set_nodelay(true),
++    )
++    .await
+ }
+ 
+ trait ConnectionSource: Send {
+@@ -355,6 +364,11 @@
+     limits: ListenerLimits,
+     audit: Arc<dyn TlsHandshakeAudit>,
+     mut shutdown: watch::Receiver<bool>,
++    configure_socket: impl Fn(&tokio::net::TcpStream) -> std::io::Result<()>
++    + Clone
++    + Send
++    + Sync
++    + 'static,
+ ) -> Result<()> {
+     ensure!(
+         limits.max_connections > 0
+@@ -382,17 +396,22 @@
+                     Err(error) => { outcome = Err(error.into()); break; },
+                 };
+                 let Ok(permit) = connections.clone().try_acquire_owned() else { drop(socket); continue; };
+-                if let Err(error) = socket.set_nodelay(true) {
+-                    outcome = Err(error.into());
+-                    break;
+-                }
+                 let acceptor = acceptor.clone();
++                let configure_socket = configure_socket.clone();
+                 let router = router.clone();
+                 let limits = limits.clone();
+                 let audit = audit.clone();
+                 let mut shutdown = connection_shutdown.clone();
+                 tasks.spawn(async move {
+                     let _permit = permit;
++                    // A peer can reset while queued before the listener starts.
++                    // On macOS even TCP_NODELAY then returns EINVAL. This closes
++                    // and audits that connection; it must not stop the listener.
++                    if configure_socket(&socket).is_err() {
++                        drop(socket);
++                        let _ = audit_handshake(audit.as_ref(), address, None, TlsHandshakeOutcome::Rejected, limits.handshake_timeout).await;
++                        return;
++                    }
+                     let stream = match tokio::time::timeout(limits.handshake_timeout, acceptor.accept(socket)).await {
+                         Ok(Ok(stream)) => stream,
+                         outcome => {
+@@ -531,6 +550,7 @@
+             ListenerLimits::default(),
+             Arc::new(Audit),
+             shutdown,
++            |socket| socket.set_nodelay(true),
+         ));
+         let client = reqwest::Client::builder()
+             .no_proxy()
+@@ -584,4 +604,142 @@
+         assert!(weak.upgrade().is_none());
+         drop(NodeStore::open(&path).unwrap());
+     }
+-}
++
++    struct RecordingAudit(tokio::sync::mpsc::UnboundedSender<TlsHandshakeEvent>);
++    #[async_trait]
++    impl TlsHandshakeAudit for RecordingAudit {
++        async fn record(&self, event: &TlsHandshakeEvent) -> Result<()> {
++            self.0.send(event.clone()).unwrap();
++            Ok(())
++        }
++    }
++
++    struct QueuedSource {
++        listener: TcpListener,
++        wait_for_first_reset: bool,
++    }
++    impl ConnectionSource for QueuedSource {
++        async fn accept(
++            &mut self,
++        ) -> std::io::Result<(tokio::net::TcpStream, std::net::SocketAddr)> {
++            let (socket, address) = self.listener.accept().await?;
++            if std::mem::take(&mut self.wait_for_first_reset) {
++                // Observe the kernel's reset state before socket configuration,
++                // without a sleep or timing assumption about packet delivery.
++                loop {
++                    socket.readable().await?;
++                    match socket.try_read(&mut [0]) {
++                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
++                        Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => break,
++                        Ok(0) => break,
++                        outcome => panic!("queued client did not reset: {outcome:?}"),
++                    }
++                }
++            }
++            Ok((socket, address))
++        }
++    }
++
++    async fn rejected_setup_keeps_listener_available(reset: bool) {
++        use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
++
++        let rcgen::CertifiedKey { cert, signing_key } =
++            rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
++        let identity = TlsIdentity::from_pem(
++            cert.pem().as_bytes(),
++            signing_key.serialize_pem().as_bytes(),
++        )
++        .unwrap();
++        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
++        let address = listener.local_addr().unwrap();
++        let queued = tokio::net::TcpStream::connect(address).await.unwrap();
++        let peer = queued.local_addr().unwrap();
++        let queued = if reset {
++            // Send RST while the connection is queued and no listener task is
++            // accepting, as happens when startup outlasts a client's deadline.
++            #[allow(deprecated)]
++            queued.set_linger(Some(Duration::ZERO)).unwrap();
++            drop(queued);
++            None
++        } else {
++            Some(queued)
++        };
++        let (events, mut records) = tokio::sync::mpsc::unbounded_channel();
++        let (stop, shutdown) = watch::channel(false);
++        let first_setup = Arc::new(AtomicBool::new(true));
++        let first_errno = Arc::new(AtomicI32::new(0));
++        let observed_errno = first_errno.clone();
++        let server = tokio::spawn(serve_tls_source(
++            QueuedSource {
++                listener,
++                wait_for_first_reset: reset,
++            },
++            server_config(&identity, ClientAuthentication::OAuth).unwrap(),
++            Router::new().route("/request", post(|| async { "listener remains available" })),
++            ListenerLimits::default(),
++            Arc::new(RecordingAudit(events)),
++            shutdown,
++            move |socket| {
++                let first = first_setup.swap(false, Ordering::SeqCst);
++                let result = if first && !reset {
++                    Err(std::io::Error::from(std::io::ErrorKind::InvalidInput))
++                } else {
++                    socket.set_nodelay(true)
++                };
++                if first && let Err(error) = &result {
++                    observed_errno.store(error.raw_os_error().unwrap_or(-1), Ordering::SeqCst);
++                }
++                result
++            },
++        ));
++        let denied = tokio::time::timeout(Duration::from_secs(10), records.recv())
++            .await
++            .unwrap()
++            .unwrap();
++        assert_eq!(denied.peer_address, peer);
++        assert_eq!(denied.outcome, TlsHandshakeOutcome::Rejected);
++        assert_eq!(denied.certificate_pin, None);
++        assert!(!server.is_finished());
++        if !reset {
++            assert_eq!(first_errno.load(Ordering::SeqCst), -1);
++        }
++        #[cfg(target_os = "macos")]
++        if reset {
++            assert_eq!(first_errno.load(Ordering::SeqCst), 22);
++        }
++        drop(queued);
++        let client = reqwest::Client::builder()
++            .no_proxy()
++            .http1_only()
++            .add_root_certificate(reqwest::Certificate::from_pem(cert.pem().as_bytes()).unwrap())
++            .timeout(Duration::from_secs(10))
++            .build()
++            .unwrap();
++        let response = client
++            .post(format!("https://localhost:{}/request", address.port()))
++            .send()
++            .await
++            .unwrap();
++        assert_eq!(response.status(), reqwest::StatusCode::OK);
++        assert_eq!(response.text().await.unwrap(), "listener remains available");
++        let accepted = records.recv().await.unwrap();
++        assert_eq!(accepted.outcome, TlsHandshakeOutcome::Accepted);
++        assert!(!server.is_finished());
++        stop.send_replace(true);
++        tokio::time::timeout(Duration::from_secs(10), server)
++            .await
++            .unwrap()
++            .unwrap()
++            .unwrap();
++    }
++
++    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++    async fn socket_setup_failure_is_audited_and_does_not_stop_listener() {
++        rejected_setup_keeps_listener_available(false).await;
++    }
++
++    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++    async fn reset_queued_before_listener_start_is_audited_and_next_tls_request_succeeds() {
++        rejected_setup_keeps_listener_available(true).await;
++    }
++}

@@ -1,0 +1,30 @@
+{
+  "status": "passed",
+  "wrapper_pid": 33218,
+  "argv": [
+    "cargo",
+    "build",
+    "--locked",
+    "--release",
+    "-p",
+    "kasumi-server",
+    "-p",
+    "kasumi-bench",
+    "--features",
+    "kasumi-bench/loopback",
+    "--bins"
+  ],
+  "source_sha256_before": "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2",
+  "started_unix_seconds": 1788602777.661234,
+  "log": "release-build.log",
+  "exit_code": 0,
+  "finished_unix_seconds": 1788603012.876907,
+  "source_sha256_after": "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2",
+  "log_sha256": "1a910dffc2f80f0e98cdd7770151cd16c0e6507c1b0e62e88848abfdd654fda3",
+  "executable_sha256": {
+    "kasumid": "5ecf74b71ffaa6bd1897927ed0dff7f0f73a5863757044b595326cc1f351bf16",
+    "kasumi-bench": "a1f93ade86ddfe7096bb0afccc9ae72b4f196254657595d4f6409525f0be52b7",
+    "kasumi-bench-loopback": "30cd9438a07549b296d86a101d1efbf64a536449107dec9b8f59946c4733adb2",
+    "kasumi-bench-network": "f1b7f8493eff2b03170854237845fa0bf026fff3d0f88dcb9dbdcf79284f273c"
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "cases": [
+    {
+      "name": "dedicated-native-test-service",
+      "protocol": "grpc",
+      "endpoint": "https://kasumi.example:9444",
+      "ca_pem": "certs/ca.pem",
+      "client_certificate_pem": "certs/client.pem",
+      "client_private_key_pem": "certs/client-key.pem",
+      "server_certificate_sha256": "REPLACE_WITH_64_HEX_DIGIT_LEAF_CERTIFICATE_SHA256",
+      "operations": 10000,
+      "targets": [{"token_env":"KASUMI_BENCH_ACCESS_TOKEN","collection":"benchmarks","id":"dedicated-document"}]
+    },
+    {
+      "name": "dedicated-mcp-test-service",
+      "protocol": "mcp",
+      "endpoint": "https://kasumi.example:9443/mcp",
+      "ca_pem": "certs/ca.pem",
+      "operations": 10000,
+      "targets": [{"token_env":"KASUMI_BENCH_ACCESS_TOKEN","collection":"benchmarks","id":"dedicated-document"}]
+    }
+  ]
+}

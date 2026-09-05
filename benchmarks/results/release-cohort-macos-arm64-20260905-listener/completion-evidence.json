@@ -1,0 +1,71 @@
+{
+  "format": 1,
+  "status": "software_acceptance_complete",
+  "checked_unix_seconds": 1788614913.204031,
+  "source_sha256": "28aeb80168d3ab02a0eec7bf2a0163a7cb99dbfd74adf596e849de17e1fa3c1d",
+  "macos_workspace": {
+    "passed": 188,
+    "failed": 0,
+    "ignored": 2
+  },
+  "linux_workspace": {
+    "passed": 188,
+    "failed": 0,
+    "ignored_opt_in": 2
+  },
+  "actual_openbao_tests": {
+    "macos": 1,
+    "linux": 1
+  },
+  "actual_minio_tests": {
+    "macos_client_linux_service": 1
+  },
+  "strict_clippy_format_python_checks": "passed on both platforms; six Python checks each",
+  "selected_cases": 15,
+  "measurements": {
+    "workloads": 99,
+    "successful_operations": 99000,
+    "failed_operations": 0,
+    "unattempted_operations": 0
+  },
+  "qualified_capacity_footprints": 15,
+  "tenant_overhead_estimates": 18,
+  "capacity_issues": [],
+  "requirement_rows_reviewed": 39,
+  "local_document_links_checked": 458,
+  "missing_document_links": [],
+  "sampled_benchmark_processes_exited": 15,
+  "active_sampled_benchmark_processes": [],
+  "detached_wrapper_and_driver_exited": true,
+  "report_sha256": "d759eafbfb9e0a74a5f48068af20d3c69405eb81af4775acb4c357dbc37f9f81",
+  "cohort_sha256": "8069be242bb1cda49c39e5236e90c7ca42c0a3c9063c84f19a50353fc2e17833",
+  "capacity_sha256": "dce52902a81d84759214a723fbe2c4ba9be564c354c058e56af57ec6bf97db0b",
+  "documents": {
+    "README.md": "4555cfa016296833e0277e5b2b4ece38d0faeb820e6b2921b8004dbaf8d802ae",
+    "docs/validation-macos.md": "f84aa7176863eda2e9b7deeffa2e195b872f2d8cb8cba3c25e4eccae5ee091e2",
+    "docs/IMPLEMENTATION.md": "ab2cf2caaa1f2afe7d2f21fd7d5409c49afbec694170fac20faf6651c08707b4",
+    "docs/operations.md": "3531fdf319e70a1f4efdb342ca4072f3fb81a81f4a9064c0bb399cc91841052e",
+    "docs/api.md": "e8de82de06769eee928473e69125609a4485221974a787e561e2761de5cfe677",
+    "docs/shutdown-investigation.md": "ba6e32e7dbf693da298f51e690dabbd1800aa9d4015ed5ba36f78976d8740086",
+    "docs/admission.md": "133eb7b5bb21ca83ace5daaae77ceb097c6a070824c3d17b38e8996a9068397a",
+    "docs/acceptance-review.md": "112f84171204bc553b33e872a0da5b468e749176eb32e6d55140a1605d3be03b",
+    "docs/final-audit-storage-security.md": "f5c4a9c5b87e6a9a9672bb46fdf653eec37a267f75be62c4e173379912e7b5d4",
+    "docs/embedded-audit-investigation.md": "f7a3fa63ca6691f668c6d005822e4df024a323e47a7e867685e69ea4d02139ce",
+    "docs/administration.md": "8baed531a29d467bd9d82c3b1447027ce47a47ebd29f19d7f5d5213dedde881b",
+    "docs/release-checklist.md": "7f4176822f7ae896312198f1e5274f8e3fdb856d221bb260064dfbe6b55f1919",
+    "docs/COMPATIBILITY.md": "f8281a11f3f67d27ba7e18cf802231d134c8796aba529ee537422bf7295b681d",
+    "docs/read-barrier-investigation.md": "530d42d00becb830f8b84cfdcfb9f0d9990a3d4db3fad119628923cfd1639706",
+    "docs/final-audit-queries-interfaces.md": "bd6d198626a6e70f3235032c769482218465e031496bbf77d1567655ff9d3712",
+    "docs/listener-startup-investigation.md": "8d5fef8a80bc48e46aa1ef6fccedb2b026f61a61c653632e916418b47ee420da",
+    "docs/validation-linux.md": "3e9faa5ee4a0a21a34fc1c95c8aedb988dea0777906a48d1a58711363c05d8d7",
+    "benchmarks/README.md": "2da23e72e7fd32ecfa18b563d9e93ec819e5f4ba64b0a017272740d5f9b26c07",
+    "benchmarks/RESULTS.md": "d759eafbfb9e0a74a5f48068af20d3c69405eb81af4775acb4c357dbc37f9f81",
+    "benchmarks/CAPACITY.md": "6d868a5214fcbf4b88a4afd6526df34626ddb8faac68a3b3564a00cce7c33850",
+    "benchmarks/results/release-cohort-macos-arm64-20260905-listener/tooling/COHORT-RENDERING.md": "6af1020fc800fcee704a071577bd6bb282d36585abe177188f94808011152c99"
+  },
+  "limits": [
+    "Shared macOS host; one selected sequential observation per workload, 1000 samples.",
+    "Three replicated voters are same-host fixtures; production hardware flush honesty and physical failure domains remain deployment assumptions.",
+    "No Redis speed ratio, production deployment or launch SLA is claimed."
+  ]
+}

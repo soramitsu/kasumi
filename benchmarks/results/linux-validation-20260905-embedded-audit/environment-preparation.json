@@ -1,0 +1,30 @@
+{
+  "status": "ready_waiting_for_source_freeze",
+  "profile": "kasumi-validation",
+  "argv": [
+    "colima",
+    "start",
+    "--profile",
+    "kasumi-validation"
+  ],
+  "pid": 24923,
+  "process_group": 24923,
+  "started_unix_seconds": 1788602048.964864,
+  "gate_started": false,
+  "ready_unix_seconds": 1788602088.349239,
+  "rust_image": "sha256:67b357ce730a064aab665277d0dfaece94ab2ca0407ba4fe818b9f2d7fb40861",
+  "minio_repo_digests": [
+    "minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e"
+  ],
+  "docker_host": {
+    "ServerVersion": "29.5.2",
+    "KernelVersion": "6.8.0-117-generic",
+    "OperatingSystem": "Ubuntu 24.04.4 LTS",
+    "Architecture": "aarch64",
+    "NCPU": 6,
+    "MemTotal": 16733048832
+  },
+  "running_containers": [],
+  "warm_target_exists": true,
+  "registry_mount_exists": true
+}

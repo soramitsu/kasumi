@@ -1,0 +1,17 @@
+{
+  "format": 1,
+  "purpose": "portable reporting tools and final reproduction instructions",
+  "files": {
+    "cohort-renderer-portability.json": "a9a703833a11533c10337405ad90f7b8bd3eabf242aa3179a9d38b44772684d6",
+    "cohort-renderer-tests-portable.log": "123a27e5e56ce0d5cb0e362486ff9aaa02d28672d02c4e4ef4d8d57b21fdee4b",
+    "render_release_report.py": "f2b6a77fa7f5c41c3324199389ecc1047ba7f17389da470ae60eba1867794fa1",
+    "cohort-archive_actual_terminal_guard.log": "6e95469d1655e79d7eb64bb9778715374d3a5b55969f43ec698d695f8c63eb5a",
+    "cohort-archive_unit_tests.log": "dfd038bdc33a71ff7b573f846b3a1d1ad2aea063098ce53aaaf0b505e4f7d09f",
+    "COHORT-RENDERING.md": "6af1020fc800fcee704a071577bd6bb282d36585abe177188f94808011152c99",
+    "cohort-archive_actual_reuse.log": "002fdbc9e0890945e61d7fb1917dc038ee13d14c8e86023c244f6aa46de32f84",
+    "release_cohort.py": "fd80a5823c43bdd68f13b8252361cc957bbca65c2e5836e6bdcb33aef9317f5c",
+    "test_release_cohort.py": "c6fd9dc193f54809d14810101af1ca19160f6219bea8a6fbc80a6946a24e99a3",
+    "cohort-renderer-readiness-portable.json": "7cbe32a4662728742b27dac0dbeeeb6ca1de04455b6ec7f00d07d3620bceb3a8",
+    "render_completed_release_report.py": "e0376d830ff037c9ea6b8c7b36d409961ccbd18684e631c4232886922d32b8c2"
+  }
+}

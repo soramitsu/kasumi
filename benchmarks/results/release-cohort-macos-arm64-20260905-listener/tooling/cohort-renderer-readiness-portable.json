@@ -1,0 +1,27 @@
+{
+  "format": 1,
+  "purpose": "Portable cohort helper readiness; no final results published",
+  "observed_unix_seconds": 1788612707.2907531,
+  "source_sha256_observed": "28aeb80168d3ab02a0eec7bf2a0163a7cb99dbfd74adf596e849de17e1fa3c1d",
+  "prior_readiness": "target/cohort-renderer-pre-portable/cohort-renderer-readiness.json",
+  "portable_checks": {
+    "path": "target/cohort-renderer-portability.json",
+    "sha256": "a9a703833a11533c10337405ad90f7b8bd3eabf242aa3179a9d38b44772684d6"
+  },
+  "staged_tooling": "target/cohort-report-tooling",
+  "staged_sha256": {
+    "release_cohort.py": "fd80a5823c43bdd68f13b8252361cc957bbca65c2e5836e6bdcb33aef9317f5c",
+    "render_release_report.py": "f7c5722a56a6f33363b8ceed8c9972e0f88aa4b770c18228cad0463446caf0b9",
+    "render_completed_release_report.py": "e0376d830ff037c9ea6b8c7b36d409961ccbd18684e631c4232886922d32b8c2",
+    "test_release_cohort.py": "c6fd9dc193f54809d14810101af1ca19160f6219bea8a6fbc80a6946a24e99a3",
+    "COHORT-RENDERING.md": "d930f4981a0c0495b8d198223458a814f214e6e008fad4766039f9d55ef40e79"
+  },
+  "tests": {
+    "target_passed": 8,
+    "archive_passed": 8,
+    "failed": 0
+  },
+  "actual_reuse_check": "passed from temporary archive with cwd /tmp",
+  "actual_terminal_check": "blocked because supplement is still running",
+  "published_results": false
+}

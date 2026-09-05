@@ -1,0 +1,655 @@
+{
+  "format": 1,
+  "created_unix_ms": 1788562479619,
+  "options": {
+    "documents": 100,
+    "tenants": [
+      1,
+      3
+    ],
+    "operations": 32,
+    "modes": [
+      "raw",
+      "local",
+      "replicated",
+      "text"
+    ],
+    "output": "benchmarks/results/smoke-macos-debug.json",
+    "work_parent": null
+  },
+  "os": "macos",
+  "architecture": "aarch64",
+  "build_profile": "debug",
+  "rustc": "rustc 1.94.1 (e408947bf 2026-03-25)",
+  "source_sha256": "d955b68935b92cf0564d4495961b667298180c4cf64a2dc4026a782d6c58f8d2",
+  "guarantees": [
+    "Raw lookup, authorized resident reads, and durable writes are reported separately; no 50x comparison is inferred.",
+    "All datasets are deterministic and total approximately 1 KiB of exact JSON per document across all tenants.",
+    "Latency samples include each API operation; throughput additionally includes driver identity, ID preparation and leader selection."
+  ],
+  "not_measured": [
+    "Authenticated gRPC/MCP wire latency (use a separately configured TLS endpoint benchmark)",
+    "Physically distributed quorum network/disk/failure-domain behavior",
+    "Live OpenBao/Vault request latency and production Linux behavior when this report is run on macOS"
+  ],
+  "cases": [
+    {
+      "mode": "raw",
+      "tenants": 1,
+      "documents": 100,
+      "replicas": 1,
+      "payload_bytes": 102400,
+      "open_seconds": 0.000325375,
+      "empty_rss_bytes": 11927552,
+      "load_seconds": 0.005615041,
+      "resident_rss_bytes": 12992512,
+      "peak_rss_bytes": 12992512,
+      "disk_bytes": 0,
+      "recovery_seconds": null,
+      "measurements": [
+        {
+          "name": "raw_hashmap_borrowed_lookup",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 1.0375e-05,
+            "throughput_ops_per_second": 3084337.3493975904,
+            "p50_microseconds": 0.25,
+            "p99_microseconds": 0.958,
+            "max_microseconds": 0.958
+          }
+        }
+      ],
+      "notes": [
+        "Borrowed map lookup only: no authentication, cloning, schema checks, consistency barrier, indexing, or durability. Timer overhead is included."
+      ]
+    },
+    {
+      "mode": "local",
+      "tenants": 1,
+      "documents": 100,
+      "replicas": 1,
+      "payload_bytes": 102400,
+      "open_seconds": 0.233516333,
+      "empty_rss_bytes": 22167552,
+      "load_seconds": 0.133311917,
+      "resident_rss_bytes": 29278208,
+      "peak_rss_bytes": 30146560,
+      "disk_bytes": 897024,
+      "recovery_seconds": 0.125261625,
+      "measurements": [
+        {
+          "name": "embedded_authorized_point_get",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 0.000778584,
+            "throughput_ops_per_second": 41100.253794067175,
+            "p50_microseconds": 16.125,
+            "p99_microseconds": 83.958,
+            "max_microseconds": 83.958
+          }
+        },
+        {
+          "name": "durable_single_document_write",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 0.902596458,
+            "throughput_ops_per_second": 35.45327451307149,
+            "p50_microseconds": 27149.542,
+            "p99_microseconds": 37864.291,
+            "max_microseconds": 37864.291
+          }
+        },
+        {
+          "name": "read_heavy_90_read_10_write",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 0.087781167,
+            "throughput_ops_per_second": 364.5428865168767,
+            "p50_microseconds": 18.375,
+            "p99_microseconds": 37299.542,
+            "max_microseconds": 37299.542
+          }
+        },
+        {
+          "name": "balanced_50_read_50_write",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 0.433039042,
+            "throughput_ops_per_second": 73.8963393513142,
+            "p50_microseconds": 39.291,
+            "p99_microseconds": 34530.916,
+            "max_microseconds": 34530.916
+          }
+        },
+        {
+          "name": "structured_indexed_equality",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 0.002305333,
+            "throughput_ops_per_second": 13880.85799318363,
+            "p50_microseconds": 62.584,
+            "p99_microseconds": 147.667,
+            "max_microseconds": 147.667
+          }
+        }
+      ],
+      "notes": [
+        "Actual Database API: tenant RBAC, read barrier, schema validation, persistent indexes, encrypted redb immediate two-phase durability, and mutation audit/receipt retention are active.",
+        "Each initial load batch has at most 256 documents; measured writes contain one document.",
+        "One real OpenRaft voter; no network protocol overhead.",
+        "Test-only authenticated key wrapping excludes Transit network latency. No successful-read strict audit; mutation audits remain enabled.",
+        "Recovery measures clean full process-state closure/reopen plus one verified point read per tenant; crash safety is validated separately."
+      ]
+    },
+    {
+      "mode": "replicated",
+      "tenants": 1,
+      "documents": 100,
+      "replicas": 3,
+      "payload_bytes": 102400,
+      "open_seconds": 0.497451125,
+      "empty_rss_bytes": 31342592,
+      "load_seconds": 0.481434875,
+      "resident_rss_bytes": 34062336,
+      "peak_rss_bytes": 35602432,
+      "disk_bytes": 2244608,
+      "recovery_seconds": 0.650029916,
+      "measurements": [
+        {
+          "name": "embedded_authorized_point_get",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 0.0022295,
+            "throughput_ops_per_second": 14352.993944830678,
+            "p50_microseconds": 56.417,
+            "p99_microseconds": 190.041,
+            "max_microseconds": 190.041
+          }
+        },
+        {
+          "name": "durable_single_document_write",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 2.904883708,
+            "throughput_ops_per_second": 11.015931519693043,
+            "p50_microseconds": 77249.958,
+            "p99_microseconds": 483377.083,
+            "max_microseconds": 483377.083
+          }
+        },
+        {
+          "name": "read_heavy_90_read_10_write",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 0.52452625,
+            "throughput_ops_per_second": 61.00743289778157,
+            "p50_microseconds": 94.958,
+            "p99_microseconds": 237638.792,
+            "max_microseconds": 237638.792
+          }
+        },
+        {
+          "name": "balanced_50_read_50_write",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 1.4862904590000001,
+            "throughput_ops_per_second": 21.530111968511264,
+            "p50_microseconds": 7954.208,
+            "p99_microseconds": 166187.792,
+            "max_microseconds": 166187.792
+          }
+        },
+        {
+          "name": "structured_indexed_equality",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 0.009848083,
+            "throughput_ops_per_second": 3249.363353253623,
+            "p50_microseconds": 149.958,
+            "p99_microseconds": 4137.583,
+            "max_microseconds": 4137.583
+          }
+        }
+      ],
+      "notes": [
+        "Actual Database API: tenant RBAC, read barrier, schema validation, persistent indexes, encrypted redb immediate two-phase durability, and mutation audit/receipt retention are active.",
+        "Each initial load batch has at most 256 documents; measured writes contain one document.",
+        "Three real OpenRaft voters use separate redb files in one process; this measures local quorum persistence, not independent physical failure domains, TLS or network latency.",
+        "Test-only authenticated key wrapping excludes Transit network latency. No successful-read strict audit; mutation audits remain enabled.",
+        "Recovery measures clean full process-state closure/reopen plus one verified point read per tenant; crash safety is validated separately."
+      ]
+    },
+    {
+      "mode": "text",
+      "tenants": 1,
+      "documents": 100,
+      "replicas": 1,
+      "payload_bytes": 102400,
+      "open_seconds": 0.349149417,
+      "empty_rss_bytes": 36274176,
+      "load_seconds": 0.237103333,
+      "resident_rss_bytes": 51396608,
+      "peak_rss_bytes": 56229888,
+      "disk_bytes": 450560,
+      "recovery_seconds": 0.641715167,
+      "measurements": [
+        {
+          "name": "embedded_authorized_point_get",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 0.001080709,
+            "throughput_ops_per_second": 29610.191087517545,
+            "p50_microseconds": 23.75,
+            "p99_microseconds": 101.541,
+            "max_microseconds": 101.541
+          }
+        },
+        {
+          "name": "durable_single_document_write",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 2.725037875,
+            "throughput_ops_per_second": 11.742956049739309,
+            "p50_microseconds": 74655.375,
+            "p99_microseconds": 178726.916,
+            "max_microseconds": 178726.916
+          }
+        },
+        {
+          "name": "read_heavy_90_read_10_write",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 0.176918542,
+            "throughput_ops_per_second": 180.87420141637838,
+            "p50_microseconds": 18.416,
+            "p99_microseconds": 66794.959,
+            "max_microseconds": 66794.959
+          }
+        },
+        {
+          "name": "balanced_50_read_50_write",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 1.046400125,
+            "throughput_ops_per_second": 30.58103610222715,
+            "p50_microseconds": 60.083,
+            "p99_microseconds": 75489.625,
+            "max_microseconds": 75489.625
+          }
+        },
+        {
+          "name": "structured_indexed_equality",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 0.002499209,
+            "throughput_ops_per_second": 12804.05120180025,
+            "p50_microseconds": 65.292,
+            "p99_microseconds": 179.0,
+            "max_microseconds": 179.0
+          }
+        },
+        {
+          "name": "text_english_Phrase_complete_pages",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 0.006439417,
+            "throughput_ops_per_second": 4969.393968429129,
+            "p50_microseconds": 146.75,
+            "p99_microseconds": 1666.542,
+            "max_microseconds": 1666.542
+          }
+        },
+        {
+          "name": "text_english_Prefix_complete_pages",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 0.015615084,
+            "throughput_ops_per_second": 2049.300535302916,
+            "p50_microseconds": 462.875,
+            "p99_microseconds": 973.666,
+            "max_microseconds": 973.666
+          }
+        },
+        {
+          "name": "text_english_Fuzzy_complete_pages",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 0.009944833,
+            "throughput_ops_per_second": 3217.751368977237,
+            "p50_microseconds": 304.042,
+            "p99_microseconds": 346.625,
+            "max_microseconds": 346.625
+          }
+        },
+        {
+          "name": "text_japanese_Terms_complete_pages",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 0.003509583,
+            "throughput_ops_per_second": 9117.892353593004,
+            "p50_microseconds": 104.417,
+            "p99_microseconds": 153.375,
+            "max_microseconds": 153.375
+          }
+        }
+      ],
+      "notes": [
+        "Actual Database API: tenant RBAC, read barrier, schema validation, persistent indexes, encrypted redb immediate two-phase durability, and mutation audit/receipt retention are active.",
+        "Each initial load batch has at most 256 documents; measured writes contain one document.",
+        "One real OpenRaft voter; no network protocol overhead.",
+        "Test-only authenticated key wrapping excludes Transit network latency. No successful-read strict audit; mutation audits remain enabled.",
+        "Recovery measures clean full process-state closure/reopen plus one verified point read per tenant; crash safety is validated separately."
+      ]
+    },
+    {
+      "mode": "raw",
+      "tenants": 3,
+      "documents": 100,
+      "replicas": 1,
+      "payload_bytes": 102400,
+      "open_seconds": 4.584e-06,
+      "empty_rss_bytes": 60784640,
+      "load_seconds": 0.002793042,
+      "resident_rss_bytes": 60784640,
+      "peak_rss_bytes": 61046784,
+      "disk_bytes": 0,
+      "recovery_seconds": null,
+      "measurements": [
+        {
+          "name": "raw_hashmap_borrowed_lookup",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 9.916e-06,
+            "throughput_ops_per_second": 3227107.704719645,
+            "p50_microseconds": 0.209,
+            "p99_microseconds": 0.917,
+            "max_microseconds": 0.917
+          }
+        }
+      ],
+      "notes": [
+        "Borrowed map lookup only: no authentication, cloning, schema checks, consistency barrier, indexing, or durability. Timer overhead is included."
+      ]
+    },
+    {
+      "mode": "local",
+      "tenants": 3,
+      "documents": 100,
+      "replicas": 1,
+      "payload_bytes": 102400,
+      "open_seconds": 1.361045958,
+      "empty_rss_bytes": 60784640,
+      "load_seconds": 0.319245333,
+      "resident_rss_bytes": 60784640,
+      "peak_rss_bytes": 61046784,
+      "disk_bytes": 512000,
+      "recovery_seconds": 0.121463667,
+      "measurements": [
+        {
+          "name": "embedded_authorized_point_get",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 0.000703167,
+            "throughput_ops_per_second": 45508.392743117925,
+            "p50_microseconds": 16.083,
+            "p99_microseconds": 53.458,
+            "max_microseconds": 53.458
+          }
+        },
+        {
+          "name": "durable_single_document_write",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 1.563075542,
+            "throughput_ops_per_second": 20.47245903358905,
+            "p50_microseconds": 51268.459,
+            "p99_microseconds": 63640.667,
+            "max_microseconds": 63640.667
+          }
+        },
+        {
+          "name": "read_heavy_90_read_10_write",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 0.11199875,
+            "throughput_ops_per_second": 285.71747452538534,
+            "p50_microseconds": 17.75,
+            "p99_microseconds": 42697.084,
+            "max_microseconds": 42697.084
+          }
+        },
+        {
+          "name": "balanced_50_read_50_write",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 0.523872959,
+            "throughput_ops_per_second": 61.08351166107813,
+            "p50_microseconds": 113.0,
+            "p99_microseconds": 46833.75,
+            "max_microseconds": 46833.75
+          }
+        },
+        {
+          "name": "structured_indexed_equality",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 0.002202875,
+            "throughput_ops_per_second": 14526.471088917891,
+            "p50_microseconds": 60.667,
+            "p99_microseconds": 121.417,
+            "max_microseconds": 121.417
+          }
+        }
+      ],
+      "notes": [
+        "Actual Database API: tenant RBAC, read barrier, schema validation, persistent indexes, encrypted redb immediate two-phase durability, and mutation audit/receipt retention are active.",
+        "Each initial load batch has at most 256 documents; measured writes contain one document.",
+        "One real OpenRaft voter; no network protocol overhead.",
+        "Test-only authenticated key wrapping excludes Transit network latency. No successful-read strict audit; mutation audits remain enabled.",
+        "Recovery measures clean full process-state closure/reopen plus one verified point read per tenant; crash safety is validated separately."
+      ]
+    },
+    {
+      "mode": "replicated",
+      "tenants": 3,
+      "documents": 100,
+      "replicas": 3,
+      "payload_bytes": 102400,
+      "open_seconds": 1.17726,
+      "empty_rss_bytes": 60981248,
+      "load_seconds": 0.626683,
+      "resident_rss_bytes": 62423040,
+      "peak_rss_bytes": 62914560,
+      "disk_bytes": 1540096,
+      "recovery_seconds": 0.371666458,
+      "measurements": [
+        {
+          "name": "embedded_authorized_point_get",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 0.001537042,
+            "throughput_ops_per_second": 20819.209884960856,
+            "p50_microseconds": 39.041,
+            "p99_microseconds": 121.584,
+            "max_microseconds": 121.584
+          }
+        },
+        {
+          "name": "durable_single_document_write",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 2.165805916,
+            "throughput_ops_per_second": 14.775100466573848,
+            "p50_microseconds": 68378.166,
+            "p99_microseconds": 79540.291,
+            "max_microseconds": 79540.291
+          }
+        },
+        {
+          "name": "read_heavy_90_read_10_write",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 0.218952,
+            "throughput_ops_per_second": 146.15075450327012,
+            "p50_microseconds": 57.0,
+            "p99_microseconds": 76732.959,
+            "max_microseconds": 76732.959
+          }
+        },
+        {
+          "name": "balanced_50_read_50_write",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 1.086330042,
+            "throughput_ops_per_second": 29.456977863823084,
+            "p50_microseconds": 125.333,
+            "p99_microseconds": 77529.625,
+            "max_microseconds": 77529.625
+          }
+        },
+        {
+          "name": "structured_indexed_equality",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 0.0031685,
+            "throughput_ops_per_second": 10099.416127505128,
+            "p50_microseconds": 88.833,
+            "p99_microseconds": 179.041,
+            "max_microseconds": 179.041
+          }
+        }
+      ],
+      "notes": [
+        "Actual Database API: tenant RBAC, read barrier, schema validation, persistent indexes, encrypted redb immediate two-phase durability, and mutation audit/receipt retention are active.",
+        "Each initial load batch has at most 256 documents; measured writes contain one document.",
+        "Three real OpenRaft voters use separate redb files in one process; this measures local quorum persistence, not independent physical failure domains, TLS or network latency.",
+        "Test-only authenticated key wrapping excludes Transit network latency. No successful-read strict audit; mutation audits remain enabled.",
+        "Recovery measures clean full process-state closure/reopen plus one verified point read per tenant; crash safety is validated separately."
+      ]
+    },
+    {
+      "mode": "text",
+      "tenants": 3,
+      "documents": 100,
+      "replicas": 1,
+      "payload_bytes": 102400,
+      "open_seconds": 0.531662708,
+      "empty_rss_bytes": 63356928,
+      "load_seconds": 0.346673833,
+      "resident_rss_bytes": 65355776,
+      "peak_rss_bytes": 70483968,
+      "disk_bytes": 454656,
+      "recovery_seconds": 0.614436375,
+      "measurements": [
+        {
+          "name": "embedded_authorized_point_get",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 0.001155792,
+            "throughput_ops_per_second": 27686.64257928762,
+            "p50_microseconds": 30.375,
+            "p99_microseconds": 73.833,
+            "max_microseconds": 73.833
+          }
+        },
+        {
+          "name": "durable_single_document_write",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 1.436800542,
+            "throughput_ops_per_second": 22.27170652055614,
+            "p50_microseconds": 44132.583,
+            "p99_microseconds": 58021.458,
+            "max_microseconds": 58021.458
+          }
+        },
+        {
+          "name": "read_heavy_90_read_10_write",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 0.086131667,
+            "throughput_ops_per_second": 371.52421536204565,
+            "p50_microseconds": 25.75,
+            "p99_microseconds": 30772.625,
+            "max_microseconds": 30772.625
+          }
+        },
+        {
+          "name": "balanced_50_read_50_write",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 0.463043416,
+            "throughput_ops_per_second": 69.10799051292418,
+            "p50_microseconds": 77.25,
+            "p99_microseconds": 37981.625,
+            "max_microseconds": 37981.625
+          }
+        },
+        {
+          "name": "structured_indexed_equality",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 0.002803125,
+            "throughput_ops_per_second": 11415.830546265328,
+            "p50_microseconds": 78.209,
+            "p99_microseconds": 162.958,
+            "max_microseconds": 162.958
+          }
+        },
+        {
+          "name": "text_english_Phrase_complete_pages",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 0.005371333,
+            "throughput_ops_per_second": 5957.552808585876,
+            "p50_microseconds": 158.958,
+            "p99_microseconds": 280.291,
+            "max_microseconds": 280.291
+          }
+        },
+        {
+          "name": "text_english_Prefix_complete_pages",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 0.008217041,
+            "throughput_ops_per_second": 3894.345908703632,
+            "p50_microseconds": 241.5,
+            "p99_microseconds": 400.709,
+            "max_microseconds": 400.709
+          }
+        },
+        {
+          "name": "text_english_Fuzzy_complete_pages",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 0.010273334,
+            "throughput_ops_per_second": 3114.8602780752576,
+            "p50_microseconds": 301.416,
+            "p99_microseconds": 391.667,
+            "max_microseconds": 391.667
+          }
+        },
+        {
+          "name": "text_japanese_Terms_complete_pages",
+          "latency": {
+            "operations": 32,
+            "elapsed_seconds": 0.004788083,
+            "throughput_ops_per_second": 6683.259250100718,
+            "p50_microseconds": 139.375,
+            "p99_microseconds": 206.0,
+            "max_microseconds": 206.0
+          }
+        }
+      ],
+      "notes": [
+        "Actual Database API: tenant RBAC, read barrier, schema validation, persistent indexes, encrypted redb immediate two-phase durability, and mutation audit/receipt retention are active.",
+        "Each initial load batch has at most 256 documents; measured writes contain one document.",
+        "One real OpenRaft voter; no network protocol overhead.",
+        "Test-only authenticated key wrapping excludes Transit network latency. No successful-read strict audit; mutation audits remain enabled.",
+        "Recovery measures clean full process-state closure/reopen plus one verified point read per tenant; crash safety is validated separately."
+      ]
+    }
+  ],
+  "failures": [],
+  "evidence_status": "Preliminary development measurement; concurrent source edits and build/test activity may influence results. Repeat with stable code on quiet host for publication."
+}

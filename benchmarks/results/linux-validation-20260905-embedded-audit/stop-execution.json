@@ -1,0 +1,14 @@
+{
+  "argv": [
+    "colima",
+    "stop",
+    "--profile",
+    "kasumi-validation"
+  ],
+  "pid": 33528,
+  "process_group": 33528,
+  "started_unix_seconds": 1788602808.091136,
+  "running_containers_before_stop": [],
+  "stdin": "DEVNULL",
+  "regular_log": "colima-stop.log"
+}

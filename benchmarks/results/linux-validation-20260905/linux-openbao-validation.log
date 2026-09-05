@@ -1,0 +1,6 @@
+Traceback (most recent call last):
+  File "/workspace/scripts/fetch_openbao.py", line 53, in <module>
+    main()
+  File "/workspace/scripts/fetch_openbao.py", line 48, in main
+    bundle.extractall(destination, members=binaries, filter="data")
+TypeError: TarFile.extractall() got an unexpected keyword argument 'filter'

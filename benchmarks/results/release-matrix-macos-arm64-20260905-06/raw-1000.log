@@ -1,0 +1,4 @@
+starting mode=raw tenants=1000 documents=1000000 operations=1000
+completed mode=raw tenants=1000 load=1.016s
+checkpoint mode=raw tenants=1000 stage=completed
+benchmark report: /Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-06/raw-1000.json

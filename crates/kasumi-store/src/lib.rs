@@ -1,0 +1,931 @@
+//! Encrypted durable records for both local execution and Raft persistence.
+//!
+//! Only wrapped keys and opaque tenant identifiers are stored in control metadata.
+//! Record namespaces, keys and values are authenticated and encrypted before redb.
+//! redb's immediate, two-phase commits persist each batch atomically. Host filesystem,
+//! kernel, device durability and the embedding process are trusted. A successful
+//! store call can return owned plaintext to its caller; that copy is not revocable.
+
+mod backup;
+mod clock;
+mod keys;
+#[cfg(any(test, feature = "test-utils"))]
+pub mod test_utils;
+
+pub use backup::{
+    BackupContents, BackupDestination, EncryptedBackup, FilesystemBackupDestination,
+    S3BackupConfig, S3BackupDestination,
+};
+pub use backup::{MAX_BACKUP_BUNDLE_BYTES, MAX_BACKUP_SNAPSHOT_BYTES};
+pub use clock::{LeaseClock, SystemLeaseClock};
+pub use keys::{
+    GeneratedKey, KeyProvider, SecretKey, TransitConfig, TransitKeyProvider, WrappedKey,
+};
+
+use std::{
+    collections::{BTreeMap, HashMap},
+    path::Path,
+    sync::{
+        Arc, Weak,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
+    time::Duration,
+};
+
+use anyhow::{Context, Result, bail, ensure};
+use chacha20poly1305::{
+    KeyInit, XChaCha20Poly1305, XNonce,
+    aead::{Aead, Payload},
+};
+use hmac::{Hmac, Mac};
+use parking_lot::{Mutex, RwLock};
+use redb::{Database, Durability, ReadableDatabase, TableDefinition};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use tokio::sync::{Mutex as AsyncMutex, watch};
+use uuid::Uuid;
+use zeroize::{Zeroize, Zeroizing};
+
+const CATALOG: TableDefinition<&[u8], &[u8]> = TableDefinition::new("wrapped_keys_v1");
+const RECORDS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("encrypted_records_v1");
+pub const MAX_KEY_LEASE: Duration = Duration::from_secs(60);
+const PROVIDER_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_RECORD: usize = 32 * 1024 * 1024;
+const MAX_BATCH: usize = 64 * 1024 * 1024;
+const INDEX_KEY: &str = "index";
+// A manifest repeats the tenant (at most 1024 UTF-8 bytes, or 6144 JSON
+// escape bytes) and adds a UUID, fixed field names and bounded integers.
+// Keep that framing available before accepting any wrapping-key change.
+const MAX_KEY_CATALOG_BYTES: usize = backup::HEADER_LIMIT - (16 << 10);
+
+#[derive(Clone, Debug)]
+pub enum WriteOp {
+    Put {
+        namespace: String,
+        key: Vec<u8>,
+        value: Vec<u8>,
+    },
+    Delete {
+        namespace: String,
+        key: Vec<u8>,
+    },
+}
+
+impl WriteOp {
+    pub fn put(
+        namespace: impl Into<String>,
+        key: impl Into<Vec<u8>>,
+        value: impl Into<Vec<u8>>,
+    ) -> Self {
+        Self::Put {
+            namespace: namespace.into(),
+            key: key.into(),
+            value: value.into(),
+        }
+    }
+    pub fn delete(namespace: impl Into<String>, key: impl Into<Vec<u8>>) -> Self {
+        Self::Delete {
+            namespace: namespace.into(),
+            key: key.into(),
+        }
+    }
+}
+
+/// Create every missing directory and persist its entry in its parent. This is
+/// separate from syncing files within the leaf directory.
+pub(crate) fn durable_directory(path: &Path) -> Result<()> {
+    let mut missing = Vec::new();
+    for directory in path.ancestors() {
+        if directory.as_os_str().is_empty() || directory.exists() {
+            break;
+        }
+        missing.push(directory.to_owned());
+    }
+    std::fs::create_dir_all(path)?;
+    for directory in missing {
+        std::fs::File::open(&directory)?.sync_all()?;
+        let parent = directory
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        std::fs::File::open(parent)?.sync_all()?;
+    }
+    Ok(())
+}
+
+pub struct NodeStore {
+    db: Database,
+    tenants: AsyncMutex<HashMap<String, Arc<AsyncMutex<Weak<TenantStore>>>>>,
+}
+
+impl NodeStore {
+    pub fn open(path: impl AsRef<Path>) -> Result<Arc<Self>> {
+        let path = path.as_ref();
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        durable_directory(parent).context("creating database directory")?;
+        let db = Database::create(path).context("opening durable database")?;
+        let node = Self::from_database(db)?;
+        // redb synchronizes file contents; a new directory entry needs its own
+        // persistence before any acknowledged first write can be crash durable.
+        std::fs::File::open(parent)?
+            .sync_all()
+            .context("syncing database directory entry")?;
+        Ok(node)
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn open_with_backend(backend: impl redb::StorageBackend) -> Result<Arc<Self>> {
+        Self::from_database(Database::builder().create_with_backend(backend)?)
+    }
+
+    fn from_database(db: Database) -> Result<Arc<Self>> {
+        let mut tx = db.begin_write()?;
+        tx.set_durability(Durability::Immediate)?;
+        tx.set_two_phase_commit(true);
+        {
+            tx.open_table(CATALOG)?;
+            tx.open_table(RECORDS)?;
+        }
+        tx.commit()?;
+        Ok(Arc::new(Self {
+            db,
+            tenants: AsyncMutex::new(HashMap::new()),
+        }))
+    }
+
+    fn catalog(&self, tenant: &str) -> Result<Option<KeyCatalog>> {
+        let tx = self.db.begin_read()?;
+        let table = tx.open_table(CATALOG)?;
+        table
+            .get(tenant_hash(tenant).as_slice())?
+            .map(|v| {
+                ensure!(
+                    v.value().len() <= MAX_KEY_CATALOG_BYTES,
+                    "key catalog byte quota exceeded"
+                );
+                let catalog: KeyCatalog =
+                    serde_json::from_slice(v.value()).context("invalid key catalog")?;
+                catalog.validate(tenant)?;
+                Ok(catalog)
+            })
+            .transpose()
+    }
+
+    fn save_catalog(&self, tenant: &str, catalog: &KeyCatalog) -> Result<()> {
+        catalog.validate(tenant)?;
+        let bytes = serde_json::to_vec(catalog)?;
+        let mut tx = self.db.begin_write()?;
+        tx.set_durability(Durability::Immediate)?;
+        tx.set_two_phase_commit(true);
+        {
+            tx.open_table(CATALOG)?
+                .insert(tenant_hash(tenant).as_slice(), bytes.as_slice())?;
+        }
+        tx.commit().context("committing wrapped-key catalog")
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct KeyCatalog {
+    format: u32,
+    tenant: String,
+    active: String,
+    keys: BTreeMap<String, WrappedKey>,
+}
+
+impl KeyCatalog {
+    fn validate(&self, tenant: &str) -> Result<()> {
+        ensure!(
+            !tenant.is_empty() && tenant.len() <= 1024,
+            "invalid catalog tenant"
+        );
+        ensure!(
+            self.format == 1 && self.tenant == tenant,
+            "key catalog tenant/format mismatch"
+        );
+        ensure!(
+            self.active != INDEX_KEY
+                && self.keys.contains_key(&self.active)
+                && self.keys.contains_key(INDEX_KEY),
+            "invalid key catalog"
+        );
+        ensure!(self.keys.len() <= 1024, "too many retained data keys");
+        // Count exact serialized bytes without building a second catalog buffer.
+        // Stop at the limit even for a malformed or oversized provider response.
+        struct Budget(usize);
+        impl std::io::Write for Budget {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0 = self
+                    .0
+                    .checked_add(bytes.len())
+                    .filter(|size| *size <= MAX_KEY_CATALOG_BYTES)
+                    .ok_or_else(|| std::io::Error::other("key catalog byte quota exceeded"))?;
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        serde_json::to_writer(Budget(0), self).context("key catalog byte quota exceeded")?;
+        Ok(())
+    }
+}
+
+struct KeyState {
+    keys: BTreeMap<String, SecretKey>,
+    deadline: Duration,
+    sealed: bool,
+}
+
+#[derive(Zeroize, zeroize::ZeroizeOnDrop)]
+struct DecodedRecord {
+    namespace: String,
+    key: Vec<u8>,
+    value: Vec<u8>,
+}
+
+/// A tenant's per-replica key cache. All keys are zeroized when the cache is sealed.
+/// Consumers holding resident documents must also discard their own copies on the
+/// `seal_notifications()` signal and gate response emission with `check_access()`.
+pub struct TenantStore {
+    node: Arc<NodeStore>,
+    tenant: String,
+    provider: Arc<dyn KeyProvider>,
+    catalog: RwLock<KeyCatalog>,
+    state: RwLock<KeyState>,
+    mutations: Mutex<()>,
+    refresh: AsyncMutex<()>,
+    clock: Arc<dyn LeaseClock>,
+    seal_notifier: watch::Sender<u64>,
+    // Low bit closes admission; the remaining bits invalidate in-flight probes.
+    access_epoch: AtomicU64,
+    shutdown_requested: AtomicBool,
+    background: AsyncMutex<BackgroundTasks>,
+}
+
+#[derive(Default)]
+struct BackgroundTasks {
+    started: bool,
+    handles: Vec<tokio::task::JoinHandle<()>>,
+}
+
+impl Drop for TenantStore {
+    fn drop(&mut self) {
+        for task in &self.background.get_mut().handles {
+            task.abort();
+        }
+    }
+}
+
+/// Release any expired cached keys after method-local key guards have dropped,
+/// including early-return/error paths and cancellation of asynchronous probes.
+struct AccessGuard<'a>(&'a TenantStore);
+impl Drop for AccessGuard<'_> {
+    fn drop(&mut self) {
+        let _ = self.0.check_access();
+    }
+}
+
+impl TenantStore {
+    pub async fn open(
+        node: Arc<NodeStore>,
+        tenant: String,
+        provider: Arc<dyn KeyProvider>,
+    ) -> Result<Arc<Self>> {
+        Self::open_inner(node, tenant, provider, Arc::new(SystemLeaseClock), true).await
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    pub async fn open_with_clock(
+        node: Arc<NodeStore>,
+        tenant: String,
+        provider: Arc<dyn KeyProvider>,
+        clock: Arc<dyn LeaseClock>,
+    ) -> Result<Arc<Self>> {
+        Self::open_inner(node, tenant, provider, clock, false).await
+    }
+
+    async fn open_inner(
+        node: Arc<NodeStore>,
+        tenant: String,
+        provider: Arc<dyn KeyProvider>,
+        clock: Arc<dyn LeaseClock>,
+        renew: bool,
+    ) -> Result<Arc<Self>> {
+        ensure!(
+            !tenant.is_empty() && tenant.len() <= 1024,
+            "invalid tenant identifier"
+        );
+        // Serialize only concurrent opens of the same tenant. A slow KMS cannot
+        // hold the node-wide registry lock while unrelated tenants are opening.
+        let gate = node
+            .tenants
+            .lock()
+            .await
+            .entry(tenant.clone())
+            .or_default()
+            .clone();
+        let mut slot = gate.lock().await;
+        if let Some(existing) = slot.upgrade() {
+            existing.check_access()?;
+            return Ok(existing);
+        }
+        let catalog = if let Some(catalog) = node.catalog(&tenant)? {
+            catalog
+        } else {
+            let root = tokio::time::timeout(PROVIDER_TIMEOUT, provider.generate_key(&tenant))
+                .await
+                .context("key generation timed out")??;
+            let data = tokio::time::timeout(PROVIDER_TIMEOUT, provider.generate_key(&tenant))
+                .await
+                .context("key generation timed out")??;
+            let active = Uuid::new_v4().to_string();
+            let catalog = KeyCatalog {
+                format: 1,
+                tenant: tenant.clone(),
+                active: active.clone(),
+                keys: BTreeMap::from([
+                    (INDEX_KEY.to_owned(), root.wrapped),
+                    (active, data.wrapped),
+                ]),
+            };
+            // Drop plaintext generation responses. Initial access requires fresh decrypts.
+            node.save_catalog(&tenant, &catalog)?;
+            catalog
+        };
+        let (seal_notifier, _) = watch::channel(0);
+        let store = Arc::new(Self {
+            node: node.clone(),
+            tenant: tenant.clone(),
+            provider,
+            catalog: RwLock::new(catalog),
+            state: RwLock::new(KeyState {
+                keys: BTreeMap::new(),
+                deadline: Duration::ZERO,
+                sealed: true,
+            }),
+            mutations: Mutex::new(()),
+            refresh: AsyncMutex::new(()),
+            clock,
+            seal_notifier,
+            access_epoch: AtomicU64::new(1),
+            shutdown_requested: AtomicBool::new(false),
+            background: AsyncMutex::new(BackgroundTasks::default()),
+        });
+        store.refresh_lease().await?;
+        // Register every background owner before another open can see this store.
+        if renew {
+            Self::start_renewal(&store).await;
+        }
+        *slot = Arc::downgrade(&store);
+        drop(slot);
+        Ok(store)
+    }
+
+    async fn start_renewal(store: &Arc<Self>) {
+        let mut background = store.background.lock().await;
+        if background.started || store.shutdown_requested.load(Ordering::Acquire) {
+            return;
+        }
+        background.started = true;
+        let weak = Arc::downgrade(store);
+        background.handles.push(tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                let Some(store) = weak.upgrade() else { return };
+                if store.check_access().is_err() {
+                    return;
+                }
+            }
+        }));
+        let weak = Arc::downgrade(store);
+        background.handles.push(tokio::spawn(async move {
+            let interval = Duration::from_secs(20);
+            let mut schedule =
+                tokio::time::interval_at(tokio::time::Instant::now() + interval, interval);
+            // Start-to-start cadence, without adding each provider's latency or
+            // issuing a burst of catch-up decrypt requests after a delayed poll.
+            schedule.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                schedule.tick().await;
+                let Some(store) = weak.upgrade() else { return };
+                // Sealing requires explicit recovery; a timer never silently unseals.
+                if store.check_access().is_err() || store.refresh_lease().await.is_err() {
+                    return;
+                }
+            }
+        }));
+    }
+
+    /// Permanently close access, discard owned keys, and stop both lease tasks.
+    ///
+    /// Completion guarantees that background probes no longer retain this store
+    /// or its node. Callers must also finish their own operations and drop all
+    /// store/node handles before reopening the database file. Concurrent calls
+    /// are safe; canceling this future leaves task handles available for a later
+    /// call to finish waiting. A shutdown store cannot be refreshed or restarted.
+    pub async fn shutdown(&self) {
+        self.shutdown_requested.store(true, Ordering::Release);
+        self.seal();
+        let mut background = self.background.lock().await;
+        for task in &background.handles {
+            task.abort();
+        }
+        // Await in place: dropping a shutdown future must not detach a task. Pop
+        // each completed handle before awaiting another, because a completed
+        // JoinHandle must never be polled twice by a subsequent shutdown caller.
+        while let Some(task) = background.handles.last_mut() {
+            let _ = task.await;
+            background.handles.pop();
+        }
+    }
+
+    pub fn tenant(&self) -> &str {
+        &self.tenant
+    }
+    pub fn generation(&self) -> u64 {
+        self.access_epoch.load(Ordering::Acquire) >> 1
+    }
+    pub fn seal_notifications(&self) -> watch::Receiver<u64> {
+        self.seal_notifier.subscribe()
+    }
+
+    pub fn seal(&self) {
+        // Signal and close admission before waiting for any in-progress disk I/O
+        // holding a shared key lock. Its release check observes revocation too.
+        let previous = self
+            .access_epoch
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |epoch| {
+                Some(epoch.wrapping_add(2) | 1)
+            })
+            .expect("unconditional epoch update");
+        if previous & 1 == 0 {
+            self.seal_notifier
+                .send_replace(previous.wrapping_add(2) >> 1);
+        }
+        let mut state = self.state.write();
+        if !state.sealed || !state.keys.is_empty() {
+            state.sealed = true;
+            state.keys.clear();
+            state.deadline = Duration::ZERO;
+        }
+    }
+
+    pub fn check_access(&self) -> Result<()> {
+        if self.valid(&self.state.read()) {
+            return Ok(());
+        }
+        self.seal();
+        bail!("tenant is sealed: key-access lease unavailable or expired")
+    }
+
+    fn valid(&self, state: &KeyState) -> bool {
+        !self.shutdown_requested.load(Ordering::Acquire)
+            && self.access_epoch.load(Ordering::Acquire) & 1 == 0
+            && !state.sealed
+            && !state.keys.is_empty()
+            && self.clock.now() < state.deadline
+    }
+
+    fn require_access(&self, state: &KeyState) -> Result<()> {
+        ensure!(
+            self.valid(state),
+            "tenant is sealed: key-access lease unavailable or expired"
+        );
+        Ok(())
+    }
+
+    /// Each retained wrapping-key version is live-decrypted. No cached plaintext
+    /// constitutes a lease probe; a late completion cannot lengthen the deadline.
+    pub async fn refresh_lease(&self) -> Result<()> {
+        let _access = AccessGuard(self);
+        let _refresh = self.refresh.lock().await;
+        ensure!(
+            !self.shutdown_requested.load(Ordering::Acquire),
+            "tenant store has shut down"
+        );
+        let start = self.clock.now();
+        let epoch = self.access_epoch.load(Ordering::Acquire);
+        let catalog = self.catalog.read().clone();
+        let refresh = async {
+            let mut keys = BTreeMap::new();
+            for (id, wrapped) in &catalog.keys {
+                keys.insert(
+                    id.clone(),
+                    self.provider.unwrap_key(&self.tenant, wrapped).await?,
+                );
+            }
+            Ok::<_, anyhow::Error>(keys)
+        };
+        let result = tokio::time::timeout(PROVIDER_TIMEOUT, refresh).await;
+        let keys = match result {
+            Ok(Ok(keys)) => keys,
+            Ok(Err(error)) => {
+                self.seal();
+                return Err(error.context("key-access probe failed"));
+            }
+            Err(_) => {
+                self.seal();
+                bail!("key-access probe timed out");
+            }
+        };
+        let deadline = start
+            .checked_add(MAX_KEY_LEASE)
+            .context("key-access lease overflow")?;
+        let mut state = self.state.write();
+        ensure!(
+            !self.shutdown_requested.load(Ordering::Acquire),
+            "tenant store has shut down"
+        );
+        ensure!(
+            self.clock.now() < deadline,
+            "key-access probe completed after lease expiry"
+        );
+        self.access_epoch
+            .compare_exchange(epoch, epoch & !1, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| anyhow::anyhow!("tenant generation changed during key-access probe"))?;
+        state.keys = keys;
+        state.deadline = deadline;
+        state.sealed = false;
+        Ok(())
+    }
+
+    pub fn get(&self, namespace: &str, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        let _access = AccessGuard(self);
+        validate_record(namespace, key, 0)?;
+        self.check_access()?;
+        let state = self.state.read();
+        self.require_access(&state)?;
+        let disk_key = record_key(
+            &self.tenant,
+            namespace,
+            key,
+            state.keys.get(INDEX_KEY).context("index key missing")?,
+        );
+        let tx = self.node.db.begin_read()?;
+        let table = tx.open_table(RECORDS)?;
+        let mut result = match table.get(disk_key.as_slice())? {
+            Some(v) => {
+                let record = self.decode_record(&disk_key, v.value(), &state)?;
+                ensure!(
+                    record.namespace == namespace && record.key == key,
+                    "record identity mismatch"
+                );
+                Some(record)
+            }
+            None => None,
+        };
+        self.require_access(&state)?;
+        Ok(result
+            .as_mut()
+            .map(|record| std::mem::take(&mut record.value)))
+    }
+
+    pub fn scan(&self, namespace: &str) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        let _access = AccessGuard(self);
+        validate_record(namespace, &[], 0)?;
+        self.check_access()?;
+        let state = self.state.read();
+        self.require_access(&state)?;
+        let prefix = namespace_prefix(
+            &self.tenant,
+            namespace,
+            state.keys.get(INDEX_KEY).context("index key missing")?,
+        );
+        let tx = self.node.db.begin_read()?;
+        let table = tx.open_table(RECORDS)?;
+        let mut records = Vec::new();
+        for entry in table.range(prefix.as_slice()..)? {
+            let (key, value) = entry?;
+            if !key.value().starts_with(&prefix) {
+                break;
+            }
+            self.require_access(&state)?;
+            let record = self.decode_record(key.value(), value.value(), &state)?;
+            ensure!(record.namespace == namespace, "record namespace mismatch");
+            records.push(record);
+        }
+        records.sort_by(|a, b| a.key.cmp(&b.key));
+        self.require_access(&state)?;
+        Ok(records
+            .into_iter()
+            .map(|mut record| {
+                (
+                    std::mem::take(&mut record.key),
+                    std::mem::take(&mut record.value),
+                )
+            })
+            .collect())
+    }
+
+    pub fn write_batch(&self, operations: &[WriteOp]) -> Result<()> {
+        let _access = AccessGuard(self);
+        let mut bytes = 0usize;
+        for op in operations {
+            let (namespace, key, value_len) = match op {
+                WriteOp::Put {
+                    namespace,
+                    key,
+                    value,
+                } => (namespace, key, value.len()),
+                WriteOp::Delete { namespace, key } => (namespace, key, 0),
+            };
+            validate_record(namespace, key, value_len)?;
+            bytes = bytes
+                .checked_add(namespace.len() + key.len() + value_len)
+                .context("batch too large")?;
+            ensure!(bytes <= MAX_BATCH, "batch exceeds 64 MiB");
+        }
+        ensure!(operations.len() <= 65536, "too many batch operations");
+        self.check_access()?;
+        let _mutation = self.mutations.lock();
+        let state = self.state.read();
+        self.require_access(&state)?;
+        let catalog = self.catalog.read();
+        let index = state.keys.get(INDEX_KEY).context("index key missing")?;
+        let data = state
+            .keys
+            .get(&catalog.active)
+            .context("active data key missing")?;
+        let mut tx = self.node.db.begin_write()?;
+        tx.set_durability(Durability::Immediate)?;
+        tx.set_two_phase_commit(true);
+        {
+            let mut table = tx.open_table(RECORDS)?;
+            for op in operations {
+                self.require_access(&state)?;
+                match op {
+                    WriteOp::Put {
+                        namespace,
+                        key,
+                        value,
+                    } => {
+                        let disk_key = record_key(&self.tenant, namespace, key, index);
+                        let plaintext = Zeroizing::new(encode_plain_record(namespace, key, value)?);
+                        let aad = record_aad(&self.tenant, &disk_key);
+                        let mut envelope = Vec::new();
+                        append_bytes(&mut envelope, catalog.active.as_bytes())?;
+                        envelope.extend(encrypt(data, &plaintext, &aad)?);
+                        table.insert(disk_key.as_slice(), envelope.as_slice())?;
+                    }
+                    WriteOp::Delete { namespace, key } => {
+                        let disk_key = record_key(&self.tenant, namespace, key, index);
+                        table.remove(disk_key.as_slice())?;
+                    }
+                }
+            }
+        }
+        self.require_access(&state)?;
+        tx.commit()
+            .context("durable encrypted batch commit failed; outcome may be unknown")?;
+        // Expiry during fsync is an unknown-outcome write, never a false rollback claim.
+        self.require_access(&state).context(
+            "batch committed but key access was lost before acknowledgment; outcome unknown",
+        )
+    }
+
+    pub async fn rotate_data_key(&self) -> Result<()> {
+        let _access = AccessGuard(self);
+        let _refresh = self.refresh.lock().await;
+        self.check_access()?;
+        let generated =
+            tokio::time::timeout(PROVIDER_TIMEOUT, self.provider.generate_key(&self.tenant))
+                .await??;
+        let key = tokio::time::timeout(
+            PROVIDER_TIMEOUT,
+            self.provider.unwrap_key(&self.tenant, &generated.wrapped),
+        )
+        .await??;
+        let _mutation = self.mutations.lock();
+        let mut state = self.state.write();
+        self.require_access(&state)?;
+        let mut catalog = self.catalog.read().clone();
+        ensure!(catalog.keys.len() < 1024, "too many retained data keys");
+        let id = Uuid::new_v4().to_string();
+        catalog.keys.insert(id.clone(), generated.wrapped);
+        catalog.active = id.clone();
+        self.node.save_catalog(&self.tenant, &catalog)?;
+        state.keys.insert(id, key);
+        *self.catalog.write() = catalog;
+        self.require_access(&state).context(
+            "key rotation committed but access expired before acknowledgment; outcome unknown",
+        )
+    }
+
+    /// Rewrap all retained DEKs under the current version of the same Transit KEK.
+    /// Historical encrypted backup files have their own wrappers and are not rewritten.
+    pub async fn rewrap_keys(&self) -> Result<()> {
+        let _access = AccessGuard(self);
+        let _refresh = self.refresh.lock().await;
+        self.check_access()?;
+        let mut catalog = self.catalog.read().clone();
+        for (id, wrapped) in &mut catalog.keys {
+            *wrapped = tokio::time::timeout(
+                PROVIDER_TIMEOUT,
+                self.provider.rewrap_key(&self.tenant, wrapped),
+            )
+            .await??;
+            let probe = tokio::time::timeout(
+                PROVIDER_TIMEOUT,
+                self.provider.unwrap_key(&self.tenant, wrapped),
+            )
+            .await??;
+            let state = self.state.read();
+            self.require_access(&state)?;
+            let original = state.keys.get(id).context("rewrap key missing")?;
+            ensure!(
+                same_key(original, &probe),
+                "rewrap changed data key material"
+            );
+        }
+        let _mutation = self.mutations.lock();
+        let state = self.state.read();
+        self.require_access(&state)?;
+        self.node.save_catalog(&self.tenant, &catalog)?;
+        *self.catalog.write() = catalog;
+        self.require_access(&state).context(
+            "key rewrap committed but access expired before acknowledgment; outcome unknown",
+        )
+    }
+
+    fn decode_record(
+        &self,
+        disk_key: &[u8],
+        envelope: &[u8],
+        state: &KeyState,
+    ) -> Result<DecodedRecord> {
+        let mut input = envelope;
+        let id = std::str::from_utf8(take_bytes(&mut input)?)
+            .context("invalid encrypted record key id")?;
+        let data_key = state
+            .keys
+            .get(id)
+            .context("encrypted record references an unavailable key")?;
+        let plaintext = Zeroizing::new(decrypt(
+            data_key,
+            input,
+            &record_aad(&self.tenant, disk_key),
+        )?);
+        let mut input = plaintext.as_slice();
+        let mut record = DecodedRecord {
+            namespace: String::new(),
+            key: Vec::new(),
+            value: Vec::new(),
+        };
+        record.namespace = std::str::from_utf8(take_bytes(&mut input)?)
+            .context("invalid record namespace")?
+            .to_owned();
+        record.key = take_bytes(&mut input)?.to_vec();
+        record.value = take_bytes(&mut input)?.to_vec();
+        ensure!(input.is_empty(), "trailing encrypted record data");
+        let expected = record_key(
+            &self.tenant,
+            &record.namespace,
+            &record.key,
+            state.keys.get(INDEX_KEY).context("index key missing")?,
+        );
+        ensure!(expected == disk_key, "encrypted record identity mismatch");
+        Ok(record)
+    }
+}
+
+fn same_key(left: &SecretKey, right: &SecretKey) -> bool {
+    left.as_bytes()
+        .iter()
+        .zip(right.as_bytes())
+        .fold(0u8, |diff, (a, b)| diff | (a ^ b))
+        == 0
+}
+
+fn tenant_hash(tenant: &str) -> [u8; 32] {
+    Sha256::digest(tenant.as_bytes()).into()
+}
+
+fn keyed_hash(key: &SecretKey, parts: &[&[u8]]) -> [u8; 32] {
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key.as_bytes()).expect("HMAC key size");
+    for part in parts {
+        mac.update(&(part.len() as u64).to_be_bytes());
+        mac.update(part);
+    }
+    mac.finalize().into_bytes().into()
+}
+
+fn namespace_prefix(tenant: &str, namespace: &str, index: &SecretKey) -> Vec<u8> {
+    let mut result = tenant_hash(tenant).to_vec();
+    result.extend(keyed_hash(
+        index,
+        &[
+            b"kasumi.namespace.v1",
+            tenant.as_bytes(),
+            namespace.as_bytes(),
+        ],
+    ));
+    result
+}
+
+fn record_key(tenant: &str, namespace: &str, key: &[u8], index: &SecretKey) -> Vec<u8> {
+    let mut result = namespace_prefix(tenant, namespace, index);
+    result.extend(keyed_hash(
+        index,
+        &[
+            b"kasumi.record.v1",
+            tenant.as_bytes(),
+            namespace.as_bytes(),
+            key,
+        ],
+    ));
+    result
+}
+
+fn record_aad(tenant: &str, key: &[u8]) -> Vec<u8> {
+    let mut aad = b"kasumi.encrypted-record.v1".to_vec();
+    aad.extend((tenant.len() as u64).to_be_bytes());
+    aad.extend(tenant.as_bytes());
+    // The physical key is an HMAC commitment to the exact namespace and user key.
+    aad.extend(key);
+    aad
+}
+
+fn validate_record(namespace: &str, key: &[u8], value_len: usize) -> Result<()> {
+    ensure!(
+        !namespace.is_empty() && namespace.len() <= 1024,
+        "invalid record namespace"
+    );
+    ensure!(key.len() <= 4096, "record key exceeds 4096 bytes");
+    ensure!(value_len <= MAX_RECORD, "record exceeds 32 MiB");
+    Ok(())
+}
+
+fn append_bytes(out: &mut Vec<u8>, value: &[u8]) -> Result<()> {
+    out.extend(
+        u32::try_from(value.len())
+            .context("field too large")?
+            .to_be_bytes(),
+    );
+    out.extend(value);
+    Ok(())
+}
+
+fn take_bytes<'a>(input: &mut &'a [u8]) -> Result<&'a [u8]> {
+    ensure!(input.len() >= 4, "truncated record field");
+    let len = u32::from_be_bytes(input[..4].try_into()?) as usize;
+    *input = &input[4..];
+    ensure!(input.len() >= len, "truncated record data");
+    let result = &input[..len];
+    *input = &input[len..];
+    Ok(result)
+}
+
+fn encode_plain_record(namespace: &str, key: &[u8], value: &[u8]) -> Result<Vec<u8>> {
+    let mut result = Vec::with_capacity(12 + namespace.len() + key.len() + value.len());
+    append_bytes(&mut result, namespace.as_bytes())?;
+    append_bytes(&mut result, key)?;
+    append_bytes(&mut result, value)?;
+    Ok(result)
+}
+
+fn encrypt(key: &SecretKey, plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
+    let mut nonce = [0u8; 24];
+    getrandom::fill(&mut nonce).map_err(|_| anyhow::anyhow!("OS randomness unavailable"))?;
+    let cipher = XChaCha20Poly1305::new_from_slice(key.as_bytes())
+        .map_err(|_| anyhow::anyhow!("invalid encryption key"))?;
+    let ciphertext = cipher
+        .encrypt(
+            XNonce::from_slice(&nonce),
+            Payload {
+                msg: plaintext,
+                aad,
+            },
+        )
+        .map_err(|_| anyhow::anyhow!("record encryption failed"))?;
+    let mut result = Vec::with_capacity(24 + ciphertext.len());
+    result.extend(nonce);
+    result.extend(ciphertext);
+    Ok(result)
+}
+
+fn decrypt(key: &SecretKey, ciphertext: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
+    ensure!(ciphertext.len() >= 40, "truncated encrypted record");
+    let cipher = XChaCha20Poly1305::new_from_slice(key.as_bytes())
+        .map_err(|_| anyhow::anyhow!("invalid encryption key"))?;
+    cipher
+        .decrypt(
+            XNonce::from_slice(&ciphertext[..24]),
+            Payload {
+                msg: &ciphertext[24..],
+                aad,
+            },
+        )
+        .map_err(|_| anyhow::anyhow!("encrypted record authentication failed"))
+}
+
+#[cfg(test)]
+mod catalog_budget;
+#[cfg(test)]
+mod tests;
+#[cfg(test)]
+mod tls_fixture;

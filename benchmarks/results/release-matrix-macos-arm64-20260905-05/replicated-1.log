@@ -1,0 +1,57 @@
+starting mode=replicated tenants=1 documents=1000000 operations=1000
+checkpoint mode=replicated tenants=1 stage=opening
+checkpoint mode=replicated tenants=1 stage=collection_setup
+loaded 100 batches (replicated, tenant 1)
+loaded 200 batches (replicated, tenant 1)
+loaded 300 batches (replicated, tenant 1)
+loaded 400 batches (replicated, tenant 1)
+loaded 500 batches (replicated, tenant 1)
+loaded 600 batches (replicated, tenant 1)
+loaded 700 batches (replicated, tenant 1)
+loaded 800 batches (replicated, tenant 1)
+loaded 900 batches (replicated, tenant 1)
+loaded 1000 batches (replicated, tenant 1)
+loaded 1100 batches (replicated, tenant 1)
+loaded 1200 batches (replicated, tenant 1)
+loaded 1300 batches (replicated, tenant 1)
+loaded 1400 batches (replicated, tenant 1)
+loaded 1500 batches (replicated, tenant 1)
+loaded 1600 batches (replicated, tenant 1)
+loaded 1700 batches (replicated, tenant 1)
+loaded 1800 batches (replicated, tenant 1)
+loaded 1900 batches (replicated, tenant 1)
+loaded 2000 batches (replicated, tenant 1)
+loaded 2100 batches (replicated, tenant 1)
+loaded 2200 batches (replicated, tenant 1)
+loaded 2300 batches (replicated, tenant 1)
+loaded 2400 batches (replicated, tenant 1)
+loaded 2500 batches (replicated, tenant 1)
+loaded 2600 batches (replicated, tenant 1)
+loaded 2700 batches (replicated, tenant 1)
+loaded 2800 batches (replicated, tenant 1)
+loaded 2900 batches (replicated, tenant 1)
+loaded 3000 batches (replicated, tenant 1)
+loaded 3100 batches (replicated, tenant 1)
+loaded 3200 batches (replicated, tenant 1)
+loaded 3300 batches (replicated, tenant 1)
+loaded 3400 batches (replicated, tenant 1)
+loaded 3500 batches (replicated, tenant 1)
+loaded 3600 batches (replicated, tenant 1)
+loaded 3700 batches (replicated, tenant 1)
+loaded 3800 batches (replicated, tenant 1)
+loaded 3900 batches (replicated, tenant 1)
+loaded tenant 1/1 (replicated)
+checkpoint mode=replicated tenants=1 stage=embedded_authorized_owned_point_get
+checkpoint mode=replicated tenants=1 stage=measured_workload workload=embedded_authorized_owned_point_get success=1000 failed=0 unattempted=0
+checkpoint mode=replicated tenants=1 stage=embedded_authorized_shared_point_get workload=embedded_authorized_owned_point_get success=1000 failed=0 unattempted=0
+checkpoint mode=replicated tenants=1 stage=measured_workload workload=embedded_authorized_shared_point_get success=1000 failed=0 unattempted=0
+checkpoint mode=replicated tenants=1 stage=durable_single_document_write workload=embedded_authorized_shared_point_get success=1000 failed=0 unattempted=0
+checkpoint mode=replicated tenants=1 stage=measured_workload workload=durable_single_document_write success=1000 failed=0 unattempted=0
+checkpoint mode=replicated tenants=1 stage=read_heavy_90_read_10_write workload=durable_single_document_write success=1000 failed=0 unattempted=0
+checkpoint mode=replicated tenants=1 stage=measured_workload workload=read_heavy_90_read_10_write success=1000 failed=0 unattempted=0
+checkpoint mode=replicated tenants=1 stage=balanced_50_read_50_write workload=read_heavy_90_read_10_write success=1000 failed=0 unattempted=0
+checkpoint mode=replicated tenants=1 stage=measured_workload workload=balanced_50_read_50_write success=1000 failed=0 unattempted=0
+checkpoint mode=replicated tenants=1 stage=measured_query workload=structured_indexed_equality success=1000 failed=0 unattempted=0
+checkpoint mode=replicated tenants=1 stage=shutting_down workload=structured_indexed_equality success=1000 failed=0 unattempted=0
+checkpoint mode=replicated tenants=1 stage=recovering workload=structured_indexed_equality success=1000 failed=0 unattempted=0
+checkpoint mode=replicated tenants=1 stage=recovered workload=structured_indexed_equality success=1000 failed=0 unattempted=0

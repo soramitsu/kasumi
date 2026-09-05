@@ -1,0 +1,3 @@
+starting live loopback benchmark tenants=1000, documents=1000000
+Error: kasumid exited before readiness: Error: Invalid argument (os error 22)
+

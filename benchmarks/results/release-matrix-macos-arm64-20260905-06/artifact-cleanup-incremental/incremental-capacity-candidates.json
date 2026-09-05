@@ -1,0 +1,1506 @@
+{
+  "format": 1,
+  "status": "inventory_only_no_deletion",
+  "created_unix_seconds": 1788607871.283848,
+  "repository_root": "/Users/takemiyamakoto/dev/kasumi",
+  "scope": "Only finalized Cargo incremental unit directories; compiled dependencies and executables remain untouched.",
+  "selection_reason": "All finalized Linux incremental cache units first; then the fewest largest exclusively allocated macOS units needed to reach approximately 8 GiB estimated reclaim. Linux validation VM and Kasumi Cargo builds are stopped according to coordinator.",
+  "protection_rules": [
+    "Do not delete until coordinator review; confirm no Kasumi Cargo build has started.",
+    "Keep target directory roots and all target/debug/deps, target/linux-validation/debug/deps, rlib/rmeta, build outputs and validated/current executables.",
+    "Keep all source, manifests, benchmarks/results, logs, credentials, registry, tools and all release artifacts.",
+    "Only delete the exact selected finalized incremental unit directories; reject symlinks, paths outside the repository incremental roots, or newly appeared -working sessions.",
+    "Keep every unselected macOS incremental unit so a substantial local warm cache remains.",
+    "These are disposable recompilation caches; deleting them can cause future incremental recompilation but does not change current binaries.",
+    "The estimate counts an inode only when every known hard link is inside the selected set. APFS snapshots/clone allocation may reduce observed filesystem free-space gain."
+  ],
+  "selected_units": [
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/admission-11oq1wm479wkm",
+      "regular_files": 5,
+      "unique_allocated_bytes": 3866624,
+      "exclusive_allocated_bytes": 3866624,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/admission-1ibd2r0lih0bo",
+      "regular_files": 175,
+      "unique_allocated_bytes": 52232192,
+      "exclusive_allocated_bytes": 52232192,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/admission-1qak66ekxbp16",
+      "regular_files": 165,
+      "unique_allocated_bytes": 39657472,
+      "exclusive_allocated_bytes": 39657472,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/admission-2af98bnfh43fp",
+      "regular_files": 4,
+      "unique_allocated_bytes": 3694592,
+      "exclusive_allocated_bytes": 3694592,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/build_script_build-28dd6ljz1stur",
+      "regular_files": 80,
+      "unique_allocated_bytes": 4386816,
+      "exclusive_allocated_bytes": 4386816,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/build_script_build-3njjnw8rxs9uk",
+      "regular_files": 80,
+      "unique_allocated_bytes": 4390912,
+      "exclusive_allocated_bytes": 4390912,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/cluster-0x84aniqoh2pl",
+      "regular_files": 261,
+      "unique_allocated_bytes": 139329536,
+      "exclusive_allocated_bytes": 139329536,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/cluster-2ck4lvy8qbyd1",
+      "regular_files": 5,
+      "unique_allocated_bytes": 5357568,
+      "exclusive_allocated_bytes": 5357568,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/cluster-2ne3o1fncxi3g",
+      "regular_files": 260,
+      "unique_allocated_bytes": 132616192,
+      "exclusive_allocated_bytes": 132616192,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/cluster-2xtfjdo70jchf",
+      "regular_files": 4,
+      "unique_allocated_bytes": 5320704,
+      "exclusive_allocated_bytes": 5320704,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/cluster_transport-02ojz3gytnmns",
+      "regular_files": 5,
+      "unique_allocated_bytes": 6496256,
+      "exclusive_allocated_bytes": 6496256,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/cluster_transport-100sz5pg4whm0",
+      "regular_files": 190,
+      "unique_allocated_bytes": 41799680,
+      "exclusive_allocated_bytes": 41799680,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/cluster_transport-1rw599nd7p1k9",
+      "regular_files": 193,
+      "unique_allocated_bytes": 41549824,
+      "exclusive_allocated_bytes": 41549824,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/concurrent_pagination-105rkw8yhdv2m",
+      "regular_files": 5,
+      "unique_allocated_bytes": 5451776,
+      "exclusive_allocated_bytes": 5451776,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/concurrent_pagination-388jzl4a0og2t",
+      "regular_files": 182,
+      "unique_allocated_bytes": 62545920,
+      "exclusive_allocated_bytes": 62545920,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/contracts-0k0z2qca87dwd",
+      "regular_files": 5,
+      "unique_allocated_bytes": 6168576,
+      "exclusive_allocated_bytes": 6168576,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/contracts-1xj83tsvssp8i",
+      "regular_files": 4,
+      "unique_allocated_bytes": 5918720,
+      "exclusive_allocated_bytes": 5918720,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/contracts-27x5ogoei0vq6",
+      "regular_files": 180,
+      "unique_allocated_bytes": 43634688,
+      "exclusive_allocated_bytes": 43634688,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/contracts-2hv2ry0q6y0as",
+      "regular_files": 189,
+      "unique_allocated_bytes": 58093568,
+      "exclusive_allocated_bytes": 58093568,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/control-1jtej9vb375g9",
+      "regular_files": 174,
+      "unique_allocated_bytes": 43675648,
+      "exclusive_allocated_bytes": 43675648,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/control-22umgi2jj20rf",
+      "regular_files": 5,
+      "unique_allocated_bytes": 3420160,
+      "exclusive_allocated_bytes": 3420160,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/control-3o5h9qt5esg6r",
+      "regular_files": 4,
+      "unique_allocated_bytes": 3276800,
+      "exclusive_allocated_bytes": 3276800,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/control-3vweiaa83mnvn",
+      "regular_files": 148,
+      "unique_allocated_bytes": 31502336,
+      "exclusive_allocated_bytes": 31502336,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/embedded_audit-0a1nxg0c6bzhv",
+      "regular_files": 4,
+      "unique_allocated_bytes": 4960256,
+      "exclusive_allocated_bytes": 4960256,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/embedded_audit-0n2and1xahsz8",
+      "regular_files": 191,
+      "unique_allocated_bytes": 69251072,
+      "exclusive_allocated_bytes": 69251072,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_bench-0jfej6k3c4jql",
+      "regular_files": 5,
+      "unique_allocated_bytes": 9203712,
+      "exclusive_allocated_bytes": 9203712,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_bench-0meqa1hey7ly8",
+      "regular_files": 10,
+      "unique_allocated_bytes": 8323072,
+      "exclusive_allocated_bytes": 8323072,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_bench-0nso680dagh2i",
+      "regular_files": 10,
+      "unique_allocated_bytes": 319488,
+      "exclusive_allocated_bytes": 319488,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_bench-0nwrili303y48",
+      "regular_files": 5,
+      "unique_allocated_bytes": 1327104,
+      "exclusive_allocated_bytes": 1327104,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_bench-0rpvmmq1wehwg",
+      "regular_files": 72,
+      "unique_allocated_bytes": 5808128,
+      "exclusive_allocated_bytes": 5808128,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_bench-0s96qjzf46yge",
+      "regular_files": 5,
+      "unique_allocated_bytes": 8957952,
+      "exclusive_allocated_bytes": 8957952,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_bench-1b0n18izuzpk6",
+      "regular_files": 31,
+      "unique_allocated_bytes": 1445888,
+      "exclusive_allocated_bytes": 1429504,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_bench-1nj21jmi4wlry",
+      "regular_files": 156,
+      "unique_allocated_bytes": 44036096,
+      "exclusive_allocated_bytes": 44036096,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_bench-2dn4u8zi6p2og",
+      "regular_files": 6,
+      "unique_allocated_bytes": 1261568,
+      "exclusive_allocated_bytes": 1241088,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_bench-2fhm4rirpm7nx",
+      "regular_files": 52,
+      "unique_allocated_bytes": 4308992,
+      "exclusive_allocated_bytes": 4263936,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_bench_loopback-13l8wrnxyrj6d",
+      "regular_files": 5,
+      "unique_allocated_bytes": 8105984,
+      "exclusive_allocated_bytes": 8105984,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_bench_loopback-24595utgt8q0k",
+      "regular_files": 10,
+      "unique_allocated_bytes": 7704576,
+      "exclusive_allocated_bytes": 7704576,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_bench_loopback-2z57p4qs1dbnc",
+      "regular_files": 10,
+      "unique_allocated_bytes": 7778304,
+      "exclusive_allocated_bytes": 7778304,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_bench_loopback-3kt7qfv04sn7k",
+      "regular_files": 5,
+      "unique_allocated_bytes": 8142848,
+      "exclusive_allocated_bytes": 8142848,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_bench_network-03mph9q8g7sio",
+      "regular_files": 10,
+      "unique_allocated_bytes": 8376320,
+      "exclusive_allocated_bytes": 8376320,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_bench_network-26z0ynucssf5v",
+      "regular_files": 5,
+      "unique_allocated_bytes": 8499200,
+      "exclusive_allocated_bytes": 8499200,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_bench_network-3natq6lyr92os",
+      "regular_files": 10,
+      "unique_allocated_bytes": 8192000,
+      "exclusive_allocated_bytes": 8192000,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_bench_network-3u3vyifr6a3hj",
+      "regular_files": 5,
+      "unique_allocated_bytes": 8540160,
+      "exclusive_allocated_bytes": 8540160,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_engine-02zw17qoqytiv",
+      "regular_files": 5,
+      "unique_allocated_bytes": 16539648,
+      "exclusive_allocated_bytes": 15581184,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_engine-0bo1xpric0sgi",
+      "regular_files": 6,
+      "unique_allocated_bytes": 19025920,
+      "exclusive_allocated_bytes": 17813504,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_engine-0iwug2lzey2np",
+      "regular_files": 262,
+      "unique_allocated_bytes": 180805632,
+      "exclusive_allocated_bytes": 179191808,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_engine-21bh2yrqnllzm",
+      "regular_files": 5,
+      "unique_allocated_bytes": 19165184,
+      "exclusive_allocated_bytes": 19165184,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_engine-234ydfl94wu7i",
+      "regular_files": 4,
+      "unique_allocated_bytes": 15745024,
+      "exclusive_allocated_bytes": 15745024,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_engine-2knyav8wnehwa",
+      "regular_files": 261,
+      "unique_allocated_bytes": 212262912,
+      "exclusive_allocated_bytes": 212262912,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_engine-2wauoety45hm4",
+      "regular_files": 262,
+      "unique_allocated_bytes": 192036864,
+      "exclusive_allocated_bytes": 190103552,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_engine-34o1zivz03x0y",
+      "regular_files": 261,
+      "unique_allocated_bytes": 182034432,
+      "exclusive_allocated_bytes": 182034432,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_query-0wz0wfk3vdifg",
+      "regular_files": 6,
+      "unique_allocated_bytes": 8527872,
+      "exclusive_allocated_bytes": 8404992,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_query-19l67mbdrh9r5",
+      "regular_files": 262,
+      "unique_allocated_bytes": 59379712,
+      "exclusive_allocated_bytes": 59052032,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_query-22g5wrwu9i2c4",
+      "regular_files": 5,
+      "unique_allocated_bytes": 9875456,
+      "exclusive_allocated_bytes": 9875456,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_query-2ud5c14ixos73",
+      "regular_files": 261,
+      "unique_allocated_bytes": 80797696,
+      "exclusive_allocated_bytes": 80797696,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_raft-0s0lwb4aed0n2",
+      "regular_files": 224,
+      "unique_allocated_bytes": 41934848,
+      "exclusive_allocated_bytes": 41127936,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_raft-17vfxljl77y60",
+      "regular_files": 219,
+      "unique_allocated_bytes": 40558592,
+      "exclusive_allocated_bytes": 39833600,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_raft-1ojaph4g87jhm",
+      "regular_files": 4,
+      "unique_allocated_bytes": 11759616,
+      "exclusive_allocated_bytes": 11759616,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_raft-2xftyyqqzf2eh",
+      "regular_files": 260,
+      "unique_allocated_bytes": 67932160,
+      "exclusive_allocated_bytes": 67932160,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_raft-3812xsmntg59e",
+      "regular_files": 5,
+      "unique_allocated_bytes": 13189120,
+      "exclusive_allocated_bytes": 13189120,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_raft-3c1iyd724330s",
+      "regular_files": 261,
+      "unique_allocated_bytes": 88035328,
+      "exclusive_allocated_bytes": 88035328,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_raft-3ejq4rz14v6ot",
+      "regular_files": 5,
+      "unique_allocated_bytes": 11259904,
+      "exclusive_allocated_bytes": 10727424,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_raft-3pvl9yvfc8n6i",
+      "regular_files": 6,
+      "unique_allocated_bytes": 12218368,
+      "exclusive_allocated_bytes": 11599872,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_server-0ebvzt04dyjjc",
+      "regular_files": 6,
+      "unique_allocated_bytes": 43466752,
+      "exclusive_allocated_bytes": 39870464,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_server-0zb5kwifibw2x",
+      "regular_files": 262,
+      "unique_allocated_bytes": 335773696,
+      "exclusive_allocated_bytes": 330878976,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_server-1q4x2fwsdn3cr",
+      "regular_files": 261,
+      "unique_allocated_bytes": 420487168,
+      "exclusive_allocated_bytes": 420487168,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_server-1wwa8tt96pbth",
+      "regular_files": 262,
+      "unique_allocated_bytes": 323891200,
+      "exclusive_allocated_bytes": 319115264,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_server-2oj6rlz9bc9y5",
+      "regular_files": 5,
+      "unique_allocated_bytes": 50802688,
+      "exclusive_allocated_bytes": 50802688,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_server-2p6croe8sfc27",
+      "regular_files": 261,
+      "unique_allocated_bytes": 387272704,
+      "exclusive_allocated_bytes": 387272704,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_store-0uwzhk1zzhlnh",
+      "regular_files": 260,
+      "unique_allocated_bytes": 125755392,
+      "exclusive_allocated_bytes": 125755392,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_store-1nwwdk7vdum5f",
+      "regular_files": 262,
+      "unique_allocated_bytes": 44789760,
+      "exclusive_allocated_bytes": 44175360,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_store-1ymlmkqcp64w6",
+      "regular_files": 6,
+      "unique_allocated_bytes": 10403840,
+      "exclusive_allocated_bytes": 9818112,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_store-21efqk0lia9hp",
+      "regular_files": 4,
+      "unique_allocated_bytes": 15126528,
+      "exclusive_allocated_bytes": 15126528,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_store-227in41v6tqme",
+      "regular_files": 5,
+      "unique_allocated_bytes": 9887744,
+      "exclusive_allocated_bytes": 9326592,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_store-26jeps4wipam0",
+      "regular_files": 5,
+      "unique_allocated_bytes": 17031168,
+      "exclusive_allocated_bytes": 17031168,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_store-2jklgi8uyz0qm",
+      "regular_files": 5,
+      "unique_allocated_bytes": 9789440,
+      "exclusive_allocated_bytes": 9232384,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_store-2jpz030zvsu21",
+      "regular_files": 261,
+      "unique_allocated_bytes": 131407872,
+      "exclusive_allocated_bytes": 131407872,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_store-38064ses0kf8y",
+      "regular_files": 262,
+      "unique_allocated_bytes": 47673344,
+      "exclusive_allocated_bytes": 46985216,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_store-39zk3hk2qrdr8",
+      "regular_files": 262,
+      "unique_allocated_bytes": 54943744,
+      "exclusive_allocated_bytes": 54272000,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_store-3esyfzrk5779w",
+      "regular_files": 260,
+      "unique_allocated_bytes": 124997632,
+      "exclusive_allocated_bytes": 124997632,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_store-3ihsafdd8ew25",
+      "regular_files": 4,
+      "unique_allocated_bytes": 15777792,
+      "exclusive_allocated_bytes": 15777792,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_types-10n6s08s6v0wk",
+      "regular_files": 5,
+      "unique_allocated_bytes": 8409088,
+      "exclusive_allocated_bytes": 8409088,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_types-29a8nwmxgbv1p",
+      "regular_files": 81,
+      "unique_allocated_bytes": 14659584,
+      "exclusive_allocated_bytes": 14659584,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_types-2ldffr16zd0ez",
+      "regular_files": 34,
+      "unique_allocated_bytes": 14884864,
+      "exclusive_allocated_bytes": 13361152,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_types-33i0ldvbrbpmq",
+      "regular_files": 6,
+      "unique_allocated_bytes": 9793536,
+      "exclusive_allocated_bytes": 9170944,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumictl-0eutjcx9tf3ce",
+      "regular_files": 170,
+      "unique_allocated_bytes": 25407488,
+      "exclusive_allocated_bytes": 25407488,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumictl-1rvuoddxzcx8s",
+      "regular_files": 170,
+      "unique_allocated_bytes": 25497600,
+      "exclusive_allocated_bytes": 25497600,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumictl-1z6curren78a2",
+      "regular_files": 5,
+      "unique_allocated_bytes": 2936832,
+      "exclusive_allocated_bytes": 2936832,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumictl-2ldvsyh8ine0i",
+      "regular_files": 10,
+      "unique_allocated_bytes": 3104768,
+      "exclusive_allocated_bytes": 3104768,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumictl-3k9gkxs1t4lxg",
+      "regular_files": 5,
+      "unique_allocated_bytes": 2977792,
+      "exclusive_allocated_bytes": 2977792,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumictl-3sgy0z2mq7ha7",
+      "regular_files": 10,
+      "unique_allocated_bytes": 3092480,
+      "exclusive_allocated_bytes": 3092480,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumid-0pcz21ix4jwp6",
+      "regular_files": 5,
+      "unique_allocated_bytes": 2609152,
+      "exclusive_allocated_bytes": 2609152,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumid-0z20l0cb08mpq",
+      "regular_files": 244,
+      "unique_allocated_bytes": 107290624,
+      "exclusive_allocated_bytes": 107290624,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumid-1w83trg3k1xqa",
+      "regular_files": 258,
+      "unique_allocated_bytes": 106229760,
+      "exclusive_allocated_bytes": 106229760,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumid-2sgs9oavtmn1j",
+      "regular_files": 10,
+      "unique_allocated_bytes": 2781184,
+      "exclusive_allocated_bytes": 2781184,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumid-307p9sfl0fw0n",
+      "regular_files": 5,
+      "unique_allocated_bytes": 2629632,
+      "exclusive_allocated_bytes": 2629632,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumid-34sccigpqzdn7",
+      "regular_files": 10,
+      "unique_allocated_bytes": 2715648,
+      "exclusive_allocated_bytes": 2715648,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/map_sharing-0isxhe2hb7ro3",
+      "regular_files": 10,
+      "unique_allocated_bytes": 1032192,
+      "exclusive_allocated_bytes": 1032192,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/map_sharing-0jmuuigor552b",
+      "regular_files": 5,
+      "unique_allocated_bytes": 897024,
+      "exclusive_allocated_bytes": 897024,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/map_sharing-0wfcbff4btfcj",
+      "regular_files": 4,
+      "unique_allocated_bytes": 884736,
+      "exclusive_allocated_bytes": 884736,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/map_sharing-1v23n9h032vnc",
+      "regular_files": 10,
+      "unique_allocated_bytes": 1048576,
+      "exclusive_allocated_bytes": 1048576,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/openbao_live-0cxfdhn4ovjo6",
+      "regular_files": 5,
+      "unique_allocated_bytes": 3108864,
+      "exclusive_allocated_bytes": 3108864,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/openbao_live-0ojluayxq7cgv",
+      "regular_files": 4,
+      "unique_allocated_bytes": 3018752,
+      "exclusive_allocated_bytes": 3018752,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/openbao_live-0p2xwma7c9djc",
+      "regular_files": 164,
+      "unique_allocated_bytes": 20320256,
+      "exclusive_allocated_bytes": 20320256,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/openbao_live-1lotvdcarew8s",
+      "regular_files": 182,
+      "unique_allocated_bytes": 28938240,
+      "exclusive_allocated_bytes": 28938240,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/openbao_live-2e4m8i0bbz26c",
+      "regular_files": 182,
+      "unique_allocated_bytes": 28848128,
+      "exclusive_allocated_bytes": 28848128,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/openbao_live-2r3tyvah7epa6",
+      "regular_files": 4,
+      "unique_allocated_bytes": 2994176,
+      "exclusive_allocated_bytes": 2994176,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/read_barrier-2mkjwottdpp45",
+      "regular_files": 5,
+      "unique_allocated_bytes": 3760128,
+      "exclusive_allocated_bytes": 3760128,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/read_barrier-2vtnjb4iwaoq5",
+      "regular_files": 261,
+      "unique_allocated_bytes": 131256320,
+      "exclusive_allocated_bytes": 131256320,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/replicated-0asggwz8l80l0",
+      "regular_files": 5,
+      "unique_allocated_bytes": 5062656,
+      "exclusive_allocated_bytes": 5062656,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/replicated-0nkz2h86w3h7s",
+      "regular_files": 179,
+      "unique_allocated_bytes": 46227456,
+      "exclusive_allocated_bytes": 46227456,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/replicated-0oovzhngcq07h",
+      "regular_files": 189,
+      "unique_allocated_bytes": 60809216,
+      "exclusive_allocated_bytes": 60809216,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/replicated-1lk6knyz6j0pg",
+      "regular_files": 4,
+      "unique_allocated_bytes": 4784128,
+      "exclusive_allocated_bytes": 4784128,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/response_release-0wwy5g9eh64rg",
+      "regular_files": 153,
+      "unique_allocated_bytes": 36061184,
+      "exclusive_allocated_bytes": 36061184,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/response_release-1hfyeha7w1r1e",
+      "regular_files": 5,
+      "unique_allocated_bytes": 3289088,
+      "exclusive_allocated_bytes": 3289088,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/response_release-2b50hfnxpth4g",
+      "regular_files": 127,
+      "unique_allocated_bytes": 23109632,
+      "exclusive_allocated_bytes": 23109632,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/response_release-2h5k7u52ivrb1",
+      "regular_files": 4,
+      "unique_allocated_bytes": 3162112,
+      "exclusive_allocated_bytes": 3162112,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/shutdown-1b1s26w6jzlob",
+      "regular_files": 4,
+      "unique_allocated_bytes": 2990080,
+      "exclusive_allocated_bytes": 2990080,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/shutdown-1isvqpg0mtbfp",
+      "regular_files": 176,
+      "unique_allocated_bytes": 52871168,
+      "exclusive_allocated_bytes": 52871168,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/shutdown-1v1fo2ynpq9hd",
+      "regular_files": 5,
+      "unique_allocated_bytes": 4313088,
+      "exclusive_allocated_bytes": 4313088,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/shutdown-2p3rd5thntnra",
+      "regular_files": 260,
+      "unique_allocated_bytes": 131035136,
+      "exclusive_allocated_bytes": 131035136,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/snapshot_budget-1cohi1q3r4fkw",
+      "regular_files": 4,
+      "unique_allocated_bytes": 2408448,
+      "exclusive_allocated_bytes": 2408448,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/snapshot_budget-2ltcjib57k4k9",
+      "regular_files": 62,
+      "unique_allocated_bytes": 9236480,
+      "exclusive_allocated_bytes": 9236480,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/snapshot_budget-2yoh49p782ycu",
+      "regular_files": 62,
+      "unique_allocated_bytes": 9220096,
+      "exclusive_allocated_bytes": 9220096,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/snapshot_budget-3pgcvduohw8m4",
+      "regular_files": 5,
+      "unique_allocated_bytes": 2437120,
+      "exclusive_allocated_bytes": 2437120,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/storage_conformance-1uvvfzn46p61p",
+      "regular_files": 5,
+      "unique_allocated_bytes": 4788224,
+      "exclusive_allocated_bytes": 4788224,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/storage_conformance-1xyofqi162wi3",
+      "regular_files": 226,
+      "unique_allocated_bytes": 97353728,
+      "exclusive_allocated_bytes": 97353728,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/storage_conformance-2dno9yil2fuww",
+      "regular_files": 234,
+      "unique_allocated_bytes": 105787392,
+      "exclusive_allocated_bytes": 105787392,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/storage_conformance-2firgdogkunfo",
+      "regular_files": 4,
+      "unique_allocated_bytes": 4747264,
+      "exclusive_allocated_bytes": 4747264,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/tls_listener-0ol3bel5emm0q",
+      "regular_files": 5,
+      "unique_allocated_bytes": 5967872,
+      "exclusive_allocated_bytes": 5967872,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/tls_listener-1g5hw3q7m6nyx",
+      "regular_files": 225,
+      "unique_allocated_bytes": 48869376,
+      "exclusive_allocated_bytes": 48869376,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/tls_listener-3nu6t1ot3c4tj",
+      "regular_files": 228,
+      "unique_allocated_bytes": 48578560,
+      "exclusive_allocated_bytes": 48578560,
+      "lane": "linux"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_server-040hbwh9tieym",
+      "regular_files": 261,
+      "unique_allocated_bytes": 326893568,
+      "exclusive_allocated_bytes": 130736128,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_server-1xcgcxxvsuawk",
+      "regular_files": 261,
+      "unique_allocated_bytes": 325984256,
+      "exclusive_allocated_bytes": 129835008,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_server-38jsyaasnh6d3",
+      "regular_files": 262,
+      "unique_allocated_bytes": 263876608,
+      "exclusive_allocated_bytes": 105222144,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_server-2rxu57yfvtfd8",
+      "regular_files": 262,
+      "unique_allocated_bytes": 259534848,
+      "exclusive_allocated_bytes": 103788544,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_server-1ia0954enj61o",
+      "regular_files": 262,
+      "unique_allocated_bytes": 224350208,
+      "exclusive_allocated_bytes": 86568960,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_server-2sshweyuww3b8",
+      "regular_files": 261,
+      "unique_allocated_bytes": 195055616,
+      "exclusive_allocated_bytes": 72962048,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_server-10q07yyuukkfn",
+      "regular_files": 261,
+      "unique_allocated_bytes": 185131008,
+      "exclusive_allocated_bytes": 69771264,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_engine-1fp4bhnsaudwk",
+      "regular_files": 261,
+      "unique_allocated_bytes": 165748736,
+      "exclusive_allocated_bytes": 67670016,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_engine-25m64d3v6dfa3",
+      "regular_files": 261,
+      "unique_allocated_bytes": 163225600,
+      "exclusive_allocated_bytes": 66625536,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_engine-0oli4znrphvrq",
+      "regular_files": 262,
+      "unique_allocated_bytes": 151486464,
+      "exclusive_allocated_bytes": 62451712,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_engine-2o620325rx5m6",
+      "regular_files": 262,
+      "unique_allocated_bytes": 149745664,
+      "exclusive_allocated_bytes": 61427712,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_engine-1ro5vrymukzhp",
+      "regular_files": 262,
+      "unique_allocated_bytes": 146857984,
+      "exclusive_allocated_bytes": 59940864,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_engine-39jjk1a0hmfb1",
+      "regular_files": 262,
+      "unique_allocated_bytes": 132075520,
+      "exclusive_allocated_bytes": 53063680,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_engine-2mu4ta570kyz3",
+      "regular_files": 262,
+      "unique_allocated_bytes": 132067328,
+      "exclusive_allocated_bytes": 52916224,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_server-2uqe61ms5aab6",
+      "regular_files": 5,
+      "unique_allocated_bytes": 51367936,
+      "exclusive_allocated_bytes": 51367936,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_server-0tsyvx96871w7",
+      "regular_files": 5,
+      "unique_allocated_bytes": 50229248,
+      "exclusive_allocated_bytes": 50229248,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_engine-2ymdrmd96iozi",
+      "regular_files": 262,
+      "unique_allocated_bytes": 124268544,
+      "exclusive_allocated_bytes": 49643520,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_engine-0wn56lptxt8n9",
+      "regular_files": 261,
+      "unique_allocated_bytes": 121176064,
+      "exclusive_allocated_bytes": 47656960,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_engine-1w50bsruc2w5l",
+      "regular_files": 262,
+      "unique_allocated_bytes": 120217600,
+      "exclusive_allocated_bytes": 46948352,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_engine-1f2540ejw8w1a",
+      "regular_files": 261,
+      "unique_allocated_bytes": 118956032,
+      "exclusive_allocated_bytes": 46718976,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_store-36yyo79ram30d",
+      "regular_files": 261,
+      "unique_allocated_bytes": 103755776,
+      "exclusive_allocated_bytes": 44576768,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_store-3ahhocim5pxkv",
+      "regular_files": 260,
+      "unique_allocated_bytes": 102584320,
+      "exclusive_allocated_bytes": 43638784,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_server-0gcu5npkuk00b",
+      "regular_files": 5,
+      "unique_allocated_bytes": 42475520,
+      "exclusive_allocated_bytes": 42475520,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_store-0pafwbavrni21",
+      "regular_files": 261,
+      "unique_allocated_bytes": 99758080,
+      "exclusive_allocated_bytes": 42459136,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_store-0d0yybjc5fitu",
+      "regular_files": 261,
+      "unique_allocated_bytes": 97988608,
+      "exclusive_allocated_bytes": 41209856,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_server-0nnugkrt4js5j",
+      "regular_files": 6,
+      "unique_allocated_bytes": 43704320,
+      "exclusive_allocated_bytes": 40108032,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_server-0k6ti3q5v7gp2",
+      "regular_files": 6,
+      "unique_allocated_bytes": 43065344,
+      "exclusive_allocated_bytes": 39469056,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/cluster-0r8rh3ihbped2",
+      "regular_files": 261,
+      "unique_allocated_bytes": 107978752,
+      "exclusive_allocated_bytes": 39079936,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/cluster-1h02e27hlxj4o",
+      "regular_files": 261,
+      "unique_allocated_bytes": 105648128,
+      "exclusive_allocated_bytes": 38080512,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_server-1s7m73z11pi1v",
+      "regular_files": 6,
+      "unique_allocated_bytes": 39874560,
+      "exclusive_allocated_bytes": 36913152,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/shutdown-25u26r1dgv5kx",
+      "regular_files": 260,
+      "unique_allocated_bytes": 101662720,
+      "exclusive_allocated_bytes": 36446208,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/read_barrier-25p07orl18kqp",
+      "regular_files": 261,
+      "unique_allocated_bytes": 101777408,
+      "exclusive_allocated_bytes": 36323328,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/read_barrier-2hpsawkb5bn2v",
+      "regular_files": 261,
+      "unique_allocated_bytes": 99778560,
+      "exclusive_allocated_bytes": 35446784,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/shutdown-3ajnvpeyo9o9p",
+      "regular_files": 261,
+      "unique_allocated_bytes": 98377728,
+      "exclusive_allocated_bytes": 34398208,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_server-1dlu8yvet4qtb",
+      "regular_files": 6,
+      "unique_allocated_bytes": 36368384,
+      "exclusive_allocated_bytes": 33923072,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_query-36o32voz9xsrd",
+      "regular_files": 261,
+      "unique_allocated_bytes": 65732608,
+      "exclusive_allocated_bytes": 33640448,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_query-3siw59b4tr7bt",
+      "regular_files": 261,
+      "unique_allocated_bytes": 65163264,
+      "exclusive_allocated_bytes": 32927744,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_raft-06jy3sfgawrbn",
+      "regular_files": 261,
+      "unique_allocated_bytes": 70742016,
+      "exclusive_allocated_bytes": 32649216,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_raft-1ubwvwtur505n",
+      "regular_files": 261,
+      "unique_allocated_bytes": 70144000,
+      "exclusive_allocated_bytes": 32215040,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_server-0gpqqhf36e9mi",
+      "regular_files": 4,
+      "unique_allocated_bytes": 29188096,
+      "exclusive_allocated_bytes": 29188096,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/storage_conformance-1dumdd1vthiog",
+      "regular_files": 234,
+      "unique_allocated_bytes": 84254720,
+      "exclusive_allocated_bytes": 28889088,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/storage_conformance-31of3uzfy7fwo",
+      "regular_files": 234,
+      "unique_allocated_bytes": 83603456,
+      "exclusive_allocated_bytes": 28450816,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_server-2np2a55ymjmzn",
+      "regular_files": 5,
+      "unique_allocated_bytes": 29315072,
+      "exclusive_allocated_bytes": 27557888,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_server-1mu9i38p4tmtk",
+      "regular_files": 5,
+      "unique_allocated_bytes": 29306880,
+      "exclusive_allocated_bytes": 27549696,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_query-22qx7wnru3a6r",
+      "regular_files": 262,
+      "unique_allocated_bytes": 49070080,
+      "exclusive_allocated_bytes": 25272320,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_query-0mu04uonbdnrd",
+      "regular_files": 262,
+      "unique_allocated_bytes": 48533504,
+      "exclusive_allocated_bytes": 24649728,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_query-22tmt3uw6je3e",
+      "regular_files": 262,
+      "unique_allocated_bytes": 48439296,
+      "exclusive_allocated_bytes": 24604672,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumid-1tmufnn7zb4z8",
+      "regular_files": 244,
+      "unique_allocated_bytes": 79994880,
+      "exclusive_allocated_bytes": 23564288,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumid-2tmwlrk0lebln",
+      "regular_files": 255,
+      "unique_allocated_bytes": 79966208,
+      "exclusive_allocated_bytes": 23437312,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_store-318vlfytprfkx",
+      "regular_files": 262,
+      "unique_allocated_bytes": 39653376,
+      "exclusive_allocated_bytes": 22650880,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_store-09ebqyuu5eh35",
+      "regular_files": 262,
+      "unique_allocated_bytes": 40079360,
+      "exclusive_allocated_bytes": 22523904,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_store-3dfbf2t4d54ph",
+      "regular_files": 262,
+      "unique_allocated_bytes": 38916096,
+      "exclusive_allocated_bytes": 22142976,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_store-3mogw2pqrh2pn",
+      "regular_files": 262,
+      "unique_allocated_bytes": 37806080,
+      "exclusive_allocated_bytes": 21430272,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_store-08yq1kwnjrg5z",
+      "regular_files": 262,
+      "unique_allocated_bytes": 41787392,
+      "exclusive_allocated_bytes": 20938752,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_store-0jhuzpi2w5biw",
+      "regular_files": 261,
+      "unique_allocated_bytes": 37527552,
+      "exclusive_allocated_bytes": 20725760,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/embedded_audit-0auxgyyu18utx",
+      "regular_files": 191,
+      "unique_allocated_bytes": 53239808,
+      "exclusive_allocated_bytes": 20615168,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_raft-33v6ia72e983m",
+      "regular_files": 223,
+      "unique_allocated_bytes": 35254272,
+      "exclusive_allocated_bytes": 20549632,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/contracts-2hxz57at84v2a",
+      "regular_files": 189,
+      "unique_allocated_bytes": 45981696,
+      "exclusive_allocated_bytes": 20406272,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/embedded_audit-3mobukqu2bnf4",
+      "regular_files": 192,
+      "unique_allocated_bytes": 52883456,
+      "exclusive_allocated_bytes": 20344832,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/contracts-18xencqn6qwyj",
+      "regular_files": 189,
+      "unique_allocated_bytes": 45826048,
+      "exclusive_allocated_bytes": 20340736,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_query-1fidmrsksyre8",
+      "regular_files": 261,
+      "unique_allocated_bytes": 37433344,
+      "exclusive_allocated_bytes": 20295680,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_bench_loopback-3i43xh02yk6m2",
+      "regular_files": 251,
+      "unique_allocated_bytes": 41410560,
+      "exclusive_allocated_bytes": 20250624,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_query-0alodx1hy2ccg",
+      "regular_files": 261,
+      "unique_allocated_bytes": 37351424,
+      "exclusive_allocated_bytes": 20242432,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_raft-0mbpeouupn1qc",
+      "regular_files": 223,
+      "unique_allocated_bytes": 34816000,
+      "exclusive_allocated_bytes": 20119552,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_query-1bbjoa7hw2fge",
+      "regular_files": 261,
+      "unique_allocated_bytes": 36749312,
+      "exclusive_allocated_bytes": 19898368,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/replicated-1q4q6ud316ptk",
+      "regular_files": 189,
+      "unique_allocated_bytes": 47702016,
+      "exclusive_allocated_bytes": 19853312,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_query-0qjx5w5qxxhny",
+      "regular_files": 262,
+      "unique_allocated_bytes": 36864000,
+      "exclusive_allocated_bytes": 19779584,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_bench-069r152l3dku9",
+      "regular_files": 193,
+      "unique_allocated_bytes": 51449856,
+      "exclusive_allocated_bytes": 19742720,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_raft-0thtp5jlp5s5s",
+      "regular_files": 223,
+      "unique_allocated_bytes": 34344960,
+      "exclusive_allocated_bytes": 19730432,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_raft-093vyo909rlt1",
+      "regular_files": 223,
+      "unique_allocated_bytes": 34320384,
+      "exclusive_allocated_bytes": 19701760,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/replicated-3pr215pjq5igd",
+      "regular_files": 189,
+      "unique_allocated_bytes": 47370240,
+      "exclusive_allocated_bytes": 19644416,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/concurrent_pagination-2k3lxupg5uo15",
+      "regular_files": 182,
+      "unique_allocated_bytes": 48660480,
+      "exclusive_allocated_bytes": 19472384,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_engine-0i25rcm278kwt",
+      "regular_files": 157,
+      "unique_allocated_bytes": 40423424,
+      "exclusive_allocated_bytes": 19443712,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_bench-3lq0mxdecnwj3",
+      "regular_files": 194,
+      "unique_allocated_bytes": 49217536,
+      "exclusive_allocated_bytes": 19357696,
+      "lane": "macos"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/concurrent_pagination-2708e9wuixhij",
+      "regular_files": 182,
+      "unique_allocated_bytes": 48357376,
+      "exclusive_allocated_bytes": 19255296,
+      "lane": "macos"
+    }
+  ],
+  "excluded_units": [
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_server-31buggbm5gyqy",
+      "reason": "contains unfinished working session"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/linux-validation/debug/incremental/kasumi_server-3b49o29geb94t",
+      "reason": "contains unfinished working session"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_raft-1e6tekpt8ouax",
+      "reason": "contains unfinished working session"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_server-09aidmajrc03v",
+      "reason": "contains unfinished working session"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_server-17doyy7f02352",
+      "reason": "contains unfinished working session"
+    },
+    {
+      "path": "/Users/takemiyamakoto/dev/kasumi/target/debug/incremental/kasumi_server-1gtddh2kyktgz",
+      "reason": "contains unfinished working session"
+    }
+  ],
+  "summary": {
+    "linux_units_selected": 132,
+    "linux_exclusive_reclaim_bytes": 5667504128,
+    "linux_exclusive_reclaim_gib": 5.2782745361328125,
+    "macos_units_selected": 75,
+    "macos_units_retained": 251,
+    "macos_selected_exclusive_bytes": 2924146688,
+    "estimated_total_reclaim_bytes": 8591650816,
+    "estimated_total_reclaim_gib": 8.001598358154297,
+    "macos_retained_unique_allocated_bytes": 2401366016,
+    "elapsed_seconds": 10.857627833000151
+  }
+}

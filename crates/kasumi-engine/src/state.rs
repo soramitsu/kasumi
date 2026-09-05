@@ -1,0 +1,1194 @@
+use crate::accounting::{SnapshotAccounting, encoded_len};
+use arc_swap::ArcSwapOption;
+use kasumi_query::{QueryIndexes, check_unique, validate_collection, validate_document};
+use kasumi_types::*;
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Mutex};
+
+pub struct Generation {
+    pub state: TenantState,
+    pub indexes: Arc<QueryIndexes>,
+    // Derived from snapshotted receipts; each command removes only expired
+    // buckets instead of traversing every retained receipt on every write.
+    receipt_expiry: ReceiptExpiry,
+    snapshot_accounting: SnapshotAccounting,
+}
+type ReceiptExpiry = imbl::OrdMap<u64, imbl::Vector<String>>;
+
+/// Only ordered consensus application may publish generations.
+pub struct TenantEngine {
+    current: ArcSwapOption<Generation>,
+    apply_lock: Mutex<()>,
+    tenant: String,
+    incarnation: String,
+    revision_base: u64,
+}
+
+impl kasumi_raft::StateMachineBackend for TenantEngine {
+    fn apply(&self, index: u64, bytes: &[u8]) -> anyhow::Result<Vec<u8>> {
+        let command: Command = serde_json::from_slice(bytes)?;
+        let revision = self
+            .revision_base
+            .checked_add(index)
+            .ok_or_else(|| anyhow::anyhow!("logical revision exhausted"))?;
+        Ok(serde_json::to_vec(&self.apply_command(revision, command)?)?)
+    }
+    fn snapshot(&self) -> anyhow::Result<Vec<u8>> {
+        Ok(TenantEngine::snapshot(self)?)
+    }
+    fn validate_snapshot(&self, bytes: &[u8]) -> anyhow::Result<()> {
+        self.prepare_snapshot(bytes)?;
+        Ok(())
+    }
+    fn restore(&self, bytes: &[u8]) -> anyhow::Result<()> {
+        Ok(TenantEngine::restore(self, bytes)?)
+    }
+}
+
+impl TenantEngine {
+    /// A tenant bootstrap is trusted control-plane input, identical on all replicas.
+    pub fn new(
+        tenant: String,
+        incarnation: String,
+        policy: Policy,
+        limits: Limits,
+    ) -> Result<Self> {
+        validate_name(&tenant)?;
+        validate_name(&incarnation)?;
+        validate_limits(&limits)?;
+        validate_policy(&policy, &limits)?;
+        let state = TenantState {
+            tenant: tenant.clone(),
+            incarnation: incarnation.clone(),
+            revision: 0,
+            revision_base: 0,
+            policy_epoch: 0,
+            suspended: false,
+            retired: false,
+            pending_restore: None,
+            document_count: 0,
+            logical_bytes: 0,
+            policy,
+            limits,
+            collections: BTreeMap::new(),
+            receipts: imbl::HashMap::new(),
+            audits: imbl::Vector::new(),
+        };
+        let indexes = Arc::new(QueryIndexes::build(&state.collections)?);
+        let snapshot_accounting = SnapshotAccounting::rebuild(&state)?;
+        if !snapshot_accounting.fits(&state)? {
+            return Err(Error::new(
+                ErrorCode::QuotaExceeded,
+                "bootstrap exceeds snapshot byte budget",
+            ));
+        }
+        Ok(Self {
+            current: ArcSwapOption::from_pointee(Generation {
+                state,
+                indexes,
+                receipt_expiry: ReceiptExpiry::new(),
+                snapshot_accounting,
+            }),
+            apply_lock: Mutex::new(()),
+            tenant,
+            incarnation,
+            revision_base: 0,
+        })
+    }
+
+    pub(crate) fn from_bootstrap(expected_tenant: &str, bytes: &[u8]) -> Result<Self> {
+        let state: TenantState = serde_json::from_slice(bytes)
+            .map_err(|_| Error::new(ErrorCode::Corruption, "invalid tenant bootstrap"))?;
+        if state.tenant != expected_tenant || state.revision != state.revision_base {
+            return Err(Error::new(
+                ErrorCode::Corruption,
+                "tenant bootstrap identity or revision invalid",
+            ));
+        }
+        let engine = Self {
+            tenant: state.tenant.clone(),
+            incarnation: state.incarnation.clone(),
+            revision_base: state.revision_base,
+            apply_lock: Mutex::new(()),
+            current: ArcSwapOption::empty(),
+        };
+        let generation = engine.prepare_snapshot(bytes)?;
+        engine.current.store(Some(Arc::new(generation)));
+        Ok(engine)
+    }
+
+    pub(crate) fn restored_bootstrap(
+        bytes: &[u8],
+        expected_tenant: &str,
+        incarnation: String,
+        backup_id: uuid::Uuid,
+    ) -> Result<Vec<u8>> {
+        let mut state: TenantState = serde_json::from_slice(bytes)
+            .map_err(|_| Error::new(ErrorCode::Corruption, "invalid logical backup"))?;
+        if state.tenant != expected_tenant {
+            return Err(Error::new(ErrorCode::Forbidden, "backup tenant mismatch"));
+        }
+        let verifier = Self {
+            tenant: state.tenant.clone(),
+            incarnation: state.incarnation.clone(),
+            revision_base: state.revision_base,
+            apply_lock: Mutex::new(()),
+            current: ArcSwapOption::empty(),
+        };
+        verifier.prepare_snapshot(bytes)?;
+        validate_name(&incarnation)?;
+        state.incarnation = incarnation;
+        state.pending_restore = Some(PendingRestore {
+            backup_id: backup_id.to_string(),
+            source_revision: state.revision,
+        });
+        state.suspended = true;
+        state.retired = false;
+        state.policy_epoch = state
+            .policy_epoch
+            .checked_add(1)
+            .ok_or_else(|| Error::new(ErrorCode::Corruption, "policy epoch exhausted"))?;
+        state.revision_base = state
+            .revision
+            .checked_add(1)
+            .ok_or_else(|| Error::new(ErrorCode::Corruption, "revision exhausted"))?;
+        state.revision = state.revision_base;
+        if !SnapshotAccounting::rebuild(&state)?.fits(&state)? {
+            return Err(Error::new(
+                ErrorCode::QuotaExceeded,
+                "restore metadata exceeds snapshot quota; increase the source quota before making this backup",
+            ));
+        }
+        serde_json::to_vec(&state)
+            .map_err(|_| Error::new(ErrorCode::Corruption, "restored bootstrap encoding failed"))
+    }
+
+    pub fn generation(&self) -> Result<Arc<Generation>> {
+        self.current
+            .load_full()
+            .ok_or_else(|| Error::new(ErrorCode::Sealed, "tenant requires authorized recovery"))
+    }
+
+    /// Drop resident state under the apply fence. Already returned client data cannot be recalled.
+    pub fn seal(&self) {
+        let _guard = self
+            .apply_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.current.store(None);
+    }
+
+    pub fn authorize(
+        &self,
+        context: &RequestContext,
+        collection: Option<&str>,
+        action: Action,
+    ) -> Result<()> {
+        authorize_state(&self.generation()?.state, context, collection, action)
+    }
+
+    pub(crate) fn authorize_discovery(
+        &self,
+        context: &RequestContext,
+        action: Action,
+        epoch: Option<u64>,
+    ) -> Result<()> {
+        let generation = self.generation()?;
+        authorize_discovery_state(&generation.state, context, action)?;
+        if epoch.is_some_and(|epoch| epoch != generation.state.policy_epoch) {
+            return Err(Error::new(
+                ErrorCode::Conflict,
+                "access policy changed during discovery",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn authorize_release(
+        &self,
+        context: &RequestContext,
+        collection: Option<&str>,
+        action: Action,
+        policy_epoch: u64,
+    ) -> Result<()> {
+        let generation = self.generation()?;
+        authorize_state(&generation.state, context, collection, action)?;
+        if generation.state.policy_epoch != policy_epoch {
+            return Err(Error::new(
+                ErrorCode::Conflict,
+                "access policy changed during read; retry the request",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Outer errors mean the replica cannot materialize committed state and must stop serving.
+    /// Inner errors are deterministic command rejections and still advance the applied revision.
+    pub fn apply_command(&self, revision: u64, command: Command) -> Result<Result<WriteReceipt>> {
+        let _guard = self
+            .apply_lock
+            .lock()
+            .map_err(|_| Error::new(ErrorCode::Unavailable, "tenant apply lock poisoned"))?;
+        let previous = self.generation()?;
+        if revision <= previous.state.revision {
+            return Err(Error::new(
+                ErrorCode::Corruption,
+                "applied revision must increase",
+            ));
+        }
+        let mut next = previous.state.clone();
+        let mut receipt_expiry = previous.receipt_expiry.clone();
+        let mut changed_receipts = BTreeSet::new();
+        next.revision = revision;
+        let result = if command.context.tenant != next.tenant {
+            Err(Error::new(ErrorCode::Forbidden, "tenant access denied"))
+        } else {
+            apply_operation(
+                &mut next,
+                &command,
+                revision,
+                &previous.indexes,
+                &mut receipt_expiry,
+                &mut changed_receipts,
+            )
+        };
+        let (outcome, changed_documents) = match result {
+            Ok(value) => value,
+            Err(error) => (Err(error), false),
+        };
+        // Check the final retained audit size before publishing any staged
+        // effects. This lets an authorized quota increase recover a full audit
+        // budget while never admitting an operation whose required record cannot fit.
+        let extra_event = usize::from(!matches!(
+            command.operation,
+            Operation::Audit(_) | Operation::MaintenanceAudit(_)
+        ));
+        if next.audits.len().saturating_add(extra_event) > next.limits.max_audit_records {
+            let mut rejected = previous.state.clone();
+            rejected.revision = revision;
+            self.current.store(Some(Arc::new(Generation {
+                state: rejected,
+                indexes: previous.indexes.clone(),
+                receipt_expiry: previous.receipt_expiry.clone(),
+                snapshot_accounting: previous.snapshot_accounting.clone(),
+            })));
+            return Ok(Err(Error::new(
+                ErrorCode::AuditUnavailable,
+                "audit retention budget exhausted",
+            )));
+        }
+        // Audit events are part of the replicated result, never emitted as document-bearing logs.
+        let action = match &command.operation {
+            Operation::Mutate(_) => "mutation",
+            Operation::CreateCollection(_) | Operation::ReplaceCollection(_) => "schema",
+            Operation::SetPolicy(_) => "policy",
+            Operation::SetLimits(_) => "quota",
+            Operation::Suspend(_) => "suspend",
+            Operation::Retire => "retire",
+            Operation::Audit(_) | Operation::MaintenanceAudit(_) => "audit",
+        };
+        if !matches!(
+            command.operation,
+            Operation::Audit(_) | Operation::MaintenanceAudit(_)
+        ) {
+            next.audits.push_back(AuditEvent {
+                event_id: format!("{}:{revision}", next.incarnation),
+                principal: command.context.principal.clone(),
+                action: action.into(),
+                request_id: command.context.request_id.clone(),
+                timestamp_ms: command.timestamp_ms,
+                data_revision: Some(revision),
+                outcome: if outcome.is_ok() {
+                    "committed"
+                } else {
+                    "rejected"
+                }
+                .into(),
+                collection: None,
+            });
+        }
+        let changed = if changed_documents {
+            match &command.operation {
+                Operation::Mutate(batch) => batch_changes(batch),
+                _ => BTreeMap::new(),
+            }
+        } else {
+            BTreeMap::new()
+        };
+        let snapshot_accounting = previous.snapshot_accounting.updated(
+            &previous.state,
+            &next,
+            &changed,
+            &changed_receipts,
+        )?;
+        if !snapshot_accounting.fits(&next)? {
+            return self.reject_snapshot_budget(
+                &previous,
+                next,
+                revision,
+                &command,
+                receipt_expiry,
+                &changed_receipts,
+            );
+        }
+        let indexes = if changed_documents {
+            let changed = match &command.operation {
+                Operation::Mutate(batch) => batch_changes(batch),
+                _ => BTreeMap::new(),
+            };
+            Arc::new(previous.indexes.update(
+                &previous.state.collections,
+                &next.collections,
+                &changed,
+            )?)
+        } else {
+            previous.indexes.clone()
+        };
+        self.current.store(Some(Arc::new(Generation {
+            state: next,
+            indexes,
+            receipt_expiry,
+            snapshot_accounting,
+        })));
+        Ok(outcome)
+    }
+
+    fn reject_snapshot_budget(
+        &self,
+        previous: &Generation,
+        next: TenantState,
+        revision: u64,
+        command: &Command,
+        receipt_expiry: ReceiptExpiry,
+        changed_receipts: &BTreeSet<String>,
+    ) -> Result<Result<WriteReceipt>> {
+        let receipt_key = if let Operation::Mutate(batch) = &command.operation {
+            Some(hex::encode(Sha256::digest(
+                serde_json::to_vec(&(&command.context.principal, &batch.idempotency_key)).map_err(
+                    |_| Error::new(ErrorCode::Corruption, "receipt identity encoding failed"),
+                )?,
+            )))
+        } else {
+            None
+        };
+        let replay = receipt_key.as_ref().is_some_and(|key| {
+            !changed_receipts.contains(key)
+                && previous
+                    .state
+                    .receipts
+                    .get(key)
+                    .is_some_and(|receipt| receipt.expires_at_ms > command.timestamp_ms)
+        });
+        let error = Error::new(
+            if replay {
+                ErrorCode::AuditUnavailable
+            } else {
+                ErrorCode::QuotaExceeded
+            },
+            "serialized tenant snapshot byte budget exhausted",
+        );
+        let mut rejected = previous.state.clone();
+        rejected.revision = revision;
+        let ordinary = !matches!(
+            command.operation,
+            Operation::Audit(_) | Operation::MaintenanceAudit(_)
+        );
+        if ordinary {
+            if let Some(key) = &receipt_key {
+                // Preserve expiry cleanup and record this failed attempt when its
+                // bounded receipt fits; never overwrite a prior idempotent result.
+                rejected.receipts = next.receipts.clone();
+                if changed_receipts.contains(key)
+                    && let Some(receipt) = rejected.receipts.get_mut(key)
+                {
+                    receipt.outcome = Err(error.clone());
+                }
+            }
+            let mut event = next
+                .audits
+                .back()
+                .ok_or_else(|| Error::new(ErrorCode::Corruption, "required audit missing"))?
+                .clone();
+            event.outcome = "rejected".into();
+            rejected.audits.push_back(event);
+            let accounting = previous.snapshot_accounting.updated(
+                &previous.state,
+                &rejected,
+                &BTreeMap::new(),
+                changed_receipts,
+            )?;
+            if rejected.audits.len() <= rejected.limits.max_audit_records
+                && accounting.fits(&rejected)?
+            {
+                self.current.store(Some(Arc::new(Generation {
+                    state: rejected,
+                    indexes: previous.indexes.clone(),
+                    receipt_expiry,
+                    snapshot_accounting: accounting,
+                })));
+                return Ok(Err(error));
+            }
+        }
+        // Required audit/receipt storage is exhausted. Nothing from the command
+        // takes effect. The revision-only cursor fits its pre-reserved headroom.
+        let mut rejected = previous.state.clone();
+        rejected.revision = revision;
+        self.current.store(Some(Arc::new(Generation {
+            state: rejected,
+            indexes: previous.indexes.clone(),
+            receipt_expiry: previous.receipt_expiry.clone(),
+            snapshot_accounting: previous.snapshot_accounting.clone(),
+        })));
+        Ok(Err(Error::new(
+            ErrorCode::AuditUnavailable,
+            "required audit cannot fit serialized tenant budget",
+        )))
+    }
+
+    pub fn snapshot(&self) -> Result<Vec<u8>> {
+        let generation = self.generation()?;
+        let bytes = serde_json::to_vec(&generation.state)
+            .map_err(|_| Error::new(ErrorCode::Corruption, "snapshot encoding failed"))?;
+        if bytes.len() != generation.snapshot_accounting.bytes(&generation.state)?
+            || !generation.snapshot_accounting.fits(&generation.state)?
+        {
+            return Err(Error::new(
+                ErrorCode::Corruption,
+                "snapshot byte accounting mismatch",
+            ));
+        }
+        Ok(bytes)
+    }
+
+    pub fn snapshot_bytes(&self) -> Result<usize> {
+        let generation = self.generation()?;
+        generation.snapshot_accounting.bytes(&generation.state)
+    }
+
+    pub fn restore(&self, bytes: &[u8]) -> Result<()> {
+        let _guard = self
+            .apply_lock
+            .lock()
+            .map_err(|_| Error::new(ErrorCode::Unavailable, "tenant apply lock poisoned"))?;
+        let generation = self.prepare_snapshot(bytes)?;
+        self.current.store(Some(Arc::new(generation)));
+        Ok(())
+    }
+
+    fn prepare_snapshot(&self, bytes: &[u8]) -> Result<Generation> {
+        if bytes.len() > MAX_TENANT_SNAPSHOT_BYTES {
+            return Err(Error::new(
+                ErrorCode::Corruption,
+                "snapshot exceeds format budget",
+            ));
+        }
+        let state: TenantState = serde_json::from_slice(bytes)
+            .map_err(|_| Error::new(ErrorCode::Corruption, "invalid tenant snapshot"))?;
+        if state.tenant != self.tenant
+            || state.incarnation != self.incarnation
+            || state.revision_base != self.revision_base
+            || state.revision < state.revision_base
+        {
+            return Err(Error::new(
+                ErrorCode::Corruption,
+                "snapshot tenant or incarnation mismatch",
+            ));
+        }
+        validate_limits(&state.limits)?;
+        validate_policy(&state.policy, &state.limits)?;
+        validate_metadata_budget(&state.collections, &state.limits)?;
+        if state.retired && !state.suspended {
+            return Err(Error::new(
+                ErrorCode::Corruption,
+                "retired incarnation must be suspended",
+            ));
+        }
+        if state.pending_restore.as_ref().is_some_and(|pending| {
+            !state.suspended
+                || pending.source_revision >= state.revision_base
+                || uuid::Uuid::parse_str(&pending.backup_id).is_err()
+        }) {
+            return Err(Error::new(
+                ErrorCode::Corruption,
+                "invalid pending restore marker",
+            ));
+        }
+        let mut count = 0u64;
+        let mut logical_bytes = 0u64;
+        for (name, collection) in &state.collections {
+            if name != &collection.definition.name {
+                return Err(Error::new(
+                    ErrorCode::Corruption,
+                    "snapshot collection identity mismatch",
+                ));
+            }
+            validate_collection(&collection.definition, &collection.documents)?;
+            check_unique(collection)?;
+            for (id, document) in &collection.documents {
+                validate_name(id)?;
+                if id != &document.id || document.version > state.revision {
+                    return Err(Error::new(
+                        ErrorCode::Corruption,
+                        "invalid document identity/version",
+                    ));
+                }
+                count = count
+                    .checked_add(1)
+                    .ok_or_else(|| Error::new(ErrorCode::Corruption, "document count overflow"))?;
+                let document_bytes = encoded_len(&document.body)?;
+                if document_bytes > state.limits.max_document_bytes {
+                    return Err(Error::new(
+                        ErrorCode::Corruption,
+                        "snapshot document exceeds byte quota",
+                    ));
+                }
+                logical_bytes = logical_bytes
+                    .checked_add(document_bytes as u64)
+                    .ok_or_else(|| {
+                        Error::new(ErrorCode::Corruption, "document byte count overflow")
+                    })?;
+            }
+        }
+        if count != state.document_count
+            || logical_bytes != state.logical_bytes
+            || count > state.limits.max_documents
+            || logical_bytes > state.limits.max_logical_bytes
+            || state.receipts.len() > state.limits.max_receipts
+            || state.audits.len() > state.limits.max_audit_records
+        {
+            return Err(Error::new(
+                ErrorCode::Corruption,
+                "snapshot logical accounting mismatch",
+            ));
+        }
+        let snapshot_accounting = SnapshotAccounting::rebuild(&state)?;
+        if !snapshot_accounting.fits(&state)? {
+            return Err(Error::new(
+                ErrorCode::Corruption,
+                "snapshot exceeds serialized byte quota",
+            ));
+        }
+        let indexes = Arc::new(QueryIndexes::build(&state.collections)?);
+        let mut receipt_expiry = ReceiptExpiry::new();
+        for (key, receipt) in &state.receipts {
+            receipt_expiry
+                .entry(receipt.expires_at_ms)
+                .or_default()
+                .push_back(key.clone());
+        }
+        Ok(Generation {
+            state,
+            indexes,
+            receipt_expiry,
+            snapshot_accounting,
+        })
+    }
+}
+
+fn authorize_state(
+    state: &TenantState,
+    context: &RequestContext,
+    collection: Option<&str>,
+    action: Action,
+) -> Result<()> {
+    if context.tenant != state.tenant {
+        return Err(Error::new(ErrorCode::Forbidden, "tenant access denied"));
+    }
+    if !state.policy.allows(context, collection, action) {
+        return Err(Error::new(ErrorCode::Forbidden, "operation access denied"));
+    }
+    if state.tenant.starts_with("__kasumi_")
+        && action == Action::Write
+        && !state.policy.allows(context, None, Action::Admin)
+    {
+        return Err(Error::new(
+            ErrorCode::Forbidden,
+            "operator metadata requires administration permission",
+        ));
+    }
+    if (state.suspended || state.retired) && action != Action::Admin {
+        return Err(Error::new(ErrorCode::Sealed, "tenant is suspended"));
+    }
+    Ok(())
+}
+
+fn authorize_discovery_state(
+    state: &TenantState,
+    context: &RequestContext,
+    action: Action,
+) -> Result<()> {
+    if context.tenant != state.tenant
+        || !context.scopes.contains(&action)
+        || !state
+            .policy
+            .grants
+            .iter()
+            .any(|grant| grant.principal == context.principal && grant.actions.contains(&action))
+    {
+        return Err(Error::new(ErrorCode::Forbidden, "discovery access denied"));
+    }
+    if state.suspended || state.retired {
+        return Err(Error::new(ErrorCode::Sealed, "tenant is suspended"));
+    }
+    Ok(())
+}
+
+fn apply_operation(
+    state: &mut TenantState,
+    command: &Command,
+    revision: u64,
+    indexes: &QueryIndexes,
+    receipt_expiry: &mut ReceiptExpiry,
+    changed_receipts: &mut BTreeSet<String>,
+) -> Result<(Result<WriteReceipt>, bool)> {
+    let receipt = || WriteReceipt {
+        revision,
+        versions: BTreeMap::new(),
+    };
+    if state.retired
+        && !matches!(
+            command.operation,
+            Operation::MaintenanceAudit(_) | Operation::Retire | Operation::SetLimits(_)
+        )
+    {
+        return Err(Error::new(
+            ErrorCode::Sealed,
+            "database incarnation is permanently retired",
+        ));
+    }
+    match &command.operation {
+        Operation::Mutate(batch) => {
+            for mutation in &batch.operations {
+                authorize_state(
+                    state,
+                    &command.context,
+                    Some(mutation.target().0),
+                    Action::Write,
+                )?;
+            }
+            if batch.operations.is_empty() {
+                return Err(Error::new(
+                    ErrorCode::InvalidArgument,
+                    "empty mutation batch",
+                ));
+            }
+            validate_name(&batch.idempotency_key)?;
+            let identity =
+                serde_json::to_vec(&(&command.context.principal, &batch.idempotency_key)).map_err(
+                    |_| Error::new(ErrorCode::InvalidArgument, "invalid receipt identity"),
+                )?;
+            let receipt_key = hex::encode(Sha256::digest(identity));
+            let digest =
+                hex::encode(Sha256::digest(serde_json::to_vec(batch).map_err(|_| {
+                    Error::new(ErrorCode::InvalidArgument, "invalid mutation batch")
+                })?));
+            if let Some(existing) = state
+                .receipts
+                .get(&receipt_key)
+                .filter(|r| r.expires_at_ms > command.timestamp_ms)
+            {
+                if existing.request_digest != digest {
+                    return Err(Error::new(
+                        ErrorCode::Conflict,
+                        "idempotency key reused for different input",
+                    ));
+                }
+                return Ok((existing.outcome.clone(), false));
+            }
+            while let Some(expires) = receipt_expiry.get_min().map(|(expires, _)| *expires) {
+                if expires > command.timestamp_ms {
+                    break;
+                }
+                let keys = receipt_expiry
+                    .remove(&expires)
+                    .expect("expiry bucket exists");
+                for key in &keys {
+                    if state
+                        .receipts
+                        .get(key)
+                        .is_some_and(|receipt| receipt.expires_at_ms == expires)
+                    {
+                        state.receipts.remove(key);
+                        changed_receipts.insert(key.clone());
+                    }
+                }
+            }
+            if state.receipts.len() >= state.limits.max_receipts {
+                return Err(Error::new(
+                    ErrorCode::QuotaExceeded,
+                    "receipt retention budget exhausted",
+                ));
+            }
+            let mut staged = state.clone();
+            let outcome = apply_batch(&mut staged, batch, revision).and_then(|receipt| {
+                indexes.validate_unique_changes(
+                    &state.collections,
+                    &staged.collections,
+                    &batch_changes(batch),
+                )?;
+                Ok(receipt)
+            });
+            if outcome.is_ok() {
+                *state = staged;
+            }
+            let expires_at_ms = command
+                .timestamp_ms
+                .saturating_add(state.limits.receipt_ttl_ms);
+            receipt_expiry
+                .entry(expires_at_ms)
+                .or_default()
+                .push_back(receipt_key.clone());
+            changed_receipts.insert(receipt_key.clone());
+            state.receipts.insert(
+                receipt_key,
+                StoredReceipt {
+                    request_digest: digest,
+                    expires_at_ms,
+                    collections: batch
+                        .operations
+                        .iter()
+                        .map(|op| op.target().0.to_owned())
+                        .collect::<BTreeSet<_>>()
+                        .into_iter()
+                        .collect(),
+                    outcome: outcome.clone(),
+                },
+            );
+            let changed = outcome.is_ok();
+            Ok((outcome, changed))
+        }
+        Operation::CreateCollection(definition) | Operation::ReplaceCollection(definition) => {
+            authorize_state(
+                state,
+                &command.context,
+                Some(&definition.name),
+                Action::Admin,
+            )?;
+            validate_name(&definition.name)?;
+            let current = state.collections.get(&definition.name);
+            if matches!(command.operation, Operation::CreateCollection(_)) && current.is_some() {
+                return Err(Error::new(ErrorCode::AlreadyExists, "collection exists"));
+            }
+            if matches!(command.operation, Operation::ReplaceCollection(_)) && current.is_none() {
+                return Err(Error::new(ErrorCode::NotFound, "collection not found"));
+            }
+            let documents = current.map(|c| c.documents.clone()).unwrap_or_default();
+            validate_collection(definition, &documents)?;
+            let collection = CollectionState {
+                definition: definition.clone(),
+                documents,
+            };
+            check_unique(&collection)?;
+            let mut collections = state.collections.clone();
+            collections.insert(definition.name.clone(), collection);
+            validate_metadata_budget(&collections, &state.limits)?;
+            let epoch = next_policy_epoch(state.policy_epoch)?;
+            state.collections = collections;
+            state.policy_epoch = epoch;
+            Ok((Ok(receipt()), true))
+        }
+        Operation::SetPolicy(policy) => {
+            authorize_state(state, &command.context, None, Action::Admin)?;
+            validate_policy(policy, &state.limits)?;
+            let epoch = next_policy_epoch(state.policy_epoch)?;
+            state.policy = policy.clone();
+            state.policy_epoch = epoch;
+            Ok((Ok(receipt()), false))
+        }
+        Operation::SetLimits(limits) => {
+            authorize_state(state, &command.context, None, Action::Admin)?;
+            validate_limits(limits)?;
+            validate_policy(&state.policy, limits)?;
+            validate_metadata_budget(&state.collections, limits)?;
+            if limits.max_document_bytes < state.limits.max_document_bytes {
+                for collection in state.collections.values() {
+                    for document in collection.documents.values() {
+                        if encoded_len(&document.body)? > limits.max_document_bytes {
+                            return Err(Error::new(
+                                ErrorCode::QuotaExceeded,
+                                "new document limit is below retained state",
+                            ));
+                        }
+                    }
+                }
+            }
+            if state.document_count > limits.max_documents
+                || state.logical_bytes > limits.max_logical_bytes
+                || state.receipts.len() > limits.max_receipts
+                || state.audits.len().saturating_add(1) > limits.max_audit_records
+            {
+                return Err(Error::new(
+                    ErrorCode::QuotaExceeded,
+                    "new limits are below retained state",
+                ));
+            }
+            state.limits = limits.clone();
+            Ok((Ok(receipt()), false))
+        }
+        Operation::Suspend(suspended) => {
+            authorize_state(state, &command.context, None, Action::Admin)?;
+            if !suspended && state.pending_restore.is_some() {
+                return Err(Error::new(
+                    ErrorCode::AuditUnavailable,
+                    "restore must be durably finalized before activation",
+                ));
+            }
+            let epoch = next_policy_epoch(state.policy_epoch)?;
+            state.suspended = *suspended;
+            state.policy_epoch = epoch;
+            Ok((Ok(receipt()), false))
+        }
+        Operation::Retire => {
+            authorize_state(state, &command.context, None, Action::Admin)?;
+            let epoch = next_policy_epoch(state.policy_epoch)?;
+            state.retired = true;
+            state.suspended = true;
+            state.policy_epoch = epoch;
+            Ok((Ok(receipt()), false))
+        }
+        Operation::Audit(event) => {
+            let action = match event.action.as_str() {
+                "read" | "discovery" => Action::Read,
+                "receipt" => Action::Write,
+                _ => {
+                    return Err(Error::new(
+                        ErrorCode::InvalidArgument,
+                        "invalid read audit action",
+                    ));
+                }
+            };
+            if event.collection.is_none() {
+                authorize_discovery_state(state, &command.context, action)?;
+            } else {
+                authorize_state(state, &command.context, event.collection.as_deref(), action)?;
+            }
+            if event.principal != command.context.principal
+                || event.request_id != command.context.request_id
+                || event.outcome != "authorized_release"
+                || event.data_revision.is_none_or(|r| r > revision)
+            {
+                return Err(Error::new(
+                    ErrorCode::InvalidArgument,
+                    "invalid read audit event",
+                ));
+            }
+            state.audits.push_back(event.clone());
+            Ok((Ok(receipt()), false))
+        }
+        Operation::MaintenanceAudit(event) => {
+            authorize_state(state, &command.context, None, Action::Admin)?;
+            if event.principal != command.context.principal
+                || event.request_id != command.context.request_id
+                || !matches!(
+                    event.action.as_str(),
+                    "backup" | "restore" | "key_rotation" | "key_rewrap" | "membership"
+                )
+                || !matches!(
+                    event.outcome.as_str(),
+                    "started" | "completed" | "failed" | "unknown"
+                )
+                || event.data_revision.is_none_or(|r| r > revision)
+            {
+                return Err(Error::new(
+                    ErrorCode::InvalidArgument,
+                    "invalid maintenance audit event",
+                ));
+            }
+            if event.action == "restore" && event.outcome == "completed" {
+                let pending = state
+                    .pending_restore
+                    .as_ref()
+                    .ok_or_else(|| Error::new(ErrorCode::Conflict, "no restore is pending"))?;
+                if event.data_revision != Some(pending.source_revision) {
+                    return Err(Error::new(
+                        ErrorCode::InvalidArgument,
+                        "restore audit revision mismatch",
+                    ));
+                }
+                state.pending_restore = None;
+            }
+            state.audits.push_back(event.clone());
+            Ok((Ok(receipt()), false))
+        }
+    }
+}
+
+fn apply_batch(
+    state: &mut TenantState,
+    batch: &MutationBatch,
+    revision: u64,
+) -> Result<WriteReceipt> {
+    if batch.operations.len() > state.limits.max_batch_operations
+        || encoded_len(batch)? > state.limits.max_batch_bytes
+    {
+        return Err(Error::new(
+            ErrorCode::ResourceExhausted,
+            "mutation batch exceeds limits",
+        ));
+    }
+    let mut targets = BTreeSet::new();
+    let mut versions = BTreeMap::new();
+    for mutation in &batch.operations {
+        let (name, id) = mutation.target();
+        validate_name(id)?;
+        if !targets.insert((name, id)) {
+            return Err(Error::new(
+                ErrorCode::InvalidArgument,
+                "duplicate batch target",
+            ));
+        }
+        let collection = state
+            .collections
+            .get_mut(name)
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "collection not found"))?;
+        let old = collection.documents.get(id);
+        match mutation.expected() {
+            Precondition::Any => {}
+            Precondition::Absent if old.is_none() => {}
+            Precondition::Version(v) if old.is_some_and(|d| d.version == *v) => {}
+            _ => {
+                return Err(Error::new(
+                    ErrorCode::Conflict,
+                    "document precondition failed",
+                ));
+            }
+        }
+        let old_bytes = old.map(|d| encoded_len(&d.body)).transpose()?.unwrap_or(0) as u64;
+        match mutation {
+            Mutation::Put { body, .. } => {
+                let bytes = encoded_len(body)?;
+                if bytes > state.limits.max_document_bytes {
+                    return Err(Error::new(
+                        ErrorCode::ResourceExhausted,
+                        "document exceeds byte limit",
+                    ));
+                }
+                validate_document(&collection.definition, body)?;
+                if old.is_none() {
+                    state.document_count += 1;
+                }
+                state.logical_bytes = state
+                    .logical_bytes
+                    .checked_sub(old_bytes)
+                    .and_then(|n| n.checked_add(bytes as u64))
+                    .ok_or_else(|| Error::new(ErrorCode::QuotaExceeded, "logical size overflow"))?;
+                collection.documents.insert(
+                    id.to_owned(),
+                    Arc::new(Document {
+                        id: id.to_owned(),
+                        version: revision,
+                        body: body.clone(),
+                    }),
+                );
+                versions.insert(document_path(name, id), revision);
+            }
+            Mutation::Delete { .. } => {
+                if collection.documents.remove(id).is_some() {
+                    state.document_count -= 1;
+                    state.logical_bytes -= old_bytes;
+                }
+                versions.insert(document_path(name, id), revision);
+            }
+        }
+    }
+    if state.document_count > state.limits.max_documents
+        || state.logical_bytes > state.limits.max_logical_bytes
+    {
+        return Err(Error::new(
+            ErrorCode::QuotaExceeded,
+            "tenant logical quota exceeded",
+        ));
+    }
+    Ok(WriteReceipt { revision, versions })
+}
+
+fn batch_changes(batch: &MutationBatch) -> BTreeMap<String, BTreeSet<String>> {
+    let mut changed = BTreeMap::<String, BTreeSet<String>>::new();
+    for mutation in &batch.operations {
+        let (collection, id) = mutation.target();
+        changed
+            .entry(collection.into())
+            .or_default()
+            .insert(id.into());
+    }
+    changed
+}
+
+fn document_path(collection: &str, id: &str) -> String {
+    let escape = |value: &str| value.replace('~', "~0").replace('/', "~1");
+    format!("/{}/{}", escape(collection), escape(id))
+}
+
+fn validate_limits(limits: &Limits) -> Result<()> {
+    if limits.max_document_bytes == 0
+        || limits.max_document_bytes > (1 << 20)
+        || limits.max_batch_operations == 0
+        || limits.max_batch_operations > 256
+        || limits.max_batch_bytes < limits.max_document_bytes
+        || limits.max_batch_bytes > (8 << 20)
+        || limits.max_page_size == 0
+        || limits.max_page_size > 1000
+        || limits.cursor_ttl_ms == 0
+        || limits.cursor_ttl_ms > 60_000
+        || limits.receipt_ttl_ms != 86_400_000
+        || limits.max_query_candidates == 0
+        || limits.max_result_bytes == 0
+        || limits.max_result_bytes > (8 << 20)
+        || limits.max_receipts == 0
+        || limits.max_audit_records == 0
+        || limits.max_documents == 0
+        || limits.max_logical_bytes == 0
+        || limits.max_snapshot_bytes < 4096
+        || limits.max_snapshot_bytes > MAX_TENANT_SNAPSHOT_BYTES
+        || limits.max_query_groups == 0
+        || limits.max_cursor_bytes == 0
+        || limits.max_cursors == 0
+        || limits.max_collections == 0
+        || limits.max_schema_bytes == 0
+        || limits.max_policy_grants == 0
+    {
+        return Err(Error::new(
+            ErrorCode::InvalidArgument,
+            "invalid resource limits",
+        ));
+    }
+    Ok(())
+}
+
+fn next_policy_epoch(epoch: u64) -> Result<u64> {
+    epoch
+        .checked_add(1)
+        .ok_or_else(|| Error::new(ErrorCode::QuotaExceeded, "policy generation exhausted"))
+}
+
+fn validate_policy(policy: &Policy, limits: &Limits) -> Result<()> {
+    if policy.grants.len() > limits.max_policy_grants {
+        return Err(Error::new(
+            ErrorCode::QuotaExceeded,
+            "policy grant quota exceeded",
+        ));
+    }
+    if !policy
+        .grants
+        .iter()
+        .any(|g| g.collection.is_none() && g.actions.contains(&Action::Admin))
+    {
+        return Err(Error::new(
+            ErrorCode::InvalidArgument,
+            "tenant needs an administrator",
+        ));
+    }
+    for grant in &policy.grants {
+        validate_name(&grant.principal)?;
+        if let Some(collection) = &grant.collection {
+            validate_name(collection)?;
+        }
+        if grant.actions.is_empty() {
+            return Err(Error::new(ErrorCode::InvalidArgument, "empty policy grant"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_metadata_budget(
+    collections: &BTreeMap<String, CollectionState>,
+    limits: &Limits,
+) -> Result<()> {
+    if collections.len() > limits.max_collections {
+        return Err(Error::new(
+            ErrorCode::QuotaExceeded,
+            "collection quota exceeded",
+        ));
+    }
+    let bytes = collections
+        .values()
+        .try_fold(0usize, |total, collection| -> Result<usize> {
+            total
+                .checked_add(encoded_len(&collection.definition)?)
+                .ok_or_else(|| Error::new(ErrorCode::QuotaExceeded, "schema size overflow"))
+        })?;
+    if bytes > limits.max_schema_bytes {
+        return Err(Error::new(
+            ErrorCode::QuotaExceeded,
+            "schema and index definition quota exceeded",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod restore_budget_tests {
+    use super::*;
+    #[test]
+    fn restored_identity_metadata_is_validated_before_bootstrap_persistence() {
+        let context = RequestContext {
+            principal: "owner".into(),
+            tenant: "tenant".into(),
+            scopes: BTreeSet::from([Action::Admin, Action::Write]),
+            request_id: "request".into(),
+        };
+        let policy = Policy {
+            grants: vec![Grant {
+                principal: "owner".into(),
+                collection: None,
+                actions: context.scopes.clone(),
+            }],
+            strict_read_audit: false,
+        };
+        let engine = TenantEngine::new(
+            "tenant".into(),
+            "incarnation".into(),
+            policy,
+            Limits::default(),
+        )
+        .unwrap();
+        engine
+            .apply_command(
+                1,
+                Command {
+                    context: context.clone(),
+                    timestamp_ms: 1,
+                    operation: Operation::CreateCollection(CollectionDefinition {
+                        name: "docs".into(),
+                        schema: serde_json::json!({"type":"object"}),
+                        indexes: vec![],
+                        strict_read_audit: false,
+                    }),
+                },
+            )
+            .unwrap()
+            .unwrap();
+        engine
+            .apply_command(
+                2,
+                Command {
+                    context,
+                    timestamp_ms: 2,
+                    operation: Operation::Mutate(MutationBatch {
+                        idempotency_key: "key".into(),
+                        operations: vec![Mutation::Put {
+                            collection: "docs".into(),
+                            id: "id".into(),
+                            body: serde_json::json!({"data":"x".repeat(4096)}),
+                            expected: Precondition::Absent,
+                        }],
+                    }),
+                },
+            )
+            .unwrap()
+            .unwrap();
+        let mut source = engine.generation().unwrap().state.clone();
+        source.limits.max_snapshot_bytes = encoded_len(&source).unwrap() + 20;
+        let bytes = serde_json::to_vec(&source).unwrap();
+        engine.restore(&bytes).unwrap(); // Source itself is a valid recoverable snapshot.
+        let outcome = TenantEngine::restored_bootstrap(
+            &bytes,
+            "tenant",
+            uuid::Uuid::new_v4().to_string(),
+            uuid::Uuid::new_v4(),
+        );
+        assert_eq!(outcome.unwrap_err().code, ErrorCode::QuotaExceeded);
+        assert_eq!(engine.snapshot().unwrap(), bytes);
+    }
+}

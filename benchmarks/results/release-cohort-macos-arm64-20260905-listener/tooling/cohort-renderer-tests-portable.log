@@ -1,0 +1,13 @@
+test_altered_capacity_blocks (__main__.CohortChecks.test_altered_capacity_blocks) ... ok
+test_altered_result_hash_blocks (__main__.CohortChecks.test_altered_result_hash_blocks) ... ok
+test_changed_engine_binary_or_extra_source_change_blocks (__main__.CohortChecks.test_changed_engine_binary_or_extra_source_change_blocks) ... ok
+test_renderer_links_origins_and_preserves_historical_failure (__main__.CohortChecks.test_renderer_links_origins_and_preserves_historical_failure) ... ok
+test_running_or_missing_case_blocks (__main__.CohortChecks.test_running_or_missing_case_blocks) ... ok
+test_startup_failure_stays_unqualified_with_no_measurements (__main__.CohortChecks.test_startup_failure_stays_unqualified_with_no_measurements) ... ok
+test_valid_synthetic_merge_retains_distinct_origins (__main__.CohortChecks.test_valid_synthetic_merge_retains_distinct_origins) ... ok
+test_workload_count_and_protocol_mismatch_blocks (__main__.CohortChecks.test_workload_count_and_protocol_mismatch_blocks) ... ok
+
+----------------------------------------------------------------------
+Ran 8 tests in 0.705s
+
+OK

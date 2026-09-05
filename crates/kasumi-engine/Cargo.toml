@@ -1,0 +1,26 @@
+[package]
+name = "kasumi-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+kasumi-types.workspace = true
+kasumi-query.workspace = true
+kasumi-raft.workspace = true
+kasumi-store.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+sha2.workspace = true
+hex.workspace = true
+arc-swap = "=1.9.2"
+imbl = { version = "=7.0.1", features = ["serde"] }
+url = "=2.5.8"
+libc = "=0.2.189"
+
+[dev-dependencies]
+tempfile.workspace = true
+kasumi-store = { workspace = true, features = ["test-utils"] }

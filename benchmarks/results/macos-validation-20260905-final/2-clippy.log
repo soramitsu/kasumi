@@ -1,0 +1,25 @@
+    Checking tokio v1.53.1
+    Checking kasumi-query v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-query)
+    Checking kasumi-types v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-types)
+    Checking tokio-util v0.7.19
+    Checking tokio-rustls v0.26.5
+    Checking openraft v0.9.25
+    Checking tokio-stream v0.1.19
+    Checking h2 v0.4.19
+    Checking tower v0.5.3
+    Checking rmcp v3.2.0
+    Checking tower-http v0.6.11
+    Checking hyper v1.11.1
+    Checking hyper-util v0.1.20
+    Checking hyper-rustls v0.27.9
+    Checking axum v0.8.9
+    Checking hyper-timeout v0.5.2
+    Checking reqwest v0.12.28
+    Checking kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+    Checking tonic v0.14.6
+    Checking kasumi-raft v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-raft)
+    Checking tonic-prost v0.14.6
+    Checking kasumi-engine v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-engine)
+    Checking kasumi-server v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-server)
+    Checking kasumi-bench v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-bench)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 21.76s

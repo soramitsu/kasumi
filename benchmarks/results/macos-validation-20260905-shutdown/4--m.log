@@ -1,0 +1,12 @@
+..running raw-1
+running local-1
+running replicated-1
+running text-1
+running network-1
+/private/var/folders/7l/w31n0ppj4zg874c4szhllss00000gn/T/kasumi-matrix-test-b3y_t_mr/results/capacity.json
+...
+----------------------------------------------------------------------
+Ran 5 tests in 1.153s
+
+OK
+/private/var/folders/7l/w31n0ppj4zg874c4szhllss00000gn/T/kasumi-matrix-test-b3y_t_mr/results/matrix.json

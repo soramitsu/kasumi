@@ -1,0 +1,358 @@
+rustc 1.94.1 (e408947bf 2026-03-25)
+cargo 1.94.1 (29ea6fb6a 2026-03-24)
+Linux ede75cb3ba83 6.8.0-117-generic #117-Ubuntu SMP PREEMPT_DYNAMIC Thu May  7 17:26:37 UTC 2026 aarch64 GNU/Linux
+   Compiling kasumi-raft v0.1.0 (/workspace/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/workspace/crates/kasumi-engine)
+   Compiling kasumi-server v0.1.0 (/workspace/crates/kasumi-server)
+   Compiling kasumi-bench v0.1.0 (/workspace/crates/kasumi-bench)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 22s
+     Running unittests src/lib.rs (target/linux-validation/debug/deps/kasumi_bench-4e7638168a9d9d64)
+
+running 2 tests
+test tests::a_failure_keeps_prior_samples_and_never_counts_unattempted_work ... ok
+test tests::failure_before_any_success_has_no_success_percentiles ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/linux-validation/debug/deps/kasumi_bench-9d02836c5bff464f)
+
+running 1 test
+test tests::failed_read_workload_retains_counts_and_later_independent_work_can_run ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running unittests src/bin/loopback.rs (target/linux-validation/debug/deps/kasumi_bench_loopback-4a25469a9caac957)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/network.rs (target/linux-validation/debug/deps/kasumi_bench_network-168cb53b1645e3a4)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/linux-validation/debug/deps/kasumi_engine-e3143eba249da240)
+
+running 7 tests
+test admission::tests::retained_cursor_releases_operation_slot_but_keeps_bytes_until_last_owner ... ok
+test admission::tests::suspend_invalidates_old_measurement_and_slow_or_failed_probe_denies ... ok
+test admission::tests::pressure_cancels_queries_but_never_changes_write_work_and_uses_hysteresis ... ok
+test admission::tests::result_release_rechecks_pressure_after_suspend_even_for_completed_work ... ok
+test admission::tests::real_process_rss_and_physical_capacity_are_measured ... ok
+test admission::tests::cancelled_detached_worker_keeps_semaphore_and_reservation_until_exit ... ok
+test state::restore_budget_tests::restored_identity_metadata_is_validated_before_bootstrap_persistence ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/admission.rs (target/linux-validation/debug/deps/admission-fd1c8df9a7ecc60c)
+
+running 2 tests
+test pressure_rejects_new_proposals_and_queries_but_committed_raft_work_still_applies ... ok
+test explicit_local_bootstrap_reads_the_complete_committed_generation ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/concurrent_pagination.rs (target/linux-validation/debug/deps/concurrent_pagination-87c4b947ad89f677)
+
+running 1 test
+test snapshot_pages_overlap_atomic_writers_and_current_policy_revocation ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.46s
+
+     Running tests/contracts.rs (target/linux-validation/debug/deps/contracts-8c921a19a34b6d36)
+
+running 17 tests
+test durable_engine_worker ... ok
+test batch_failure_leaves_no_partial_document_or_index_effects ... ok
+test authorization_is_rechecked_before_idempotency_response ... ok
+test concurrent_cas_has_exactly_one_winner ... ok
+test audit_budget_blocks_effects_and_can_be_increased_without_losing_records ... ok
+test receipt_expiry_index_obeys_exact_boundary_and_rebuilds_from_snapshot ... ok
+test receipts_survive_snapshot_and_precede_changed_schema_and_cas ... ok
+test retirement_is_terminal_and_survives_snapshot_recovery ... ok
+test key_revocation_fences_and_evicts_resident_state ... ok
+test actual_raft_writes_queries_and_snapshot_pagination ... ok
+test tampered_snapshot_never_changes_current_generation ... ok
+test unique_index_swap_is_atomic_and_old_generation_remains_coherent ... ok
+test strict_empty_discovery_is_audited_and_failed_audit_persistence_blocks_results ... ok
+test shared_get_uses_the_same_audit_and_authorization_and_keeps_historical_values ... ok
+test strict_read_audit_is_committed_before_return_and_tied_to_data_revision ... ok
+test killed_process_recovers_acknowledged_documents_receipts_and_bootstrap_policy ... ok
+test logical_backup_restores_suspended_with_new_incarnation_and_increasing_revisions ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+
+     Running tests/control.rs (target/linux-validation/debug/deps/control-d67042ab04056975)
+
+running 2 tests
+test placement_rejects_shared_domains_unknown_nodes_duplicate_identities_and_cleartext ... ok
+test control_updates_require_operator_authority_cas_and_survive_reopen ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+     Running tests/replicated.rs (target/linux-validation/debug/deps/replicated-45b757283ba29014)
+
+running 3 tests
+test deployment_modes_and_live_store_ownership_cannot_be_overridden ... ok
+test replicated_restore_has_identical_genesis_and_requires_quorum_audit_before_activation ... ok
+test replicated_service_preserves_batches_receipts_and_cursor_fences_across_partition_and_restart ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.87s
+
+     Running tests/response_release.rs (target/linux-validation/debug/deps/response_release-41ba17b4136d551b)
+
+running 1 test
+test encoded_response_is_fenced_by_policy_changes_and_actual_key_denial ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running tests/snapshot_budget.rs (target/linux-validation/debug/deps/snapshot_budget-01f22f6ed2bb1ef7)
+
+running 5 tests
+test oversize_effects_become_a_durable_rejected_receipt_without_partial_documents ... ok
+test replay_with_only_rejection_audit_headroom_keeps_the_original_receipt ... ok
+test recovery_and_limit_changes_cannot_admit_state_above_snapshot_format_or_tenant_budget ... ok
+test exact_incremental_accounting_covers_documents_receipts_expiry_schemas_policy_and_restore ... ok
+test full_audit_byte_budget_still_advances_rejections_and_can_be_raised ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running unittests examples/map_sharing.rs (target/linux-validation/debug/examples/map_sharing-388e36d57a057f00)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/linux-validation/debug/deps/kasumi_query-1e1b65e66f0f1b0b)
+
+running 32 tests
+test cancellation::tests::cancellation_during_sort_stops_comparisons ... ok
+test tests::average_is_half_even_at_requested_scale_including_negative_ties ... ok
+test cancellation::tests::sort_matches_reference_with_duplicates ... ok
+test tests::aggregate_validation_and_empty_collection_are_data_independent ... ok
+test tests::declared_indexes_and_explicit_scan_admission_are_enforced ... ok
+test tests::engine_owns_pagination_and_query_does_not_truncate_snapshot ... ok
+test tests::decimal_sort_range_and_sum_preserve_more_than_f64_precision ... ok
+test tests::groups_distinguish_absent_and_null_and_skip_empty_numeric_inputs ... ok
+test tests::candidate_group_and_response_budgets_fail_closed ... ok
+test tests::english_terms_stem_but_prefix_uses_surface_tokens_and_phrase_has_positions ... ok
+test tests::incremental_unique_indexes_allow_atomic_swaps_and_reject_conflicts ... ok
+test tests::indexed_boolean_filters_match_independent_reference_evaluator ... ok
+test tests::invalid_queries_fail_without_hits_and_json_recursion_is_bounded ... ok
+test tests::fuzzy_distance_and_expansion_limits_are_enforced ... ok
+test tests::json_pointer_escapes_and_invalid_pointers ... ok
+test tests::missing_null_empty_array_and_projection_remain_distinct ... ok
+test tests::oversized_text_is_rejected_during_document_validation ... ok
+test tests::schema_202012_local_refs_and_exact_numeric_constraints ... ok
+test tests::schemas_never_resolve_remote_or_file_resources_or_rebase_fragments ... ok
+test tests::shared_document_representation_preserves_snapshot_bytes_and_historical_values ... ok
+test tests::cooperative_cancellation_stops_text_postings_and_term_expansion ... ok
+test tests::cooperative_cancellation_discards_partial_index_scan_sort_and_projection_results ... ok
+test tests::text_planned_postings_are_bounded_even_when_intersection_has_no_hits ... ok
+test tests::text_generation_is_immutable_and_reader_is_ready_when_published ... ok
+test tests::unique_indexes_are_compound_exact_and_sparse_only_for_missing ... ok
+test tests::text_writer_rejects_stale_branches_without_damaging_published_reader ... ok
+test tests::japanese_lindera_terms_phrases_and_fuzzy_typos ... ok
+test tests::unicode_nfkc_and_case_normalization_and_ranked_results ... ok
+test tests::validator_cache_does_not_retain_tenant_plaintext_after_generation_drop ... ok
+test tests::unrelated_document_fields_reuse_text_reader_and_definition_change_rebuilds ... ok
+test tests::incremental_text_updates_reuse_index_and_preserve_every_old_snapshot ... ok
+test tests::incremental_postings_match_rebuild_and_share_unchanged_roots ... ok
+
+test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.50s
+
+     Running unittests src/lib.rs (target/linux-validation/debug/deps/kasumi_raft-7865f59d3b3b8e0b)
+
+running 6 tests
+test timing::tests::replicated_timing_profile_satisfies_openraft_and_retains_safety_features ... ok
+test storage::tests::invalid_backend_snapshot_never_replaces_durable_recoverable_state ... ok
+test storage::tests::applied_metadata_does_not_block_runtime_while_snapshot_capture_holds_state_lock ... ok
+test storage::tests::snapshot_install_power_loss_at_every_storage_operation_keeps_whole_old_or_new_snapshot ... ok
+test storage::tests::eight_mib_command_uses_compact_log_record_and_replays_after_reopen ... ok
+test storage::tests::snapshots_larger_than_store_record_limit_are_chunked_and_recovered ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 14.27s
+
+     Running tests/cluster.rs (target/linux-validation/debug/deps/cluster-373f20e69bd6d686)
+
+running 7 tests
+test raft_crash_worker ... ok
+test fatal_snapshot_capture_blocks_even_local_generation_access ... ok
+test one_voter_acknowledgment_recovers_without_a_snapshot ... ok
+test acknowledged_one_voter_write_survives_sigkill_without_graceful_shutdown ... ok
+test oversized_replication_backlog_shrinks_and_catches_up_without_changing_membership ... ok
+test snapshot_catches_up_partitioned_follower_and_replaces_a_voter ... ok
+test partition_rejects_minority_reads_and_writes_and_recovers_after_full_restart ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.40s
+
+     Running tests/read_barrier.rs (target/linux-validation/debug/deps/read_barrier-aada2354a8e754f7)
+
+running 4 tests
+test key_seal_interrupts_pending_quorum_probe_without_waiting_for_deadline ... ok
+test higher_term_stops_retry_and_never_releases_a_stale_read ... ok
+test fresh_quorum_round_recovers_after_a_600ms_stall_within_original_deadline ... ok
+test permanent_partition_exhausts_five_seconds_without_reducing_membership ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.09s
+
+     Running tests/storage_conformance.rs (target/linux-validation/debug/deps/storage_conformance-e8d55793415af043)
+
+running 5 tests
+test snapshot_buffer_caps_total_size_and_sparse_seeks ... ok
+test snapshot_survives_reopen_and_failed_apply_makes_replica_unavailable ... ok
+test log_vote_and_committed_cursor_survive_full_reopen ... ok
+test committed_log_replay_survives_every_append_and_commit_io_failure ... ok
+test openraft_storage_conformance_suite ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.74s
+
+     Running unittests src/lib.rs (target/linux-validation/debug/deps/kasumi_server-ceff94ee096dec17)
+
+running 34 tests
+test administration::tests::generation_paths_cannot_inherit_tenant_traversal ... ok
+test administration::tests::closed_commands_reject_path_and_tenant_overrides ... ok
+test api::tests::current_mcp_discovery_and_tool_catalog_work_without_initialize ... ok
+test api::tests::native_status_bounds_worst_case_header_escaping ... ok
+test api::tests::mcp_rejects_legacy_mismatched_metadata_bad_origins_and_unauthenticated_calls ... ok
+test api::tests::both_adapters_reject_wrong_identity_tenant_scope_and_admin_escalation ... ok
+test api::tests::native_and_mcp_share_exact_data_receipts_query_and_authorization ... ok
+test api::tests::protected_resource_metadata_and_challenges_advertise_only_configured_issuer ... ok
+test api::tests::required_audit_failure_blocks_dispatch_and_preserves_authentication_denials ... ok
+test auth::tests::config_rejects_cleartext_credentials_and_symmetric_algorithms ... ok
+test auth::tests::identity_and_tenant_come_only_from_verified_access_token ... ok
+test auth::tests::missing_audit_sink_blocks_valid_tokens_and_cannot_be_reconfigured ... ok
+test auth::tests::rejects_wrong_audience_issuer_expiry_not_before_and_id_tokens ... ok
+test auth::tests::untrusted_signatures_and_unknown_keys_never_gain_access ... ok
+test api::tests::native_and_mcp_lost_committed_responses_resolve_without_reapplying ... ok
+test api::tests::required_service_audits_are_durable_and_exclude_unverified_identity_and_payloads ... ok
+test api::tests::reserved_control_and_security_tenants_are_never_data_routes ... ok
+test api::tests::private_native_control_route_can_raise_a_full_audit_budget ... ok
+test runtime::lifecycle_tests::initial_control_bootstrap_rejects_mismatched_policy_and_raft_traffic ... ok
+test runtime::lifecycle_tests::initial_tenant_bootstrap_rejects_mismatched_limits_and_raft_traffic ... ok
+test runtime::lifecycle_tests::local_runtime_opens_real_transit_tls_publishes_control_serves_and_reopens_durable_state ... ok
+test runtime::tests::admin_client_requires_https_server_pin_and_runtime_token_reference ... ok
+test runtime::tests::operator_example_is_valid_secret_free_and_rejects_inline_credentials ... ok
+test runtime::tests::private_key_file_permissions_are_checked_on_opened_file ... ok
+test runtime::tests::rejects_cleartext_credential_urls_ambient_variable_names_and_missing_administrators ... ok
+test runtime::tests::rejects_shared_wrapping_keys_reserved_tenants_and_ambiguous_listeners ... ok
+test runtime::tests::replication_is_explicit_three_voters_with_unique_pins_and_domains ... ok
+test runtime::tests::service_audit_survives_reopen_and_tenant_sealing_and_fails_closed_at_quota ... ok
+test runtime::tests::staged_topology_permits_supersets_but_rejects_changed_pins_and_removed_routes ... ok
+test mcp::response_tests::envelope_accounting_includes_large_request_ids_and_bounds_errors ... ok
+test api::tests::long_schema_property_errors_match_native_mcp_and_durable_receipts ... ok
+test runtime::lifecycle_tests::runtime_catches_up_spare_and_replaces_three_voters_through_admin_control ... ok
+test mcp::response_tests::quoted_payload_stays_within_wire_limit_without_redundant_text_copy ... ok
+test runtime::lifecycle_tests::three_runtime_nodes_replicate_with_control_quorum_over_audited_pinned_mtls ... ok
+
+test result: ok. 34 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 11.49s
+
+     Running unittests src/bin/kasumictl.rs (target/linux-validation/debug/deps/kasumictl-d9b913c36b10ddd2)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/kasumid.rs (target/linux-validation/debug/deps/kasumid-627e4c0999ada9b6)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/cluster_transport.rs (target/linux-validation/debug/deps/cluster_transport-67895f6a188a51f8)
+
+running 2 tests
+test peer_requests_bind_certificate_source_candidate_target_and_group_and_limit_body ... ok
+test real_three_node_raft_replicates_over_pinned_mutual_tls_http ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running tests/tls_listener.rs (target/linux-validation/debug/deps/tls_listener-f52d60660a3044fd)
+
+running 4 tests
+test oauth_listener_allows_tls_without_client_cert_but_peer_pins_fail_before_http ... ok
+test mutual_tls_requires_trusted_client_and_rejects_tls12 ... ok
+test native_grpc_channel_uses_pinned_tls13_and_http2_with_no_plaintext_fallback ... ok
+test authentication_audit_failure_or_timeout_never_releases_http_requests ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+     Running unittests src/lib.rs (target/linux-validation/debug/deps/kasumi_store-bdc0f94e0abc636a)
+
+running 30 tests
+test backup::minio_live::actual_minio_tls_sigv4_encrypted_roundtrip_create_only_and_access_denial ... ignored, requires explicit KASUMI_MINIO_DOCKER_HOST, KASUMI_MINIO_DOCKER_CONFIG and KASUMI_MINIO_WORKDIR; official pinned image must be pre-pulled
+test backup::tests::destination_byte_limits_and_untrusted_format_are_rejected ... ok
+test backup::s3_tests::aws_published_signature_v4_get_object_vector ... ok
+test backup::tests::historical_backup_keeps_original_key_dependencies_after_rewrap ... ok
+test backup::tests::removal_of_an_inactive_backup_key_dependency_breaks_authentication ... ok
+test keys::tests::transit_origin_path_and_wrapped_version_validation ... ok
+test backup::s3_tests::s3_tls_round_trip_signed_session_token_create_only_and_bounded_download ... ok
+test keys::tests::transit_rejects_missing_trust_tls12_redirects_malformed_and_oversized_responses ... ok
+test backup::tests::encrypted_bundle_round_trip_filesystem_reopen_and_tamper_rejection ... ok
+test tests::a_late_success_cannot_undo_an_explicit_seal ... ok
+test keys::tests::transit_tls_generation_fresh_decrypt_rewrap_context_and_revocation ... ok
+test tests::a_fresh_probe_covers_every_retained_version_and_revocation_seals_warm_state ... ok
+test tests::delayed_probe_cannot_extend_a_lease_past_sixty_seconds_from_start ... ok
+test tests::atomic_batches_and_cross_namespace_isolation_survive_reopen ... ok
+test tests::ciphertext_corruption_swapping_and_wrong_tenant_are_rejected ... ok
+test tests::different_tenants_do_not_share_a_slow_key_service_open_gate ... ok
+test tests::expiry_during_fsync_reports_unknown_outcome_and_preserves_committed_batch ... ok
+test tests::expiry_during_key_catalog_fsync_does_not_acknowledge_rotation ... ok
+test tests::faulty_provider_rewrap_cannot_replace_data_keys_or_break_recovery ... ok
+test tests::invalid_batch_does_not_apply_earlier_operations ... ok
+test tests::every_injected_commit_failure_recovers_whole_batch_or_previous_state ... ok
+test tests::periodic_probes_start_every_twenty_seconds_despite_provider_latency ... ok
+test tests::rewrap_preserves_documents_after_retiring_old_wrapping_versions ... ok
+test tests::sixty_second_suspend_aware_expiry_and_explicit_recovery ... ok
+test tests::names_keys_and_values_are_absent_from_disk_and_nonce_changes_on_overwrite ... ok
+test tests::wrapping_catalog_is_atomic_across_every_injected_commit_failure ... ok
+test catalog_budget::catalog_byte_quota_rejects_initialization_rotation_and_rewrap_before_persistence ... ok
+test tests::expiry_watchdog_discards_keys_and_notifies_without_an_incoming_request ... ok
+test catalog_budget::exact_catalog_boundary_leaves_room_for_worst_case_manifest_tenant_encoding ... ok
+test keys::tests::transit_timeout_is_bounded_and_seals_existing_plaintext ... ok
+
+test result: ok. 29 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 5.06s
+
+     Running tests/openbao_live.rs (target/linux-validation/debug/deps/openbao_live-fe59337c5fe6f451)
+
+running 1 test
+test actual_openbao_transit_roundtrip_rotation_backups_and_warm_revocation ... ignored, requires KASUMI_OPENBAO_BIN pointing to a verified local OpenBao release
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/linux-validation/debug/deps/kasumi_types-e3e1d76dfdf3cf07)
+
+running 3 tests
+test tests::remote_mutation_fields_are_closed ... ok
+test tests::exact_number_wire_round_trip ... ok
+test tests::error_messages_bound_utf8_and_recovered_receipt_allocations ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+    Checking kasumi-raft v0.1.0 (/workspace/crates/kasumi-raft)
+    Checking kasumi-engine v0.1.0 (/workspace/crates/kasumi-engine)
+    Checking kasumi-server v0.1.0 (/workspace/crates/kasumi-server)
+    Checking kasumi-bench v0.1.0 (/workspace/crates/kasumi-bench)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 10.54s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.53s
+     Running tests/openbao_live.rs (target/linux-validation/debug/deps/openbao_live-ca82205d67550be5)
+
+running 1 test
+test actual_openbao_transit_roundtrip_rotation_backups_and_warm_revocation ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.24s
+
+running raw-1
+running local-1
+running replicated-1
+running text-1
+running network-1
+/tmp/kasumi-matrix-test-chf8d1mg/results/capacity.json
+..
+----------------------------------------------------------------------
+Ran 2 tests in 0.166s
+
+OK
+/tmp/kasumi-matrix-test-chf8d1mg/results/matrix.json

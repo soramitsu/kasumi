@@ -1,0 +1,8 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.00s
+     Running tests/openbao_live.rs (target/debug/deps/openbao_live-4e2c73b030eb186b)
+
+running 1 test
+test actual_openbao_transit_roundtrip_rotation_backups_and_warm_revocation ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.71s
+

@@ -1,0 +1,107 @@
+{
+  "format": 1,
+  "status": "passed",
+  "wrapper_pid": 29404,
+  "source_sha256_before": "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2",
+  "host": [
+    "Darwin",
+    "takemiyamakotonoMacBook-Pro.local",
+    "25.6.0",
+    "Darwin Kernel Version 25.6.0: Fri Jul 31 19:17:26 PDT 2026; root:xnu-12377.161.14~5/RELEASE_ARM64_T6041",
+    "arm64"
+  ],
+  "rustc": "rustc 1.94.1 (e408947bf 2026-03-25)",
+  "started_unix_seconds": 1788602476.132564,
+  "commands": [
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "--workspace",
+        "--all-features",
+        "--all-targets",
+        "--locked"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 121.1017529964447,
+      "log": "1-test.log",
+      "log_sha256": "84b79c7b0d3c9a1db12e194b9ec33af929bd8b555e842129c4e7bfc07d837ad2",
+      "test_entry_counts": {
+        "passed": 186,
+        "failed": 0,
+        "ignored": 2
+      }
+    },
+    {
+      "argv": [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--all-features",
+        "--all-targets",
+        "--locked",
+        "--no-deps",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 12.81674599647522,
+      "log": "2-clippy.log",
+      "log_sha256": "83094fe323388b69f9bca344e6145baa09207f9eab0e53b489ce5f4ea66bb88e"
+    },
+    {
+      "argv": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.26792383193969727,
+      "log": "3-fmt.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "argv": [
+        "python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "scripts",
+        "-p",
+        "test_*.py"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.7529420852661133,
+      "log": "4--m.log",
+      "log_sha256": "6cf6fd6dbdafb58b66543ede95b9d251b177cf514c72ee39e5da8afd9c2d8afe"
+    },
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "kasumi-store",
+        "--test",
+        "openbao_live",
+        "--locked",
+        "--",
+        "--ignored"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 1.7530858516693115,
+      "log": "5-test.log",
+      "log_sha256": "bb77199c3f1748533dcd17862dc413ae2b738938f10af796e7f331583472a1eb",
+      "test_entry_counts": {
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0
+      }
+    }
+  ],
+  "source_sha256_after": "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2",
+  "finished_unix_seconds": 1788602612.8373709
+}

@@ -1,0 +1,8 @@
+{
+  "cases": [],
+  "documents": 1000000,
+  "evidence_status": "failed development fixture; no success claimed",
+  "fixture_error": "kasumid exited before readiness: Error: Invalid argument (os error 22)\n",
+  "format": 1,
+  "tenants": 1000
+}

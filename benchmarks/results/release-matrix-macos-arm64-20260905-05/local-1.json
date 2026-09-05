@@ -1,0 +1,196 @@
+{
+  "format": 1,
+  "created_unix_ms": 1788599943563,
+  "options": {
+    "documents": 1000000,
+    "tenants": [
+      1
+    ],
+    "operations": 1000,
+    "modes": [
+      "local"
+    ],
+    "output": "/Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-05/local-1.json",
+    "work_parent": "/var/folders/7l/w31n0ppj4zg874c4szhllss00000gn/T/kasumi-matrix-q9zy568t"
+  },
+  "os": "macos",
+  "architecture": "aarch64",
+  "build_profile": "release",
+  "rustc": "rustc 1.94.1 (e408947bf 2026-03-25)",
+  "source_sha256": "daf6da703a73b7c410b04dbafdba41264a00ceb97e79e3107afc7b1d3f355866",
+  "executable_sha256": "2ee2f2d49211e6ee25a8ac23ab204f0bd804cf7a59866a741453fe2f7f33466a",
+  "git_status": [
+    " M .gitignore",
+    " M README.md",
+    "?? Cargo.lock",
+    "?? Cargo.toml",
+    "?? benchmarks/",
+    "?? crates/",
+    "?? deploy/",
+    "?? docs/",
+    "?? scripts/"
+  ],
+  "logical_cpus": 16,
+  "evidence_status": "Preliminary development measurement; repeat on a quiet host with stable source for publication",
+  "guarantees": [
+    "Raw lookup, authorized resident reads, and durable writes are reported separately; no 50x comparison is inferred.",
+    "RSS is process resident memory; peak RSS covers the whole process lifetime. Sequential cases may retain allocator pages; run one case per process for independent capacity estimates.",
+    "Source hash records files at process start, executable hash identifies actual compiled bytes; use quiet stable checkout for publication.",
+    "All datasets are deterministic and total approximately 1 KiB of exact JSON per document across all tenants.",
+    "Latency samples include each API operation; throughput additionally includes driver identity, ID preparation and leader selection."
+  ],
+  "not_measured": [
+    "Authenticated gRPC/MCP wire latency (use a separately configured TLS endpoint benchmark)",
+    "Physically distributed quorum network/disk/failure-domain behavior",
+    "Live OpenBao/Vault request latency and production Linux behavior when this report is run on macOS"
+  ],
+  "cases": [
+    {
+      "mode": "local",
+      "tenants": 1,
+      "documents": 1000000,
+      "replicas": 1,
+      "raft_timing_milliseconds": {
+        "election_timeout_max": 300,
+        "election_timeout_min": 150,
+        "heartbeat_interval": 50,
+        "install_snapshot_timeout": 200
+      },
+      "payload_bytes": 1024000000,
+      "open_seconds": 0.170052083,
+      "baseline_rss_bytes": 72024064,
+      "empty_rss_bytes": 75366400,
+      "collection_setup_seconds": 0.025157958,
+      "empty_index_rss_bytes": 78839808,
+      "load_seconds": 134.629978417,
+      "resident_rss_bytes": 4381573120,
+      "after_workload_rss_bytes": 5160648704,
+      "after_recovery_rss_bytes": 10891640832,
+      "peak_rss_bytes": 8798715904,
+      "disk_bytes": 4294971392,
+      "shutdown_seconds": 0.937569625,
+      "recovery_seconds": 27.809001417,
+      "measurements": [
+        {
+          "name": "embedded_authorized_owned_point_get",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.003681583,
+            "throughput_ops_per_second": 271622.2885644572,
+            "p50_microseconds": 1.709,
+            "p99_microseconds": 6.334,
+            "max_microseconds": 21.958
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "embedded_authorized_shared_point_get",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.001688375,
+            "throughput_ops_per_second": 592285.4816021322,
+            "p50_microseconds": 0.5,
+            "p99_microseconds": 0.708,
+            "max_microseconds": 1.292
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "durable_single_document_write",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 32.332226666,
+            "throughput_ops_per_second": 30.928893649368803,
+            "p50_microseconds": 24252.416,
+            "p99_microseconds": 44868.792,
+            "max_microseconds": 1124419.083
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "read_heavy_90_read_10_write",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 3.932886583,
+            "throughput_ops_per_second": 254.2661678377721,
+            "p50_microseconds": 1.958,
+            "p99_microseconds": 35831.25,
+            "max_microseconds": 1119236.875
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "balanced_50_read_50_write",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 24.983649209,
+            "throughput_ops_per_second": 40.026178387093445,
+            "p50_microseconds": 12.875,
+            "p99_microseconds": 457282.584,
+            "max_microseconds": 1972390.417
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "structured_indexed_equality",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.017425916,
+            "throughput_ops_per_second": 57385.79251730583,
+            "p50_microseconds": 14.166,
+            "p99_microseconds": 29.708,
+            "max_microseconds": 98.042
+          },
+          "failed_attempts": []
+        }
+      ],
+      "notes": [
+        "Actual Database API: tenant RBAC, read barrier, schema validation, persistent indexes, encrypted redb immediate two-phase durability, and mutation audit/receipt retention are active.",
+        "Each initial load batch has at most 256 documents; measured writes contain one document. Setup establishes a real quorum barrier before readiness. Measured operations are never retried; no additional warmup samples are discarded after loading.",
+        "One real OpenRaft voter; no network protocol overhead.",
+        "Test-only authenticated key wrapping excludes Transit network latency. No successful-read strict audit; mutation audits remain enabled.",
+        "Shutdown measures complete Database closure and release of fixture stores. Recovery starts after shutdown and measures reopen, index reconstruction, key access, readiness and one verified point read per tenant; final cleanup and crash safety are separate."
+      ]
+    }
+  ],
+  "progress": [
+    {
+      "details": {},
+      "measurements": [],
+      "mode": "local",
+      "stage": "completed",
+      "tenants": 1
+    }
+  ],
+  "failures": []
+}

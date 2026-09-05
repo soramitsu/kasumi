@@ -1,0 +1,83 @@
+{
+  "format": 1,
+  "status": "passed",
+  "source_sha256_before": "a36dd4e69700ea7e20aec5784106c0034f306d50edfec8939ad2b46ba439a63f",
+  "host": [
+    "Darwin",
+    "takemiyamakotonoMacBook-Pro.local",
+    "25.6.0",
+    "Darwin Kernel Version 25.6.0: Fri Jul 31 19:17:26 PDT 2026; root:xnu-12377.161.14~5/RELEASE_ARM64_T6041",
+    "arm64"
+  ],
+  "rustc": "rustc 1.94.1 (e408947bf 2026-03-25)",
+  "started_unix_seconds": 1788581319.097018,
+  "commands": [
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "--workspace",
+        "--all-features",
+        "--all-targets",
+        "--locked"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 110.32799315452576,
+      "log": "1-test.log",
+      "log_sha256": "815655a8be50ef32964315cb3663097a217c88004db927f0f5f6ef54e7e2ffdc",
+      "test_entry_counts": {
+        "passed": 167,
+        "failed": 0,
+        "ignored": 2
+      }
+    },
+    {
+      "argv": [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--all-features",
+        "--all-targets",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 10.834774017333984,
+      "log": "2-clippy.log",
+      "log_sha256": "52308356be7ae7b187388189b5d4b27d6d26ad07fec6e903006ff3be95a5f125"
+    },
+    {
+      "argv": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.41150403022766113,
+      "log": "3-fmt.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "argv": [
+        "python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "scripts",
+        "-p",
+        "test_*.py"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.55568528175354,
+      "log": "4--m.log",
+      "log_sha256": "918c0170b091165f36dfe35f7e05ae5a418d4c124974476a911126033cba9252"
+    }
+  ],
+  "source_sha256_after": "a36dd4e69700ea7e20aec5784106c0034f306d50edfec8939ad2b46ba439a63f",
+  "finished_unix_seconds": 1788581441.252874
+}

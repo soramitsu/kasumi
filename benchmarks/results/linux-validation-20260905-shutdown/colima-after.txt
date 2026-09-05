@@ -1,0 +1,5 @@
+PROFILE              STATUS     ARCH       CPUS    MEMORY    DISK     RUNTIME    ADDRESS
+default              Stopped    aarch64    2       2GiB      10GiB    docker     
+kasumi-validation    Stopped    aarch64    6       16GiB     40GiB    docker     
+nevo-exact           Stopped    aarch64    8       32GiB     60GiB    docker     
+nevo-rosetta         Stopped    aarch64    8       32GiB     60GiB    docker     

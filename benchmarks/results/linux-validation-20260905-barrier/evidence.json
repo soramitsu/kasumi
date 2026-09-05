@@ -1,0 +1,64 @@
+{
+  "format": 1,
+  "status": "passed",
+  "source_sha256_before": "a36dd4e69700ea7e20aec5784106c0034f306d50edfec8939ad2b46ba439a63f",
+  "image_sha256": "67b357ce730a064aab665277d0dfaece94ab2ca0407ba4fe818b9f2d7fb40861",
+  "started_unix_seconds": 1788581494.7132711,
+  "argv": [
+    "docker",
+    "--host",
+    "unix:///Users/takemiyamakoto/.colima/kasumi-validation/docker.sock",
+    "--config",
+    "/Users/takemiyamakoto/dev/kasumi/target/docker-validation-client",
+    "run",
+    "--cpus",
+    "6",
+    "--memory",
+    "14g",
+    "--memory-swap",
+    "14g",
+    "--rm",
+    "--name",
+    "kasumi-linux-validation-barrier",
+    "--mount",
+    "type=bind,source=/Users/takemiyamakoto/dev/kasumi,target=/workspace",
+    "--mount",
+    "type=bind,source=/Users/takemiyamakoto/dev/kasumi/target/linux-cargo-registry,target=/usr/local/cargo/registry",
+    "-e",
+    "CARGO_NET_OFFLINE=true",
+    "-w",
+    "/workspace",
+    "kasumi-validation:rust1.94.1",
+    "bash",
+    "-c",
+    "bash scripts/validate_linux.sh && cargo fmt --all --check && python3 -m unittest discover -s scripts -p \"test_*.py\""
+  ],
+  "log": "full-gate.log",
+  "exit_code": 0,
+  "finished_unix_seconds": 1788581700.646796,
+  "source_sha256_after": "a36dd4e69700ea7e20aec5784106c0034f306d50edfec8939ad2b46ba439a63f",
+  "test_entry_counts": {
+    "passed_including_separate_openbao": 168,
+    "failed": 0,
+    "ignored_in_workspace_run": 2
+  },
+  "log_sha256": "5b1c05dd296b2c03be69774a110f2ea252b88f26639ed05fa5503999f5eb9896",
+  "workspace_test_entry_counts": {
+    "passed": 167,
+    "failed": 0,
+    "ignored": 2
+  },
+  "additional_checks": {
+    "actual_linux_openbao_tests_passed": 1,
+    "python_driver_tests_passed": 2,
+    "strict_workspace_all_features_all_targets_clippy": "passed",
+    "cargo_fmt_all_check": "passed"
+  },
+  "cleanup": {
+    "fixture_containers_remaining": 0,
+    "colima_profile": "kasumi-validation",
+    "profile_status": "Stopped",
+    "stop_exit_code": 0,
+    "other_profiles_modified": false
+  }
+}

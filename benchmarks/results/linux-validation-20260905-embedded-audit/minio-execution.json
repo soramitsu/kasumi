@@ -1,0 +1,14 @@
+{
+  "argv": [
+    "/usr/bin/caffeinate",
+    "-i",
+    "/opt/homebrew/bin/python3",
+    "/Users/takemiyamakoto/dev/kasumi/target/run-minio-embedded-audit-gate.py",
+    "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2"
+  ],
+  "launcher_pid": 32032,
+  "process_group": 32032,
+  "launched_unix_seconds": 1788602672.8581781,
+  "regular_log": "minio-orchestration.log",
+  "start_new_session": true
+}

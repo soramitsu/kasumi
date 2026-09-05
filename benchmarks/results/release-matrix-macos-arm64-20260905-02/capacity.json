@@ -1,0 +1,270 @@
+{
+  "format": 1,
+  "matrix_status": "failed",
+  "source_sha256": "a36dd4e69700ea7e20aec5784106c0034f306d50edfec8939ad2b46ba439a63f",
+  "passed_quietness_screening": false,
+  "host_load_violation_counts": {
+    "competing compiler/linker or virtual machine process present": 20
+  },
+  "configured_documents": 1000000,
+  "configured_tenants": [
+    1,
+    100,
+    1000
+  ],
+  "footprints": [
+    {
+      "id": "raw-1",
+      "source_file": "raw-1.json",
+      "result_sha256": "fc623b07b17c4cc44b99c7ac06266a9c4e8eefc7a7aab715920686cba3b72470",
+      "completed_and_identity_verified": true,
+      "deployment": "raw",
+      "documents": 1000000,
+      "tenants": 1,
+      "replicas_per_tenant": 1,
+      "resident_data_raft_groups": 0,
+      "resident_control_raft_groups": 0,
+      "additional_service_security_store": false,
+      "baseline_rss_bytes": 71925760,
+      "empty_groups_rss_bytes": 71925760,
+      "empty_indexes_rss_bytes": null,
+      "loaded_rss_bytes": 2113699840,
+      "after_workload_rss_bytes": 2113699840,
+      "after_recovery_rss_bytes": null,
+      "process_lifetime_peak_rss_bytes": 2113699840,
+      "disk_file_bytes": 0,
+      "unique_logical_payload_bytes": 1024000000,
+      "loaded_rss_per_unique_payload_byte": 2.06416,
+      "loaded_rss_per_resident_payload_byte": 2.06416,
+      "open_seconds": 6.25e-07,
+      "collection_setup_seconds": null,
+      "load_seconds": 1.071255167,
+      "clean_recovery_seconds": null,
+      "sampling_scope": "entire harness process including all voters and driver allocations"
+    },
+    {
+      "id": "local-1",
+      "source_file": "local-1.json",
+      "result_sha256": "562c5e5dedf591d27118f78b6b515fb07a8bf424f12a6c2609f925f0d1a2e206",
+      "completed_and_identity_verified": false,
+      "deployment": "local",
+      "documents": null,
+      "tenants": null,
+      "replicas_per_tenant": 1,
+      "resident_data_raft_groups": 1,
+      "resident_control_raft_groups": 0,
+      "additional_service_security_store": false,
+      "baseline_rss_bytes": null,
+      "empty_groups_rss_bytes": null,
+      "empty_indexes_rss_bytes": null,
+      "loaded_rss_bytes": null,
+      "after_workload_rss_bytes": null,
+      "after_recovery_rss_bytes": null,
+      "process_lifetime_peak_rss_bytes": null,
+      "disk_file_bytes": null,
+      "unique_logical_payload_bytes": 157286400,
+      "loaded_rss_per_unique_payload_byte": null,
+      "loaded_rss_per_resident_payload_byte": null,
+      "open_seconds": null,
+      "collection_setup_seconds": null,
+      "load_seconds": null,
+      "clean_recovery_seconds": null,
+      "sampling_scope": "entire harness process including all voters and driver allocations"
+    }
+  ],
+  "layers": [
+    {
+      "layer": "raw_hashmap",
+      "tenants": 1,
+      "footprint_id": "raw-1",
+      "measurements": [
+        {
+          "name": "raw_hashmap_borrowed_lookup",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.000423917,
+            "throughput_ops_per_second": 2358952.3420858327,
+            "p50_microseconds": 0.375,
+            "p99_microseconds": 0.583,
+            "max_microseconds": 0.791
+          },
+          "failed_attempts": []
+        }
+      ],
+      "status": "observed"
+    },
+    {
+      "layer": "embedded_access",
+      "tenants": 1,
+      "footprint_id": "local-1",
+      "measurements": [],
+      "status": "not_measured"
+    },
+    {
+      "layer": "local_durable_writes",
+      "tenants": 1,
+      "footprint_id": "local-1",
+      "measurements": [],
+      "status": "not_measured"
+    },
+    {
+      "layer": "replicated_durable_access",
+      "tenants": 1,
+      "footprint_id": "replicated-1",
+      "measurements": [],
+      "status": "not_measured"
+    },
+    {
+      "layer": "authenticated_grpc",
+      "tenants": 1,
+      "footprint_id": "network-1",
+      "measurements": [],
+      "status": "not_measured"
+    },
+    {
+      "layer": "authenticated_mcp",
+      "tenants": 1,
+      "footprint_id": "network-1",
+      "measurements": [],
+      "status": "not_measured"
+    },
+    {
+      "layer": "raw_hashmap",
+      "tenants": 100,
+      "footprint_id": "raw-100",
+      "measurements": [],
+      "status": "not_measured"
+    },
+    {
+      "layer": "embedded_access",
+      "tenants": 100,
+      "footprint_id": "local-100",
+      "measurements": [],
+      "status": "not_measured"
+    },
+    {
+      "layer": "local_durable_writes",
+      "tenants": 100,
+      "footprint_id": "local-100",
+      "measurements": [],
+      "status": "not_measured"
+    },
+    {
+      "layer": "replicated_durable_access",
+      "tenants": 100,
+      "footprint_id": "replicated-100",
+      "measurements": [],
+      "status": "not_measured"
+    },
+    {
+      "layer": "authenticated_grpc",
+      "tenants": 100,
+      "footprint_id": "network-100",
+      "measurements": [],
+      "status": "not_measured"
+    },
+    {
+      "layer": "authenticated_mcp",
+      "tenants": 100,
+      "footprint_id": "network-100",
+      "measurements": [],
+      "status": "not_measured"
+    },
+    {
+      "layer": "raw_hashmap",
+      "tenants": 1000,
+      "footprint_id": "raw-1000",
+      "measurements": [],
+      "status": "not_measured"
+    },
+    {
+      "layer": "embedded_access",
+      "tenants": 1000,
+      "footprint_id": "local-1000",
+      "measurements": [],
+      "status": "not_measured"
+    },
+    {
+      "layer": "local_durable_writes",
+      "tenants": 1000,
+      "footprint_id": "local-1000",
+      "measurements": [],
+      "status": "not_measured"
+    },
+    {
+      "layer": "replicated_durable_access",
+      "tenants": 1000,
+      "footprint_id": "replicated-1000",
+      "measurements": [],
+      "status": "not_measured"
+    },
+    {
+      "layer": "authenticated_grpc",
+      "tenants": 1000,
+      "footprint_id": "network-1000",
+      "measurements": [],
+      "status": "not_measured"
+    },
+    {
+      "layer": "authenticated_mcp",
+      "tenants": 1000,
+      "footprint_id": "network-1000",
+      "measurements": [],
+      "status": "not_measured"
+    }
+  ],
+  "supplemental_workloads": [
+    {
+      "workload": "english_japanese_indexed_text",
+      "tenants": 1,
+      "footprint_id": "text-1",
+      "measurements": [],
+      "status": "not_measured"
+    },
+    {
+      "workload": "english_japanese_indexed_text",
+      "tenants": 100,
+      "footprint_id": "text-100",
+      "measurements": [],
+      "status": "not_measured"
+    },
+    {
+      "workload": "english_japanese_indexed_text",
+      "tenants": 1000,
+      "footprint_id": "text-1000",
+      "measurements": [],
+      "status": "not_measured"
+    }
+  ],
+  "tenant_overhead_estimates": [],
+  "issues": [
+    "local-1: incomplete, mismatched, or not bound to matrix result/executable hashes; observed values are not used for overhead derivation",
+    "replicated-1: no result file",
+    "text-1: no result file",
+    "network-1: no result file",
+    "raw-100: no result file",
+    "local-100: no result file",
+    "replicated-100: no result file",
+    "text-100: no result file",
+    "network-100: no result file",
+    "raw-1000: no result file",
+    "local-1000: no result file",
+    "replicated-1000: no result file",
+    "text-1000: no result file",
+    "network-1000: no result file"
+  ],
+  "limits": [
+    "One sequential closed-loop observation per workload; no saturation throughput, confidence interval, or launch SLA is inferred.",
+    "API-layer rows share footprints. Never sum embedded/local or native/MCP footprint references.",
+    "Resident/payload ratios include whole-process infrastructure and replicated copies, not just document heap overhead.",
+    "RSS snapshots and five-second host samples can miss transient peaks; network process-lifetime peak is not measured here.",
+    "Clean reopen is distinct from crash/power-loss safety. OpenBao and issuer remain running for network restart.",
+    "Three voters are in one process on one host. Independent failure domains and remote network latency are not measured.",
+    "An observed fit does not establish maximum capacity; budgets require headroom for staged indexes, snapshots, cursors, receipts, auditing, background work and OS memory."
+  ]
+}

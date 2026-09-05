@@ -1,0 +1,127 @@
+{
+  "format": 1,
+  "created_unix_ms": 1788563061154,
+  "options": {
+    "documents": 1000000,
+    "tenants": [
+      1,
+      100,
+      1000
+    ],
+    "operations": 10000,
+    "modes": [
+      "raw"
+    ],
+    "output": "benchmarks/results/hashmap-1m-macos-release.json",
+    "work_parent": null
+  },
+  "os": "macos",
+  "architecture": "aarch64",
+  "build_profile": "release",
+  "rustc": "rustc 1.94.1 (e408947bf 2026-03-25)",
+  "source_sha256": "ed1619ef0e3727ef8667c0fa950e0d3b845140f24ff8eb335cdba468299ce25f",
+  "guarantees": [
+    "Raw lookup, authorized resident reads, and durable writes are reported separately; no 50x comparison is inferred.",
+    "All datasets are deterministic and total approximately 1 KiB of exact JSON per document across all tenants.",
+    "Latency samples include each API operation; throughput additionally includes driver identity, ID preparation and leader selection."
+  ],
+  "not_measured": [
+    "Authenticated gRPC/MCP wire latency (use a separately configured TLS endpoint benchmark)",
+    "Physically distributed quorum network/disk/failure-domain behavior",
+    "Live OpenBao/Vault request latency and production Linux behavior when this report is run on macOS"
+  ],
+  "cases": [
+    {
+      "mode": "raw",
+      "tenants": 1,
+      "documents": 1000000,
+      "replicas": 1,
+      "payload_bytes": 1024000000,
+      "open_seconds": 4.17e-07,
+      "empty_rss_bytes": 8454144,
+      "load_seconds": 1.19268325,
+      "resident_rss_bytes": 2110652416,
+      "peak_rss_bytes": 2110652416,
+      "disk_bytes": 0,
+      "recovery_seconds": null,
+      "measurements": [
+        {
+          "name": "raw_hashmap_borrowed_lookup",
+          "latency": {
+            "operations": 10000,
+            "elapsed_seconds": 0.004831542,
+            "throughput_ops_per_second": 2069732.6029660923,
+            "p50_microseconds": 0.375,
+            "p99_microseconds": 0.708,
+            "max_microseconds": 239.916
+          }
+        }
+      ],
+      "notes": [
+        "Borrowed map lookup only: no authentication, cloning, schema checks, consistency barrier, indexing, or durability. Timer overhead is included."
+      ]
+    },
+    {
+      "mode": "raw",
+      "tenants": 100,
+      "documents": 1000000,
+      "replicas": 1,
+      "payload_bytes": 1024000000,
+      "open_seconds": 1.167e-06,
+      "empty_rss_bytes": 1995620352,
+      "load_seconds": 1.296002042,
+      "resident_rss_bytes": 2113224704,
+      "peak_rss_bytes": 2113224704,
+      "disk_bytes": 0,
+      "recovery_seconds": null,
+      "measurements": [
+        {
+          "name": "raw_hashmap_borrowed_lookup",
+          "latency": {
+            "operations": 10000,
+            "elapsed_seconds": 0.00378225,
+            "throughput_ops_per_second": 2643928.8783131735,
+            "p50_microseconds": 0.334,
+            "p99_microseconds": 0.583,
+            "max_microseconds": 15.666
+          }
+        }
+      ],
+      "notes": [
+        "Borrowed map lookup only: no authentication, cloning, schema checks, consistency barrier, indexing, or durability. Timer overhead is included."
+      ]
+    },
+    {
+      "mode": "raw",
+      "tenants": 1000,
+      "documents": 1000000,
+      "replicas": 1,
+      "payload_bytes": 1024000000,
+      "open_seconds": 3.458e-06,
+      "empty_rss_bytes": 1993572352,
+      "load_seconds": 1.091280834,
+      "resident_rss_bytes": 2094546944,
+      "peak_rss_bytes": 2113470464,
+      "disk_bytes": 0,
+      "recovery_seconds": null,
+      "measurements": [
+        {
+          "name": "raw_hashmap_borrowed_lookup",
+          "latency": {
+            "operations": 10000,
+            "elapsed_seconds": 0.003722209,
+            "throughput_ops_per_second": 2686576.7075411403,
+            "p50_microseconds": 0.334,
+            "p99_microseconds": 0.542,
+            "max_microseconds": 12.833
+          }
+        }
+      ],
+      "notes": [
+        "Borrowed map lookup only: no authentication, cloning, schema checks, consistency barrier, indexing, or durability. Timer overhead is included."
+      ]
+    }
+  ],
+  "failures": [],
+  "evidence_status": "Preliminary development measurement; concurrent source edits and build/test activity may influence results. Repeat with stable code on quiet host for publication."
+}

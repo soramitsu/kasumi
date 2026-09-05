@@ -1,0 +1,33 @@
+[Unit]
+Description=Kasumi durable document database
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kasumi
+Group=kasumi
+StateDirectory=kasumi
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/kasumi
+EnvironmentFile=/etc/kasumi/secrets.env
+ExecStartPre=/usr/local/bin/kasumid check-config /etc/kasumi/node.json
+ExecStart=/usr/local/bin/kasumid serve /etc/kasumi/node.json
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=60
+UMask=0077
+LimitCORE=0
+LimitNOFILE=65536
+MemorySwapMax=0
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/kasumi
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

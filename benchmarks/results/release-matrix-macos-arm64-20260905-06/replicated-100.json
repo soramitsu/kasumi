@@ -1,0 +1,197 @@
+{
+  "format": 1,
+  "created_unix_ms": 1788606093062,
+  "options": {
+    "documents": 1000000,
+    "tenants": [
+      100
+    ],
+    "operations": 1000,
+    "modes": [
+      "replicated"
+    ],
+    "output": "/Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-06/replicated-100.json",
+    "work_parent": "/var/folders/7l/w31n0ppj4zg874c4szhllss00000gn/T/kasumi-matrix-y00i2uf0"
+  },
+  "os": "macos",
+  "architecture": "aarch64",
+  "build_profile": "release",
+  "rustc": "rustc 1.94.1 (e408947bf 2026-03-25)",
+  "source_sha256": "658d5d157c76a9f03ff986f87f95747618a2f86e22996ad7698d8e060d7bf572",
+  "executable_sha256": "a1f93ade86ddfe7096bb0afccc9ae72b4f196254657595d4f6409525f0be52b7",
+  "git_status": [
+    " M .gitignore",
+    " M README.md",
+    "?? Cargo.lock",
+    "?? Cargo.toml",
+    "?? benchmarks/",
+    "?? crates/",
+    "?? deploy/",
+    "?? docs/",
+    "?? scripts/"
+  ],
+  "logical_cpus": 16,
+  "evidence_status": "Preliminary development measurement; repeat on a quiet host with stable source for publication",
+  "guarantees": [
+    "Raw lookup, authorized resident reads, and durable writes are reported separately; no 50x comparison is inferred.",
+    "RSS is process resident memory; peak RSS covers the whole process lifetime. Sequential cases may retain allocator pages; run one case per process for independent capacity estimates.",
+    "Source hash records files at process start, executable hash identifies actual compiled bytes; use quiet stable checkout for publication.",
+    "All datasets are deterministic and total approximately 1 KiB of exact JSON per document across all tenants.",
+    "Latency samples include each API operation; throughput additionally includes driver identity, ID preparation and leader selection."
+  ],
+  "not_measured": [
+    "Authenticated gRPC/MCP wire latency (use a separately configured TLS endpoint benchmark)",
+    "Physically distributed quorum network/disk/failure-domain behavior",
+    "Live OpenBao/Vault request latency and production Linux behavior when this report is run on macOS"
+  ],
+  "cases": [
+    {
+      "mode": "replicated",
+      "tenants": 100,
+      "documents": 1000000,
+      "replicas": 3,
+      "security_audit_stores": 3,
+      "raft_timing_milliseconds": {
+        "election_timeout_max": 3000,
+        "election_timeout_min": 1500,
+        "heartbeat_interval": 250,
+        "install_snapshot_timeout": 30000
+      },
+      "payload_bytes": 1024000000,
+      "open_seconds": 55.734003708,
+      "baseline_rss_bytes": 72138752,
+      "empty_rss_bytes": 112721920,
+      "collection_setup_seconds": 7.023308666,
+      "empty_index_rss_bytes": 124354560,
+      "load_seconds": 384.576122417,
+      "resident_rss_bytes": 12972998656,
+      "after_workload_rss_bytes": 13096861696,
+      "after_recovery_rss_bytes": 13267156992,
+      "peak_rss_bytes": 13096861696,
+      "disk_bytes": 7843360768,
+      "shutdown_seconds": 2.078796291,
+      "recovery_seconds": 52.69878175,
+      "measurements": [
+        {
+          "name": "embedded_authorized_owned_point_get",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.039526584,
+            "throughput_ops_per_second": 25299.428860333595,
+            "p50_microseconds": 31.791,
+            "p99_microseconds": 121.417,
+            "max_microseconds": 692.708
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "embedded_authorized_shared_point_get",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.024998042,
+            "throughput_ops_per_second": 40003.13304538011,
+            "p50_microseconds": 19.0,
+            "p99_microseconds": 60.583,
+            "max_microseconds": 80.458
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "durable_single_document_write",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 119.548639542,
+            "throughput_ops_per_second": 8.364796151851468,
+            "p50_microseconds": 77243.708,
+            "p99_microseconds": 354077.0,
+            "max_microseconds": 3003494.375
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "read_heavy_90_read_10_write",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 6.500491209,
+            "throughput_ops_per_second": 153.8345284761695,
+            "p50_microseconds": 26.0,
+            "p99_microseconds": 73976.667,
+            "max_microseconds": 87639.875
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "balanced_50_read_50_write",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 42.847140708,
+            "throughput_ops_per_second": 23.33878021907982,
+            "p50_microseconds": 174.625,
+            "p99_microseconds": 146708.5,
+            "max_microseconds": 2655590.084
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "structured_indexed_equality",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.031658125,
+            "throughput_ops_per_second": 31587.46767220105,
+            "p50_microseconds": 27.667,
+            "p99_microseconds": 50.333,
+            "max_microseconds": 109.375
+          },
+          "failed_attempts": []
+        }
+      ],
+      "notes": [
+        "Actual Database API: tenant RBAC, read barrier, schema validation, persistent indexes, encrypted redb immediate two-phase durability, and mutation audit/receipt retention are active.",
+        "Each initial load batch has at most 256 documents; measured writes contain one document. Setup establishes a real quorum barrier before readiness. Measured operations are never retried; no additional warmup samples are discarded after loading.",
+        "Three real OpenRaft voters use separate redb files in one process; this measures local quorum persistence, not independent physical failure domains, TLS or network latency.",
+        "Test-only authenticated key wrapping excludes Transit network latency. Each replica node has one independently encrypted service security-audit tenant with a distinct wrapping key shared across its customer groups; its opening/key/RSS/disk overhead is included. No successful-read strict audit; mutation and denial audits remain enabled.",
+        "Shutdown measures complete Database closure and release of fixture stores. Recovery starts after shutdown and measures reopen, index reconstruction, key access, readiness and one verified point read per tenant; final cleanup and crash safety are separate."
+      ]
+    }
+  ],
+  "progress": [
+    {
+      "details": {},
+      "measurements": [],
+      "mode": "replicated",
+      "stage": "completed",
+      "tenants": 100
+    }
+  ],
+  "failures": []
+}

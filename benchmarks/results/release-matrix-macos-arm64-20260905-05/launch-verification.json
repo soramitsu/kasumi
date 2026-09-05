@@ -1,0 +1,8 @@
+{
+  "format": 1,
+  "checked_unix_seconds": 1788599923.008662,
+  "processes": "83269     1 83269 /opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python\n83271 83269 83269 /opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python\n",
+  "stdio": "p83269\nf0\nn/dev/null\nf1\nn/Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-05/driver.log\nf2\nn/Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-05/driver.log\np83271\nf0\nn/dev/null\nf1\nn/Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-05/driver.log\nf2\nn/Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-05/driver.log\n",
+  "release_build": "Finished release profile in driver.log; no skip-build override",
+  "validation_vm": "kasumi-validation stopped before wrapper launch; see Linux gate cleanup manifest"
+}

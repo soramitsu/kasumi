@@ -1,0 +1,34 @@
+{
+  "status": "ready_waiting_for_frozen_source",
+  "profile": "kasumi-validation",
+  "argv": [
+    "colima",
+    "start",
+    "--profile",
+    "kasumi-validation"
+  ],
+  "pid": 9642,
+  "process_group": 9642,
+  "started_unix_seconds": 1788610802.772574,
+  "gate_started": false,
+  "wrapper_paths": [
+    "/Users/takemiyamakoto/dev/kasumi/target/run-linux-listener-gate.py",
+    "/Users/takemiyamakoto/dev/kasumi/target/run-minio-listener-gate.py"
+  ],
+  "ready_unix_seconds": 1788610831.443531,
+  "rust_image": "sha256:67b357ce730a064aab665277d0dfaece94ab2ca0407ba4fe818b9f2d7fb40861",
+  "minio_repo_digests": [
+    "minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e"
+  ],
+  "docker_host": {
+    "ServerVersion": "29.5.2",
+    "KernelVersion": "6.8.0-117-generic",
+    "OperatingSystem": "Ubuntu 24.04.4 LTS",
+    "Architecture": "aarch64",
+    "NCPU": 6,
+    "MemTotal": 16733052928
+  },
+  "running_containers": [],
+  "warm_target_exists": true,
+  "registry_mount_exists": true
+}

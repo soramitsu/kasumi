@@ -1,0 +1,45 @@
+{
+  "format": 1,
+  "status": "prepared_not_launched",
+  "prepared_at_utc": "2026-09-05T10:09:29.239533+00:00",
+  "source_sha256": "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2",
+  "archived_files": {
+    "execution-wrapper.py": "bd4aa5ddec7a061957f91ded1ece668c5d810f1eb620c31979dd4970000e2336",
+    "source-manifest.json": "f4495221b02f346d1cff99b3bdbbdec1d6c5b8e3f4d4460f4631111bd41a6643",
+    "RUN_NOTES.md": "fb29e2685938907813b9ae5c108dfd8d53d05c698528e04ecafb603e139d3a56"
+  },
+  "renderer_sha256": "4e455198185e8452276b05ce257ce6be85b7bf9d1431855412d675c0ea8c3e1a",
+  "renderer_check_evidence": "../../../target/run06-reporting-readiness.json",
+  "renderer_checks_passed": 8,
+  "source_files_verified": 84,
+  "expected_cases": [
+    "raw-1",
+    "local-1",
+    "replicated-1",
+    "text-1",
+    "network-1",
+    "raw-100",
+    "local-100",
+    "replicated-100",
+    "text-100",
+    "network-100",
+    "raw-1000",
+    "local-1000",
+    "replicated-1000",
+    "text-1000",
+    "network-1000"
+  ],
+  "gate_status_at_preparation": {
+    "macos-validation-20260905-embedded-audit/evidence.json": "passed",
+    "linux-validation-20260905-embedded-audit/evidence.json": "passed",
+    "linux-validation-20260905-embedded-audit/minio-evidence.json": "passed",
+    "macos-validation-20260905-embedded-audit/release-build.json": "running"
+  },
+  "pending_operator_prerequisites": [
+    "Release build must pass on the frozen source.",
+    "Stop this task's validation VM and build processes before measurements.",
+    "Reclaim sufficient safe disk headroom for replica files while retaining the 30 GiB driver safety floor."
+  ],
+  "wrapper_launched": false,
+  "scope": "Prepared wrapper/report artifacts only; no executable build, service or measurement launched."
+}

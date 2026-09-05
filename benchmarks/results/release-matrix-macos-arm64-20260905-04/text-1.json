@@ -1,0 +1,188 @@
+{
+  "format": 1,
+  "created_unix_ms": 1788586199431,
+  "options": {
+    "documents": 1000000,
+    "tenants": [
+      1
+    ],
+    "operations": 1000,
+    "modes": [
+      "text"
+    ],
+    "output": "/Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-04/text-1.json",
+    "work_parent": "/var/folders/7l/w31n0ppj4zg874c4szhllss00000gn/T/kasumi-matrix-6ff8qbdj"
+  },
+  "os": "macos",
+  "architecture": "aarch64",
+  "build_profile": "release",
+  "rustc": "rustc 1.94.1 (e408947bf 2026-03-25)",
+  "source_sha256": "58d2da6a2807d6faa30b4238c38a562e4eec180c88e01f1719ceeb7daa43d79d",
+  "executable_sha256": "90765871b600090ec6ab64a69c4b8459c1dae9b9f1e312b9a4d90975ec361a28",
+  "git_status": [
+    " M .gitignore",
+    " M README.md",
+    "?? Cargo.lock",
+    "?? Cargo.toml",
+    "?? benchmarks/",
+    "?? crates/",
+    "?? deploy/",
+    "?? docs/",
+    "?? scripts/"
+  ],
+  "logical_cpus": 16,
+  "evidence_status": "Preliminary development measurement; repeat on a quiet host with stable source for publication",
+  "guarantees": [
+    "Raw lookup, authorized resident reads, and durable writes are reported separately; no 50x comparison is inferred.",
+    "RSS is process resident memory; peak RSS covers the whole process lifetime. Sequential cases may retain allocator pages; run one case per process for independent capacity estimates.",
+    "Source hash records files at process start, executable hash identifies actual compiled bytes; use quiet stable checkout for publication.",
+    "All datasets are deterministic and total approximately 1 KiB of exact JSON per document across all tenants.",
+    "Latency samples include each API operation; throughput additionally includes driver identity, ID preparation and leader selection."
+  ],
+  "not_measured": [
+    "Authenticated gRPC/MCP wire latency (use a separately configured TLS endpoint benchmark)",
+    "Physically distributed quorum network/disk/failure-domain behavior",
+    "Live OpenBao/Vault request latency and production Linux behavior when this report is run on macOS"
+  ],
+  "cases": [],
+  "progress": [
+    {
+      "details": {
+        "documents": 1000000,
+        "empty_index_rss_bytes": 85131264,
+        "empty_rss_bytes": 75497472,
+        "load_seconds": 222.73909725,
+        "mode": "text",
+        "open_seconds": 0.273612584,
+        "payload_bytes": 1024000000,
+        "resident_rss_bytes": 5372116992,
+        "tenants": 1
+      },
+      "measurements": [
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 0.002861416,
+            "max_microseconds": 5.542,
+            "operations": 1000,
+            "p50_microseconds": 1.667,
+            "p99_microseconds": 2.083,
+            "throughput_ops_per_second": 349477.3217176391
+          },
+          "name": "embedded_authorized_owned_point_get",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 0.001618167,
+            "max_microseconds": 2.083,
+            "operations": 1000,
+            "p50_microseconds": 0.458,
+            "p99_microseconds": 0.625,
+            "throughput_ops_per_second": 617983.1871494104
+          },
+          "name": "embedded_authorized_shared_point_get",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 60.846895667,
+            "max_microseconds": 1610439.041,
+            "operations": 1000,
+            "p50_microseconds": 40074.25,
+            "p99_microseconds": 159777.417,
+            "throughput_ops_per_second": 16.43469217349645
+          },
+          "name": "durable_single_document_write",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 7.7066525,
+            "max_microseconds": 1898242.417,
+            "operations": 1000,
+            "p50_microseconds": 2.625,
+            "p99_microseconds": 118410.542,
+            "throughput_ops_per_second": 129.75802399290743
+          },
+          "name": "read_heavy_90_read_10_write",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 23.490916583,
+            "max_microseconds": 1228473.417,
+            "operations": 1000,
+            "p50_microseconds": 17.583,
+            "p99_microseconds": 435840.208,
+            "throughput_ops_per_second": 42.56964586574216
+          },
+          "name": "balanced_50_read_50_write",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 0.014195833,
+            "max_microseconds": 39.666,
+            "operations": 1000,
+            "p50_microseconds": 12.417,
+            "p99_microseconds": 18.583,
+            "throughput_ops_per_second": 70443.2068199168
+          },
+          "name": "structured_indexed_equality",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 1.490194292,
+            "max_microseconds": 10190.167,
+            "operations": 1000,
+            "p50_microseconds": 1402.459,
+            "p99_microseconds": 2556.5,
+            "throughput_ops_per_second": 671.0534360307428
+          },
+          "name": "text_english_Phrase_complete_pages",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        }
+      ],
+      "mode": "text",
+      "stage": "measured_text_query",
+      "tenants": 1
+    }
+  ],
+  "failures": []
+}

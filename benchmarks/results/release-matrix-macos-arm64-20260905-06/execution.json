@@ -1,0 +1,42 @@
+{
+  "format": 1,
+  "status": "failed",
+  "wrapper_pid": 41576,
+  "wrapper_pgid": 41576,
+  "command": [
+    "/usr/bin/caffeinate",
+    "-i",
+    "/opt/homebrew/opt/python@3.14/bin/python3.14",
+    "scripts/run_benchmark_matrix.py",
+    "--output-directory",
+    "/Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-06",
+    "--documents",
+    "1000000",
+    "--tenants",
+    "1,100,1000",
+    "--operations",
+    "1000",
+    "--allow-host-load"
+  ],
+  "cwd": "/Users/takemiyamakoto/dev/kasumi",
+  "started_unix_seconds": 1788603773.24294,
+  "source_sha256_before": "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2",
+  "log": "driver.log",
+  "stdio": "regular file stdout/stderr; stdin is /dev/null",
+  "wrapper_source": "execution-wrapper.py",
+  "wrapper_sha256": "bd4aa5ddec7a061957f91ded1ece668c5d810f1eb620c31979dd4970000e2336",
+  "continuation_survival": "Outer wrapper is a separate OS session. No output pipe depends on the initiating tool handle.",
+  "sleep_inhibition": "caffeinate -i for driver lifetime; no global power settings changed",
+  "validation": [
+    "../macos-validation-20260905-embedded-audit/evidence.json",
+    "../linux-validation-20260905-embedded-audit/evidence.json"
+  ],
+  "minio_validation": "../linux-validation-20260905-embedded-audit/minio-evidence.json",
+  "release_build": "../macos-validation-20260905-embedded-audit/release-build.json",
+  "host_qualification": "Unrelated host activity is recorded; no isolated-host performance or external speed comparison claim.",
+  "driver_pid": 41577,
+  "exit_code": 1,
+  "finished_unix_seconds": 1788610411.563358,
+  "source_sha256_after": "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2",
+  "log_sha256": "2bf0681a95de218a369506d84281e6822925afaae93ffb6bbb26c00112434abc"
+}

@@ -1,0 +1,180 @@
+{
+  "format": 1,
+  "created_unix_ms": 1788585673918,
+  "options": {
+    "documents": 1000000,
+    "tenants": [
+      1
+    ],
+    "operations": 1000,
+    "modes": [
+      "replicated"
+    ],
+    "output": "/Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-04/replicated-1.json",
+    "work_parent": "/var/folders/7l/w31n0ppj4zg874c4szhllss00000gn/T/kasumi-matrix-6ff8qbdj"
+  },
+  "os": "macos",
+  "architecture": "aarch64",
+  "build_profile": "release",
+  "rustc": "rustc 1.94.1 (e408947bf 2026-03-25)",
+  "source_sha256": "58d2da6a2807d6faa30b4238c38a562e4eec180c88e01f1719ceeb7daa43d79d",
+  "executable_sha256": "90765871b600090ec6ab64a69c4b8459c1dae9b9f1e312b9a4d90975ec361a28",
+  "git_status": [
+    " M .gitignore",
+    " M README.md",
+    "?? Cargo.lock",
+    "?? Cargo.toml",
+    "?? benchmarks/",
+    "?? crates/",
+    "?? deploy/",
+    "?? docs/",
+    "?? scripts/"
+  ],
+  "logical_cpus": 16,
+  "evidence_status": "Preliminary development measurement; repeat on a quiet host with stable source for publication",
+  "guarantees": [
+    "Raw lookup, authorized resident reads, and durable writes are reported separately; no 50x comparison is inferred.",
+    "RSS is process resident memory; peak RSS covers the whole process lifetime. Sequential cases may retain allocator pages; run one case per process for independent capacity estimates.",
+    "Source hash records files at process start, executable hash identifies actual compiled bytes; use quiet stable checkout for publication.",
+    "All datasets are deterministic and total approximately 1 KiB of exact JSON per document across all tenants.",
+    "Latency samples include each API operation; throughput additionally includes driver identity, ID preparation and leader selection."
+  ],
+  "not_measured": [
+    "Authenticated gRPC/MCP wire latency (use a separately configured TLS endpoint benchmark)",
+    "Physically distributed quorum network/disk/failure-domain behavior",
+    "Live OpenBao/Vault request latency and production Linux behavior when this report is run on macOS"
+  ],
+  "cases": [],
+  "progress": [
+    {
+      "details": {
+        "documents": 1000000,
+        "empty_index_rss_bytes": 79904768,
+        "empty_rss_bytes": 76316672,
+        "load_seconds": 369.6616355,
+        "mode": "replicated",
+        "open_seconds": 0.581956666,
+        "payload_bytes": 1024000000,
+        "resident_rss_bytes": 13199622144,
+        "tenants": 1
+      },
+      "measurements": [
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 0.020229958,
+            "max_microseconds": 61.958,
+            "operations": 1000,
+            "p50_microseconds": 17.334,
+            "p99_microseconds": 31.709,
+            "throughput_ops_per_second": 49431.63994705278
+          },
+          "name": "embedded_authorized_owned_point_get",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 0.017372417,
+            "max_microseconds": 40.041,
+            "operations": 1000,
+            "p50_microseconds": 15.166,
+            "p99_microseconds": 26.0,
+            "throughput_ops_per_second": 57562.51418556209
+          },
+          "name": "embedded_authorized_shared_point_get",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 103.079746667,
+            "max_microseconds": 3121730.958,
+            "operations": 1000,
+            "p50_microseconds": 70482.208,
+            "p99_microseconds": 293248.25,
+            "throughput_ops_per_second": 9.701226791238716
+          },
+          "name": "durable_single_document_write",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 13.573999666,
+            "max_microseconds": 1331005.625,
+            "operations": 1000,
+            "p50_microseconds": 24.875,
+            "p99_microseconds": 220181.458,
+            "throughput_ops_per_second": 73.67025376498194
+          },
+          "name": "read_heavy_90_read_10_write",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 11,
+          "failed_attempts": [
+            {
+              "elapsed_microseconds": 5001772.0,
+              "error_code": "UNAVAILABLE",
+              "message": "Unavailable: read quorum unavailable",
+              "operation_index": 10
+            }
+          ],
+          "failed_operations": 1,
+          "latency": {
+            "elapsed_seconds": 18.364412625,
+            "max_microseconds": 4809892.542,
+            "operations": 10,
+            "p50_microseconds": 667838.416,
+            "p99_microseconds": 4809892.542,
+            "throughput_ops_per_second": 0.5445314371986346
+          },
+          "name": "balanced_50_read_50_write",
+          "requested_operations": 1000,
+          "successful_operations": 10,
+          "unattempted_operations": 989
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 0.111434417,
+            "max_microseconds": 46636.667,
+            "operations": 1000,
+            "p50_microseconds": 40.542,
+            "p99_microseconds": 520.125,
+            "throughput_ops_per_second": 8973.888201882906
+          },
+          "name": "structured_indexed_equality",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        }
+      ],
+      "mode": "replicated",
+      "stage": "recovering",
+      "tenants": 1
+    }
+  ],
+  "failures": [
+    "mode=replicated tenants=1: opening durable database: Database already open. Cannot acquire lock."
+  ]
+}

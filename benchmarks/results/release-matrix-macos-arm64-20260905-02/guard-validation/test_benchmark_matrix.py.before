@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+"""Exercise driver failures with synthetic processes; never emit benchmark evidence."""
+import importlib.util
+import json
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+from unittest.mock import patch
+
+SCRIPTS=Path(__file__).resolve().parent
+spec=importlib.util.spec_from_file_location("matrix_driver",SCRIPTS/"run_benchmark_matrix.py")
+driver=importlib.util.module_from_spec(spec)
+spec.loader.exec_module(driver)
+
+
+class MatrixFailureTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary=tempfile.TemporaryDirectory(prefix="kasumi-matrix-test-")
+        self.root=Path(self.temporary.name)
+        (self.root/"target/release").mkdir(parents=True)
+        (self.root/"scripts").mkdir()
+        (self.root/"Cargo.toml").write_text("")
+        (self.root/"Cargo.lock").write_text("")
+        shutil.copyfile(SCRIPTS/"report_benchmark_capacity.py",self.root/"scripts/report_benchmark_capacity.py")
+        subprocess.run(["git","init","-q",str(self.root)],check=True)
+        code='''import json,sys
+from pathlib import Path
+args=sys.argv[1:]
+def option(name):return args[args.index(name)+1]
+mode=option('--modes') if '--modes' in args else 'network'
+path=Path(option('--output')) if '--output' in args else Path(option('--output-prefix')+'-1.json')
+path.write_text(json.dumps({'format':1,'cases':[],'failures':['synthetic failure'] if mode=='raw' else []}))
+raise SystemExit(7 if mode=='raw' else 0)
+'''
+        for name in ("kasumi-bench","kasumi-bench-loopback","kasumi-bench-network","kasumid"):
+            executable=self.root/"target/release"/name
+            executable.write_text(f"#!{sys.executable}\n"+code)
+            executable.chmod(0o700)
+        self.output=self.root/"results"
+        self.argv=["driver","--skip-build","--quiet-seconds","0","--documents","1","--tenants","1","--operations","1","--output-directory",str(self.output)]
+        self.sample={"unix_seconds":0,"load_average":[0,0,0],"background_cpu_percent":0,"competing_processes":[],"free_disk_bytes":100*2**30,"memory":{}}
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def test_failed_case_preserves_exit_hash_and_runs_other_cases(self):
+        original_sleep=time.sleep
+        with patch.object(driver,"ROOT",self.root),patch.object(sys,"argv",self.argv),patch.object(driver,"host_sample",return_value=self.sample),patch.object(driver.time,"sleep",side_effect=lambda seconds:original_sleep(min(seconds,0.02))):
+            with self.assertRaises(SystemExit) as exit:
+                driver.main()
+        self.assertEqual(exit.exception.code,1)
+        result=json.loads((self.output/"matrix.json").read_text())
+        self.assertEqual(result["status"],"completed_with_failures")
+        self.assertEqual([case["status"] for case in result["cases"]],["failed","passed","passed","passed","passed"])
+        self.assertEqual(result["cases"][0]["exit_code"],7)
+        self.assertEqual(result["cases"][0]["result_sha256"],driver.digest(self.output/"raw-1.json"))
+        self.assertEqual(len(result["failures"]),1)
+        self.assertTrue((self.output/"capacity.json").exists())
+
+    def test_source_change_still_aborts_before_cases(self):
+        calls=0
+        def identity():
+            nonlocal calls
+            calls+=1
+            return "initial" if calls<=2 else "changed"
+        with patch.object(driver,"ROOT",self.root),patch.object(sys,"argv",self.argv),patch.object(driver,"host_sample",return_value=self.sample),patch.object(driver,"source_identity",side_effect=identity):
+            with self.assertRaisesRegex(RuntimeError,"source changed"):
+                driver.main()
+        result=json.loads((self.output/"matrix.json").read_text())
+        self.assertEqual(result["status"],"failed")
+        self.assertEqual(result["cases"],[])
+
+
+if __name__ == "__main__":
+    unittest.main()

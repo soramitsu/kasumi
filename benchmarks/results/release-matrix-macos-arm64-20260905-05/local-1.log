@@ -1,0 +1,60 @@
+starting mode=local tenants=1 documents=1000000 operations=1000
+checkpoint mode=local tenants=1 stage=opening
+checkpoint mode=local tenants=1 stage=collection_setup
+loaded 100 batches (local, tenant 1)
+loaded 200 batches (local, tenant 1)
+loaded 300 batches (local, tenant 1)
+loaded 400 batches (local, tenant 1)
+loaded 500 batches (local, tenant 1)
+loaded 600 batches (local, tenant 1)
+loaded 700 batches (local, tenant 1)
+loaded 800 batches (local, tenant 1)
+loaded 900 batches (local, tenant 1)
+loaded 1000 batches (local, tenant 1)
+loaded 1100 batches (local, tenant 1)
+loaded 1200 batches (local, tenant 1)
+loaded 1300 batches (local, tenant 1)
+loaded 1400 batches (local, tenant 1)
+loaded 1500 batches (local, tenant 1)
+loaded 1600 batches (local, tenant 1)
+loaded 1700 batches (local, tenant 1)
+loaded 1800 batches (local, tenant 1)
+loaded 1900 batches (local, tenant 1)
+loaded 2000 batches (local, tenant 1)
+loaded 2100 batches (local, tenant 1)
+loaded 2200 batches (local, tenant 1)
+loaded 2300 batches (local, tenant 1)
+loaded 2400 batches (local, tenant 1)
+loaded 2500 batches (local, tenant 1)
+loaded 2600 batches (local, tenant 1)
+loaded 2700 batches (local, tenant 1)
+loaded 2800 batches (local, tenant 1)
+loaded 2900 batches (local, tenant 1)
+loaded 3000 batches (local, tenant 1)
+loaded 3100 batches (local, tenant 1)
+loaded 3200 batches (local, tenant 1)
+loaded 3300 batches (local, tenant 1)
+loaded 3400 batches (local, tenant 1)
+loaded 3500 batches (local, tenant 1)
+loaded 3600 batches (local, tenant 1)
+loaded 3700 batches (local, tenant 1)
+loaded 3800 batches (local, tenant 1)
+loaded 3900 batches (local, tenant 1)
+loaded tenant 1/1 (local)
+checkpoint mode=local tenants=1 stage=embedded_authorized_owned_point_get
+checkpoint mode=local tenants=1 stage=measured_workload workload=embedded_authorized_owned_point_get success=1000 failed=0 unattempted=0
+checkpoint mode=local tenants=1 stage=embedded_authorized_shared_point_get workload=embedded_authorized_owned_point_get success=1000 failed=0 unattempted=0
+checkpoint mode=local tenants=1 stage=measured_workload workload=embedded_authorized_shared_point_get success=1000 failed=0 unattempted=0
+checkpoint mode=local tenants=1 stage=durable_single_document_write workload=embedded_authorized_shared_point_get success=1000 failed=0 unattempted=0
+checkpoint mode=local tenants=1 stage=measured_workload workload=durable_single_document_write success=1000 failed=0 unattempted=0
+checkpoint mode=local tenants=1 stage=read_heavy_90_read_10_write workload=durable_single_document_write success=1000 failed=0 unattempted=0
+checkpoint mode=local tenants=1 stage=measured_workload workload=read_heavy_90_read_10_write success=1000 failed=0 unattempted=0
+checkpoint mode=local tenants=1 stage=balanced_50_read_50_write workload=read_heavy_90_read_10_write success=1000 failed=0 unattempted=0
+checkpoint mode=local tenants=1 stage=measured_workload workload=balanced_50_read_50_write success=1000 failed=0 unattempted=0
+checkpoint mode=local tenants=1 stage=measured_query workload=structured_indexed_equality success=1000 failed=0 unattempted=0
+checkpoint mode=local tenants=1 stage=shutting_down workload=structured_indexed_equality success=1000 failed=0 unattempted=0
+checkpoint mode=local tenants=1 stage=recovering workload=structured_indexed_equality success=1000 failed=0 unattempted=0
+checkpoint mode=local tenants=1 stage=recovered workload=structured_indexed_equality success=1000 failed=0 unattempted=0
+completed mode=local tenants=1 load=134.630s
+checkpoint mode=local tenants=1 stage=completed
+benchmark report: /Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-05/local-1.json

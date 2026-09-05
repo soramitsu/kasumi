@@ -1,0 +1,26 @@
+{
+  "format": 1,
+  "platform": "macOS aarch64 client with Linux aarch64 MinIO container",
+  "client_source_sha256": "358b623bee1e6a9189cdec2aeadbe047b4e1499e179386be4613b3684708db44",
+  "client_binary": "target/debug/deps/kasumi_store-82b8325ecb96a8b9",
+  "client_binary_sha256": "b8684c9a2e816040725ad969b6652bfb881f2e603fc07f3fa3aab5d809b4d97d",
+  "image": "minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e",
+  "argv": [
+    "/Users/takemiyamakoto/dev/kasumi/target/debug/deps/kasumi_store-82b8325ecb96a8b9",
+    "--exact",
+    "backup::minio_live::actual_minio_tls_sigv4_encrypted_roundtrip_create_only_and_access_denial",
+    "--ignored",
+    "--nocapture"
+  ],
+  "fixture_environment": {
+    "KASUMI_MINIO_DOCKER_HOST": "unix:///Users/takemiyamakoto/.colima/kasumi-validation/docker.sock",
+    "KASUMI_MINIO_DOCKER_CONFIG": "/Users/takemiyamakoto/dev/kasumi/target/docker-validation-client",
+    "KASUMI_MINIO_WORKDIR": "/Users/takemiyamakoto/dev/kasumi/target/minio-live"
+  },
+  "started_unix_seconds": 1788575590.545432,
+  "log": "minio-live.log",
+  "exit_code": 0,
+  "status": "passed",
+  "finished_unix_seconds": 1788575591.220962,
+  "log_sha256": "69555dd94c6c7d0a28118718c053f1c24fe25ddb0902ff0019204375763abc76"
+}

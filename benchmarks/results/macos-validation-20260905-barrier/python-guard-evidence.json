@@ -1,0 +1,33 @@
+{
+  "format": 1,
+  "status": "passed",
+  "source_sha256_before": "c55682adadd4c92e499f8a252a6f8fdb496184b4b0f693fe53a6e49195728f58",
+  "source_sha256_after": "c55682adadd4c92e499f8a252a6f8fdb496184b4b0f693fe53a6e49195728f58",
+  "started_unix_seconds": 1788584035.8885171,
+  "finished_unix_seconds": 1788584037.1040041,
+  "argv": [
+    "/opt/homebrew/opt/python@3.14/bin/python3.14",
+    "-m",
+    "unittest",
+    "discover",
+    "-s",
+    "scripts",
+    "-p",
+    "test_*.py"
+  ],
+  "exit_code": 0,
+  "python": "3.14.7 (main, Aug  5 2026, 10:29:49) [Clang 21.0.0 (clang-2100.1.1.101)]",
+  "host": {
+    "system": "Darwin",
+    "node": "takemiyamakotonoMacBook-Pro.local",
+    "release": "25.6.0",
+    "version": "Darwin Kernel Version 25.6.0: Fri Jul 31 19:17:26 PDT 2026; root:xnu-12377.161.14~5/RELEASE_ARM64_T6041",
+    "machine": "arm64",
+    "processor": "arm"
+  },
+  "log": "python-guard.log",
+  "log_sha256": "d00e7d15b2b1de7941a871ed3d8f90e7024026c40d21416b7248eaa038f54029",
+  "python_driver_tests_passed": 3,
+  "scope": "Python-only disk-guard ordering and regression; all Rust, manifests, dependencies and release executables remain unchanged from the 167-test full gate. Exact reconstruction proof is preserved in the referenced manifest.",
+  "source_proof": "../release-matrix-macos-arm64-20260905-02/guard-validation/source-manifest.json"
+}

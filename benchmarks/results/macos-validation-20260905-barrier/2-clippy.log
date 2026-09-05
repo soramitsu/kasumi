@@ -1,0 +1,6 @@
+    Checking kasumi-raft v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-raft)
+    Checking kasumi-query v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-query)
+    Checking kasumi-engine v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-engine)
+    Checking kasumi-server v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-server)
+    Checking kasumi-bench v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-bench)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 10.76s

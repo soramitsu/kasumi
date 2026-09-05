@@ -1,0 +1,124 @@
+{
+  "format": 1,
+  "status": "failed",
+  "source_sha256": "c55682adadd4c92e499f8a252a6f8fdb496184b4b0f693fe53a6e49195728f58",
+  "executable_sha256": {
+    "target/release/kasumi-bench": "90765871b600090ec6ab64a69c4b8459c1dae9b9f1e312b9a4d90975ec361a28",
+    "target/release/kasumi-bench-loopback": "a9725bf15a63e5e3f10d7c7565ec803ac07b26a85f5d247d5de751d90c7882c0",
+    "target/release/kasumi-bench-network": "bff30734ecf9516d8e4cdb32dac112661a34bdadd12bc2adf42174dffe840b60",
+    "target/release/kasumid": "aefa856e7d2f6cb3200dd15ce2be566a86307e7f024b177d19c535f501856f74"
+  },
+  "git_status": [
+    " M .gitignore",
+    " M README.md",
+    "?? Cargo.lock",
+    "?? Cargo.toml",
+    "?? benchmarks/",
+    "?? crates/",
+    "?? deploy/",
+    "?? docs/",
+    "?? scripts/"
+  ],
+  "host": {
+    "uname": {
+      "sysname": "Darwin",
+      "release": "25.6.0",
+      "version": "Darwin Kernel Version 25.6.0: Fri Jul 31 19:17:26 PDT 2026; root:xnu-12377.161.14~5/RELEASE_ARM64_T6041",
+      "machine": "arm64"
+    },
+    "logical_cpus": 16,
+    "rustc": "rustc 1.94.1 (e408947bf 2026-03-25)"
+  },
+  "options": {
+    "documents": 1000000,
+    "operations": 1000,
+    "tenants": "1,100,1000",
+    "output_directory": "/Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-04",
+    "skip_build": false,
+    "allow_host_load": true,
+    "quiet_seconds": 60,
+    "max_background_cpu": 100,
+    "max_initial_load": 4.0,
+    "min_free_gib": 30
+  },
+  "statistics": "One sequential closed-loop run per case. Nearest-rank p99 at 1000 operations has about 10 tail observations; no repeatability confidence interval is claimed. Extended runs can set --operations 10000.",
+  "quietness_policy": "Configured OS load/process-CPU observations and absence of compiler/linker/VM processes are screening evidence, not proof of exclusive hardware ownership. Background changes abort unless --allow-host-load explicitly records unqualified observations. No unrelated process is stopped.",
+  "cases": [
+    {
+      "name": "raw-1",
+      "started_unix_seconds": 1788585425.2681012,
+      "elapsed_seconds": 5.0510358810424805,
+      "command": [
+        "/Users/takemiyamakoto/dev/kasumi/target/release/kasumi-bench",
+        "--documents",
+        "1000000",
+        "--operations",
+        "1000",
+        "--tenants",
+        "1",
+        "--modes",
+        "raw",
+        "--output",
+        "/Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-04/raw-1.json",
+        "--work-parent",
+        "/var/folders/7l/w31n0ppj4zg874c4szhllss00000gn/T/kasumi-matrix-6ff8qbdj"
+      ],
+      "status": "passed",
+      "exit_code": 0,
+      "result_sha256": "c94dfd12482f9d4b67bea833ec2b59082f7509be9e8fe4fb6d1f7480f22453a0"
+    },
+    {
+      "name": "local-1",
+      "started_unix_seconds": 1788585430.365361,
+      "elapsed_seconds": 243.4898669719696,
+      "command": [
+        "/Users/takemiyamakoto/dev/kasumi/target/release/kasumi-bench",
+        "--documents",
+        "1000000",
+        "--operations",
+        "1000",
+        "--tenants",
+        "1",
+        "--modes",
+        "local",
+        "--output",
+        "/Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-04/local-1.json",
+        "--work-parent",
+        "/var/folders/7l/w31n0ppj4zg874c4szhllss00000gn/T/kasumi-matrix-6ff8qbdj"
+      ],
+      "status": "passed",
+      "exit_code": 0,
+      "result_sha256": "534bfabfa108d266b267eab5884483a6d41ca177942ce8882a16fdbd256dfc9d"
+    },
+    {
+      "name": "replicated-1",
+      "started_unix_seconds": 1788585673.903648,
+      "elapsed_seconds": 525.4758100509644,
+      "command": [
+        "/Users/takemiyamakoto/dev/kasumi/target/release/kasumi-bench",
+        "--documents",
+        "1000000",
+        "--operations",
+        "1000",
+        "--tenants",
+        "1",
+        "--modes",
+        "replicated",
+        "--output",
+        "/Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-04/replicated-1.json",
+        "--work-parent",
+        "/var/folders/7l/w31n0ppj4zg874c4szhllss00000gn/T/kasumi-matrix-6ff8qbdj"
+      ],
+      "status": "failed",
+      "exit_code": 1,
+      "result_sha256": "98256228b53794029c56cabf6cb059cab5e13855d000768d4eb2230f2530e539"
+    }
+  ],
+  "failures": [
+    "replicated-1 failed with exit 1; see replicated-1.log",
+    ""
+  ],
+  "host_load_violation_counts": {
+    "competing compiler/linker or virtual machine process present": 237
+  }
+}

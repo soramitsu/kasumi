@@ -1,0 +1,2521 @@
+{
+  "format": "kasumi-cohort-capacity-v1",
+  "matrix_status": "completed_under_host_load",
+  "source_sha256": null,
+  "configured_documents": 1000000,
+  "configured_tenants": [
+    1,
+    100,
+    1000
+  ],
+  "footprints": [
+    {
+      "id": "raw-1",
+      "source_file": "raw-1.json",
+      "result_sha256": "8bb8b7a23426818098563ddda7fd418ed4bcf007606c52afa0693f5c0cb80dee",
+      "completed_and_identity_verified": true,
+      "deployment": "raw",
+      "documents": 1000000,
+      "tenants": 1,
+      "replicas_per_tenant": 1,
+      "resident_data_raft_groups": 0,
+      "resident_control_raft_groups": 0,
+      "service_security_store_count": 0,
+      "additional_service_security_store": false,
+      "baseline_rss_bytes": 71974912,
+      "empty_groups_rss_bytes": 71974912,
+      "empty_indexes_rss_bytes": null,
+      "loaded_rss_bytes": 2114207744,
+      "after_workload_rss_bytes": 2114207744,
+      "after_recovery_rss_bytes": null,
+      "process_lifetime_peak_rss_bytes": 2114207744,
+      "disk_file_bytes": 0,
+      "unique_logical_payload_bytes": 1024000000,
+      "loaded_rss_per_unique_payload_byte": 2.064656,
+      "loaded_rss_per_resident_payload_byte": 2.064656,
+      "open_seconds": 6.67e-07,
+      "collection_setup_seconds": null,
+      "load_seconds": 1.34580925,
+      "clean_shutdown_seconds": null,
+      "clean_recovery_seconds": null,
+      "sampling_scope": "entire harness process including all voters and driver allocations",
+      "origin_directory": "benchmarks/results/release-matrix-macos-arm64-20260905-06",
+      "origin_source_sha256": "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2"
+    },
+    {
+      "id": "local-1",
+      "source_file": "local-1.json",
+      "result_sha256": "81c25fe8892a0858c36880225216ba992ae1428ae827c2130ab0c71ef91393d8",
+      "completed_and_identity_verified": true,
+      "deployment": "local",
+      "documents": 1000000,
+      "tenants": 1,
+      "replicas_per_tenant": 1,
+      "resident_data_raft_groups": 1,
+      "resident_control_raft_groups": 0,
+      "service_security_store_count": 1,
+      "additional_service_security_store": true,
+      "baseline_rss_bytes": 72105984,
+      "empty_groups_rss_bytes": 75595776,
+      "empty_indexes_rss_bytes": 78921728,
+      "loaded_rss_bytes": 4360536064,
+      "after_workload_rss_bytes": 5948260352,
+      "after_recovery_rss_bytes": 10612932608,
+      "process_lifetime_peak_rss_bytes": 8083832832,
+      "disk_file_bytes": 4294971392,
+      "unique_logical_payload_bytes": 1024000000,
+      "loaded_rss_per_unique_payload_byte": 4.258336,
+      "loaded_rss_per_resident_payload_byte": 4.258336,
+      "open_seconds": 0.202037041,
+      "collection_setup_seconds": 0.02925325,
+      "load_seconds": 156.815197875,
+      "clean_shutdown_seconds": 1.8016095,
+      "clean_recovery_seconds": 47.113793125,
+      "sampling_scope": "entire harness process including all voters and driver allocations",
+      "origin_directory": "benchmarks/results/release-matrix-macos-arm64-20260905-06",
+      "origin_source_sha256": "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2"
+    },
+    {
+      "id": "replicated-1",
+      "source_file": "replicated-1.json",
+      "result_sha256": "97b966bcfff78ce790d6ce4db24aa7da7a4597f78f46a9d537f376bc565118f7",
+      "completed_and_identity_verified": true,
+      "deployment": "replicated",
+      "documents": 1000000,
+      "tenants": 1,
+      "replicas_per_tenant": 3,
+      "resident_data_raft_groups": 3,
+      "resident_control_raft_groups": 0,
+      "service_security_store_count": 3,
+      "additional_service_security_store": true,
+      "baseline_rss_bytes": 72122368,
+      "empty_groups_rss_bytes": 76546048,
+      "empty_indexes_rss_bytes": 79773696,
+      "loaded_rss_bytes": 14997471232,
+      "after_workload_rss_bytes": 16431923200,
+      "after_recovery_rss_bytes": 28190294016,
+      "process_lifetime_peak_rss_bytes": 25093226496,
+      "disk_file_bytes": 12884914176,
+      "unique_logical_payload_bytes": 1024000000,
+      "loaded_rss_per_unique_payload_byte": 14.645968,
+      "loaded_rss_per_resident_payload_byte": 4.881989333333333,
+      "open_seconds": 0.533786917,
+      "collection_setup_seconds": 0.057492167,
+      "load_seconds": 376.497119958,
+      "clean_shutdown_seconds": 4.442755792,
+      "clean_recovery_seconds": 119.99130825,
+      "sampling_scope": "entire harness process including all voters and driver allocations",
+      "origin_directory": "benchmarks/results/release-matrix-macos-arm64-20260905-06",
+      "origin_source_sha256": "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2"
+    },
+    {
+      "id": "text-1",
+      "source_file": "text-1.json",
+      "result_sha256": "8a7b0f9656421dacb6725b49d607aac7351535c3c2a1a8aa1bd32b021af5167a",
+      "completed_and_identity_verified": true,
+      "deployment": "text",
+      "documents": 1000000,
+      "tenants": 1,
+      "replicas_per_tenant": 1,
+      "resident_data_raft_groups": 1,
+      "resident_control_raft_groups": 0,
+      "service_security_store_count": 1,
+      "additional_service_security_store": true,
+      "baseline_rss_bytes": 72187904,
+      "empty_groups_rss_bytes": 75743232,
+      "empty_indexes_rss_bytes": 85114880,
+      "loaded_rss_bytes": 5663883264,
+      "after_workload_rss_bytes": 6101712896,
+      "after_recovery_rss_bytes": 11406131200,
+      "process_lifetime_peak_rss_bytes": 9080995840,
+      "disk_file_bytes": 4294971392,
+      "unique_logical_payload_bytes": 1024000000,
+      "loaded_rss_per_unique_payload_byte": 5.531136,
+      "loaded_rss_per_resident_payload_byte": 5.531136,
+      "open_seconds": 0.228654625,
+      "collection_setup_seconds": 0.027597666,
+      "load_seconds": 234.404795292,
+      "clean_shutdown_seconds": 1.172810083,
+      "clean_recovery_seconds": 104.870260667,
+      "sampling_scope": "entire harness process including all voters and driver allocations",
+      "origin_directory": "benchmarks/results/release-matrix-macos-arm64-20260905-06",
+      "origin_source_sha256": "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2"
+    },
+    {
+      "id": "network-1",
+      "source_file": "network-1.json",
+      "result_sha256": "5270ef123e80b899cd0de95d84e56079cbcc4719833b1518e07210e41bdde7a2",
+      "completed_and_identity_verified": true,
+      "deployment": "network",
+      "documents": 1000000,
+      "tenants": 1,
+      "replicas_per_tenant": 1,
+      "resident_data_raft_groups": 1,
+      "resident_control_raft_groups": 1,
+      "service_security_store_count": 1,
+      "additional_service_security_store": true,
+      "baseline_rss_bytes": null,
+      "empty_groups_rss_bytes": 20398080,
+      "empty_indexes_rss_bytes": 22446080,
+      "loaded_rss_bytes": 4394385408,
+      "after_workload_rss_bytes": 5163008000,
+      "after_recovery_rss_bytes": 7465222144,
+      "process_lifetime_peak_rss_bytes": null,
+      "disk_file_bytes": 4294971392,
+      "unique_logical_payload_bytes": 1024000000,
+      "loaded_rss_per_unique_payload_byte": 4.291392,
+      "loaded_rss_per_resident_payload_byte": 4.291392,
+      "open_seconds": 0.41667275,
+      "collection_setup_seconds": 0.035432459,
+      "load_seconds": 223.428938291,
+      "clean_shutdown_seconds": 1.089533167,
+      "clean_recovery_seconds": 29.221108625,
+      "sampling_scope": "kasumid process only; benchmark client, issuer, OpenBao are excluded and available in host-samples.jsonl",
+      "origin_directory": "benchmarks/results/network-rerun-macos-arm64-20260905-listener",
+      "origin_source_sha256": "28aeb80168d3ab02a0eec7bf2a0163a7cb99dbfd74adf596e849de17e1fa3c1d"
+    },
+    {
+      "id": "raw-100",
+      "source_file": "raw-100.json",
+      "result_sha256": "c01d88f56d5842bbe4949ba593e9c74f9fbe13b68fef6a3c954695c922455e20",
+      "completed_and_identity_verified": true,
+      "deployment": "raw",
+      "documents": 1000000,
+      "tenants": 100,
+      "replicas_per_tenant": 1,
+      "resident_data_raft_groups": 0,
+      "resident_control_raft_groups": 0,
+      "service_security_store_count": 0,
+      "additional_service_security_store": false,
+      "baseline_rss_bytes": 72056832,
+      "empty_groups_rss_bytes": 72056832,
+      "empty_indexes_rss_bytes": null,
+      "loaded_rss_bytes": 2053308416,
+      "after_workload_rss_bytes": 2053308416,
+      "after_recovery_rss_bytes": null,
+      "process_lifetime_peak_rss_bytes": 2053308416,
+      "disk_file_bytes": 0,
+      "unique_logical_payload_bytes": 1024000000,
+      "loaded_rss_per_unique_payload_byte": 2.005184,
+      "loaded_rss_per_resident_payload_byte": 2.005184,
+      "open_seconds": 2.666e-06,
+      "collection_setup_seconds": null,
+      "load_seconds": 0.995414958,
+      "clean_shutdown_seconds": null,
+      "clean_recovery_seconds": null,
+      "sampling_scope": "entire harness process including all voters and driver allocations",
+      "origin_directory": "benchmarks/results/release-matrix-macos-arm64-20260905-06",
+      "origin_source_sha256": "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2"
+    },
+    {
+      "id": "local-100",
+      "source_file": "local-100.json",
+      "result_sha256": "14d36a6babdf76b921c9c42236c829d31b88d8f7b78712344ca6551da6775075",
+      "completed_and_identity_verified": true,
+      "deployment": "local",
+      "documents": 1000000,
+      "tenants": 100,
+      "replicas_per_tenant": 1,
+      "resident_data_raft_groups": 100,
+      "resident_control_raft_groups": 0,
+      "service_security_store_count": 1,
+      "additional_service_security_store": true,
+      "baseline_rss_bytes": 72138752,
+      "empty_groups_rss_bytes": 84312064,
+      "empty_indexes_rss_bytes": 90030080,
+      "loaded_rss_bytes": 4329095168,
+      "after_workload_rss_bytes": 4371660800,
+      "after_recovery_rss_bytes": 4788256768,
+      "process_lifetime_peak_rss_bytes": 4371660800,
+      "disk_file_bytes": 2088767488,
+      "unique_logical_payload_bytes": 1024000000,
+      "loaded_rss_per_unique_payload_byte": 4.227632,
+      "loaded_rss_per_resident_payload_byte": 4.227632,
+      "open_seconds": 19.527260125,
+      "collection_setup_seconds": 2.797102583,
+      "load_seconds": 160.80002475,
+      "clean_shutdown_seconds": 0.634014958,
+      "clean_recovery_seconds": 17.745888667,
+      "sampling_scope": "entire harness process including all voters and driver allocations",
+      "origin_directory": "benchmarks/results/release-matrix-macos-arm64-20260905-06",
+      "origin_source_sha256": "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2"
+    },
+    {
+      "id": "replicated-100",
+      "source_file": "replicated-100.json",
+      "result_sha256": "b41391f4925cda0755f36a8895dbcb5ebc04c9a28f9ec1fa555977e0926393c0",
+      "completed_and_identity_verified": true,
+      "deployment": "replicated",
+      "documents": 1000000,
+      "tenants": 100,
+      "replicas_per_tenant": 3,
+      "resident_data_raft_groups": 300,
+      "resident_control_raft_groups": 0,
+      "service_security_store_count": 3,
+      "additional_service_security_store": true,
+      "baseline_rss_bytes": 72138752,
+      "empty_groups_rss_bytes": 112721920,
+      "empty_indexes_rss_bytes": 124354560,
+      "loaded_rss_bytes": 12972998656,
+      "after_workload_rss_bytes": 13096861696,
+      "after_recovery_rss_bytes": 13267156992,
+      "process_lifetime_peak_rss_bytes": 13096861696,
+      "disk_file_bytes": 7843360768,
+      "unique_logical_payload_bytes": 1024000000,
+      "loaded_rss_per_unique_payload_byte": 12.668944,
+      "loaded_rss_per_resident_payload_byte": 4.222981333333333,
+      "open_seconds": 55.734003708,
+      "collection_setup_seconds": 7.023308666,
+      "load_seconds": 384.576122417,
+      "clean_shutdown_seconds": 2.078796291,
+      "clean_recovery_seconds": 52.69878175,
+      "sampling_scope": "entire harness process including all voters and driver allocations",
+      "origin_directory": "benchmarks/results/release-matrix-macos-arm64-20260905-06",
+      "origin_source_sha256": "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2"
+    },
+    {
+      "id": "text-100",
+      "source_file": "text-100.json",
+      "result_sha256": "9aa4b539a7c2601864ce82dce8412ef3c3c03cb52efb7893430e00cfbc9f2dad",
+      "completed_and_identity_verified": true,
+      "deployment": "text",
+      "documents": 1000000,
+      "tenants": 100,
+      "replicas_per_tenant": 1,
+      "resident_data_raft_groups": 100,
+      "resident_control_raft_groups": 0,
+      "service_security_store_count": 1,
+      "additional_service_security_store": true,
+      "baseline_rss_bytes": 72138752,
+      "empty_groups_rss_bytes": 84099072,
+      "empty_indexes_rss_bytes": 97107968,
+      "loaded_rss_bytes": 4806524928,
+      "after_workload_rss_bytes": 4839686144,
+      "after_recovery_rss_bytes": 4802674688,
+      "process_lifetime_peak_rss_bytes": 4839686144,
+      "disk_file_bytes": 3942649856,
+      "unique_logical_payload_bytes": 1024000000,
+      "loaded_rss_per_unique_payload_byte": 4.693872,
+      "loaded_rss_per_resident_payload_byte": 4.693872,
+      "open_seconds": 18.473315458,
+      "collection_setup_seconds": 2.631703708,
+      "load_seconds": 213.427168083,
+      "clean_shutdown_seconds": 0.687159125,
+      "clean_recovery_seconds": 65.06197675,
+      "sampling_scope": "entire harness process including all voters and driver allocations",
+      "origin_directory": "benchmarks/results/release-matrix-macos-arm64-20260905-06",
+      "origin_source_sha256": "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2"
+    },
+    {
+      "id": "network-100",
+      "source_file": "network-100.json",
+      "result_sha256": "28c5b7c3dee622e263c1637feba9a592dce0adcaff6fb6724ccc4af0d74dcc65",
+      "completed_and_identity_verified": true,
+      "deployment": "network",
+      "documents": 1000000,
+      "tenants": 100,
+      "replicas_per_tenant": 1,
+      "resident_data_raft_groups": 100,
+      "resident_control_raft_groups": 1,
+      "service_security_store_count": 1,
+      "additional_service_security_store": true,
+      "baseline_rss_bytes": null,
+      "empty_groups_rss_bytes": 37748736,
+      "empty_indexes_rss_bytes": 42614784,
+      "loaded_rss_bytes": 4498833408,
+      "after_workload_rss_bytes": 4640112640,
+      "after_recovery_rss_bytes": 4335845376,
+      "process_lifetime_peak_rss_bytes": null,
+      "disk_file_bytes": 3456110592,
+      "unique_logical_payload_bytes": 1024000000,
+      "loaded_rss_per_unique_payload_byte": 4.393392,
+      "loaded_rss_per_resident_payload_byte": 4.393392,
+      "open_seconds": 33.059541084,
+      "collection_setup_seconds": 7.9607980000000005,
+      "load_seconds": 327.79790425,
+      "clean_shutdown_seconds": 0.6573425,
+      "clean_recovery_seconds": 19.265642,
+      "sampling_scope": "kasumid process only; benchmark client, issuer, OpenBao are excluded and available in host-samples.jsonl",
+      "origin_directory": "benchmarks/results/network-rerun-macos-arm64-20260905-listener",
+      "origin_source_sha256": "28aeb80168d3ab02a0eec7bf2a0163a7cb99dbfd74adf596e849de17e1fa3c1d"
+    },
+    {
+      "id": "raw-1000",
+      "source_file": "raw-1000.json",
+      "result_sha256": "10c0747e7ea42c3c3385ad443579df7d9e42e714021d4cc4c34a94ca5dfaae7a",
+      "completed_and_identity_verified": true,
+      "deployment": "raw",
+      "documents": 1000000,
+      "tenants": 1000,
+      "replicas_per_tenant": 1,
+      "resident_data_raft_groups": 0,
+      "resident_control_raft_groups": 0,
+      "service_security_store_count": 0,
+      "additional_service_security_store": false,
+      "baseline_rss_bytes": 71991296,
+      "empty_groups_rss_bytes": 71991296,
+      "empty_indexes_rss_bytes": null,
+      "loaded_rss_bytes": 2145927168,
+      "after_workload_rss_bytes": 2145927168,
+      "after_recovery_rss_bytes": null,
+      "process_lifetime_peak_rss_bytes": 2145927168,
+      "disk_file_bytes": 0,
+      "unique_logical_payload_bytes": 1024000000,
+      "loaded_rss_per_unique_payload_byte": 2.095632,
+      "loaded_rss_per_resident_payload_byte": 2.095632,
+      "open_seconds": 3.334e-06,
+      "collection_setup_seconds": null,
+      "load_seconds": 1.016135416,
+      "clean_shutdown_seconds": null,
+      "clean_recovery_seconds": null,
+      "sampling_scope": "entire harness process including all voters and driver allocations",
+      "origin_directory": "benchmarks/results/release-matrix-macos-arm64-20260905-06",
+      "origin_source_sha256": "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2"
+    },
+    {
+      "id": "local-1000",
+      "source_file": "local-1000.json",
+      "result_sha256": "a4d375869c8391abcd85d1728b541211671836f0c828c8c8a7d2cdb48a1f1537",
+      "completed_and_identity_verified": true,
+      "deployment": "local",
+      "documents": 1000000,
+      "tenants": 1000,
+      "replicas_per_tenant": 1,
+      "resident_data_raft_groups": 1000,
+      "resident_control_raft_groups": 0,
+      "service_security_store_count": 1,
+      "additional_service_security_store": true,
+      "baseline_rss_bytes": 72122368,
+      "empty_groups_rss_bytes": 122568704,
+      "empty_indexes_rss_bytes": 178765824,
+      "loaded_rss_bytes": 4655382528,
+      "after_workload_rss_bytes": 4701782016,
+      "after_recovery_rss_bytes": 5125472256,
+      "process_lifetime_peak_rss_bytes": 4701782016,
+      "disk_file_bytes": 2030047232,
+      "unique_logical_payload_bytes": 1024000000,
+      "loaded_rss_per_unique_payload_byte": 4.546272,
+      "loaded_rss_per_resident_payload_byte": 4.546272,
+      "open_seconds": 191.965695083,
+      "collection_setup_seconds": 41.802167042,
+      "load_seconds": 192.085501375,
+      "clean_shutdown_seconds": 0.5759145,
+      "clean_recovery_seconds": 17.692194416,
+      "sampling_scope": "entire harness process including all voters and driver allocations",
+      "origin_directory": "benchmarks/results/release-matrix-macos-arm64-20260905-06",
+      "origin_source_sha256": "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2"
+    },
+    {
+      "id": "replicated-1000",
+      "source_file": "replicated-1000.json",
+      "result_sha256": "9e8159266d6294d3905c17f90203afb05a6e6cf41030eebd0a7b39525c43edf0",
+      "completed_and_identity_verified": true,
+      "deployment": "replicated",
+      "documents": 1000000,
+      "tenants": 1000,
+      "replicas_per_tenant": 3,
+      "resident_data_raft_groups": 3000,
+      "resident_control_raft_groups": 0,
+      "service_security_store_count": 3,
+      "additional_service_security_store": true,
+      "baseline_rss_bytes": 72269824,
+      "empty_groups_rss_bytes": 791904256,
+      "empty_indexes_rss_bytes": 1021018112,
+      "loaded_rss_bytes": 15440805888,
+      "after_workload_rss_bytes": 15903686656,
+      "after_recovery_rss_bytes": 16157048832,
+      "process_lifetime_peak_rss_bytes": 15903686656,
+      "disk_file_bytes": 8869916672,
+      "unique_logical_payload_bytes": 1024000000,
+      "loaded_rss_per_unique_payload_byte": 15.078912,
+      "loaded_rss_per_resident_payload_byte": 5.026304,
+      "open_seconds": 500.839954291,
+      "collection_setup_seconds": 80.19191225,
+      "load_seconds": 424.857758625,
+      "clean_shutdown_seconds": 6.363340792,
+      "clean_recovery_seconds": 106.411573666,
+      "sampling_scope": "entire harness process including all voters and driver allocations",
+      "origin_directory": "benchmarks/results/release-matrix-macos-arm64-20260905-06",
+      "origin_source_sha256": "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2"
+    },
+    {
+      "id": "text-1000",
+      "source_file": "text-1000.json",
+      "result_sha256": "c4f04c1ff9e60c342f2c7cd5cb011822833cbbab175c7fca73aec812cdcf5747",
+      "completed_and_identity_verified": true,
+      "deployment": "text",
+      "documents": 1000000,
+      "tenants": 1000,
+      "replicas_per_tenant": 1,
+      "resident_data_raft_groups": 1000,
+      "resident_control_raft_groups": 0,
+      "service_security_store_count": 1,
+      "additional_service_security_store": true,
+      "baseline_rss_bytes": 72318976,
+      "empty_groups_rss_bytes": 96108544,
+      "empty_indexes_rss_bytes": 141918208,
+      "loaded_rss_bytes": 5893406720,
+      "after_workload_rss_bytes": 5994512384,
+      "after_recovery_rss_bytes": 6579617792,
+      "process_lifetime_peak_rss_bytes": 5994512384,
+      "disk_file_bytes": 2025852928,
+      "unique_logical_payload_bytes": 1024000000,
+      "loaded_rss_per_unique_payload_byte": 5.75528,
+      "loaded_rss_per_resident_payload_byte": 5.75528,
+      "open_seconds": 173.486381791,
+      "collection_setup_seconds": 48.556325125,
+      "load_seconds": 271.753694667,
+      "clean_shutdown_seconds": 2.443743875,
+      "clean_recovery_seconds": 119.304281958,
+      "sampling_scope": "entire harness process including all voters and driver allocations",
+      "origin_directory": "benchmarks/results/release-matrix-macos-arm64-20260905-06",
+      "origin_source_sha256": "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2"
+    },
+    {
+      "id": "network-1000",
+      "source_file": "network-1000.json",
+      "result_sha256": "b4692d7842fb899e5f76852cb81de9c13de21b89af3a4ebe2212c656e23e1828",
+      "completed_and_identity_verified": true,
+      "deployment": "network",
+      "documents": 1000000,
+      "tenants": 1000,
+      "replicas_per_tenant": 1,
+      "resident_data_raft_groups": 1000,
+      "resident_control_raft_groups": 1,
+      "service_security_store_count": 1,
+      "additional_service_security_store": true,
+      "baseline_rss_bytes": null,
+      "empty_groups_rss_bytes": 200474624,
+      "empty_indexes_rss_bytes": 246464512,
+      "loaded_rss_bytes": 4946591744,
+      "after_workload_rss_bytes": 5064507392,
+      "after_recovery_rss_bytes": 4810653696,
+      "process_lifetime_peak_rss_bytes": null,
+      "disk_file_bytes": 2030047232,
+      "unique_logical_payload_bytes": 1024000000,
+      "loaded_rss_per_unique_payload_byte": 4.830656,
+      "loaded_rss_per_resident_payload_byte": 4.830656,
+      "open_seconds": 196.724941042,
+      "collection_setup_seconds": 72.030444459,
+      "load_seconds": 263.038515,
+      "clean_shutdown_seconds": 1.60811675,
+      "clean_recovery_seconds": 52.016212458,
+      "sampling_scope": "kasumid process only; benchmark client, issuer, OpenBao are excluded and available in host-samples.jsonl",
+      "origin_directory": "benchmarks/results/network-rerun-macos-arm64-20260905-listener",
+      "origin_source_sha256": "28aeb80168d3ab02a0eec7bf2a0163a7cb99dbfd74adf596e849de17e1fa3c1d"
+    }
+  ],
+  "layers": [
+    {
+      "layer": "raw_hashmap",
+      "tenants": 1,
+      "footprint_id": "raw-1",
+      "measurements": [
+        {
+          "name": "raw_hashmap_borrowed_lookup",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.000388959,
+            "throughput_ops_per_second": 2570965.063155757,
+            "p50_microseconds": 0.375,
+            "p99_microseconds": 0.542,
+            "max_microseconds": 1.75
+          },
+          "failed_attempts": []
+        }
+      ],
+      "status": "observed"
+    },
+    {
+      "layer": "embedded_access",
+      "tenants": 1,
+      "footprint_id": "local-1",
+      "measurements": [
+        {
+          "name": "embedded_authorized_owned_point_get",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.005102625,
+            "throughput_ops_per_second": 195977.5605693148,
+            "p50_microseconds": 3.125,
+            "p99_microseconds": 6.625,
+            "max_microseconds": 11.75
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "embedded_authorized_shared_point_get",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.002904542,
+            "throughput_ops_per_second": 344288.35940399556,
+            "p50_microseconds": 1.042,
+            "p99_microseconds": 1.292,
+            "max_microseconds": 3.583
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "structured_indexed_equality",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.030808084,
+            "throughput_ops_per_second": 32459.013030476028,
+            "p50_microseconds": 25.125,
+            "p99_microseconds": 57.792,
+            "max_microseconds": 732.833
+          },
+          "failed_attempts": []
+        }
+      ],
+      "status": "observed"
+    },
+    {
+      "layer": "local_durable_writes",
+      "tenants": 1,
+      "footprint_id": "local-1",
+      "measurements": [
+        {
+          "name": "durable_single_document_write",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 27.300776833,
+            "throughput_ops_per_second": 36.62899433657299,
+            "p50_microseconds": 23801.084,
+            "p99_microseconds": 28839.041,
+            "max_microseconds": 1031326.666
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "read_heavy_90_read_10_write",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 7.6210091250000005,
+            "throughput_ops_per_second": 131.21621869203574,
+            "p50_microseconds": 3.583,
+            "p99_microseconds": 28749.791,
+            "max_microseconds": 1388961.083
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "balanced_50_read_50_write",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 19.025244584,
+            "throughput_ops_per_second": 52.56174214133299,
+            "p50_microseconds": 32.666,
+            "p99_microseconds": 203462.25,
+            "max_microseconds": 363412.375
+          },
+          "failed_attempts": []
+        }
+      ],
+      "status": "observed"
+    },
+    {
+      "layer": "replicated_durable_access",
+      "tenants": 1,
+      "footprint_id": "replicated-1",
+      "measurements": [
+        {
+          "name": "embedded_authorized_owned_point_get",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.021335584,
+            "throughput_ops_per_second": 46870.05520917543,
+            "p50_microseconds": 19.375,
+            "p99_microseconds": 30.875,
+            "max_microseconds": 42.541
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "embedded_authorized_shared_point_get",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.020663458,
+            "throughput_ops_per_second": 48394.61042774157,
+            "p50_microseconds": 18.25,
+            "p99_microseconds": 27.083,
+            "max_microseconds": 55.125
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "durable_single_document_write",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 80.727717375,
+            "throughput_ops_per_second": 12.387319157740524,
+            "p50_microseconds": 65922.625,
+            "p99_microseconds": 122481.333,
+            "max_microseconds": 3423445.833
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "read_heavy_90_read_10_write",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 14.265901334,
+            "throughput_ops_per_second": 70.09721829609845,
+            "p50_microseconds": 26.25,
+            "p99_microseconds": 140264.833,
+            "max_microseconds": 2897119.458
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "balanced_50_read_50_write",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 67.049924292,
+            "throughput_ops_per_second": 14.91425994226386,
+            "p50_microseconds": 50001.916,
+            "p99_microseconds": 874020.375,
+            "max_microseconds": 3696889.959
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "structured_indexed_equality",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.049883958,
+            "throughput_ops_per_second": 20046.524776562437,
+            "p50_microseconds": 45.292,
+            "p99_microseconds": 75.417,
+            "max_microseconds": 559.667
+          },
+          "failed_attempts": []
+        }
+      ],
+      "status": "observed"
+    },
+    {
+      "layer": "raw_hashmap",
+      "tenants": 100,
+      "footprint_id": "raw-100",
+      "measurements": [
+        {
+          "name": "raw_hashmap_borrowed_lookup",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.000500458,
+            "throughput_ops_per_second": 1998169.6765762563,
+            "p50_microseconds": 0.458,
+            "p99_microseconds": 1.667,
+            "max_microseconds": 3.875
+          },
+          "failed_attempts": []
+        }
+      ],
+      "status": "observed"
+    },
+    {
+      "layer": "embedded_access",
+      "tenants": 100,
+      "footprint_id": "local-100",
+      "measurements": [
+        {
+          "name": "embedded_authorized_owned_point_get",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.003496625,
+            "throughput_ops_per_second": 285990.06184535084,
+            "p50_microseconds": 1.75,
+            "p99_microseconds": 6.958,
+            "max_microseconds": 10.708
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "embedded_authorized_shared_point_get",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.001735625,
+            "throughput_ops_per_second": 576161.3251710479,
+            "p50_microseconds": 0.542,
+            "p99_microseconds": 0.792,
+            "max_microseconds": 2.5
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "structured_indexed_equality",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.015417667,
+            "throughput_ops_per_second": 64860.65628476734,
+            "p50_microseconds": 12.709,
+            "p99_microseconds": 28.208,
+            "max_microseconds": 91.209
+          },
+          "failed_attempts": []
+        }
+      ],
+      "status": "observed"
+    },
+    {
+      "layer": "local_durable_writes",
+      "tenants": 100,
+      "footprint_id": "local-100",
+      "measurements": [
+        {
+          "name": "durable_single_document_write",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 36.522024,
+            "throughput_ops_per_second": 27.38073881118965,
+            "p50_microseconds": 25689.417,
+            "p99_microseconds": 101452.042,
+            "max_microseconds": 1370618.333
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "read_heavy_90_read_10_write",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 2.6817952910000002,
+            "throughput_ops_per_second": 372.8845387103038,
+            "p50_microseconds": 2.625,
+            "p99_microseconds": 31990.708,
+            "max_microseconds": 42354.791
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "balanced_50_read_50_write",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 19.003287333,
+            "throughput_ops_per_second": 52.62247433703001,
+            "p50_microseconds": 185.542,
+            "p99_microseconds": 69072.834,
+            "max_microseconds": 1171952.25
+          },
+          "failed_attempts": []
+        }
+      ],
+      "status": "observed"
+    },
+    {
+      "layer": "replicated_durable_access",
+      "tenants": 100,
+      "footprint_id": "replicated-100",
+      "measurements": [
+        {
+          "name": "embedded_authorized_owned_point_get",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.039526584,
+            "throughput_ops_per_second": 25299.428860333595,
+            "p50_microseconds": 31.791,
+            "p99_microseconds": 121.417,
+            "max_microseconds": 692.708
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "embedded_authorized_shared_point_get",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.024998042,
+            "throughput_ops_per_second": 40003.13304538011,
+            "p50_microseconds": 19.0,
+            "p99_microseconds": 60.583,
+            "max_microseconds": 80.458
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "durable_single_document_write",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 119.548639542,
+            "throughput_ops_per_second": 8.364796151851468,
+            "p50_microseconds": 77243.708,
+            "p99_microseconds": 354077.0,
+            "max_microseconds": 3003494.375
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "read_heavy_90_read_10_write",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 6.500491209,
+            "throughput_ops_per_second": 153.8345284761695,
+            "p50_microseconds": 26.0,
+            "p99_microseconds": 73976.667,
+            "max_microseconds": 87639.875
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "balanced_50_read_50_write",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 42.847140708,
+            "throughput_ops_per_second": 23.33878021907982,
+            "p50_microseconds": 174.625,
+            "p99_microseconds": 146708.5,
+            "max_microseconds": 2655590.084
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "structured_indexed_equality",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.031658125,
+            "throughput_ops_per_second": 31587.46767220105,
+            "p50_microseconds": 27.667,
+            "p99_microseconds": 50.333,
+            "max_microseconds": 109.375
+          },
+          "failed_attempts": []
+        }
+      ],
+      "status": "observed"
+    },
+    {
+      "layer": "raw_hashmap",
+      "tenants": 1000,
+      "footprint_id": "raw-1000",
+      "measurements": [
+        {
+          "name": "raw_hashmap_borrowed_lookup",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.000374417,
+            "throughput_ops_per_second": 2670818.8997828625,
+            "p50_microseconds": 0.333,
+            "p99_microseconds": 0.542,
+            "max_microseconds": 1.625
+          },
+          "failed_attempts": []
+        }
+      ],
+      "status": "observed"
+    },
+    {
+      "layer": "embedded_access",
+      "tenants": 1000,
+      "footprint_id": "local-1000",
+      "measurements": [
+        {
+          "name": "embedded_authorized_owned_point_get",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.004825833,
+            "throughput_ops_per_second": 207218.11136025636,
+            "p50_microseconds": 2.291,
+            "p99_microseconds": 10.625,
+            "max_microseconds": 27.042
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "embedded_authorized_shared_point_get",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.001908958,
+            "throughput_ops_per_second": 523845.9934686881,
+            "p50_microseconds": 0.625,
+            "p99_microseconds": 1.125,
+            "max_microseconds": 3.375
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "structured_indexed_equality",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.017626417,
+            "throughput_ops_per_second": 56733.0274780178,
+            "p50_microseconds": 14.0,
+            "p99_microseconds": 32.542,
+            "max_microseconds": 54.125
+          },
+          "failed_attempts": []
+        }
+      ],
+      "status": "observed"
+    },
+    {
+      "layer": "local_durable_writes",
+      "tenants": 1000,
+      "footprint_id": "local-1000",
+      "measurements": [
+        {
+          "name": "durable_single_document_write",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 33.754915792,
+            "throughput_ops_per_second": 29.62531461082781,
+            "p50_microseconds": 24857.958,
+            "p99_microseconds": 43802.916,
+            "max_microseconds": 1205154.375
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "read_heavy_90_read_10_write",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 2.62891875,
+            "throughput_ops_per_second": 380.3845212028709,
+            "p50_microseconds": 2.458,
+            "p99_microseconds": 28722.958,
+            "max_microseconds": 80495.667
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "balanced_50_read_50_write",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 16.78656375,
+            "throughput_ops_per_second": 59.57145338932157,
+            "p50_microseconds": 20.666,
+            "p99_microseconds": 34272.0,
+            "max_microseconds": 1632381.667
+          },
+          "failed_attempts": []
+        }
+      ],
+      "status": "observed"
+    },
+    {
+      "layer": "replicated_durable_access",
+      "tenants": 1000,
+      "footprint_id": "replicated-1000",
+      "measurements": [
+        {
+          "name": "embedded_authorized_owned_point_get",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.084686375,
+            "throughput_ops_per_second": 11808.274943873794,
+            "p50_microseconds": 36.458,
+            "p99_microseconds": 83.416,
+            "max_microseconds": 10056.292
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "embedded_authorized_shared_point_get",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.035138834,
+            "throughput_ops_per_second": 28458.542477533545,
+            "p50_microseconds": 29.334,
+            "p99_microseconds": 49.083,
+            "max_microseconds": 1640.167
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "durable_single_document_write",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 88.862508667,
+            "throughput_ops_per_second": 11.253339737991892,
+            "p50_microseconds": 66769.459,
+            "p99_microseconds": 358769.125,
+            "max_microseconds": 3106610.75
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "read_heavy_90_read_10_write",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 8.689734541,
+            "throughput_ops_per_second": 115.07831399012123,
+            "p50_microseconds": 39.667,
+            "p99_microseconds": 120517.75,
+            "max_microseconds": 192265.958
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "balanced_50_read_50_write",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 63.487981584,
+            "throughput_ops_per_second": 15.751012633421254,
+            "p50_microseconds": 10173.125,
+            "p99_microseconds": 330236.333,
+            "max_microseconds": 2742474.625
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "structured_indexed_equality",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.107304125,
+            "throughput_ops_per_second": 9319.306224248136,
+            "p50_microseconds": 61.458,
+            "p99_microseconds": 94.792,
+            "max_microseconds": 10137.333
+          },
+          "failed_attempts": []
+        }
+      ],
+      "status": "observed"
+    },
+    {
+      "layer": "authenticated_grpc",
+      "tenants": 1,
+      "footprint_id": "network-1",
+      "measurements": [
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 16.919774334,
+            "max_microseconds": 570943.542,
+            "operations": 1000,
+            "p50_microseconds": 12945.875,
+            "p99_microseconds": 32744.084,
+            "throughput_ops_per_second": 59.10244310945194
+          },
+          "name": "authenticated_point_get",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 46.714744459,
+            "max_microseconds": 1558007.041,
+            "operations": 1000,
+            "p50_microseconds": 37495.75,
+            "p99_microseconds": 108113.75,
+            "throughput_ops_per_second": 21.406517611964404
+          },
+          "name": "durable_single_document_write",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 33.170636084,
+            "max_microseconds": 4182241.458,
+            "operations": 1000,
+            "p50_microseconds": 13183.25,
+            "p99_microseconds": 399990.333,
+            "throughput_ops_per_second": 30.147145730568436
+          },
+          "name": "read_heavy_90_read_10_write",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 32.530360042,
+            "max_microseconds": 2167064.708,
+            "operations": 1000,
+            "p50_microseconds": 33450.333,
+            "p99_microseconds": 78873.833,
+            "throughput_ops_per_second": 30.74051435978263
+          },
+          "name": "balanced_50_read_50_write",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 25.019484458,
+            "max_microseconds": 1575810.292,
+            "operations": 1000,
+            "p50_microseconds": 14022.625,
+            "p99_microseconds": 126516.958,
+            "throughput_ops_per_second": 39.96884914550064
+          },
+          "name": "authenticated_query_complete_pages",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        }
+      ],
+      "status": "observed"
+    },
+    {
+      "layer": "authenticated_mcp",
+      "tenants": 1,
+      "footprint_id": "network-1",
+      "measurements": [
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 20.81180875,
+            "max_microseconds": 693583.208,
+            "operations": 1000,
+            "p50_microseconds": 12940.916,
+            "p99_microseconds": 84875.333,
+            "throughput_ops_per_second": 48.04964393111675
+          },
+          "name": "authenticated_point_get",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 85.668930125,
+            "max_microseconds": 2667755.667,
+            "operations": 1000,
+            "p50_microseconds": 41760.958,
+            "p99_microseconds": 252529.917,
+            "throughput_ops_per_second": 11.672843334694324
+          },
+          "name": "durable_single_document_write",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 34.831362417,
+            "max_microseconds": 2717364.291,
+            "operations": 1000,
+            "p50_microseconds": 14895.0,
+            "p99_microseconds": 194893.5,
+            "throughput_ops_per_second": 28.709758407610668
+          },
+          "name": "read_heavy_90_read_10_write",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 64.923773375,
+            "max_microseconds": 1913109.959,
+            "operations": 1000,
+            "p50_microseconds": 40309.417,
+            "p99_microseconds": 252571.708,
+            "throughput_ops_per_second": 15.402678372127196
+          },
+          "name": "balanced_50_read_50_write",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 43.21327825,
+            "max_microseconds": 619896.292,
+            "operations": 1000,
+            "p50_microseconds": 45740.833,
+            "p99_microseconds": 97133.5,
+            "throughput_ops_per_second": 23.141035359889642
+          },
+          "name": "authenticated_query_complete_pages",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        }
+      ],
+      "status": "observed"
+    },
+    {
+      "layer": "authenticated_grpc",
+      "tenants": 100,
+      "footprint_id": "network-100",
+      "measurements": [
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 13.127669791,
+            "max_microseconds": 40047.833,
+            "operations": 1000,
+            "p50_microseconds": 12897.166,
+            "p99_microseconds": 26356.5,
+            "throughput_ops_per_second": 76.17498123586067
+          },
+          "name": "authenticated_point_get",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 48.172033333,
+            "max_microseconds": 2270859.125,
+            "operations": 1000,
+            "p50_microseconds": 38028.875,
+            "p99_microseconds": 70313.25,
+            "throughput_ops_per_second": 20.758932741893524
+          },
+          "name": "durable_single_document_write",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 20.765082583,
+            "max_microseconds": 1894133.916,
+            "operations": 1000,
+            "p50_microseconds": 13512.708,
+            "p99_microseconds": 55766.875,
+            "throughput_ops_per_second": 48.157766577758856
+          },
+          "name": "read_heavy_90_read_10_write",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 34.189340167,
+            "max_microseconds": 1904063.375,
+            "operations": 1000,
+            "p50_microseconds": 33628.917,
+            "p99_microseconds": 49636.833,
+            "throughput_ops_per_second": 29.248882696051947
+          },
+          "name": "balanced_50_read_50_write",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 13.221172833,
+            "max_microseconds": 26849.709,
+            "operations": 1000,
+            "p50_microseconds": 12928.333,
+            "p99_microseconds": 21985.0,
+            "throughput_ops_per_second": 75.63625501544036
+          },
+          "name": "authenticated_query_complete_pages",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        }
+      ],
+      "status": "observed"
+    },
+    {
+      "layer": "authenticated_mcp",
+      "tenants": 100,
+      "footprint_id": "network-100",
+      "measurements": [
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 17.284455834,
+            "max_microseconds": 702093.666,
+            "operations": 1000,
+            "p50_microseconds": 12845.5,
+            "p99_microseconds": 34358.375,
+            "throughput_ops_per_second": 57.85545171939487
+          },
+          "name": "authenticated_point_get",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 54.862401333,
+            "max_microseconds": 2730858.75,
+            "operations": 1000,
+            "p50_microseconds": 38105.291,
+            "p99_microseconds": 113350.833,
+            "throughput_ops_per_second": 18.227419429387883
+          },
+          "name": "durable_single_document_write",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 23.797519,
+            "max_microseconds": 1148346.416,
+            "operations": 1000,
+            "p50_microseconds": 13895.166,
+            "p99_microseconds": 92085.583,
+            "throughput_ops_per_second": 42.021187166611774
+          },
+          "name": "read_heavy_90_read_10_write",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 89.1146045,
+            "max_microseconds": 3121688.375,
+            "operations": 1000,
+            "p50_microseconds": 45182.417,
+            "p99_microseconds": 497253.042,
+            "throughput_ops_per_second": 11.221505224769302
+          },
+          "name": "balanced_50_read_50_write",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 16.04749475,
+            "max_microseconds": 64998.541,
+            "operations": 1000,
+            "p50_microseconds": 14147.167,
+            "p99_microseconds": 49413.459,
+            "throughput_ops_per_second": 62.31502272340672
+          },
+          "name": "authenticated_query_complete_pages",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        }
+      ],
+      "status": "observed"
+    },
+    {
+      "layer": "authenticated_grpc",
+      "tenants": 1000,
+      "footprint_id": "network-1000",
+      "measurements": [
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 18.023491875,
+            "max_microseconds": 93155.958,
+            "operations": 1000,
+            "p50_microseconds": 13032.042,
+            "p99_microseconds": 68859.375,
+            "throughput_ops_per_second": 55.483144272785374
+          },
+          "name": "authenticated_point_get",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 62.490382875,
+            "max_microseconds": 1951261.875,
+            "operations": 1000,
+            "p50_microseconds": 39455.334,
+            "p99_microseconds": 187459.167,
+            "throughput_ops_per_second": 16.002462362893628
+          },
+          "name": "durable_single_document_write",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 17.798635375,
+            "max_microseconds": 110143.333,
+            "operations": 1000,
+            "p50_microseconds": 13077.333,
+            "p99_microseconds": 72650.75,
+            "throughput_ops_per_second": 56.184082595714166
+          },
+          "name": "read_heavy_90_read_10_write",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 35.347643334,
+            "max_microseconds": 1975850.333,
+            "operations": 1000,
+            "p50_microseconds": 32468.917,
+            "p99_microseconds": 117482.583,
+            "throughput_ops_per_second": 28.29042916810597
+          },
+          "name": "balanced_50_read_50_write",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 14.752209083,
+            "max_microseconds": 53893.834,
+            "operations": 1000,
+            "p50_microseconds": 12993.042,
+            "p99_microseconds": 49177.208,
+            "throughput_ops_per_second": 67.78645790428565
+          },
+          "name": "authenticated_query_complete_pages",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        }
+      ],
+      "status": "observed"
+    },
+    {
+      "layer": "authenticated_mcp",
+      "tenants": 1000,
+      "footprint_id": "network-1000",
+      "measurements": [
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 18.535991458,
+            "max_microseconds": 575283.792,
+            "operations": 1000,
+            "p50_microseconds": 13010.875,
+            "p99_microseconds": 52133.75,
+            "throughput_ops_per_second": 53.949096937483056
+          },
+          "name": "authenticated_point_get",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 54.577867625,
+            "max_microseconds": 3194566.166,
+            "operations": 1000,
+            "p50_microseconds": 40860.458,
+            "p99_microseconds": 116544.541,
+            "throughput_ops_per_second": 18.32244540719174
+          },
+          "name": "durable_single_document_write",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 20.934379541,
+            "max_microseconds": 677004.334,
+            "operations": 1000,
+            "p50_microseconds": 13012.083,
+            "p99_microseconds": 64298.875,
+            "throughput_ops_per_second": 47.76831326868319
+          },
+          "name": "read_heavy_90_read_10_write",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 41.858730666,
+            "max_microseconds": 1680910.959,
+            "operations": 1000,
+            "p50_microseconds": 34255.833,
+            "p99_microseconds": 184728.666,
+            "throughput_ops_per_second": 23.889878744274867
+          },
+          "name": "balanced_50_read_50_write",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        },
+        {
+          "attempted_operations": 1000,
+          "failed_attempts": [],
+          "failed_operations": 0,
+          "latency": {
+            "elapsed_seconds": 19.240740792,
+            "max_microseconds": 574619.75,
+            "operations": 1000,
+            "p50_microseconds": 12970.708,
+            "p99_microseconds": 57533.333,
+            "throughput_ops_per_second": 51.97305087212569
+          },
+          "name": "authenticated_query_complete_pages",
+          "requested_operations": 1000,
+          "successful_operations": 1000,
+          "unattempted_operations": 0
+        }
+      ],
+      "status": "observed"
+    }
+  ],
+  "supplemental_workloads": [
+    {
+      "workload": "english_japanese_indexed_text",
+      "tenants": 1,
+      "footprint_id": "text-1",
+      "measurements": [
+        {
+          "name": "embedded_authorized_owned_point_get",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.004707041,
+            "throughput_ops_per_second": 212447.69272245557,
+            "p50_microseconds": 2.917,
+            "p99_microseconds": 8.125,
+            "max_microseconds": 22.208
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "embedded_authorized_shared_point_get",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.002323833,
+            "throughput_ops_per_second": 430323.52152671904,
+            "p50_microseconds": 0.833,
+            "p99_microseconds": 1.292,
+            "max_microseconds": 55.833
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "durable_single_document_write",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 44.957288583,
+            "throughput_ops_per_second": 22.24333431838985,
+            "p50_microseconds": 32343.792,
+            "p99_microseconds": 91316.167,
+            "max_microseconds": 1294716.458
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "read_heavy_90_read_10_write",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 6.497328792,
+            "throughput_ops_per_second": 153.90940369698933,
+            "p50_microseconds": 3.709,
+            "p99_microseconds": 54239.208,
+            "max_microseconds": 2338125.167
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "balanced_50_read_50_write",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 28.981186583,
+            "throughput_ops_per_second": 34.50514343627971,
+            "p50_microseconds": 58.75,
+            "p99_microseconds": 375710.833,
+            "max_microseconds": 1207565.125
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "structured_indexed_equality",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.168286,
+            "throughput_ops_per_second": 5942.264953709756,
+            "p50_microseconds": 26.708,
+            "p99_microseconds": 3076.0,
+            "max_microseconds": 7296.792
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "text_english_Phrase_complete_pages",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 3.5437070840000002,
+            "throughput_ops_per_second": 282.1903662735122,
+            "p50_microseconds": 3337.458,
+            "p99_microseconds": 7921.458,
+            "max_microseconds": 11429.542
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "text_english_Prefix_complete_pages",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 33.261362208,
+            "throughput_ops_per_second": 30.064914171178494,
+            "p50_microseconds": 32525.208,
+            "p99_microseconds": 48718.25,
+            "max_microseconds": 80642.416
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "text_english_Fuzzy_complete_pages",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 1.599593458,
+            "throughput_ops_per_second": 625.1588458296883,
+            "p50_microseconds": 1498.833,
+            "p99_microseconds": 2677.417,
+            "max_microseconds": 3888.0
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "text_japanese_Terms_complete_pages",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 1.4899566659999999,
+            "throughput_ops_per_second": 671.160459105594,
+            "p50_microseconds": 1369.666,
+            "p99_microseconds": 2601.417,
+            "max_microseconds": 3053.583
+          },
+          "failed_attempts": []
+        }
+      ],
+      "status": "observed"
+    },
+    {
+      "workload": "english_japanese_indexed_text",
+      "tenants": 100,
+      "footprint_id": "text-100",
+      "measurements": [
+        {
+          "name": "embedded_authorized_owned_point_get",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.003359333,
+            "throughput_ops_per_second": 297678.14027367934,
+            "p50_microseconds": 1.709,
+            "p99_microseconds": 6.125,
+            "max_microseconds": 9.709
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "embedded_authorized_shared_point_get",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.001805083,
+            "throughput_ops_per_second": 553991.1461135028,
+            "p50_microseconds": 0.583,
+            "p99_microseconds": 0.958,
+            "max_microseconds": 4.959
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "durable_single_document_write",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 37.970898,
+            "throughput_ops_per_second": 26.335958659708286,
+            "p50_microseconds": 27850.417,
+            "p99_microseconds": 96382.292,
+            "max_microseconds": 1766209.042
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "read_heavy_90_read_10_write",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 2.87660825,
+            "throughput_ops_per_second": 347.6316248484652,
+            "p50_microseconds": 2.459,
+            "p99_microseconds": 38384.708,
+            "max_microseconds": 64987.917
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "balanced_50_read_50_write",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 18.349656709,
+            "throughput_ops_per_second": 54.496932332773696,
+            "p50_microseconds": 8.875,
+            "p99_microseconds": 48251.792,
+            "max_microseconds": 1304680.625
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "structured_indexed_equality",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.014918458,
+            "throughput_ops_per_second": 67031.05642687736,
+            "p50_microseconds": 11.917,
+            "p99_microseconds": 27.792,
+            "max_microseconds": 46.042
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "text_english_Phrase_complete_pages",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.031942333,
+            "throughput_ops_per_second": 31306.417098588256,
+            "p50_microseconds": 27.833,
+            "p99_microseconds": 54.625,
+            "max_microseconds": 82.541
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "text_english_Prefix_complete_pages",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.197155375,
+            "throughput_ops_per_second": 5072.141705494968,
+            "p50_microseconds": 193.333,
+            "p99_microseconds": 254.583,
+            "max_microseconds": 288.167
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "text_english_Fuzzy_complete_pages",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.039739791,
+            "throughput_ops_per_second": 25163.695501065922,
+            "p50_microseconds": 36.167,
+            "p99_microseconds": 59.375,
+            "max_microseconds": 77.959
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "text_japanese_Terms_complete_pages",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.029179792,
+            "throughput_ops_per_second": 34270.29226253566,
+            "p50_microseconds": 26.208,
+            "p99_microseconds": 47.666,
+            "max_microseconds": 57.834
+          },
+          "failed_attempts": []
+        }
+      ],
+      "status": "observed"
+    },
+    {
+      "workload": "english_japanese_indexed_text",
+      "tenants": 1000,
+      "footprint_id": "text-1000",
+      "measurements": [
+        {
+          "name": "embedded_authorized_owned_point_get",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.00538575,
+            "throughput_ops_per_second": 185675.16130529638,
+            "p50_microseconds": 2.459,
+            "p99_microseconds": 11.0,
+            "max_microseconds": 17.25
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "embedded_authorized_shared_point_get",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.002520916,
+            "throughput_ops_per_second": 396681.20635515027,
+            "p50_microseconds": 0.959,
+            "p99_microseconds": 1.542,
+            "max_microseconds": 3.834
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "durable_single_document_write",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 49.027207792,
+            "throughput_ops_per_second": 20.39683769556166,
+            "p50_microseconds": 46069.667,
+            "p99_microseconds": 56472.0,
+            "max_microseconds": 1246874.292
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "read_heavy_90_read_10_write",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 4.537340042,
+            "throughput_ops_per_second": 220.39344434040103,
+            "p50_microseconds": 4.667,
+            "p99_microseconds": 49781.917,
+            "max_microseconds": 70535.541
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "balanced_50_read_50_write",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 26.3294945,
+            "throughput_ops_per_second": 37.98022024311937,
+            "p50_microseconds": 68.458,
+            "p99_microseconds": 60634.5,
+            "max_microseconds": 1160160.166
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "structured_indexed_equality",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.071394458,
+            "throughput_ops_per_second": 14006.689426789962,
+            "p50_microseconds": 25.333,
+            "p99_microseconds": 57.709,
+            "max_microseconds": 20090.709
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "text_english_Phrase_complete_pages",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.105009792,
+            "throughput_ops_per_second": 9522.921443364063,
+            "p50_microseconds": 51.5,
+            "p99_microseconds": 124.083,
+            "max_microseconds": 10317.875
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "text_english_Prefix_complete_pages",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.185634833,
+            "throughput_ops_per_second": 5386.92002917362,
+            "p50_microseconds": 121.542,
+            "p99_microseconds": 272.542,
+            "max_microseconds": 10219.333
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "text_english_Fuzzy_complete_pages",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.0887,
+            "throughput_ops_per_second": 11273.957158962796,
+            "p50_microseconds": 69.084,
+            "p99_microseconds": 127.75,
+            "max_microseconds": 10090.375
+          },
+          "failed_attempts": []
+        },
+        {
+          "name": "text_japanese_Terms_complete_pages",
+          "requested_operations": 1000,
+          "attempted_operations": 1000,
+          "successful_operations": 1000,
+          "failed_operations": 0,
+          "unattempted_operations": 0,
+          "latency": {
+            "operations": 1000,
+            "elapsed_seconds": 0.082874583,
+            "throughput_ops_per_second": 12066.425721864567,
+            "p50_microseconds": 45.0,
+            "p99_microseconds": 108.083,
+            "max_microseconds": 10120.834
+          },
+          "failed_attempts": []
+        }
+      ],
+      "status": "observed"
+    }
+  ],
+  "tenant_overhead_estimates": [
+    {
+      "deployment": "raw",
+      "tenant_count": 100,
+      "stage": "empty_groups_rss_bytes",
+      "additional_tenant_rss_bytes": 827.4747474747475,
+      "additional_resident_voter_rss_bytes": null,
+      "method": "Difference from independent one-tenant process / additional tenants. This includes all associated runtime, policy, KMS, audit and index overhead; allocator/OS noise can produce negative estimates. It is not an isolated Raft allocation measurement."
+    },
+    {
+      "deployment": "local",
+      "tenant_count": 100,
+      "stage": "empty_groups_rss_bytes",
+      "additional_tenant_rss_bytes": 88043.31313131313,
+      "additional_resident_voter_rss_bytes": 88043.31313131313,
+      "method": "Difference from independent one-tenant process / additional tenants. This includes all associated runtime, policy, KMS, audit and index overhead; allocator/OS noise can produce negative estimates. It is not an isolated Raft allocation measurement."
+    },
+    {
+      "deployment": "local",
+      "tenant_count": 100,
+      "stage": "empty_indexes_rss_bytes",
+      "additional_tenant_rss_bytes": 112205.57575757576,
+      "additional_resident_voter_rss_bytes": 112205.57575757576,
+      "method": "Difference from independent one-tenant process / additional tenants. This includes all associated runtime, policy, KMS, audit and index overhead; allocator/OS noise can produce negative estimates. It is not an isolated Raft allocation measurement."
+    },
+    {
+      "deployment": "replicated",
+      "tenant_count": 100,
+      "stage": "empty_groups_rss_bytes",
+      "additional_tenant_rss_bytes": 365412.8484848485,
+      "additional_resident_voter_rss_bytes": 121804.28282828284,
+      "method": "Difference from independent one-tenant process / additional tenants. This includes all associated runtime, policy, KMS, audit and index overhead; allocator/OS noise can produce negative estimates. It is not an isolated Raft allocation measurement."
+    },
+    {
+      "deployment": "replicated",
+      "tenant_count": 100,
+      "stage": "empty_indexes_rss_bytes",
+      "additional_tenant_rss_bytes": 450311.75757575757,
+      "additional_resident_voter_rss_bytes": 150103.91919191918,
+      "method": "Difference from independent one-tenant process / additional tenants. This includes all associated runtime, policy, KMS, audit and index overhead; allocator/OS noise can produce negative estimates. It is not an isolated Raft allocation measurement."
+    },
+    {
+      "deployment": "text",
+      "tenant_count": 100,
+      "stage": "empty_groups_rss_bytes",
+      "additional_tenant_rss_bytes": 84402.42424242424,
+      "additional_resident_voter_rss_bytes": 84402.42424242424,
+      "method": "Difference from independent one-tenant process / additional tenants. This includes all associated runtime, policy, KMS, audit and index overhead; allocator/OS noise can produce negative estimates. It is not an isolated Raft allocation measurement."
+    },
+    {
+      "deployment": "text",
+      "tenant_count": 100,
+      "stage": "empty_indexes_rss_bytes",
+      "additional_tenant_rss_bytes": 121142.30303030302,
+      "additional_resident_voter_rss_bytes": 121142.30303030302,
+      "method": "Difference from independent one-tenant process / additional tenants. This includes all associated runtime, policy, KMS, audit and index overhead; allocator/OS noise can produce negative estimates. It is not an isolated Raft allocation measurement."
+    },
+    {
+      "deployment": "raw",
+      "tenant_count": 1000,
+      "stage": "empty_groups_rss_bytes",
+      "additional_tenant_rss_bytes": 16.4004004004004,
+      "additional_resident_voter_rss_bytes": null,
+      "method": "Difference from independent one-tenant process / additional tenants. This includes all associated runtime, policy, KMS, audit and index overhead; allocator/OS noise can produce negative estimates. It is not an isolated Raft allocation measurement."
+    },
+    {
+      "deployment": "local",
+      "tenant_count": 1000,
+      "stage": "empty_groups_rss_bytes",
+      "additional_tenant_rss_bytes": 47019.94794794795,
+      "additional_resident_voter_rss_bytes": 47019.94794794795,
+      "method": "Difference from independent one-tenant process / additional tenants. This includes all associated runtime, policy, KMS, audit and index overhead; allocator/OS noise can produce negative estimates. It is not an isolated Raft allocation measurement."
+    },
+    {
+      "deployment": "local",
+      "tenant_count": 1000,
+      "stage": "empty_indexes_rss_bytes",
+      "additional_tenant_rss_bytes": 99944.04004004004,
+      "additional_resident_voter_rss_bytes": 99944.04004004004,
+      "method": "Difference from independent one-tenant process / additional tenants. This includes all associated runtime, policy, KMS, audit and index overhead; allocator/OS noise can produce negative estimates. It is not an isolated Raft allocation measurement."
+    },
+    {
+      "deployment": "replicated",
+      "tenant_count": 1000,
+      "stage": "empty_groups_rss_bytes",
+      "additional_tenant_rss_bytes": 716074.2822822822,
+      "additional_resident_voter_rss_bytes": 238691.4274274274,
+      "method": "Difference from independent one-tenant process / additional tenants. This includes all associated runtime, policy, KMS, audit and index overhead; allocator/OS noise can produce negative estimates. It is not an isolated Raft allocation measurement."
+    },
+    {
+      "deployment": "replicated",
+      "tenant_count": 1000,
+      "stage": "empty_indexes_rss_bytes",
+      "additional_tenant_rss_bytes": 942186.6026026026,
+      "additional_resident_voter_rss_bytes": 314062.2008675342,
+      "method": "Difference from independent one-tenant process / additional tenants. This includes all associated runtime, policy, KMS, audit and index overhead; allocator/OS noise can produce negative estimates. It is not an isolated Raft allocation measurement."
+    },
+    {
+      "deployment": "text",
+      "tenant_count": 1000,
+      "stage": "empty_groups_rss_bytes",
+      "additional_tenant_rss_bytes": 20385.6976976977,
+      "additional_resident_voter_rss_bytes": 20385.6976976977,
+      "method": "Difference from independent one-tenant process / additional tenants. This includes all associated runtime, policy, KMS, audit and index overhead; allocator/OS noise can produce negative estimates. It is not an isolated Raft allocation measurement."
+    },
+    {
+      "deployment": "text",
+      "tenant_count": 1000,
+      "stage": "empty_indexes_rss_bytes",
+      "additional_tenant_rss_bytes": 56860.188188188185,
+      "additional_resident_voter_rss_bytes": 56860.188188188185,
+      "method": "Difference from independent one-tenant process / additional tenants. This includes all associated runtime, policy, KMS, audit and index overhead; allocator/OS noise can produce negative estimates. It is not an isolated Raft allocation measurement."
+    },
+    {
+      "deployment": "network",
+      "tenant_count": 100,
+      "stage": "empty_groups_rss_bytes",
+      "additional_tenant_rss_bytes": 175259.15151515152,
+      "additional_resident_voter_rss_bytes": 175259.15151515152,
+      "method": "Difference from independent one-tenant process / additional tenants. This includes all associated runtime, policy, KMS, audit and index overhead; allocator/OS noise can produce negative estimates. It is not an isolated Raft allocation measurement."
+    },
+    {
+      "deployment": "network",
+      "tenant_count": 100,
+      "stage": "empty_indexes_rss_bytes",
+      "additional_tenant_rss_bytes": 203724.28282828283,
+      "additional_resident_voter_rss_bytes": 203724.28282828283,
+      "method": "Difference from independent one-tenant process / additional tenants. This includes all associated runtime, policy, KMS, audit and index overhead; allocator/OS noise can produce negative estimates. It is not an isolated Raft allocation measurement."
+    },
+    {
+      "deployment": "network",
+      "tenant_count": 1000,
+      "stage": "empty_groups_rss_bytes",
+      "additional_tenant_rss_bytes": 180256.8008008008,
+      "additional_resident_voter_rss_bytes": 180256.8008008008,
+      "method": "Difference from independent one-tenant process / additional tenants. This includes all associated runtime, policy, KMS, audit and index overhead; allocator/OS noise can produce negative estimates. It is not an isolated Raft allocation measurement."
+    },
+    {
+      "deployment": "network",
+      "tenant_count": 1000,
+      "stage": "empty_indexes_rss_bytes",
+      "additional_tenant_rss_bytes": 224242.67467467466,
+      "additional_resident_voter_rss_bytes": 224242.67467467466,
+      "method": "Difference from independent one-tenant process / additional tenants. This includes all associated runtime, policy, KMS, audit and index overhead; allocator/OS noise can produce negative estimates. It is not an isolated Raft allocation measurement."
+    }
+  ],
+  "issues": [],
+  "limits": [
+    "One sequential closed-loop observation per workload; no saturation throughput, confidence interval, or launch SLA is inferred.",
+    "API-layer rows share footprints. Never sum embedded/local or native/MCP footprint references.",
+    "Service security-audit stores are shared per node, included in memory/key/disk observations, and counted separately from tenant/control Raft groups. Older results without declared counts retain their original fixture attribution.",
+    "Resident/payload ratios include whole-process infrastructure and replicated copies, not just document heap overhead.",
+    "RSS snapshots and five-second host samples can miss transient peaks; network process-lifetime peak is not measured here.",
+    "Shutdown is timed separately through complete database closure or successful server process exit. Recovery starts after shutdown and covers reopen/spawn through verified reads; final cleanup is excluded. OpenBao and issuer remain running for network restart. These are not crash/power-loss measurements.",
+    "Three voters are in one process on one host. Independent failure domains and remote network latency are not measured.",
+    "An observed fit does not establish maximum capacity; budgets require headroom for staged indexes, snapshots, cursors, receipts, auditing, background work and OS memory.",
+    "This is a derived two-cohort view; consult each footprint origin. No raw source identity is relabeled."
+  ]
+}

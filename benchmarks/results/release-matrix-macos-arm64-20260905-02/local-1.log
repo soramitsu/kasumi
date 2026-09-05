@@ -1,0 +1,9 @@
+starting mode=local tenants=1 documents=1000000 operations=1000
+checkpoint mode=local tenants=1 stage=opening
+checkpoint mode=local tenants=1 stage=collection_setup
+loaded 100 batches (local, tenant 1)
+loaded 200 batches (local, tenant 1)
+loaded 300 batches (local, tenant 1)
+loaded 400 batches (local, tenant 1)
+loaded 500 batches (local, tenant 1)
+loaded 600 batches (local, tenant 1)

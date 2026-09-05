@@ -1,0 +1,17 @@
+{
+  "status": "completed",
+  "source_sha256_before": "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2",
+  "started_unix_seconds": 1788603727.003572,
+  "free_disk_bytes_before": 37677178880,
+  "selected_paths": 15730,
+  "selected_regular_files": 53651,
+  "protected_executables": 108,
+  "retained_release_lane": true,
+  "retained_current_incremental_sessions": true,
+  "finished_unix_seconds": 1788603742.684157,
+  "source_sha256_after": "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2",
+  "protected_executables_unchanged": true,
+  "free_disk_bytes_after": 57456963584,
+  "observed_free_disk_change_bytes": 19779784704,
+  "scope": "Only explicit superseded test executables, their obsolete object caches, and older finalized incremental sessions. Current binaries, newest warm sessions, dependencies, source, and all earlier evidence retained."
+}

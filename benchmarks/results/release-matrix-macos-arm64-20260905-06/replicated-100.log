@@ -1,0 +1,43 @@
+starting mode=replicated tenants=100 documents=1000000 operations=1000
+checkpoint mode=replicated tenants=100 stage=opening
+opened 100/100 tenant groups
+checkpoint mode=replicated tenants=100 stage=collection_setup
+loaded 100 batches (replicated, tenant 3)
+loaded 300 batches (replicated, tenant 8)
+loaded 500 batches (replicated, tenant 13)
+loaded 700 batches (replicated, tenant 18)
+loaded 900 batches (replicated, tenant 23)
+loaded 1100 batches (replicated, tenant 28)
+loaded 1300 batches (replicated, tenant 33)
+loaded 1500 batches (replicated, tenant 38)
+loaded 1700 batches (replicated, tenant 43)
+loaded 1900 batches (replicated, tenant 48)
+loaded 2100 batches (replicated, tenant 53)
+loaded 2300 batches (replicated, tenant 58)
+loaded 2500 batches (replicated, tenant 63)
+loaded 2700 batches (replicated, tenant 68)
+loaded 2900 batches (replicated, tenant 73)
+loaded 3100 batches (replicated, tenant 78)
+loaded 3300 batches (replicated, tenant 83)
+loaded 3500 batches (replicated, tenant 88)
+loaded 3700 batches (replicated, tenant 93)
+loaded 3900 batches (replicated, tenant 98)
+loaded tenant 100/100 (replicated)
+checkpoint mode=replicated tenants=100 stage=embedded_authorized_owned_point_get
+checkpoint mode=replicated tenants=100 stage=measured_workload workload=embedded_authorized_owned_point_get success=1000 failed=0 unattempted=0
+checkpoint mode=replicated tenants=100 stage=embedded_authorized_shared_point_get workload=embedded_authorized_owned_point_get success=1000 failed=0 unattempted=0
+checkpoint mode=replicated tenants=100 stage=measured_workload workload=embedded_authorized_shared_point_get success=1000 failed=0 unattempted=0
+checkpoint mode=replicated tenants=100 stage=durable_single_document_write workload=embedded_authorized_shared_point_get success=1000 failed=0 unattempted=0
+checkpoint mode=replicated tenants=100 stage=measured_workload workload=durable_single_document_write success=1000 failed=0 unattempted=0
+checkpoint mode=replicated tenants=100 stage=read_heavy_90_read_10_write workload=durable_single_document_write success=1000 failed=0 unattempted=0
+checkpoint mode=replicated tenants=100 stage=measured_workload workload=read_heavy_90_read_10_write success=1000 failed=0 unattempted=0
+checkpoint mode=replicated tenants=100 stage=balanced_50_read_50_write workload=read_heavy_90_read_10_write success=1000 failed=0 unattempted=0
+checkpoint mode=replicated tenants=100 stage=measured_workload workload=balanced_50_read_50_write success=1000 failed=0 unattempted=0
+checkpoint mode=replicated tenants=100 stage=measured_query workload=structured_indexed_equality success=1000 failed=0 unattempted=0
+checkpoint mode=replicated tenants=100 stage=shutting_down workload=structured_indexed_equality success=1000 failed=0 unattempted=0
+checkpoint mode=replicated tenants=100 stage=recovering workload=structured_indexed_equality success=1000 failed=0 unattempted=0
+opened 100/100 tenant groups
+checkpoint mode=replicated tenants=100 stage=recovered workload=structured_indexed_equality success=1000 failed=0 unattempted=0
+completed mode=replicated tenants=100 load=384.576s
+checkpoint mode=replicated tenants=100 stage=completed
+benchmark report: /Users/takemiyamakoto/dev/kasumi/benchmarks/results/release-matrix-macos-arm64-20260905-06/replicated-100.json

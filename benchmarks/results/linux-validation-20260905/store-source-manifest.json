@@ -1,0 +1,12 @@
+{
+  "recorded_utc": "2026-09-05T00:01:40.501281+00:00",
+  "files": {
+    "crates/kasumi-store/src/lib.rs": "854534d0c4b8a0d3129a378e7c03a9f4e8fca5acdb34c0944c3ad71c145a353a",
+    "crates/kasumi-store/src/backup.rs": "0428e1036bd24cbea93552f72891924503a10a61a1e2dfb53bf979ee6085bb9a",
+    "crates/kasumi-store/src/catalog_budget.rs": "a9408ae70458e6a7a676228481a16e990c244a2a94cc905686aa97897f793a1f",
+    "crates/kasumi-store/src/tests.rs": "975d83acb2ccbe848af583084a252b85f294ea1e59cf3d43a509a2ca5d6c1a98",
+    "scripts/fetch_openbao.py": "f37cc5376d68f83fdc238609ef3a931ba686ac1d982596dea1f83b8371c540a1",
+    "Cargo.lock": "f53210ada29848989e6b94c228b9ba3a568668f6744eff466bac0ffed0b28950",
+    "crates/kasumi-store/Cargo.toml": "223c6766fd6cd8b38fecf6fccbf8b59be630044d25788ff896c6990449b4ca68"
+  }
+}

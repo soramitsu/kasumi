@@ -1,0 +1,111 @@
+{
+  "format": 1,
+  "status": "completed_under_host_load",
+  "source_sha256": "28aeb80168d3ab02a0eec7bf2a0163a7cb99dbfd74adf596e849de17e1fa3c1d",
+  "executable_sha256": {
+    "target/release/kasumi-bench": "a1f93ade86ddfe7096bb0afccc9ae72b4f196254657595d4f6409525f0be52b7",
+    "target/release/kasumi-bench-loopback": "788550dfa5f1d75535ab37fc63f3675959c98cc38a12628d99dd22c9ff716e1d",
+    "target/release/kasumi-bench-network": "f1b7f8493eff2b03170854237845fa0bf026fff3d0f88dcb9dbdcf79284f273c",
+    "target/release/kasumid": "55d88df05e3602ad3ba482351bcf896a58130deed12c6a22c249aaf70cf183c0"
+  },
+  "git_status": [
+    " M .gitignore",
+    " M README.md",
+    "?? Cargo.lock",
+    "?? Cargo.toml",
+    "?? benchmarks/",
+    "?? crates/",
+    "?? deploy/",
+    "?? docs/",
+    "?? scripts/"
+  ],
+  "host": {
+    "uname": {
+      "sysname": "Darwin",
+      "release": "25.6.0",
+      "version": "Darwin Kernel Version 25.6.0: Fri Jul 31 19:17:26 PDT 2026; root:xnu-12377.161.14~5/RELEASE_ARM64_T6041",
+      "machine": "arm64"
+    },
+    "logical_cpus": 16,
+    "rustc": "rustc 1.94.1 (e408947bf 2026-03-25)"
+  },
+  "options": {
+    "documents": 1000000,
+    "operations": 1000,
+    "tenants": "1,100,1000",
+    "output_directory": "/Users/takemiyamakoto/dev/kasumi/benchmarks/results/network-rerun-macos-arm64-20260905-listener",
+    "skip_build": true,
+    "allow_host_load": true,
+    "quiet_seconds": 60,
+    "max_background_cpu": 100,
+    "max_initial_load": 4.0,
+    "min_free_gib": 30
+  },
+  "statistics": "One sequential closed-loop run per case. Nearest-rank p99 at 1000 operations has about 10 tail observations; no repeatability confidence interval is claimed. Extended runs can set --operations 10000.",
+  "quietness_policy": "Configured OS load/process-CPU observations and absence of compiler/linker/VM processes are screening evidence, not proof of exclusive hardware ownership. Background changes abort unless --allow-host-load explicitly records unqualified observations. No unrelated process is stopped.",
+  "cases": [
+    {
+      "name": "network-1",
+      "started_unix_seconds": 1788611885.102299,
+      "elapsed_seconds": 668.0086040496826,
+      "command": [
+        "/Users/takemiyamakoto/dev/kasumi/target/release/kasumi-bench-loopback",
+        "--documents",
+        "1000000",
+        "--operations",
+        "1000",
+        "--tenants",
+        "1",
+        "--output-prefix",
+        "/Users/takemiyamakoto/dev/kasumi/benchmarks/results/network-rerun-macos-arm64-20260905-listener/network"
+      ],
+      "status": "passed",
+      "exit_code": 0,
+      "result_sha256": "5270ef123e80b899cd0de95d84e56079cbcc4719833b1518e07210e41bdde7a2"
+    },
+    {
+      "name": "network-100",
+      "started_unix_seconds": 1788612553.1860712,
+      "elapsed_seconds": 736.5354909896851,
+      "command": [
+        "/Users/takemiyamakoto/dev/kasumi/target/release/kasumi-bench-loopback",
+        "--documents",
+        "1000000",
+        "--operations",
+        "1000",
+        "--tenants",
+        "100",
+        "--output-prefix",
+        "/Users/takemiyamakoto/dev/kasumi/benchmarks/results/network-rerun-macos-arm64-20260905-listener/network"
+      ],
+      "status": "passed",
+      "exit_code": 0,
+      "result_sha256": "28c5b7c3dee622e263c1637feba9a592dce0adcaff6fb6724ccc4af0d74dcc65"
+    },
+    {
+      "name": "network-1000",
+      "started_unix_seconds": 1788613289.786918,
+      "elapsed_seconds": 942.6418972015381,
+      "command": [
+        "/Users/takemiyamakoto/dev/kasumi/target/release/kasumi-bench-loopback",
+        "--documents",
+        "1000000",
+        "--operations",
+        "1000",
+        "--tenants",
+        "1000",
+        "--output-prefix",
+        "/Users/takemiyamakoto/dev/kasumi/benchmarks/results/network-rerun-macos-arm64-20260905-listener/network"
+      ],
+      "status": "passed",
+      "exit_code": 0,
+      "result_sha256": "b4692d7842fb899e5f76852cb81de9c13de21b89af3a4ebe2212c656e23e1828"
+    }
+  ],
+  "failures": [],
+  "host_load_violation_counts": {
+    "competing compiler/linker or virtual machine process present": 474
+  },
+  "passed_quietness_screening": false,
+  "finished_unix_seconds": 1788614232.5378711
+}

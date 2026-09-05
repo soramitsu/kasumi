@@ -1,0 +1,119 @@
+{
+  "format": 1,
+  "status": "passed",
+  "source_sha256_before": "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2",
+  "image_sha256": "67b357ce730a064aab665277d0dfaece94ab2ca0407ba4fe818b9f2d7fb40861",
+  "started_unix_seconds": 1788602464.004299,
+  "wrapper_pid": 29330,
+  "process_group": 29330,
+  "argv": [
+    "docker",
+    "--host",
+    "unix:///Users/takemiyamakoto/.colima/kasumi-validation/docker.sock",
+    "--config",
+    "/Users/takemiyamakoto/dev/kasumi/target/docker-validation-client",
+    "run",
+    "--cpus",
+    "6",
+    "--memory",
+    "14g",
+    "--memory-swap",
+    "14g",
+    "--rm",
+    "--name",
+    "kasumi-linux-validation-embedded-audit",
+    "--mount",
+    "type=bind,source=/Users/takemiyamakoto/dev/kasumi,target=/workspace",
+    "--mount",
+    "type=bind,source=/Users/takemiyamakoto/dev/kasumi/target/linux-cargo-registry,target=/usr/local/cargo/registry",
+    "-e",
+    "CARGO_NET_OFFLINE=true",
+    "-e",
+    "CARGO_TARGET_DIR=/workspace/target/linux-validation",
+    "-w",
+    "/workspace",
+    "sha256:67b357ce730a064aab665277d0dfaece94ab2ca0407ba4fe818b9f2d7fb40861",
+    "bash",
+    "-c",
+    "bash scripts/validate_linux.sh && cargo fmt --all --check && python3 -m unittest discover -s scripts -p \"test_*.py\""
+  ],
+  "log": "full-gate.log",
+  "cargo_target_directory": "/workspace/target/linux-validation",
+  "docker_host": {
+    "ServerVersion": "29.5.2",
+    "KernelVersion": "6.8.0-117-generic",
+    "OperatingSystem": "Ubuntu 24.04.4 LTS",
+    "Architecture": "aarch64",
+    "NCPU": 6,
+    "MemTotal": 16733048832
+  },
+  "virtual_machine": {
+    "profile": "kasumi-validation",
+    "driver": "macOS Virtualization.Framework",
+    "mount": "virtiofs"
+  },
+  "docker_client_pid": 29334,
+  "exit_code": 0,
+  "source_sha256_after": "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2",
+  "image_sha256_after": "sha256:67b357ce730a064aab665277d0dfaece94ab2ca0407ba4fe818b9f2d7fb40861",
+  "test_entry_counts": {
+    "passed_including_separate_openbao": 187,
+    "failed": 0,
+    "ignored_in_workspace_run": 2
+  },
+  "python_tests": [
+    6
+  ],
+  "log_sha256": "800edc9f5e50601483d654cb2cbd40d45539790bc3311038fabdd1f85b1ffc8e",
+  "finished_unix_seconds": 1788602715.891728,
+  "elapsed_seconds": 251.88742899894714,
+  "workspace_test_entry_counts": {
+    "passed": 186,
+    "failed": 0,
+    "ignored": 2
+  },
+  "additional_checks": {
+    "actual_linux_openbao_tests_passed": 1,
+    "python_driver_tests_passed": 6,
+    "strict_workspace_all_features_all_targets_clippy": "passed",
+    "cargo_fmt_all_check": "passed",
+    "actual_minio_tests_passed": 1,
+    "minio_client_platform": "macOS aarch64",
+    "minio_evidence": "minio-evidence.json"
+  },
+  "cleanup": {
+    "fixture_containers_remaining": 0,
+    "colima_profile": "kasumi-validation",
+    "profile_status": "Stopped",
+    "stop_exit_code": null,
+    "stop_status_evidence": "colima-after.txt and colima-stop.log; stop launched detached, exit code not observed",
+    "other_profiles_modified": false,
+    "wrapper_and_client_pids_checked": [
+      29330,
+      29334,
+      32032,
+      32035,
+      33528
+    ],
+    "wrapper_and_client_pids_remaining": 0,
+    "source_sha256_after_cleanup": "a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2",
+    "finished_unix_seconds": 1788602900.9801202
+  },
+  "supplemental_log_sha256": {
+    "stop-execution.json": "feffb99ef00922e5daf669f1ebdeb070cebda75b0f52b2abb25980904b3db07b",
+    "minio-orchestration.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "minio-execution.json": "d158c383429ba0f7caa5e689d52d8b946febc8ed726c08cfe770739e26953199",
+    "orchestration.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "colima-before-stop.jsonl": "98189883ff60167f37a1a656b09c3bb24232f330393d731101e48bc063c195e3",
+    "minio-evidence.json": "35c1c2f68f1ed200518965a69380f9e7ba6032c45da02c3e2c2797eeea03f527",
+    "build-progress.jsonl": "8856a2f5fad7bee30b21d788725502a741f99bafba7db6bcb8dde9e845a14d9c",
+    "colima-stop.log": "90007c2aaa955c8aa6c5aca20d6c4649290ce8e593649e220129e6b028fe9358",
+    "full-gate.log": "800edc9f5e50601483d654cb2cbd40d45539790bc3311038fabdd1f85b1ffc8e",
+    "colima-start.log": "6317563577edf778edaff5a955d53e24f15f85d40d4d2dc7fd3e8c228732f45d",
+    "docker-after.txt": "3d15654c616b7ce264719e8782ff67537832f558015d064a0396aa169cfc7bba",
+    "environment-preparation.json": "43d5b3f09354c2296352bc90fbe1b5cd511c7cde5ad118424ee5f7c21822c7cd",
+    "colima-after.txt": "24157e233188e0a28fa04b64be3c7ca55302d562ee8b8f173e0f2398e9550b03",
+    "execution.json": "82510528d742fae24fbbaa76adb4f82f2027b53cbd3b32c434527d1514d3df44",
+    "minio-live.log": "46bd5d54d1471c0c0092c18b5ea988331a9f27e8d9a15ef892d87e5116ac13c1"
+  }
+}
