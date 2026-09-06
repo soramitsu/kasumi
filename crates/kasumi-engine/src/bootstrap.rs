@@ -535,6 +535,11 @@ async fn restore_access(
     audit: &SecurityAudit,
     context: &RequestContext,
 ) -> anyhow::Result<()> {
+    if context.authorization.check_live().is_err() {
+        return Err(restore_denial(audit, context, ErrorCode::Unauthorized)
+            .await
+            .into());
+    }
     if context.tenant != target.tenant() || !context.scopes.contains(&Action::Admin) {
         return Err(restore_denial(audit, context, ErrorCode::Forbidden)
             .await

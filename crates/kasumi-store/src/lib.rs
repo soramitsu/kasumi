@@ -8,7 +8,6 @@
 
 mod archive_objects;
 mod backup;
-mod clock;
 mod keys;
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_utils;
@@ -18,7 +17,7 @@ pub use backup::{
     S3BackupConfig, S3BackupDestination,
 };
 pub use backup::{MAX_BACKUP_BUNDLE_BYTES, MAX_BACKUP_SNAPSHOT_BYTES};
-pub use clock::{LeaseClock, SystemLeaseClock};
+use kasumi_clock::{LeaseClock, SystemLeaseClock};
 pub use keys::{
     GeneratedKey, KeyProvider, SecretKey, TransitConfig, TransitKeyProvider, WrappedKey,
 };

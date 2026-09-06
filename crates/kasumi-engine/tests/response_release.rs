@@ -16,6 +16,7 @@ async fn encoded_response_is_fenced_by_policy_changes_and_actual_key_denial() {
         .await
         .unwrap();
     let context = RequestContext {
+        authorization: kasumi_types::RequestAuthorization::service_identity(),
         tenant: "tenant".into(),
         principal: "owner".into(),
         scopes: BTreeSet::from([Action::Admin, Action::Read, Action::Write]),

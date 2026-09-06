@@ -12,6 +12,7 @@ async fn full_shutdown_reopens_immediately_with_receipts_and_retained_plaintext(
     let path = directory.path().join("node.redb");
     let provider = Arc::new(LocalKeyProvider::new([29; 32]));
     let context = RequestContext {
+        authorization: kasumi_types::RequestAuthorization::service_identity(),
         tenant: "shutdown".into(),
         principal: "owner".into(),
         scopes: BTreeSet::from([Action::Read, Action::Write, Action::Admin, Action::Audit]),

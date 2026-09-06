@@ -3,7 +3,7 @@
 use crate::{
     api::{
         DatabaseRegistry, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, decode_json, encode_json,
-        release_response, status,
+        mutation_release, release_response, status,
     },
     auth::Authenticator,
 };
@@ -539,9 +539,9 @@ impl NativeAdmin {
             .auth
             .audit_result(&context, database.response_fence(&context))
             .await
-            .map_err(status)?;
+            .map_err(|error| status(mutation_release::<()>(Err(error)).unwrap_err()))?;
         let response = receipt(result);
-        let response = release_response(&self.auth, &context, fence, response, false)
+        let response = release_response(&self.auth, &context, fence, response, true)
             .await
             .map_err(status)?;
         Ok(Response::new(response))
@@ -574,16 +574,16 @@ impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
                 database.backup_checkpoint_response_fence(&context, &proof),
             )
             .await
-            .map_err(status)?;
+            .map_err(|error| status(mutation_release::<()>(Err(error)).unwrap_err()))?;
         let response = BackupCheckpointResponse {
             response_json: encode_json(proof.checkpoint()).map_err(status)?,
         };
         self.auth
             .audit_result(&context, fence.check())
             .await
-            .map_err(status)?;
+            .map_err(|error| status(mutation_release::<()>(Err(error)).unwrap_err()))?;
         Ok(Response::new(
-            release_response(&self.auth, &context, operation_fence, response, false)
+            release_response(&self.auth, &context, operation_fence, response, true)
                 .await
                 .map_err(status)?,
         ))
@@ -677,9 +677,9 @@ impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
                 database.schema_activation_response_fence(&context, &reference),
             )
             .await
-            .map_err(status)?;
+            .map_err(|error| status(mutation_release::<()>(Err(error)).unwrap_err()))?;
         Ok(Response::new(
-            release_response(&self.auth, &context, fence, receipt(result), false)
+            release_response(&self.auth, &context, fence, receipt(result), true)
                 .await
                 .map_err(status)?,
         ))
@@ -748,6 +748,10 @@ impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
             .audit_result(&context, manager.response_fence(&context, &command))
             .await
             .map_err(status)?;
+        let mutation = !matches!(
+            command,
+            crate::administration::ManagementCommand::Status { .. }
+        );
         let result = manager.execute(context.clone(), command).await;
         // Administration owns its operation denials, including nested database
         // requests. The adapter owns only its route and response fences.
@@ -755,10 +759,16 @@ impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
         let response = ManagementResponse {
             result_json: encode_json(&result).map_err(status)?,
         };
-        self.auth
+        let release = self
+            .auth
             .audit_result(&context, fence.check_release())
-            .await
-            .map_err(status)?;
+            .await;
+        if mutation {
+            mutation_release(release)
+        } else {
+            release
+        }
+        .map_err(status)?;
         Ok(Response::new(response))
     }
     async fn create_collection(

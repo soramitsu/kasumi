@@ -156,6 +156,7 @@ fn body(ordinal: usize, version: usize, tenants: usize) -> Value {
 }
 fn context(tenant: usize) -> RequestContext {
     RequestContext {
+        authorization: kasumi_types::RequestAuthorization::service_identity(),
         principal: "benchmark".into(),
         tenant: format!("bench-{tenant:04}"),
         scopes: BTreeSet::from([Action::Read, Action::Write, Action::Admin]),

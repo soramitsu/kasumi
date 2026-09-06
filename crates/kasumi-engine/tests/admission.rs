@@ -23,6 +23,7 @@ async fn pressure_rejects_new_proposals_and_queries_but_committed_raft_work_stil
     .await
     .unwrap();
     let context = RequestContext {
+        authorization: kasumi_types::RequestAuthorization::service_identity(),
         principal: "owner".into(),
         tenant: "tenant".into(),
         scopes: BTreeSet::from([Action::Admin, Action::Write, Action::Read]),
@@ -147,6 +148,7 @@ async fn explicit_local_bootstrap_reads_the_complete_committed_generation() {
     .await
     .unwrap();
     let context = RequestContext {
+        authorization: kasumi_types::RequestAuthorization::service_identity(),
         principal: "owner".into(),
         tenant: "local".into(),
         scopes: BTreeSet::from([Action::Admin, Action::Write, Action::Read]),

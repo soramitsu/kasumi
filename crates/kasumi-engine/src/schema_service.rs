@@ -11,12 +11,16 @@ impl Database {
             let receipt = self
                 .administer(context.clone(), Operation::ActivateSchema(request))
                 .await?;
-            self.schema_activation_response_fence(&context, &reference)?
-                .check()?;
+            let release = self
+                .schema_activation_response_fence(&context, &reference)
+                .and_then(|fence| fence.check());
+            self.audit_result(&context, release)
+                .await
+                .map_err(credential_acknowledgement)?;
             Ok(receipt)
         }
         .await;
-        self.audit_result(&context, result).await
+        self.audit_write_result(&context, result).await
     }
 
     /// Capture the acknowledgement epoch before rechecking current authority.

@@ -28,6 +28,7 @@ impl BackupDestination for PendingSource {
 }
 fn context(tenant: &str) -> RequestContext {
     RequestContext {
+        authorization: kasumi_types::RequestAuthorization::service_identity(),
         tenant: tenant.into(),
         principal: "owner".into(),
         scopes: BTreeSet::from([Action::Admin, Action::Read, Action::Write]),

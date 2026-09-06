@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 
 fn context() -> RequestContext {
     RequestContext {
+        authorization: kasumi_types::RequestAuthorization::service_identity(),
         principal: "owner".into(),
         tenant: "tenant".into(),
         scopes: BTreeSet::from([Action::Read, Action::Write, Action::Admin]),

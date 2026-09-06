@@ -8,6 +8,7 @@ use std::{collections::BTreeSet, sync::Arc};
 
 fn identity(principal: &str) -> RequestContext {
     RequestContext {
+        authorization: kasumi_types::RequestAuthorization::service_identity(),
         principal: principal.into(),
         tenant: "pages".into(),
         scopes: BTreeSet::from([Action::Admin, Action::Read, Action::Write]),

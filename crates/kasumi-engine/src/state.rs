@@ -229,6 +229,7 @@ impl TenantEngine {
         collection: Option<&str>,
         action: Action,
     ) -> Result<()> {
+        context.authorization.check_live()?;
         authorize_state(&self.generation()?.state, context, collection, action)
     }
 
@@ -238,6 +239,7 @@ impl TenantEngine {
         action: Action,
         epoch: Option<u64>,
     ) -> Result<()> {
+        context.authorization.check_live()?;
         let generation = self.generation()?;
         authorize_discovery_state(&generation.state, context, action)?;
         if epoch.is_some_and(|epoch| epoch != generation.state.policy_epoch) {
@@ -256,6 +258,7 @@ impl TenantEngine {
         action: Action,
         policy_epoch: u64,
     ) -> Result<()> {
+        context.authorization.check_live()?;
         let generation = self.generation()?;
         authorize_state(&generation.state, context, collection, action)?;
         if generation.state.policy_epoch != policy_epoch {
@@ -287,6 +290,12 @@ impl TenantEngine {
         next.revision = revision;
         let result = if command.context.tenant != next.tenant {
             Err(Error::new(ErrorCode::Forbidden, "tenant access denied"))
+        } else if let Err(error) = command
+            .context
+            .authorization
+            .check_admitted_at(command.timestamp_ms)
+        {
+            Err(error)
         } else {
             apply_operation(
                 &mut next,
@@ -1474,6 +1483,7 @@ mod restore_budget_tests {
     #[test]
     fn restored_identity_metadata_is_validated_before_bootstrap_persistence() {
         let context = RequestContext {
+            authorization: kasumi_types::RequestAuthorization::service_identity(),
             principal: "owner".into(),
             tenant: "tenant".into(),
             scopes: BTreeSet::from([Action::Admin, Action::Write]),

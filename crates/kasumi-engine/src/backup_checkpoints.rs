@@ -92,9 +92,12 @@ impl Database {
         context: RequestContext,
         destination: &dyn BackupDestination,
     ) -> Result<VerifiedBackupCheckpoint> {
+        let mut publication_admitted = false;
         let result =
             tokio::time::timeout(Duration::from_millis(BACKUP_OPERATION_TIMEOUT_MS), async {
                 let fence = self.response_fence(&context)?;
+                self.engine.authorize(&context, None, Action::Admin)?;
+                publication_admitted = true;
                 let expected = self
                     .publish_full_backup(context.clone(), destination)
                     .await?;
@@ -118,7 +121,12 @@ impl Database {
                 )
             })
             .and_then(|result| result);
-        self.audit_result(&context, result).await
+        let result = self.audit_result(&context, result).await;
+        if publication_admitted {
+            result.map_err(credential_acknowledgement)
+        } else {
+            result
+        }
     }
 
     pub async fn backup_checkpoint_named(
@@ -133,7 +141,7 @@ impl Database {
                 .await
         }
         .await;
-        self.audit_result(&context, result).await
+        self.audit_write_result(&context, result).await
     }
 
     pub async fn verify_backup_checkpoint_named(

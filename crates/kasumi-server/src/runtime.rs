@@ -1404,6 +1404,7 @@ pub(crate) fn control_context(policy: &Policy) -> Result<RequestContext> {
     let grant=policy.grants.iter().find(|grant|grant.collection.is_none() && [Action::Admin,Action::Read,Action::Write].iter().all(|action|grant.actions.contains(action)))
         .context("control bootstrap needs one explicitly named operator with read/write/admin permissions")?;
     Ok(RequestContext {
+        authorization: kasumi_types::RequestAuthorization::service_identity(),
         principal: grant.principal.clone(),
         tenant: CONTROL_TENANT.into(),
         scopes: BTreeSet::from([Action::Read, Action::Write, Action::Admin, Action::Audit]),
@@ -2416,6 +2417,7 @@ mod lifecycle_tests {
             transit.ca_certificate = Some(files.certificate.clone());
         }
         let context = RequestContext {
+            authorization: kasumi_types::RequestAuthorization::service_identity(),
             principal: "acme-admin".into(),
             tenant: "acme".into(),
             scopes: BTreeSet::from([Action::Read, Action::Write, Action::Admin, Action::Audit]),
@@ -2943,6 +2945,7 @@ mod lifecycle_tests {
         }
         drop(reserved);
         let context = RequestContext {
+            authorization: kasumi_types::RequestAuthorization::service_identity(),
             principal: "acme-admin".into(),
             tenant: "acme".into(),
             scopes: BTreeSet::from([Action::Read, Action::Write, Action::Admin, Action::Audit]),

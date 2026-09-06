@@ -11,6 +11,7 @@ async fn queued_staged_finalize_checks_fresh_time_and_canceled_callers_keep_dura
     .unwrap();
     let audit = SecurityAudit::open(audit_store, 100_000).unwrap();
     let context = RequestContext {
+        authorization: kasumi_types::RequestAuthorization::service_identity(),
         tenant: "stage-time".into(),
         principal: "owner".into(),
         scopes: BTreeSet::from([Action::Read, Action::Write, Action::Admin, Action::Audit]),

@@ -1,4 +1,6 @@
 //! Transport-independent, exact JSON contracts shared by every Kasumi interface.
+mod authorization;
+pub use authorization::RequestAuthorization;
 mod backup;
 pub use backup::*;
 mod atomic;
@@ -111,6 +113,7 @@ pub enum ErrorCode {
 /// Embedding applications are trusted and may provide their own verified context.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RequestContext {
+    pub authorization: RequestAuthorization,
     pub principal: String,
     pub tenant: String,
     pub scopes: BTreeSet<Action>,

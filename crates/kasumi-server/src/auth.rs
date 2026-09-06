@@ -1,12 +1,9 @@
 //! OAuth resource-server authentication. Token-provided URLs are never fetched.
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header, jwk::JwkSet};
-use kasumi_types::{Action, Error, ErrorCode, RequestContext, Result};
+use kasumi_clock::EpochClock;
+use kasumi_types::{Action, Error, ErrorCode, RequestAuthorization, RequestContext, Result};
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::BTreeSet,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{collections::BTreeSet, sync::Arc, time::Duration};
 use tokio::sync::RwLock;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -66,11 +63,12 @@ struct Claims {
 
 struct CachedKeys {
     keys: JwkSet,
-    fetched: Instant,
+    fetched: Duration,
 }
 
 pub struct Authenticator {
     config: AuthConfig,
+    clock: Arc<EpochClock>,
     client: reqwest::Client,
     cache: RwLock<Option<CachedKeys>>,
     refresh: tokio::sync::Mutex<()>,
@@ -79,6 +77,10 @@ pub struct Authenticator {
 
 impl Authenticator {
     pub fn new(config: AuthConfig) -> anyhow::Result<Arc<Self>> {
+        Self::new_with_clock(config, EpochClock::system()?)
+    }
+
+    fn new_with_clock(config: AuthConfig, clock: Arc<EpochClock>) -> anyhow::Result<Arc<Self>> {
         for (name, text) in [
             ("issuer", &config.issuer),
             ("audience", &config.audience),
@@ -129,6 +131,7 @@ impl Authenticator {
         let client = client.build()?;
         Ok(Arc::new(Self {
             config,
+            clock,
             client,
             cache: RwLock::new(None),
             refresh: tokio::sync::Mutex::new(()),
@@ -219,7 +222,7 @@ impl Authenticator {
         let authenticator = Self::new(config).expect("valid test authenticator config");
         *authenticator.cache.write().await = Some(CachedKeys {
             keys,
-            fetched: Instant::now(),
+            fetched: authenticator.clock.elapsed_clock().now(),
         });
         authenticator
     }
@@ -230,13 +233,26 @@ impl Authenticator {
         {
             let cache = self.cache.read().await;
             if let Some(cache) = cache.as_ref() {
-                if cache.fetched.elapsed() < Duration::from_secs(300)
+                if self
+                    .clock
+                    .elapsed_clock()
+                    .now()
+                    .checked_sub(cache.fetched)
+                    .ok_or_else(unauthorized)?
+                    < Duration::from_secs(300)
                     && cache.keys.find(requested_kid).is_some()
                 {
                     return Ok(());
                 }
                 // Unknown-kid floods cannot turn verification into an unbounded JWKS fetcher.
-                if cache.fetched.elapsed() < Duration::from_secs(5) {
+                if self
+                    .clock
+                    .elapsed_clock()
+                    .now()
+                    .checked_sub(cache.fetched)
+                    .ok_or_else(unauthorized)?
+                    < Duration::from_secs(5)
+                {
                     return Err(unauthorized());
                 }
             }
@@ -273,7 +289,7 @@ impl Authenticator {
         }
         *self.cache.write().await = Some(CachedKeys {
             keys,
-            fetched: Instant::now(),
+            fetched: self.clock.elapsed_clock().now(),
         });
         Ok(())
     }
@@ -288,6 +304,8 @@ impl Authenticator {
                     request_id: context.request_id.clone(),
                 })
                 .await?;
+                self.audit_result(&context, context.authorization.check_live())
+                    .await?;
                 Ok(context)
             }
             Err(error) => {
@@ -305,6 +323,9 @@ impl Authenticator {
     }
 
     async fn verify(&self, authorization: &str) -> Result<RequestContext> {
+        // Capture before JWKS/signature work. Delayed verification cannot renew
+        // the absolute token lifetime or ignore time spent suspended.
+        let observation = self.clock.observe().map_err(|_| unauthorized())?;
         let token = authorization
             .strip_prefix("Bearer ")
             .filter(|value| {
@@ -387,7 +408,12 @@ impl Authenticator {
                 _ => None,
             })
             .collect();
+        let authorization = RequestAuthorization::from_verified_credential(
+            claims.exp.checked_mul(1000).ok_or_else(unauthorized)?,
+            &observation,
+        )?;
         Ok(RequestContext {
+            authorization,
             principal: claims.sub,
             tenant: claims.tenant,
             scopes,
@@ -438,13 +464,17 @@ mod tests {
     }
 
     async fn fixture() -> (Arc<Authenticator>, EncodingKey) {
+        fixture_with_clock(EpochClock::system().unwrap()).await
+    }
+
+    async fn fixture_with_clock(clock: Arc<EpochClock>) -> (Arc<Authenticator>, EncodingKey) {
         let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
         let keys: JwkSet = serde_json::from_value(serde_json::json!({"keys":[{"kty":"OKP","crv":"Ed25519","alg":"EdDSA","use":"sig","kid":"key-1","x":URL_SAFE_NO_PAD.encode(key.public_key_raw())}]})).unwrap();
-        let auth = Authenticator::new(config()).unwrap();
+        let auth = Authenticator::new_with_clock(config(), clock).unwrap();
         auth.install_audit(Arc::new(TestAudit::default())).unwrap();
         *auth.cache.write().await = Some(CachedKeys {
             keys,
-            fetched: Instant::now(),
+            fetched: auth.clock.elapsed_clock().now(),
         });
         (
             auth,
@@ -489,7 +519,7 @@ mod tests {
         let cache = source.cache.read().await;
         *auth.cache.write().await = Some(CachedKeys {
             keys: cache.as_ref().unwrap().keys.clone(),
-            fetched: Instant::now(),
+            fetched: auth.clock.elapsed_clock().now(),
         });
         assert_eq!(
             auth.authenticate(&bearer(&key, &claims(), "at+jwt"))
@@ -575,5 +605,113 @@ mod tests {
         let mut bad = config();
         bad.algorithms = vec![Algorithm::HS256];
         assert!(Authenticator::new(bad).is_err());
+    }
+    struct ManualElapsed(std::sync::atomic::AtomicU64);
+    impl kasumi_clock::LeaseClock for ManualElapsed {
+        fn now(&self) -> Duration {
+            Duration::from_millis(self.0.load(std::sync::atomic::Ordering::SeqCst))
+        }
+    }
+    struct ManualWall(std::sync::atomic::AtomicU64);
+    impl kasumi_clock::WallClock for ManualWall {
+        fn now_ms(&self) -> anyhow::Result<u64> {
+            Ok(self.0.load(std::sync::atomic::Ordering::SeqCst))
+        }
+    }
+    #[tokio::test]
+    async fn verified_credential_expiry_survives_suspend_wall_rollback_and_injected_origin() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let mut claims = claims();
+        let base = claims["exp"].as_u64().unwrap() - 300;
+        claims["exp"] = serde_json::json!(base + 10);
+        claims["authorization"] = serde_json::json!({"kind":"service_identity"});
+        let elapsed = Arc::new(ManualElapsed(AtomicU64::new(0)));
+        let wall = Arc::new(ManualWall(AtomicU64::new(base * 1000)));
+        let clock = Arc::new(EpochClock::new(elapsed.clone(), wall.clone()).unwrap());
+        let (auth, key) = fixture_with_clock(clock).await;
+        let token = bearer(&key, &claims, "at+jwt");
+        let context = auth.authenticate(&token).await.unwrap();
+        assert_eq!(
+            context.authorization.expires_at_ms(),
+            Some((base + 10) * 1000)
+        );
+        elapsed.0.store(9999, Ordering::SeqCst);
+        wall.0.store(1, Ordering::SeqCst);
+        let delayed_clone = context.clone();
+        delayed_clone.authorization.check_live().unwrap();
+        // Suspend advances the kernel elapsed clock even when UTC moves back.
+        elapsed.0.store(10_000, Ordering::SeqCst);
+        assert_eq!(
+            context.authorization.check_live().unwrap_err().code,
+            ErrorCode::Unauthorized
+        );
+        assert_eq!(
+            delayed_clone.authorization.check_live().unwrap_err().code,
+            ErrorCode::Unauthorized
+        );
+        assert_eq!(
+            auth.authenticate(&token).await.unwrap_err().code,
+            ErrorCode::Unauthorized
+        );
+        // A clone cannot recover even if a faulty injected clock goes backwards.
+        elapsed.0.store(1, Ordering::SeqCst);
+        assert!(delayed_clone.authorization.check_live().is_err());
+    }
+    struct ExpiringAudit {
+        clock: Arc<ManualElapsed>,
+        events: std::sync::Mutex<Vec<RequestAuditKind>>,
+    }
+    #[async_trait::async_trait]
+    impl RequestAuditSink for ExpiringAudit {
+        async fn record(&self, event: RequestAuditEvent) -> Result<()> {
+            if event.kind == RequestAuditKind::AuthenticationSucceeded {
+                self.clock
+                    .0
+                    .store(10_000, std::sync::atomic::Ordering::SeqCst);
+            }
+            self.events.lock().unwrap().push(event.kind);
+            Ok(())
+        }
+    }
+    #[tokio::test]
+    async fn credential_expiring_during_required_authentication_audit_is_never_released() {
+        use std::sync::atomic::AtomicU64;
+        let mut claims = claims();
+        let base = claims["exp"].as_u64().unwrap() - 300;
+        claims["exp"] = serde_json::json!(base + 10);
+        let elapsed = Arc::new(ManualElapsed(AtomicU64::new(0)));
+        let clock = Arc::new(
+            EpochClock::new(
+                elapsed.clone(),
+                Arc::new(ManualWall(AtomicU64::new(base * 1000))),
+            )
+            .unwrap(),
+        );
+        let (source, key) = fixture().await;
+        let auth = Authenticator::new_with_clock(config(), clock).unwrap();
+        let cache = source.cache.read().await;
+        *auth.cache.write().await = Some(CachedKeys {
+            keys: cache.as_ref().unwrap().keys.clone(),
+            fetched: Duration::ZERO,
+        });
+        let audit = Arc::new(ExpiringAudit {
+            clock: elapsed,
+            events: std::sync::Mutex::new(vec![]),
+        });
+        auth.install_audit(audit.clone()).unwrap();
+        assert_eq!(
+            auth.authenticate(&bearer(&key, &claims, "at+jwt"))
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::Unauthorized
+        );
+        assert_eq!(
+            *audit.events.lock().unwrap(),
+            vec![
+                RequestAuditKind::AuthenticationSucceeded,
+                RequestAuditKind::AccessDenied
+            ]
+        );
     }
 }

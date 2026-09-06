@@ -1,8 +1,9 @@
 use crate::admission::{CancelOnDrop, NodeAdmission, Reservation, WorkFence, WorkRegistration};
 use crate::{SecurityAudit, SecurityEvent, SecurityEventKind, SecurityOutcome, TenantEngine};
+use kasumi_clock::{LeaseClock, SystemLeaseClock};
 use kasumi_query::QueryCancellation;
 use kasumi_raft::RaftGroup;
-use kasumi_store::{BackupDestination, LeaseClock, SystemLeaseClock, TenantStore};
+use kasumi_store::{BackupDestination, TenantStore};
 use kasumi_types::*;
 use sha2::{Digest, Sha256};
 #[path = "backup_checkpoints.rs"]
@@ -25,7 +26,7 @@ use std::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
     },
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 struct Cursor {
@@ -58,6 +59,9 @@ impl ProposalWork {
         // cannot let later commands overtake an unresolved write. Time is
         // sampled only after the previous write has finished.
         let _guard = self.admission_gate.lock().await;
+        if let Err(error) = command.context.authorization.check_live() {
+            return Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(error))?);
+        }
         if let (Some(engine), Operation::ActivateSchema(request)) =
             (&self.schema_engine, &command.operation)
         {
@@ -73,6 +77,14 @@ impl ProposalWork {
             }
         }
         command.timestamp_ms = self.clock.now_ms()?;
+        if let Err(error) = command.context.authorization.check_live().and_then(|()| {
+            command
+                .context
+                .authorization
+                .check_admitted_at(command.timestamp_ms)
+        }) {
+            return Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(error))?);
+        }
         let bytes = serde_json::to_vec(&command)?;
         anyhow::ensure!(
             bytes.len() <= max_bytes,
@@ -271,6 +283,7 @@ impl ResponseFence<'_> {
     /// handed to a transport are previously released plaintext; client receipt
     /// is not asserted, and transport buffering cannot recall those bytes.
     pub fn check(&self) -> Result<()> {
+        self.context.authorization.check_live()?;
         self.database.access()?;
         self.database
             .admission()
@@ -294,6 +307,7 @@ impl Database {
     /// and response serialization. It never replaces that call's RBAC checks,
     /// quorum barrier, strict audit, or operation-receipt semantics.
     pub fn response_fence(&self, context: &RequestContext) -> Result<ResponseFence<'_>> {
+        context.authorization.check_live()?;
         self.access()?;
         let generation = self.engine.generation()?;
         if generation.state.tenant != context.tenant {
@@ -528,7 +542,7 @@ impl Database {
         batch: MutationBatch,
     ) -> Result<WriteReceipt> {
         let result = self.submit(context.clone(), Operation::Mutate(batch)).await;
-        self.audit_result(&context, result).await
+        self.audit_write_result(&context, result).await
     }
 
     pub async fn begin_staged_transaction(
@@ -539,7 +553,7 @@ impl Database {
         let result = self
             .submit(context.clone(), Operation::BeginStaged(request))
             .await;
-        self.audit_result(&context, result).await
+        self.audit_write_result(&context, result).await
     }
 
     pub async fn append_staged_chunk(
@@ -550,7 +564,7 @@ impl Database {
         let result = self
             .submit(context.clone(), Operation::AppendStaged(request))
             .await;
-        self.audit_result(&context, result).await
+        self.audit_write_result(&context, result).await
     }
 
     pub async fn finalize_staged_transaction(
@@ -561,7 +575,7 @@ impl Database {
         let result = self
             .submit(context.clone(), Operation::FinalizeStaged(reference))
             .await;
-        self.audit_result(&context, result).await
+        self.audit_write_result(&context, result).await
     }
 
     pub async fn abort_staged_transaction(
@@ -572,7 +586,7 @@ impl Database {
         let result = self
             .submit(context.clone(), Operation::AbortStaged(reference))
             .await;
-        self.audit_result(&context, result).await
+        self.audit_write_result(&context, result).await
     }
 
     pub async fn staged_transaction_status(
@@ -591,6 +605,7 @@ impl Database {
         context: &RequestContext,
         reference: &StagedTransactionRef,
     ) -> Result<StagedTransactionStatus> {
+        context.authorization.check_live()?;
         self.access()?;
         crate::state::staging::lookup(&self.engine.generation()?.state, context, reference)?;
         let mut reservation = self.admission().reserve(1 << 20, None)?;
@@ -641,6 +656,9 @@ impl Database {
     /// Raft proposal. This independent service store remains usable after tenant
     /// key revocation. Audit-storage failure never turns a denial into access.
     async fn audit_result<T>(&self, context: &RequestContext, mut result: Result<T>) -> Result<T> {
+        if result.is_ok() {
+            result = context.authorization.check_live().and(result);
+        }
         if let Err(error) = &mut result {
             if error.denial_audit_attempted() {
                 return result;
@@ -673,13 +691,29 @@ impl Database {
         result
     }
 
+    // Only an already successful effect may become uncertain at handoff. A
+    // pre-proposal rejection must remain a definite rejection and accept no ID.
+    async fn audit_write_result<T>(
+        &self,
+        context: &RequestContext,
+        result: Result<T>,
+    ) -> Result<T> {
+        let committed = result.is_ok();
+        let result = self.audit_result(context, result).await;
+        if committed {
+            result.map_err(credential_acknowledgement)
+        } else {
+            result
+        }
+    }
+
     pub async fn administer(
         &self,
         context: RequestContext,
         operation: Operation,
     ) -> Result<WriteReceipt> {
         let result = self.administer_inner(context.clone(), operation).await;
-        self.audit_result(&context, result).await
+        self.audit_write_result(&context, result).await
     }
 
     async fn administer_inner(
@@ -710,7 +744,7 @@ impl Database {
     /// Repeating this after a lost response is harmless and rechecks access.
     pub async fn complete_restore(&self, context: RequestContext) -> Result<()> {
         let result = self.complete_restore_inner(context.clone()).await;
-        self.audit_result(&context, result).await
+        self.audit_write_result(&context, result).await
     }
 
     async fn complete_restore_inner(&self, context: RequestContext) -> Result<()> {
@@ -735,7 +769,7 @@ impl Database {
         let result = self
             .maintenance_audit_inner(context.clone(), action, outcome, revision)
             .await;
-        self.audit_result(&context, result).await
+        self.audit_write_result(&context, result).await
     }
 
     async fn maintenance_audit_inner(
@@ -770,6 +804,7 @@ impl Database {
     }
 
     async fn submit(&self, context: RequestContext, operation: Operation) -> Result<WriteReceipt> {
+        context.authorization.check_live()?;
         self.access()?;
         if context.tenant != self.engine.generation()?.state.tenant {
             return Err(Error::new(ErrorCode::Forbidden, "tenant access denied"));
@@ -893,6 +928,7 @@ impl Database {
             as u64;
         drop(generation);
         let reservation = self.admission().reserve(command_budget, None)?;
+        let release_context = context.clone();
         let command = Command {
             context,
             // Budget the longest possible stamp before the worker replaces it
@@ -948,8 +984,9 @@ impl Database {
                 )
             })?;
         self.access()?;
-        serde_json::from_slice::<Result<WriteReceipt>>(&result)
-            .map_err(|_| Error::new(ErrorCode::Corruption, "invalid state machine response"))?
+        let result = serde_json::from_slice::<Result<WriteReceipt>>(&result)
+            .map_err(|_| Error::new(ErrorCode::Corruption, "invalid state machine response"))?;
+        self.audit_write_result(&release_context, result).await
     }
 
     pub async fn get(
@@ -1638,10 +1675,9 @@ impl Database {
 }
 
 pub fn now_ms() -> Result<u64> {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .map_err(|_| Error::new(ErrorCode::Unavailable, "system clock precedes epoch"))
+    kasumi_clock::EpochClock::system()
+        .and_then(|clock| clock.now_ms())
+        .map_err(|_| Error::new(ErrorCode::Unavailable, "trusted clock unavailable"))
 }
 
 async fn cancelled(token: &QueryCancellation) {
@@ -1688,10 +1724,22 @@ fn snapshot_workspace(limits: &Limits, request: &ReadSnapshotRequest) -> u64 {
         .saturating_add(limits.max_document_bytes.saturating_mul(3) as u64)
 }
 
+fn credential_acknowledgement(error: Error) -> Error {
+    if error.code == ErrorCode::Unauthorized {
+        Error::new(
+            ErrorCode::UnknownOutcome,
+            "credential expired after effect admission; use a fresh credential to resolve the original operation identity",
+        )
+    } else {
+        error
+    }
+}
+
 #[cfg(test)]
 mod tests {
     include!("service_staging_tests.rs");
     include!("service_schema_tests.rs");
+    include!("service_credential_tests.rs");
     use super::*;
     use crate::admission::AdmissionConfig;
     use kasumi_store::{NodeStore, test_utils::LocalKeyProvider};
@@ -1718,6 +1766,7 @@ mod tests {
         .unwrap();
         let audit = SecurityAudit::open(audit_store, 100_000).unwrap();
         let context = RequestContext {
+            authorization: kasumi_types::RequestAuthorization::service_identity(),
             tenant: "deadline".into(),
             principal: "owner".into(),
             scopes: BTreeSet::from([Action::Read, Action::Write, Action::Admin, Action::Audit]),

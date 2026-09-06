@@ -158,9 +158,9 @@ pub(crate) fn encode_json(value: &impl Serialize) -> Result<Vec<u8>> {
 /// A successfully submitted mutation must not look like a rejected CAS when a
 /// later policy change withholds its response. Its retained receipt is the
 /// resolution path once the principal has access again.
-pub(crate) fn mutation_release(result: Result<()>) -> Result<()> {
+pub(crate) fn mutation_release<T>(result: Result<T>) -> Result<T> {
     result.map_err(|error| {
-        if error.code == ErrorCode::Conflict {
+        if matches!(error.code, ErrorCode::Conflict | ErrorCode::Unauthorized) {
             Error::new(
                 ErrorCode::UnknownOutcome,
                 "write response release was fenced; resolve or retry the same idempotency key",
@@ -181,16 +181,12 @@ pub(crate) async fn release_response<T>(
     response: T,
     mutation: bool,
 ) -> Result<T> {
-    let release = fence.check();
-    auth.audit_result(
-        context,
-        if mutation {
-            mutation_release(release)
-        } else {
-            release
-        },
-    )
-    .await?;
+    let release = auth.audit_result(context, fence.check()).await;
+    if mutation {
+        mutation_release(release)?;
+    } else {
+        release?;
+    }
     Ok(response)
 }
 
@@ -335,6 +331,7 @@ mod tests {
             let db = Database::new(engine, group, store, audit.clone());
             db.administer(
                 RequestContext {
+                    authorization: kasumi_types::RequestAuthorization::service_identity(),
                     principal: "person".into(),
                     tenant: "tenant-a".into(),
                     scopes: actions,
@@ -1188,6 +1185,7 @@ name: "docs".into(),
                 .collect()
         };
         let context = RequestContext {
+            authorization: kasumi_types::RequestAuthorization::service_identity(),
             principal: "reader".into(),
             tenant: "tenant-a".into(),
             scopes: BTreeSet::from([Action::Read, Action::Write]),
@@ -1345,6 +1343,7 @@ name: "docs".into(),
         for mutation in [false, true] {
             let fixture = Fixture::new().await;
             let context = RequestContext {
+                authorization: kasumi_types::RequestAuthorization::service_identity(),
                 principal: "person".into(),
                 tenant: "tenant-a".into(),
                 scopes: BTreeSet::from([Action::Read, Action::Write]),
@@ -1381,6 +1380,85 @@ name: "docs".into(),
             let event: Value = serde_json::from_slice(&records[0].1).unwrap();
             assert_eq!(event["event"]["kind"], "tenant_sealed");
             assert_eq!(event["event"]["request_id"], context.request_id);
+            fixture.close().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn encoded_response_credential_expiry_is_audited_and_preserves_committed_receipt() {
+        struct Clock(std::sync::atomic::AtomicU64);
+        impl kasumi_clock::LeaseClock for Clock {
+            fn now(&self) -> std::time::Duration {
+                std::time::Duration::from_millis(self.0.load(std::sync::atomic::Ordering::SeqCst))
+            }
+        }
+        for mutation in [false, true] {
+            let fixture = Fixture::new().await;
+            let clock = Arc::new(Clock(std::sync::atomic::AtomicU64::new(0)));
+            let epoch = kasumi_clock::EpochClock::new(
+                clock.clone(),
+                Arc::new(kasumi_clock::SystemWallClock),
+            )
+            .unwrap();
+            let observation = epoch.observe().unwrap();
+            let context = RequestContext {
+                authorization: kasumi_types::RequestAuthorization::from_verified_credential(
+                    observation.utc_ms() + 1000,
+                    &observation,
+                )
+                .unwrap(),
+                principal: "person".into(),
+                tenant: "tenant-a".into(),
+                scopes: BTreeSet::from([Action::Read, Action::Write]),
+                request_id: "encoded-expiry".into(),
+            };
+            let fence = fixture.db.response_fence(&context).unwrap();
+            let encoded = if mutation {
+                encode_json(
+                    &fixture
+                        .db
+                        .mutate(context.clone(), serde_json::from_value(batch()).unwrap())
+                        .await
+                        .unwrap(),
+                )
+                .unwrap()
+            } else {
+                encode_json(&fixture.db.collections(&context).await.unwrap()).unwrap()
+            };
+            clock.0.store(1000, std::sync::atomic::Ordering::SeqCst);
+            let error = release_response(&fixture.auth, &context, fence, encoded, mutation)
+                .await
+                .unwrap_err();
+            assert_eq!(
+                error.code,
+                if mutation {
+                    ErrorCode::UnknownOutcome
+                } else {
+                    ErrorCode::Unauthorized
+                }
+            );
+            let records = fixture.audit_store.scan("security.audit").unwrap();
+            assert_eq!(records.len(), 1);
+            let event: Value = serde_json::from_slice(&records[0].1).unwrap();
+            assert_eq!(event["event"]["kind"], "access_denied");
+            assert_eq!(event["event"]["request_id"], context.request_id);
+            if mutation {
+                let fresh = fixture
+                    .auth
+                    .authenticate(&fixture.token("person", "tenant-a", "kasumi:read kasumi:write"))
+                    .await
+                    .unwrap();
+                let key = batch()["idempotency_key"].as_str().unwrap().to_owned();
+                assert!(
+                    fixture
+                        .db
+                        .operation_receipt(&fresh, &key)
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .is_ok()
+                );
+            }
             fixture.close().await;
         }
     }
@@ -1552,6 +1630,7 @@ name: "docs".into(),
         let fixture = Fixture::new().await;
         let tenant = crate::runtime::CONTROL_TENANT;
         let context = RequestContext {
+            authorization: kasumi_types::RequestAuthorization::service_identity(),
             tenant: tenant.into(),
             principal: "person".into(),
             scopes: BTreeSet::from([Action::Admin, Action::Read, Action::Write]),

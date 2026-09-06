@@ -19,9 +19,10 @@ use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::{
-    AccessGuard, KeyCatalog, KeyProvider, LeaseClock, MAX_KEY_LEASE, PROVIDER_TIMEOUT,
-    SystemLeaseClock, TenantStore, decrypt, encrypt,
+    AccessGuard, KeyCatalog, KeyProvider, MAX_KEY_LEASE, PROVIDER_TIMEOUT, TenantStore, decrypt,
+    encrypt,
 };
+use kasumi_clock::{LeaseClock, SystemLeaseClock};
 
 const FORMAT: u32 = 1;
 pub(crate) const HEADER_LIMIT: usize = 2 * 1024 * 1024;

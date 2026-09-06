@@ -18,7 +18,8 @@ New first-release [conditional transaction contracts](docs/transactions.md),
 [durable feeds and logical-history archives](docs/history.md),
 [chunked full backups](docs/chunked-backup-plan.md),
 [atomic schema activation](docs/schema-activation.md), and
-[verified backup checkpoints](docs/backup-checkpoints.md) extend that recorded baseline. Their focused regression tests do not replace
+[verified backup checkpoints](docs/backup-checkpoints.md) and
+[credential lifetime fences](docs/credential-lifetime.md) extend that recorded baseline. Their focused regression tests do not replace
 the baseline's full platform and performance gates for the changed source.
 
 ## Deployment contracts

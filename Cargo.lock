@@ -1805,6 +1805,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "kasumi-clock"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "libc",
+]
+
+[[package]]
 name = "kasumi-engine"
 version = "0.1.0"
 dependencies = [
@@ -1813,6 +1821,7 @@ dependencies = [
  "async-trait",
  "hex",
  "imbl",
+ "kasumi-clock",
  "kasumi-query",
  "kasumi-raft",
  "kasumi-store",
@@ -1876,6 +1885,7 @@ dependencies = [
  "hyper-util",
  "jsonwebtoken",
  "kasumi-client",
+ "kasumi-clock",
  "kasumi-engine",
  "kasumi-raft",
  "kasumi-store",
@@ -1915,6 +1925,7 @@ dependencies = [
  "hex",
  "hmac",
  "hyper-util",
+ "kasumi-clock",
  "libc",
  "parking_lot",
  "rcgen",
@@ -1953,7 +1964,9 @@ dependencies = [
 name = "kasumi-types"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "imbl",
+ "kasumi-clock",
  "serde",
  "serde_json",
  "sha2",

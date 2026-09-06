@@ -1,0 +1,9 @@
+[package]
+name = "kasumi-clock"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+libc = "0.2"

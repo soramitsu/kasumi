@@ -9,6 +9,7 @@ use std::{collections::BTreeSet, sync::Arc};
 
 fn context(principal: &str) -> RequestContext {
     RequestContext {
+        authorization: kasumi_types::RequestAuthorization::service_identity(),
         principal: principal.into(),
         tenant: "tenant-a".into(),
         scopes: BTreeSet::from([Action::Read, Action::Write, Action::Admin, Action::Audit]),

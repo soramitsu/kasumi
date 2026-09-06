@@ -16,6 +16,7 @@ use std::{
 
 fn context() -> RequestContext {
     RequestContext {
+        authorization: kasumi_types::RequestAuthorization::service_identity(),
         principal: "owner".into(),
         tenant: "tenant-a".into(),
         scopes: BTreeSet::from([Action::Admin, Action::Read, Action::Write]),

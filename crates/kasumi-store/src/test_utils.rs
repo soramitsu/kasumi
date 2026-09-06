@@ -9,7 +9,8 @@ use async_trait::async_trait;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use zeroize::Zeroizing;
 
-use crate::{GeneratedKey, KeyProvider, LeaseClock, SecretKey, WrappedKey, decrypt, encrypt};
+use crate::{GeneratedKey, KeyProvider, SecretKey, WrappedKey, decrypt, encrypt};
+use kasumi_clock::LeaseClock;
 
 pub struct LocalKeyProvider {
     key: SecretKey,

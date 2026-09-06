@@ -1,0 +1,25 @@
+    Checking kasumi-clock v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-clock)
+    Checking kasumi-store v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-store)
+    Checking kasumi-raft v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-raft)
+    Checking kasumi-types v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-types)
+    Checking kasumi-query v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-query)
+    Checking kasumi-engine v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-engine)
+   Compiling kasumi-client v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-client)
+    Checking kasumi-transport v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-transport)
+    Checking kasumi-server v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-server)
+    Checking kasumi-bench v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-bench)
+error: items after a test module
+    --> crates/kasumi-engine/src/service.rs:1732:1
+     |
+1732 | mod tests {
+     | ^^^^^^^^^
+...
+1929 | fn credential_acknowledgement(error: Error) -> Error {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#items_after_test_module
+     = note: `-D clippy::items-after-test-module` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::items_after_test_module)]`
+     = help: move the items to before the test module was defined
+
+error: could not compile `kasumi-engine` (lib test) due to 1 previous error

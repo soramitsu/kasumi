@@ -5,8 +5,8 @@
 //! All resident state, including immutable generations, Tantivy writers, receipts
 //! and audit retention, contributes to observed RSS. Committed work bypasses this
 //! gate and must finish materializing or make its replica unavailable.
+use kasumi_clock::{LeaseClock, SystemLeaseClock};
 use kasumi_query::QueryCancellation;
-use kasumi_store::{LeaseClock, SystemLeaseClock};
 use kasumi_types::{Error, ErrorCode, Result};
 use serde::{Deserialize, Serialize};
 use std::{

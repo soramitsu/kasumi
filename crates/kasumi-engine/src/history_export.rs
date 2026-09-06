@@ -15,7 +15,7 @@ impl Database {
         request: ArchiveHistory,
     ) -> Result<WriteReceipt> {
         let result = self.archive_history_inner(&context, request).await;
-        self.audit_result(&context, result).await
+        self.audit_write_result(&context, result).await
     }
 
     async fn archive_history_inner(

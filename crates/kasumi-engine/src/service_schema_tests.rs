@@ -18,6 +18,7 @@ async fn canceled_queued_schema_activation_finishes_once_and_checks_receipt_rele
     .await
     .unwrap();
     let context = RequestContext {
+        authorization: kasumi_types::RequestAuthorization::service_identity(),
         tenant: "schema-cancel".into(),
         principal: "owner".into(),
         scopes: BTreeSet::from([Action::Read, Action::Write, Action::Admin]),

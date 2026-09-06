@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+kasumi-clock.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 kasumi-types.workspace = true

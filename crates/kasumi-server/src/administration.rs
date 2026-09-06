@@ -250,6 +250,7 @@ pub struct ManagementResponseFence {
 }
 impl ManagementResponseFence {
     pub fn check_release(&self) -> kasumi_types::Result<()> {
+        self.context.authorization.check_live()?;
         let check = |tenant: &ManagedTenant| -> kasumi_types::Result<()> {
             tenant.store.check_access().map_err(|_| {
                 kasumi_types::Error::new(
@@ -518,7 +519,14 @@ impl Administration {
     ) -> kasumi_types::Result<serde_json::Value> {
         // No user-provided tenant can bypass this lookup and current RBAC.
         let _guard = self.gate.lock().await;
+        let mut admitted = false;
+        let mutation = !matches!(command, ManagementCommand::Status { .. });
         let mut result: Result<serde_json::Value> = async {
+            let source = self.current(&context.tenant)?;
+            self.authorized(&source, &context, false).await?;
+            // Management can perform several durable steps. Once execution is
+            // admitted, credential expiry cannot assert those steps rolled back.
+            admitted = true;
             let result = self.execute_inner(&context, command).await?;
             let current = self.current(&context.tenant)?;
             self.authorized(&current, &context, false).await?;
@@ -530,7 +538,9 @@ impl Administration {
             && !error.denial_audit_attempted()
             && matches!(
                 error.code,
-                kasumi_types::ErrorCode::Forbidden | kasumi_types::ErrorCode::Sealed
+                kasumi_types::ErrorCode::Forbidden
+                    | kasumi_types::ErrorCode::Unauthorized
+                    | kasumi_types::ErrorCode::Sealed
             )
         {
             let kind = if error.code == kasumi_types::ErrorCode::Sealed {
@@ -542,7 +552,7 @@ impl Administration {
             let _ = self.event(&context, kind, SecurityOutcome::Denied).await;
             error.mark_denial_audit_attempted();
         }
-        result.map_err(|error| {
+        let result = result.map_err(|error| {
             error
                 .downcast_ref::<kasumi_types::Error>()
                 .cloned()
@@ -552,7 +562,12 @@ impl Administration {
                         "administrative operation failed; inspect status before retrying",
                     )
                 })
-        })
+        });
+        if admitted && mutation {
+            crate::api::mutation_release(result)
+        } else {
+            result
+        }
     }
     async fn execute_inner(
         &self,
@@ -1626,6 +1641,7 @@ impl Administration {
         if self
             .registry
             .database(&RequestContext {
+                authorization: kasumi_types::RequestAuthorization::service_identity(),
                 tenant: tenant.into(),
                 principal: "runtime".into(),
                 scopes: BTreeSet::new(),
