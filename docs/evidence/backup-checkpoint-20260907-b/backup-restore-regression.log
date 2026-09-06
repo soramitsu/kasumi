@@ -1,0 +1,38 @@
+   Compiling kasumi-engine v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.44s
+     Running tests/backup_checkpoint.rs (target/debug/deps/backup_checkpoint-3d79c58fb8d0ebc7)
+
+running 4 tests
+test missing_corrupt_resident_or_cold_dependency_and_history_subset_never_yield_proof ... ok
+test checkpoint_binds_actual_generation_complete_graph_keys_and_encrypted_restart ... ok
+test shutdown_cancels_pending_checkpoint_read_and_releases_database_work ... ok
+test verification_requires_current_global_admin_and_rechecks_policy_during_readback ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.88s
+
+     Running tests/history.rs (target/debug/deps/history-2b200c85dd8a4b5d)
+
+running 5 tests
+test change_feed_is_atomic_ordered_resumable_and_detects_retention_gaps ... ok
+test archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_restart ... ok
+test scoped_feed_advances_through_filtered_commit_tail_and_emits_only_real_deletions ... ok
+test shutdown_cancels_pending_archive_upload_and_keeps_source_rows_on_restart ... ok
+test chunked_full_backup_restores_cold_history_and_permanent_identity_without_source_objects has been running for over 60 seconds
+test chunked_full_backup_restores_cold_history_and_permanent_identity_without_source_objects ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 85.07s
+
+     Running tests/restore_deadline.rs (target/debug/deps/restore_deadline-8086fe6e3e59ad90)
+
+running 1 test
+test restore_deadline_bounds_source_io_and_gate_queue_without_blocking_another_tenant ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.82s
+
+     Running tests/shutdown.rs (target/debug/deps/shutdown-359cc024248f1a5b)
+
+running 1 test
+test full_shutdown_reopens_immediately_with_receipts_and_retained_plaintext ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.67s
+

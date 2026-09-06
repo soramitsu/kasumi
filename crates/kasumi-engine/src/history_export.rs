@@ -2,6 +2,12 @@
 //! before one replicated publication removes any resident source bodies.
 use super::*;
 
+pub(super) struct PublishedObject {
+    pub id: uuid::Uuid,
+    pub ciphertext_sha256: String,
+    pub key_catalog_sha256: String,
+}
+
 impl Database {
     pub async fn archive_history(
         &self,
@@ -211,7 +217,7 @@ impl Database {
         crate::state::history::validate_manifest(&manifest)?;
         let bytes = serde_json::to_vec(&manifest)
             .map_err(|_| Error::new(ErrorCode::Corruption, "archive manifest encoding failed"))?;
-        let (manifest_object_id, manifest_ciphertext_sha256) = self
+        let published = self
             .publish_history_object(
                 context,
                 state.policy_epoch,
@@ -227,8 +233,8 @@ impl Database {
             context.clone(),
             Operation::PublishHistoryArchive(PublishHistoryArchive {
                 manifest,
-                manifest_object_id,
-                manifest_ciphertext_sha256,
+                manifest_object_id: published.id.to_string(),
+                manifest_ciphertext_sha256: published.ciphertext_sha256,
                 expected_policy_epoch: state.policy_epoch,
             }),
         )
@@ -259,7 +265,7 @@ impl Database {
             .map(|document| document.version)
             .max()
             .unwrap_or(0);
-        let (object_id, ciphertext_sha256) = self
+        let published = self
             .publish_history_object(
                 context,
                 policy_epoch,
@@ -270,8 +276,8 @@ impl Database {
             )
             .await?;
         Ok(ArchiveChunkDescriptor {
-            object_id,
-            ciphertext_sha256,
+            object_id: published.id.to_string(),
+            ciphertext_sha256: published.ciphertext_sha256,
             plaintext_sha256,
             plaintext_bytes,
             document_count: chunk.documents.len(),
@@ -288,7 +294,7 @@ impl Database {
         plaintext: Vec<u8>,
         destination: &dyn BackupDestination,
         cancellation: &QueryCancellation,
-    ) -> Result<(String, String)> {
+    ) -> Result<PublishedObject> {
         cancellation.check()?;
         self.engine
             .authorize_release(context, None, Action::Admin, policy_epoch)?;
@@ -331,6 +337,10 @@ impl Database {
         }
         self.engine
             .authorize_release(context, None, Action::Admin, policy_epoch)?;
-        Ok((id.to_string(), digest))
+        Ok(PublishedObject {
+            id,
+            ciphertext_sha256: verified.ciphertext_sha256,
+            key_catalog_sha256: verified.key_catalog_sha256,
+        })
     }
 }

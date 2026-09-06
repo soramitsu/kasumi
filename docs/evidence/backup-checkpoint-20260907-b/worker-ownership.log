@@ -1,0 +1,10 @@
+   Compiling kasumi-engine v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.22s
+     Running unittests src/lib.rs (target/debug/deps/kasumi_engine-6a2bb67a7fc81498)
+
+running 2 tests
+test bootstrap::backup_restore::tests::expired_restore_worker_keeps_its_admission_charge_until_actual_completion ... ok
+test backup_verify::tests::expired_live_verification_worker_keeps_bytes_and_shutdown_registration_until_done ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.15s
+

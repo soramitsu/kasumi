@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+uuid.workspace = true
 sha2.workspace = true
 serde.workspace = true
 serde_json.workspace = true

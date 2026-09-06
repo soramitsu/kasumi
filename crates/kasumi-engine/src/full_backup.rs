@@ -57,6 +57,7 @@ struct StreamWork {
     generation: Arc<crate::Generation>,
     writer: StateStream,
     _reservation: Arc<Reservation>,
+    _permit: Arc<tokio::sync::OwnedSemaphorePermit>,
     _registration: WorkRegistration,
 }
 
@@ -71,22 +72,22 @@ impl StreamWork {
 }
 
 impl Database {
-    pub(super) async fn backup_inner(
+    pub(super) async fn publish_full_backup(
         &self,
         context: RequestContext,
         destination: &dyn BackupDestination,
-    ) -> Result<uuid::Uuid> {
+    ) -> Result<FullBackupCheckpoint> {
         self.access()?;
         self.engine.authorize(&context, None, Action::Admin)?;
         let cancellation = QueryCancellation::default();
         let _cancel_on_drop = CancelOnDrop(cancellation.clone());
         let _registration = self.work.begin(cancellation.clone())?;
-        let _slot = self.query_slots.clone().try_acquire_owned().map_err(|_| {
+        let permit = Arc::new(self.query_slots.clone().try_acquire_owned().map_err(|_| {
             Error::new(
                 ErrorCode::ResourceExhausted,
                 "backup concurrency limit reached",
             )
-        })?;
+        })?);
         tokio::select! {
             result = self.barrier() => result?,
             _ = cancelled(&cancellation) => return Err(cancelled_error()),
@@ -117,17 +118,19 @@ impl Database {
                 cancellation: cancellation.clone(),
             },
             _reservation: reservation.clone(),
+            _permit: permit.clone(),
             _registration: self.work.begin(cancellation.clone())?,
         };
         let producer = tokio::task::spawn_blocking(move || work.run());
         let mut chunks = Vec::new();
+        let mut key_catalogs = BTreeSet::new();
         while let Some(bytes) = tokio::select! {
             bytes = receiver.recv() => bytes,
             _ = cancelled(&cancellation) => return Err(cancelled_error()),
         } {
             let plaintext_bytes = bytes.len();
             let plaintext_sha256 = hex::encode(Sha256::digest(&bytes));
-            let (object_id, ciphertext_sha256) = self
+            let published = self
                 .publish_history_object(
                     &context,
                     state.policy_epoch,
@@ -137,14 +140,10 @@ impl Database {
                     &cancellation,
                 )
                 .await?;
+            key_catalogs.insert(published.key_catalog_sha256);
             chunks.push(BackupChunk {
-                object_id: uuid::Uuid::parse_str(&object_id).map_err(|_| {
-                    Error::new(
-                        ErrorCode::Corruption,
-                        "generated backup object identity invalid",
-                    )
-                })?,
-                ciphertext_sha256,
+                object_id: published.id,
+                ciphertext_sha256: published.ciphertext_sha256,
                 plaintext_sha256,
                 plaintext_bytes,
             });
@@ -178,6 +177,7 @@ impl Database {
                     &cancellation,
                 )
                 .await?;
+            key_catalogs.insert(plaintext.key_catalog_sha256.clone());
             let stored: HistoryArchiveManifest = serde_json::from_slice(&plaintext.snapshot)
                 .map_err(|_| {
                     Error::new(ErrorCode::Corruption, "backup history manifest invalid")
@@ -201,6 +201,7 @@ impl Database {
                         &cancellation,
                     )
                     .await?;
+                key_catalogs.insert(plaintext.key_catalog_sha256.clone());
                 if plaintext.snapshot.len() != descriptor.plaintext_bytes
                     || hex::encode(Sha256::digest(&plaintext.snapshot))
                         != descriptor.plaintext_sha256
@@ -218,7 +219,7 @@ impl Database {
                 "full backup manifest encoding failed",
             )
         })?;
-        let (id, _) = self
+        let published = self
             .publish_history_object(
                 &context,
                 state.policy_epoch,
@@ -234,8 +235,16 @@ impl Database {
             .authorize_release(&context, None, Action::Admin, state.policy_epoch)?;
         self.admission().check_release(&cancellation)?;
         self.access()?;
-        uuid::Uuid::parse_str(&id)
-            .map_err(|_| Error::new(ErrorCode::Corruption, "generated backup identity invalid"))
+        key_catalogs.insert(published.key_catalog_sha256);
+        Ok(FullBackupCheckpoint {
+            tenant: manifest.tenant,
+            source_incarnation: manifest.source_incarnation,
+            revision: manifest.revision,
+            resident_sha256: manifest.resident_sha256,
+            backup_id: published.id,
+            manifest_ciphertext_sha256: published.ciphertext_sha256,
+            key_lineage_digest: crate::backup_verify::key_lineage_digest(&key_catalogs)?,
+        })
     }
 
     #[allow(clippy::too_many_arguments)]

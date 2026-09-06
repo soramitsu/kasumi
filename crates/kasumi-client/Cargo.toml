@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+uuid.workspace = true
 anyhow.workspace = true
 kasumi-types.workspace = true
 kasumi-transport.workspace = true

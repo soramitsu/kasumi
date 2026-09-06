@@ -225,6 +225,7 @@ mod tests {
     include!("api_staging_tests.rs");
     include!("api_history_tests.rs");
     include!("api_schema_tests.rs");
+    include!("api_backup_checkpoint_tests.rs");
     use super::*;
     use crate::{
         auth::{AuthConfig, Authenticator},

@@ -1019,7 +1019,13 @@ fn apply_operation(
                 || event.request_id != command.context.request_id
                 || !matches!(
                     event.action.as_str(),
-                    "backup" | "restore" | "archive" | "key_rotation" | "key_rewrap" | "membership"
+                    "backup"
+                        | "backup_verification"
+                        | "restore"
+                        | "archive"
+                        | "key_rotation"
+                        | "key_rewrap"
+                        | "membership"
                 )
                 || !matches!(
                     event.outcome.as_str(),

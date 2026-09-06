@@ -53,6 +53,9 @@ pub struct BackupContents {
     pub source_tenant: String,
     pub revision: u64,
     pub snapshot: Zeroizing<Vec<u8>>,
+    /// Digests returned only after complete authenticated object/key verification.
+    pub ciphertext_sha256: String,
+    pub key_catalog_sha256: String,
 }
 
 impl TenantStore {
@@ -192,11 +195,8 @@ impl EncryptedBackup {
         let key = keys
             .get(&self.manifest.catalog.active)
             .context("backup key missing")?;
-        let mut plaintext = Zeroizing::new(decrypt(
-            key,
-            &self.ciphertext,
-            &manifest_bytes(&self.manifest)?,
-        )?);
+        let aad = manifest_bytes(&self.manifest)?;
+        let mut plaintext = Zeroizing::new(decrypt(key, &self.ciphertext, &aad)?);
         ensure!(plaintext.len() >= 32, "invalid backup integrity record");
         let digest = Sha256::digest(&plaintext[32..]);
         ensure!(
@@ -212,11 +212,25 @@ impl EncryptedBackup {
             clock.now() < deadline,
             "backup key authorization expired before release"
         );
+        let mut ciphertext_digest = Sha256::new();
+        ciphertext_digest.update(MAGIC);
+        ciphertext_digest.update((aad.len() as u32).to_be_bytes());
+        ciphertext_digest.update(&aad);
+        ciphertext_digest.update(&self.ciphertext);
+        let ciphertext_sha256 = hex::encode(ciphertext_digest.finalize());
+        let key_catalog_sha256 =
+            hex::encode(Sha256::digest(serde_json::to_vec(&self.manifest.catalog)?));
+        ensure!(
+            clock.now() < deadline,
+            "backup key authorization expired before digest release"
+        );
         Ok(BackupContents {
             backup_id: self.id(),
             source_tenant: source_tenant.into(),
             revision: self.revision(),
             snapshot: plaintext,
+            ciphertext_sha256,
+            key_catalog_sha256,
         })
     }
 }

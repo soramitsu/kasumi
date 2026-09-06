@@ -13,10 +13,12 @@ cases: 99,000 successful operations at 1, 100 and 1,000 tenants. They preserve
 source and executable identities, earlier failures and shared-host limitations.
 The [acceptance checklist](docs/release-checklist.md) maps every agreed requirement
 to implementation and evidence. No Redis multiplier or production SLA is claimed.
-New first-release [conditional transaction contracts](docs/transactions.md) and
+New first-release [conditional transaction contracts](docs/transactions.md),
 [large atomic transactions/read leases](docs/large-transactions-plan.md),
-[durable feeds and logical-history archives](docs/history.md), and
-[chunked full backups](docs/chunked-backup-plan.md) extend that recorded baseline. Their focused regression tests do not replace
+[durable feeds and logical-history archives](docs/history.md),
+[chunked full backups](docs/chunked-backup-plan.md),
+[atomic schema activation](docs/schema-activation.md), and
+[verified backup checkpoints](docs/backup-checkpoints.md) extend that recorded baseline. Their focused regression tests do not replace
 the baseline's full platform and performance gates for the changed source.
 
 ## Deployment contracts

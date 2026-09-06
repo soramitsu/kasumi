@@ -2,6 +2,9 @@
 mod accounting;
 pub mod admission;
 mod backup_format;
+mod backup_proof;
+mod backup_verify;
+pub use backup_proof::VerifiedBackupCheckpoint;
 mod bootstrap;
 pub mod control;
 pub mod security_audit;

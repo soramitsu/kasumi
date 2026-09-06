@@ -5,6 +5,8 @@ use kasumi_raft::RaftGroup;
 use kasumi_store::{BackupDestination, LeaseClock, SystemLeaseClock, TenantStore};
 use kasumi_types::*;
 use sha2::{Digest, Sha256};
+#[path = "backup_checkpoints.rs"]
+mod backup_checkpoints;
 #[path = "change_feed.rs"]
 mod change_feed;
 #[path = "full_backup.rs"]
@@ -762,8 +764,9 @@ impl Database {
         context: RequestContext,
         destination: &dyn BackupDestination,
     ) -> Result<uuid::Uuid> {
-        let result = self.backup_inner(context.clone(), destination).await;
-        self.audit_result(&context, result).await
+        self.backup_checkpoint(context, destination)
+            .await
+            .map(|proof| proof.backup_id())
     }
 
     async fn submit(&self, context: RequestContext, operation: Operation) -> Result<WriteReceipt> {

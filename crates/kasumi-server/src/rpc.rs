@@ -550,6 +550,87 @@ impl NativeAdmin {
 
 #[tonic::async_trait]
 impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
+    async fn create_backup_checkpoint(
+        &self,
+        request: Request<CreateBackupCheckpointRequest>,
+    ) -> Result<Response<BackupCheckpointResponse>, Status> {
+        let context = verified(&self.auth, &request).await?;
+        let request: kasumi_types::CreateBackupCheckpoint =
+            decode_json(&request.into_inner().request_json).map_err(status)?;
+        let database = self.database(&context).await?;
+        let operation_fence = self
+            .auth
+            .audit_result(&context, database.response_fence(&context))
+            .await
+            .map_err(status)?;
+        let proof =
+            Box::pin(database.backup_checkpoint_named(context.clone(), &request.destination))
+                .await
+                .map_err(|error| self.registry.status(&context, error))?;
+        let fence = self
+            .auth
+            .audit_result(
+                &context,
+                database.backup_checkpoint_response_fence(&context, &proof),
+            )
+            .await
+            .map_err(status)?;
+        let response = BackupCheckpointResponse {
+            response_json: encode_json(proof.checkpoint()).map_err(status)?,
+        };
+        self.auth
+            .audit_result(&context, fence.check())
+            .await
+            .map_err(status)?;
+        Ok(Response::new(
+            release_response(&self.auth, &context, operation_fence, response, false)
+                .await
+                .map_err(status)?,
+        ))
+    }
+
+    async fn verify_backup_checkpoint(
+        &self,
+        request: Request<VerifyBackupCheckpointRequest>,
+    ) -> Result<Response<BackupCheckpointResponse>, Status> {
+        let context = verified(&self.auth, &request).await?;
+        let request: kasumi_types::VerifyBackupCheckpoint =
+            decode_json(&request.into_inner().request_json).map_err(status)?;
+        let database = self.database(&context).await?;
+        let operation_fence = self
+            .auth
+            .audit_result(&context, database.response_fence(&context))
+            .await
+            .map_err(status)?;
+        let proof = Box::pin(database.verify_backup_checkpoint_named(
+            context.clone(),
+            &request.destination,
+            request.backup_id,
+        ))
+        .await
+        .map_err(|error| self.registry.status(&context, error))?;
+        let fence = self
+            .auth
+            .audit_result(
+                &context,
+                database.backup_checkpoint_response_fence(&context, &proof),
+            )
+            .await
+            .map_err(status)?;
+        let response = BackupCheckpointResponse {
+            response_json: encode_json(proof.checkpoint()).map_err(status)?,
+        };
+        self.auth
+            .audit_result(&context, fence.check())
+            .await
+            .map_err(status)?;
+        Ok(Response::new(
+            release_response(&self.auth, &context, operation_fence, response, false)
+                .await
+                .map_err(status)?,
+        ))
+    }
+
     async fn read_schema(
         &self,
         request: Request<ReadSchemaRequest>,

@@ -1,10 +1,11 @@
-//! Verify an entire full-backup dependency graph before bootstrap persistence.
+//! Empty-target authorization and deterministic namespace rebinding around the
+//! common complete-backup graph verifier.
 use super::*;
 use crate::{
-    admission::{NodeAdmission, Reservation},
+    admission::NodeAdmission,
     backup_format::*,
+    backup_verify::{BackupReader, VerificationDeadline, VerifiedBackup},
 };
-
 /// Trusted operator binding for a complete backup and its copied history.
 /// The same alias must be configured on every restored replica. Historical
 /// archive keys must also remain accessible to the target tenant provider.
@@ -17,57 +18,11 @@ pub struct RestoreSource {
     pub timeout_ms: u64,
 }
 
-#[derive(Clone, Copy)]
-pub(super) struct RestoreDeadline(tokio::time::Instant);
-
 impl RestoreSource {
-    pub(super) fn deadline(&self) -> anyhow::Result<RestoreDeadline> {
-        anyhow::ensure!(
-            (1..=600_000).contains(&self.timeout_ms),
-            "restore timeout outside bounds"
-        );
-        Ok(RestoreDeadline(
-            tokio::time::Instant::now() + std::time::Duration::from_millis(self.timeout_ms),
-        ))
+    pub(super) fn deadline(&self) -> anyhow::Result<VerificationDeadline> {
+        VerificationDeadline::new(self.timeout_ms)
     }
 }
-
-impl RestoreDeadline {
-    pub fn check(self) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            tokio::time::Instant::now() < self.0,
-            "restore verification deadline expired"
-        );
-        Ok(())
-    }
-    pub async fn run<T>(self, future: impl std::future::Future<Output = T>) -> anyhow::Result<T> {
-        self.check()?;
-        tokio::time::timeout_at(self.0, future)
-            .await
-            .map_err(|_| anyhow::anyhow!("restore verification deadline expired"))
-    }
-    pub async fn blocking<T, F>(self, reservation: Arc<Reservation>, work: F) -> anyhow::Result<T>
-    where
-        T: Send + 'static,
-        F: FnOnce() -> anyhow::Result<T> + Send + 'static,
-    {
-        self.run(tokio::task::spawn_blocking(move || {
-            let _reservation = reservation;
-            self.check()?;
-            let result = work()?;
-            self.check()?;
-            Ok(result)
-        }))
-        .await??
-    }
-}
-
-pub(super) struct VerifiedBackup {
-    pub state: TenantState,
-    pub bytes: Vec<u8>,
-    pub _reservation: Arc<Reservation>,
-}
-
 pub(super) struct PreparedState {
     pub bytes: Vec<u8>,
     pub engine: Arc<TenantEngine>,
@@ -75,26 +30,34 @@ pub(super) struct PreparedState {
 }
 
 impl VerifiedBackup {
-    pub async fn into_genesis(
+    pub(super) async fn into_genesis(
         self,
-        deadline: RestoreDeadline,
+        deadline: VerificationDeadline,
         tenant: String,
         incarnation: String,
         backup_id: uuid::Uuid,
     ) -> anyhow::Result<PreparedState> {
         deadline
-            .blocking(self._reservation.clone(), move || {
-                let bytes =
-                    TenantEngine::restored_bootstrap(&self.bytes, &tenant, incarnation, backup_id)?;
-                deadline.check()?;
-                let engine = Arc::new(TenantEngine::from_bootstrap(&tenant, &bytes)?);
-                let sha256 = hex::encode(Sha256::digest(&bytes));
-                Ok(PreparedState {
-                    bytes,
-                    engine,
-                    sha256,
-                })
-            })
+            .blocking(
+                self._reservation.clone(),
+                self._registration.clone(),
+                move || {
+                    let bytes = TenantEngine::restored_bootstrap(
+                        &self.bytes,
+                        &tenant,
+                        incarnation,
+                        backup_id,
+                    )?;
+                    deadline.check()?;
+                    let engine = Arc::new(TenantEngine::from_bootstrap(&tenant, &bytes)?);
+                    let sha256 = hex::encode(Sha256::digest(&bytes));
+                    Ok(PreparedState {
+                        bytes,
+                        engine,
+                        sha256,
+                    })
+                },
+            )
             .await
     }
 }
@@ -141,6 +104,56 @@ async fn object(
     Ok(contents)
 }
 
+struct RestoreReader<'a> {
+    source: &'a RestoreSource,
+    target: &'a TenantStore,
+    context: &'a RequestContext,
+    audit: &'a SecurityAudit,
+}
+impl BackupReader for RestoreReader<'_> {
+    fn tenant(&self) -> &str {
+        self.target.tenant()
+    }
+    fn work_registration(&self) -> Option<Arc<crate::backup_verify::VerificationWork>> {
+        None
+    }
+    fn cancellation(&self) -> Option<kasumi_query::QueryCancellation> {
+        None
+    }
+    async fn check_access(&self) -> anyhow::Result<()> {
+        restore_access(self.target, self.audit, self.context).await
+    }
+    async fn authorize_state<'a>(&'a self, state: &'a TenantState) -> anyhow::Result<()> {
+        if self.context.tenant != state.tenant
+            || !state.policy.allows(self.context, None, Action::Admin)
+        {
+            return Err(
+                restore_denial(self.audit, self.context, ErrorCode::Forbidden)
+                    .await
+                    .into(),
+            );
+        }
+        self.check_access().await
+    }
+    async fn object<'a>(
+        &'a self,
+        id: uuid::Uuid,
+        max_plaintext: usize,
+        expected_ciphertext: Option<&'a str>,
+        history: bool,
+    ) -> anyhow::Result<kasumi_store::BackupContents> {
+        object(
+            self.source,
+            self.target,
+            id,
+            max_plaintext,
+            expected_ciphertext,
+            history,
+        )
+        .await
+    }
+}
+
 pub(super) async fn load(
     source: &RestoreSource,
     backup_id: uuid::Uuid,
@@ -148,157 +161,31 @@ pub(super) async fn load(
     context: &RequestContext,
     audit: &SecurityAudit,
     admission: &Arc<NodeAdmission>,
-    deadline: RestoreDeadline,
+    deadline: VerificationDeadline,
 ) -> anyhow::Result<VerifiedBackup> {
     validate_name(&source.destination_alias)?;
-    restore_access(target, audit, context).await?;
-    // Bound the envelope before trusting its declared resident size.
-    let reservation = admission.reserve((MANIFEST_BYTES * 3 + (8 << 20)) as u64, None)?;
-    let envelope = object(source, target, backup_id, MANIFEST_BYTES, None, false).await?;
-    let manifest: FullBackupManifest = serde_json::from_slice(&envelope.snapshot)?;
-    manifest.validate()?;
-    anyhow::ensure!(
-        manifest.tenant == target.tenant() && manifest.revision == envelope.revision,
-        "full backup manifest identity differs"
-    );
-    drop(envelope);
-    drop(reservation);
-    let reservation = Arc::new(
-        admission.reserve(
-            manifest
-                .resident_bytes
-                .saturating_mul(6)
-                .saturating_add(64 << 20) as u64,
-            None,
-        )?,
-    );
-    let mut bytes = Vec::with_capacity(manifest.resident_bytes);
-    let mut digest = Sha256::new();
-    for chunk in &manifest.chunks {
-        restore_access(target, audit, context).await?;
-        let contents = object(
-            source,
-            target,
-            chunk.object_id,
-            chunk.plaintext_bytes,
-            Some(&chunk.ciphertext_sha256),
-            false,
-        )
-        .await?;
-        anyhow::ensure!(
-            contents.revision == manifest.revision
-                && contents.snapshot.len() == chunk.plaintext_bytes
-                && hex::encode(Sha256::digest(&contents.snapshot)) == chunk.plaintext_sha256,
-            "full backup chunk plaintext differs"
-        );
-        digest.update(&contents.snapshot);
-        bytes.extend_from_slice(&contents.snapshot);
-    }
-    anyhow::ensure!(
-        bytes.len() == manifest.resident_bytes
-            && hex::encode(digest.finalize()) == manifest.resident_sha256,
-        "full backup resident stream differs"
-    );
-    let (state, bytes) = deadline
-        .blocking(reservation.clone(), move || {
-            let state: TenantState = serde_json::from_slice(&bytes)?;
-            Ok((state, bytes))
-        })
-        .await?;
-    if context.tenant != state.tenant || !state.policy.allows(context, None, Action::Admin) {
-        return Err(restore_denial(audit, context, ErrorCode::Forbidden)
-            .await
-            .into());
-    }
-    anyhow::ensure!(
-        state.tenant == manifest.tenant
-            && state.incarnation == manifest.source_incarnation
-            && state.revision == manifest.revision,
-        "full backup state identity differs"
-    );
-    // Check all source accounting, structured indexes, identities, and archive
-    // references before trusting any transitive catalog descriptor.
-    let (mut state, bytes) = deadline
-        .blocking(reservation.clone(), move || {
-            TenantEngine::verify_logical_snapshot(&bytes, &state)?;
-            Ok((state, bytes))
-        })
-        .await?;
-    for archive in state.history_archives.values() {
-        restore_access(target, audit, context).await?;
-        let contents = object(
-            source,
-            target,
-            uuid::Uuid::parse_str(&archive.manifest_object_id)?,
-            MAX_ARCHIVE_MANIFEST_BYTES,
-            Some(&archive.manifest_ciphertext_sha256),
-            true,
-        )
-        .await?;
-        let stored: HistoryArchiveManifest = serde_json::from_slice(&contents.snapshot)?;
-        anyhow::ensure!(
-            stored == archive.manifest,
-            "full backup history manifest differs"
-        );
-        for (index, chunk) in archive.manifest.chunks.iter().enumerate() {
-            let contents = object(
-                source,
-                target,
-                uuid::Uuid::parse_str(&chunk.object_id)?,
-                chunk.plaintext_bytes,
-                Some(&chunk.ciphertext_sha256),
-                true,
-            )
-            .await?;
-            anyhow::ensure!(
-                contents.snapshot.len() == chunk.plaintext_bytes
-                    && hex::encode(Sha256::digest(&contents.snapshot)) == chunk.plaintext_sha256,
-                "full backup history chunk plaintext differs"
-            );
-            let body: HistoryArchiveChunk = serde_json::from_slice(&contents.snapshot)?;
-            anyhow::ensure!(
-                body.archive_id == archive.manifest.archive_id
-                    && body.collection == archive.manifest.collection
-                    && body.source_incarnation == archive.manifest.source_incarnation
-                    && body.index == index
-                    && body.documents.len() == chunk.document_count
-                    && body
-                        .documents
-                        .first()
-                        .is_some_and(|doc| doc.id == chunk.first_id)
-                    && body
-                        .documents
-                        .last()
-                        .is_some_and(|doc| doc.id == chunk.last_id)
-                    && body
-                        .documents
-                        .windows(2)
-                        .all(|pair| pair[0].id < pair[1].id),
-                "full backup history chunk identity differs"
-            );
-            let collection = &state.collections[&archive.manifest.collection];
-            for doc in &body.documents {
-                let reference = collection.archived_documents.get(&doc.id).ok_or_else(|| {
-                    anyhow::anyhow!("full backup archived document reference missing")
-                })?;
-                anyhow::ensure!(
-                    reference.archive_id == archive.manifest.archive_id
-                        && reference.chunk_index == index
-                        && reference.version == doc.version
-                        && reference.document_sha256 == staged_digest(doc)?.0
-                        && reference.document_bytes == crate::accounting::encoded_len(doc)?
-                        && reference.indexed_fields
-                            == crate::state::history::index_fields(&collection.definition, doc),
-                    "full backup archived document differs from retained metadata"
-                );
-            }
-        }
-    }
+    let reader = RestoreReader {
+        source,
+        target,
+        context,
+        audit,
+    };
+    let verified = Box::pin(crate::backup_verify::verify(
+        &reader, backup_id, admission, deadline,
+    ))
+    .await?;
+    let VerifiedBackup {
+        mut state,
+        bytes,
+        checkpoint,
+        _reservation: reservation,
+        _registration: registration,
+    } = verified;
     // One trusted deterministic relocation for every replica, leaving the
     // immutable source manifest and object ciphertext unchanged.
     let alias = source.destination_alias.clone();
     let (state, bytes) = deadline
-        .blocking(reservation.clone(), move || {
+        .blocking(reservation.clone(), registration.clone(), move || {
             drop(bytes);
             state.history_archive_bytes = 0;
             for (id, archive) in state.history_archives.iter_mut() {
@@ -318,10 +205,11 @@ pub(super) async fn load(
     Ok(VerifiedBackup {
         state,
         bytes,
+        checkpoint,
         _reservation: reservation,
+        _registration: registration,
     })
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -332,11 +220,10 @@ mod tests {
         let weak = Arc::downgrade(&reservation);
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
-        let deadline =
-            RestoreDeadline(tokio::time::Instant::now() + std::time::Duration::from_millis(100));
+        let deadline = VerificationDeadline::new(100).unwrap();
         let task = tokio::spawn(async move {
             deadline
-                .blocking(reservation, move || {
+                .blocking(reservation, None, move || {
                     let _ = started_tx.send(());
                     release_rx.recv()?;
                     Ok(())

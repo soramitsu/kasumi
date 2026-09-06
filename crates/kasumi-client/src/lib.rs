@@ -12,6 +12,9 @@ use serde::Serialize;
 use std::collections::BTreeSet;
 use tonic::{Request, transport::Channel};
 
+mod backup_proof;
+pub use backup_proof::VerifiedBackupCheckpoint;
+
 pub mod proto {
     tonic::include_proto!("kasumi.v1");
 }
@@ -342,6 +345,58 @@ pub struct KasumiAdminClient {
     inner: proto::kasumi_admin_client::KasumiAdminClient<Channel>,
 }
 impl KasumiAdminClient {
+    /// Returns a proof only from this authenticated, pinned-mTLS administrative channel.
+    pub async fn create_backup_checkpoint(
+        &mut self,
+        bearer: &str,
+        request: &kasumi_types::CreateBackupCheckpoint,
+    ) -> Result<VerifiedBackupCheckpoint, ClientError> {
+        let mut request = authorized(
+            bearer,
+            proto::CreateBackupCheckpointRequest {
+                request_json: encode(request)?,
+            },
+        )?;
+        request.set_timeout(std::time::Duration::from_secs(300));
+        let response = self
+            .inner
+            .create_backup_checkpoint(request)
+            .await?
+            .into_inner();
+        let checkpoint: kasumi_types::FullBackupCheckpoint =
+            serde_json::from_slice(&response.response_json)?;
+        checkpoint.validate().map_err(|error| {
+            ClientError::Json(<serde_json::Error as serde::de::Error>::custom(error))
+        })?;
+        Ok(VerifiedBackupCheckpoint::verified(checkpoint))
+    }
+
+    /// Returns a proof only from this authenticated, pinned-mTLS administrative channel.
+    pub async fn verify_backup_checkpoint(
+        &mut self,
+        bearer: &str,
+        request: &kasumi_types::VerifyBackupCheckpoint,
+    ) -> Result<VerifiedBackupCheckpoint, ClientError> {
+        let mut request = authorized(
+            bearer,
+            proto::VerifyBackupCheckpointRequest {
+                request_json: encode(request)?,
+            },
+        )?;
+        request.set_timeout(std::time::Duration::from_secs(300));
+        let response = self
+            .inner
+            .verify_backup_checkpoint(request)
+            .await?
+            .into_inner();
+        let checkpoint: kasumi_types::FullBackupCheckpoint =
+            serde_json::from_slice(&response.response_json)?;
+        checkpoint.validate().map_err(|error| {
+            ClientError::Json(<serde_json::Error as serde::de::Error>::custom(error))
+        })?;
+        Ok(VerifiedBackupCheckpoint::verified(checkpoint))
+    }
+
     pub async fn read_schema(
         &mut self,
         bearer: &str,
