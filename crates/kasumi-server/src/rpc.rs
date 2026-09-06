@@ -504,26 +504,33 @@ impl NativeAdmin {
             .max_decoding_message_size(MAX_REQUEST_BYTES)
             .max_encoding_message_size(MAX_RESPONSE_BYTES)
     }
-    async fn apply(
+    async fn database(
         &self,
-        context: RequestContext,
-        operation: Operation,
-    ) -> Result<Response<WriteReceipt>, Status> {
-        let database = if context.tenant == crate::runtime::CONTROL_TENANT {
+        context: &RequestContext,
+    ) -> Result<Arc<kasumi_engine::Database>, Status> {
+        Ok(if context.tenant == crate::runtime::CONTROL_TENANT {
             let result = match &self.management {
-                Some(manager) => manager.authorized_database(&context).await,
+                Some(manager) => manager.authorized_database(context).await,
                 None => Err(kasumi_types::Error::new(
                     kasumi_types::ErrorCode::Forbidden,
                     "control administration requires the private runtime route",
                 )),
             };
             self.auth
-                .audit_result(&context, result)
+                .audit_result(context, result)
                 .await
                 .map_err(status)?
         } else {
-            routed(&self.registry, &self.auth, &context).await?
-        };
+            routed(&self.registry, &self.auth, context).await?
+        })
+    }
+
+    async fn apply(
+        &self,
+        context: RequestContext,
+        operation: Operation,
+    ) -> Result<Response<WriteReceipt>, Status> {
+        let database = self.database(&context).await?;
         let result = database.administer(context.clone(), operation).await;
         let result = result.map_err(|error| self.registry.status(&context, error))?;
         // Policy/schema/suspension operations intentionally change the epoch.
@@ -543,6 +550,86 @@ impl NativeAdmin {
 
 #[tonic::async_trait]
 impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
+    async fn read_schema(
+        &self,
+        request: Request<ReadSchemaRequest>,
+    ) -> Result<Response<ReadSchemaResponse>, Status> {
+        let context = verified(&self.auth, &request).await?;
+        let request = decode_json(&request.into_inner().request_json).map_err(status)?;
+        let database = self.database(&context).await?;
+        let fence = self
+            .auth
+            .audit_result(&context, database.response_fence(&context))
+            .await
+            .map_err(status)?;
+        let snapshot = database
+            .read_schema(&context, request)
+            .await
+            .map_err(|error| self.registry.status(&context, error))?;
+        let response = ReadSchemaResponse {
+            response_json: encode_json(&snapshot).map_err(status)?,
+        };
+        Ok(Response::new(
+            release_response(&self.auth, &context, fence, response, false)
+                .await
+                .map_err(status)?,
+        ))
+    }
+
+    async fn activate_schema(
+        &self,
+        request: Request<SchemaChangeSetRequest>,
+    ) -> Result<Response<WriteReceipt>, Status> {
+        let context = verified(&self.auth, &request).await?;
+        let request: kasumi_types::SchemaChangeSet =
+            decode_json(&request.into_inner().request_json).map_err(status)?;
+        let reference = request.reference().map_err(status)?;
+        let database = self.database(&context).await?;
+        let result = database
+            .activate_schema(context.clone(), request)
+            .await
+            .map_err(|error| self.registry.status(&context, error))?;
+        let fence = self
+            .auth
+            .audit_result(
+                &context,
+                database.schema_activation_response_fence(&context, &reference),
+            )
+            .await
+            .map_err(status)?;
+        Ok(Response::new(
+            release_response(&self.auth, &context, fence, receipt(result), false)
+                .await
+                .map_err(status)?,
+        ))
+    }
+
+    async fn schema_activation_status(
+        &self,
+        request: Request<SchemaActivationReference>,
+    ) -> Result<Response<SchemaActivationStatusResponse>, Status> {
+        let context = verified(&self.auth, &request).await?;
+        let reference = decode_json(&request.into_inner().request_json).map_err(status)?;
+        let database = self.database(&context).await?;
+        let fence = self
+            .auth
+            .audit_result(&context, database.response_fence(&context))
+            .await
+            .map_err(status)?;
+        let result = database
+            .schema_activation_status(&context, &reference)
+            .await
+            .map_err(|error| self.registry.status(&context, error))?;
+        let response = SchemaActivationStatusResponse {
+            response_json: encode_json(&result).map_err(status)?,
+        };
+        Ok(Response::new(
+            release_response(&self.auth, &context, fence, response, false)
+                .await
+                .map_err(status)?,
+        ))
+    }
+
     async fn archive_history(
         &self,
         request: Request<ArchiveHistoryRequest>,

@@ -306,6 +306,8 @@ impl SnapshotAccounting {
             change_feed: FeedFrame,
             history_archives: BTreeMap<(), ()>,
             history_archive_bytes: usize,
+            schema_activations: BTreeMap<(), ()>,
+            schema_activation_bytes: usize,
             audits: Vec<()>,
         }
         let frame = Frame {
@@ -334,6 +336,8 @@ impl SnapshotAccounting {
             },
             history_archives: BTreeMap::new(),
             history_archive_bytes: state.history_archive_bytes,
+            schema_activations: BTreeMap::new(),
+            schema_activation_bytes: state.schema_activation_bytes,
             audits: Vec::new(),
         };
         [
@@ -345,6 +349,8 @@ impl SnapshotAccounting {
             state.change_feed.encoded_commit_bytes,
             commas(state.change_feed.commits.len()),
             state.history_archive_bytes,
+            state.schema_activation_bytes,
+            commas(state.schema_activations.len()),
             commas(state.history_archives.len()),
         ]
         .into_iter()

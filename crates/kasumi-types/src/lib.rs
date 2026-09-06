@@ -3,6 +3,8 @@ mod atomic;
 pub use atomic::*;
 mod history;
 pub use history::*;
+mod schema;
+pub use schema::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -166,6 +168,7 @@ pub struct Limits {
     pub max_documents: u64,
     pub max_collections: usize,
     pub max_schema_bytes: usize,
+    pub max_schema_activations: usize,
     pub max_policy_grants: usize,
     pub max_logical_bytes: u64,
     #[serde(default = "default_snapshot_bytes")]
@@ -192,6 +195,7 @@ impl Default for Limits {
             max_documents: 1_000_000,
             max_collections: 128,
             max_schema_bytes: 8 << 20,
+            max_schema_activations: 4096,
             max_policy_grants: 4096,
             max_logical_bytes: 1 << 30,
             max_snapshot_bytes: default_snapshot_bytes(),
@@ -382,6 +386,7 @@ pub struct Command {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", content = "data", rename_all = "snake_case")]
 pub enum Operation {
+    ActivateSchema(SchemaChangeSet),
     PublishHistoryArchive(PublishHistoryArchive),
     Mutate(MutationBatch),
     BeginStaged(BeginStagedTransaction),
@@ -449,6 +454,9 @@ pub struct TenantState {
     #[serde(serialize_with = "serialize_resident_map")]
     pub history_archives: imbl::HashMap<String, RetainedHistoryArchive>,
     pub history_archive_bytes: usize,
+    #[serde(serialize_with = "serialize_resident_map")]
+    pub schema_activations: imbl::HashMap<String, StoredSchemaActivation>,
+    pub schema_activation_bytes: usize,
     pub audits: imbl::Vector<AuditEvent>,
 }
 

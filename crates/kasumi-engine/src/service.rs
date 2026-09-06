@@ -13,6 +13,8 @@ mod full_backup;
 mod history_export;
 #[path = "history_reads.rs"]
 mod history_reads;
+#[path = "schema_service.rs"]
+mod schema_service;
 #[path = "snapshot_leases.rs"]
 mod snapshot_leases;
 use std::{
@@ -43,16 +45,31 @@ struct ProposalWork {
     group: RaftGroup,
     admission_gate: Arc<tokio::sync::Mutex<()>>,
     clock: Arc<dyn CommandClock>,
+    schema_engine: Option<Arc<TenantEngine>>,
     _reservation: Reservation,
     _registration: WorkRegistration,
 }
 
 impl ProposalWork {
-    async fn run(self, mut command: Command, max_bytes: usize) -> anyhow::Result<Vec<u8>> {
+    async fn run(mut self, mut command: Command, max_bytes: usize) -> anyhow::Result<Vec<u8>> {
         // The background proposal owns this gate; caller timeout/cancellation
         // cannot let later commands overtake an unresolved write. Time is
         // sampled only after the previous write has finished.
         let _guard = self.admission_gate.lock().await;
+        if let (Some(engine), Operation::ActivateSchema(request)) =
+            (&self.schema_engine, &command.operation)
+        {
+            let admitted = (|| -> Result<()> {
+                let generation = engine.generation()?;
+                crate::state::schema::authorize(&generation.state, &command.context, request)?;
+                self._reservation
+                    .reserve_additional(generation.snapshot_bytes()?.saturating_mul(2) as u64)
+            })();
+            if let Err(error) = admitted {
+                // No proposal was made and no activation identity was accepted.
+                return Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(error))?);
+            }
+        }
         command.timestamp_ms = self.clock.now_ms()?;
         let bytes = serde_json::to_vec(&command)?;
         anyhow::ensure!(
@@ -756,6 +773,11 @@ impl Database {
         }
         // Authorization repeats during ordered apply, so queued operations cannot bypass policy changes.
         match &operation {
+            Operation::ActivateSchema(request) => crate::state::schema::authorize(
+                &self.engine.generation()?.state,
+                &context,
+                request,
+            )?,
             Operation::BeginStaged(request) => crate::state::staging::authorize_manifest(
                 &self.engine.generation()?.state,
                 &context,
@@ -782,10 +804,10 @@ impl Database {
                 }
             }
             Operation::Audit(event) => {
-                let action = if event.action == "receipt" {
-                    Action::Write
-                } else {
-                    Action::Read
+                let action = match event.action.as_str() {
+                    "receipt" => Action::Write,
+                    "schema_activation_status" | "schema_read" => Action::Admin,
+                    _ => Action::Read,
                 };
                 if event.collection.is_none() {
                     self.engine.authorize_discovery(&context, action, None)?;
@@ -804,6 +826,10 @@ impl Database {
             definition.indexes.iter().any(|index| index.text.is_some())
         };
         let needs_writer = match &operation {
+            Operation::ActivateSchema(request) => request
+                .changes
+                .iter()
+                .any(|change| has_text(change.definition())),
             Operation::FinalizeStaged(reference) => {
                 let stage = crate::state::staging::lookup(&generation.state, &context, reference)?;
                 stage.manifest.write_collections.iter().any(|name| {
@@ -851,10 +877,12 @@ impl Database {
         } else {
             0
         };
-        let command_budget = generation
-            .state
-            .limits
-            .max_batch_bytes
+        let max_command_payload = if matches!(operation, Operation::ActivateSchema(_)) {
+            MAX_SCHEMA_CHANGESET_BYTES
+        } else {
+            generation.state.limits.max_batch_bytes
+        };
+        let command_budget = max_command_payload
             .saturating_add(64 << 10)
             .saturating_mul(3)
             .saturating_add(staged_workspace)
@@ -872,13 +900,7 @@ impl Database {
         };
         let bytes = serde_json::to_vec(&command)
             .map_err(|_| Error::new(ErrorCode::InvalidArgument, "command encoding failed"))?;
-        let max_bytes = self
-            .engine
-            .generation()?
-            .state
-            .limits
-            .max_batch_bytes
-            .saturating_add(64 << 10);
+        let max_bytes = max_command_payload.saturating_add(64 << 10);
         if bytes.len() > max_bytes {
             return Err(Error::new(
                 ErrorCode::ResourceExhausted,
@@ -888,6 +910,8 @@ impl Database {
         let registration = self.work.begin(QueryCancellation::default())?;
         let proposal = tokio::spawn(
             ProposalWork {
+                schema_engine: matches!(command.operation, Operation::ActivateSchema(_))
+                    .then(|| self.engine.clone()),
                 group: self.group.clone(),
                 admission_gate: self.proposal_gate.clone(),
                 clock: self
@@ -1213,10 +1237,10 @@ impl Database {
                 })?;
         }
         self.access()?;
-        let action = if kind == "receipt" {
-            Action::Write
-        } else {
-            Action::Read
+        let action = match kind {
+            "receipt" => Action::Write,
+            "schema_activation_status" | "schema_read" => Action::Admin,
+            _ => Action::Read,
         };
         if collection.is_none() {
             self.engine
@@ -1664,6 +1688,7 @@ fn snapshot_workspace(limits: &Limits, request: &ReadSnapshotRequest) -> u64 {
 #[cfg(test)]
 mod tests {
     include!("service_staging_tests.rs");
+    include!("service_schema_tests.rs");
     use super::*;
     use crate::admission::AdmissionConfig;
     use kasumi_store::{NodeStore, test_utils::LocalKeyProvider};

@@ -342,6 +342,63 @@ pub struct KasumiAdminClient {
     inner: proto::kasumi_admin_client::KasumiAdminClient<Channel>,
 }
 impl KasumiAdminClient {
+    pub async fn read_schema(
+        &mut self,
+        bearer: &str,
+        request: &kasumi_types::ReadSchema,
+    ) -> Result<kasumi_types::SchemaSnapshot, ClientError> {
+        let response = self
+            .inner
+            .read_schema(authorized(
+                bearer,
+                proto::ReadSchemaRequest {
+                    request_json: encode(request)?,
+                },
+            )?)
+            .await?
+            .into_inner();
+        Ok(serde_json::from_slice(&response.response_json)?)
+    }
+
+    pub async fn activate_schema(
+        &mut self,
+        bearer: &str,
+        request: &kasumi_types::SchemaChangeSet,
+    ) -> Result<WriteReceipt, ClientError> {
+        let response = self
+            .inner
+            .activate_schema(authorized(
+                bearer,
+                proto::SchemaChangeSetRequest {
+                    request_json: encode(request)?,
+                },
+            )?)
+            .await?
+            .into_inner();
+        Ok(WriteReceipt {
+            revision: response.revision,
+            versions: response.versions.into_iter().collect(),
+        })
+    }
+
+    pub async fn schema_activation_status(
+        &mut self,
+        bearer: &str,
+        reference: &kasumi_types::SchemaActivationRef,
+    ) -> Result<kasumi_types::SchemaActivationStatus, ClientError> {
+        let response = self
+            .inner
+            .schema_activation_status(authorized(
+                bearer,
+                proto::SchemaActivationReference {
+                    request_json: encode(reference)?,
+                },
+            )?)
+            .await?
+            .into_inner();
+        Ok(serde_json::from_slice(&response.response_json)?)
+    }
+
     pub async fn connect(config: &KasumiClientConfig) -> Result<Self, ClientError> {
         let channel = kasumi_transport::grpc_channel(
             &config.endpoint,

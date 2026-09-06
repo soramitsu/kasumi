@@ -410,6 +410,41 @@ pub struct Reservation {
     id: u64,
 }
 impl Reservation {
+    /// Increase the workspace of an already admitted operation after its queued
+    /// dependencies are known. This rechecks fresh pressure/byte limits without
+    /// consuming another operation slot, and leaves the old charge on failure.
+    pub(crate) fn reserve_additional(&mut self, bytes: u64) -> Result<()> {
+        let mut state = self.node.state.lock().unwrap_or_else(|p| p.into_inner());
+        if !state.usable
+            || self.node.clock.now().saturating_sub(state.sampled_at)
+                >= Duration::from_millis(self.node.config.max_sample_age_ms)
+        {
+            self.node.sample(&mut state);
+        }
+        if !state.usable
+            || state.pressured
+            || state.bytes.saturating_add(bytes) > self.node.max_bytes
+            || state
+                .resident
+                .saturating_add(state.bytes)
+                .saturating_add(bytes)
+                >= self.node.high
+        {
+            return Err(Error::new(
+                ErrorCode::ResourceExhausted,
+                "node rebuild workspace budget exhausted",
+            ));
+        }
+        let charge = state
+            .charges
+            .get_mut(&self.id)
+            .ok_or_else(|| Error::new(ErrorCode::Unavailable, "admission reservation absent"))?;
+        charge.bytes = charge.bytes.checked_add(bytes).ok_or_else(|| {
+            Error::new(ErrorCode::ResourceExhausted, "admission workspace overflow")
+        })?;
+        state.bytes += bytes;
+        Ok(())
+    }
     /// Completed computation may retain its response bytes while a nested
     /// strict-audit proposal occupies the operation slot.
     pub(crate) fn retain_workspace(&mut self) {
@@ -626,6 +661,25 @@ mod tests {
         drop(cursor);
         assert_eq!(node.snapshot().reserved_bytes, 300);
         drop(continuation);
+        assert_eq!(node.snapshot().reserved_bytes, 0);
+    }
+    #[test]
+    fn queued_rebuild_expands_its_existing_slot_and_rejects_growth_without_losing_charge() {
+        let (node, memory, clock) = fixture();
+        let first = node.reserve(100, None).unwrap();
+        let mut rebuild = node.reserve(100, None).unwrap();
+        assert!(node.reserve(1, None).is_err());
+        rebuild.reserve_additional(100).unwrap();
+        assert_eq!(node.snapshot().reserved_bytes, 300);
+        assert_eq!(node.snapshot().inflight_operations, 2);
+        assert!(rebuild.reserve_additional(201).is_err());
+        assert_eq!(node.snapshot().reserved_bytes, 300);
+        clock.0.store(60_000, Ordering::SeqCst);
+        memory.rss.store(1000, Ordering::SeqCst);
+        assert!(rebuild.reserve_additional(1).is_err());
+        assert_eq!(node.snapshot().reserved_bytes, 300);
+        drop(rebuild);
+        drop(first);
         assert_eq!(node.snapshot().reserved_bytes, 0);
     }
     #[test]

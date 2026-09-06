@@ -4,7 +4,8 @@ use anyhow::{Context, Result, bail, ensure};
 use kasumi_server::{
     api::MAX_REQUEST_BYTES,
     rpc::proto::{
-        CollectionDefinitionRequest, ManagementRequest, SetLimitsRequest, SetPolicyRequest,
+        CollectionDefinitionRequest, ManagementRequest, ReadSchemaRequest,
+        SchemaActivationReference, SchemaChangeSetRequest, SetLimitsRequest, SetPolicyRequest,
         SetSuspendedRequest,
     },
     runtime::AdminClientConfig,
@@ -69,13 +70,14 @@ async fn main() -> Result<()> {
     }
     let [flag, path, operation, rest @ ..] = arguments.as_slice() else {
         bail!(
-            "usage: kasumictl --config <client.json> create-collection|replace-collection|set-policy|set-limits <operation.json>, or suspend|resume, or manage <command.json>"
+            "usage: kasumictl --config <client.json> activate-schema|read-schema|schema-status|create-collection|replace-collection|set-policy|set-limits <operation.json>, or suspend|resume, or manage <command.json>"
         );
     };
     ensure!(flag == "--config", "first argument must be --config");
     let payload = match (operation.as_str(), rest) {
         (
-            "create-collection" | "replace-collection" | "set-policy" | "set-limits" | "manage",
+            "activate-schema" | "read-schema" | "schema-status" | "create-collection"
+            | "replace-collection" | "set-policy" | "set-limits" | "manage",
             [file],
         ) => Some(read_json(file)?),
         ("suspend" | "resume", []) => None,
@@ -84,6 +86,15 @@ async fn main() -> Result<()> {
     // Parse typed payloads before connecting; exact JSON bytes still go on the wire.
     if let Some(bytes) = &payload {
         match operation.as_str() {
+            "activate-schema" => {
+                serde_json::from_slice::<kasumi_types::SchemaChangeSet>(bytes)?;
+            }
+            "read-schema" => {
+                serde_json::from_slice::<kasumi_types::ReadSchema>(bytes)?;
+            }
+            "schema-status" => {
+                serde_json::from_slice::<kasumi_types::SchemaActivationRef>(bytes)?;
+            }
             "create-collection" | "replace-collection" => {
                 serde_json::from_slice::<kasumi_types::CollectionDefinition>(bytes)?;
             }
@@ -100,6 +111,36 @@ async fn main() -> Result<()> {
         }
     }
     let (mut client, authorization) = AdminClientConfig::load(path)?.connect().await?;
+    if matches!(operation.as_str(), "read-schema" | "schema-status") {
+        let result = if operation == "read-schema" {
+            client
+                .read_schema(request(
+                    ReadSchemaRequest {
+                        request_json: payload.unwrap(),
+                    },
+                    &authorization,
+                ))
+                .await
+                .map(|response| response.into_inner().response_json)
+        } else {
+            client
+                .schema_activation_status(request(
+                    SchemaActivationReference {
+                        request_json: payload.unwrap(),
+                    },
+                    &authorization,
+                ))
+                .await
+                .map(|response| response.into_inner().response_json)
+        }
+        .map_err(|status| {
+            leader_hint(&status);
+            anyhow::anyhow!("schema observation failed ({})", status.code())
+        })?;
+        let result: serde_json::Value = serde_json::from_slice(&result)?;
+        println!("{}", serde_json::to_string(&result)?);
+        return Ok(());
+    }
     if operation == "manage" {
         let response = client
             .manage(request(
@@ -123,6 +164,16 @@ async fn main() -> Result<()> {
         return Ok(());
     }
     let result = match operation.as_str() {
+        "activate-schema" => {
+            client
+                .activate_schema(request(
+                    SchemaChangeSetRequest {
+                        request_json: payload.unwrap(),
+                    },
+                    &authorization,
+                ))
+                .await
+        }
         "create-collection" => {
             client
                 .create_collection(request(

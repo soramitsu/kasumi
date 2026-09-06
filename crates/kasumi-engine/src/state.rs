@@ -7,6 +7,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 #[path = "history_state.rs"]
 pub(crate) mod history;
+#[path = "schema_activation.rs"]
+pub(crate) mod schema;
 #[path = "staging.rs"]
 pub(crate) mod staging;
 
@@ -104,6 +106,8 @@ impl TenantEngine {
             change_feed: ChangeFeedState::empty(),
             history_archives: imbl::HashMap::new(),
             history_archive_bytes: 0,
+            schema_activations: imbl::HashMap::new(),
+            schema_activation_bytes: 0,
             audits: imbl::Vector::new(),
         };
         let indexes = Arc::new(QueryIndexes::build(&state.collections)?);
@@ -327,7 +331,9 @@ impl TenantEngine {
             | Operation::AppendStaged(_)
             | Operation::FinalizeStaged(_)
             | Operation::AbortStaged(_) => "staged_transaction",
-            Operation::CreateCollection(_) | Operation::ReplaceCollection(_) => "schema",
+            Operation::ActivateSchema(_)
+            | Operation::CreateCollection(_)
+            | Operation::ReplaceCollection(_) => "schema",
             Operation::SetPolicy(_) => "policy",
             Operation::SetLimits(_) => "quota",
             Operation::Suspend(_) => "suspend",
@@ -455,6 +461,7 @@ impl TenantEngine {
             Operation::Audit(_) | Operation::MaintenanceAudit(_)
         );
         if ordinary {
+            schema::reject_budget(&previous.state, &next, &mut rejected, command, &error)?;
             if let Operation::FinalizeStaged(reference) = &command.operation {
                 let key =
                     staged_digest(&(&command.context.principal, &reference.transaction_id))?.0;
@@ -665,6 +672,7 @@ impl TenantEngine {
         }
         let snapshot_accounting = SnapshotAccounting::rebuild(&state)?;
         staging::validate_restored(&state)?;
+        schema::validate_restored(&state)?;
         history::validate_restored(&state)?;
         crate::change_feed_state::validate_restored(&state)?;
         if !snapshot_accounting.fits(&state)? {
@@ -733,8 +741,11 @@ fn authorize_discovery_state(
     {
         return Err(Error::new(ErrorCode::Forbidden, "discovery access denied"));
     }
-    if state.suspended || state.retired {
-        return Err(Error::new(ErrorCode::Sealed, "tenant is suspended"));
+    if (state.suspended && action != Action::Admin) || state.retired {
+        return Err(Error::new(
+            ErrorCode::Sealed,
+            "tenant is suspended or retired",
+        ));
     }
     Ok(())
 }
@@ -879,6 +890,9 @@ fn apply_operation(
             let changed = outcome.is_ok();
             Ok((outcome, changed))
         }
+        Operation::ActivateSchema(request) => {
+            schema::apply(state, &command.context, request, revision)
+        }
         Operation::CreateCollection(definition) | Operation::ReplaceCollection(definition) => {
             authorize_state(
                 state,
@@ -886,55 +900,11 @@ fn apply_operation(
                 Some(&definition.name),
                 Action::Admin,
             )?;
-            validate_name(&definition.name)?;
-            let current = state.collections.get(&definition.name);
-            if definition.retention_class == CollectionRetentionClass::ArchivableHistory
-                && definition.write_mode != CollectionWriteMode::AppendOnly
-            {
-                return Err(Error::new(
-                    ErrorCode::InvalidArgument,
-                    "archivable history must be append-only",
-                ));
-            }
-            if current.is_some_and(|collection| {
-                collection.definition.retention_class != definition.retention_class
-            }) {
-                return Err(Error::new(
-                    ErrorCode::Forbidden,
-                    "collection retention class is immutable",
-                ));
-            }
-            if current.is_some_and(|collection| !collection.archived_documents.is_empty()) {
-                return Err(Error::new(
-                    ErrorCode::Conflict,
-                    "archived collection schema/index definitions are sealed",
-                ));
-            }
-            if matches!(command.operation, Operation::CreateCollection(_)) && current.is_some() {
-                return Err(Error::new(ErrorCode::AlreadyExists, "collection exists"));
-            }
-            if matches!(command.operation, Operation::ReplaceCollection(_)) && current.is_none() {
-                return Err(Error::new(ErrorCode::NotFound, "collection not found"));
-            }
-            let documents = current.map(|c| c.documents.clone()).unwrap_or_default();
-            if current.is_some_and(|collection| {
-                collection.definition.write_mode == CollectionWriteMode::AppendOnly
-                    && definition.write_mode != CollectionWriteMode::AppendOnly
-            }) {
-                return Err(Error::new(
-                    ErrorCode::Forbidden,
-                    "append-only protection cannot be weakened",
-                ));
-            }
-            validate_collection(definition, &documents)?;
-            let collection = CollectionState {
-                archived_documents: Default::default(),
-                archived_document_bytes: 0,
-                data_epoch: current.map_or(0, |collection| collection.data_epoch),
-                definition: definition.clone(),
-                documents,
-            };
-            check_unique(&collection)?;
+            let collection = schema::prepare_collection(
+                state.collections.get(&definition.name),
+                definition,
+                matches!(command.operation, Operation::CreateCollection(_)),
+            )?;
             let mut collections = state.collections.clone();
             collections.insert(definition.name.clone(), collection);
             validate_metadata_budget(&collections, &state.limits)?;
@@ -957,6 +927,12 @@ fn apply_operation(
             authorize_state(state, &command.context, None, Action::Admin)?;
             validate_limits(limits)?;
             staging::validate_new_limits(state, limits)?;
+            if state.schema_activations.len() > limits.max_schema_activations {
+                return Err(Error::new(
+                    ErrorCode::QuotaExceeded,
+                    "new quota excludes permanent schema activations",
+                ));
+            }
             validate_policy(&state.policy, limits)?;
             validate_metadata_budget(&state.collections, limits)?;
             if limits.max_document_bytes < state.limits.max_document_bytes {
@@ -1011,6 +987,7 @@ fn apply_operation(
             let action = match event.action.as_str() {
                 "read" | "discovery" | "change_feed" | "archive_receipt" => Action::Read,
                 "receipt" => Action::Write,
+                "schema_activation_status" | "schema_read" => Action::Admin,
                 _ => {
                     return Err(Error::new(
                         ErrorCode::InvalidArgument,
@@ -1412,6 +1389,8 @@ fn validate_limits(limits: &Limits) -> Result<()> {
         || limits.max_cursors == 0
         || limits.max_collections == 0
         || limits.max_schema_bytes == 0
+        || limits.max_schema_activations == 0
+        || limits.max_schema_activations > 100_000
         || limits.max_policy_grants == 0
     {
         return Err(Error::new(
