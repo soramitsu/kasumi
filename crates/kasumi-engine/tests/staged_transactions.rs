@@ -26,6 +26,7 @@ fn policy() -> Policy {
 }
 fn definition(name: &str, mode: CollectionWriteMode) -> CollectionDefinition {
     CollectionDefinition {
+        retention_class: kasumi_types::CollectionRetentionClass::Operational,
         name: name.into(),
         write_mode: mode,
         schema: json!({"type":"object"}),

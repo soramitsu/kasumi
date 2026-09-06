@@ -9,6 +9,7 @@ service KasumiData {
   rpc Get(GetRequest) returns (Document);
   rpc Query(QueryRequest) returns (QueryResponse);
   rpc ReadSnapshot(ReadSnapshotRequest) returns (ReadSnapshotResponse);
+  rpc ReadChangeFeed(ReadChangeFeedRequest) returns (ReadChangeFeedResponse);
   rpc BeginStagedTransaction(BeginStagedTransactionRequest) returns (WriteReceipt);
   rpc AppendStagedChunk(AppendStagedChunkRequest) returns (WriteReceipt);
   rpc FinalizeStagedTransaction(StagedTransactionReference) returns (WriteReceipt);
@@ -26,6 +27,7 @@ service KasumiData {
 // Bind only to the administrative listener. These methods still enforce the
 // current tenant/collection admin policy in consensus order.
 service KasumiAdmin {
+  rpc ArchiveHistory(ArchiveHistoryRequest) returns (WriteReceipt);
   rpc CreateCollection(CollectionDefinitionRequest) returns (WriteReceipt);
   rpc ReplaceCollection(CollectionDefinitionRequest) returns (WriteReceipt);
   rpc SetPolicy(SetPolicyRequest) returns (WriteReceipt);
@@ -41,6 +43,9 @@ message Document { string id = 1; uint64 version = 2; bytes body_json = 3; }
 message QueryRequest { bytes query_json = 1; }
 message ReadSnapshotRequest { bytes request_json = 1; }
 message ReadSnapshotResponse { bytes response_json = 1; }
+message ReadChangeFeedRequest { bytes request_json = 1; }
+message ReadChangeFeedResponse { bytes response_json = 1; }
+message ArchiveHistoryRequest { bytes request_json = 1; }
 message BeginStagedTransactionRequest { bytes request_json = 1; }
 message AppendStagedChunkRequest { bytes request_json = 1; }
 message StagedTransactionReference { bytes request_json = 1; }

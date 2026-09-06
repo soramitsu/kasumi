@@ -28,6 +28,20 @@ struct UniqueIndex {
 }
 
 impl UniqueIndex {
+    fn insert_archived(&mut self, name: &str, id: &str, document: &ArchivedDocument) -> Result<()> {
+        let key = self
+            .fields
+            .iter()
+            .map(|field| scalar(document.indexed_fields.get(&field.path), Some(field.kind)))
+            .collect::<Result<Vec<_>>>()?;
+        if !key.contains(&Scalar::Missing) && self.entries.insert(key, id.into()).is_some() {
+            return Err(Error::new(
+                ErrorCode::Conflict,
+                format!("unique index {name} conflicts"),
+            ));
+        }
+        Ok(())
+    }
     fn key(&self, document: &Document) -> Result<Option<Vec<Scalar>>> {
         let key = self
             .fields
@@ -215,6 +229,18 @@ impl Structured {
             }
         }
         let mut unique = BTreeMap::new();
+        for (id, document) in &collection.archived_documents {
+            ids.insert(id.clone());
+            for (path, index) in &mut fields {
+                let value = document.indexed_fields.get(path);
+                if value.is_some() {
+                    index.present.insert(id.clone());
+                }
+                for key in indexed_values(value, index.kind)? {
+                    index.entries.entry(key).or_default().insert(id.clone());
+                }
+            }
+        }
         for definition in collection
             .definition
             .indexes
@@ -227,6 +253,9 @@ impl Structured {
             };
             for document in collection.documents.values() {
                 index.insert(&definition.name, document)?;
+            }
+            for (id, document) in &collection.archived_documents {
+                index.insert_archived(&definition.name, id, document)?;
             }
             unique.insert(definition.name.clone(), index);
         }

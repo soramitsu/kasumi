@@ -145,6 +145,7 @@ impl ControlPlane {
             .engine()
             .authorize(&context, None, Action::Admin)?;
         let definition = CollectionDefinition {
+            retention_class: kasumi_types::CollectionRetentionClass::Operational,
             write_mode: kasumi_types::CollectionWriteMode::Mutable,
             name: COLLECTION.into(),
             schema: json!({

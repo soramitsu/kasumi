@@ -151,6 +151,7 @@ async fn replicated_service_preserves_batches_receipts_and_cursor_fences_across_
         .administer(
             context(),
             Operation::CreateCollection(CollectionDefinition {
+                retention_class: kasumi_types::CollectionRetentionClass::Operational,
                 write_mode: kasumi_types::CollectionWriteMode::Mutable,
                 name: "documents".into(),
                 schema: json!({"type":"object"}),
@@ -434,6 +435,7 @@ async fn replicated_restore_has_identical_genesis_and_requires_quorum_audit_befo
         .administer(
             context(),
             Operation::CreateCollection(CollectionDefinition {
+                retention_class: kasumi_types::CollectionRetentionClass::Operational,
                 write_mode: kasumi_types::CollectionWriteMode::Mutable,
                 name: "documents".into(),
                 schema: json!({"type":"object"}),

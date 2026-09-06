@@ -185,6 +185,11 @@ pub fn validate_collection(
     documents: &imbl::HashMap<String, std::sync::Arc<Document>>,
 ) -> Result<()> {
     validate_name(&definition.name)?;
+    if definition.retention_class == CollectionRetentionClass::ArchivableHistory
+        && definition.write_mode != CollectionWriteMode::AppendOnly
+    {
+        return Err(invalid("archivable history must be append-only"));
+    }
     let _validator = compile(&definition.schema)?;
     if definition.indexes.len() > 64 {
         return Err(invalid("a collection supports at most 64 indexes"));
@@ -238,6 +243,8 @@ pub fn validate_collection(
         validate_document(definition, &document.body)?;
     }
     check_unique(&CollectionState {
+        archived_documents: Default::default(),
+        archived_document_bytes: 0,
         data_epoch: 0,
         definition: definition.clone(),
         documents: documents.clone(),

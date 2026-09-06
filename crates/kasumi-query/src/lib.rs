@@ -42,6 +42,45 @@ pub struct QueryIndexes {
 }
 
 impl QueryIndexes {
+    /// Plan bounded candidates using maintained structured indexes without
+    /// reading document bodies. Explicit scans are resolved by the service.
+    pub fn indexed_candidate_ids(
+        &self,
+        collections: &BTreeMap<String, CollectionState>,
+        request: &QueryRequest,
+        limits: &Limits,
+        cancellation: &QueryCancellation,
+    ) -> Result<Vec<String>> {
+        cancellation.check()?;
+        validate_name(&request.collection)?;
+        validate_predicate(&request.filter, 0, &mut 0)?;
+        let collection = collections
+            .get(&request.collection)
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "collection not found"))?;
+        let indexes = self
+            .collections
+            .get(&request.collection)
+            .ok_or_else(|| Error::new(ErrorCode::Unavailable, "collection index not ready"))?;
+        if request.text.is_some() {
+            return Err(Error::new(
+                ErrorCode::IndexRequired,
+                "cold text queries require a supported archive text index",
+            ));
+        }
+        indexes.structured.validate(&request.filter, false)?;
+        Ok(indexes
+            .structured
+            .candidates(
+                collection,
+                &request.filter,
+                &indexes.structured.ids,
+                false,
+                limits.max_query_candidates,
+                cancellation,
+            )?
+            .into_iter()
+            .collect())
+    }
     /// Bounded ID-order continuation over an existing generation's maintained
     /// primary ID index. The caller supplies authorization and snapshot fences.
     pub fn document_ids_after(

@@ -82,7 +82,9 @@ pub async fn prepare_replicated_restore(
             && !replica.incarnation.is_nil(),
         "invalid restore replica identity"
     );
-    let encrypted = destination.get(backup_id).await?;
+    let encrypted = destination
+        .get(backup_id, kasumi_store::MAX_BACKUP_BUNDLE_BYTES)
+        .await?;
     let backup = EncryptedBackup::from_bytes(&encrypted, MAX_BOOTSTRAP)?;
     anyhow::ensure!(
         backup.id() == backup_id && backup.source_tenant() == target.tenant(),
@@ -459,7 +461,9 @@ pub async fn restore_local_with_incarnation_and_admission(
         target.get(NS, b"manifest")?.is_none() && target.get("raft.meta", b"node_id")?.is_none(),
         "restore target is already initialized"
     );
-    let bytes = destination.get(backup_id).await?;
+    let bytes = destination
+        .get(backup_id, kasumi_store::MAX_BACKUP_BUNDLE_BYTES)
+        .await?;
     restore_access(&target, &security_audit, &context).await?;
     let backup = EncryptedBackup::from_bytes(&bytes, MAX_BOOTSTRAP)?;
     anyhow::ensure!(

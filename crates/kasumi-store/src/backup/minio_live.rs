@@ -201,28 +201,48 @@ async fn actual_minio_tls_sigv4_encrypted_roundtrip_create_only_and_access_denia
     let id = encrypted.id();
     let bytes = encrypted.to_bytes()?;
     destination.put(id, bytes.clone()).await?;
-    assert_eq!(destination.get(id).await?, bytes);
+    assert_eq!(destination.get(id, 16 << 20).await?, bytes);
     assert!(
         destination
             .put(id, b"overwrite attempt".to_vec())
             .await
             .is_err()
     );
-    let recovered = EncryptedBackup::from_bytes(&destination.get(id).await?, 1 << 20)?
+    let recovered = EncryptedBackup::from_bytes(&destination.get(id, 16 << 20).await?, 1 << 20)?
         .decrypt("customer", provider)
         .await?;
     assert_eq!(recovered.snapshot.as_slice(), snapshot);
     assert_eq!(recovered.revision, 17);
-    assert!(destination.get(Uuid::new_v4()).await.is_err());
+    assert!(
+        destination
+            .get(Uuid::new_v4(), MAX_BACKUP_BUNDLE_BYTES)
+            .await
+            .is_err()
+    );
     let mut bad = make();
     bad.secret_access_key = "incorrect-credential".into();
-    assert!(S3BackupDestination::new(bad)?.get(id).await.is_err());
+    assert!(
+        S3BackupDestination::new(bad)?
+            .get(id, 16 << 20)
+            .await
+            .is_err()
+    );
     let mut untrusted = make();
     untrusted.ca_pem = None;
-    assert!(S3BackupDestination::new(untrusted)?.get(id).await.is_err());
+    assert!(
+        S3BackupDestination::new(untrusted)?
+            .get(id, 16 << 20)
+            .await
+            .is_err()
+    );
     let mut tiny = make();
     tiny.max_bytes = 1;
-    assert!(S3BackupDestination::new(tiny)?.get(id).await.is_err());
+    assert!(
+        S3BackupDestination::new(tiny)?
+            .get(id, 16 << 20)
+            .await
+            .is_err()
+    );
     store.seal();
     Ok(())
 }

@@ -259,7 +259,14 @@ impl Database {
             )
         })?;
         let work = SnapshotWork {
-            generation: lease.generation.clone(),
+            generation: self
+                .hydrate_history(
+                    lease.generation.clone(),
+                    &snapshot.documents,
+                    &[],
+                    &cancellation,
+                )
+                .await?,
             request: snapshot,
             cancellation: cancellation.clone(),
             _permit: permit,
@@ -384,8 +391,61 @@ impl Database {
                 "snapshot concurrency limit reached",
             )
         })?;
+        let candidates = lease.generation.indexes.document_ids_after(
+            &request.collection,
+            request.after_id.as_deref(),
+            request.limit + 1,
+        )?;
+        let collection = &lease.generation.state.collections[&request.collection];
+        let mut keys = Vec::new();
+        let mut bytes = crate::accounting::encoded_len(&SnapshotScanPage {
+            snapshot: lease.header(&request.lease_id),
+            collection: request.collection.clone(),
+            data_epoch: collection.data_epoch,
+            documents: vec![],
+            next_after_id: None,
+        })?
+        .saturating_add(256);
+        let mut has_more = false;
+        for id in candidates {
+            let document_bytes = if let Some(document) = collection.documents.get(&id) {
+                crate::accounting::encoded_len(document)?
+            } else {
+                collection
+                    .archived_documents
+                    .get(&id)
+                    .ok_or_else(|| {
+                        Error::new(ErrorCode::Corruption, "snapshot index identity missing")
+                    })?
+                    .document_bytes
+            };
+            if keys.len() >= request.limit
+                || bytes.saturating_add(document_bytes + 1)
+                    > lease.generation.state.limits.max_result_bytes
+            {
+                if keys.is_empty() {
+                    return Err(Error::new(
+                        ErrorCode::ResourceExhausted,
+                        "snapshot document cannot fit page budget",
+                    ));
+                }
+                has_more = true;
+                break;
+            }
+            bytes += document_bytes + 1;
+            keys.push(DocumentKey {
+                collection: request.collection.clone(),
+                id,
+            });
+        }
+        let generation = self
+            .hydrate_history(lease.generation.clone(), &keys, &[], &cancellation)
+            .await?;
         let work = ScanWork {
             lease: lease.clone(),
+            generation,
+            ids: keys.into_iter().map(|key| key.id).collect(),
+            has_more,
             request: request.clone(),
             cancellation: cancellation.clone(),
             _permit: permit,
@@ -419,6 +479,9 @@ impl Database {
 
 struct ScanWork {
     lease: Arc<RetainedSnapshot>,
+    generation: Arc<crate::Generation>,
+    ids: Vec<String>,
+    has_more: bool,
     request: ScanSnapshotPage,
     cancellation: QueryCancellation,
     _permit: tokio::sync::OwnedSemaphorePermit,
@@ -440,7 +503,7 @@ impl ScanWork {
         }
     }
     fn evaluate(&self) -> Result<SnapshotScanPage> {
-        let state = &self.lease.generation.state;
+        let state = &self.generation.state;
         let collection = &state.collections[&self.request.collection];
         let mut response = SnapshotScanPage {
             snapshot: self.lease.header(&self.request.lease_id),
@@ -449,15 +512,10 @@ impl ScanWork {
             documents: vec![],
             next_after_id: None,
         };
-        let ids = self.lease.generation.indexes.document_ids_after(
-            &self.request.collection,
-            self.request.after_id.as_deref(),
-            self.request.limit + 1,
-        )?;
         // Reserve space for the continuation ID before cloning document bodies.
         let mut bytes = crate::accounting::encoded_len(&response)?.saturating_add(256);
-        for id in ids {
-            let document = collection.documents.get(&id).ok_or_else(|| {
+        for id in &self.ids {
+            let document = collection.documents.get(id).ok_or_else(|| {
                 Error::new(ErrorCode::Corruption, "snapshot ID index has no document")
             })?;
             self.cancellation.check()?;
@@ -476,6 +534,12 @@ impl ScanWork {
             }
             bytes = bytes.saturating_add(additional);
             response.documents.push(document.as_ref().clone());
+        }
+        if self.has_more {
+            response.next_after_id = response
+                .documents
+                .last()
+                .map(|document| document.id.clone());
         }
         if crate::accounting::encoded_len(&response)? > state.limits.max_result_bytes {
             return Err(Error::new(

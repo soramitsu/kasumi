@@ -27,6 +27,7 @@ fn policy(strict_read_audit: bool) -> Policy {
 }
 fn definition() -> CollectionDefinition {
     CollectionDefinition {
+        retention_class: kasumi_types::CollectionRetentionClass::Operational,
         write_mode: kasumi_types::CollectionWriteMode::Mutable,
         name: "people".into(),
         schema: json!({"type":"object", "required":["email","age"], "properties":{"email":{"type":"string"},"age":{"type":"integer","minimum":0}}}),

@@ -6,6 +6,7 @@
 //! kernel, device durability and the embedding process are trusted. A successful
 //! store call can return owned plaintext to its caller; that copy is not revocable.
 
+mod archive_objects;
 mod backup;
 mod clock;
 mod keys;

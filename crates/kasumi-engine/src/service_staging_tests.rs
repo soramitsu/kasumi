@@ -41,6 +41,7 @@ async fn queued_staged_finalize_checks_fresh_time_and_canceled_callers_keep_dura
     db.administer(
         context.clone(),
         Operation::CreateCollection(CollectionDefinition {
+            retention_class: kasumi_types::CollectionRetentionClass::Operational,
             name: "docs".into(),
             schema: json!({"type":"object"}),
             indexes: vec![],

@@ -45,6 +45,7 @@ async fn full_shutdown_reopens_immediately_with_receipts_and_retained_plaintext(
                 .administer(
                     context.clone(),
                     Operation::CreateCollection(CollectionDefinition {
+                        retention_class: kasumi_types::CollectionRetentionClass::Operational,
                         write_mode: kasumi_types::CollectionWriteMode::Mutable,
                         name: "docs".into(),
                         schema: json!({"type":"object","required":["n"]}),

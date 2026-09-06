@@ -55,6 +55,8 @@ fn header(key: &str, collection: &CollectionState) -> Result<usize> {
         definition: &'a CollectionDefinition,
         data_epoch: u64,
         documents: BTreeMap<(), ()>,
+        archived_documents: BTreeMap<(), ()>,
+        archived_document_bytes: usize,
     }
     entry(
         key,
@@ -62,8 +64,18 @@ fn header(key: &str, collection: &CollectionState) -> Result<usize> {
             definition: &collection.definition,
             data_epoch: collection.data_epoch,
             documents: BTreeMap::new(),
+            archived_documents: BTreeMap::new(),
+            archived_document_bytes: collection.archived_document_bytes,
         },
-    )
+    )?
+    .checked_add(collection.archived_document_bytes)
+    .and_then(|bytes| bytes.checked_add(commas(collection.archived_documents.len())))
+    .ok_or_else(|| {
+        Error::new(
+            ErrorCode::Corruption,
+            "archive reference accounting overflow",
+        )
+    })
 }
 
 fn staged_entry(key: &str, stage: &StagedTransaction) -> Result<usize> {
@@ -266,6 +278,13 @@ impl SnapshotAccounting {
     }
     pub fn bytes(&self, state: &TenantState) -> Result<usize> {
         #[derive(Serialize)]
+        struct FeedFrame {
+            next_sequence: u64,
+            commits: BTreeMap<(), ()>,
+            event_count: usize,
+            encoded_commit_bytes: usize,
+        }
+        #[derive(Serialize)]
         struct Frame<'a> {
             tenant: &'a str,
             incarnation: &'a str,
@@ -284,6 +303,9 @@ impl SnapshotAccounting {
             receipts: BTreeMap<(), ()>,
             staged_transactions: BTreeMap<(), ()>,
             active_staged_transactions: &'a BTreeSet<String>,
+            change_feed: FeedFrame,
+            history_archives: BTreeMap<(), ()>,
+            history_archive_bytes: usize,
             audits: Vec<()>,
         }
         let frame = Frame {
@@ -304,6 +326,14 @@ impl SnapshotAccounting {
             receipts: BTreeMap::new(),
             staged_transactions: BTreeMap::new(),
             active_staged_transactions: &state.active_staged_transactions,
+            change_feed: FeedFrame {
+                next_sequence: state.change_feed.next_sequence,
+                commits: BTreeMap::new(),
+                event_count: state.change_feed.event_count,
+                encoded_commit_bytes: state.change_feed.encoded_commit_bytes,
+            },
+            history_archives: BTreeMap::new(),
+            history_archive_bytes: state.history_archive_bytes,
             audits: Vec::new(),
         };
         [
@@ -312,6 +342,10 @@ impl SnapshotAccounting {
             self.receipts,
             self.audits,
             self.staged,
+            state.change_feed.encoded_commit_bytes,
+            commas(state.change_feed.commits.len()),
+            state.history_archive_bytes,
+            commas(state.history_archives.len()),
         ]
         .into_iter()
         .try_fold(encoded_len(&frame)?, |n, v| {

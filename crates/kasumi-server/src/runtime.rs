@@ -2350,6 +2350,8 @@ mod lifecycle_tests {
                         .administer(
                             beta.clone(),
                             Operation::CreateCollection(CollectionDefinition {
+                                retention_class:
+                                    kasumi_types::CollectionRetentionClass::Operational,
                                 write_mode: kasumi_types::CollectionWriteMode::Mutable,
                                 name: "onboarded".into(),
                                 schema: serde_json::json!({"type":"object"}),
@@ -2523,6 +2525,7 @@ mod lifecycle_tests {
                     .administer(
                         context.clone(),
                         Operation::CreateCollection(CollectionDefinition {
+                            retention_class: kasumi_types::CollectionRetentionClass::Operational,
                             write_mode: kasumi_types::CollectionWriteMode::Mutable,
                             name: "docs".into(),
                             schema: serde_json::json!({"type":"object"}),
@@ -3153,6 +3156,7 @@ mod lifecycle_tests {
             .administer(
                 context.clone(),
                 Operation::CreateCollection(CollectionDefinition {
+                    retention_class: kasumi_types::CollectionRetentionClass::Operational,
                     write_mode: kasumi_types::CollectionWriteMode::Mutable,
                     name: "docs".into(),
                     schema: serde_json::json!({"type":"object"}),

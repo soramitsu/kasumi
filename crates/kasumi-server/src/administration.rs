@@ -394,6 +394,11 @@ impl Administration {
         let mut generations = BTreeMap::new();
         let mut active = BTreeMap::new();
         for tenant in tenants {
+            for (alias, destination) in &destinations {
+                tenant
+                    .database
+                    .install_archive_destination(alias.clone(), destination.clone())?;
+            }
             let state = tenant.database.engine().generation()?;
             let name = state.state.tenant.clone();
             let incarnation = state.state.incarnation.clone();
@@ -1359,6 +1364,7 @@ impl Administration {
         );
         let hash = self.provision_hash(tenant, &target)?;
         let definition = kasumi_types::CollectionDefinition {
+            retention_class: kasumi_types::CollectionRetentionClass::Operational,
             write_mode: kasumi_types::CollectionWriteMode::Mutable,
             name: "tenant_provisioning".into(),
             schema: serde_json::json!({"type":"object","required":["bootstrap_sha256"],"additionalProperties":false,
@@ -1599,6 +1605,11 @@ impl Administration {
         Ok(topology)
     }
     fn publish_target(&self, tenant: &str, expected: &str, target: ManagedTenant) -> Result<()> {
+        for (alias, destination) in &self.destinations {
+            target
+                .database
+                .install_archive_destination(alias.clone(), destination.clone())?;
+        }
         let incarnation = target
             .database
             .engine()

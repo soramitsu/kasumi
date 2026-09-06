@@ -5,6 +5,12 @@ use kasumi_raft::RaftGroup;
 use kasumi_store::{BackupDestination, LeaseClock, SystemLeaseClock, TenantStore};
 use kasumi_types::*;
 use sha2::{Digest, Sha256};
+#[path = "change_feed.rs"]
+mod change_feed;
+#[path = "history_export.rs"]
+mod history_export;
+#[path = "history_reads.rs"]
+mod history_reads;
 #[path = "snapshot_leases.rs"]
 mod snapshot_leases;
 use std::{
@@ -213,6 +219,7 @@ pub struct Database {
     store: Arc<TenantStore>,
     cursors: Mutex<HashMap<String, Cursor>>,
     snapshot_leases: Mutex<HashMap<String, Arc<snapshot_leases::RetainedSnapshot>>>,
+    archive_destinations: Mutex<BTreeMap<String, Arc<dyn BackupDestination>>>,
     query_slots: Arc<tokio::sync::Semaphore>,
     clock: Arc<dyn LeaseClock>,
     admission: OnceLock<Arc<NodeAdmission>>,
@@ -338,6 +345,7 @@ impl Database {
             store,
             cursors: Mutex::new(HashMap::new()),
             snapshot_leases: Mutex::new(HashMap::new()),
+            archive_destinations: Mutex::new(BTreeMap::new()),
             query_slots: Arc::new(tokio::sync::Semaphore::new(4)),
             clock: Arc::new(SystemLeaseClock),
             admission: admission.map(OnceLock::from).unwrap_or_default(),
@@ -667,6 +675,7 @@ impl Database {
                 | Operation::AppendStaged(_)
                 | Operation::FinalizeStaged(_)
                 | Operation::AbortStaged(_)
+                | Operation::PublishHistoryArchive(_)
         ) {
             return Err(Error::new(
                 ErrorCode::InvalidArgument,
@@ -747,6 +756,12 @@ impl Database {
         self.barrier().await?;
         self.engine.authorize(&context, None, Action::Admin)?;
         let generation = self.engine.generation()?;
+        if !generation.state.history_archives.is_empty() {
+            return Err(Error::new(
+                ErrorCode::Conflict,
+                "archived history requires a verified chunked full backup",
+            ));
+        }
         let revision = generation.state.revision;
         let bytes = serde_json::to_vec(&generation.state)
             .map_err(|_| Error::new(ErrorCode::Corruption, "backup snapshot encoding failed"))?;
@@ -864,7 +879,9 @@ impl Database {
         // Cover serialization/replication workspace plus the configured Tantivy
         // writer buffer when applicable. Persistent staged index nodes still feed
         // RSS; this is an admission estimate, not exact allocator accounting.
-        let staged_workspace = if let Operation::FinalizeStaged(reference) = &operation {
+        let staged_workspace = if matches!(operation, Operation::PublishHistoryArchive(_)) {
+            MAX_ARCHIVE_SOURCE_BYTES.saturating_mul(3)
+        } else if let Operation::FinalizeStaged(reference) = &operation {
             let stage = crate::state::staging::lookup(&generation.state, &context, reference)?;
             if stage.is_active() {
                 stage
@@ -1093,7 +1110,14 @@ impl Database {
             )
         })?;
         let work = SnapshotWork {
-            generation: generation.clone(),
+            generation: self
+                .hydrate_history(
+                    generation.clone(),
+                    &request.documents,
+                    &request.queries,
+                    &cancellation,
+                )
+                .await?,
             request,
             cancellation: cancellation.clone(),
             _permit: permit,
@@ -1162,15 +1186,17 @@ impl Database {
         self.engine
             .authorize(context, Some(collection), Action::Read)?;
         let generation = self.engine.generation()?;
-        let document = generation
-            .state
-            .collections
-            .get(collection)
-            .and_then(|c| c.documents.get(id))
+        let cancellation = QueryCancellation::default();
+        let _cancel_on_drop = CancelOnDrop(cancellation.clone());
+        let _registration = self.work.begin(cancellation.clone())?;
+        let mut history = history_reads::HistoryReadCache::new();
+        let document = self
+            .history_document(&generation, collection, id, &cancellation, &mut history)
+            .await?
             .ok_or_else(|| Error::new(ErrorCode::NotFound, "document not found"))?;
         // Both shared and owned variants prepare their result before auditing and
         // the final access release. Owned callers keep the original API contract.
-        let document = select(document);
+        let document = select(&document);
         let revision = generation.state.revision;
         let policy_epoch = generation.state.policy_epoch;
         let strict = generation.state.policy.strict_read_audit
@@ -1493,7 +1519,14 @@ impl Database {
                 )
             })?;
             let work = QueryWork {
-                generation: generation.clone(),
+                generation: self
+                    .hydrate_history(
+                        generation.clone(),
+                        &[],
+                        std::slice::from_ref(&request),
+                        &cancellation,
+                    )
+                    .await?,
                 request: request.clone(),
                 cancellation: cancellation.clone(),
                 _permit: permit,
@@ -1737,6 +1770,7 @@ mod tests {
         db.administer(
             context.clone(),
             Operation::CreateCollection(CollectionDefinition {
+                retention_class: kasumi_types::CollectionRetentionClass::Operational,
                 name: "docs".into(),
                 schema: json!({"type":"object"}),
                 indexes: vec![],

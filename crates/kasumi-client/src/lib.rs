@@ -45,6 +45,23 @@ pub struct KasumiClient {
 }
 
 impl KasumiClient {
+    pub async fn read_change_feed(
+        &mut self,
+        bearer: &str,
+        request: &kasumi_types::ReadChangeFeed,
+    ) -> Result<kasumi_types::ChangeFeedPage, ClientError> {
+        let response = self
+            .inner
+            .read_change_feed(authorized(
+                bearer,
+                proto::ReadChangeFeedRequest {
+                    request_json: encode(request)?,
+                },
+            )?)
+            .await?
+            .into_inner();
+        Ok(serde_json::from_slice(&response.response_json)?)
+    }
     pub async fn connect(config: &KasumiClientConfig) -> Result<Self, ClientError> {
         let channel = kasumi_transport::grpc_channel(
             &config.endpoint,
@@ -308,6 +325,48 @@ impl KasumiClient {
                 bearer,
                 proto::MutateRequest {
                     batch_json: encode(batch)?,
+                },
+            )?)
+            .await?
+            .into_inner();
+        Ok(WriteReceipt {
+            revision: response.revision,
+            versions: response.versions.into_iter().collect(),
+        })
+    }
+}
+
+/// Connect this client to the separate administrative listener.
+#[derive(Clone)]
+pub struct KasumiAdminClient {
+    inner: proto::kasumi_admin_client::KasumiAdminClient<Channel>,
+}
+impl KasumiAdminClient {
+    pub async fn connect(config: &KasumiClientConfig) -> Result<Self, ClientError> {
+        let channel = kasumi_transport::grpc_channel(
+            &config.endpoint,
+            &config.identity,
+            &config.trusted_ca_pem,
+            config.server_certificate_pins.clone(),
+        )
+        .await?;
+        Ok(Self {
+            inner: proto::kasumi_admin_client::KasumiAdminClient::new(channel)
+                .max_encoding_message_size((8 << 20) + (64 << 10))
+                .max_decoding_message_size(16 << 20),
+        })
+    }
+    pub async fn archive_history(
+        &mut self,
+        bearer: &str,
+        request: &kasumi_types::ArchiveHistory,
+    ) -> Result<WriteReceipt, ClientError> {
+        let response = self
+            .inner
+            .archive_history(authorized(
+                bearer,
+                proto::ArchiveHistoryRequest {
+                    request_json: encode(request)?,
                 },
             )?)
             .await?

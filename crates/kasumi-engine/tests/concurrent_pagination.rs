@@ -72,6 +72,7 @@ async fn snapshot_pages_overlap_atomic_writers_and_current_policy_revocation() {
         .administer(
             identity("owner"),
             Operation::CreateCollection(CollectionDefinition {
+                retention_class: kasumi_types::CollectionRetentionClass::Operational,
                 write_mode: kasumi_types::CollectionWriteMode::Mutable,
                 name: "docs".into(),
                 schema: json!({"type":"object"}),

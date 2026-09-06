@@ -231,7 +231,9 @@ fn manifest_bytes(manifest: &Manifest) -> Result<Vec<u8>> {
 pub trait BackupDestination: Send + Sync {
     /// Publishing is create-only: an existing backup must never be overwritten.
     async fn put(&self, id: Uuid, encrypted: Vec<u8>) -> Result<()>;
-    async fn get(&self, id: Uuid) -> Result<Vec<u8>>;
+    /// Enforce the caller's expected object bound before allocation and while
+    /// reading, in addition to the destination's configured maximum.
+    async fn get(&self, id: Uuid, max_bytes: usize) -> Result<Vec<u8>>;
 }
 
 pub struct FilesystemBackupDestination {
@@ -274,9 +276,9 @@ impl BackupDestination for FilesystemBackupDestination {
         })
         .await?
     }
-    async fn get(&self, id: Uuid) -> Result<Vec<u8>> {
+    async fn get(&self, id: Uuid, max_bytes: usize) -> Result<Vec<u8>> {
         let path = self.path(id);
-        let limit = self.max_bytes;
+        let limit = self.max_bytes.min(max_bytes);
         tokio::task::spawn_blocking(move || -> Result<Vec<u8>> {
             let file = std::fs::File::open(path)?;
             ensure!(
@@ -512,7 +514,8 @@ impl BackupDestination for S3BackupDestination {
         );
         Ok(())
     }
-    async fn get(&self, id: Uuid) -> Result<Vec<u8>> {
+    async fn get(&self, id: Uuid, max_bytes: usize) -> Result<Vec<u8>> {
+        let limit = self.max_bytes.min(max_bytes);
         let url = self.object_url(id)?;
         let headers = self.signed_headers("GET", &url, &[], time::OffsetDateTime::now_utc())?;
         let mut response = self
@@ -528,15 +531,13 @@ impl BackupDestination for S3BackupDestination {
             response.status().as_u16()
         );
         ensure!(
-            response
-                .content_length()
-                .is_none_or(|n| n <= self.max_bytes as u64),
+            response.content_length().is_none_or(|n| n <= limit as u64),
             "backup exceeds destination byte limit"
         );
         let mut bytes = Vec::new();
         while let Some(chunk) = response.chunk().await.context("reading S3 backup")? {
             ensure!(
-                chunk.len() <= self.max_bytes.saturating_sub(bytes.len()),
+                chunk.len() <= limit.saturating_sub(bytes.len()),
                 "backup exceeds destination byte limit"
             );
             bytes.extend(chunk);
@@ -580,7 +581,7 @@ mod tests {
             FilesystemBackupDestination::new(dir.path().join("backups"), 1 << 20).unwrap();
         destination.put(backup.id(), bytes.clone()).await.unwrap();
         assert!(destination.put(backup.id(), bytes.clone()).await.is_err());
-        let read = destination.get(backup.id()).await.unwrap();
+        let read = destination.get(backup.id(), 16 << 20).await.unwrap();
         assert_eq!(bytes, read);
         let parsed = EncryptedBackup::from_bytes(&read, 1 << 20).unwrap();
         let plain = parsed.decrypt("tenant", provider.clone()).await.unwrap();
@@ -659,7 +660,7 @@ mod tests {
         let id = Uuid::new_v4();
         assert!(destination.put(id, vec![0; 6]).await.is_err());
         std::fs::write(destination.path(id), [0; 6]).unwrap();
-        assert!(destination.get(id).await.is_err());
+        assert!(destination.get(id, 16 << 20).await.is_err());
         for bytes in [b"".as_slice(), b"KASUMIB1", b"KASUMIB1\xff\xff\xff\xff"] {
             assert!(EncryptedBackup::from_bytes(bytes, 1024).is_err());
         }
@@ -799,17 +800,22 @@ mod s3_tests {
             .await
             .unwrap();
         assert_eq!(
-            destination.get(id).await.unwrap(),
+            destination.get(id, 16 << 20).await.unwrap(),
             b"encrypted snapshot bytes"
         );
         assert!(destination.put(id, b"replacement".to_vec()).await.is_err());
-        assert!(destination.get(Uuid::new_v4()).await.is_err());
+        assert!(
+            destination
+                .get(Uuid::new_v4(), MAX_BACKUP_BUNDLE_BYTES)
+                .await
+                .is_err()
+        );
         let mut small = make();
         small.max_bytes = 5;
         assert!(
             S3BackupDestination::new(small)
                 .unwrap()
-                .get(id)
+                .get(id, 16 << 20)
                 .await
                 .is_err()
         );
@@ -818,7 +824,7 @@ mod s3_tests {
         assert!(
             S3BackupDestination::new(wrong)
                 .unwrap()
-                .get(id)
+                .get(id, 16 << 20)
                 .await
                 .is_err()
         );
@@ -827,7 +833,7 @@ mod s3_tests {
         assert!(
             S3BackupDestination::new(untrusted)
                 .unwrap()
-                .get(id)
+                .get(id, 16 << 20)
                 .await
                 .is_err()
         );

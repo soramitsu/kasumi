@@ -223,6 +223,7 @@ pub(crate) fn status(error: Error) -> tonic::Status {
 #[cfg(test)]
 mod tests {
     include!("api_staging_tests.rs");
+    include!("api_history_tests.rs");
     use super::*;
     use crate::{
         auth::{AuthConfig, Authenticator},
@@ -338,6 +339,7 @@ mod tests {
                     request_id: "bootstrap".into(),
                 },
                 Operation::CreateCollection(CollectionDefinition {
+                    retention_class: kasumi_types::CollectionRetentionClass::Operational,
                     write_mode: kasumi_types::CollectionWriteMode::Mutable,
                     name: "docs".into(),
                     schema: json!({"type":"object"}),
@@ -673,6 +675,7 @@ mod tests {
         let admin = NativeAdmin::new(fixture.registry.clone(), fixture.auth.clone());
         admin.replace_collection(native(proto::CollectionDefinitionRequest {
             definition_json: serde_json::to_vec(&CollectionDefinition {
+                retention_class: kasumi_types::CollectionRetentionClass::Operational,
                 write_mode: kasumi_types::CollectionWriteMode::Mutable,
 name: "docs".into(),
                 schema: json!({"type":"object", "patternProperties":{".*":{"type":"integer"}}}),

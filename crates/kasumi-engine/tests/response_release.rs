@@ -52,6 +52,7 @@ async fn encoded_response_is_fenced_by_policy_changes_and_actual_key_denial() {
         .administer(
             context.clone(),
             Operation::CreateCollection(CollectionDefinition {
+                retention_class: kasumi_types::CollectionRetentionClass::Operational,
                 write_mode: kasumi_types::CollectionWriteMode::Mutable,
                 name: "docs".into(),
                 schema: json!({"type":"object"}),

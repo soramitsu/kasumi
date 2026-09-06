@@ -180,6 +180,7 @@ fn body(ordinal: usize) -> Value {
 }
 fn definition() -> CollectionDefinition {
     CollectionDefinition {
+        retention_class: kasumi_types::CollectionRetentionClass::Operational,
         write_mode: kasumi_types::CollectionWriteMode::Mutable,
         name: "docs".into(),
         schema: json!({"type":"object","required":["ordinal","version","text","padding"],"properties":{"ordinal":{"type":"integer"},"version":{"type":"integer"},"text":{"type":"string"},"padding":{"type":"string"}},"additionalProperties":false}),

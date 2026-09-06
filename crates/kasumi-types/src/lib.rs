@@ -1,6 +1,8 @@
 //! Transport-independent, exact JSON contracts shared by every Kasumi interface.
 mod atomic;
 pub use atomic::*;
+mod history;
+pub use history::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -156,6 +158,7 @@ pub fn default_snapshot_bytes() -> usize {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Limits {
+    pub history: HistoryLimits,
     pub atomic: AtomicLimits,
     pub max_document_bytes: usize,
     pub max_batch_operations: usize,
@@ -182,6 +185,7 @@ impl Default for Limits {
     fn default() -> Self {
         Self {
             atomic: AtomicLimits::default(),
+            history: HistoryLimits::default(),
             max_document_bytes: 1 << 20,
             max_batch_operations: 256,
             max_batch_bytes: 8 << 20,
@@ -216,6 +220,7 @@ pub struct Document {
 pub struct CollectionDefinition {
     pub name: String,
     pub write_mode: CollectionWriteMode,
+    pub retention_class: CollectionRetentionClass,
     pub schema: Value,
     #[serde(default)]
     pub indexes: Vec<IndexDefinition>,
@@ -241,6 +246,9 @@ pub struct CollectionState {
     #[serde(serialize_with = "serialize_resident_map")]
     // Leaf copy-on-write clones Arc handles, never unrelated JSON bodies.
     pub documents: imbl::HashMap<String, std::sync::Arc<Document>>,
+    #[serde(serialize_with = "serialize_resident_map")]
+    pub archived_documents: imbl::HashMap<String, ArchivedDocument>,
+    pub archived_document_bytes: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -374,6 +382,7 @@ pub struct Command {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", content = "data", rename_all = "snake_case")]
 pub enum Operation {
+    PublishHistoryArchive(PublishHistoryArchive),
     Mutate(MutationBatch),
     BeginStaged(BeginStagedTransaction),
     AppendStaged(AppendStagedChunk),
@@ -436,6 +445,10 @@ pub struct TenantState {
     #[serde(serialize_with = "serialize_resident_map")]
     pub staged_transactions: imbl::HashMap<String, StagedTransaction>,
     pub active_staged_transactions: BTreeSet<String>,
+    pub change_feed: ChangeFeedState,
+    #[serde(serialize_with = "serialize_resident_map")]
+    pub history_archives: imbl::HashMap<String, RetainedHistoryArchive>,
+    pub history_archive_bytes: usize,
     pub audits: imbl::Vector<AuditEvent>,
 }
 

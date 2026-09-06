@@ -5,6 +5,8 @@ use kasumi_types::*;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
+#[path = "history_state.rs"]
+pub(crate) mod history;
 #[path = "staging.rs"]
 pub(crate) mod staging;
 
@@ -15,8 +17,24 @@ pub struct Generation {
     // buckets instead of traversing every retained receipt on every write.
     receipt_expiry: ReceiptExpiry,
     snapshot_accounting: SnapshotAccounting,
+    _read_reservations: Vec<crate::admission::Reservation>,
 }
 impl Generation {
+    pub(crate) fn read_view(
+        &self,
+        collections: BTreeMap<String, CollectionState>,
+        reservations: Vec<crate::admission::Reservation>,
+    ) -> Self {
+        let mut state = self.state.clone();
+        state.collections = collections;
+        Self {
+            state,
+            indexes: self.indexes.clone(),
+            receipt_expiry: self.receipt_expiry.clone(),
+            snapshot_accounting: self.snapshot_accounting.clone(),
+            _read_reservations: reservations,
+        }
+    }
     pub(crate) fn snapshot_bytes(&self) -> Result<usize> {
         self.snapshot_accounting.bytes(&self.state)
     }
@@ -83,6 +101,9 @@ impl TenantEngine {
             receipts: imbl::HashMap::new(),
             staged_transactions: imbl::HashMap::new(),
             active_staged_transactions: BTreeSet::new(),
+            change_feed: ChangeFeedState::empty(),
+            history_archives: imbl::HashMap::new(),
+            history_archive_bytes: 0,
             audits: imbl::Vector::new(),
         };
         let indexes = Arc::new(QueryIndexes::build(&state.collections)?);
@@ -99,6 +120,7 @@ impl TenantEngine {
                 indexes,
                 receipt_expiry: ReceiptExpiry::new(),
                 snapshot_accounting,
+                _read_reservations: vec![],
             }),
             apply_lock: Mutex::new(()),
             tenant,
@@ -282,6 +304,7 @@ impl TenantEngine {
                 indexes: previous.indexes.clone(),
                 receipt_expiry: previous.receipt_expiry.clone(),
                 snapshot_accounting: previous.snapshot_accounting.clone(),
+                _read_reservations: vec![],
             })));
             return Ok(Err(Error::new(
                 ErrorCode::AuditUnavailable,
@@ -290,6 +313,7 @@ impl TenantEngine {
         }
         // Audit events are part of the replicated result, never emitted as document-bearing logs.
         let action = match &command.operation {
+            Operation::PublishHistoryArchive(_) => "archive",
             Operation::Mutate(_) => "mutation",
             Operation::BeginStaged(_)
             | Operation::AppendStaged(_)
@@ -327,6 +351,20 @@ impl TenantEngine {
         } else {
             BTreeMap::new()
         };
+        if changed_documents
+            && !matches!(command.operation, Operation::PublishHistoryArchive(_))
+            && let Err(error) =
+                crate::change_feed_state::append(&previous.state, &mut next, &changed)
+        {
+            return self.reject_resource_budget(
+                &previous,
+                next,
+                &command,
+                receipt_expiry,
+                &changed_receipts,
+                Some(error),
+            );
+        }
         let snapshot_accounting = previous.snapshot_accounting.updated(
             &previous.state,
             &next,
@@ -335,16 +373,18 @@ impl TenantEngine {
             &staged_changes(&previous.state, &command)?,
         )?;
         if !snapshot_accounting.fits(&next)? {
-            return self.reject_snapshot_budget(
+            return self.reject_resource_budget(
                 &previous,
                 next,
-                revision,
                 &command,
                 receipt_expiry,
                 &changed_receipts,
+                None,
             );
         }
-        let indexes = if changed_documents {
+        let indexes = if changed_documents
+            && !matches!(command.operation, Operation::PublishHistoryArchive(_))
+        {
             Arc::new(previous.indexes.update(
                 &previous.state.collections,
                 &next.collections,
@@ -358,19 +398,21 @@ impl TenantEngine {
             indexes,
             receipt_expiry,
             snapshot_accounting,
+            _read_reservations: vec![],
         })));
         Ok(outcome)
     }
 
-    fn reject_snapshot_budget(
+    fn reject_resource_budget(
         &self,
         previous: &Generation,
         next: TenantState,
-        revision: u64,
         command: &Command,
         receipt_expiry: ReceiptExpiry,
         changed_receipts: &BTreeSet<String>,
+        failure: Option<Error>,
     ) -> Result<Result<WriteReceipt>> {
+        let revision = next.revision;
         let receipt_key = if let Operation::Mutate(batch) = &command.operation {
             Some(hex::encode(Sha256::digest(
                 serde_json::to_vec(&(&command.context.principal, &batch.idempotency_key)).map_err(
@@ -388,14 +430,16 @@ impl TenantEngine {
                     .get(key)
                     .is_some_and(|receipt| receipt.expires_at_ms > command.timestamp_ms)
         });
-        let error = Error::new(
-            if replay {
-                ErrorCode::AuditUnavailable
-            } else {
-                ErrorCode::QuotaExceeded
-            },
-            "serialized tenant snapshot byte budget exhausted",
-        );
+        let error = failure.unwrap_or_else(|| {
+            Error::new(
+                if replay {
+                    ErrorCode::AuditUnavailable
+                } else {
+                    ErrorCode::QuotaExceeded
+                },
+                "serialized tenant snapshot byte budget exhausted",
+            )
+        });
         let mut rejected = previous.state.clone();
         rejected.revision = revision;
         let ordinary = !matches!(
@@ -454,6 +498,7 @@ impl TenantEngine {
                     indexes: previous.indexes.clone(),
                     receipt_expiry,
                     snapshot_accounting: accounting,
+                    _read_reservations: vec![],
                 })));
                 return Ok(Err(error));
             }
@@ -467,6 +512,7 @@ impl TenantEngine {
             indexes: previous.indexes.clone(),
             receipt_expiry: previous.receipt_expiry.clone(),
             snapshot_accounting: previous.snapshot_accounting.clone(),
+            _read_reservations: vec![],
         })));
         Ok(Err(Error::new(
             ErrorCode::AuditUnavailable,
@@ -553,6 +599,11 @@ impl TenantEngine {
         let mut count = 0u64;
         let mut logical_bytes = 0u64;
         for (name, collection) in &state.collections {
+            count = count
+                .checked_add(collection.archived_documents.len() as u64)
+                .ok_or_else(|| {
+                    Error::new(ErrorCode::Corruption, "archived document count overflow")
+                })?;
             if collection.data_epoch > state.revision {
                 return Err(Error::new(
                     ErrorCode::Corruption,
@@ -606,6 +657,8 @@ impl TenantEngine {
         }
         let snapshot_accounting = SnapshotAccounting::rebuild(&state)?;
         staging::validate_restored(&state)?;
+        history::validate_restored(&state)?;
+        crate::change_feed_state::validate_restored(&state)?;
         if !snapshot_accounting.fits(&state)? {
             return Err(Error::new(
                 ErrorCode::Corruption,
@@ -625,6 +678,7 @@ impl TenantEngine {
             indexes,
             receipt_expiry,
             snapshot_accounting,
+            _read_reservations: vec![],
         })
     }
 }
@@ -701,6 +755,9 @@ fn apply_operation(
         ));
     }
     match &command.operation {
+        Operation::PublishHistoryArchive(request) => {
+            history::publish(state, command, request, revision)
+        }
         Operation::BeginStaged(_)
         | Operation::AppendStaged(_)
         | Operation::FinalizeStaged(_)
@@ -823,6 +880,28 @@ fn apply_operation(
             )?;
             validate_name(&definition.name)?;
             let current = state.collections.get(&definition.name);
+            if definition.retention_class == CollectionRetentionClass::ArchivableHistory
+                && definition.write_mode != CollectionWriteMode::AppendOnly
+            {
+                return Err(Error::new(
+                    ErrorCode::InvalidArgument,
+                    "archivable history must be append-only",
+                ));
+            }
+            if current.is_some_and(|collection| {
+                collection.definition.retention_class != definition.retention_class
+            }) {
+                return Err(Error::new(
+                    ErrorCode::Forbidden,
+                    "collection retention class is immutable",
+                ));
+            }
+            if current.is_some_and(|collection| !collection.archived_documents.is_empty()) {
+                return Err(Error::new(
+                    ErrorCode::Conflict,
+                    "archived collection schema/index definitions are sealed",
+                ));
+            }
             if matches!(command.operation, Operation::CreateCollection(_)) && current.is_some() {
                 return Err(Error::new(ErrorCode::AlreadyExists, "collection exists"));
             }
@@ -841,6 +920,8 @@ fn apply_operation(
             }
             validate_collection(definition, &documents)?;
             let collection = CollectionState {
+                archived_documents: Default::default(),
+                archived_document_bytes: 0,
                 data_epoch: current.map_or(0, |collection| collection.data_epoch),
                 definition: definition.clone(),
                 documents,
@@ -885,6 +966,7 @@ fn apply_operation(
             if state.document_count > limits.max_documents
                 || state.logical_bytes > limits.max_logical_bytes
                 || state.receipts.len() > limits.max_receipts
+                || state.history_archives.len() > limits.history.max_archive_segments
                 || state.audits.len().saturating_add(1) > limits.max_audit_records
             {
                 return Err(Error::new(
@@ -893,6 +975,7 @@ fn apply_operation(
                 ));
             }
             state.limits = limits.clone();
+            crate::change_feed_state::trim(&mut state.change_feed, &limits.history)?;
             Ok((Ok(receipt()), false))
         }
         Operation::Suspend(suspended) => {
@@ -918,7 +1001,7 @@ fn apply_operation(
         }
         Operation::Audit(event) => {
             let action = match event.action.as_str() {
-                "read" | "discovery" => Action::Read,
+                "read" | "discovery" | "change_feed" | "archive_receipt" => Action::Read,
                 "receipt" => Action::Write,
                 _ => {
                     return Err(Error::new(
@@ -951,7 +1034,7 @@ fn apply_operation(
                 || event.request_id != command.context.request_id
                 || !matches!(
                     event.action.as_str(),
-                    "backup" | "restore" | "key_rotation" | "key_rewrap" | "membership"
+                    "backup" | "restore" | "archive" | "key_rotation" | "key_rewrap" | "membership"
                 )
                 || !matches!(
                     event.outcome.as_str(),
@@ -1032,6 +1115,12 @@ fn apply_mutations(
             .collections
             .get_mut(name)
             .ok_or_else(|| Error::new(ErrorCode::NotFound, "collection not found"))?;
+        if collection.archived_documents.contains_key(id) {
+            return Err(Error::new(
+                ErrorCode::Conflict,
+                "archived immutable identity cannot be overwritten or deleted",
+            ));
+        }
         let old = collection.documents.get(id);
         if collection.definition.write_mode == CollectionWriteMode::AppendOnly
             && !matches!(mutation, Mutation::Put { expected: Precondition::Absent, .. } if old.is_none())
@@ -1159,12 +1248,19 @@ fn validate_read_assertions(
                     let collection_state = state.collections.get(collection).ok_or_else(|| {
                         Error::new(ErrorCode::NotFound, "read collection not found")
                     })?;
-                    let document = collection_state.documents.get(id);
+                    let version = collection_state
+                        .documents
+                        .get(id)
+                        .map(|document| document.version)
+                        .or_else(|| {
+                            collection_state
+                                .archived_documents
+                                .get(id)
+                                .map(|document| document.version)
+                        });
                     let matches = match expected {
-                        ReadPrecondition::Absent => document.is_none(),
-                        ReadPrecondition::Version(version) => {
-                            document.is_some_and(|d| d.version == *version)
-                        }
+                        ReadPrecondition::Absent => version.is_none(),
+                        ReadPrecondition::Version(expected) => version == Some(*expected),
                     };
                     if !matches {
                         return Err(Error::new(
@@ -1216,6 +1312,7 @@ fn operation_changes(
 ) -> Result<BTreeMap<String, BTreeSet<String>>> {
     match &command.operation {
         Operation::Mutate(batch) => Ok(batch_changes(batch)),
+        Operation::PublishHistoryArchive(request) => Ok(history::changes(state, request)),
         Operation::FinalizeStaged(reference) => {
             let key = staged_digest(&(&command.context.principal, &reference.transaction_id))?.0;
             let stage = state.staged_transactions.get(&key).ok_or_else(|| {
@@ -1247,6 +1344,18 @@ fn document_path(collection: &str, id: &str) -> String {
 }
 
 fn validate_limits(limits: &Limits) -> Result<()> {
+    if limits.history.max_feed_events == 0
+        || limits.history.max_feed_events > 1_000_000
+        || limits.history.max_feed_bytes == 0
+        || limits.history.max_feed_bytes > (512 << 20)
+        || limits.history.max_archive_segments == 0
+        || limits.history.max_archive_segments > 65_536
+    {
+        return Err(Error::new(
+            ErrorCode::InvalidArgument,
+            "invalid history resource limits",
+        ));
+    }
     let atomic = &limits.atomic;
     if atomic.max_operations == 0
         || atomic.max_operations > 100_000
@@ -1399,6 +1508,7 @@ mod restore_budget_tests {
                     context: context.clone(),
                     timestamp_ms: 1,
                     operation: Operation::CreateCollection(CollectionDefinition {
+                        retention_class: kasumi_types::CollectionRetentionClass::Operational,
                         write_mode: kasumi_types::CollectionWriteMode::Mutable,
                         name: "docs".into(),
                         schema: serde_json::json!({"type":"object"}),

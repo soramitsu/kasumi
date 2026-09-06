@@ -68,6 +68,7 @@ async fn pressure_rejects_new_proposals_and_queries_but_committed_raft_work_stil
         ErrorCode::Conflict
     );
     let operation = Operation::CreateCollection(CollectionDefinition {
+        retention_class: kasumi_types::CollectionRetentionClass::Operational,
         write_mode: kasumi_types::CollectionWriteMode::Mutable,
         name: "docs".into(),
         schema: json!({"type":"object"}),
@@ -171,6 +172,7 @@ async fn explicit_local_bootstrap_reads_the_complete_committed_generation() {
         .administer(
             context.clone(),
             Operation::CreateCollection(CollectionDefinition {
+                retention_class: kasumi_types::CollectionRetentionClass::Operational,
                 write_mode: kasumi_types::CollectionWriteMode::Mutable,
                 name: "docs".into(),
                 schema: json!({"type":"object"}),

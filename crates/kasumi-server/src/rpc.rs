@@ -72,6 +72,31 @@ impl NativeData {
 
 #[tonic::async_trait]
 impl kasumi_data_server::KasumiData for NativeData {
+    async fn read_change_feed(
+        &self,
+        request: Request<ReadChangeFeedRequest>,
+    ) -> Result<Response<ReadChangeFeedResponse>, Status> {
+        let context = verified(&self.auth, &request).await?;
+        let request = decode_json(&request.into_inner().request_json).map_err(status)?;
+        let database = routed(&self.registry, &self.auth, &context).await?;
+        let fence = self
+            .auth
+            .audit_result(&context, database.response_fence(&context))
+            .await
+            .map_err(status)?;
+        let result = database
+            .read_change_feed(&context, request)
+            .await
+            .map_err(|error| self.registry.status(&context, error))?;
+        let response = ReadChangeFeedResponse {
+            response_json: encode_json(&result).map_err(status)?,
+        };
+        Ok(Response::new(
+            release_response(&self.auth, &context, fence, response, false)
+                .await
+                .map_err(status)?,
+        ))
+    }
     async fn get(&self, request: Request<GetRequest>) -> Result<Response<Document>, Status> {
         let context = verified(&self.auth, &request).await?;
         let request = request.into_inner();
@@ -518,6 +543,28 @@ impl NativeAdmin {
 
 #[tonic::async_trait]
 impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
+    async fn archive_history(
+        &self,
+        request: Request<ArchiveHistoryRequest>,
+    ) -> Result<Response<WriteReceipt>, Status> {
+        let context = verified(&self.auth, &request).await?;
+        let request = decode_json(&request.into_inner().request_json).map_err(status)?;
+        let database = routed(&self.registry, &self.auth, &context).await?;
+        let fence = self
+            .auth
+            .audit_result(&context, database.response_fence(&context))
+            .await
+            .map_err(status)?;
+        let result = database
+            .archive_history(context.clone(), request)
+            .await
+            .map_err(|error| self.registry.status(&context, error))?;
+        Ok(Response::new(
+            release_response(&self.auth, &context, fence, receipt(result), true)
+                .await
+                .map_err(status)?,
+        ))
+    }
     async fn manage(
         &self,
         request: Request<ManagementRequest>,

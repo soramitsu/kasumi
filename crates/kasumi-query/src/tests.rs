@@ -3,6 +3,7 @@ use serde_json::json;
 
 fn definition(fields: &[(&str, ScalarType)]) -> CollectionDefinition {
     CollectionDefinition {
+        retention_class: kasumi_types::CollectionRetentionClass::Operational,
         write_mode: kasumi_types::CollectionWriteMode::Mutable,
         name: "docs".into(),
         schema: json!({"type":"object"}),
@@ -45,6 +46,8 @@ fn collection(
     BTreeMap::from([(
         "docs".into(),
         CollectionState {
+            archived_documents: Default::default(),
+            archived_document_bytes: 0,
             data_epoch: 0,
             definition,
             documents,
@@ -1179,20 +1182,26 @@ fn shared_document_representation_preserves_snapshot_bytes_and_historical_values
         definition(&[]),
         vec![body.clone(), json!({"other":"untouched"})],
     );
-    // This matches the previous owned-document snapshot representation. Sorting
-    // borrowed entries and Arc serde dereferencing must preserve exact bytes.
+    // A plain ordered representation of the current v1 fields checks canonical
+    // map ordering and Arc dereferencing independently of persistent maps.
     #[derive(serde::Serialize)]
     struct OwnedRepresentation<'a> {
         definition: &'a CollectionDefinition,
+        data_epoch: u64,
         documents: BTreeMap<&'a String, &'a Document>,
+        archived_documents: BTreeMap<&'a String, &'a ArchivedDocument>,
+        archived_document_bytes: usize,
     }
     let expected = OwnedRepresentation {
         definition: &old["docs"].definition,
+        data_epoch: old["docs"].data_epoch,
         documents: old["docs"]
             .documents
             .iter()
             .map(|(id, doc)| (id, doc.as_ref()))
             .collect(),
+        archived_documents: old["docs"].archived_documents.iter().collect(),
+        archived_document_bytes: old["docs"].archived_document_bytes,
     };
     let encoded = serde_json::to_vec(&old["docs"]).unwrap();
     assert_eq!(encoded, serde_json::to_vec(&expected).unwrap());
