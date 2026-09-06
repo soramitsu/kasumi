@@ -60,6 +60,177 @@ impl KasumiClient {
         })
     }
 
+    pub async fn begin_staged_transaction(
+        &mut self,
+        bearer: &str,
+        request: &kasumi_types::BeginStagedTransaction,
+    ) -> Result<WriteReceipt, ClientError> {
+        let response = self
+            .inner
+            .begin_staged_transaction(authorized(
+                bearer,
+                proto::BeginStagedTransactionRequest {
+                    request_json: encode(request)?,
+                },
+            )?)
+            .await?
+            .into_inner();
+        Ok(WriteReceipt {
+            revision: response.revision,
+            versions: response.versions.into_iter().collect(),
+        })
+    }
+
+    pub async fn append_staged_chunk(
+        &mut self,
+        bearer: &str,
+        request: &kasumi_types::AppendStagedChunk,
+    ) -> Result<WriteReceipt, ClientError> {
+        let response = self
+            .inner
+            .append_staged_chunk(authorized(
+                bearer,
+                proto::AppendStagedChunkRequest {
+                    request_json: encode(request)?,
+                },
+            )?)
+            .await?
+            .into_inner();
+        Ok(WriteReceipt {
+            revision: response.revision,
+            versions: response.versions.into_iter().collect(),
+        })
+    }
+
+    pub async fn finalize_staged_transaction(
+        &mut self,
+        bearer: &str,
+        request: &kasumi_types::StagedTransactionRef,
+    ) -> Result<WriteReceipt, ClientError> {
+        let response = self
+            .inner
+            .finalize_staged_transaction(authorized(
+                bearer,
+                proto::StagedTransactionReference {
+                    request_json: encode(request)?,
+                },
+            )?)
+            .await?
+            .into_inner();
+        Ok(WriteReceipt {
+            revision: response.revision,
+            versions: response.versions.into_iter().collect(),
+        })
+    }
+
+    pub async fn abort_staged_transaction(
+        &mut self,
+        bearer: &str,
+        request: &kasumi_types::StagedTransactionRef,
+    ) -> Result<WriteReceipt, ClientError> {
+        let response = self
+            .inner
+            .abort_staged_transaction(authorized(
+                bearer,
+                proto::StagedTransactionReference {
+                    request_json: encode(request)?,
+                },
+            )?)
+            .await?
+            .into_inner();
+        Ok(WriteReceipt {
+            revision: response.revision,
+            versions: response.versions.into_iter().collect(),
+        })
+    }
+
+    pub async fn staged_transaction_status(
+        &mut self,
+        bearer: &str,
+        request: &kasumi_types::StagedTransactionRef,
+    ) -> Result<kasumi_types::StagedTransactionStatus, ClientError> {
+        let response = self
+            .inner
+            .staged_transaction_status(authorized(
+                bearer,
+                proto::StagedTransactionReference {
+                    request_json: encode(request)?,
+                },
+            )?)
+            .await?
+            .into_inner();
+        Ok(serde_json::from_slice(&response.response_json)?)
+    }
+
+    pub async fn open_snapshot_lease(
+        &mut self,
+        bearer: &str,
+        request: &kasumi_types::OpenSnapshotLease,
+    ) -> Result<kasumi_types::SnapshotLease, ClientError> {
+        let response = self
+            .inner
+            .open_snapshot_lease(authorized(
+                bearer,
+                proto::OpenSnapshotLeaseRequest {
+                    request_json: encode(request)?,
+                },
+            )?)
+            .await?
+            .into_inner();
+        Ok(serde_json::from_slice(&response.response_json)?)
+    }
+
+    pub async fn read_snapshot_page(
+        &mut self,
+        bearer: &str,
+        request: &kasumi_types::ReadSnapshotPage,
+    ) -> Result<kasumi_types::SnapshotReadResponse, ClientError> {
+        let response = self
+            .inner
+            .read_snapshot_page(authorized(
+                bearer,
+                proto::ReadSnapshotPageRequest {
+                    request_json: encode(request)?,
+                },
+            )?)
+            .await?
+            .into_inner();
+        Ok(serde_json::from_slice(&response.response_json)?)
+    }
+
+    pub async fn scan_snapshot_page(
+        &mut self,
+        bearer: &str,
+        request: &kasumi_types::ScanSnapshotPage,
+    ) -> Result<kasumi_types::SnapshotScanPage, ClientError> {
+        let response = self
+            .inner
+            .scan_snapshot_page(authorized(
+                bearer,
+                proto::ScanSnapshotPageRequest {
+                    request_json: encode(request)?,
+                },
+            )?)
+            .await?
+            .into_inner();
+        Ok(serde_json::from_slice(&response.response_json)?)
+    }
+
+    pub async fn close_snapshot_lease(
+        &mut self,
+        bearer: &str,
+        lease_id: &str,
+    ) -> Result<(), ClientError> {
+        self.inner
+            .close_snapshot_lease(authorized(
+                bearer,
+                proto::SnapshotLeaseReference {
+                    lease_id: lease_id.into(),
+                },
+            )?)
+            .await?;
+        Ok(())
+    }
     pub async fn read_snapshot(
         &mut self,
         bearer: &str,

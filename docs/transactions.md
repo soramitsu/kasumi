@@ -69,8 +69,8 @@ bounded by `Limits.max_page_size`), and the combined response must fit
 `Limits.max_result_bytes`. Incomplete results fail with `RESOURCE_EXHAUSTED`;
 the API never silently truncates a dependency set. Existing candidate, query
 work, memory admission and cancellation limits still apply. Large coherent
-report paging and batches above the existing 256-write/8-MiB limits are not
-provided by this primitive.
+report paging and batches above the existing 256-write/8-MiB limits use the
+separate [staged transaction and read lease APIs](large-transactions-plan.md).
 
 The service authorizes every collection and audits strict reads before release,
 then rechecks current authority and key availability. The returned revision

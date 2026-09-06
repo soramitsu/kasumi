@@ -9,6 +9,15 @@ service KasumiData {
   rpc Get(GetRequest) returns (Document);
   rpc Query(QueryRequest) returns (QueryResponse);
   rpc ReadSnapshot(ReadSnapshotRequest) returns (ReadSnapshotResponse);
+  rpc BeginStagedTransaction(BeginStagedTransactionRequest) returns (WriteReceipt);
+  rpc AppendStagedChunk(AppendStagedChunkRequest) returns (WriteReceipt);
+  rpc FinalizeStagedTransaction(StagedTransactionReference) returns (WriteReceipt);
+  rpc AbortStagedTransaction(StagedTransactionReference) returns (WriteReceipt);
+  rpc StagedTransactionStatus(StagedTransactionReference) returns (StagedTransactionStatusResponse);
+  rpc OpenSnapshotLease(OpenSnapshotLeaseRequest) returns (SnapshotLeaseResponse);
+  rpc ReadSnapshotPage(ReadSnapshotPageRequest) returns (ReadSnapshotResponse);
+  rpc ScanSnapshotPage(ScanSnapshotPageRequest) returns (SnapshotScanPageResponse);
+  rpc CloseSnapshotLease(SnapshotLeaseReference) returns (CloseSnapshotLeaseResponse);
   rpc Mutate(MutateRequest) returns (WriteReceipt);
   rpc Collections(CollectionsRequest) returns (CollectionsResponse);
   rpc Receipt(ReceiptRequest) returns (ReceiptResponse);
@@ -32,6 +41,17 @@ message Document { string id = 1; uint64 version = 2; bytes body_json = 3; }
 message QueryRequest { bytes query_json = 1; }
 message ReadSnapshotRequest { bytes request_json = 1; }
 message ReadSnapshotResponse { bytes response_json = 1; }
+message BeginStagedTransactionRequest { bytes request_json = 1; }
+message AppendStagedChunkRequest { bytes request_json = 1; }
+message StagedTransactionReference { bytes request_json = 1; }
+message StagedTransactionStatusResponse { bytes response_json = 1; }
+message OpenSnapshotLeaseRequest { bytes request_json = 1; }
+message SnapshotLeaseResponse { bytes response_json = 1; }
+message ReadSnapshotPageRequest { bytes request_json = 1; }
+message ScanSnapshotPageRequest { bytes request_json = 1; }
+message SnapshotScanPageResponse { bytes response_json = 1; }
+message SnapshotLeaseReference { string lease_id = 1; }
+message CloseSnapshotLeaseResponse {}
 message QueryRow { Document document = 1; optional float score = 2; }
 message QueryResponse {
   uint64 revision = 1;

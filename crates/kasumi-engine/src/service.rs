@@ -5,6 +5,8 @@ use kasumi_raft::RaftGroup;
 use kasumi_store::{BackupDestination, LeaseClock, SystemLeaseClock, TenantStore};
 use kasumi_types::*;
 use sha2::{Digest, Sha256};
+#[path = "snapshot_leases.rs"]
+mod snapshot_leases;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     sync::{
@@ -210,6 +212,7 @@ pub struct Database {
     group: RaftGroup,
     store: Arc<TenantStore>,
     cursors: Mutex<HashMap<String, Cursor>>,
+    snapshot_leases: Mutex<HashMap<String, Arc<snapshot_leases::RetainedSnapshot>>>,
     query_slots: Arc<tokio::sync::Semaphore>,
     clock: Arc<dyn LeaseClock>,
     admission: OnceLock<Arc<NodeAdmission>>,
@@ -334,6 +337,7 @@ impl Database {
             group,
             store,
             cursors: Mutex::new(HashMap::new()),
+            snapshot_leases: Mutex::new(HashMap::new()),
             query_slots: Arc::new(tokio::sync::Semaphore::new(4)),
             clock: Arc::new(SystemLeaseClock),
             admission: admission.map(OnceLock::from).unwrap_or_default(),
@@ -393,6 +397,10 @@ impl Database {
         self.audit_work.drain().await;
         self.store.shutdown().await;
         self.engine.seal();
+        self.snapshot_leases
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
         self.cursors
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -413,6 +421,10 @@ impl Database {
         if self.store.check_access().is_err() {
             self.work.seal();
             self.engine.seal();
+            self.snapshot_leases
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clear();
             self.cursors
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
@@ -454,6 +466,10 @@ impl Database {
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
                     .retain(|_, c| !pressured && now.saturating_sub(c.created) < c.ttl);
+                db.snapshot_leases
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .retain(|_, lease| lease.retain(now, pressured));
                 if db.engine.generation().is_err() {
                     break;
                 }
@@ -484,6 +500,112 @@ impl Database {
     ) -> Result<WriteReceipt> {
         let result = self.submit(context.clone(), Operation::Mutate(batch)).await;
         self.audit_result(&context, result).await
+    }
+
+    pub async fn begin_staged_transaction(
+        &self,
+        context: RequestContext,
+        request: BeginStagedTransaction,
+    ) -> Result<WriteReceipt> {
+        let result = self
+            .submit(context.clone(), Operation::BeginStaged(request))
+            .await;
+        self.audit_result(&context, result).await
+    }
+
+    pub async fn append_staged_chunk(
+        &self,
+        context: RequestContext,
+        request: AppendStagedChunk,
+    ) -> Result<WriteReceipt> {
+        let result = self
+            .submit(context.clone(), Operation::AppendStaged(request))
+            .await;
+        self.audit_result(&context, result).await
+    }
+
+    pub async fn finalize_staged_transaction(
+        &self,
+        context: RequestContext,
+        reference: StagedTransactionRef,
+    ) -> Result<WriteReceipt> {
+        let result = self
+            .submit(context.clone(), Operation::FinalizeStaged(reference))
+            .await;
+        self.audit_result(&context, result).await
+    }
+
+    pub async fn abort_staged_transaction(
+        &self,
+        context: RequestContext,
+        reference: StagedTransactionRef,
+    ) -> Result<WriteReceipt> {
+        let result = self
+            .submit(context.clone(), Operation::AbortStaged(reference))
+            .await;
+        self.audit_result(&context, result).await
+    }
+
+    pub async fn staged_transaction_status(
+        &self,
+        context: &RequestContext,
+        reference: &StagedTransactionRef,
+    ) -> Result<StagedTransactionStatus> {
+        let result = self
+            .staged_transaction_status_inner(context, reference)
+            .await;
+        self.audit_result(context, result).await
+    }
+
+    async fn staged_transaction_status_inner(
+        &self,
+        context: &RequestContext,
+        reference: &StagedTransactionRef,
+    ) -> Result<StagedTransactionStatus> {
+        self.access()?;
+        crate::state::staging::lookup(&self.engine.generation()?.state, context, reference)?;
+        let mut reservation = self.admission().reserve(1 << 20, None)?;
+        self.barrier().await?;
+        let generation = self.engine.generation()?;
+        let stage = crate::state::staging::lookup(&generation.state, context, reference)?;
+        let status = stage.status();
+        let policy_epoch = generation.state.policy_epoch;
+        let revision = generation.state.revision;
+        let mut collections = BTreeMap::new();
+        for collection in &stage.manifest.read_collections {
+            collections.insert(collection.clone(), "read");
+        }
+        for collection in &stage.manifest.write_collections {
+            collections.insert(collection.clone(), "receipt");
+        }
+        let release: Vec<_> = collections
+            .into_iter()
+            .map(|(collection, kind)| {
+                let strict = generation.state.policy.strict_read_audit
+                    || generation
+                        .state
+                        .collections
+                        .get(&collection)
+                        .is_some_and(|collection| collection.definition.strict_read_audit);
+                (collection, kind, strict)
+            })
+            .collect();
+        drop(generation);
+        reservation.retain_workspace();
+        for (collection, kind, strict) in release {
+            self.release_event(
+                context,
+                Some(&collection),
+                revision,
+                strict,
+                policy_epoch,
+                kind,
+            )
+            .await?;
+        }
+        self.access()?;
+        crate::state::staging::lookup(&self.engine.generation()?.state, context, reference)?;
+        Ok(status)
     }
 
     /// Every public request owns one denial record, including failures before a
@@ -538,7 +660,13 @@ impl Database {
     ) -> Result<WriteReceipt> {
         if matches!(
             operation,
-            Operation::Mutate(_) | Operation::Audit(_) | Operation::MaintenanceAudit(_)
+            Operation::Mutate(_)
+                | Operation::Audit(_)
+                | Operation::MaintenanceAudit(_)
+                | Operation::BeginStaged(_)
+                | Operation::AppendStaged(_)
+                | Operation::FinalizeStaged(_)
+                | Operation::AbortStaged(_)
         ) {
             return Err(Error::new(
                 ErrorCode::InvalidArgument,
@@ -663,6 +791,25 @@ impl Database {
         }
         // Authorization repeats during ordered apply, so queued operations cannot bypass policy changes.
         match &operation {
+            Operation::BeginStaged(request) => crate::state::staging::authorize_manifest(
+                &self.engine.generation()?.state,
+                &context,
+                &request.manifest,
+            )?,
+            Operation::AppendStaged(request) => {
+                crate::state::staging::lookup(
+                    &self.engine.generation()?.state,
+                    &context,
+                    &request.transaction,
+                )?;
+            }
+            Operation::FinalizeStaged(reference) | Operation::AbortStaged(reference) => {
+                crate::state::staging::lookup(
+                    &self.engine.generation()?.state,
+                    &context,
+                    reference,
+                )?;
+            }
             Operation::Mutate(batch) => {
                 for mutation in &batch.operations {
                     self.engine
@@ -692,6 +839,16 @@ impl Database {
             definition.indexes.iter().any(|index| index.text.is_some())
         };
         let needs_writer = match &operation {
+            Operation::FinalizeStaged(reference) => {
+                let stage = crate::state::staging::lookup(&generation.state, &context, reference)?;
+                stage.manifest.write_collections.iter().any(|name| {
+                    generation
+                        .state
+                        .collections
+                        .get(name)
+                        .is_some_and(|collection| has_text(&collection.definition))
+                })
+            }
             Operation::Mutate(batch) => batch.operations.iter().any(|mutation| {
                 generation
                     .state
@@ -707,12 +864,33 @@ impl Database {
         // Cover serialization/replication workspace plus the configured Tantivy
         // writer buffer when applicable. Persistent staged index nodes still feed
         // RSS; this is an admission estimate, not exact allocator accounting.
+        let staged_workspace = if let Operation::FinalizeStaged(reference) = &operation {
+            let stage = crate::state::staging::lookup(&generation.state, &context, reference)?;
+            if stage.is_active() {
+                stage
+                    .manifest
+                    .encoded_chunk_bytes
+                    .saturating_mul(3)
+                    .saturating_add(
+                        stage
+                            .manifest
+                            .operation_count
+                            .saturating_add(stage.manifest.read_assertion_count)
+                            .saturating_mul(512),
+                    )
+            } else {
+                0
+            }
+        } else {
+            0
+        };
         let command_budget = generation
             .state
             .limits
             .max_batch_bytes
             .saturating_add(64 << 10)
             .saturating_mul(3)
+            .saturating_add(staged_workspace)
             .saturating_add(if needs_writer { 15_000_000 } else { 0 })
             as u64;
         drop(generation);
@@ -1502,6 +1680,7 @@ fn snapshot_workspace(limits: &Limits, request: &ReadSnapshotRequest) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    include!("service_staging_tests.rs");
     use super::*;
     use crate::admission::AdmissionConfig;
     use kasumi_store::{NodeStore, test_utils::LocalKeyProvider};

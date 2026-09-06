@@ -1080,6 +1080,58 @@ async fn key_revocation_fences_and_evicts_resident_state() {
 }
 
 #[tokio::test]
+async fn key_revocation_evicts_retained_coherent_leases_and_rejects_every_page() {
+    let (_dir, db, key, store, audit) = database(false).await;
+    let generation = db.engine().generation().unwrap();
+    let weak = Arc::downgrade(&generation);
+    drop(generation);
+    let lease = db
+        .open_snapshot_lease(&context("owner"), OpenSnapshotLease { ttl_ms: 60_000 })
+        .await
+        .unwrap();
+    assert!(weak.upgrade().is_some());
+    key.revoke();
+    assert!(store.refresh_lease().await.is_err());
+    assert_eq!(
+        db.read_snapshot_page(
+            &context("owner"),
+            ReadSnapshotPage {
+                lease_id: lease.lease_id.clone(),
+                documents: vec![DocumentKey {
+                    collection: "people".into(),
+                    id: "a".into()
+                }],
+            }
+        )
+        .await
+        .unwrap_err()
+        .code,
+        ErrorCode::Sealed
+    );
+    assert!(
+        weak.upgrade().is_none(),
+        "key sealing must release every owned lease generation"
+    );
+    assert_eq!(
+        db.scan_snapshot_page(
+            &context("owner"),
+            ScanSnapshotPage {
+                lease_id: lease.lease_id,
+                collection: "people".into(),
+                after_id: None,
+                limit: 1
+            }
+        )
+        .await
+        .unwrap_err()
+        .code,
+        ErrorCode::Sealed
+    );
+    db.shutdown().await.unwrap();
+    audit.shutdown().await;
+}
+
+#[tokio::test]
 async fn logical_backup_restores_suspended_with_new_incarnation_and_increasing_revisions() {
     let (_source_dir, source, source_key, _source_store, source_audit) = database(false).await;
     let receipt = source

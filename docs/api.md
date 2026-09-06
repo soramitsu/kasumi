@@ -120,7 +120,8 @@ The authoritative wire schema is
 Generate clients with the normal Protobuf toolchain or use
 `kasumi_client::proto::kasumi_data_client::KasumiDataClient`.
 The independent `kasumi-client` crate also provides a typed `KasumiClient`
-wrapper for `query`, `read_snapshot` and `mutate`, constructed with
+wrapper for `query`, `read_snapshot`, `mutate`, staged transactions and read
+leases, constructed with
 `KasumiClient::connect(&KasumiClientConfig)`. The required configuration contains
 the HTTPS `endpoint`, `identity` (`kasumi_transport::TlsIdentity`),
 `trusted_ca_pem` and nonempty `server_certificate_pins`. There is no unchecked
@@ -150,6 +151,15 @@ alone does not grant document access.
 | `Mutate` | UTF-8 `batch_json` bytes, using the batch shape above | Revision and per-document versions |
 | `Collections` | Empty message | Authorized collection definitions as JSON bytes |
 | `Receipt` | `idempotency_key` | Committed receipt, rejected database error, or no retained outcome |
+| `BeginStagedTransaction` | `BeginStagedTransaction` as UTF-8 JSON | Reserved permanent identity and upload budget |
+| `AppendStagedChunk` | `AppendStagedChunk` as UTF-8 JSON | Durably accepted invisible chunk |
+| `FinalizeStagedTransaction` | `StagedTransactionRef` as UTF-8 JSON | One atomic commit revision, empty versions map |
+| `AbortStagedTransaction` | `StagedTransactionRef` as UTF-8 JSON | Original durable abort receipt |
+| `StagedTransactionStatus` | `StagedTransactionRef` as UTF-8 JSON | Manifest, received chunk indexes, expiry and permanent outcome |
+| `OpenSnapshotLease` | `OpenSnapshotLease` as UTF-8 JSON | Principal-bound lease and coherent snapshot identity |
+| `ReadSnapshotPage` | `ReadSnapshotPage` as UTF-8 JSON | Named documents/absence in `SnapshotReadResponse` |
+| `ScanSnapshotPage` | `ScanSnapshotPage` as UTF-8 JSON | ID-ordered documents, collection epoch and `next_after_id` |
+| `CloseSnapshotLease` | `lease_id` | Empty response |
 
 Do not convert these JSON byte fields through Protobuf's double-valued
 `Struct`. Native errors carry the Kasumi error code in structured status details.
@@ -169,6 +179,21 @@ and `SnapshotReadResponse::read_assertions()` to fence them in the subsequent ba
 See [transaction contracts](transactions.md) for the exact assertion shapes,
 queue-admission deadline semantics, immutable collection rules and bounded
 snapshot behavior.
+
+For larger inputs, open a read lease and collect bounded pages from that lease.
+Deduplicate the common snapshot assertion; retain every document and collection
+dependency. Split the complete write/read set into `StagedChunk` values and build
+`StagedManifest::from_chunks(&chunks)`. Begin with a stable transaction ID and
+upload TTL, then append every chunk and finalize using
+`StagedTransactionRef { transaction_id, manifest_digest }`, where the digest is
+`staged_digest(&manifest)?.0`. All SDK calls take the current bearer token and
+the typed request by reference; `close_snapshot_lease` takes the lease ID.
+
+Unknown outcomes are resolved with the same principal, transaction ID and
+manifest using status or identical finalize. Terminal identities never expire
+or silently evict; the explicit permanent record quota must have capacity before
+begin accepts upload payload. See [large transaction contracts](large-transactions-plan.md)
+for resource limits, expiry, cancellation and snapshot lease invalidation.
 
 ## MCP 2026-07-28
 

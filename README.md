@@ -13,7 +13,8 @@ cases: 99,000 successful operations at 1, 100 and 1,000 tenants. They preserve
 source and executable identities, earlier failures and shared-host limitations.
 The [acceptance checklist](docs/release-checklist.md) maps every agreed requirement
 to implementation and evidence. No Redis multiplier or production SLA is claimed.
-New first-release [conditional transaction and snapshot contracts](docs/transactions.md)
+New first-release [conditional transaction contracts](docs/transactions.md) and
+[large atomic transactions/read leases](docs/large-transactions-plan.md)
 extend that recorded baseline. Their focused regression tests do not replace
 the baseline's full platform and performance gates for the changed source.
 
@@ -31,6 +32,9 @@ Each successful batch publishes its matching document and index generation
 together. Cursors continue a historical snapshot for at most 60 seconds and are
 bound to identity, policy, incarnation, query, and leadership term. Receipts are
 scoped to the principal and retained for 24 hours, including in snapshots.
+Staged transactions keep permanent terminal identities, publish all effects in
+one generation and support up to 100,000 mutations within explicit byte budgets.
+Read leases provide bounded coherent point and ID-ordered collection pages.
 
 ## Workspace
 
@@ -41,7 +45,7 @@ scoped to the principal and retained for 24 hours, including in snapshots.
 | `kasumi-raft` | OpenRaft 0.9.25, durable storage adapters and quorum barriers |
 | `kasumi-query` | Offline schemas, persistent structured indexes, Tantivy/Lindera |
 | `kasumi-engine` | Ordered application, shared API, bootstrap, restore, control metadata |
-| `kasumi-client` | Shared native Protobuf and a typed snapshot/mutation client |
+| `kasumi-client` | Shared native Protobuf and a secure typed query/transaction/read lease client |
 | `kasumi-transport` | Shared TLS 1.3, mTLS, CA validation and server certificate pinning |
 | `kasumi-server` | OAuth, TLS/mTLS, native Protobuf, MCP and administrative runtime |
 | `kasumi-bench` | Reproducible latency, memory and recovery measurements across API layers |

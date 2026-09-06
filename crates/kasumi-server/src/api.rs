@@ -222,6 +222,7 @@ pub(crate) fn status(error: Error) -> tonic::Status {
 
 #[cfg(test)]
 mod tests {
+    include!("api_staging_tests.rs");
     use super::*;
     use crate::{
         auth::{AuthConfig, Authenticator},

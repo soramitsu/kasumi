@@ -1,4 +1,6 @@
 //! Transport-independent, exact JSON contracts shared by every Kasumi interface.
+mod atomic;
+pub use atomic::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -154,6 +156,7 @@ pub fn default_snapshot_bytes() -> usize {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Limits {
+    pub atomic: AtomicLimits,
     pub max_document_bytes: usize,
     pub max_batch_operations: usize,
     pub max_batch_bytes: usize,
@@ -178,6 +181,7 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
+            atomic: AtomicLimits::default(),
             max_document_bytes: 1 << 20,
             max_batch_operations: 256,
             max_batch_bytes: 8 << 20,
@@ -371,6 +375,10 @@ pub struct Command {
 #[serde(tag = "op", content = "data", rename_all = "snake_case")]
 pub enum Operation {
     Mutate(MutationBatch),
+    BeginStaged(BeginStagedTransaction),
+    AppendStaged(AppendStagedChunk),
+    FinalizeStaged(StagedTransactionRef),
+    AbortStaged(StagedTransactionRef),
     CreateCollection(CollectionDefinition),
     ReplaceCollection(CollectionDefinition),
     SetPolicy(Policy),
@@ -425,6 +433,9 @@ pub struct TenantState {
     pub collections: BTreeMap<String, CollectionState>,
     #[serde(serialize_with = "serialize_resident_map")]
     pub receipts: imbl::HashMap<String, StoredReceipt>,
+    #[serde(serialize_with = "serialize_resident_map")]
+    pub staged_transactions: imbl::HashMap<String, StagedTransaction>,
+    pub active_staged_transactions: BTreeSet<String>,
     pub audits: imbl::Vector<AuditEvent>,
 }
 

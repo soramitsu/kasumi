@@ -10,6 +10,7 @@ pub(crate) struct SnapshotAccounting {
     documents: usize,
     receipts: usize,
     audits: usize,
+    staged: usize,
 }
 
 pub(crate) fn encoded_len(value: &impl Serialize) -> Result<usize> {
@@ -65,6 +66,42 @@ fn header(key: &str, collection: &CollectionState) -> Result<usize> {
     )
 }
 
+fn staged_entry(key: &str, stage: &StagedTransaction) -> Result<usize> {
+    #[derive(Serialize)]
+    struct Header<'a> {
+        principal: &'a str,
+        transaction_id: &'a str,
+        manifest_digest: &'a str,
+        manifest: &'a StagedManifest,
+        chunks: BTreeMap<(), ()>,
+        stored_chunk_bytes: usize,
+        uploaded_payload_bytes: usize,
+        uploaded_operations: usize,
+        uploaded_read_assertions: usize,
+        expires_at_ms: u64,
+        ttl_ms: u64,
+        outcome: &'a StagedOutcome,
+    }
+    let header = Header {
+        principal: &stage.principal,
+        transaction_id: &stage.transaction_id,
+        manifest_digest: &stage.manifest_digest,
+        manifest: &stage.manifest,
+        chunks: BTreeMap::new(),
+        stored_chunk_bytes: stage.stored_chunk_bytes,
+        uploaded_payload_bytes: stage.uploaded_payload_bytes,
+        uploaded_operations: stage.uploaded_operations,
+        uploaded_read_assertions: stage.uploaded_read_assertions,
+        expires_at_ms: stage.expires_at_ms,
+        ttl_ms: stage.ttl_ms,
+        outcome: &stage.outcome,
+    };
+    entry(key, &header)?
+        .checked_add(stage.stored_chunk_bytes)
+        .and_then(|bytes| bytes.checked_add(commas(stage.chunks.len())))
+        .ok_or_else(|| Error::new(ErrorCode::Corruption, "staged accounting overflow"))
+}
+
 impl SnapshotAccounting {
     pub fn rebuild(state: &TenantState) -> Result<Self> {
         let mut result = Self {
@@ -86,6 +123,10 @@ impl SnapshotAccounting {
         for audit in &state.audits {
             change(&mut result.audits, 0, encoded_len(audit)?)?;
         }
+        result.staged = commas(state.staged_transactions.len());
+        for (key, stage) in &state.staged_transactions {
+            change(&mut result.staged, 0, staged_entry(key, stage)?)?;
+        }
         Ok(result)
     }
     pub fn updated(
@@ -94,8 +135,29 @@ impl SnapshotAccounting {
         next: &TenantState,
         changed_documents: &BTreeMap<String, BTreeSet<String>>,
         changed_receipts: &BTreeSet<String>,
+        changed_stages: &BTreeSet<String>,
     ) -> Result<Self> {
         let mut result = self.clone();
+        change(
+            &mut result.staged,
+            commas(previous.staged_transactions.len()),
+            commas(next.staged_transactions.len()),
+        )?;
+        for key in changed_stages {
+            let old = previous
+                .staged_transactions
+                .get(key)
+                .map(|stage| staged_entry(key, stage))
+                .transpose()?
+                .unwrap_or(0);
+            let new = next
+                .staged_transactions
+                .get(key)
+                .map(|stage| staged_entry(key, stage))
+                .transpose()?
+                .unwrap_or(0);
+            change(&mut result.staged, old, new)?;
+        }
         change(
             &mut result.collection_headers,
             commas(previous.collections.len()),
@@ -220,6 +282,8 @@ impl SnapshotAccounting {
             limits: &'a Limits,
             collections: BTreeMap<(), ()>,
             receipts: BTreeMap<(), ()>,
+            staged_transactions: BTreeMap<(), ()>,
+            active_staged_transactions: &'a BTreeSet<String>,
             audits: Vec<()>,
         }
         let frame = Frame {
@@ -238,6 +302,8 @@ impl SnapshotAccounting {
             limits: &state.limits,
             collections: BTreeMap::new(),
             receipts: BTreeMap::new(),
+            staged_transactions: BTreeMap::new(),
+            active_staged_transactions: &state.active_staged_transactions,
             audits: Vec::new(),
         };
         [
@@ -245,6 +311,7 @@ impl SnapshotAccounting {
             self.documents,
             self.receipts,
             self.audits,
+            self.staged,
         ]
         .into_iter()
         .try_fold(encoded_len(&frame)?, |n, v| {
@@ -255,7 +322,12 @@ impl SnapshotAccounting {
     pub fn fits(&self, state: &TenantState) -> Result<bool> {
         // Even a rejected command advances its revision. Reserve all remaining
         // decimal digits so a full tenant never violates its budget on rejection.
-        let headroom = 20 - state.revision.to_string().len();
+        let headroom = (20 - state.revision.to_string().len()).saturating_add(
+            state
+                .active_staged_transactions
+                .len()
+                .saturating_mul(STAGED_OUTCOME_HEADROOM),
+        );
         Ok(self.bytes(state)?.saturating_add(headroom) <= state.limits.max_snapshot_bytes)
     }
 }

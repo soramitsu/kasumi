@@ -5,6 +5,8 @@ use kasumi_types::*;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
+#[path = "staging.rs"]
+pub(crate) mod staging;
 
 pub struct Generation {
     pub state: TenantState,
@@ -13,6 +15,11 @@ pub struct Generation {
     // buckets instead of traversing every retained receipt on every write.
     receipt_expiry: ReceiptExpiry,
     snapshot_accounting: SnapshotAccounting,
+}
+impl Generation {
+    pub(crate) fn snapshot_bytes(&self) -> Result<usize> {
+        self.snapshot_accounting.bytes(&self.state)
+    }
 }
 type ReceiptExpiry = imbl::OrdMap<u64, imbl::Vector<String>>;
 
@@ -74,6 +81,8 @@ impl TenantEngine {
             limits,
             collections: BTreeMap::new(),
             receipts: imbl::HashMap::new(),
+            staged_transactions: imbl::HashMap::new(),
+            active_staged_transactions: BTreeSet::new(),
             audits: imbl::Vector::new(),
         };
         let indexes = Arc::new(QueryIndexes::build(&state.collections)?);
@@ -282,6 +291,10 @@ impl TenantEngine {
         // Audit events are part of the replicated result, never emitted as document-bearing logs.
         let action = match &command.operation {
             Operation::Mutate(_) => "mutation",
+            Operation::BeginStaged(_)
+            | Operation::AppendStaged(_)
+            | Operation::FinalizeStaged(_)
+            | Operation::AbortStaged(_) => "staged_transaction",
             Operation::CreateCollection(_) | Operation::ReplaceCollection(_) => "schema",
             Operation::SetPolicy(_) => "policy",
             Operation::SetLimits(_) => "quota",
@@ -310,10 +323,7 @@ impl TenantEngine {
             });
         }
         let changed = if changed_documents {
-            match &command.operation {
-                Operation::Mutate(batch) => batch_changes(batch),
-                _ => BTreeMap::new(),
-            }
+            operation_changes(&previous.state, &command)?
         } else {
             BTreeMap::new()
         };
@@ -322,6 +332,7 @@ impl TenantEngine {
             &next,
             &changed,
             &changed_receipts,
+            &staged_changes(&previous.state, &command)?,
         )?;
         if !snapshot_accounting.fits(&next)? {
             return self.reject_snapshot_budget(
@@ -334,10 +345,6 @@ impl TenantEngine {
             );
         }
         let indexes = if changed_documents {
-            let changed = match &command.operation {
-                Operation::Mutate(batch) => batch_changes(batch),
-                _ => BTreeMap::new(),
-            };
             Arc::new(previous.indexes.update(
                 &previous.state.collections,
                 &next.collections,
@@ -396,6 +403,25 @@ impl TenantEngine {
             Operation::Audit(_) | Operation::MaintenanceAudit(_)
         );
         if ordinary {
+            if let Operation::FinalizeStaged(reference) = &command.operation {
+                let key =
+                    staged_digest(&(&command.context.principal, &reference.transaction_id))?.0;
+                if previous
+                    .state
+                    .staged_transactions
+                    .get(&key)
+                    .is_some_and(StagedTransaction::is_active)
+                    && let Some(completed) = next.staged_transactions.get(&key)
+                    && !completed.is_active()
+                {
+                    let mut completed = completed.clone();
+                    completed.outcome = StagedOutcome::Finished {
+                        outcome: Err(error.clone()),
+                    };
+                    rejected.staged_transactions.insert(key.clone(), completed);
+                    rejected.active_staged_transactions.remove(&key);
+                }
+            }
             if let Some(key) = &receipt_key {
                 // Preserve expiry cleanup and record this failed attempt when its
                 // bounded receipt fits; never overwrite a prior idempotent result.
@@ -418,6 +444,7 @@ impl TenantEngine {
                 &rejected,
                 &BTreeMap::new(),
                 changed_receipts,
+                &staged_changes(&previous.state, command)?,
             )?;
             if rejected.audits.len() <= rejected.limits.max_audit_records
                 && accounting.fits(&rejected)?
@@ -578,6 +605,7 @@ impl TenantEngine {
             ));
         }
         let snapshot_accounting = SnapshotAccounting::rebuild(&state)?;
+        staging::validate_restored(&state)?;
         if !snapshot_accounting.fits(&state)? {
             return Err(Error::new(
                 ErrorCode::Corruption,
@@ -673,6 +701,10 @@ fn apply_operation(
         ));
     }
     match &command.operation {
+        Operation::BeginStaged(_)
+        | Operation::AppendStaged(_)
+        | Operation::FinalizeStaged(_)
+        | Operation::AbortStaged(_) => staging::apply(state, command, revision, indexes),
         Operation::Mutate(batch) => {
             for mutation in &batch.operations {
                 authorize_state(
@@ -835,6 +867,7 @@ fn apply_operation(
         Operation::SetLimits(limits) => {
             authorize_state(state, &command.context, None, Action::Admin)?;
             validate_limits(limits)?;
+            staging::validate_new_limits(state, limits)?;
             validate_policy(&state.policy, limits)?;
             validate_metadata_budget(&state.collections, limits)?;
             if limits.max_document_bytes < state.limits.max_document_bytes {
@@ -964,10 +997,29 @@ fn apply_batch(
             "mutation batch exceeds limits",
         ));
     }
-    validate_read_set(state, &batch.read_set, evaluated_at_ms)?;
+    validate_read_assertions(
+        state,
+        &batch.read_set.iter().collect::<Vec<_>>(),
+        evaluated_at_ms,
+        512,
+    )?;
+    apply_mutations(
+        state,
+        &batch.operations.iter().collect::<Vec<_>>(),
+        revision,
+        true,
+    )
+}
+
+fn apply_mutations(
+    state: &mut TenantState,
+    operations: &[&Mutation],
+    revision: u64,
+    include_versions: bool,
+) -> Result<WriteReceipt> {
     let mut targets = BTreeSet::new();
     let mut versions = BTreeMap::new();
-    for mutation in &batch.operations {
+    for &mutation in operations {
         let (name, id) = mutation.target();
         validate_name(id)?;
         if !targets.insert((name, id)) {
@@ -1028,7 +1080,9 @@ fn apply_batch(
                     }),
                 );
                 collection.data_epoch = revision;
-                versions.insert(document_path(name, id), revision);
+                if include_versions {
+                    versions.insert(document_path(name, id), revision);
+                }
             }
             Mutation::Delete { .. } => {
                 if collection.documents.remove(id).is_some() {
@@ -1036,7 +1090,9 @@ fn apply_batch(
                     state.logical_bytes -= old_bytes;
                     collection.data_epoch = revision;
                 }
-                versions.insert(document_path(name, id), revision);
+                if include_versions {
+                    versions.insert(document_path(name, id), revision);
+                }
             }
         }
     }
@@ -1051,19 +1107,20 @@ fn apply_batch(
     Ok(WriteReceipt { revision, versions })
 }
 
-fn validate_read_set(
+fn validate_read_assertions(
     state: &TenantState,
-    assertions: &[ReadAssertion],
+    assertions: &[&ReadAssertion],
     evaluated_at_ms: u64,
+    max_assertions: usize,
 ) -> Result<()> {
-    if assertions.len() > 512 {
+    if assertions.len() > max_assertions {
         return Err(Error::new(
             ErrorCode::ResourceExhausted,
             "read assertion limit exceeded",
         ));
     }
     let mut identities = BTreeSet::new();
-    for assertion in assertions {
+    for &assertion in assertions {
         let identity =
             match assertion {
                 ReadAssertion::Before { not_after_ms } => {
@@ -1153,12 +1210,66 @@ fn batch_changes(batch: &MutationBatch) -> BTreeMap<String, BTreeSet<String>> {
     changed
 }
 
+fn operation_changes(
+    state: &TenantState,
+    command: &Command,
+) -> Result<BTreeMap<String, BTreeSet<String>>> {
+    match &command.operation {
+        Operation::Mutate(batch) => Ok(batch_changes(batch)),
+        Operation::FinalizeStaged(reference) => {
+            let key = staged_digest(&(&command.context.principal, &reference.transaction_id))?.0;
+            let stage = state.staged_transactions.get(&key).ok_or_else(|| {
+                Error::new(ErrorCode::Corruption, "finalized staged source missing")
+            })?;
+            Ok(staging::changes(stage))
+        }
+        _ => Ok(BTreeMap::new()),
+    }
+}
+
+fn staged_changes(state: &TenantState, command: &Command) -> Result<BTreeSet<String>> {
+    let transaction_id = match &command.operation {
+        Operation::BeginStaged(request) => &request.transaction_id,
+        Operation::AppendStaged(request) => &request.transaction.transaction_id,
+        Operation::FinalizeStaged(reference) | Operation::AbortStaged(reference) => {
+            &reference.transaction_id
+        }
+        _ => return Ok(BTreeSet::new()),
+    };
+    let mut changed = state.active_staged_transactions.clone();
+    changed.insert(staged_digest(&(&command.context.principal, transaction_id))?.0);
+    Ok(changed)
+}
+
 fn document_path(collection: &str, id: &str) -> String {
     let escape = |value: &str| value.replace('~', "~0").replace('/', "~1");
     format!("/{}/{}", escape(collection), escape(id))
 }
 
 fn validate_limits(limits: &Limits) -> Result<()> {
+    let atomic = &limits.atomic;
+    if atomic.max_operations == 0
+        || atomic.max_operations > 100_000
+        || atomic.max_read_assertions == 0
+        || atomic.max_read_assertions > 100_000
+        || atomic.max_transaction_bytes < limits.max_batch_bytes
+        || atomic.max_transaction_bytes > (64 << 20)
+        || atomic.max_active_transactions == 0
+        || atomic.max_active_transactions > 64
+        || atomic.max_reserved_staging_bytes < atomic.max_transaction_bytes
+        || atomic.max_reserved_staging_bytes > (512 << 20)
+        || atomic.max_transaction_records < atomic.max_active_transactions
+        || atomic.max_transaction_records > 1_000_000
+        || atomic.max_snapshot_leases == 0
+        || atomic.max_snapshot_leases > 128
+        || atomic.max_snapshot_lease_bytes == 0
+        || atomic.max_snapshot_lease_bytes > MAX_TENANT_SNAPSHOT_BYTES
+    {
+        return Err(Error::new(
+            ErrorCode::InvalidArgument,
+            "invalid atomic resource limits",
+        ));
+    }
     if limits.max_document_bytes == 0
         || limits.max_document_bytes > (1 << 20)
         || limits.max_batch_operations == 0

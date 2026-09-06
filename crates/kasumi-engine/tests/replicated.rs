@@ -170,6 +170,57 @@ async fn replicated_service_preserves_batches_receipts_and_cursor_fences_across_
         .unwrap();
     query.cursor = first_page.cursor;
     assert!(query.cursor.is_some());
+    let chunks: Vec<_> = (0..2)
+        .map(|chunk| StagedChunk {
+            read_set: vec![],
+            operations: (chunk * 150..(chunk + 1) * 150)
+                .map(|n| Mutation::Put {
+                    collection: "documents".into(),
+                    id: format!("staged{n:04}"),
+                    body: json!({"exact":9007199254740993_u64}),
+                    expected: Precondition::Absent,
+                })
+                .collect(),
+        })
+        .collect();
+    let manifest = StagedManifest::from_chunks(&chunks).unwrap();
+    let staged = StagedTransactionRef {
+        transaction_id: "across-leaders".into(),
+        manifest_digest: staged_digest(&manifest).unwrap().0,
+    };
+    nodes[&first]
+        .begin_staged_transaction(
+            context(),
+            BeginStagedTransaction {
+                transaction_id: staged.transaction_id.clone(),
+                manifest,
+                ttl_ms: 60_000,
+            },
+        )
+        .await
+        .unwrap();
+    nodes[&first]
+        .append_staged_chunk(
+            context(),
+            AppendStagedChunk {
+                transaction: staged.clone(),
+                index: 0,
+                chunk: chunks[0].clone(),
+            },
+        )
+        .await
+        .unwrap();
+    let lease = nodes[&first]
+        .open_snapshot_lease(&context(), OpenSnapshotLease { ttl_ms: 60_000 })
+        .await
+        .unwrap();
+    let lease_page = ReadSnapshotPage {
+        lease_id: lease.lease_id,
+        documents: vec![DocumentKey {
+            collection: "documents".into(),
+            id: "a".into(),
+        }],
+    };
     router.isolate(&group, first, true);
     assert!(!matches!(
         tokio::time::timeout(
@@ -179,7 +230,59 @@ async fn replicated_service_preserves_batches_receipts_and_cursor_fences_across_
         .await,
         Ok(Ok(_))
     ));
+    assert!(!matches!(
+        tokio::time::timeout(
+            Duration::from_millis(600),
+            nodes[&first].read_snapshot_page(&context(), lease_page.clone())
+        )
+        .await,
+        Ok(Ok(_))
+    ));
     let second = leader(&nodes, Some(first)).await;
+    let status = nodes[&second]
+        .staged_transaction_status(&context(), &staged)
+        .await
+        .unwrap();
+    assert_eq!(status.received_chunks, vec![0]);
+    assert_eq!(
+        nodes[&second]
+            .engine()
+            .generation()
+            .unwrap()
+            .state
+            .document_count,
+        2
+    );
+    nodes[&second]
+        .append_staged_chunk(
+            context(),
+            AppendStagedChunk {
+                transaction: staged.clone(),
+                index: 1,
+                chunk: chunks[1].clone(),
+            },
+        )
+        .await
+        .unwrap();
+    let staged_receipt = nodes[&second]
+        .finalize_staged_transaction(context(), staged.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        nodes[&second]
+            .engine()
+            .generation()
+            .unwrap()
+            .state
+            .document_count,
+        302
+    );
+    assert!(
+        nodes[&second]
+            .read_snapshot_page(&context(), lease_page.clone())
+            .await
+            .is_err()
+    );
     assert_eq!(
         nodes[&second].mutate(context(), batch()).await.unwrap(),
         receipt
@@ -204,6 +307,12 @@ async fn replicated_service_preserves_batches_receipts_and_cursor_fences_across_
     router.isolate(&group, first, false);
     // A historical page cannot resume on the former leader even after it rejoins.
     assert!(nodes[&first].query(&context(), query).await.is_err());
+    assert!(
+        nodes[&first]
+            .read_snapshot_page(&context(), lease_page)
+            .await
+            .is_err()
+    );
     shutdown_nodes(&mut nodes, &mut audits, &router, &group).await;
     nodes.clear();
     for id in 1..=3 {
@@ -223,6 +332,21 @@ async fn replicated_service_preserves_batches_receipts_and_cursor_fences_across_
         nodes.insert(id, db);
     }
     let recovered = leader(&nodes, None).await;
+    assert_eq!(
+        nodes[&recovered]
+            .finalize_staged_transaction(context(), staged)
+            .await
+            .unwrap(),
+        staged_receipt
+    );
+    assert_eq!(
+        nodes[&recovered]
+            .get(&context(), "documents", "staged0299")
+            .await
+            .unwrap()
+            .version,
+        staged_receipt.revision
+    );
     assert_eq!(
         nodes[&recovered].mutate(context(), batch()).await.unwrap(),
         receipt

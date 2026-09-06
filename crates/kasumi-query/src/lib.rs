@@ -42,6 +42,31 @@ pub struct QueryIndexes {
 }
 
 impl QueryIndexes {
+    /// Bounded ID-order continuation over an existing generation's maintained
+    /// primary ID index. The caller supplies authorization and snapshot fences.
+    pub fn document_ids_after(
+        &self,
+        collection: &str,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<String>> {
+        use std::ops::Bound;
+        if limit == 0 || limit > 1001 {
+            return Err(invalid("ID page limit outside bounds"));
+        }
+        let indexes = self
+            .collections
+            .get(collection)
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "collection index not found"))?;
+        let start = after.map_or(Bound::Unbounded, Bound::Excluded);
+        Ok(indexes
+            .structured
+            .ids
+            .range::<_, str>((start, Bound::Unbounded))
+            .take(limit)
+            .cloned()
+            .collect())
+    }
     pub fn build(collections: &BTreeMap<String, CollectionState>) -> Result<Self> {
         let mut indexes = BTreeMap::new();
         for (name, collection) in collections {

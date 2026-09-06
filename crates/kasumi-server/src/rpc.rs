@@ -182,6 +182,221 @@ impl kasumi_data_server::KasumiData for NativeData {
             .map_err(status)?;
         Ok(Response::new(response))
     }
+    async fn begin_staged_transaction(
+        &self,
+        request: Request<BeginStagedTransactionRequest>,
+    ) -> Result<Response<WriteReceipt>, Status> {
+        let context = verified(&self.auth, &request).await?;
+        let input = decode_json(&request.into_inner().request_json).map_err(status)?;
+        let database = routed(&self.registry, &self.auth, &context).await?;
+        let fence = self
+            .auth
+            .audit_result(&context, database.response_fence(&context))
+            .await
+            .map_err(status)?;
+        let result = database
+            .begin_staged_transaction(context.clone(), input)
+            .await
+            .map_err(|error| self.registry.status(&context, error))?;
+        let response = release_response(&self.auth, &context, fence, receipt(result), true)
+            .await
+            .map_err(status)?;
+        Ok(Response::new(response))
+    }
+
+    async fn append_staged_chunk(
+        &self,
+        request: Request<AppendStagedChunkRequest>,
+    ) -> Result<Response<WriteReceipt>, Status> {
+        let context = verified(&self.auth, &request).await?;
+        let input = decode_json(&request.into_inner().request_json).map_err(status)?;
+        let database = routed(&self.registry, &self.auth, &context).await?;
+        let fence = self
+            .auth
+            .audit_result(&context, database.response_fence(&context))
+            .await
+            .map_err(status)?;
+        let result = database
+            .append_staged_chunk(context.clone(), input)
+            .await
+            .map_err(|error| self.registry.status(&context, error))?;
+        let response = release_response(&self.auth, &context, fence, receipt(result), true)
+            .await
+            .map_err(status)?;
+        Ok(Response::new(response))
+    }
+
+    async fn finalize_staged_transaction(
+        &self,
+        request: Request<StagedTransactionReference>,
+    ) -> Result<Response<WriteReceipt>, Status> {
+        let context = verified(&self.auth, &request).await?;
+        let input = decode_json(&request.into_inner().request_json).map_err(status)?;
+        let database = routed(&self.registry, &self.auth, &context).await?;
+        let fence = self
+            .auth
+            .audit_result(&context, database.response_fence(&context))
+            .await
+            .map_err(status)?;
+        let result = database
+            .finalize_staged_transaction(context.clone(), input)
+            .await
+            .map_err(|error| self.registry.status(&context, error))?;
+        let response = release_response(&self.auth, &context, fence, receipt(result), true)
+            .await
+            .map_err(status)?;
+        Ok(Response::new(response))
+    }
+
+    async fn abort_staged_transaction(
+        &self,
+        request: Request<StagedTransactionReference>,
+    ) -> Result<Response<WriteReceipt>, Status> {
+        let context = verified(&self.auth, &request).await?;
+        let input = decode_json(&request.into_inner().request_json).map_err(status)?;
+        let database = routed(&self.registry, &self.auth, &context).await?;
+        let fence = self
+            .auth
+            .audit_result(&context, database.response_fence(&context))
+            .await
+            .map_err(status)?;
+        let result = database
+            .abort_staged_transaction(context.clone(), input)
+            .await
+            .map_err(|error| self.registry.status(&context, error))?;
+        let response = release_response(&self.auth, &context, fence, receipt(result), true)
+            .await
+            .map_err(status)?;
+        Ok(Response::new(response))
+    }
+
+    async fn staged_transaction_status(
+        &self,
+        request: Request<StagedTransactionReference>,
+    ) -> Result<Response<StagedTransactionStatusResponse>, Status> {
+        let context = verified(&self.auth, &request).await?;
+        let input = decode_json(&request.into_inner().request_json).map_err(status)?;
+        let database = routed(&self.registry, &self.auth, &context).await?;
+        let fence = self
+            .auth
+            .audit_result(&context, database.response_fence(&context))
+            .await
+            .map_err(status)?;
+        let result = database
+            .staged_transaction_status(&context, &input)
+            .await
+            .map_err(|error| self.registry.status(&context, error))?;
+        let response = StagedTransactionStatusResponse {
+            response_json: encode_json(&result).map_err(status)?,
+        };
+        let response = release_response(&self.auth, &context, fence, response, false)
+            .await
+            .map_err(status)?;
+        Ok(Response::new(response))
+    }
+
+    async fn open_snapshot_lease(
+        &self,
+        request: Request<OpenSnapshotLeaseRequest>,
+    ) -> Result<Response<SnapshotLeaseResponse>, Status> {
+        let context = verified(&self.auth, &request).await?;
+        let input = decode_json(&request.into_inner().request_json).map_err(status)?;
+        let database = routed(&self.registry, &self.auth, &context).await?;
+        let fence = self
+            .auth
+            .audit_result(&context, database.response_fence(&context))
+            .await
+            .map_err(status)?;
+        let result = database
+            .open_snapshot_lease(&context, input)
+            .await
+            .map_err(|error| self.registry.status(&context, error))?;
+        let response = SnapshotLeaseResponse {
+            response_json: encode_json(&result).map_err(status)?,
+        };
+        let response = release_response(&self.auth, &context, fence, response, false)
+            .await
+            .map_err(status)?;
+        Ok(Response::new(response))
+    }
+
+    async fn read_snapshot_page(
+        &self,
+        request: Request<ReadSnapshotPageRequest>,
+    ) -> Result<Response<ReadSnapshotResponse>, Status> {
+        let context = verified(&self.auth, &request).await?;
+        let input = decode_json(&request.into_inner().request_json).map_err(status)?;
+        let database = routed(&self.registry, &self.auth, &context).await?;
+        let fence = self
+            .auth
+            .audit_result(&context, database.response_fence(&context))
+            .await
+            .map_err(status)?;
+        let result = database
+            .read_snapshot_page(&context, input)
+            .await
+            .map_err(|error| self.registry.status(&context, error))?;
+        let response = ReadSnapshotResponse {
+            response_json: encode_json(&result).map_err(status)?,
+        };
+        let response = release_response(&self.auth, &context, fence, response, false)
+            .await
+            .map_err(status)?;
+        Ok(Response::new(response))
+    }
+
+    async fn scan_snapshot_page(
+        &self,
+        request: Request<ScanSnapshotPageRequest>,
+    ) -> Result<Response<SnapshotScanPageResponse>, Status> {
+        let context = verified(&self.auth, &request).await?;
+        let input = decode_json(&request.into_inner().request_json).map_err(status)?;
+        let database = routed(&self.registry, &self.auth, &context).await?;
+        let fence = self
+            .auth
+            .audit_result(&context, database.response_fence(&context))
+            .await
+            .map_err(status)?;
+        let result = database
+            .scan_snapshot_page(&context, input)
+            .await
+            .map_err(|error| self.registry.status(&context, error))?;
+        let response = SnapshotScanPageResponse {
+            response_json: encode_json(&result).map_err(status)?,
+        };
+        let response = release_response(&self.auth, &context, fence, response, false)
+            .await
+            .map_err(status)?;
+        Ok(Response::new(response))
+    }
+
+    async fn close_snapshot_lease(
+        &self,
+        request: Request<SnapshotLeaseReference>,
+    ) -> Result<Response<CloseSnapshotLeaseResponse>, Status> {
+        let context = verified(&self.auth, &request).await?;
+        let lease_id = request.into_inner().lease_id;
+        let database = routed(&self.registry, &self.auth, &context).await?;
+        let fence = self
+            .auth
+            .audit_result(&context, database.response_fence(&context))
+            .await
+            .map_err(status)?;
+        database
+            .close_snapshot_lease(&context, &lease_id)
+            .await
+            .map_err(|error| self.registry.status(&context, error))?;
+        let response = release_response(
+            &self.auth,
+            &context,
+            fence,
+            CloseSnapshotLeaseResponse {},
+            false,
+        )
+        .await
+        .map_err(status)?;
+        Ok(Response::new(response))
+    }
     async fn collections(
         &self,
         request: Request<CollectionsRequest>,
