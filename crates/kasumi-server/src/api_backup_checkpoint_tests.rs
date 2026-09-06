@@ -51,6 +51,28 @@ async fn native_backup_proof_is_admin_only_configured_and_verified_through_secur
     let readback = client.verify_backup_checkpoint(bearer, &request).await.unwrap();
     assert_eq!(proof.checkpoint(), readback.checkpoint());
     assert!(client.verify_backup_checkpoint(read_only.strip_prefix("Bearer ").unwrap(), &request).await.is_err());
+    let retirement = kasumi_types::RetireSourceRequest {
+        retirement_id: "native-retirement".into(), expected_source_incarnation: proof.source_incarnation().into(),
+        target_incarnation: uuid::Uuid::new_v4().to_string(), checkpoint: proof.checkpoint().clone(),
+        destination: "approved".into(), not_after_ms: u64::MAX,
+    };
+    let reference = retirement.reference().unwrap();
+    assert!(client.retire_source(read_only.strip_prefix("Bearer ").unwrap(), &retirement).await.is_err());
+    let mut stopped_request = retirement.clone(); stopped_request.retirement_id = "native-stopped".into();
+    let kasumi_client::VerifiedRetirementResolution::Stopped(stopped) = client.abort_retirement(bearer, &stopped_request).await.unwrap() else { panic!("stop must be definitive") };
+    assert_eq!(stopped.reference(), &stopped_request.reference().unwrap());
+    assert!(client.retire_source(bearer, &stopped_request).await.is_err());
+    let retired = client.retire_source(bearer, &retirement).await.unwrap();
+    let kasumi_client::VerifiedRetirementResolution::Retired(resolved) = client.abort_retirement(bearer, &retirement).await.unwrap() else { panic!("retirement cannot be stopped after commit") };
+    assert_eq!(resolved.receipt(), retired.receipt());
+    assert_eq!(retired.checkpoint(), proof.checkpoint());
+    assert_eq!(retired.target_incarnation(), retirement.target_incarnation);
+    assert_eq!(client.verify_retirement_receipt(bearer, &reference).await.unwrap().receipt(), retired.receipt());
+    assert_eq!(client.retirement_status(bearer, &reference).await.unwrap().unwrap().outcome.unwrap(), *retired.receipt());
+    assert_eq!(client.retire_source(bearer, &retirement).await.unwrap().receipt(), retired.receipt());
+    let mut mismatched = reference.clone(); mismatched.source_incarnation = "unconfigured-source".into();
+    assert!(client.verify_retirement_receipt(bearer, &mismatched).await.is_err());
+    assert!(client.retirement_status(read_only.strip_prefix("Bearer ").unwrap(), &reference).await.is_err());
     let mut invalid_pin = config;
     invalid_pin.server_certificate_pins = BTreeSet::from([[0x53; 32]]);
     assert!(KasumiAdminClient::connect(&invalid_pin).await.is_err());

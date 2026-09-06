@@ -27,6 +27,10 @@ service KasumiData {
 // Bind only to the administrative listener. These methods still enforce the
 // current tenant/collection admin policy in consensus order.
 service KasumiAdmin {
+  rpc AbortRetirement(RetireSourceRequest) returns (RetirementStatusResponse);
+  rpc RetireSource(RetireSourceRequest) returns (RetirementReceiptResponse);
+  rpc RetirementStatus(RetirementReference) returns (RetirementStatusResponse);
+  rpc VerifyRetirementReceipt(RetirementReference) returns (RetirementReceiptResponse);
   rpc CreateBackupCheckpoint(CreateBackupCheckpointRequest) returns (BackupCheckpointResponse);
   rpc VerifyBackupCheckpoint(VerifyBackupCheckpointRequest) returns (BackupCheckpointResponse);
   rpc ReadSchema(ReadSchemaRequest) returns (ReadSchemaResponse);
@@ -94,3 +98,8 @@ message ManagementResponse { bytes result_json = 1; }
 message CreateBackupCheckpointRequest { bytes request_json = 1; }
 message VerifyBackupCheckpointRequest { bytes request_json = 1; }
 message BackupCheckpointResponse { bytes response_json = 1; }
+
+message RetireSourceRequest { bytes request_json = 1; }
+message RetirementReference { bytes request_json = 1; }
+message RetirementReceiptResponse { bytes response_json = 1; }
+message RetirementStatusResponse { bytes response_json = 1; }

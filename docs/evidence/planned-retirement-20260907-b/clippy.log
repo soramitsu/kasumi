@@ -1,0 +1,7 @@
+    Checking kasumi-types v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-types)
+    Checking kasumi-query v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-query)
+    Checking kasumi-engine v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-engine)
+   Compiling kasumi-client v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-client)
+    Checking kasumi-server v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-server)
+    Checking kasumi-bench v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-bench)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 33.93s

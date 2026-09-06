@@ -53,9 +53,9 @@ These operations act on the addressed replica's encrypted store, with tenant con
 
 ## Restoring an immutable generation
 
-Choose a fresh nonnil UUID once and use it on every target replica. Keep the same logical tenant. The server chooses a private generation directory beside the configured database file, hashed by tenant and keyed by this UUID. It never accepts a caller path and never overwrites an existing database. At most `max_prepared_generations_per_tenant` preparations may remain resident (default two). Old files are retained; retiring the source releases its resident state and keys.
+Choose a fresh nonnil UUID once and use it on every target replica. Keep the same logical tenant. The server chooses a private generation directory beside the configured database file, hashed by tenant and keyed by this UUID. It never accepts a caller path and never overwrites an existing database. At most `max_prepared_generations_per_tenant` preparations may remain resident (default two). Old files are retained; retiring the source permanently fences ordinary data access while preserving authenticated retirement custody.
 
-1. Suspend the source on its tenant leader. Wait for suspension to apply on the replicas being prepared.
+1. Quiesce application work, suspend the source on its tenant leader, and wait for suspension to apply. Then create and verify the full backup checkpoint. Capture must follow the final application, policy and suspension changes; retirement compares the complete source closure with this checkpoint.
 2. Submit the following on each of the three replicas; use a destination accessible to each:
 
 ```json
@@ -66,18 +66,18 @@ Preparation authenticates/decrypts the bundle, checks its tenant and backup poli
 
 3. In replicated mode, issue `{"operation":"initialize_restore","incarnation":"<fresh UUID>"}` on the lowest target voter. Before initializing, the server probes all three pinned mTLS peers and compares their exact restored-bootstrap hashes. A missing or differing preparation refuses initialization. The new group retains three voters; partitions never reduce replication.
 4. Find the target leader with status and issue `{"operation":"complete_restore","incarnation":"<fresh UUID>"}` there. This quorum-commits the mandatory restore-completion audit and clears its durable pending marker. Local restore performs this step during preparation. Wait until the source-leader node and control-leader node observe completion locally.
-5. On the old source leader issue `{"operation":"retire_source","incarnation":"<fresh UUID>"}`. This is a permanent consensus fence. It prevents stale replicas from resuming the old generation. It is not a reversible suspension.
+5. On the old source leader submit `ManagementCommand::RetireSource { request }`. The typed `RetireSourceRequest` requires a permanent retirement ID, exact source and intended target incarnations, the complete verified `FullBackupCheckpoint`, installed destination alias and trusted execution deadline. Persist `request.reference()` before submitting. The command verifies the actual backup graph, checks complete source closure, and retains one exact consensus outcome. See [planned retirement](planned-retirement.md) for native/SDK proof and stop-resolution contracts.
 6. After the control-leader node observes source retirement and target completion, issue there:
 
 ```json
-{"operation":"activate_restore","incarnation":"<fresh UUID>","expected_source":"<old incarnation UUID>"}
+{"operation":"activate_restore","incarnation":"<fresh UUID>","retirement":{"source_incarnation":"<old incarnation UUID>","retirement_id":"<persisted retirement ID>","request_digest":"<exact request SHA-256>"}}
 ```
 
-This performs a versioned control-route CAS, then atomically swaps the local registry. Other replicas observe the durable route and switch after their restored state is ready. A crash between the CAS and registry publication recovers from that route. Restarting with the original deployment bootstrap follows the new generation descriptor; a missing routed file fails closed. It does not resurrect the source.
+This obtains a fresh source retirement proof, checks its exact target and permanent restored origin, performs a versioned control-route CAS, then atomically swaps the local registry. Other replicas observe the durable route and switch after their restored state is ready. A crash between the CAS and registry publication recovers from that route. Restarting with the original deployment bootstrap follows the new generation descriptor; a missing routed file fails closed. It does not resurrect the source. This managed path requires both generations in its configured topology; cross-host activation requires a separate authenticated control/executor integration.
 
 7. The new generation remains suspended. Resume it explicitly on its own leader, then verify application reads. Source, target and control leaders may be different nodes throughout this procedure.
 
-If route publication fails after retirement, the source remains retired. Retry the controlled activation after inspecting topology and prepared state; do not resume or overwrite the source. New incarnations invalidate historical cursors. Backups include retained idempotency receipts.
+If route publication fails after retirement, the source remains retired. Recover the exact retirement proof and retry its controlled activation; do not resume or overwrite the source. Before replacing a disputed checkpoint, resolve its full exact request with `abort_retirement`: only an authenticated `Stopped` proof defeats a delayed retirement. A `Retired` winner requires the original target/checkpoint. Status absence, an expired orchestration grant and a lost response are insufficient. New incarnations invalidate historical cursors. Backups include retained idempotency receipts.
 
 ## Adding configured tenants and peers
 

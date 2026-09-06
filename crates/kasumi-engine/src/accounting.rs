@@ -295,6 +295,7 @@ impl SnapshotAccounting {
             suspended: bool,
             retired: bool,
             pending_restore: &'a Option<PendingRestore>,
+            restored_from: &'a Option<FullBackupCheckpoint>,
             document_count: u64,
             logical_bytes: u64,
             policy: &'a Policy,
@@ -308,6 +309,8 @@ impl SnapshotAccounting {
             history_archive_bytes: usize,
             schema_activations: BTreeMap<(), ()>,
             schema_activation_bytes: usize,
+            retirements: BTreeMap<(), ()>,
+            retirement_bytes: usize,
             audits: Vec<()>,
         }
         let frame = Frame {
@@ -320,6 +323,7 @@ impl SnapshotAccounting {
             suspended: state.suspended,
             retired: state.retired,
             pending_restore: &state.pending_restore,
+            restored_from: &state.restored_from,
             document_count: state.document_count,
             logical_bytes: state.logical_bytes,
             policy: &state.policy,
@@ -338,6 +342,8 @@ impl SnapshotAccounting {
             history_archive_bytes: state.history_archive_bytes,
             schema_activations: BTreeMap::new(),
             schema_activation_bytes: state.schema_activation_bytes,
+            retirements: BTreeMap::new(),
+            retirement_bytes: state.retirement_bytes,
             audits: Vec::new(),
         };
         [
@@ -350,6 +356,8 @@ impl SnapshotAccounting {
             commas(state.change_feed.commits.len()),
             state.history_archive_bytes,
             state.schema_activation_bytes,
+            state.retirement_bytes,
+            commas(state.retirements.len()),
             commas(state.schema_activations.len()),
             commas(state.history_archives.len()),
         ]

@@ -396,9 +396,39 @@ fn retirement_is_terminal_and_survives_snapshot_recovery() {
     db.apply_command(1, command(Operation::CreateCollection(definition())))
         .unwrap()
         .unwrap();
-    db.apply_command(2, command(Operation::Retire))
-        .unwrap()
-        .unwrap();
+    let generation = db.generation().unwrap();
+    let request = RetireSourceRequest {
+        retirement_id: "replica-retire".into(),
+        expected_source_incarnation: generation.state.incarnation.clone(),
+        target_incarnation: uuid::Uuid::new_v4().to_string(),
+        checkpoint: FullBackupCheckpoint {
+            tenant: generation.state.tenant.clone(),
+            source_incarnation: generation.state.incarnation.clone(),
+            revision: 1,
+            resident_sha256: "00".repeat(32),
+            backup_id: uuid::Uuid::new_v4(),
+            manifest_ciphertext_sha256: "00".repeat(32),
+            key_lineage_digest: "00".repeat(32),
+        },
+        destination: "approved".into(),
+        not_after_ms: u64::MAX,
+    };
+    drop(generation);
+    // Pure replica apply receives a trusted leader preparation. Actual graph
+    // verification and admission are exercised by the encrypted service tests.
+    db.apply_command(
+        2,
+        command(Operation::RetireSource(PreparedRetirement {
+            request,
+            verified_closure_digest: "00".repeat(32),
+            observation: Some(RetirementObservation {
+                revision: 1,
+                closure_digest: "00".repeat(32),
+            }),
+        })),
+    )
+    .unwrap()
+    .unwrap();
     let restored = engine(false, Limits::default());
     restored.restore(&db.snapshot().unwrap()).unwrap();
     assert!(restored.generation().unwrap().state.retired);
@@ -1154,12 +1184,27 @@ async fn logical_backup_restores_suspended_with_new_incarnation_and_increasing_r
     let destination = Arc::new(
         kasumi_store::FilesystemBackupDestination::new(backup_dir.path(), 16 << 20).unwrap(),
     );
-    let id = source
-        .backup(context("owner"), destination.as_ref())
+    source
+        .install_archive_destination("backup".into(), destination.clone())
+        .unwrap();
+    let checkpoint = source
+        .backup_checkpoint(context("owner"), destination.as_ref())
         .await
         .unwrap();
+    let id = checkpoint.backup_id();
+    let target_incarnation = uuid::Uuid::new_v4();
     source
-        .administer(context("owner"), Operation::Retire)
+        .retire_source(
+            context("owner"),
+            RetireSourceRequest {
+                retirement_id: "restore".into(),
+                expected_source_incarnation: old_incarnation.clone(),
+                target_incarnation: target_incarnation.to_string(),
+                checkpoint: checkpoint.checkpoint().clone(),
+                destination: "backup".into(),
+                not_after_ms: u64::MAX,
+            },
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -1178,7 +1223,7 @@ async fn logical_backup_restores_suspended_with_new_incarnation_and_increasing_r
     let target_store = TenantStore::open(node, "tenant-a".into(), target_key)
         .await
         .unwrap();
-    let restored = kasumi_engine::restore_local(
+    let restored = kasumi_engine::restore_local_with_incarnation(
         &kasumi_engine::RestoreSource {
             timeout_ms: 300_000,
             destination_alias: "backup".into(),
@@ -1188,6 +1233,7 @@ async fn logical_backup_restores_suspended_with_new_incarnation_and_increasing_r
         id,
         target_store.clone(),
         context("owner"),
+        target_incarnation,
         target_audit.clone(),
     )
     .await
@@ -1197,6 +1243,16 @@ async fn logical_backup_restores_suspended_with_new_incarnation_and_increasing_r
         old_incarnation
     );
     assert!(restored.engine().generation().unwrap().state.suspended);
+    assert_eq!(
+        restored
+            .engine()
+            .generation()
+            .unwrap()
+            .state
+            .restored_from
+            .as_ref(),
+        Some(checkpoint.checkpoint())
+    );
     assert_eq!(
         restored
             .get(&context("owner"), "people", "a")

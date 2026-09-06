@@ -178,6 +178,66 @@ impl Database {
         destination: &dyn BackupDestination,
         backup_id: uuid::Uuid,
     ) -> Result<VerifiedBackupCheckpoint> {
+        self.with_verified_backup(context, destination, backup_id, |verified, _, _| {
+            Ok(VerifiedBackupCheckpoint::verified(
+                verified.checkpoint.clone(),
+            ))
+        })
+        .await
+    }
+
+    pub(super) async fn verified_retirement_closure(
+        &self,
+        context: &RequestContext,
+        destination: &dyn BackupDestination,
+        expected: FullBackupCheckpoint,
+    ) -> Result<String> {
+        let credential = context.authorization.clone();
+        self.with_verified_backup(
+            context,
+            destination,
+            expected.backup_id,
+            move |verified, deadline, cancellation| {
+                if verified.checkpoint != expected {
+                    return Err(Error::new(
+                        ErrorCode::Conflict,
+                        "retirement checkpoint differs from verified backup",
+                    )
+                    .into());
+                }
+                crate::retirement_closure::digest(&verified.state, || {
+                    credential.check_live()?;
+                    cancellation.check()?;
+                    deadline.check().map_err(|_| {
+                        Error::new(
+                            ErrorCode::ResourceExhausted,
+                            "retirement verification deadline expired",
+                        )
+                    })
+                })
+                .map_err(Into::into)
+            },
+        )
+        .await
+    }
+
+    async fn with_verified_backup<T, F>(
+        &self,
+        context: &RequestContext,
+        destination: &dyn BackupDestination,
+        backup_id: uuid::Uuid,
+        finish: F,
+    ) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(
+                crate::backup_verify::VerifiedBackup,
+                VerificationDeadline,
+                QueryCancellation,
+            ) -> anyhow::Result<T>
+            + Send
+            + 'static,
+    {
         self.access()?;
         self.engine.authorize(context, None, Action::Admin)?;
         if backup_id.is_nil() {
@@ -220,15 +280,12 @@ impl Database {
         };
         // Decoded resident state can be large; its destructor and reservation
         // also belong to the actual blocking worker, not a canceled caller.
+        let worker_cancellation = cancellation.clone();
         let proof = deadline
             .blocking(
                 verified._reservation.clone(),
                 Some(registration),
-                move || {
-                    let checkpoint = verified.checkpoint.clone();
-                    drop(verified);
-                    Ok(VerifiedBackupCheckpoint::verified(checkpoint))
-                },
+                move || finish(verified, deadline, worker_cancellation),
             )
             .await
             .map_err(|error| verification_error(error, deadline))?;

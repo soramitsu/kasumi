@@ -7,6 +7,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 #[path = "history_state.rs"]
 pub(crate) mod history;
+#[path = "retirement_state.rs"]
+pub(crate) mod retirement;
 #[path = "schema_activation.rs"]
 pub(crate) mod schema;
 #[path = "staging.rs"]
@@ -95,6 +97,7 @@ impl TenantEngine {
             suspended: false,
             retired: false,
             pending_restore: None,
+            restored_from: None,
             document_count: 0,
             logical_bytes: 0,
             policy,
@@ -108,6 +111,8 @@ impl TenantEngine {
             history_archive_bytes: 0,
             schema_activations: imbl::HashMap::new(),
             schema_activation_bytes: 0,
+            retirements: imbl::HashMap::new(),
+            retirement_bytes: 0,
             audits: imbl::Vector::new(),
         };
         let indexes = Arc::new(QueryIndexes::build(&state.collections)?);
@@ -158,7 +163,7 @@ impl TenantEngine {
         bytes: &[u8],
         expected_tenant: &str,
         incarnation: String,
-        backup_id: uuid::Uuid,
+        checkpoint: FullBackupCheckpoint,
     ) -> Result<Vec<u8>> {
         let mut state: TenantState = serde_json::from_slice(bytes)
             .map_err(|_| Error::new(ErrorCode::Corruption, "invalid logical backup"))?;
@@ -167,9 +172,20 @@ impl TenantEngine {
         }
         Self::verify_logical_snapshot(bytes, &state)?;
         validate_name(&incarnation)?;
+        checkpoint.validate()?;
+        if checkpoint.tenant != state.tenant
+            || checkpoint.source_incarnation != state.incarnation
+            || checkpoint.revision != state.revision
+        {
+            return Err(Error::new(
+                ErrorCode::Corruption,
+                "restored origin differs from verified snapshot",
+            ));
+        }
+        state.restored_from = Some(checkpoint.clone());
         state.incarnation = incarnation;
         state.pending_restore = Some(PendingRestore {
-            backup_id: backup_id.to_string(),
+            backup_id: checkpoint.backup_id.to_string(),
             source_revision: state.revision,
         });
         state.suspended = true;
@@ -301,6 +317,7 @@ impl TenantEngine {
                 &mut next,
                 &command,
                 revision,
+                previous.state.revision,
                 &previous.indexes,
                 &mut receipt_expiry,
                 &mut changed_receipts,
@@ -346,7 +363,8 @@ impl TenantEngine {
             Operation::SetPolicy(_) => "policy",
             Operation::SetLimits(_) => "quota",
             Operation::Suspend(_) => "suspend",
-            Operation::Retire => "retire",
+            Operation::RetireSource(_) => "retire",
+            Operation::AbortRetirement(_) => "retire_stop",
             Operation::Audit(_) | Operation::MaintenanceAudit(_) => "audit",
         };
         if !matches!(
@@ -471,6 +489,7 @@ impl TenantEngine {
         );
         if ordinary {
             schema::reject_budget(&previous.state, &next, &mut rejected, command, &error)?;
+            retirement::reject_budget(&previous.state, &next, &mut rejected, command, &error)?;
             if let Operation::FinalizeStaged(reference) = &command.operation {
                 let key =
                     staged_digest(&(&command.context.principal, &reference.transaction_id))?.0;
@@ -682,6 +701,29 @@ impl TenantEngine {
         let snapshot_accounting = SnapshotAccounting::rebuild(&state)?;
         staging::validate_restored(&state)?;
         schema::validate_restored(&state)?;
+        retirement::validate_restored(&state)?;
+        if let Some(origin) = &state.restored_from {
+            origin.validate()?;
+            if origin.tenant != state.tenant
+                || origin.source_incarnation == state.incarnation
+                || origin.revision >= state.revision_base
+                || state.pending_restore.as_ref().is_some_and(|pending| {
+                    pending.backup_id != origin.backup_id.to_string()
+                        || pending.source_revision != origin.revision
+                })
+            {
+                return Err(Error::new(
+                    ErrorCode::Corruption,
+                    "restored origin binding differs",
+                ));
+            }
+        } else if state.pending_restore.is_some() {
+            return Err(Error::new(
+                ErrorCode::Corruption,
+                "pending restore lacks authenticated origin",
+            ));
+        }
+
         history::validate_restored(&state)?;
         crate::change_feed_state::validate_restored(&state)?;
         if !snapshot_accounting.fits(&state)? {
@@ -763,6 +805,7 @@ fn apply_operation(
     state: &mut TenantState,
     command: &Command,
     revision: u64,
+    previous_revision: u64,
     indexes: &QueryIndexes,
     receipt_expiry: &mut ReceiptExpiry,
     changed_receipts: &mut BTreeSet<String>,
@@ -774,7 +817,11 @@ fn apply_operation(
     if state.retired
         && !matches!(
             command.operation,
-            Operation::MaintenanceAudit(_) | Operation::Retire | Operation::SetLimits(_)
+            Operation::MaintenanceAudit(_)
+                | Operation::RetireSource(_)
+                | Operation::AbortRetirement(_)
+                | Operation::SetLimits(_)
+                | Operation::SetPolicy(_)
         )
     {
         return Err(Error::new(
@@ -936,7 +983,9 @@ fn apply_operation(
             authorize_state(state, &command.context, None, Action::Admin)?;
             validate_limits(limits)?;
             staging::validate_new_limits(state, limits)?;
-            if state.schema_activations.len() > limits.max_schema_activations {
+            if state.schema_activations.len() > limits.max_schema_activations
+                || state.retirements.len() > limits.max_retirements
+            {
                 return Err(Error::new(
                     ErrorCode::QuotaExceeded,
                     "new quota excludes permanent schema activations",
@@ -984,13 +1033,11 @@ fn apply_operation(
             state.policy_epoch = epoch;
             Ok((Ok(receipt()), false))
         }
-        Operation::Retire => {
-            authorize_state(state, &command.context, None, Action::Admin)?;
-            let epoch = next_policy_epoch(state.policy_epoch)?;
-            state.retired = true;
-            state.suspended = true;
-            state.policy_epoch = epoch;
-            Ok((Ok(receipt()), false))
+        Operation::RetireSource(request) => {
+            retirement::apply(state, command, request, previous_revision, revision)
+        }
+        Operation::AbortRetirement(request) => {
+            retirement::abort(state, &command.context, request, revision)
         }
         Operation::Audit(event) => {
             let action = match event.action.as_str() {
@@ -1035,6 +1082,8 @@ fn apply_operation(
                         | "key_rotation"
                         | "key_rewrap"
                         | "membership"
+                        | "retirement_status"
+                        | "retirement_receipt"
                 )
                 || !matches!(
                     event.outcome.as_str(),
@@ -1404,6 +1453,8 @@ fn validate_limits(limits: &Limits) -> Result<()> {
         || limits.max_cursors == 0
         || limits.max_collections == 0
         || limits.max_schema_bytes == 0
+        || limits.max_retirements == 0
+        || limits.max_retirements > 100_000
         || limits.max_schema_activations == 0
         || limits.max_schema_activations > 100_000
         || limits.max_policy_grants == 0
@@ -1550,7 +1601,15 @@ mod restore_budget_tests {
             &bytes,
             "tenant",
             uuid::Uuid::new_v4().to_string(),
-            uuid::Uuid::new_v4(),
+            FullBackupCheckpoint {
+                tenant: source.tenant.clone(),
+                source_incarnation: source.incarnation.clone(),
+                revision: source.revision,
+                resident_sha256: hex::encode(Sha256::digest(&bytes)),
+                backup_id: uuid::Uuid::new_v4(),
+                manifest_ciphertext_sha256: "00".repeat(32),
+                key_lineage_digest: "00".repeat(32),
+            },
         );
         assert_eq!(outcome.unwrap_err().code, ErrorCode::QuotaExceeded);
         assert_eq!(engine.snapshot().unwrap(), bytes);

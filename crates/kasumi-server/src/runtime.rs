@@ -2592,6 +2592,10 @@ mod lifecycle_tests {
             }));
             if round == 0 {
                 use crate::administration::ManagementCommand as M;
+                database
+                    .administer(context.clone(), Operation::Suspend(true))
+                    .await
+                    .unwrap();
                 let backup = manager
                     .execute(
                         context.clone(),
@@ -2611,10 +2615,6 @@ mod lifecycle_tests {
                     .execute(context.clone(), M::RewrapKeys)
                     .await
                     .unwrap();
-                database
-                    .administer(context.clone(), Operation::Suspend(true))
-                    .await
-                    .unwrap();
                 let restored = uuid::Uuid::new_v4();
                 let source = database
                     .engine()
@@ -2623,6 +2623,19 @@ mod lifecycle_tests {
                     .state
                     .incarnation
                     .clone();
+                let retirement_request = kasumi_types::RetireSourceRequest {
+                    retirement_id: "runtime-restore".into(),
+                    expected_source_incarnation: source.clone(),
+                    target_incarnation: restored.to_string(),
+                    destination: "primary".into(),
+                    not_after_ms: u64::MAX,
+                    checkpoint: database
+                        .verify_backup_checkpoint_named(context.clone(), "primary", backup_id)
+                        .await
+                        .unwrap()
+                        .checkpoint()
+                        .clone(),
+                };
                 manager
                     .execute(
                         context.clone(),
@@ -2641,7 +2654,7 @@ mod lifecycle_tests {
                             context.clone(),
                             M::ActivateRestore {
                                 incarnation: restored,
-                                expected_source: source.clone()
+                                retirement: retirement_request.reference().unwrap()
                             }
                         )
                         .await
@@ -2651,7 +2664,7 @@ mod lifecycle_tests {
                     .execute(
                         context.clone(),
                         M::RetireSource {
-                            incarnation: restored,
+                            request: retirement_request.clone(),
                         },
                     )
                     .await
@@ -2664,7 +2677,7 @@ mod lifecycle_tests {
                 );
                 let activation = M::ActivateRestore {
                     incarnation: restored,
-                    expected_source: source,
+                    retirement: retirement_request.reference().unwrap(),
                 };
                 let activation_fence = manager.response_fence(&context, &activation).unwrap();
                 let old_source_fence = manager
@@ -3333,6 +3346,10 @@ mod lifecycle_tests {
             mock.await.unwrap().unwrap();
             return;
         }
+        databases[leader]
+            .administer(context.clone(), Operation::Suspend(true))
+            .await
+            .unwrap();
         let backup = managers[leader]
             .execute(
                 context.clone(),
@@ -3343,10 +3360,6 @@ mod lifecycle_tests {
             .await
             .unwrap();
         let backup_id = uuid::Uuid::parse_str(backup["backup_id"].as_str().unwrap()).unwrap();
-        databases[leader]
-            .administer(context.clone(), Operation::Suspend(true))
-            .await
-            .unwrap();
         tokio::time::timeout(Duration::from_secs(20), async {
             while !databases
                 .iter()
@@ -3365,6 +3378,19 @@ mod lifecycle_tests {
             .state
             .incarnation
             .clone();
+        let retirement_request = kasumi_types::RetireSourceRequest {
+            retirement_id: "replicated-restore".into(),
+            expected_source_incarnation: source.clone(),
+            target_incarnation: incarnation.to_string(),
+            destination: "primary".into(),
+            not_after_ms: u64::MAX,
+            checkpoint: databases[leader]
+                .verify_backup_checkpoint_named(context.clone(), "primary", backup_id)
+                .await
+                .unwrap()
+                .checkpoint()
+                .clone(),
+        };
         managers[0]
             .execute(
                 context.clone(),
@@ -3500,7 +3526,12 @@ mod lifecycle_tests {
                     let metrics = database.raft_group().raft().metrics().borrow().clone();
                     if metrics.current_leader == Some(metrics.id)
                         && manager
-                            .execute(context.clone(), M::RetireSource { incarnation })
+                            .execute(
+                                context.clone(),
+                                M::RetireSource {
+                                    request: retirement_request.clone(),
+                                },
+                            )
                             .await
                             .is_ok()
                     {
@@ -3527,7 +3558,7 @@ mod lifecycle_tests {
                 context.clone(),
                 M::ActivateRestore {
                     incarnation,
-                    expected_source: source.clone(),
+                    retirement: retirement_request.reference().unwrap(),
                 },
             )
         })

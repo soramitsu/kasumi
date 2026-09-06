@@ -1,4 +1,9 @@
 //! Deterministic tenant state and the common authorized service layer.
+mod retirement_closure;
+mod retirement_proof;
+pub use retirement_proof::{
+    VerifiedRetirementReceipt, VerifiedRetirementResolution, VerifiedRetirementStop,
+};
 mod accounting;
 pub mod admission;
 mod backup_format;

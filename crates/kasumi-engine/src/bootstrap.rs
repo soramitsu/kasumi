@@ -117,7 +117,6 @@ pub async fn prepare_replicated_restore(
             deadline,
             target.tenant().into(),
             bootstrap.incarnation.clone(),
-            backup_id,
         )
         .await?;
     deadline.check()?;
@@ -483,12 +482,7 @@ pub async fn restore_local_with_incarnation_and_admission(
         "restore requires a fresh database incarnation"
     );
     let restored = verified
-        .into_genesis(
-            deadline,
-            target.tenant().into(),
-            incarnation.to_string(),
-            backup_id,
-        )
+        .into_genesis(deadline, target.tenant().into(), incarnation.to_string())
         .await?;
     deadline.check()?;
     restore_access(&target, &security_audit, &context).await?;

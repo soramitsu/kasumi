@@ -35,7 +35,6 @@ impl VerifiedBackup {
         deadline: VerificationDeadline,
         tenant: String,
         incarnation: String,
-        backup_id: uuid::Uuid,
     ) -> anyhow::Result<PreparedState> {
         deadline
             .blocking(
@@ -46,7 +45,7 @@ impl VerifiedBackup {
                         &self.bytes,
                         &tenant,
                         incarnation,
-                        backup_id,
+                        self.checkpoint.clone(),
                     )?;
                     deadline.check()?;
                     let engine = Arc::new(TenantEngine::from_bootstrap(&tenant, &bytes)?);

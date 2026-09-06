@@ -16,6 +16,8 @@ mod full_backup;
 mod history_export;
 #[path = "history_reads.rs"]
 mod history_reads;
+#[path = "retirement_service.rs"]
+mod retirement_service;
 #[path = "schema_service.rs"]
 mod schema_service;
 #[path = "snapshot_leases.rs"]
@@ -49,8 +51,9 @@ struct ProposalWork {
     admission_gate: Arc<tokio::sync::Mutex<()>>,
     clock: Arc<dyn CommandClock>,
     schema_engine: Option<Arc<TenantEngine>>,
+    admission: Arc<NodeAdmission>,
     _reservation: Reservation,
-    _registration: WorkRegistration,
+    _registration: Arc<WorkRegistration>,
 }
 
 impl ProposalWork {
@@ -58,7 +61,7 @@ impl ProposalWork {
         // The background proposal owns this gate; caller timeout/cancellation
         // cannot let later commands overtake an unresolved write. Time is
         // sampled only after the previous write has finished.
-        let _guard = self.admission_gate.lock().await;
+        let _guard = self.admission_gate.clone().lock_owned().await;
         if let Err(error) = command.context.authorization.check_live() {
             return Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(error))?);
         }
@@ -74,6 +77,54 @@ impl ProposalWork {
             if let Err(error) = admitted {
                 // No proposal was made and no activation identity was accepted.
                 return Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(error))?);
+            }
+        }
+        if let (Some(engine), Operation::RetireSource(prepared)) =
+            (&self.schema_engine, &mut command.operation)
+        {
+            let generation = engine.generation()?;
+            let admitted = crate::state::retirement::admit(
+                &generation.state,
+                &command.context,
+                &prepared.request,
+            );
+            match admitted {
+                Err(error) => return Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(error))?),
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    let workspace = self.admission.reserve(
+                        crate::retirement_closure::workspace_bytes(&generation.state)?,
+                        None,
+                    )?;
+                    let registration = self._registration.clone();
+                    let credential = command.context.authorization.clone();
+                    struct Output {
+                        result: Result<RetirementObservation>,
+                        _workspace: Reservation,
+                        _registration: Arc<WorkRegistration>,
+                    }
+                    let output = tokio::task::spawn_blocking(move || {
+                        let result = crate::retirement_closure::digest(&generation.state, || {
+                            credential.check_live()
+                        })
+                        .map(|closure_digest| RetirementObservation {
+                            revision: generation.state.revision,
+                            closure_digest,
+                        });
+                        Output {
+                            result,
+                            _workspace: workspace,
+                            _registration: registration,
+                        }
+                    })
+                    .await?;
+                    match output.result {
+                        Ok(observed) => prepared.observation = Some(observed),
+                        Err(error) => {
+                            return Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(error))?);
+                        }
+                    }
+                }
             }
         }
         command.timestamp_ms = self.clock.now_ms()?;
@@ -731,6 +782,8 @@ impl Database {
                 | Operation::FinalizeStaged(_)
                 | Operation::AbortStaged(_)
                 | Operation::PublishHistoryArchive(_)
+                | Operation::RetireSource(_)
+                | Operation::AbortRetirement(_)
         ) {
             return Err(Error::new(
                 ErrorCode::InvalidArgument,
@@ -949,8 +1002,12 @@ impl Database {
         let registration = self.work.begin(QueryCancellation::default())?;
         let proposal = tokio::spawn(
             ProposalWork {
-                schema_engine: matches!(command.operation, Operation::ActivateSchema(_))
-                    .then(|| self.engine.clone()),
+                schema_engine: matches!(
+                    command.operation,
+                    Operation::ActivateSchema(_) | Operation::RetireSource(_)
+                )
+                .then(|| self.engine.clone()),
+                admission: self.admission().clone(),
                 group: self.group.clone(),
                 admission_gate: self.proposal_gate.clone(),
                 clock: self
@@ -959,7 +1016,7 @@ impl Database {
                     .map_err(|_| Error::new(ErrorCode::Unavailable, "command clock unavailable"))?
                     .clone(),
                 _reservation: reservation,
-                _registration: registration,
+                _registration: Arc::new(registration),
             }
             .run(command, max_bytes),
         );
@@ -1740,6 +1797,7 @@ mod tests {
     include!("service_staging_tests.rs");
     include!("service_schema_tests.rs");
     include!("service_credential_tests.rs");
+    include!("service_retirement_tests.rs");
     use super::*;
     use crate::admission::AdmissionConfig;
     use kasumi_store::{NodeStore, test_utils::LocalKeyProvider};

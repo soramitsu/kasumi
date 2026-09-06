@@ -171,11 +171,11 @@ pub enum ManagementCommand {
         incarnation: Uuid,
     },
     RetireSource {
-        incarnation: Uuid,
+        request: kasumi_types::RetireSourceRequest,
     },
     ActivateRestore {
         incarnation: Uuid,
-        expected_source: String,
+        retirement: kasumi_types::RetirementRef,
     },
     AddLearner {
         node_id: u64,
@@ -338,6 +338,36 @@ impl Administration {
                 })
         })
     }
+    /// Exact configured-generation administrative custody. This never selects
+    /// a caller URL or opens an arbitrary historical store.
+    pub async fn authorized_source_database(
+        &self,
+        context: &RequestContext,
+        incarnation: &str,
+    ) -> kasumi_types::Result<Arc<Database>> {
+        let result: Result<Arc<Database>> = async {
+            ensure!(
+                context.tenant != crate::runtime::SECURITY_TENANT,
+                "security tenant has no source route"
+            );
+            kasumi_types::validate_name(incarnation)?;
+            let source = self.generation(&context.tenant, incarnation)?;
+            self.authorized(&source, context, true).await?;
+            Ok(source.database)
+        }
+        .await;
+        result.map_err(|error| {
+            error
+                .downcast_ref::<kasumi_types::Error>()
+                .cloned()
+                .unwrap_or_else(|| {
+                    kasumi_types::Error::new(
+                        kasumi_types::ErrorCode::Unavailable,
+                        "source administrative custody unavailable",
+                    )
+                })
+        })
+    }
     pub fn response_fence(
         self: &Arc<Self>,
         context: &RequestContext,
@@ -355,8 +385,15 @@ impl Administration {
             ManagementCommand::PrepareRestore { incarnation, .. }
             | ManagementCommand::InitializeRestore { incarnation }
             | ManagementCommand::CompleteRestore { incarnation }
-            | ManagementCommand::RetireSource { incarnation }
             | ManagementCommand::ActivateRestore { incarnation, .. } => Some(*incarnation),
+            ManagementCommand::RetireSource { request } => {
+                Some(Uuid::parse_str(&request.target_incarnation).map_err(|_| {
+                    kasumi_types::Error::new(
+                        kasumi_types::ErrorCode::InvalidArgument,
+                        "invalid retirement target",
+                    )
+                })?)
+            }
             _ => None,
         };
         let provisioning = provisioning_tenant(command)
@@ -527,7 +564,10 @@ impl Administration {
             // Management can perform several durable steps. Once execution is
             // admitted, credential expiry cannot assert those steps rolled back.
             admitted = true;
-            let result = self.execute_inner(&context, command).await?;
+            // Keep composed callers and listener tasks from retaining every
+            // administrative branch's workspace in their own async frame.
+            // This remains the same future: dropping it still drops its guards.
+            let result = Box::pin(self.execute_inner(&context, command)).await?;
             let current = self.current(&context.tenant)?;
             self.authorized(&current, &context, false).await?;
             Ok(result)
@@ -908,26 +948,57 @@ impl Administration {
                 .await?;
                 Ok(serde_json::json!({"completed":true,"incarnation":incarnation}))
             }
-            ManagementCommand::RetireSource { incarnation } => {
-                let target = self.generation(&context.tenant, &incarnation.to_string())?;
+            ManagementCommand::RetireSource { request } => {
+                request.validate()?;
+                let target = self.generation(&context.tenant, &request.target_incarnation)?;
                 self.authorized(&target, context, false).await?;
                 let target_state = target.database.engine().generation()?;
                 ensure!(
-                    target_state.state.suspended && target_state.state.pending_restore.is_none(),
-                    "target restore not complete"
+                    target_state.state.suspended
+                        && target_state.state.pending_restore.is_none()
+                        && target_state.state.restored_from.as_ref() == Some(&request.checkpoint),
+                    "target restore must match the exact retirement checkpoint"
                 );
+                let source =
+                    self.generation(&context.tenant, &request.expected_source_incarnation)?;
+                let proof = source
+                    .database
+                    .retire_source(context.clone(), request)
+                    .await?;
                 source
                     .database
-                    .administer(context.clone(), Operation::Retire)
-                    .await?;
-                Ok(serde_json::json!({"retired":true}))
+                    .retirement_response_fence(context, &proof)?
+                    .check()?;
+                Ok(serde_json::to_value(proof.receipt())?)
             }
             ManagementCommand::ActivateRestore {
                 incarnation,
-                expected_source,
+                retirement,
             } => {
+                retirement.validate()?;
+                let expected_source = retirement.source_incarnation.clone();
+                let retired_source = self.generation(&context.tenant, &expected_source)?;
+                let proof = retired_source
+                    .database
+                    .verify_retirement_receipt(context.clone(), &retirement)
+                    .await?;
+                ensure!(
+                    proof.target_incarnation() == incarnation.to_string(),
+                    "retirement target differs"
+                );
                 let target = self.generation(&context.tenant, &incarnation.to_string())?;
                 self.authorized(&target, context, false).await?;
+                ensure!(
+                    target
+                        .database
+                        .engine()
+                        .generation()?
+                        .state
+                        .restored_from
+                        .as_ref()
+                        == Some(proof.checkpoint()),
+                    "target restored origin differs from source retirement"
+                );
                 let source_state = source.database.engine().generation()?;
                 if source_state.state.incarnation == incarnation.to_string() {
                     let plane = ControlPlane::new(self.control.clone())?;
@@ -1981,6 +2052,32 @@ fn validate_voters(topology: &ControlTopology, voters: &BTreeSet<u64>) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn management_entry_future_bounds_stack_residency() {
+        fn future_size<A, F>(_: impl FnOnce(A) -> F) -> usize {
+            std::mem::size_of::<F>()
+        }
+        let bytes = future_size(
+            |(manager, context, command): (
+                &'static Administration,
+                RequestContext,
+                ManagementCommand,
+            )| manager.execute(context, command),
+        );
+        let retirement_bytes = future_size(
+            |(database, context, request): (
+                &'static kasumi_engine::Database,
+                RequestContext,
+                kasumi_types::RetireSourceRequest,
+            )| database.retire_source(context, request),
+        );
+        eprintln!("management future {bytes} bytes; retirement future {retirement_bytes} bytes");
+        assert!(bytes <= 8 * 1024, "management future retains {bytes} bytes");
+        assert!(
+            retirement_bytes <= 8 * 1024,
+            "retirement future retains {retirement_bytes} bytes"
+        );
+    }
     #[test]
     fn closed_commands_reject_path_and_tenant_overrides() {
         assert!(

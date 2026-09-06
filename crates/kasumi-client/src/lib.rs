@@ -12,7 +12,12 @@ use serde::Serialize;
 use std::collections::BTreeSet;
 use tonic::{Request, transport::Channel};
 
+mod retirement_proof;
+pub use retirement_proof::{
+    VerifiedRetirementReceipt, VerifiedRetirementResolution, VerifiedRetirementStop,
+};
 mod backup_proof;
+mod retirement;
 pub use backup_proof::VerifiedBackupCheckpoint;
 
 pub mod proto {

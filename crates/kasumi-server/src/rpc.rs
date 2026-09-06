@@ -13,6 +13,8 @@ use tonic::{Request, Response, Status};
 
 pub use kasumi_client::proto;
 use proto::*;
+#[path = "rpc_retirement.rs"]
+mod retirement;
 
 #[derive(Clone)]
 pub struct NativeData {
@@ -550,6 +552,31 @@ impl NativeAdmin {
 
 #[tonic::async_trait]
 impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
+    async fn abort_retirement(
+        &self,
+        request: Request<RetireSourceRequest>,
+    ) -> Result<Response<RetirementStatusResponse>, Status> {
+        self.abort_retirement_rpc(request).await
+    }
+    async fn retire_source(
+        &self,
+        request: Request<RetireSourceRequest>,
+    ) -> Result<Response<RetirementReceiptResponse>, Status> {
+        self.retire_source_rpc(request).await
+    }
+    async fn retirement_status(
+        &self,
+        request: Request<RetirementReference>,
+    ) -> Result<Response<RetirementStatusResponse>, Status> {
+        self.retirement_status_rpc(request).await
+    }
+    async fn verify_retirement_receipt(
+        &self,
+        request: Request<RetirementReference>,
+    ) -> Result<Response<RetirementReceiptResponse>, Status> {
+        self.verify_retirement_receipt_rpc(request).await
+    }
+
     async fn create_backup_checkpoint(
         &self,
         request: Request<CreateBackupCheckpointRequest>,
