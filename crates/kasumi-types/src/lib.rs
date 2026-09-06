@@ -211,6 +211,7 @@ pub struct Document {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CollectionDefinition {
     pub name: String,
+    pub write_mode: CollectionWriteMode,
     pub schema: Value,
     #[serde(default)]
     pub indexes: Vec<IndexDefinition>,
@@ -218,9 +219,21 @@ pub struct CollectionDefinition {
     pub strict_read_audit: bool,
 }
 
+/// Append-only protection is enforced during ordered application, including
+/// administrative callers. A collection cannot later weaken this protection.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CollectionWriteMode {
+    Mutable,
+    AppendOnly,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CollectionState {
     pub definition: CollectionDefinition,
+    /// Last committed document-change revision; reads, denials and replays do
+    /// not change it. Schema changes are fenced separately by schema_epoch.
+    pub data_epoch: u64,
     #[serde(serialize_with = "serialize_resident_map")]
     // Leaf copy-on-write clones Arc handles, never unrelated JSON bodies.
     pub documents: imbl::HashMap<String, std::sync::Arc<Document>>,
@@ -305,7 +318,46 @@ pub enum Precondition {
 #[serde(deny_unknown_fields)]
 pub struct MutationBatch {
     pub idempotency_key: String,
+    pub read_set: Vec<ReadAssertion>,
     pub operations: Vec<Mutation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "kind",
+    content = "version",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum ReadPrecondition {
+    Absent,
+    Version(u64),
+}
+
+/// Read-only dependencies checked against one pre-write state, after exact
+/// idempotent replay. Collection epochs fence inserts/deletes (phantoms).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ReadAssertion {
+    /// Trusted execution-admission time must not exceed this bound. Replicas
+    /// evaluate the leader-stamped command time, never their local wall clock.
+    Before {
+        not_after_ms: u64,
+    },
+    Snapshot {
+        incarnation: String,
+        policy_epoch: u64,
+        schema_epoch: u64,
+    },
+    Document {
+        collection: String,
+        id: String,
+        expected: ReadPrecondition,
+    },
+    Collection {
+        collection: String,
+        data_epoch: u64,
+    },
 }
 
 /// All nondeterministic values (identity, time, IDs) are fixed before proposal.
@@ -362,6 +414,7 @@ pub struct TenantState {
     /// Logical revisions stay increasing when a backup starts a new Raft history.
     pub revision_base: u64,
     pub policy_epoch: u64,
+    pub schema_epoch: u64,
     pub suspended: bool,
     pub retired: bool,
     pub pending_restore: Option<PendingRestore>,
@@ -523,6 +576,70 @@ pub struct QueryResponse {
     pub cursor: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(deny_unknown_fields)]
+pub struct DocumentKey {
+    pub collection: String,
+    pub id: String,
+}
+
+/// A bounded, complete read from one generation. Queries cannot use cursors;
+/// exceeding a requested row limit fails instead of returning a partial set.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ReadSnapshotRequest {
+    pub documents: Vec<DocumentKey>,
+    pub queries: Vec<QueryRequest>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SnapshotDocument {
+    pub key: DocumentKey,
+    pub document: Option<Document>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SnapshotReadResponse {
+    pub revision: u64,
+    pub incarnation: String,
+    pub policy_epoch: u64,
+    pub schema_epoch: u64,
+    pub collection_epochs: BTreeMap<String, u64>,
+    pub documents: Vec<SnapshotDocument>,
+    pub queries: Vec<QueryResponse>,
+}
+
+impl SnapshotReadResponse {
+    /// Conservative serializable read set: querying a collection fences all
+    /// writes in that collection. Point reads fence only their exact document.
+    pub fn read_assertions(&self) -> Vec<ReadAssertion> {
+        let mut result = vec![ReadAssertion::Snapshot {
+            incarnation: self.incarnation.clone(),
+            policy_epoch: self.policy_epoch,
+            schema_epoch: self.schema_epoch,
+        }];
+        for row in &self.documents {
+            result.push(ReadAssertion::Document {
+                collection: row.key.collection.clone(),
+                id: row.key.id.clone(),
+                expected: row
+                    .document
+                    .as_ref()
+                    .map_or(ReadPrecondition::Absent, |document| {
+                        ReadPrecondition::Version(document.version)
+                    }),
+            });
+        }
+        for (collection, data_epoch) in &self.collection_epochs {
+            result.push(ReadAssertion::Collection {
+                collection: collection.clone(),
+                data_epoch: *data_epoch,
+            });
+        }
+        result
+    }
+}
+
 pub fn validate_name(value: &str) -> Result<()> {
     if value.is_empty() || value.len() > 256 || value.chars().any(|c| c.is_control()) {
         return Err(Error::new(
@@ -582,7 +699,7 @@ mod tests {
     fn remote_mutation_fields_are_closed() {
         assert!(
             serde_json::from_value::<MutationBatch>(
-                serde_json::json!({"idempotency_key":"x","operations":[],"principal":"admin"})
+                serde_json::json!({"read_set":[],"idempotency_key":"x","operations":[],"principal":"admin"})
             )
             .is_err()
         );

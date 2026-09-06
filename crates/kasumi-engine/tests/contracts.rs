@@ -27,6 +27,7 @@ fn policy(strict_read_audit: bool) -> Policy {
 }
 fn definition() -> CollectionDefinition {
     CollectionDefinition {
+        write_mode: kasumi_types::CollectionWriteMode::Mutable,
         name: "people".into(),
         schema: json!({"type":"object", "required":["email","age"], "properties":{"email":{"type":"string"},"age":{"type":"integer","minimum":0}}}),
         indexes: vec![IndexDefinition {
@@ -59,9 +60,227 @@ fn command(operation: Operation) -> Command {
 }
 fn batch(key: &str, operations: Vec<Mutation>) -> MutationBatch {
     MutationBatch {
+        read_set: Vec::new(),
         idempotency_key: key.into(),
         operations,
     }
+}
+
+#[test]
+fn conditional_batches_fence_dependencies_and_phantoms_but_not_audits_or_replays() {
+    let db = engine(false, Limits::default());
+    db.apply_command(1, command(Operation::CreateCollection(definition())))
+        .unwrap()
+        .unwrap();
+    db.apply_command(
+        2,
+        command(Operation::Mutate(batch(
+            "seed",
+            vec![put("a", "a", Precondition::Absent)],
+        ))),
+    )
+    .unwrap()
+    .unwrap();
+    let read_set = vec![
+        ReadAssertion::Snapshot {
+            incarnation: "incarnation-a".into(),
+            policy_epoch: 1,
+            schema_epoch: 1,
+        },
+        ReadAssertion::Document {
+            collection: "people".into(),
+            id: "a".into(),
+            expected: ReadPrecondition::Version(2),
+        },
+        ReadAssertion::Document {
+            collection: "people".into(),
+            id: "b".into(),
+            expected: ReadPrecondition::Absent,
+        },
+        ReadAssertion::Collection {
+            collection: "people".into(),
+            data_epoch: 2,
+        },
+    ];
+    db.apply_command(
+        3,
+        command(Operation::Audit(AuditEvent {
+            event_id: "read-audit".into(),
+            principal: "owner".into(),
+            action: "read".into(),
+            request_id: "test-request".into(),
+            timestamp_ms: 1_000,
+            data_revision: Some(2),
+            outcome: "authorized_release".into(),
+            collection: Some("people".into()),
+        })),
+    )
+    .unwrap()
+    .unwrap();
+    let mut conditional = batch("conditional", vec![put("b", "b", Precondition::Absent)]);
+    conditional.read_set = read_set.clone();
+    let committed = db
+        .apply_command(4, command(Operation::Mutate(conditional.clone())))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        db.generation().unwrap().state.collections["people"].data_epoch,
+        4
+    );
+    let replay = db
+        .apply_command(5, command(Operation::Mutate(conditional)))
+        .unwrap()
+        .unwrap();
+    assert_eq!(replay, committed);
+    assert_eq!(
+        db.generation().unwrap().state.collections["people"].data_epoch,
+        4
+    );
+    for (index, assertion) in read_set.into_iter().skip(2).enumerate() {
+        let mut rejected = batch(
+            &format!("stale-{index}"),
+            vec![put("c", "c", Precondition::Absent)],
+        );
+        rejected.read_set = vec![assertion];
+        assert_eq!(
+            db.apply_command(6 + index as u64, command(Operation::Mutate(rejected)))
+                .unwrap()
+                .unwrap_err()
+                .code,
+            ErrorCode::Conflict
+        );
+        assert!(
+            !db.generation().unwrap().state.collections["people"]
+                .documents
+                .contains_key("c")
+        );
+        assert_eq!(
+            db.generation().unwrap().state.collections["people"].data_epoch,
+            4
+        );
+    }
+    let snapshot = db.snapshot().unwrap();
+    db.restore(&snapshot).unwrap();
+    assert_eq!(db.snapshot().unwrap(), snapshot);
+}
+
+#[test]
+fn read_assertions_block_write_skew_and_require_read_authority() {
+    let db = engine(false, Limits::default());
+    db.apply_command(1, command(Operation::CreateCollection(definition())))
+        .unwrap()
+        .unwrap();
+    db.apply_command(
+        2,
+        command(Operation::Mutate(batch(
+            "seed",
+            vec![
+                put("a", "a", Precondition::Absent),
+                put("b", "b", Precondition::Absent),
+            ],
+        ))),
+    )
+    .unwrap()
+    .unwrap();
+    let mut first = batch("first", vec![put("a", "a-new", Precondition::Version(2))]);
+    first.read_set = vec![ReadAssertion::Document {
+        collection: "people".into(),
+        id: "b".into(),
+        expected: ReadPrecondition::Version(2),
+    }];
+    db.apply_command(3, command(Operation::Mutate(first)))
+        .unwrap()
+        .unwrap();
+    let mut second = batch("second", vec![put("b", "b-new", Precondition::Version(2))]);
+    second.read_set = vec![ReadAssertion::Document {
+        collection: "people".into(),
+        id: "a".into(),
+        expected: ReadPrecondition::Version(2),
+    }];
+    assert_eq!(
+        db.apply_command(4, command(Operation::Mutate(second.clone())))
+            .unwrap()
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    second.idempotency_key = "write-only".into();
+    let mut input = command(Operation::Mutate(second));
+    input.context.scopes.remove(&Action::Read);
+    assert_eq!(
+        db.apply_command(5, input).unwrap().unwrap_err().code,
+        ErrorCode::Forbidden
+    );
+    assert_eq!(
+        db.generation().unwrap().state.collections["people"].documents["b"].body["email"],
+        "b"
+    );
+}
+
+#[test]
+fn append_only_mode_rejects_overwrite_delete_and_schema_weakening_atomically() {
+    let db = engine(false, Limits::default());
+    let mut immutable = definition();
+    immutable.write_mode = CollectionWriteMode::AppendOnly;
+    db.apply_command(1, command(Operation::CreateCollection(immutable.clone())))
+        .unwrap()
+        .unwrap();
+    db.apply_command(
+        2,
+        command(Operation::Mutate(batch(
+            "seed",
+            vec![put("a", "a", Precondition::Absent)],
+        ))),
+    )
+    .unwrap()
+    .unwrap();
+    for (offset, mutation) in [
+        put("a", "changed", Precondition::Version(2)),
+        Mutation::Delete {
+            collection: "people".into(),
+            id: "a".into(),
+            expected: Precondition::Version(2),
+        },
+        put("unconditional", "u", Precondition::Any),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_eq!(
+            db.apply_command(
+                3 + offset as u64,
+                command(Operation::Mutate(batch(
+                    &format!("forbidden-{offset}"),
+                    vec![put("b", "b", Precondition::Absent), mutation]
+                )))
+            )
+            .unwrap()
+            .unwrap_err()
+            .code,
+            ErrorCode::Forbidden
+        );
+        assert!(
+            !db.generation().unwrap().state.collections["people"]
+                .documents
+                .contains_key("b")
+        );
+    }
+    assert_eq!(
+        db.apply_command(6, command(Operation::ReplaceCollection(definition())))
+            .unwrap()
+            .unwrap_err()
+            .code,
+        ErrorCode::Forbidden
+    );
+    assert_eq!(db.generation().unwrap().state.schema_epoch, 1);
+    db.apply_command(7, command(Operation::ReplaceCollection(immutable)))
+        .unwrap()
+        .unwrap();
+    assert_eq!(db.generation().unwrap().state.schema_epoch, 2);
+    assert_eq!(
+        db.generation().unwrap().state.collections["people"].data_epoch,
+        2
+    );
 }
 fn put(id: &str, email: &str, expected: Precondition) -> Mutation {
     Mutation::Put {
@@ -511,6 +730,145 @@ async fn actual_raft_writes_queries_and_snapshot_pagination() {
     assert_eq!(
         db.get(&context("owner"), "people", "b").await.unwrap().body["email"],
         "new-b"
+    );
+    db.shutdown().await.unwrap();
+    audit.shutdown().await;
+}
+
+#[tokio::test]
+async fn coherent_snapshot_reads_span_collections_under_concurrent_commits_and_strict_audit() {
+    let (_dir, db, _key, _store, audit) = database(true).await;
+    let mut mirror = definition();
+    mirror.name = "mirror".into();
+    db.administer(context("owner"), Operation::CreateCollection(mirror))
+        .await
+        .unwrap();
+    let pair = |value: &str| {
+        let first = put("a", value, Precondition::Any);
+        let mut second = first.clone();
+        if let Mutation::Put { collection, .. } = &mut second {
+            *collection = "mirror".into();
+        }
+        vec![first, second]
+    };
+    db.mutate(context("owner"), batch("initial-pair", pair("0")))
+        .await
+        .unwrap();
+    let writer_db = db.clone();
+    let writer = tokio::spawn(async move {
+        for value in 1..=12 {
+            writer_db
+                .mutate(
+                    context("owner"),
+                    batch(&format!("pair-{value}"), pair(&value.to_string())),
+                )
+                .await
+                .unwrap();
+        }
+    });
+    for _ in 0..12 {
+        let snapshot = db
+            .read_snapshot(
+                &context("owner"),
+                ReadSnapshotRequest {
+                    documents: vec![
+                        DocumentKey {
+                            collection: "people".into(),
+                            id: "a".into(),
+                        },
+                        DocumentKey {
+                            collection: "people".into(),
+                            id: "missing".into(),
+                        },
+                    ],
+                    queries: vec![
+                        serde_json::from_value(
+                            json!({"collection":"mirror","allow_scan":true,"limit":100}),
+                        )
+                        .unwrap(),
+                    ],
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            snapshot.documents[0].document.as_ref().unwrap().body["email"],
+            snapshot.queries[0].rows[0].body["email"]
+        );
+        assert!(snapshot.documents[1].document.is_none());
+        assert_eq!(snapshot.queries[0].revision, snapshot.revision);
+        assert_eq!(snapshot.collection_epochs.len(), 1);
+        assert!(snapshot.collection_epochs.contains_key("mirror"));
+        let state = db.engine().generation().unwrap();
+        assert!(state.state.audits.iter().any(|event| event.action == "read"
+            && event.collection.as_deref() == Some("mirror")
+            && event.data_revision == Some(snapshot.revision)));
+    }
+    writer.await.unwrap();
+    let snapshot = db
+        .read_snapshot(
+            &context("owner"),
+            ReadSnapshotRequest {
+                documents: vec![DocumentKey {
+                    collection: "people".into(),
+                    id: "a".into(),
+                }],
+                queries: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+    let mut conditional = batch(
+        "snapshot-dependent",
+        vec![put("b", "b", Precondition::Absent)],
+    );
+    conditional.read_set = snapshot.read_assertions();
+    db.mutate(context("owner"), conditional).await.unwrap();
+    db.shutdown().await.unwrap();
+    audit.shutdown().await;
+}
+
+#[tokio::test]
+async fn snapshot_reads_reject_partial_queries_cursors_and_foreign_authority() {
+    let (_dir, db, _key, _store, audit) = database(false).await;
+    db.mutate(
+        context("owner"),
+        batch(
+            "two",
+            vec![
+                put("a", "a", Precondition::Absent),
+                put("b", "b", Precondition::Absent),
+            ],
+        ),
+    )
+    .await
+    .unwrap();
+    let mut request = ReadSnapshotRequest {
+        documents: Vec::new(),
+        queries: vec![query()],
+    };
+    assert_eq!(
+        db.read_snapshot(&context("owner"), request.clone())
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::ResourceExhausted
+    );
+    request.queries[0].limit = 2;
+    assert_eq!(
+        db.read_snapshot(&context("other"), request.clone())
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Forbidden
+    );
+    request.queries[0].cursor = Some("cursor".into());
+    assert_eq!(
+        db.read_snapshot(&context("owner"), request)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::InvalidArgument
     );
     db.shutdown().await.unwrap();
     audit.shutdown().await;

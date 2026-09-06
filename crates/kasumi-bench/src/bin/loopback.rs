@@ -11,8 +11,9 @@ use kasumi_server::{
     mcp::McpConfig,
     rpc::proto,
     runtime::{TenantConfig, TlsFiles, TransitSettings, example_config},
-    tls::{self, ClientAuthentication, ListenerLimits, TlsIdentity},
+    tls::{self, ListenerLimits},
 };
+use kasumi_transport::{ClientAuthentication, TlsIdentity};
 use kasumi_types::*;
 use rcgen::{
     BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
@@ -179,6 +180,7 @@ fn body(ordinal: usize) -> Value {
 }
 fn definition() -> CollectionDefinition {
     CollectionDefinition {
+        write_mode: kasumi_types::CollectionWriteMode::Mutable,
         name: "docs".into(),
         schema: json!({"type":"object","required":["ordinal","version","text","padding"],"properties":{"ordinal":{"type":"integer"},"version":{"type":"integer"},"text":{"type":"string"},"padding":{"type":"string"}},"additionalProperties":false}),
         indexes: vec![IndexDefinition {
@@ -226,7 +228,7 @@ async fn benchmark(
     let (issuer_stop, shutdown) = watch::channel(false);
     let issuer = tokio::spawn(tls::serve_tls(
         issuer_socket,
-        tls::server_config(&identity(&server)?, ClientAuthentication::OAuth)?,
+        kasumi_transport::server_config(&identity(&server)?, ClientAuthentication::OAuth)?,
         Router::new().route(
             "/keys",
             get(move || {
@@ -357,12 +359,12 @@ async fn benchmark(
             "build kasumid in the same profile before loopback benchmark",
         )?));
     let client_identity = identity(&client)?;
-    let pin = tls::certificate_pin(&std::fs::read(&server.certificate)?)?;
+    let pin = kasumi_transport::certificate_pin(&std::fs::read(&server.certificate)?)?;
     let native_url = format!("https://localhost:{}", native.port());
     let admin_url = format!("https://localhost:{}", admin.port());
     let opened = Instant::now();
     let channel = loop {
-        match tls::grpc_channel(
+        match kasumi_transport::grpc_channel(
             &admin_url,
             &client_identity,
             authority.pem.as_bytes(),
@@ -387,7 +389,7 @@ async fn benchmark(
         }
     };
     let mut admin_client = proto::kasumi_admin_client::KasumiAdminClient::new(channel);
-    let channel = tls::grpc_channel(
+    let channel = kasumi_transport::grpc_channel(
         &native_url,
         &client_identity,
         authority.pem.as_bytes(),
@@ -460,6 +462,7 @@ async fn benchmark(
                 data.mutate(request(
                     proto::MutateRequest {
                         batch_json: serde_json::to_vec(&MutationBatch {
+                            read_set: Vec::new(),
                             idempotency_key: format!("load-{batch}"),
                             operations: std::mem::take(&mut operations_batch),
                         })?,
@@ -474,6 +477,7 @@ async fn benchmark(
             data.mutate(request(
                 proto::MutateRequest {
                     batch_json: serde_json::to_vec(&MutationBatch {
+                        read_set: Vec::new(),
                         idempotency_key: format!("load-{batch}"),
                         operations: operations_batch,
                     })?,
@@ -535,7 +539,7 @@ async fn benchmark(
             .context("restart kasumid for recovery measurement")?,
     ));
     let channel = loop {
-        match tls::grpc_channel(
+        match kasumi_transport::grpc_channel(
             &native_url,
             &client_identity,
             authority.pem.as_bytes(),

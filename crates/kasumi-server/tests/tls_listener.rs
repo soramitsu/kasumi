@@ -2,9 +2,8 @@ mod tls_support;
 
 use anyhow::Result;
 use axum::{Router, routing::get};
-use kasumi_server::tls::{
-    ClientAuthentication, ListenerLimits, peer_client_config, serve_tls, server_config,
-};
+use kasumi_server::tls::{ListenerLimits, serve_tls};
+use kasumi_transport::{ClientAuthentication, grpc_channel, peer_client_config, server_config};
 use std::{
     collections::BTreeSet,
     sync::{
@@ -24,7 +23,6 @@ async fn native_grpc_channel_uses_pinned_tls13_and_http2_with_no_plaintext_fallb
             NativeData,
             proto::{CollectionsRequest, kasumi_data_client::KasumiDataClient},
         },
-        tls::grpc_channel,
     };
     let ca = Authority::new()?;
     let server = ca.issue("127.0.0.1")?;
@@ -64,6 +62,49 @@ async fn native_grpc_channel_uses_pinned_tls13_and_http2_with_no_plaintext_fallb
         .await
         .unwrap_err();
     assert_eq!(error.code(), tonic::Code::Unauthenticated);
+    let mut client_config = kasumi_client::KasumiClientConfig {
+        endpoint: endpoint.clone(),
+        identity: caller.tls()?,
+        trusted_ca_pem: ca.pem.as_bytes().to_vec(),
+        server_certificate_pins: pins.clone(),
+    };
+    let mut typed = kasumi_client::KasumiClient::connect(&client_config).await?;
+    let error = typed
+        .read_snapshot(
+            "invalid",
+            &kasumi_types::ReadSnapshotRequest {
+                documents: vec![kasumi_types::DocumentKey {
+                    collection: "docs".into(),
+                    id: "a".into(),
+                }],
+                queries: vec![],
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, kasumi_client::ClientError::Transport(status) if status.code() == tonic::Code::Unauthenticated)
+    );
+    drop(typed);
+    client_config.server_certificate_pins.clear();
+    assert!(
+        kasumi_client::KasumiClient::connect(&client_config)
+            .await
+            .is_err()
+    );
+    client_config.server_certificate_pins = BTreeSet::from([[0; 32]]);
+    assert!(
+        kasumi_client::KasumiClient::connect(&client_config)
+            .await
+            .is_err()
+    );
+    client_config.server_certificate_pins = pins.clone();
+    client_config.endpoint = endpoint.replacen("https:", "http:", 1);
+    assert!(
+        kasumi_client::KasumiClient::connect(&client_config)
+            .await
+            .is_err()
+    );
     assert!(
         grpc_channel(
             &endpoint,

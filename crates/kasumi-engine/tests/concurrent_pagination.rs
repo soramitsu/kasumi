@@ -36,6 +36,7 @@ fn policy(reader: bool) -> Policy {
 
 fn batch(phase: usize) -> MutationBatch {
     MutationBatch {
+        read_set: Vec::new(),
         idempotency_key: format!("phase-{phase}"),
         operations: (0..32)
             .map(|ordinal| Mutation::Put {
@@ -71,6 +72,7 @@ async fn snapshot_pages_overlap_atomic_writers_and_current_policy_revocation() {
         .administer(
             identity("owner"),
             Operation::CreateCollection(CollectionDefinition {
+                write_mode: kasumi_types::CollectionWriteMode::Mutable,
                 name: "docs".into(),
                 schema: json!({"type":"object"}),
                 indexes: vec![],

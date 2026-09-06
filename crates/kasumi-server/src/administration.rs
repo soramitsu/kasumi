@@ -1359,6 +1359,7 @@ impl Administration {
         );
         let hash = self.provision_hash(tenant, &target)?;
         let definition = kasumi_types::CollectionDefinition {
+            write_mode: kasumi_types::CollectionWriteMode::Mutable,
             name: "tenant_provisioning".into(),
             schema: serde_json::json!({"type":"object","required":["bootstrap_sha256"],"additionalProperties":false,
                 "properties":{"bootstrap_sha256":{"type":"string","pattern":"^provision-v1-[a-f0-9]{64}$"}}}),
@@ -1393,6 +1394,7 @@ impl Administration {
                 .mutate(
                     context.clone(),
                     kasumi_types::MutationBatch {
+                        read_set: Vec::new(),
                         idempotency_key: format!(
                             "approve-tenant-{}",
                             hex_digest(format!("{tenant}/{hash}").as_bytes())

@@ -238,6 +238,7 @@ pub fn validate_collection(
         validate_document(definition, &document.body)?;
     }
     check_unique(&CollectionState {
+        data_epoch: 0,
         definition: definition.clone(),
         documents: documents.clone(),
     })

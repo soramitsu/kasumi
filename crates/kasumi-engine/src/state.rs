@@ -64,6 +64,7 @@ impl TenantEngine {
             revision: 0,
             revision_base: 0,
             policy_epoch: 0,
+            schema_epoch: 0,
             suspended: false,
             retired: false,
             pending_restore: None,
@@ -498,6 +499,14 @@ impl TenantEngine {
         validate_limits(&state.limits)?;
         validate_policy(&state.policy, &state.limits)?;
         validate_metadata_budget(&state.collections, &state.limits)?;
+        if state.schema_epoch > state.policy_epoch
+            || (!state.collections.is_empty() && state.schema_epoch == 0)
+        {
+            return Err(Error::new(
+                ErrorCode::Corruption,
+                "invalid snapshot schema epoch",
+            ));
+        }
         if state.retired && !state.suspended {
             return Err(Error::new(
                 ErrorCode::Corruption,
@@ -517,6 +526,12 @@ impl TenantEngine {
         let mut count = 0u64;
         let mut logical_bytes = 0u64;
         for (name, collection) in &state.collections {
+            if collection.data_epoch > state.revision {
+                return Err(Error::new(
+                    ErrorCode::Corruption,
+                    "invalid snapshot data/schema epoch",
+                ));
+            }
             if name != &collection.definition.name {
                 return Err(Error::new(
                     ErrorCode::Corruption,
@@ -527,7 +542,7 @@ impl TenantEngine {
             check_unique(collection)?;
             for (id, document) in &collection.documents {
                 validate_name(id)?;
-                if id != &document.id || document.version > state.revision {
+                if id != &document.id || document.version > collection.data_epoch {
                     return Err(Error::new(
                         ErrorCode::Corruption,
                         "invalid document identity/version",
@@ -667,6 +682,13 @@ fn apply_operation(
                     Action::Write,
                 )?;
             }
+            for assertion in &batch.read_set {
+                if let ReadAssertion::Document { collection, .. }
+                | ReadAssertion::Collection { collection, .. } = assertion
+                {
+                    authorize_state(state, &command.context, Some(collection), Action::Read)?;
+                }
+            }
             if batch.operations.is_empty() {
                 return Err(Error::new(
                     ErrorCode::InvalidArgument,
@@ -721,14 +743,16 @@ fn apply_operation(
                 ));
             }
             let mut staged = state.clone();
-            let outcome = apply_batch(&mut staged, batch, revision).and_then(|receipt| {
-                indexes.validate_unique_changes(
-                    &state.collections,
-                    &staged.collections,
-                    &batch_changes(batch),
-                )?;
-                Ok(receipt)
-            });
+            let outcome = apply_batch(&mut staged, batch, revision, command.timestamp_ms).and_then(
+                |receipt| {
+                    indexes.validate_unique_changes(
+                        &state.collections,
+                        &staged.collections,
+                        &batch_changes(batch),
+                    )?;
+                    Ok(receipt)
+                },
+            );
             if outcome.is_ok() {
                 *state = staged;
             }
@@ -774,8 +798,18 @@ fn apply_operation(
                 return Err(Error::new(ErrorCode::NotFound, "collection not found"));
             }
             let documents = current.map(|c| c.documents.clone()).unwrap_or_default();
+            if current.is_some_and(|collection| {
+                collection.definition.write_mode == CollectionWriteMode::AppendOnly
+                    && definition.write_mode != CollectionWriteMode::AppendOnly
+            }) {
+                return Err(Error::new(
+                    ErrorCode::Forbidden,
+                    "append-only protection cannot be weakened",
+                ));
+            }
             validate_collection(definition, &documents)?;
             let collection = CollectionState {
+                data_epoch: current.map_or(0, |collection| collection.data_epoch),
                 definition: definition.clone(),
                 documents,
             };
@@ -784,8 +818,10 @@ fn apply_operation(
             collections.insert(definition.name.clone(), collection);
             validate_metadata_budget(&collections, &state.limits)?;
             let epoch = next_policy_epoch(state.policy_epoch)?;
+            let schema_epoch = next_policy_epoch(state.schema_epoch)?;
             state.collections = collections;
             state.policy_epoch = epoch;
+            state.schema_epoch = schema_epoch;
             Ok((Ok(receipt()), true))
         }
         Operation::SetPolicy(policy) => {
@@ -918,6 +954,7 @@ fn apply_batch(
     state: &mut TenantState,
     batch: &MutationBatch,
     revision: u64,
+    evaluated_at_ms: u64,
 ) -> Result<WriteReceipt> {
     if batch.operations.len() > state.limits.max_batch_operations
         || encoded_len(batch)? > state.limits.max_batch_bytes
@@ -927,6 +964,7 @@ fn apply_batch(
             "mutation batch exceeds limits",
         ));
     }
+    validate_read_set(state, &batch.read_set, evaluated_at_ms)?;
     let mut targets = BTreeSet::new();
     let mut versions = BTreeMap::new();
     for mutation in &batch.operations {
@@ -943,6 +981,14 @@ fn apply_batch(
             .get_mut(name)
             .ok_or_else(|| Error::new(ErrorCode::NotFound, "collection not found"))?;
         let old = collection.documents.get(id);
+        if collection.definition.write_mode == CollectionWriteMode::AppendOnly
+            && !matches!(mutation, Mutation::Put { expected: Precondition::Absent, .. } if old.is_none())
+        {
+            return Err(Error::new(
+                ErrorCode::Forbidden,
+                "append-only collections accept absent creates only",
+            ));
+        }
         match mutation.expected() {
             Precondition::Any => {}
             Precondition::Absent if old.is_none() => {}
@@ -981,12 +1027,14 @@ fn apply_batch(
                         body: body.clone(),
                     }),
                 );
+                collection.data_epoch = revision;
                 versions.insert(document_path(name, id), revision);
             }
             Mutation::Delete { .. } => {
                 if collection.documents.remove(id).is_some() {
                     state.document_count -= 1;
                     state.logical_bytes -= old_bytes;
+                    collection.data_epoch = revision;
                 }
                 versions.insert(document_path(name, id), revision);
             }
@@ -1001,6 +1049,96 @@ fn apply_batch(
         ));
     }
     Ok(WriteReceipt { revision, versions })
+}
+
+fn validate_read_set(
+    state: &TenantState,
+    assertions: &[ReadAssertion],
+    evaluated_at_ms: u64,
+) -> Result<()> {
+    if assertions.len() > 512 {
+        return Err(Error::new(
+            ErrorCode::ResourceExhausted,
+            "read assertion limit exceeded",
+        ));
+    }
+    let mut identities = BTreeSet::new();
+    for assertion in assertions {
+        let identity =
+            match assertion {
+                ReadAssertion::Before { not_after_ms } => {
+                    if evaluated_at_ms > *not_after_ms {
+                        return Err(Error::new(
+                            ErrorCode::Conflict,
+                            "transaction authorization deadline expired",
+                        ));
+                    }
+                    (3, "", "")
+                }
+                ReadAssertion::Snapshot {
+                    incarnation,
+                    policy_epoch,
+                    schema_epoch,
+                } => {
+                    validate_name(incarnation)?;
+                    if incarnation != &state.incarnation
+                        || *policy_epoch != state.policy_epoch
+                        || *schema_epoch != state.schema_epoch
+                    {
+                        return Err(Error::new(
+                            ErrorCode::Conflict,
+                            "snapshot identity or authority changed",
+                        ));
+                    }
+                    (0, "", "")
+                }
+                ReadAssertion::Document {
+                    collection,
+                    id,
+                    expected,
+                } => {
+                    validate_name(collection)?;
+                    validate_name(id)?;
+                    let collection_state = state.collections.get(collection).ok_or_else(|| {
+                        Error::new(ErrorCode::NotFound, "read collection not found")
+                    })?;
+                    let document = collection_state.documents.get(id);
+                    let matches = match expected {
+                        ReadPrecondition::Absent => document.is_none(),
+                        ReadPrecondition::Version(version) => {
+                            document.is_some_and(|d| d.version == *version)
+                        }
+                    };
+                    if !matches {
+                        return Err(Error::new(
+                            ErrorCode::Conflict,
+                            "read document precondition failed",
+                        ));
+                    }
+                    (1, collection.as_str(), id.as_str())
+                }
+                ReadAssertion::Collection {
+                    collection,
+                    data_epoch,
+                } => {
+                    validate_name(collection)?;
+                    let current = state.collections.get(collection).ok_or_else(|| {
+                        Error::new(ErrorCode::NotFound, "read collection not found")
+                    })?;
+                    if current.data_epoch != *data_epoch {
+                        return Err(Error::new(ErrorCode::Conflict, "read collection changed"));
+                    }
+                    (2, collection.as_str(), "")
+                }
+            };
+        if !identities.insert(identity) {
+            return Err(Error::new(
+                ErrorCode::InvalidArgument,
+                "duplicate read assertion",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn batch_changes(batch: &MutationBatch) -> BTreeMap<String, BTreeSet<String>> {
@@ -1150,6 +1288,7 @@ mod restore_budget_tests {
                     context: context.clone(),
                     timestamp_ms: 1,
                     operation: Operation::CreateCollection(CollectionDefinition {
+                        write_mode: kasumi_types::CollectionWriteMode::Mutable,
                         name: "docs".into(),
                         schema: serde_json::json!({"type":"object"}),
                         indexes: vec![],
@@ -1166,6 +1305,7 @@ mod restore_budget_tests {
                     context,
                     timestamp_ms: 2,
                     operation: Operation::Mutate(MutationBatch {
+                        read_set: Vec::new(),
                         idempotency_key: "key".into(),
                         operations: vec![Mutation::Put {
                             collection: "docs".into(),

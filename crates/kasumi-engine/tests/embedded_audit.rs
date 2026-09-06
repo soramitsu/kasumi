@@ -79,6 +79,7 @@ async fn every_embedded_request_boundary_durably_audits_denials_and_sealed_tenan
     denied!(db.mutate(
         visitor.clone(),
         MutationBatch {
+            read_set: Vec::new(),
             idempotency_key: "private-receipt-value".into(),
             operations: vec![Mutation::Put {
                 collection: "docs".into(),

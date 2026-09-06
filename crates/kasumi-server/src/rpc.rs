@@ -11,9 +11,7 @@ use kasumi_types::{Operation, RequestContext, validate_name};
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
-pub mod proto {
-    tonic::include_proto!("kasumi.v1");
-}
+pub use kasumi_client::proto;
 use proto::*;
 
 #[derive(Clone)]
@@ -139,6 +137,31 @@ impl kasumi_data_server::KasumiData for NativeData {
             .map_err(status)?;
         Ok(Response::new(response))
     }
+    async fn read_snapshot(
+        &self,
+        request: Request<ReadSnapshotRequest>,
+    ) -> Result<Response<ReadSnapshotResponse>, Status> {
+        let context = verified(&self.auth, &request).await?;
+        let snapshot = decode_json(&request.into_inner().request_json).map_err(status)?;
+        let database = routed(&self.registry, &self.auth, &context).await?;
+        let fence = self
+            .auth
+            .audit_result(&context, database.response_fence(&context))
+            .await
+            .map_err(status)?;
+        let result = database
+            .read_snapshot(&context, snapshot)
+            .await
+            .map_err(|error| self.registry.status(&context, error))?;
+        let response = ReadSnapshotResponse {
+            response_json: encode_json(&result).map_err(status)?,
+        };
+        let response = release_response(&self.auth, &context, fence, response, false)
+            .await
+            .map_err(status)?;
+        Ok(Response::new(response))
+    }
+
     async fn mutate(
         &self,
         request: Request<MutateRequest>,

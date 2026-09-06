@@ -145,6 +145,7 @@ impl ControlPlane {
             .engine()
             .authorize(&context, None, Action::Admin)?;
         let definition = CollectionDefinition {
+            write_mode: kasumi_types::CollectionWriteMode::Mutable,
             name: COLLECTION.into(),
             schema: json!({
                 "$schema":"https://json-schema.org/draft/2020-12/schema", "type":"object",
@@ -221,6 +222,7 @@ impl ControlPlane {
             .mutate(
                 context,
                 MutationBatch {
+                    read_set: Vec::new(),
                     idempotency_key,
                     operations: vec![Mutation::Put {
                         collection: COLLECTION.into(),

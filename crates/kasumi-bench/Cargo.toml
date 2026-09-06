@@ -6,7 +6,7 @@ rust-version.workspace = true
 default-run = "kasumi-bench"
 
 [features]
-network = ["dep:kasumi-server", "dep:reqwest", "dep:tonic", "dep:zeroize"]
+network = ["dep:kasumi-server", "dep:kasumi-transport", "dep:reqwest", "dep:tonic", "dep:zeroize"]
 loopback = ["network", "dep:rcgen", "dep:jsonwebtoken", "dep:base64", "dep:axum", "dep:async-trait"]
 
 [[bin]]
@@ -34,6 +34,7 @@ kasumi-raft.workspace = true
 kasumi-store = { workspace = true, features = ["test-utils"] }
 libc = "0.2"
 kasumi-server = { path = "../kasumi-server", optional = true }
+kasumi-transport = { workspace = true, optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"], optional = true }
 tonic = { version = "0.14", default-features = false, features = ["transport", "codegen"], optional = true }
 zeroize = { version = "1", optional = true }

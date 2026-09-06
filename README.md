@@ -6,13 +6,16 @@ OpenRaft provide persistence and ordered writes. JSON Schema validation, atomic
 batches, CAS, idempotency receipts, typed queries, and English/Japanese search
 share one authorization layer across Rust, native gRPC, and MCP.
 
-**Status:** the v1 implementation and software acceptance gates are complete.
+**Status:** the original v1 baseline passed software acceptance gates.
 Both macOS and Linux passed 188 workspace tests, strict lint/formatting and live
 service checks. The [measured results](benchmarks/RESULTS.md) cover all 15 required
 cases: 99,000 successful operations at 1, 100 and 1,000 tenants. They preserve
 source and executable identities, earlier failures and shared-host limitations.
 The [acceptance checklist](docs/release-checklist.md) maps every agreed requirement
 to implementation and evidence. No Redis multiplier or production SLA is claimed.
+New first-release [conditional transaction and snapshot contracts](docs/transactions.md)
+extend that recorded baseline. Their focused regression tests do not replace
+the baseline's full platform and performance gates for the changed source.
 
 ## Deployment contracts
 
@@ -38,6 +41,8 @@ scoped to the principal and retained for 24 hours, including in snapshots.
 | `kasumi-raft` | OpenRaft 0.9.25, durable storage adapters and quorum barriers |
 | `kasumi-query` | Offline schemas, persistent structured indexes, Tantivy/Lindera |
 | `kasumi-engine` | Ordered application, shared API, bootstrap, restore, control metadata |
+| `kasumi-client` | Shared native Protobuf and a typed snapshot/mutation client |
+| `kasumi-transport` | Shared TLS 1.3, mTLS, CA validation and server certificate pinning |
 | `kasumi-server` | OAuth, TLS/mTLS, native Protobuf, MCP and administrative runtime |
 | `kasumi-bench` | Reproducible latency, memory and recovery measurements across API layers |
 

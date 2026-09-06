@@ -76,6 +76,7 @@ The `CollectionDefinition` JSON for the examples below is:
 ```json
 {
   "name": "docs",
+  "write_mode": "mutable",
   "schema": {"type": "object", "properties": {"amount": {"type": "number"}}},
   "indexes": [{"name": "amount", "fields": [{"path": "/amount", "kind": "number"}]}]
 }
@@ -88,6 +89,7 @@ that existing collection:
 ```rust
 let batch: kasumi_types::MutationBatch = serde_json::from_str(r#"{
   "idempotency_key": "invoice-creation-42",
+  "read_set": [],
   "operations": [{
     "op": "put", "collection": "docs", "id": "invoice-42",
     "body": {"amount": 9007199254740993.123456789},
@@ -114,13 +116,23 @@ also provides the separate control/security stores and shared admission limits.
 ## Native gRPC
 
 The authoritative wire schema is
-[`kasumi.proto`](../crates/kasumi-server/proto/kasumi.proto), package `kasumi.v1`.
+[`kasumi.proto`](../crates/kasumi-client/proto/kasumi.proto), package `kasumi.v1`.
 Generate clients with the normal Protobuf toolchain or use
-`kasumi_server::rpc::proto::kasumi_data_client::KasumiDataClient`.
+`kasumi_client::proto::kasumi_data_client::KasumiDataClient`.
+The independent `kasumi-client` crate also provides a typed `KasumiClient`
+wrapper for `query`, `read_snapshot` and `mutate`, constructed with
+`KasumiClient::connect(&KasumiClientConfig)`. The required configuration contains
+the HTTPS `endpoint`, `identity` (`kasumi_transport::TlsIdentity`),
+`trusted_ca_pem` and nonempty `server_certificate_pins`. There is no unchecked
+channel constructor. Every method takes the
+current bearer token explicitly. The client preserves structured native status
+errors and performs no implicit retries or redirects.
 Connect to the native data endpoint using TLS 1.3 and an approved client
-certificate. In Rust, `kasumi_server::tls::grpc_channel` takes the HTTPS origin,
+certificate. In Rust, `kasumi_transport::grpc_channel` takes the HTTPS origin,
 `TlsIdentity`, trusted CA PEM and a set of SHA-256 server leaf-certificate pins.
 It returns the channel accepted by the generated client.
+The server listeners, peer transport and SDK use this one shared implementation;
+the SDK does not depend on `kasumi-server` or storage internals.
 
 Every call also supplies `authorization: Bearer <access token>` metadata.
 Kasumi verifies signed JWT access tokens against its configured issuer, audience,
@@ -134,6 +146,7 @@ alone does not grant document access.
 | --- | --- | --- |
 | `Get` | `collection`, `id` | Document ID, version and exact UTF-8 `body_json` bytes |
 | `Query` | UTF-8 `query_json` bytes | Snapshot revision, rows, JSON aggregate bytes and optional cursor |
+| `ReadSnapshot` | UTF-8 `request_json` bytes: document keys and queries | One coherent generation as UTF-8 `response_json`, including read assertions' source versions/epochs |
 | `Mutate` | UTF-8 `batch_json` bytes, using the batch shape above | Revision and per-document versions |
 | `Collections` | Empty message | Authorized collection definitions as JSON bytes |
 | `Receipt` | `idempotency_key` | Committed receipt, rejected database error, or no retained outcome |
@@ -143,6 +156,19 @@ Do not convert these JSON byte fields through Protobuf's double-valued
 An authorized `kasumi-leader-node-id` hint refers to the operator-approved node
 map; it is not a redirect URL. Tenant and control groups can have different
 leaders. Follow [routing and outcomes](administration.md#routing-and-outcomes).
+
+## Conditional transactions and immutable collections
+
+`MutationBatch.read_set` and `CollectionDefinition.write_mode` are required v1
+fields. A conditional batch verifies all its read dependencies against one
+pre-write state, then atomically applies writes across that tenant's collections.
+Reads from a separate earlier `get` or `query` are not automatically dependencies.
+Use `Database::read_snapshot` or native `ReadSnapshot` to capture coherent inputs,
+and `SnapshotReadResponse::read_assertions()` to fence them in the subsequent batch.
+
+See [transaction contracts](transactions.md) for the exact assertion shapes,
+queue-admission deadline semantics, immutable collection rules and bounded
+snapshot behavior.
 
 ## MCP 2026-07-28
 

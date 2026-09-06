@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/kasumi-types", "crates/kasumi-store", "crates/kasumi-query", "crates/kasumi-raft", "crates/kasumi-engine", "crates/kasumi-server", "crates/kasumi-bench"]
+members = ["crates/kasumi-types", "crates/kasumi-store", "crates/kasumi-query", "crates/kasumi-raft", "crates/kasumi-engine", "crates/kasumi-transport", "crates/kasumi-client", "crates/kasumi-server", "crates/kasumi-bench"]
 
 [workspace.package]
 version = "0.1.0"
@@ -24,6 +24,8 @@ kasumi-store = { path = "crates/kasumi-store" }
 kasumi-query = { path = "crates/kasumi-query" }
 kasumi-raft = { path = "crates/kasumi-raft" }
 kasumi-engine = { path = "crates/kasumi-engine" }
+kasumi-client = { path = "crates/kasumi-client" }
+kasumi-transport = { path = "crates/kasumi-transport" }
 
 [profile.release]
 lto = "thin"

@@ -3,6 +3,7 @@ use serde_json::json;
 
 fn definition(fields: &[(&str, ScalarType)]) -> CollectionDefinition {
     CollectionDefinition {
+        write_mode: kasumi_types::CollectionWriteMode::Mutable,
         name: "docs".into(),
         schema: json!({"type":"object"}),
         strict_read_audit: false,
@@ -44,6 +45,7 @@ fn collection(
     BTreeMap::from([(
         "docs".into(),
         CollectionState {
+            data_epoch: 0,
             definition,
             documents,
         },

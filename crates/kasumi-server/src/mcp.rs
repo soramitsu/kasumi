@@ -498,7 +498,14 @@ fn tools() -> &'static Vec<Tool> {
         let precondition = json!({"oneOf":[object(json!({"kind":{"enum":["any","absent"]}}),json!(["kind"])),object(json!({"kind":{"const":"version"},"version":{"type":"integer","minimum":0}}),json!(["kind","version"]))]});
         let put = object(json!({"op":{"const":"put"},"collection":name,"id":name,"body":{"type":"object"},"expected":precondition}),json!(["op","collection","id","body"]));
         let delete = object(json!({"op":{"const":"delete"},"collection":name,"id":name,"expected":precondition}),json!(["op","collection","id"]));
-        let mutate = object(json!({"idempotency_key":name,"operations":{"type":"array","minItems":1,"maxItems":256,"items":{"oneOf":[put,delete]}}}),json!(["idempotency_key","operations"]));
+        let read_expected = json!({"oneOf":[object(json!({"kind":{"const":"absent"}}),json!(["kind"])),object(json!({"kind":{"const":"version"},"version":{"type":"integer","minimum":0}}),json!(["kind","version"]))]});
+        let read_assertion = json!({"oneOf":[
+            object(json!({"kind":{"const":"before"},"not_after_ms":{"type":"integer","minimum":0}}),json!(["kind","not_after_ms"])),
+            object(json!({"kind":{"const":"snapshot"},"incarnation":name,"policy_epoch":{"type":"integer","minimum":0},"schema_epoch":{"type":"integer","minimum":0}}),json!(["kind","incarnation","policy_epoch","schema_epoch"])),
+            object(json!({"kind":{"const":"document"},"collection":name,"id":name,"expected":read_expected}),json!(["kind","collection","id","expected"])),
+            object(json!({"kind":{"const":"collection"},"collection":name,"data_epoch":{"type":"integer","minimum":0}}),json!(["kind","collection","data_epoch"]))
+        ]});
+        let mutate = object(json!({"idempotency_key":name,"read_set":{"type":"array","maxItems":512,"items":read_assertion},"operations":{"type":"array","minItems":1,"maxItems":256,"items":{"oneOf":[put,delete]}}}),json!(["idempotency_key","read_set","operations"]));
         vec![
             make_tool("kasumi_collections","Discover authorized collection schemas and declared indexes.",object(json!({}),json!([])),true),
             make_tool("kasumi_get","Read one document by collection/id after a read barrier.",object(json!({"collection":name,"id":name}),json!(["collection","id"])),true),

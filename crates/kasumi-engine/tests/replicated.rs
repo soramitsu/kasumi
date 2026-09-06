@@ -101,6 +101,7 @@ async fn leader(nodes: &BTreeMap<u64, Arc<Database>>, exclude: Option<u64>) -> u
 }
 fn batch() -> MutationBatch {
     MutationBatch {
+        read_set: Vec::new(),
         idempotency_key: "receipt-after-failover".into(),
         operations: ["a", "b"]
             .into_iter()
@@ -150,6 +151,7 @@ async fn replicated_service_preserves_batches_receipts_and_cursor_fences_across_
         .administer(
             context(),
             Operation::CreateCollection(CollectionDefinition {
+                write_mode: kasumi_types::CollectionWriteMode::Mutable,
                 name: "documents".into(),
                 schema: json!({"type":"object"}),
                 indexes: vec![],
@@ -308,6 +310,7 @@ async fn replicated_restore_has_identical_genesis_and_requires_quorum_audit_befo
         .administer(
             context(),
             Operation::CreateCollection(CollectionDefinition {
+                write_mode: kasumi_types::CollectionWriteMode::Mutable,
                 name: "documents".into(),
                 schema: json!({"type":"object"}),
                 indexes: vec![],

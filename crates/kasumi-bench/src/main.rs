@@ -208,6 +208,7 @@ fn definition(text: bool) -> CollectionDefinition {
         }
     }
     CollectionDefinition {
+        write_mode: kasumi_types::CollectionWriteMode::Mutable,
         name: "docs".into(),
         schema: json!({"type":"object","required":["ordinal","version","text","padding"],"properties":{"ordinal":{"type":"integer"},"version":{"type":"integer"},"text":{"type":"string"},"padding":{"type":"string"}},"additionalProperties":false}),
         indexes,
@@ -518,6 +519,7 @@ async fn database_case(
                     .mutate(
                         context(tenant),
                         MutationBatch {
+                            read_set: Vec::new(),
                             idempotency_key: format!("load-{load_batches}"),
                             operations: std::mem::take(&mut operations),
                         },
@@ -546,6 +548,7 @@ async fn database_case(
                 .mutate(
                     context(tenant),
                     MutationBatch {
+                        read_set: Vec::new(),
                         idempotency_key: format!("load-{load_batches}"),
                         operations,
                     },
@@ -704,6 +707,7 @@ async fn workload(
                     .mutate(
                         context,
                         MutationBatch {
+                            read_set: Vec::new(),
                             idempotency_key: format!("work-{phase}-{operation}"),
                             operations: vec![Mutation::Put {
                                 collection: "docs".into(),
@@ -1012,6 +1016,7 @@ mod tests {
             .mutate(
                 context(0),
                 MutationBatch {
+                    read_set: Vec::new(),
                     idempotency_key: "load".into(),
                     operations: vec![Mutation::Put {
                         collection: "docs".into(),

@@ -2,10 +2,8 @@
 //! variables and are never included in the report. Writes require --allow-writes.
 use anyhow::{Context, Result, ensure};
 use kasumi_bench::{Measurement, Samples};
-use kasumi_server::{
-    rpc::proto,
-    tls::{TlsIdentity, grpc_channel},
-};
+use kasumi_server::rpc::proto;
+use kasumi_transport::{TlsIdentity, grpc_channel};
 use kasumi_types::{Mutation, MutationBatch, Precondition, QueryRequest};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -231,6 +229,7 @@ impl Client {
     }
     async fn mutate(&mut self, target: &Target, key: &str) -> Result<()> {
         let batch = MutationBatch {
+            read_set: Vec::new(),
             idempotency_key: key.into(),
             operations: vec![Mutation::Put {
                 collection: target.collection.clone(),

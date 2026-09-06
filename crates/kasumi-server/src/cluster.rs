@@ -23,9 +23,9 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 
 use crate::auth::{RequestAuditEvent, RequestAuditKind, RequestAuditSink};
-use crate::tls::{
-    AuthenticatedTlsPeer, CertificatePin, ClientAuthentication, TlsIdentity, peer_client_config,
-    server_config,
+use crate::tls::AuthenticatedTlsPeer;
+use kasumi_transport::{
+    CertificatePin, ClientAuthentication, TlsIdentity, peer_client_config, server_config,
 };
 
 const RPC_PATH: &str = "/internal/raft";

@@ -8,6 +8,8 @@ rust-version.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 kasumi-types.workspace = true
+kasumi-client.workspace = true
+kasumi-transport.workspace = true
 kasumi-engine.workspace = true
 kasumi-store.workspace = true
 kasumi-raft.workspace = true
@@ -19,7 +21,6 @@ tracing.workspace = true
 jsonwebtoken = "9.3.1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
-rustls-pemfile = "2"
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
 axum = "0.8"
 tonic = { version = "0.14", default-features = false, features = ["router", "transport", "codegen", "tls-ring"] }
@@ -34,11 +35,6 @@ http-body-util = "0.1"
 sha2.workspace = true
 hyper = { version = "1", features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["server-auto", "http1", "http2", "tokio", "service"] }
-
-[build-dependencies]
-tonic-prost-build = "0.14"
-prost-build = "0.14"
-protoc-bin-vendored = "3"
 
 [dev-dependencies]
 base64 = "0.22"

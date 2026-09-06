@@ -337,6 +337,7 @@ mod tests {
                     request_id: "bootstrap".into(),
                 },
                 Operation::CreateCollection(CollectionDefinition {
+                    write_mode: kasumi_types::CollectionWriteMode::Mutable,
                     name: "docs".into(),
                     schema: json!({"type":"object"}),
                     indexes: vec![IndexDefinition {
@@ -445,7 +446,7 @@ mod tests {
         )
     }
     fn batch() -> Value {
-        serde_json::from_str(r#"{"idempotency_key":"write-once","operations":[{"op":"put","collection":"docs","id":"one","body":{"n":90071992547409931234567890.123456789},"expected":{"kind":"absent"}}]}"#).unwrap()
+        serde_json::from_str(r#"{"read_set":[],"idempotency_key":"write-once","operations":[{"op":"put","collection":"docs","id":"one","body":{"n":90071992547409931234567890.123456789},"expected":{"kind":"absent"}}]}"#).unwrap()
     }
 
     // Model the delivery boundary deterministically: run the complete adapter,
@@ -671,7 +672,8 @@ mod tests {
         let admin = NativeAdmin::new(fixture.registry.clone(), fixture.auth.clone());
         admin.replace_collection(native(proto::CollectionDefinitionRequest {
             definition_json: serde_json::to_vec(&CollectionDefinition {
-                name: "docs".into(),
+                write_mode: kasumi_types::CollectionWriteMode::Mutable,
+name: "docs".into(),
                 schema: json!({"type":"object", "patternProperties":{".*":{"type":"integer"}}}),
                 indexes: Vec::new(), strict_read_audit: false,
             }).unwrap(),
@@ -681,7 +683,7 @@ mod tests {
         let body = Value::Object(object);
         assert!(serde_json::to_vec(&body).unwrap().len() < 1 << 20);
         assert!(serde_json::to_vec(&body).unwrap().len() > (1 << 20) - 1024);
-        let batch = json!({"idempotency_key":"long-schema-error", "operations":[{"op":"put", "collection":"docs", "id":"bad", "body":body}]});
+        let batch = json!({"read_set":[],"idempotency_key":"long-schema-error", "operations":[{"op":"put", "collection":"docs", "id":"bad", "body":body}]});
         let native_api = fixture.data();
         let rejected = native_api
             .mutate(native(
@@ -873,6 +875,67 @@ mod tests {
             .unwrap();
         assert!(query["inputSchema"]["$defs"]["predicate"]["oneOf"].is_array());
         assert_eq!(query["inputSchema"]["additionalProperties"], false);
+        fixture.close().await;
+    }
+
+    #[tokio::test]
+    async fn native_snapshot_preserves_exact_data_and_its_read_set_rejects_a_stale_commit() {
+        let fixture = Fixture::new().await;
+        let token = fixture.token(
+            "person",
+            "tenant-a",
+            "kasumi:read kasumi:write kasumi:admin",
+        );
+        let api = fixture.data();
+        api.mutate(native(
+            proto::MutateRequest {
+                batch_json: serde_json::to_vec(&batch()).unwrap(),
+            },
+            &token,
+        ))
+        .await
+        .unwrap();
+        let response = api
+            .read_snapshot(native(
+                proto::ReadSnapshotRequest {
+                    request_json: serde_json::to_vec(
+                        &json!({"documents":[{"collection":"docs","id":"one"}],"queries":[]}),
+                    )
+                    .unwrap(),
+                },
+                &token,
+            ))
+            .await
+            .unwrap()
+            .into_inner();
+        let snapshot: kasumi_types::SnapshotReadResponse =
+            serde_json::from_slice(&response.response_json).unwrap();
+        assert_eq!(
+            snapshot.documents[0].document.as_ref().unwrap().body["n"].to_string(),
+            "90071992547409931234567890.123456789"
+        );
+        let conditional = json!({"idempotency_key":"conditional-native","read_set":snapshot.read_assertions(),"operations":[{"op":"put","collection":"docs","id":"one","body":{"n":2},"expected":{"kind":"any"}}]});
+        api.mutate(native(
+            proto::MutateRequest {
+                batch_json: serde_json::to_vec(&conditional).unwrap(),
+            },
+            &token,
+        ))
+        .await
+        .unwrap();
+        let mut stale = conditional;
+        stale["idempotency_key"] = json!("stale-native");
+        stale["operations"][0]["id"] = json!("other");
+        let error = api
+            .mutate(native(
+                proto::MutateRequest {
+                    batch_json: serde_json::to_vec(&stale).unwrap(),
+                },
+                &token,
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), tonic::Code::Aborted);
         fixture.close().await;
     }
 

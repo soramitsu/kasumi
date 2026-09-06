@@ -6,7 +6,7 @@ use kasumi_store::{BackupDestination, LeaseClock, SystemLeaseClock, TenantStore}
 use kasumi_types::*;
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, BTreeSet, HashMap},
     sync::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
@@ -31,15 +31,35 @@ struct Cursor {
 struct ProposalWork {
     // Drop storage ownership before notifying shutdown that this job drained.
     group: RaftGroup,
+    admission_gate: Arc<tokio::sync::Mutex<()>>,
+    clock: Arc<dyn CommandClock>,
     _reservation: Reservation,
     _registration: WorkRegistration,
 }
 
 impl ProposalWork {
-    async fn run(self, bytes: Vec<u8>) -> anyhow::Result<Vec<u8>> {
-        let result = self.group.write(bytes).await;
-        drop(self);
-        result
+    async fn run(self, mut command: Command, max_bytes: usize) -> anyhow::Result<Vec<u8>> {
+        // The background proposal owns this gate; caller timeout/cancellation
+        // cannot let later commands overtake an unresolved write. Time is
+        // sampled only after the previous write has finished.
+        let _guard = self.admission_gate.lock().await;
+        command.timestamp_ms = self.clock.now_ms()?;
+        let bytes = serde_json::to_vec(&command)?;
+        anyhow::ensure!(
+            bytes.len() <= max_bytes,
+            "command exceeds proposal byte budget"
+        );
+        self.group.write(bytes).await
+    }
+}
+
+trait CommandClock: Send + Sync {
+    fn now_ms(&self) -> Result<u64>;
+}
+struct SystemCommandClock;
+impl CommandClock for SystemCommandClock {
+    fn now_ms(&self) -> Result<u64> {
+        now_ms()
     }
 }
 
@@ -93,6 +113,97 @@ impl QueryWork {
     }
 }
 
+struct SnapshotWork {
+    generation: Arc<crate::Generation>,
+    request: ReadSnapshotRequest,
+    cancellation: QueryCancellation,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+    reservation: Reservation,
+    registration: Arc<WorkRegistration>,
+}
+struct SnapshotOutput {
+    response: Result<SnapshotReadResponse>,
+    reservation: Reservation,
+    _registration: Arc<WorkRegistration>,
+}
+impl SnapshotWork {
+    fn run(self) -> SnapshotOutput {
+        let response = self.evaluate();
+        SnapshotOutput {
+            response,
+            reservation: self.reservation,
+            _registration: self.registration,
+        }
+    }
+
+    fn evaluate(&self) -> Result<SnapshotReadResponse> {
+        let state = &self.generation.state;
+        let mut result = SnapshotReadResponse {
+            revision: state.revision,
+            incarnation: state.incarnation.clone(),
+            policy_epoch: state.policy_epoch,
+            schema_epoch: state.schema_epoch,
+            collection_epochs: BTreeMap::new(),
+            documents: Vec::new(),
+            queries: Vec::new(),
+        };
+        for key in &self.request.documents {
+            self.cancellation.check()?;
+            let collection = &state.collections[&key.collection];
+            let document = collection.documents.get(&key.id);
+            // Check output capacity before cloning a potentially large body.
+            if crate::accounting::encoded_len(&result)?
+                .saturating_add(document.map_or(Ok(0), crate::accounting::encoded_len)?)
+                > state.limits.max_result_bytes
+            {
+                return Err(Error::new(
+                    ErrorCode::ResourceExhausted,
+                    "snapshot result exceeds byte limit",
+                ));
+            }
+            result.documents.push(SnapshotDocument {
+                key: key.clone(),
+                document: document.map(|document| document.as_ref().clone()),
+            });
+        }
+        for query in &self.request.queries {
+            self.cancellation.check()?;
+            let mut response = self.generation.indexes.execute_with_cancellation(
+                &state.collections,
+                query,
+                &state.limits,
+                &self.cancellation,
+            )?;
+            if response.rows.len() > query.limit {
+                return Err(Error::new(
+                    ErrorCode::ResourceExhausted,
+                    "snapshot query exceeds complete row limit",
+                ));
+            }
+            response.revision = state.revision;
+            result.collection_epochs.insert(
+                query.collection.clone(),
+                state.collections[&query.collection].data_epoch,
+            );
+            result.queries.push(response);
+            if crate::accounting::encoded_len(&result)? > state.limits.max_result_bytes {
+                return Err(Error::new(
+                    ErrorCode::ResourceExhausted,
+                    "snapshot result exceeds byte limit",
+                ));
+            }
+        }
+        if crate::accounting::encoded_len(&result)? > state.limits.max_result_bytes {
+            return Err(Error::new(
+                ErrorCode::ResourceExhausted,
+                "snapshot result exceeds byte limit",
+            ));
+        }
+        self.cancellation.check()?;
+        Ok(result)
+    }
+}
+
 /// Every adapter calls this service; it cannot read a map without access and consistency gates.
 pub struct Database {
     engine: Arc<TenantEngine>,
@@ -109,6 +220,8 @@ pub struct Database {
     closing: AtomicBool,
     shutdown_gate: tokio::sync::Mutex<()>,
     seal_monitor: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    proposal_gate: Arc<tokio::sync::Mutex<()>>,
+    command_clock: Mutex<Arc<dyn CommandClock>>,
 }
 
 /// Extends an already authorized operation through adapter response encoding.
@@ -231,6 +344,8 @@ impl Database {
             closing: AtomicBool::new(false),
             shutdown_gate: tokio::sync::Mutex::new(()),
             seal_monitor: tokio::sync::Mutex::new(None),
+            proposal_gate: Arc::new(tokio::sync::Mutex::new(())),
+            command_clock: Mutex::new(Arc::new(SystemCommandClock)),
         });
         database.spawn_seal_monitor();
         database
@@ -604,20 +719,22 @@ impl Database {
         let reservation = self.admission().reserve(command_budget, None)?;
         let command = Command {
             context,
-            timestamp_ms: now_ms()?,
+            // Budget the longest possible stamp before the worker replaces it
+            // with trusted admission time. Time must not expand a queued input
+            // beyond a limit that preflight already accepted.
+            timestamp_ms: u64::MAX,
             operation,
         };
         let bytes = serde_json::to_vec(&command)
             .map_err(|_| Error::new(ErrorCode::InvalidArgument, "command encoding failed"))?;
-        if bytes.len()
-            > self
-                .engine
-                .generation()?
-                .state
-                .limits
-                .max_batch_bytes
-                .saturating_add(64 << 10)
-        {
+        let max_bytes = self
+            .engine
+            .generation()?
+            .state
+            .limits
+            .max_batch_bytes
+            .saturating_add(64 << 10);
+        if bytes.len() > max_bytes {
             return Err(Error::new(
                 ErrorCode::ResourceExhausted,
                 "command too large",
@@ -627,10 +744,16 @@ impl Database {
         let proposal = tokio::spawn(
             ProposalWork {
                 group: self.group.clone(),
+                admission_gate: self.proposal_gate.clone(),
+                clock: self
+                    .command_clock
+                    .lock()
+                    .map_err(|_| Error::new(ErrorCode::Unavailable, "command clock unavailable"))?
+                    .clone(),
                 _reservation: reservation,
                 _registration: registration,
             }
-            .run(bytes),
+            .run(command, max_bytes),
         );
         let result = tokio::time::timeout(Duration::from_secs(10), proposal)
             .await
@@ -685,6 +808,157 @@ impl Database {
             .read_document(context, collection, id, Arc::clone)
             .await;
         self.audit_result(context, result).await
+    }
+
+    /// Read all requested documents and complete bounded queries from exactly
+    /// one authorized generation. Returned assertions can fence a later batch.
+    pub async fn read_snapshot(
+        &self,
+        context: &RequestContext,
+        request: ReadSnapshotRequest,
+    ) -> Result<SnapshotReadResponse> {
+        let result = self.read_snapshot_inner(context, request).await;
+        self.audit_result(context, result).await
+    }
+
+    async fn read_snapshot_inner(
+        &self,
+        context: &RequestContext,
+        request: ReadSnapshotRequest,
+    ) -> Result<SnapshotReadResponse> {
+        self.access()?;
+        if request.documents.len() > 256
+            || request.queries.len() > 16
+            || (request.documents.is_empty() && request.queries.is_empty())
+        {
+            return Err(Error::new(
+                ErrorCode::InvalidArgument,
+                "snapshot request outside bounds",
+            ));
+        }
+        let mut keys = BTreeSet::new();
+        let mut collections = BTreeSet::new();
+        for key in &request.documents {
+            validate_name(&key.collection)?;
+            validate_name(&key.id)?;
+            if !keys.insert(key) {
+                return Err(Error::new(
+                    ErrorCode::InvalidArgument,
+                    "duplicate snapshot document",
+                ));
+            }
+            collections.insert(key.collection.clone());
+        }
+        for query in &request.queries {
+            validate_name(&query.collection)?;
+            if query.cursor.is_some() {
+                return Err(Error::new(
+                    ErrorCode::InvalidArgument,
+                    "snapshot reads do not accept cursors",
+                ));
+            }
+            collections.insert(query.collection.clone());
+        }
+        for collection in &collections {
+            self.engine
+                .authorize(context, Some(collection), Action::Read)?;
+        }
+        let cancellation = QueryCancellation::default();
+        let _cancel_on_drop = CancelOnDrop(cancellation.clone());
+        let registration = Arc::new(self.work.begin(cancellation.clone())?);
+        let workspace = snapshot_workspace(&self.engine.generation()?.state.limits, &request);
+        let reservation = self
+            .admission()
+            .reserve(workspace, Some(cancellation.clone()))?;
+        tokio::select! {
+            result = self.barrier() => result?,
+            _ = cancelled(&cancellation) => return Err(cancelled_error()),
+        }
+        let generation = self.engine.generation()?;
+        let state = &generation.state;
+        if snapshot_workspace(&state.limits, &request) > workspace {
+            return Err(Error::new(
+                ErrorCode::ResourceExhausted,
+                "snapshot limits changed during admission",
+            ));
+        }
+        let mut release_collections = BTreeMap::new();
+        for collection in &collections {
+            self.engine.authorize_release(
+                context,
+                Some(collection),
+                Action::Read,
+                state.policy_epoch,
+            )?;
+            let definition = &state
+                .collections
+                .get(collection)
+                .ok_or_else(|| Error::new(ErrorCode::NotFound, "snapshot collection not found"))?
+                .definition;
+            release_collections.insert(
+                collection.clone(),
+                state.policy.strict_read_audit || definition.strict_read_audit,
+            );
+        }
+        for query in &request.queries {
+            if query.limit == 0 || query.limit > state.limits.max_page_size {
+                return Err(Error::new(
+                    ErrorCode::InvalidArgument,
+                    "snapshot query row limit outside bounds",
+                ));
+            }
+        }
+        let permit = self.query_slots.clone().try_acquire_owned().map_err(|_| {
+            Error::new(
+                ErrorCode::ResourceExhausted,
+                "query concurrency limit reached",
+            )
+        })?;
+        let work = SnapshotWork {
+            generation: generation.clone(),
+            request,
+            cancellation: cancellation.clone(),
+            _permit: permit,
+            reservation,
+            registration,
+        };
+        let worker = tokio::task::spawn_blocking(move || work.run());
+        let SnapshotOutput {
+            response,
+            mut reservation,
+            _registration,
+        } = tokio::select! {
+            result = tokio::time::timeout(Duration::from_secs(5), worker) => result
+                .map_err(|_| Error::new(ErrorCode::ResourceExhausted, "snapshot deadline exceeded"))?
+                .map_err(|_| Error::new(ErrorCode::Unavailable, "snapshot worker failed"))?,
+            _ = cancelled(&cancellation) => return Err(cancelled_error()),
+        };
+        let response = response?;
+        reservation.retain(state.limits.max_result_bytes.saturating_mul(3) as u64);
+        drop(generation);
+        for (collection, strict) in &release_collections {
+            self.release(
+                context,
+                collection,
+                response.revision,
+                *strict,
+                response.policy_epoch,
+            )
+            .await?;
+        }
+        // Recheck every collection after the last asynchronous audit. A policy
+        // change during an earlier release must not leak the assembled result.
+        self.access()?;
+        self.admission().check_release(&cancellation)?;
+        for collection in release_collections.keys() {
+            self.engine.authorize_release(
+                context,
+                Some(collection),
+                Action::Read,
+                response.policy_epoch,
+            )?;
+        }
+        Ok(response)
     }
 
     async fn read_document<T>(
@@ -1213,11 +1487,155 @@ fn query_workspace(limits: &Limits, request: &QueryRequest) -> u64 {
         ) as u64
 }
 
+fn snapshot_workspace(limits: &Limits, request: &ReadSnapshotRequest) -> u64 {
+    // Queries run sequentially: reserve one maximum query workspace, plus the
+    // retained combined result and one document clone through final release.
+    request
+        .queries
+        .iter()
+        .map(|query| query_workspace(limits, query))
+        .max()
+        .unwrap_or(0)
+        .saturating_add(limits.max_result_bytes.saturating_mul(3) as u64)
+        .saturating_add(limits.max_document_bytes.saturating_mul(3) as u64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::admission::AdmissionConfig;
+    use kasumi_store::{NodeStore, test_utils::LocalKeyProvider};
+    use serde_json::json;
     use std::{future::Future, task::Poll};
+
+    struct ControlledCommandClock(std::sync::atomic::AtomicU64);
+    impl CommandClock for ControlledCommandClock {
+        fn now_ms(&self) -> Result<u64> {
+            Ok(self.0.load(Ordering::SeqCst))
+        }
+    }
+
+    #[tokio::test]
+    async fn queued_deadlines_use_admission_time_and_survive_caller_cancellation() {
+        let directory = tempfile::tempdir().unwrap();
+        let node = NodeStore::open(directory.path().join("node.redb")).unwrap();
+        let audit_store = TenantStore::open(
+            node.clone(),
+            crate::SECURITY_TENANT.into(),
+            Arc::new(LocalKeyProvider::new([0xA7; 32])),
+        )
+        .await
+        .unwrap();
+        let audit = SecurityAudit::open(audit_store, 100_000).unwrap();
+        let context = RequestContext {
+            tenant: "deadline".into(),
+            principal: "owner".into(),
+            scopes: BTreeSet::from([Action::Read, Action::Write, Action::Admin, Action::Audit]),
+            request_id: "deadline-test".into(),
+        };
+        let store = TenantStore::open(
+            node,
+            context.tenant.clone(),
+            Arc::new(LocalKeyProvider::new([0xB7; 32])),
+        )
+        .await
+        .unwrap();
+        let db = crate::open_local(
+            store,
+            Policy {
+                grants: vec![Grant {
+                    principal: context.principal.clone(),
+                    collection: None,
+                    actions: context.scopes.clone(),
+                }],
+                strict_read_audit: false,
+            },
+            Limits::default(),
+            audit,
+        )
+        .await
+        .unwrap();
+        db.administer(
+            context.clone(),
+            Operation::CreateCollection(CollectionDefinition {
+                name: "docs".into(),
+                schema: json!({"type":"object"}),
+                indexes: vec![],
+                strict_read_audit: false,
+                write_mode: CollectionWriteMode::Mutable,
+            }),
+        )
+        .await
+        .unwrap();
+        let base = now_ms().unwrap();
+        let clock = Arc::new(ControlledCommandClock(std::sync::atomic::AtomicU64::new(
+            base,
+        )));
+        *db.command_clock.lock().unwrap() = clock.clone();
+        let batch = |id: &str, not_after_ms| MutationBatch {
+            idempotency_key: id.into(),
+            read_set: vec![ReadAssertion::Before { not_after_ms }],
+            operations: vec![Mutation::Put {
+                collection: "docs".into(),
+                id: id.into(),
+                body: json!({"value":1}),
+                expected: Precondition::Absent,
+            }],
+        };
+
+        let gate = db.proposal_gate.lock().await;
+        let mut queued = Box::pin(db.mutate(context.clone(), batch("queued", base + 10)));
+        assert!(
+            std::future::poll_fn(|cx| Poll::Ready(queued.as_mut().poll(cx)))
+                .await
+                .is_pending()
+        );
+        clock.0.store(base + 11, Ordering::SeqCst);
+        drop(gate);
+        assert_eq!(queued.await.unwrap_err().code, ErrorCode::Conflict);
+        assert_eq!(
+            db.get(&context, "docs", "queued").await.unwrap_err().code,
+            ErrorCode::NotFound
+        );
+
+        let gate = db.proposal_gate.lock().await;
+        let mut canceled = Box::pin(db.mutate(context.clone(), batch("canceled", base + 20)));
+        assert!(
+            std::future::poll_fn(|cx| Poll::Ready(canceled.as_mut().poll(cx)))
+                .await
+                .is_pending()
+        );
+        drop(canceled);
+        clock.0.store(base + 21, Ordering::SeqCst);
+        drop(gate);
+        db.work.drain().await;
+        assert_eq!(
+            db.operation_receipt(&context, "canceled")
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap_err()
+                .code,
+            ErrorCode::Conflict
+        );
+        assert_eq!(
+            db.get(&context, "docs", "canceled").await.unwrap_err().code,
+            ErrorCode::NotFound
+        );
+
+        // Inclusive boundary succeeds. An exact retry resolves the durable
+        // result even once its authorization deadline has subsequently passed.
+        let accepted = batch("accepted", base + 21);
+        let receipt = db.mutate(context.clone(), accepted.clone()).await.unwrap();
+        let data_epoch = db.engine.generation().unwrap().state.collections["docs"].data_epoch;
+        clock.0.store(base + 22, Ordering::SeqCst);
+        assert_eq!(db.mutate(context.clone(), accepted).await.unwrap(), receipt);
+        assert_eq!(
+            db.engine.generation().unwrap().state.collections["docs"].data_epoch,
+            data_epoch
+        );
+        db.shutdown().await.unwrap();
+    }
 
     #[tokio::test]
     async fn query_shutdown_drains_abandoned_output_and_captured_generation() {

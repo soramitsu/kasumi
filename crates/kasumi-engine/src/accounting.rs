@@ -52,12 +52,14 @@ fn header(key: &str, collection: &CollectionState) -> Result<usize> {
     #[derive(Serialize)]
     struct EmptyCollection<'a> {
         definition: &'a CollectionDefinition,
+        data_epoch: u64,
         documents: BTreeMap<(), ()>,
     }
     entry(
         key,
         &EmptyCollection {
             definition: &collection.definition,
+            data_epoch: collection.data_epoch,
             documents: BTreeMap::new(),
         },
     )
@@ -102,9 +104,9 @@ impl SnapshotAccounting {
         // Definitions have their own bounded metadata quota. Pointer equality is
         // unavailable for this small BTreeMap; compare only serialized definitions
         // when their operation changed the policy/schema epoch or collection count.
-        if previous.policy_epoch != next.policy_epoch
-            || previous.collections.len() != next.collections.len()
-        {
+        let metadata_changed = previous.policy_epoch != next.policy_epoch
+            || previous.collections.len() != next.collections.len();
+        if metadata_changed {
             let names: BTreeSet<_> = previous
                 .collections
                 .keys()
@@ -135,6 +137,13 @@ impl SnapshotAccounting {
                 .collections
                 .get(name)
                 .ok_or_else(|| Error::new(ErrorCode::Corruption, "next collection missing"))?;
+            if !metadata_changed {
+                change(
+                    &mut result.collection_headers,
+                    header(name, old)?,
+                    header(name, new)?,
+                )?;
+            }
             change(
                 &mut result.documents,
                 commas(old.documents.len()),
@@ -201,6 +210,7 @@ impl SnapshotAccounting {
             revision: u64,
             revision_base: u64,
             policy_epoch: u64,
+            schema_epoch: u64,
             suspended: bool,
             retired: bool,
             pending_restore: &'a Option<PendingRestore>,
@@ -218,6 +228,7 @@ impl SnapshotAccounting {
             revision: state.revision,
             revision_base: state.revision_base,
             policy_epoch: state.policy_epoch,
+            schema_epoch: state.schema_epoch,
             suspended: state.suspended,
             retired: state.retired,
             pending_restore: &state.pending_restore,

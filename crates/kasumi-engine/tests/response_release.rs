@@ -52,6 +52,7 @@ async fn encoded_response_is_fenced_by_policy_changes_and_actual_key_denial() {
         .administer(
             context.clone(),
             Operation::CreateCollection(CollectionDefinition {
+                write_mode: kasumi_types::CollectionWriteMode::Mutable,
                 name: "docs".into(),
                 schema: json!({"type":"object"}),
                 indexes: vec![],
@@ -64,6 +65,7 @@ async fn encoded_response_is_fenced_by_policy_changes_and_actual_key_denial() {
         .mutate(
             context.clone(),
             MutationBatch {
+                read_set: Vec::new(),
                 idempotency_key: "once".into(),
                 operations: vec![Mutation::Put {
                     collection: "docs".into(),

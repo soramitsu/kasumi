@@ -45,6 +45,7 @@ async fn full_shutdown_reopens_immediately_with_receipts_and_retained_plaintext(
                 .administer(
                     context.clone(),
                     Operation::CreateCollection(CollectionDefinition {
+                        write_mode: kasumi_types::CollectionWriteMode::Mutable,
                         name: "docs".into(),
                         schema: json!({"type":"object","required":["n"]}),
                         indexes: vec![],
@@ -71,6 +72,7 @@ async fn full_shutdown_reopens_immediately_with_receipts_and_retained_plaintext(
             .mutate(
                 context.clone(),
                 MutationBatch {
+                    read_set: Vec::new(),
                     idempotency_key: format!("write-{round}"),
                     operations: ["a", "b"]
                         .into_iter()

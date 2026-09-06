@@ -8,11 +8,12 @@ use crate::{
     cluster::{ClusterNetwork, PeerConfig, PeerLimits},
     mcp::McpConfig,
     rpc::{NativeAdmin, NativeData},
-    tls::{self, CertificatePin, ClientAuthentication, ListenerLimits, TlsIdentity},
+    tls::{self, ListenerLimits},
 };
 use anyhow::{Context, Result, ensure};
 use kasumi_engine::{Database, ReplicaPlacement, ReplicatedBootstrap};
 use kasumi_store::{NodeStore, TenantStore, TransitConfig, TransitKeyProvider};
+use kasumi_transport::{CertificatePin, ClientAuthentication, TlsIdentity};
 use kasumi_types::{Action, Grant, Limits, Policy, Precondition, RequestContext};
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
@@ -371,7 +372,7 @@ impl MutualTlsEndpoint {
     fn load(&self) -> Result<Arc<rustls::ServerConfig>> {
         let identity = self.tls.load()?;
         let ca = read_bounded(&self.client_ca, MAX_PEM_BYTES)?;
-        tls::server_config(
+        kasumi_transport::server_config(
             &identity,
             ClientAuthentication::Required {
                 trusted_ca_pem: &ca,
@@ -759,7 +760,7 @@ impl NodeRuntime {
         // durable bootstrap can be created. No listener serves until `serve`.
         let mcp_identity = config.mcp.tls.load()?;
         let local_certificate_pin = mcp_identity.certificate_pin();
-        let mcp_tls = tls::server_config(&mcp_identity, ClientAuthentication::OAuth)?;
+        let mcp_tls = kasumi_transport::server_config(&mcp_identity, ClientAuthentication::OAuth)?;
         let native_tls = config.native.load()?;
         let admin_tls = config.admin.load()?;
         let mut providers = Vec::new();
@@ -1534,7 +1535,7 @@ impl AdminClientConfig {
         let mut authorization: tonic::metadata::MetadataValue<tonic::metadata::Ascii> =
             authorization.parse()?;
         authorization.set_sensitive(true);
-        let channel = tls::grpc_channel(&self.endpoint, &identity, &ca, pins).await?;
+        let channel = kasumi_transport::grpc_channel(&self.endpoint, &identity, &ca, pins).await?;
         Ok((
             crate::rpc::proto::kasumi_admin_client::KasumiAdminClient::new(channel),
             authorization,
@@ -1976,7 +1977,11 @@ mod lifecycle_tests {
             };
             tasks.listeners.spawn(tls::serve_tls(
                 socket,
-                tls::server_config(&files.load().unwrap(), ClientAuthentication::OAuth).unwrap(),
+                kasumi_transport::server_config(
+                    &files.load().unwrap(),
+                    ClientAuthentication::OAuth,
+                )
+                .unwrap(),
                 router,
                 ListenerLimits::default(),
                 Arc::new(FixtureAudit),
@@ -2345,6 +2350,7 @@ mod lifecycle_tests {
                         .administer(
                             beta.clone(),
                             Operation::CreateCollection(CollectionDefinition {
+                                write_mode: kasumi_types::CollectionWriteMode::Mutable,
                                 name: "onboarded".into(),
                                 schema: serde_json::json!({"type":"object"}),
                                 indexes: vec![],
@@ -2380,7 +2386,8 @@ mod lifecycle_tests {
         let (mock_stop, mock_shutdown) = watch::channel(false);
         let mock = tokio::spawn(tls::serve_tls(
             mock_socket,
-            tls::server_config(&files.load().unwrap(), ClientAuthentication::OAuth).unwrap(),
+            kasumi_transport::server_config(&files.load().unwrap(), ClientAuthentication::OAuth)
+                .unwrap(),
             router,
             ListenerLimits::default(),
             Arc::new(FixtureAudit),
@@ -2516,6 +2523,7 @@ mod lifecycle_tests {
                     .administer(
                         context.clone(),
                         Operation::CreateCollection(CollectionDefinition {
+                            write_mode: kasumi_types::CollectionWriteMode::Mutable,
                             name: "docs".into(),
                             schema: serde_json::json!({"type":"object"}),
                             indexes: Vec::new(),
@@ -2528,6 +2536,7 @@ mod lifecycle_tests {
                     .mutate(
                         context.clone(),
                         MutationBatch {
+                            read_set: Vec::new(),
                             idempotency_key: "runtime-persistence".into(),
                             operations: vec![Mutation::Put {
                                 collection: "docs".into(),
@@ -2797,7 +2806,11 @@ mod lifecycle_tests {
         let (mock_stop, mock_shutdown) = watch::channel(false);
         let mock = tokio::spawn(tls::serve_tls(
             mock_socket,
-            tls::server_config(&mock_files.load().unwrap(), ClientAuthentication::OAuth).unwrap(),
+            kasumi_transport::server_config(
+                &mock_files.load().unwrap(),
+                ClientAuthentication::OAuth,
+            )
+            .unwrap(),
             Router::new()
                 .route("/v1/transit/{*operation}", post(transit))
                 .with_state(Arc::new(TransitFixture::default())),
@@ -3140,6 +3153,7 @@ mod lifecycle_tests {
             .administer(
                 context.clone(),
                 Operation::CreateCollection(CollectionDefinition {
+                    write_mode: kasumi_types::CollectionWriteMode::Mutable,
                     name: "docs".into(),
                     schema: serde_json::json!({"type":"object"}),
                     indexes: Vec::new(),
@@ -3152,6 +3166,7 @@ mod lifecycle_tests {
             .mutate(
                 context.clone(),
                 MutationBatch {
+                    read_set: Vec::new(),
                     idempotency_key: "replicated-runtime".into(),
                     operations: vec![Mutation::Put {
                         collection: "docs".into(),

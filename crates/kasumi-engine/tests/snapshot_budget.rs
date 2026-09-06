@@ -32,6 +32,7 @@ fn engine(limit: usize) -> TenantEngine {
 }
 fn schema() -> Operation {
     Operation::CreateCollection(CollectionDefinition {
+        write_mode: kasumi_types::CollectionWriteMode::Mutable,
         name: "docs".into(),
         schema: json!({"type":"object"}),
         indexes: vec![],
@@ -40,6 +41,7 @@ fn schema() -> Operation {
 }
 fn batch(key: &str, id: &str, size: usize) -> Operation {
     Operation::Mutate(MutationBatch {
+        read_set: Vec::new(),
         idempotency_key: key.into(),
         operations: vec![Mutation::Put {
             collection: "docs".into(),
@@ -92,6 +94,7 @@ fn exact_incremental_accounting_covers_documents_receipts_expiry_schemas_policy_
     apply(&db, 30, 86_400_100, batch("fresh", "new", 20)).unwrap();
     assert_eq!(db.generation().unwrap().state.receipts.len(), 1);
     let delete = Operation::Mutate(MutationBatch {
+        read_set: Vec::new(),
         idempotency_key: "delete".into(),
         operations: vec![Mutation::Delete {
             collection: "docs".into(),

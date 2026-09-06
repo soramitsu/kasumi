@@ -68,6 +68,7 @@ async fn pressure_rejects_new_proposals_and_queries_but_committed_raft_work_stil
         ErrorCode::Conflict
     );
     let operation = Operation::CreateCollection(CollectionDefinition {
+        write_mode: kasumi_types::CollectionWriteMode::Mutable,
         name: "docs".into(),
         schema: json!({"type":"object"}),
         indexes: vec![],
@@ -170,6 +171,7 @@ async fn explicit_local_bootstrap_reads_the_complete_committed_generation() {
         .administer(
             context.clone(),
             Operation::CreateCollection(CollectionDefinition {
+                write_mode: kasumi_types::CollectionWriteMode::Mutable,
                 name: "docs".into(),
                 schema: json!({"type":"object"}),
                 indexes: vec![],
@@ -184,6 +186,7 @@ async fn explicit_local_bootstrap_reads_the_complete_committed_generation() {
         .mutate(
             context.clone(),
             MutationBatch {
+                read_set: Vec::new(),
                 idempotency_key: "batch".into(),
                 operations: vec![
                     Mutation::Put {

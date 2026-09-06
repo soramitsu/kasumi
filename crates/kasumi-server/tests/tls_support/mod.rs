@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 use anyhow::Result;
-use kasumi_server::tls::{TlsHandshakeAudit, TlsHandshakeEvent, TlsIdentity};
+use kasumi_server::tls::{TlsHandshakeAudit, TlsHandshakeEvent};
+use kasumi_transport::TlsIdentity;
 use rcgen::{
     BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
     KeyUsagePurpose,

@@ -8,6 +8,7 @@ package kasumi.v1;
 service KasumiData {
   rpc Get(GetRequest) returns (Document);
   rpc Query(QueryRequest) returns (QueryResponse);
+  rpc ReadSnapshot(ReadSnapshotRequest) returns (ReadSnapshotResponse);
   rpc Mutate(MutateRequest) returns (WriteReceipt);
   rpc Collections(CollectionsRequest) returns (CollectionsResponse);
   rpc Receipt(ReceiptRequest) returns (ReceiptResponse);
@@ -29,6 +30,8 @@ service KasumiAdmin {
 message GetRequest { string collection = 1; string id = 2; }
 message Document { string id = 1; uint64 version = 2; bytes body_json = 3; }
 message QueryRequest { bytes query_json = 1; }
+message ReadSnapshotRequest { bytes request_json = 1; }
+message ReadSnapshotResponse { bytes response_json = 1; }
 message QueryRow { Document document = 1; optional float score = 2; }
 message QueryResponse {
   uint64 revision = 1;

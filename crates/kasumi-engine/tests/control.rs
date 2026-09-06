@@ -140,6 +140,7 @@ async fn control_updates_require_operator_authority_cas_and_survive_reopen() {
         db.mutate(
             context("writer", CONTROL_TENANT),
             MutationBatch {
+                read_set: Vec::new(),
                 idempotency_key: "bypass".into(),
                 operations: vec![Mutation::Delete {
                     collection: "topology".into(),

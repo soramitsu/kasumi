@@ -1,7 +1,7 @@
 # Kasumi v1 implementation ledger
 
-The complete v1 design agreed on 2026-09-05 is implemented and its software
-acceptance evidence is complete. Current macOS/Linux gates passed 188 workspace
+The original v1 design agreed on 2026-09-05 was implemented and its software
+acceptance evidence completed. Its macOS/Linux gates passed 188 workspace
 entries per platform, strict Clippy/formatting, six Python checks and actual
 OpenBao/MinIO fixtures. The [final results](../benchmarks/RESULTS.md) cover all
 15 required cases with 99,000 successful operations, zero failures and zero
@@ -10,6 +10,10 @@ their original source identity; three corrected-network cases passed separately,
 including shutdown and verified recovery. This is software acceptance within
 documented fault models and host qualifications, not a production deployment
 or performance SLA.
+
+First-release [conditional transaction and coherent snapshot additions](transactions.md)
+now extend this baseline. The evidence below remains attached to its recorded
+source and does not certify these later changes.
 
 Evidence below has run on macOS with Rust 1.94.1 unless stated otherwise.
 Software fault models and loopback fixtures are distinct from actual hardware
