@@ -3,7 +3,7 @@
 These first-release additions extend the original 2026-09-05 acceptance baseline.
 The original manifests remain evidence for their recorded source; they do not
 certify the changed implementation. New collection definitions require
-`write_mode`, batches require `read_set`, and persisted state requires the
+`write_mode` and `retention_class`, batches require `read_set`, and persisted state requires the
 new schema and collection epochs. There is no old-state migration or implicit
 default for these fields.
 

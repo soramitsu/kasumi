@@ -216,6 +216,8 @@ pub struct PublishHistoryArchive {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetainedHistoryArchive {
+    /// Current operator binding, distinct from immutable source provenance.
+    pub storage_destination: String,
     pub manifest: HistoryArchiveManifest,
     pub manifest_object_id: String,
     pub manifest_ciphertext_sha256: String,

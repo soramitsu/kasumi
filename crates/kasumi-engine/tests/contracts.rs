@@ -1150,9 +1150,13 @@ async fn logical_backup_restores_suspended_with_new_incarnation_and_increasing_r
         .incarnation
         .clone();
     let backup_dir = tempfile::tempdir().unwrap();
-    let destination =
-        kasumi_store::FilesystemBackupDestination::new(backup_dir.path(), 16 << 20).unwrap();
-    let id = source.backup(context("owner"), &destination).await.unwrap();
+    let destination = Arc::new(
+        kasumi_store::FilesystemBackupDestination::new(backup_dir.path(), 16 << 20).unwrap(),
+    );
+    let id = source
+        .backup(context("owner"), destination.as_ref())
+        .await
+        .unwrap();
     source
         .administer(context("owner"), Operation::Retire)
         .await
@@ -1174,9 +1178,13 @@ async fn logical_backup_restores_suspended_with_new_incarnation_and_increasing_r
         .await
         .unwrap();
     let restored = kasumi_engine::restore_local(
-        &destination,
+        &kasumi_engine::RestoreSource {
+            timeout_ms: 300_000,
+            destination_alias: "backup".into(),
+            destination: destination.clone(),
+            keys: source_key.clone(),
+        },
         id,
-        source_key.clone(),
         target_store.clone(),
         context("owner"),
         target_audit.clone(),
@@ -1198,9 +1206,13 @@ async fn logical_backup_restores_suspended_with_new_incarnation_and_increasing_r
     );
     assert!(
         kasumi_engine::restore_local(
-            &destination,
+            &kasumi_engine::RestoreSource {
+                timeout_ms: 300_000,
+                destination_alias: "backup".into(),
+                destination: destination.clone(),
+                keys: source_key
+            },
             id,
-            source_key,
             target_store,
             context("owner"),
             target_audit.clone()

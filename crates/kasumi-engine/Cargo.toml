@@ -22,5 +22,6 @@ url = "=2.5.8"
 libc = "=0.2.189"
 
 [dev-dependencies]
+async-trait.workspace = true
 tempfile.workspace = true
 kasumi-store = { workspace = true, features = ["test-utils"] }

@@ -161,14 +161,7 @@ impl TenantEngine {
         if state.tenant != expected_tenant {
             return Err(Error::new(ErrorCode::Forbidden, "backup tenant mismatch"));
         }
-        let verifier = Self {
-            tenant: state.tenant.clone(),
-            incarnation: state.incarnation.clone(),
-            revision_base: state.revision_base,
-            apply_lock: Mutex::new(()),
-            current: ArcSwapOption::empty(),
-        };
-        verifier.prepare_snapshot(bytes)?;
+        Self::verify_logical_snapshot(bytes, &state)?;
         validate_name(&incarnation)?;
         state.incarnation = incarnation;
         state.pending_restore = Some(PendingRestore {
@@ -200,6 +193,21 @@ impl TenantEngine {
         self.current
             .load_full()
             .ok_or_else(|| Error::new(ErrorCode::Sealed, "tenant requires authorized recovery"))
+    }
+
+    /// A full logical backup can be captured at any committed revision. It is
+    /// validated as a snapshot; only the later restored genesis must begin at
+    /// its revision base.
+    pub(crate) fn verify_logical_snapshot(bytes: &[u8], state: &TenantState) -> Result<()> {
+        let verifier = Self {
+            tenant: state.tenant.clone(),
+            incarnation: state.incarnation.clone(),
+            revision_base: state.revision_base,
+            apply_lock: Mutex::new(()),
+            current: ArcSwapOption::empty(),
+        };
+        verifier.prepare_snapshot(bytes)?;
+        Ok(())
     }
 
     /// Drop resident state under the apply fence. Already returned client data cannot be recalled.

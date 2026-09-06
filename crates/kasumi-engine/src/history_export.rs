@@ -26,6 +26,8 @@ impl Database {
         }
         self.engine.authorize(context, None, Action::Admin)?;
         self.engine
+            .authorize(context, Some(&request.collection), Action::Admin)?;
+        self.engine
             .authorize(context, Some(&request.collection), Action::Read)?;
         self.access()?;
         let cancellation = QueryCancellation::default();
@@ -68,6 +70,13 @@ impl Database {
                 "archive_receipt",
             )
             .await?;
+            self.engine.authorize_release(
+                context,
+                Some(&request.collection),
+                Action::Admin,
+                state.policy_epoch,
+            )?;
+            self.access()?;
             return Ok(WriteReceipt {
                 revision: existing.published_revision,
                 versions: BTreeMap::new(),
@@ -271,7 +280,7 @@ impl Database {
         })
     }
 
-    async fn publish_history_object(
+    pub(super) async fn publish_history_object(
         &self,
         context: &RequestContext,
         policy_epoch: u64,
@@ -300,7 +309,10 @@ impl Database {
         let digest = hex::encode(Sha256::digest(&bytes));
         // A transport failure may follow a durable create. Verify the same
         // immutable object before deciding whether publication can proceed.
-        let _put_result = destination.put(id, bytes).await;
+        let _put_result = tokio::select! {
+            result = destination.put(id, bytes) => result,
+            _ = cancelled(cancellation) => return Err(cancelled_error()),
+        };
         cancellation.check()?;
         let verified = self
             .verified_history_object(

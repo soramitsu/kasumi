@@ -7,6 +7,8 @@ use kasumi_types::*;
 use sha2::{Digest, Sha256};
 #[path = "change_feed.rs"]
 mod change_feed;
+#[path = "full_backup.rs"]
+mod full_backup;
 #[path = "history_export.rs"]
 mod history_export;
 #[path = "history_reads.rs"]
@@ -745,58 +747,6 @@ impl Database {
     ) -> Result<uuid::Uuid> {
         let result = self.backup_inner(context.clone(), destination).await;
         self.audit_result(&context, result).await
-    }
-
-    async fn backup_inner(
-        &self,
-        context: RequestContext,
-        destination: &dyn BackupDestination,
-    ) -> Result<uuid::Uuid> {
-        self.engine.authorize(&context, None, Action::Admin)?;
-        self.barrier().await?;
-        self.engine.authorize(&context, None, Action::Admin)?;
-        let generation = self.engine.generation()?;
-        if !generation.state.history_archives.is_empty() {
-            return Err(Error::new(
-                ErrorCode::Conflict,
-                "archived history requires a verified chunked full backup",
-            ));
-        }
-        let revision = generation.state.revision;
-        let bytes = serde_json::to_vec(&generation.state)
-            .map_err(|_| Error::new(ErrorCode::Corruption, "backup snapshot encoding failed"))?;
-        drop(generation);
-        let backup = self
-            .store
-            .encrypt_backup(revision, &bytes)
-            .map_err(|_| Error::new(ErrorCode::Unavailable, "backup encryption failed"))?;
-        let id = backup.id();
-        let bytes = backup.to_bytes().map_err(|_| {
-            Error::new(ErrorCode::ResourceExhausted, "backup exceeds format limits")
-        })?;
-        self.maintenance_audit_inner(context.clone(), "backup", "started", revision)
-            .await?;
-        self.engine.authorize(&context, None, Action::Admin)?;
-        let result = destination.put(id, bytes).await;
-        self.access()?;
-        self.maintenance_audit_inner(
-            context,
-            "backup",
-            if result.is_ok() {
-                "completed"
-            } else {
-                "failed"
-            },
-            revision,
-        )
-        .await?;
-        result.map_err(|_| {
-            Error::new(
-                ErrorCode::UnknownOutcome,
-                format!("backup destination result uncertain; inspect {id} before retry"),
-            )
-        })?;
-        Ok(id)
     }
 
     async fn submit(&self, context: RequestContext, operation: Operation) -> Result<WriteReceipt> {

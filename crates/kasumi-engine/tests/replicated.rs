@@ -435,8 +435,8 @@ async fn replicated_restore_has_identical_genesis_and_requires_quorum_audit_befo
         .administer(
             context(),
             Operation::CreateCollection(CollectionDefinition {
-                retention_class: kasumi_types::CollectionRetentionClass::Operational,
-                write_mode: kasumi_types::CollectionWriteMode::Mutable,
+                retention_class: kasumi_types::CollectionRetentionClass::ArchivableHistory,
+                write_mode: kasumi_types::CollectionWriteMode::AppendOnly,
                 name: "documents".into(),
                 schema: json!({"type":"object"}),
                 indexes: vec![],
@@ -446,10 +446,30 @@ async fn replicated_restore_has_identical_genesis_and_requires_quorum_audit_befo
         .await
         .unwrap();
     let receipt = source.mutate(context(), batch()).await.unwrap();
-    let backups =
+    let backups = Arc::new(
         kasumi_store::FilesystemBackupDestination::new(root.path().join("backups"), 16 << 20)
-            .unwrap();
-    let backup_id = source.backup(context(), &backups).await.unwrap();
+            .unwrap(),
+    );
+    let cold_path = root.path().join("cold");
+    let cold =
+        Arc::new(kasumi_store::FilesystemBackupDestination::new(&cold_path, 16 << 20).unwrap());
+    source
+        .install_archive_destination("cold".into(), cold)
+        .unwrap();
+    source
+        .archive_history(
+            context(),
+            ArchiveHistory {
+                archive_id: "replicated-period".into(),
+                collection: "documents".into(),
+                cutoff_revision: receipt.revision,
+                destination: "cold".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let backup_id = source.backup(context(), backups.as_ref()).await.unwrap();
+    std::fs::remove_dir_all(cold_path).unwrap();
     let incarnation = uuid::Uuid::new_v4();
     let group = format!("tenant-a/{incarnation}");
     let router = Arc::new(InProcessRouter::default());
@@ -461,9 +481,13 @@ async fn replicated_restore_has_identical_genesis_and_requires_quorum_audit_befo
         let (node_store, audit) = store(&root.path().join(format!("restored-{id}.redb"))).await;
         audits.insert(id, audit.clone());
         let restored = prepare_replicated_restore(
-            &backups,
+            &kasumi_engine::RestoreSource {
+                timeout_ms: 300_000,
+                destination_alias: "backup".into(),
+                destination: backups.clone(),
+                keys: Arc::new(LocalKeyProvider::new([43; 32])),
+            },
             backup_id,
-            Arc::new(LocalKeyProvider::new([43; 32])),
             node_store,
             context(),
             ReplicaRestoreConfig {
@@ -471,6 +495,8 @@ async fn replicated_restore_has_identical_genesis_and_requires_quorum_audit_befo
                 incarnation,
                 voters: initial.voters.clone(),
                 raft: Config::default(),
+                admission: kasumi_engine::admission::NodeAdmission::new(Default::default())
+                    .unwrap(),
             },
             router.clone(),
             audit,
@@ -555,6 +581,8 @@ async fn replicated_restore_has_identical_genesis_and_requires_quorum_audit_befo
         )
         .await
         .unwrap();
+        db.install_archive_destination("backup".into(), backups.clone())
+            .unwrap();
         router.register(group.clone(), id, db.raft_group().raft().clone());
         nodes.insert(id, db);
     }

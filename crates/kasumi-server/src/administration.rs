@@ -771,9 +771,13 @@ impl Administration {
                         })
                         .collect::<Result<BTreeMap<_, _>>>()?;
                     let prepared = kasumi_engine::prepare_replicated_restore(
-                        self.destination(&destination)?,
+                        &kasumi_engine::RestoreSource {
+                            timeout_ms: 300_000,
+                            destination_alias: destination.clone(),
+                            destination: self.destinations[&destination].clone(),
+                            keys: source.provider.clone(),
+                        },
                         backup_id,
-                        source.provider.clone(),
                         store.clone(),
                         context.clone(),
                         kasumi_engine::ReplicaRestoreConfig {
@@ -786,6 +790,7 @@ impl Administration {
                             incarnation,
                             voters,
                             raft: kasumi_raft::server_config(),
+                            admission: self.admission.clone(),
                         },
                         network.clone(),
                         self.audit.clone(),
@@ -807,9 +812,13 @@ impl Administration {
                     )
                 } else {
                     let db = kasumi_engine::restore_local_with_incarnation_and_admission(
-                        self.destination(&destination)?,
+                        &kasumi_engine::RestoreSource {
+                            timeout_ms: 300_000,
+                            destination_alias: destination.clone(),
+                            destination: self.destinations[&destination].clone(),
+                            keys: source.provider.clone(),
+                        },
                         backup_id,
-                        source.provider.clone(),
                         store.clone(),
                         context.clone(),
                         incarnation,
@@ -819,9 +828,6 @@ impl Administration {
                     .await?;
                     (db, None, String::new())
                 };
-                if bootstrap.is_some() {
-                    database.install_admission(self.admission.clone())?;
-                }
                 let descriptor = GenerationDescriptor {
                     format: 1,
                     tenant: context.tenant.clone(),

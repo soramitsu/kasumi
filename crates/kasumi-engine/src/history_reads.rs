@@ -94,8 +94,15 @@ impl Database {
             .ok_or_else(|| {
                 Error::new(ErrorCode::Corruption, "history manifest reference missing")
             })?;
-        let destination = self.archive_destination(&archive.manifest.destination)?;
+        let destination = self.archive_destination(&archive.storage_destination)?;
         if !cache.manifests.contains(&reference.archive_id) {
+            // A manifest can be much larger than the requested point document.
+            // Charge encrypted framing, authenticated plaintext and decoding
+            // before the destination allocates any of those buffers.
+            let _manifest_workspace = self.admission().reserve(
+                (MAX_ARCHIVE_MANIFEST_BYTES * 6 + (4 << 20)) as u64,
+                Some(cancellation.clone()),
+            )?;
             let plaintext = self
                 .verified_history_object(
                     destination.as_ref(),
@@ -138,7 +145,7 @@ impl Database {
                     "history read exceeds bounded materialization budget",
                 ));
             }
-            let reservation = self.admission().reserve(
+            let mut reservation = self.admission().reserve(
                 (descriptor.plaintext_bytes.saturating_mul(3) + (4 << 20)) as u64,
                 Some(cancellation.clone()),
             )?;
@@ -190,6 +197,7 @@ impl Database {
             }
             cache.chunks.insert(key.clone(), Arc::new(chunk));
             cache.bytes = total;
+            reservation.retain_workspace();
             cache.reservations.push(reservation);
         }
         let chunk = &cache.chunks[&key];

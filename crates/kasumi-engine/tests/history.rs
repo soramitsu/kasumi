@@ -1,5 +1,6 @@
 mod common;
 use kasumi_engine::{Database, SecurityAudit};
+use kasumi_store::BackupDestination;
 use kasumi_store::{NodeStore, TenantStore, test_utils::LocalKeyProvider};
 use kasumi_types::*;
 use serde_json::json;
@@ -457,8 +458,10 @@ async fn archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_res
         db.engine().snapshot().unwrap().len()
     );
     assert!(
-        db.backup(context(), destination.as_ref()).await.is_err(),
-        "history subset references cannot silently become a self-contained backup"
+        !db.backup(context(), destination.as_ref())
+            .await
+            .unwrap()
+            .is_nil()
     );
     db.shutdown().await.unwrap();
     audit.shutdown().await;
@@ -528,5 +531,435 @@ async fn archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_res
         ErrorCode::Unavailable
     );
     db.shutdown().await.unwrap();
+    audit.shutdown().await;
+}
+
+#[tokio::test]
+async fn chunked_full_backup_restores_cold_history_and_permanent_identity_without_source_objects() {
+    let root = tempfile::tempdir().unwrap();
+    let cold_path = root.path().join("cold");
+    let backup_path = root.path().join("backup");
+    let cold =
+        Arc::new(kasumi_store::FilesystemBackupDestination::new(&cold_path, 16 << 20).unwrap());
+    let backups =
+        Arc::new(kasumi_store::FilesystemBackupDestination::new(&backup_path, 16 << 20).unwrap());
+    let (db, audit) = open(&root.path().join("source.redb"), Limits::default()).await;
+    db.install_archive_destination("cold".into(), cold).unwrap();
+    collection(&db, "docs", CollectionRetentionClass::ArchivableHistory).await;
+    let chunks: Vec<_> = (0..2)
+        .map(|chunk| StagedChunk {
+            read_set: vec![],
+            operations: (chunk * 6..chunk * 6 + 6)
+                .map(|n| Mutation::Put {
+                    collection: "docs".into(),
+                    id: format!("r{n:04}"),
+                    expected: Precondition::Absent,
+                    body: json!({"n": n, "payload": "x".repeat(900_000)}),
+                })
+                .collect(),
+        })
+        .collect();
+    let manifest = StagedManifest::from_chunks(&chunks).unwrap();
+    let reference = StagedTransactionRef {
+        transaction_id: "permanent-history-command".into(),
+        manifest_digest: staged_digest(&manifest).unwrap().0,
+    };
+    db.begin_staged_transaction(
+        context(),
+        BeginStagedTransaction {
+            transaction_id: reference.transaction_id.clone(),
+            manifest,
+            ttl_ms: 60_000,
+        },
+    )
+    .await
+    .unwrap();
+    for (index, chunk) in chunks.into_iter().enumerate() {
+        db.append_staged_chunk(
+            context(),
+            AppendStagedChunk {
+                transaction: reference.clone(),
+                index,
+                chunk,
+            },
+        )
+        .await
+        .unwrap();
+    }
+    let original = db
+        .finalize_staged_transaction(context(), reference.clone())
+        .await
+        .unwrap();
+    db.archive_history(
+        context(),
+        ArchiveHistory {
+            archive_id: "large-period".into(),
+            collection: "docs".into(),
+            cutoff_revision: original.revision,
+            destination: "cold".into(),
+        },
+    )
+    .await
+    .unwrap();
+    let state = db.engine().generation().unwrap();
+    let archive = state.state.history_archives["large-period"].clone();
+    assert!(
+        archive.manifest.chunks.len() >= 2,
+        "exercise real multiple-chunk archival"
+    );
+    assert!(state.state.collections["docs"].documents.is_empty());
+    drop(state);
+    let backup_id = db.backup(context(), backups.as_ref()).await.unwrap();
+    let encrypted = backups.get(backup_id, 8 << 20).await.unwrap();
+    let full = kasumi_store::EncryptedBackup::from_bytes(&encrypted, 4 << 20)
+        .unwrap()
+        .decrypt("history", Arc::new(LocalKeyProvider::new([0xD3; 32])))
+        .await
+        .unwrap();
+    let full: serde_json::Value = serde_json::from_slice(&full.snapshot).unwrap();
+    assert_eq!(full["kind"], "full_database");
+    assert!(
+        full["chunks"].as_array().unwrap().len() >= 2,
+        "exercise real multiple-chunk resident export"
+    );
+    db.shutdown().await.unwrap();
+    audit.shutdown().await;
+    drop(db);
+    drop(audit);
+    std::fs::remove_dir_all(&cold_path).unwrap();
+    let node = NodeStore::open(root.path().join("restored.redb")).unwrap();
+    let restored_audit = common::security_audit(node.clone()).await;
+    let target = TenantStore::open(
+        node,
+        "history".into(),
+        Arc::new(LocalKeyProvider::new([0xD3; 32])),
+    )
+    .await
+    .unwrap();
+    let restore_source = kasumi_engine::RestoreSource {
+        timeout_ms: 300_000,
+        destination_alias: "recovered".into(),
+        destination: backups.clone(),
+        keys: Arc::new(LocalKeyProvider::new([0xD3; 32])),
+    };
+    let restored = kasumi_engine::restore_local(
+        &restore_source,
+        backup_id,
+        target,
+        context(),
+        restored_audit.clone(),
+    )
+    .await
+    .unwrap();
+    assert!(restored.engine().generation().unwrap().state.suspended);
+    let restored_archive = restored
+        .engine()
+        .generation()
+        .unwrap()
+        .state
+        .history_archives["large-period"]
+        .clone();
+    assert_eq!(restored_archive.storage_destination, "recovered");
+    assert_eq!(
+        restored_archive.manifest, archive.manifest,
+        "source provenance is immutable"
+    );
+    restored
+        .administer(context(), Operation::Suspend(false))
+        .await
+        .unwrap();
+    assert_eq!(
+        restored
+            .get(&context(), "docs", "r0011")
+            .await
+            .unwrap()
+            .body["payload"]
+            .as_str()
+            .unwrap()
+            .len(),
+        900_000
+    );
+    assert_eq!(
+        restored
+            .finalize_staged_transaction(context(), reference)
+            .await
+            .unwrap(),
+        original
+    );
+    let lease = restored
+        .open_snapshot_lease(&context(), OpenSnapshotLease { ttl_ms: 60_000 })
+        .await
+        .unwrap();
+    let page = restored
+        .scan_snapshot_page(
+            &context(),
+            ScanSnapshotPage {
+                lease_id: lease.lease_id.clone(),
+                collection: "docs".into(),
+                after_id: None,
+                limit: 12,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(page.next_after_id.is_some(), "byte bound splits cold pages");
+    assert!(
+        page.documents
+            .iter()
+            .all(|doc| doc.version == original.revision)
+    );
+    restored
+        .close_snapshot_lease(&context(), &lease.lease_id)
+        .await
+        .unwrap();
+    restored.shutdown().await.unwrap();
+    restored_audit.shutdown().await;
+    drop(restored);
+    drop(restored_audit);
+
+    // Subsets, unavailable historical keys and corrupt/missing dependencies
+    // cannot install either bootstrap or Raft identity.
+    let dependency_path =
+        backup_path.join(format!("{}.kasumi", archive.manifest.chunks[1].object_id));
+    let valid_dependency = std::fs::read(&dependency_path).unwrap();
+    for (suffix, selected_id) in [
+        (
+            "subset",
+            uuid::Uuid::parse_str(&archive.manifest_object_id).unwrap(),
+        ),
+        ("wrong-keys", backup_id),
+        ("corrupt", backup_id),
+        ("missing", backup_id),
+    ] {
+        if suffix == "corrupt" {
+            let mut corrupt = valid_dependency.clone();
+            let last = corrupt.len() - 1;
+            corrupt[last] ^= 1;
+            std::fs::write(&dependency_path, corrupt).unwrap();
+        } else if suffix == "missing" {
+            std::fs::remove_file(&dependency_path).unwrap();
+        }
+        let node = NodeStore::open(root.path().join(format!("{suffix}.redb"))).unwrap();
+        let audit = common::security_audit(node.clone()).await;
+        let target = TenantStore::open(
+            node,
+            "history".into(),
+            Arc::new(LocalKeyProvider::new(
+                [if suffix == "wrong-keys" { 0xD4 } else { 0xD3 }; 32],
+            )),
+        )
+        .await
+        .unwrap();
+        assert!(
+            kasumi_engine::restore_local(
+                &restore_source,
+                selected_id,
+                target.clone(),
+                context(),
+                audit.clone()
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            target
+                .get("engine.bootstrap", b"manifest")
+                .unwrap()
+                .is_none()
+        );
+        assert!(target.get("raft.meta", b"node_id").unwrap().is_none());
+        audit.shutdown().await;
+        if suffix == "corrupt" {
+            std::fs::write(&dependency_path, &valid_dependency).unwrap();
+        }
+    }
+}
+
+struct PendingDestination {
+    entered: tokio::sync::Notify,
+}
+
+#[tokio::test]
+async fn scoped_feed_advances_through_filtered_commit_tail_and_emits_only_real_deletions() {
+    let root = tempfile::tempdir().unwrap();
+    let (db, audit) = open(&root.path().join("node.redb"), Limits::default()).await;
+    collection(&db, "docs", CollectionRetentionClass::Operational).await;
+    collection(&db, "other", CollectionRetentionClass::Operational).await;
+    let mut write = batch("cross-collection", 0, 1);
+    write.operations.push(Mutation::Put {
+        collection: "other".into(),
+        id: "x".into(),
+        expected: Precondition::Absent,
+        body: json!({"n": 99}),
+    });
+    let receipt = db.mutate(context(), write).await.unwrap();
+    let ChangeFeedPage::Events {
+        events,
+        next,
+        caught_up,
+        ..
+    } = db
+        .read_change_feed(&context(), feed(ChangeFeedStart::Beginning, 1))
+        .await
+        .unwrap()
+    else {
+        panic!("unexpected gap")
+    };
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].revision, receipt.revision);
+    assert_eq!(events[0].commit_event_count, 2);
+    assert_eq!(events[0].ordinal, 0);
+    assert_eq!(next.after_sequence, 1);
+    assert!(!caught_up);
+    let ChangeFeedPage::Events {
+        events,
+        next,
+        caught_up,
+        ..
+    } = db
+        .read_change_feed(&context(), feed(ChangeFeedStart::After { cursor: next }, 1))
+        .await
+        .unwrap()
+    else {
+        panic!("unexpected gap")
+    };
+    assert!(events.is_empty());
+    assert_eq!(
+        next.after_sequence, 2,
+        "a scoped consumer can complete the atomic commit"
+    );
+    assert!(caught_up);
+    let deletion = db
+        .mutate(
+            context(),
+            MutationBatch {
+                idempotency_key: "delete".into(),
+                read_set: vec![],
+                operations: vec![
+                    Mutation::Delete {
+                        collection: "docs".into(),
+                        id: "r0000".into(),
+                        expected: Precondition::Any,
+                    },
+                    Mutation::Delete {
+                        collection: "docs".into(),
+                        id: "never-existed".into(),
+                        expected: Precondition::Any,
+                    },
+                ],
+            },
+        )
+        .await
+        .unwrap();
+    let ChangeFeedPage::Events { events, next, .. } = db
+        .read_change_feed(
+            &context(),
+            feed(ChangeFeedStart::After { cursor: next }, 10),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("unexpected gap")
+    };
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].id, "r0000");
+    assert_eq!(events[0].revision, deletion.revision);
+    assert_eq!(events[0].commit_event_count, 1);
+    assert!(events[0].document.is_none());
+    assert_eq!(next.after_sequence, 3);
+    db.shutdown().await.unwrap();
+    audit.shutdown().await;
+}
+
+#[async_trait::async_trait]
+impl BackupDestination for PendingDestination {
+    async fn put(&self, _id: uuid::Uuid, _bytes: Vec<u8>) -> anyhow::Result<()> {
+        self.entered.notify_one();
+        std::future::pending().await
+    }
+    async fn get(&self, _id: uuid::Uuid, _max_bytes: usize) -> anyhow::Result<Vec<u8>> {
+        anyhow::bail!("no object was published")
+    }
+}
+
+#[tokio::test]
+async fn shutdown_cancels_pending_archive_upload_and_keeps_source_rows_on_restart() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("node.redb");
+    let (db, audit) = open(&path, Limits::default()).await;
+    collection(&db, "docs", CollectionRetentionClass::ArchivableHistory).await;
+    let cutoff = db
+        .mutate(context(), batch("seed", 0, 1))
+        .await
+        .unwrap()
+        .revision;
+    let pending = Arc::new(PendingDestination {
+        entered: tokio::sync::Notify::new(),
+    });
+    db.install_archive_destination("pending".into(), pending.clone())
+        .unwrap();
+    let task = tokio::spawn({
+        let db = db.clone();
+        async move {
+            db.archive_history(
+                context(),
+                ArchiveHistory {
+                    archive_id: "interrupted".into(),
+                    collection: "docs".into(),
+                    cutoff_revision: cutoff,
+                    destination: "pending".into(),
+                },
+            )
+            .await
+        }
+    });
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        pending.entered.notified(),
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), db.shutdown())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(task.await.unwrap().is_err());
+    audit.shutdown().await;
+    drop(db);
+    drop(audit);
+    let (db, audit) = open(&path, Limits::default()).await;
+    assert_eq!(
+        db.get(&context(), "docs", "r0000").await.unwrap().version,
+        cutoff
+    );
+    assert!(
+        db.engine()
+            .generation()
+            .unwrap()
+            .state
+            .history_archives
+            .is_empty()
+    );
+    assert!(
+        db.engine().generation().unwrap().state.collections["docs"]
+            .archived_documents
+            .is_empty()
+    );
+    let backup = tokio::spawn({
+        let db = db.clone();
+        let pending = pending.clone();
+        async move { db.backup(context(), pending.as_ref()).await }
+    });
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        pending.entered.notified(),
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), db.shutdown())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(backup.await.unwrap().is_err());
     audit.shutdown().await;
 }

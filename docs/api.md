@@ -77,6 +77,7 @@ The `CollectionDefinition` JSON for the examples below is:
 {
   "name": "docs",
   "write_mode": "mutable",
+  "retention_class": "operational",
   "schema": {"type": "object", "properties": {"amount": {"type": "number"}}},
   "indexes": [{"name": "amount", "fields": [{"path": "/amount", "kind": "number"}]}]
 }
@@ -169,8 +170,8 @@ leaders. Follow [routing and outcomes](administration.md#routing-and-outcomes).
 
 ## Conditional transactions and immutable collections
 
-`MutationBatch.read_set` and `CollectionDefinition.write_mode` are required v1
-fields. A conditional batch verifies all its read dependencies against one
+`MutationBatch.read_set`, `CollectionDefinition.write_mode`, and
+`CollectionDefinition.retention_class` are required v1 fields. A conditional batch verifies all its read dependencies against one
 pre-write state, then atomically applies writes across that tenant's collections.
 Reads from a separate earlier `get` or `query` are not automatically dependencies.
 Use `Database::read_snapshot` or native `ReadSnapshot` to capture coherent inputs,

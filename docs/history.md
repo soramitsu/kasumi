@@ -77,14 +77,18 @@ collections cannot be archived. Collection/index definitions cannot change
 after archived references exist.
 
 History manifests explicitly identify a `history_subset`; they are not full
-database backups. The existing monolithic full-backup API rejects a database
-that has archived history. A verified chunked full backup, transitive archive
-copy and archive-aware restore are still required before archived databases can
-use the full backup/restore workflow.
+database backups. The [chunked full-backup path](chunked-backup-plan.md) streams
+one coherent resident generation and copies all verified archive dependencies.
+Restore requires a full-database manifest and verifies the complete dependency
+graph before installing a new suspended incarnation. The configured target key
+provider must retain access to historical wrapping-key dependencies.
 
 Engine tests cover durable feed restart, strict audit, retention gaps, complete
 commit rejection, current policy, exact numbers, archived point/query/snapshot
 and leased ID reads, unique indexes, physical restart, and missing/corrupt
-objects. Native tests cover authenticated feed/archive dispatch and exact values.
+objects. Further tests exercise multiple real encrypted chunks, full restore
+after loss of original cold storage, permanent command replay, missing/corrupt
+dependencies, historical key authority, and cancellation of stalled uploads.
+Native tests cover authenticated feed/archive dispatch and exact values.
 These are local correctness tests; they do not establish Linux deployment,
 large-fleet performance or a recovery objective.

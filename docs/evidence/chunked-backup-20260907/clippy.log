@@ -1,0 +1,4 @@
+    Checking kasumi-engine v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-engine)
+    Checking kasumi-server v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-server)
+    Checking kasumi-bench v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-bench)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 11.28s

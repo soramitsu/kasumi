@@ -10,6 +10,10 @@ use std::{
     sync::Arc,
 };
 
+#[path = "backup_restore.rs"]
+mod backup_restore;
+pub use backup_restore::RestoreSource;
+
 const NS: &str = "engine.bootstrap";
 const CHUNK: usize = 4 << 20;
 const MAX_BOOTSTRAP: usize = 2 << 30;
@@ -44,6 +48,7 @@ pub struct ReplicaRestoreConfig {
     pub incarnation: uuid::Uuid,
     pub voters: BTreeMap<u64, ReplicaPlacement>,
     pub raft: Config,
+    pub admission: Arc<crate::admission::NodeAdmission>,
 }
 
 pub struct PreparedReplicaRestore {
@@ -61,16 +66,16 @@ pub struct PreparedReplicaRestore {
 /// then `Database::complete_restore` must commit before explicit activation.
 #[allow(clippy::too_many_arguments)]
 pub async fn prepare_replicated_restore(
-    destination: &dyn BackupDestination,
+    source: &RestoreSource,
     backup_id: uuid::Uuid,
-    source_keys: Arc<dyn KeyProvider>,
     target: Arc<TenantStore>,
     context: RequestContext,
     replica: ReplicaRestoreConfig,
     transport: Arc<dyn RaftTransport>,
     security_audit: Arc<SecurityAudit>,
 ) -> anyhow::Result<PreparedReplicaRestore> {
-    let _gate = BOOTSTRAP_GATE.lock().await;
+    let deadline = source.deadline()?;
+    let _gate = deadline.run(BOOTSTRAP_GATE.lock()).await?;
     restore_access(&target, &security_audit, &context).await?;
     anyhow::ensure!(
         target.get(NS, b"manifest")?.is_none() && target.get("raft.meta", b"node_id")?.is_none(),
@@ -82,48 +87,44 @@ pub async fn prepare_replicated_restore(
             && !replica.incarnation.is_nil(),
         "invalid restore replica identity"
     );
-    let encrypted = destination
-        .get(backup_id, kasumi_store::MAX_BACKUP_BUNDLE_BYTES)
-        .await?;
-    let backup = EncryptedBackup::from_bytes(&encrypted, MAX_BOOTSTRAP)?;
+    let verified = deadline
+        .run(Box::pin(backup_restore::load(
+            source,
+            backup_id,
+            &target,
+            &context,
+            &security_audit,
+            &replica.admission,
+            deadline,
+        )))
+        .await??;
+    let source_revision = verified.state.revision;
+    let _restore_workspace = verified._reservation.clone();
+    let original = &verified.state;
     anyhow::ensure!(
-        backup.id() == backup_id && backup.source_tenant() == target.tenant(),
-        "backup identity mismatch"
-    );
-    let contents = backup.decrypt(target.tenant(), source_keys).await?;
-    restore_access(&target, &security_audit, &context).await?;
-    let source: TenantState = serde_json::from_slice(&contents.snapshot)?;
-    if source.revision != contents.revision
-        || context.tenant != source.tenant
-        || !source.policy.allows(&context, None, Action::Admin)
-    {
-        return Err(
-            restore_denial(&security_audit, &context, ErrorCode::Forbidden)
-                .await
-                .into(),
-        );
-    }
-    anyhow::ensure!(
-        replica.incarnation.to_string() != source.incarnation,
+        replica.incarnation.to_string() != original.incarnation,
         "restore requires a fresh incarnation"
     );
     let bootstrap = ReplicatedBootstrap {
         incarnation: replica.incarnation.to_string(),
-        initial_policy: source.policy.clone(),
-        initial_limits: source.limits.clone(),
+        initial_policy: original.policy.clone(),
+        initial_limits: original.limits.clone(),
         voters: replica.voters,
     };
     bootstrap.validate()?;
-    let restored = TenantEngine::restored_bootstrap(
-        &contents.snapshot,
-        target.tenant(),
-        bootstrap.incarnation.clone(),
-        backup_id,
-    )?;
-    let bootstrap_sha256 = hex::encode(Sha256::digest(&restored));
+    let restored = verified
+        .into_genesis(
+            deadline,
+            target.tenant().into(),
+            bootstrap.incarnation.clone(),
+            backup_id,
+        )
+        .await?;
+    deadline.check()?;
+    restore_access(&target, &security_audit, &context).await?;
     bind_deployment(&target, &serde_json::to_vec(&("replicated", &bootstrap))?)?;
-    persist_new(&target, &restored)?;
-    let engine = Arc::new(TenantEngine::from_bootstrap(target.tenant(), &restored)?);
+    persist_new(&target, &restored.bytes)?;
+    let engine = restored.engine;
     let group = RaftGroup::open(
         replica.node_id,
         format!("{}/{}", target.tenant(), bootstrap.incarnation),
@@ -133,12 +134,18 @@ pub async fn prepare_replicated_restore(
         replica.raft,
     )
     .await?;
+    let database =
+        Database::new_with_admission(engine, group, target, replica.admission, security_audit);
+    database.install_archive_destination(
+        source.destination_alias.clone(),
+        source.destination.clone(),
+    )?;
     Ok(PreparedReplicaRestore {
-        database: Database::new(engine, group, target, security_audit),
+        database,
         bootstrap,
         backup_id,
-        source_revision: source.revision,
-        bootstrap_sha256,
+        source_revision,
+        bootstrap_sha256: restored.sha256,
     })
 }
 
@@ -364,15 +371,6 @@ async fn start(
     start_with_optional_admission(store, bytes, None, security_audit).await
 }
 
-async fn start_with_admission(
-    store: Arc<TenantStore>,
-    bytes: &[u8],
-    admission: Arc<crate::admission::NodeAdmission>,
-    security_audit: Arc<SecurityAudit>,
-) -> anyhow::Result<Arc<Database>> {
-    start_with_optional_admission(store, bytes, Some(admission), security_audit).await
-}
-
 async fn start_with_optional_admission(
     store: Arc<TenantStore>,
     bytes: &[u8],
@@ -380,6 +378,15 @@ async fn start_with_optional_admission(
     security_audit: Arc<SecurityAudit>,
 ) -> anyhow::Result<Arc<Database>> {
     let engine = Arc::new(TenantEngine::from_bootstrap(store.tenant(), bytes)?);
+    start_prepared(store, engine, admission, security_audit).await
+}
+
+async fn start_prepared(
+    store: Arc<TenantStore>,
+    engine: Arc<TenantEngine>,
+    admission: Option<Arc<crate::admission::NodeAdmission>>,
+    security_audit: Arc<SecurityAudit>,
+) -> anyhow::Result<Arc<Database>> {
     let incarnation = engine.generation()?.state.incarnation.clone();
     let group = RaftGroup::local(
         1,
@@ -400,17 +407,15 @@ async fn start_with_optional_admission(
 /// Old Raft membership/node identities never cross this boundary. The result is
 /// suspended and must be explicitly activated through its administrative API.
 pub async fn restore_local(
-    destination: &dyn BackupDestination,
+    source: &RestoreSource,
     backup_id: uuid::Uuid,
-    source_keys: Arc<dyn KeyProvider>,
     target: Arc<TenantStore>,
     context: RequestContext,
     security_audit: Arc<SecurityAudit>,
 ) -> anyhow::Result<Arc<Database>> {
     restore_local_with_incarnation(
-        destination,
+        source,
         backup_id,
-        source_keys,
         target,
         context,
         uuid::Uuid::new_v4(),
@@ -422,18 +427,16 @@ pub async fn restore_local(
 /// The server chooses a fresh incarnation before creating its isolated restore
 /// file. An existing store or the backup's original incarnation is rejected.
 pub async fn restore_local_with_incarnation(
-    destination: &dyn BackupDestination,
+    source: &RestoreSource,
     backup_id: uuid::Uuid,
-    source_keys: Arc<dyn KeyProvider>,
     target: Arc<TenantStore>,
     context: RequestContext,
     incarnation: uuid::Uuid,
     security_audit: Arc<SecurityAudit>,
 ) -> anyhow::Result<Arc<Database>> {
     restore_local_with_incarnation_and_admission(
-        destination,
+        source,
         backup_id,
-        source_keys,
         target,
         context,
         incarnation,
@@ -446,58 +449,58 @@ pub async fn restore_local_with_incarnation(
 /// Install the node's admission governor before the required restore audit.
 #[allow(clippy::too_many_arguments)]
 pub async fn restore_local_with_incarnation_and_admission(
-    destination: &dyn BackupDestination,
+    source: &RestoreSource,
     backup_id: uuid::Uuid,
-    source_keys: Arc<dyn KeyProvider>,
     target: Arc<TenantStore>,
     context: RequestContext,
     incarnation: uuid::Uuid,
     admission: Arc<crate::admission::NodeAdmission>,
     security_audit: Arc<SecurityAudit>,
 ) -> anyhow::Result<Arc<Database>> {
-    let _gate = BOOTSTRAP_GATE.lock().await;
+    let deadline = source.deadline()?;
+    let _gate = deadline.run(BOOTSTRAP_GATE.lock()).await?;
     restore_access(&target, &security_audit, &context).await?;
     anyhow::ensure!(
         target.get(NS, b"manifest")?.is_none() && target.get("raft.meta", b"node_id")?.is_none(),
         "restore target is already initialized"
     );
-    let bytes = destination
-        .get(backup_id, kasumi_store::MAX_BACKUP_BUNDLE_BYTES)
-        .await?;
-    restore_access(&target, &security_audit, &context).await?;
-    let backup = EncryptedBackup::from_bytes(&bytes, MAX_BOOTSTRAP)?;
+    let verified = deadline
+        .run(Box::pin(backup_restore::load(
+            source,
+            backup_id,
+            &target,
+            &context,
+            &security_audit,
+            &admission,
+            deadline,
+        )))
+        .await??;
+    let source_revision = verified.state.revision;
+    let _restore_workspace = verified._reservation.clone();
+    let original = &verified.state;
     anyhow::ensure!(
-        backup.id() == backup_id && backup.source_tenant() == target.tenant(),
-        "backup identity mismatch"
-    );
-    let contents = backup.decrypt(target.tenant(), source_keys).await?;
-    restore_access(&target, &security_audit, &context).await?;
-    let source: TenantState = serde_json::from_slice(&contents.snapshot)?;
-    anyhow::ensure!(
-        !incarnation.is_nil() && incarnation.to_string() != source.incarnation,
+        !incarnation.is_nil() && incarnation.to_string() != original.incarnation,
         "restore requires a fresh database incarnation"
     );
-    if source.revision != contents.revision
-        || context.tenant != source.tenant
-        || !source.policy.allows(&context, None, Action::Admin)
-    {
-        return Err(
-            restore_denial(&security_audit, &context, ErrorCode::Forbidden)
-                .await
-                .into(),
-        );
-    }
-    let restored = TenantEngine::restored_bootstrap(
-        &contents.snapshot,
-        target.tenant(),
-        incarnation.to_string(),
-        backup_id,
-    )?;
+    let restored = verified
+        .into_genesis(
+            deadline,
+            target.tenant().into(),
+            incarnation.to_string(),
+            backup_id,
+        )
+        .await?;
+    deadline.check()?;
+    restore_access(&target, &security_audit, &context).await?;
     bind_deployment(&target, b"local-v1")?;
-    persist_new(&target, &restored)?;
-    let database = start_with_admission(target, &restored, admission, security_audit).await?;
+    persist_new(&target, &restored.bytes)?;
+    let database = start_prepared(target, restored.engine, Some(admission), security_audit).await?;
+    database.install_archive_destination(
+        source.destination_alias.clone(),
+        source.destination.clone(),
+    )?;
     if let Err(error) = database
-        .maintenance_audit(context, "restore", "completed", source.revision)
+        .maintenance_audit(context, "restore", "completed", source_revision)
         .await
     {
         database.shutdown().await?;
@@ -532,6 +535,11 @@ async fn restore_access(
     audit: &SecurityAudit,
     context: &RequestContext,
 ) -> anyhow::Result<()> {
+    if context.tenant != target.tenant() || !context.scopes.contains(&Action::Admin) {
+        return Err(restore_denial(audit, context, ErrorCode::Forbidden)
+            .await
+            .into());
+    }
     if target.check_access().is_err() {
         return Err(restore_denial(audit, context, ErrorCode::Sealed)
             .await

@@ -1,8 +1,10 @@
-# Chunked full backup contract under implementation
+# Chunked full backups and archive-aware restore
 
-The completed history-prefix archive is a subset export. Its manifests must
-never enter full-database restore. The current full-backup operation rejects
-archived databases until the following path is implemented and tested.
+`Database::backup` exports a complete logical database as an encrypted manifest
+and verified chunks. The private native management `Backup` operation uses this
+same path. A history-prefix archive is a subset export and is never accepted as
+a complete backup. This is the first-release format; no monolithic-state
+fallback or conversion path is present.
 
 1. Capture one committed tenant generation after current administrative
    authorization and a quorum barrier. Stream its canonical resident-state JSON
@@ -38,9 +40,28 @@ archived databases until the following path is implemented and tested.
    explicit activation. Permanent native command identities and all operational
    state are included; archived bodies remain outside resident memory.
 
-Acceptance requires multiple actual chunks, source archive loss after a complete
-backup, restore into a fresh encrypted database, resumed cold point/index/leased
-reads and permanent replay, corrupt/missing dependency rejection before state
-installation, interrupted export without a successful manifest, current key
-revocation, and identical replicated restore genesis. Local correctness checks
-do not establish production recovery time or large-fleet performance.
+The embedded restore functions take `RestoreSource { destination_alias,
+destination, keys, timeout_ms }`. The operator installs the alias on every replica. The required timeout is
+1..=600,000 ms and bounds admission to the bootstrap gate and the complete
+verification phase; native management supplies an explicit 300,000 ms budget.
+Large resident decoding, validation and re-encoding run in bounded blocking
+workers. A caller timeout does not release their memory/work charge before the
+actual worker finishes. Expiry is checked again immediately before persistence.
+Synchronous final disk persistence is not claimed to be preemptible. The
+replicated restore configuration also takes the actual node admission governor.
+The implementation verifies historical objects using the source key authority
+and target tenant provider; unavailable historical keys reject restoration.
+It does not silently re-encrypt or discard inaccessible history.
+
+The resident stream remains bounded by the 2 GiB snapshot format and the node
+admission budget. Export holds a coherent generation and a one-chunk channel;
+restore reconstructs only resident state, not every historical body. Archive
+metadata and declared structured index values remain resident. Each referenced
+historical object is read and checked separately. Aborted operations can leave
+encrypted orphan objects; automatic orphan collection is not implemented.
+
+Tests exercise real multiple-chunk exports, loss of original cold storage,
+restoration into a fresh encrypted database, cold point and leased reads,
+permanent replay, rejection before state installation, interrupted uploads and
+identical replicated restore genesis. Local correctness checks do not establish
+production recovery time or large-fleet performance.

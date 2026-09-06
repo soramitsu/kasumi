@@ -282,6 +282,7 @@ pub(crate) fn publish(
             .ok_or_else(|| Error::new(ErrorCode::Corruption, "archive logical byte underflow"))?;
     }
     let retained = RetainedHistoryArchive {
+        storage_destination: manifest.destination.clone(),
         manifest: manifest.clone(),
         manifest_object_id: request.manifest_object_id.clone(),
         manifest_ciphertext_sha256: request.manifest_ciphertext_sha256.clone(),
@@ -408,6 +409,7 @@ pub(crate) fn validate_restored(state: &TenantState) -> Result<()> {
         }
     }
     for (id, archive) in &state.history_archives {
+        validate_name(&archive.storage_destination)?;
         validate_manifest(&archive.manifest)?;
         validate_sha256(&archive.manifest_ciphertext_sha256)?;
         uuid::Uuid::parse_str(&archive.manifest_object_id)

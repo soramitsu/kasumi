@@ -14,8 +14,9 @@ source and executable identities, earlier failures and shared-host limitations.
 The [acceptance checklist](docs/release-checklist.md) maps every agreed requirement
 to implementation and evidence. No Redis multiplier or production SLA is claimed.
 New first-release [conditional transaction contracts](docs/transactions.md) and
-[large atomic transactions/read leases](docs/large-transactions-plan.md)
-extend that recorded baseline. Their focused regression tests do not replace
+[large atomic transactions/read leases](docs/large-transactions-plan.md),
+[durable feeds and logical-history archives](docs/history.md), and
+[chunked full backups](docs/chunked-backup-plan.md) extend that recorded baseline. Their focused regression tests do not replace
 the baseline's full platform and performance gates for the changed source.
 
 ## Deployment contracts

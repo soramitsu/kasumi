@@ -93,8 +93,8 @@ async fn every_embedded_request_boundary_durably_audits_denials_and_sealed_tenan
     denied!(db.maintenance_audit(visitor.clone(), "backup", "started", 0));
     denied!(db.complete_restore(visitor.clone()));
     let destination =
-        FilesystemBackupDestination::new(dir.path().join("backups"), 16 << 20).unwrap();
-    denied!(db.backup(visitor.clone(), &destination));
+        Arc::new(FilesystemBackupDestination::new(dir.path().join("backups"), 16 << 20).unwrap());
+    denied!(db.backup(visitor.clone(), destination.as_ref()));
     let mut cross_tenant = context("owner");
     cross_tenant.tenant = "other-tenant".into();
     denied!(db.get(&cross_tenant, "docs", "id"));
@@ -227,8 +227,11 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
     )
     .await;
     let destination =
-        FilesystemBackupDestination::new(dir.path().join("backups"), 16 << 20).unwrap();
-    let backup = source.backup(context("owner"), &destination).await.unwrap();
+        Arc::new(FilesystemBackupDestination::new(dir.path().join("backups"), 16 << 20).unwrap());
+    let backup = source
+        .backup(context("owner"), destination.as_ref())
+        .await
+        .unwrap();
     let target_path = dir.path().join("target.redb");
     let target_node = NodeStore::open(&target_path).unwrap();
     let target_store = TenantStore::open(
@@ -248,9 +251,13 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
     .unwrap();
     let audit = SecurityAudit::open(service_store, 100).unwrap();
     let local = restore_local(
-        &destination,
+        &kasumi_engine::RestoreSource {
+            timeout_ms: 300_000,
+            destination_alias: "backup".into(),
+            destination: destination.clone(),
+            keys: source_key.clone(),
+        },
         backup,
-        source_key.clone(),
         target_store.clone(),
         context("visitor"),
         audit.clone(),
@@ -275,11 +282,16 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
             })
             .collect(),
         raft: Config::default(),
+        admission: kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
     };
     let replicated = prepare_replicated_restore(
-        &destination,
+        &kasumi_engine::RestoreSource {
+            timeout_ms: 300_000,
+            destination_alias: "backup".into(),
+            destination: destination.clone(),
+            keys: source_key.clone(),
+        },
         backup,
-        source_key.clone(),
         target_store.clone(),
         context("visitor"),
         replica,
@@ -305,9 +317,13 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
     assert!(target_store.get("raft.meta", b"node_id").unwrap().is_none());
     target_store.seal();
     let sealed = restore_local(
-        &destination,
+        &kasumi_engine::RestoreSource {
+            timeout_ms: 300_000,
+            destination_alias: "backup".into(),
+            destination: destination.clone(),
+            keys: source_key,
+        },
         backup,
-        source_key,
         target_store.clone(),
         context("owner"),
         audit.clone(),
