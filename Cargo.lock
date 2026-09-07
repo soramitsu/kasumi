@@ -1827,6 +1827,7 @@ dependencies = [
  "kasumi-store",
  "kasumi-types",
  "libc",
+ "openraft",
  "serde",
  "serde_json",
  "sha2",

@@ -30,7 +30,7 @@ impl StateMachineBackend for PausedSnapshot {
         self.inner.apply(position, command)
     }
 
-    fn snapshot(&self) -> Result<Vec<u8>> {
+    fn snapshot(&self) -> Result<kasumi_raft::BackendSnapshot> {
         if let Some(entered) = self.entered.lock().unwrap().take() {
             let _ = entered.send(());
             self.release.lock().unwrap().recv_timeout(WAIT)?;
@@ -38,7 +38,7 @@ impl StateMachineBackend for PausedSnapshot {
         self.inner.snapshot()
     }
 
-    fn validate_snapshot(&self, bytes: &[u8]) -> Result<()> {
+    fn validate_snapshot(&self, bytes: &[u8]) -> Result<Option<kasumi_raft::RetiredSnapshotState>> {
         self.inner.validate_snapshot(bytes)
     }
 

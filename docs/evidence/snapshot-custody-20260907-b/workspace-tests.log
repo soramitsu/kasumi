@@ -1,0 +1,181 @@
+   Compiling kasumi-raft v0.1.0 (/private/tmp/kasumi-snapshot-custody/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-snapshot-custody/crates/kasumi-engine)
+   Compiling kasumi-server v0.1.0 (/private/tmp/kasumi-snapshot-custody/crates/kasumi-server)
+   Compiling kasumi-bench v0.1.0 (/private/tmp/kasumi-snapshot-custody/crates/kasumi-bench)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 49s
+     Running unittests src/lib.rs (/tmp/kasumi-custody-substrate-target/debug/deps/kasumi_bench-a914c88a64078769)
+
+running 2 tests
+test tests::failure_before_any_success_has_no_success_percentiles ... ok
+test tests::a_failure_keeps_prior_samples_and_never_counts_unattempted_work ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running unittests src/main.rs (/tmp/kasumi-custody-substrate-target/debug/deps/kasumi_bench-ba26d2509620c870)
+
+running 1 test
+test tests::failed_read_workload_retains_counts_and_later_independent_work_can_run ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.34s
+
+     Running unittests src/bin/loopback.rs (/tmp/kasumi-custody-substrate-target/debug/deps/kasumi_bench_loopback-ffe45d5a59aeedd5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/bin/network.rs (/tmp/kasumi-custody-substrate-target/debug/deps/kasumi_bench_network-d5fb478e5620d5bf)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (/tmp/kasumi-custody-substrate-target/debug/deps/kasumi_client-750264ec44308ff5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (/tmp/kasumi-custody-substrate-target/debug/deps/kasumi_clock-8401f3bab24abbf7)
+
+running 4 tests
+test tests::elapsed_regression_is_not_treated_as_renewed_time ... ok
+test tests::delayed_use_of_a_paired_observation_never_reanchors_credential_expiry ... ok
+test tests::production_clock_acquisition_does_not_create_a_new_utc_anchor ... ok
+test tests::wall_rollback_and_frequent_observation_cannot_stop_elapsed_expiry ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (/tmp/kasumi-custody-substrate-target/debug/deps/kasumi_engine-66be7eaa242fd236)
+
+running 32 tests
+test admission::tests::pressure_cancels_queries_but_never_changes_write_work_and_uses_hysteresis ... ok
+test admission::tests::queued_rebuild_expands_its_existing_slot_and_rejects_growth_without_losing_charge ... ok
+test admission::tests::real_process_rss_and_physical_capacity_are_measured ... ok
+test admission::tests::result_release_rechecks_pressure_after_suspend_even_for_completed_work ... ok
+test admission::tests::retained_cursor_releases_operation_slot_but_keeps_bytes_until_last_owner ... ok
+test admission::tests::shutdown_drain_waits_for_detached_work_to_release_its_registration ... ok
+test admission::tests::suspend_invalidates_old_measurement_and_slow_or_failed_probe_denies ... ok
+test admission::tests::cancelled_detached_worker_keeps_semaphore_and_reservation_until_exit ... ok
+test bootstrap::backup_restore::tests::expired_restore_worker_keeps_its_admission_charge_until_actual_completion ... ok
+test backup_verify::tests::expired_live_verification_worker_keeps_bytes_and_shutdown_registration_until_done ... ok
+test security_audit::tests::cancelled_queued_audit_and_cancelled_shutdown_drain_before_immediate_reopen ... ok
+test security_audit::tests::uncertain_audit_commit_fences_queued_writers_until_sequence_recovery ... ok
+test security_audit::tests::live_opens_share_sequence_and_preserve_concurrent_records_through_reopen ... ok
+test service::tests::accepted_stop_release_failure_is_unknown_and_reopen_recovers_exact_tombstone ... ok
+test service::tests::canceled_queued_schema_activation_finishes_once_and_checks_receipt_release_authority ... ok
+test service::tests::committed_effect_with_expired_ack_is_resolved_by_fresh_credential ... ok
+test service::tests::committed_retirement_with_expired_reply_has_fresh_authorized_receipt_recovery ... ok
+test service::tests::expired_queued_and_canceled_credentials_accept_no_effect_or_identity ... ok
+test service::tests::generic_administration_cannot_inject_a_claimed_retirement_preparation ... ok
+test service::tests::guarded_stop_queued_deadline_and_cancellation_leave_only_actual_durable_outcomes ... ok
+test service::tests::query_shutdown_drains_abandoned_output_and_captured_generation ... ok
+test service::tests::queued_deadlines_use_admission_time_and_survive_caller_cancellation ... ok
+test service::tests::long_backup_verification_and_encoded_read_recheck_original_credential ... ok
+test service::tests::queued_expired_credential_cannot_accept_retirement_or_its_id ... ok
+test service::tests::queued_staged_finalize_checks_fresh_time_and_canceled_callers_keep_durable_outcomes ... ok
+test service::tests::queued_stop_checks_authority_after_an_earlier_ordered_write ... ok
+test service::tests::queued_stop_credential_expiry_never_accepts_missing_identity ... ok
+test service::tests::replicated_credential_admission_uses_only_captured_time_after_local_expiry ... ok
+test service::tests::queued_retirement_uses_trusted_admission_deadline_and_cancellation_keeps_exact_outcome ... ok
+test service::tests::retained_stop_response_fence_expires_without_changing_permanent_outcome ... ok
+test state::restore_budget_tests::restored_identity_metadata_is_validated_before_bootstrap_persistence ... ok
+test service::tests::serialized_authorization_never_becomes_fresh_service_or_credential_authority ... ok
+
+test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 17.01s
+
+     Running tests/admission.rs (/tmp/kasumi-custody-substrate-target/debug/deps/admission-a3dbd6496a864b52)
+
+running 2 tests
+test pressure_rejects_new_proposals_and_queries_but_committed_raft_work_still_applies ... ok
+test explicit_local_bootstrap_reads_the_complete_committed_generation ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.78s
+
+     Running tests/backup_checkpoint.rs (/tmp/kasumi-custody-substrate-target/debug/deps/backup_checkpoint-d6eb9ac33306107b)
+
+running 4 tests
+test missing_corrupt_resident_or_cold_dependency_and_history_subset_never_yield_proof ... ok
+test checkpoint_binds_actual_generation_complete_graph_keys_and_encrypted_restart ... ok
+test shutdown_cancels_pending_checkpoint_read_and_releases_database_work ... ok
+test verification_requires_current_global_admin_and_rechecks_policy_during_readback ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.09s
+
+     Running tests/concurrent_pagination.rs (/tmp/kasumi-custody-substrate-target/debug/deps/concurrent_pagination-1ee6b18092110799)
+
+running 1 test
+test snapshot_pages_overlap_atomic_writers_and_current_policy_revocation ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.00s
+
+     Running tests/contracts.rs (/tmp/kasumi-custody-substrate-target/debug/deps/contracts-2d6cc629c3d53f14)
+
+running 23 tests
+test append_only_mode_rejects_overwrite_delete_and_schema_weakening_atomically ... ok
+test audit_budget_blocks_effects_and_can_be_increased_without_losing_records ... ok
+test authorization_is_rechecked_before_idempotency_response ... ok
+test batch_failure_leaves_no_partial_document_or_index_effects ... ok
+test actual_raft_writes_queries_and_snapshot_pagination ... ok
+test concurrent_cas_has_exactly_one_winner ... ok
+test conditional_batches_fence_dependencies_and_phantoms_but_not_audits_or_replays ... ok
+test durable_engine_worker ... ok
+test key_revocation_evicts_retained_coherent_leases_and_rejects_every_page ... ok
+test key_revocation_fences_and_evicts_resident_state ... ok
+test killed_process_recovers_acknowledged_documents_receipts_and_bootstrap_policy ... ok
+test coherent_snapshot_reads_span_collections_under_concurrent_commits_and_strict_audit ... ok
+test read_assertions_block_write_skew_and_require_read_authority ... ok
+test receipt_expiry_index_obeys_exact_boundary_and_rebuilds_from_snapshot ... ok
+test receipts_survive_snapshot_and_precede_changed_schema_and_cas ... ok
+test retirement_is_terminal_and_survives_snapshot_recovery ... ok
+test shared_get_uses_the_same_audit_and_authorization_and_keeps_historical_values ... ok
+test snapshot_reads_reject_partial_queries_cursors_and_foreign_authority ... ok
+test strict_empty_discovery_is_audited_and_failed_audit_persistence_blocks_results ... ok
+test logical_backup_restores_suspended_with_new_incarnation_and_increasing_revisions ... ok
+test tampered_snapshot_never_changes_current_generation ... ok
+test unique_index_swap_is_atomic_and_old_generation_remains_coherent ... ok
+test strict_read_audit_is_committed_before_return_and_tied_to_data_revision ... ok
+
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 11.36s
+
+     Running tests/control.rs (/tmp/kasumi-custody-substrate-target/debug/deps/control-2d8057014caa49b8)
+
+running 2 tests
+test placement_rejects_shared_domains_unknown_nodes_duplicate_identities_and_cleartext ... ok
+test control_updates_require_operator_authority_cas_and_survive_reopen ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.27s
+
+     Running tests/embedded_audit.rs (/tmp/kasumi-custody-substrate-target/debug/deps/embedded_audit-46f7d519b3b8dd63)
+
+running 3 tests
+test cancelled_embedded_denial_writer_is_drained_before_shutdown_and_reopen ... ok
+test every_embedded_request_boundary_durably_audits_denials_and_sealed_tenants ... ok
+test standalone_restore_denials_are_audited_before_a_database_exists ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.83s
+
+     Running tests/guarded_staging.rs (/tmp/kasumi-custody-substrate-target/debug/deps/guarded_staging-153ac378f08afad1)
+
+running 10 tests
+test committed_original_survives_receipt_absence_admission_failure_and_fresh_resolution ... ok
+test final_response_fence_rechecks_authority_and_preserves_accepted_stop ... ok
+test concurrent_original_and_stop_keep_exactly_one_permanent_outcome ... ok
+test guarded_stop_orders_more_than_one_small_batch_of_authority_dependencies ... ok
+test malformed_fresh_admission_and_changed_manifest_cannot_accept_or_rebind_identity ... ok
+test retained_snapshot_quota_rejects_missing_stop_without_leaving_partial_identity ... ok
+test missing_stop_has_no_upload_lease_and_defeats_delayed_begin_after_encrypted_restart ... ok
+test stale_authority_cannot_create_stop_and_retained_terminal_release_checks_exact_read_scope ... ok
+test stopped_resolution_preserves_original_failed_finalize ... ok
+test upload_stop_clears_payload_and_permanent_capacity_is_checked_without_active_reservation ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.23s
+
+     Running tests/history.rs (/tmp/kasumi-custody-substrate-target/debug/deps/history-d49316b6484f8f80)
+
+running 5 tests
+test change_feed_is_atomic_ordered_resumable_and_detects_retention_gaps ... ok
+test archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_restart ... ok
+test scoped_feed_advances_through_filtered_commit_tail_and_emits_only_real_deletions ... ok
+test shutdown_cancels_pending_archive_upload_and_keeps_source_rows_on_restart ... ok
+test chunked_full_backup_restores_cold_history_and_permanent_identity_without_source_objects has been running for over 60 seconds

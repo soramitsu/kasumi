@@ -85,12 +85,14 @@ impl StateMachineBackend for BytesBackend {
         *self.0.lock().unwrap() = bytes.to_vec();
         Ok(crate::AppliedResponse::application(bytes.to_vec()))
     }
-    fn snapshot(&self) -> Result<Vec<u8>> {
-        Ok(self.0.lock().unwrap().clone())
+    fn snapshot(&self) -> Result<crate::BackendSnapshot> {
+        Ok(crate::BackendSnapshot::application(
+            self.0.lock().unwrap().clone(),
+        ))
     }
-    fn validate_snapshot(&self, bytes: &[u8]) -> Result<()> {
+    fn validate_snapshot(&self, bytes: &[u8]) -> Result<Option<crate::RetiredSnapshotState>> {
         ensure!(bytes != b"invalid", "invalid application snapshot");
-        Ok(())
+        Ok(None)
     }
     fn restore(&self, bytes: &[u8]) -> Result<()> {
         self.validate_snapshot(bytes)?;
@@ -124,7 +126,7 @@ async fn applied_metadata_does_not_block_runtime_while_snapshot_capture_holds_st
         ) -> Result<crate::AppliedResponse> {
             Ok(crate::AppliedResponse::application(bytes.to_vec()))
         }
-        fn snapshot(&self) -> Result<Vec<u8>> {
+        fn snapshot(&self) -> Result<crate::BackendSnapshot> {
             self.entered
                 .lock()
                 .unwrap()
@@ -138,10 +140,12 @@ async fn applied_metadata_does_not_block_runtime_while_snapshot_capture_holds_st
                 .lock()
                 .unwrap()
                 .recv_timeout(std::time::Duration::from_secs(1));
-            Ok(b"consistent-snapshot".to_vec())
+            Ok(crate::BackendSnapshot::application(
+                b"consistent-snapshot".to_vec(),
+            ))
         }
-        fn validate_snapshot(&self, _: &[u8]) -> Result<()> {
-            Ok(())
+        fn validate_snapshot(&self, _: &[u8]) -> Result<Option<crate::RetiredSnapshotState>> {
+            Ok(None)
         }
         fn restore(&self, _: &[u8]) -> Result<()> {
             Ok(())
@@ -193,6 +197,7 @@ fn envelope(bytes: Vec<u8>) -> SnapshotEnvelope {
             snapshot_id: uuid::Uuid::new_v4().to_string(),
         },
         backend: bytes,
+        retirement: None,
     }
 }
 
@@ -263,7 +268,7 @@ async fn snapshots_larger_than_store_record_limit_are_chunked_and_recovered() ->
         Arc::new(LocalKeyProvider::new([241; 32])),
     )
     .await?;
-    persist_snapshot(&domains, &bytes, 64 * 1024 * 1024, &value.meta)?;
+    persist_snapshot(&domains, &bytes, 64 * 1024 * 1024, &value)?;
     assert!(
         load_manifest(&store, b"current", 64 * 1024 * 1024)?
             .unwrap()
@@ -284,13 +289,14 @@ async fn snapshot_install_power_loss_at_every_storage_operation_keeps_whole_old_
 -> Result<()> {
     let seed = FaultBackend::new();
     let old = envelope(b"old-complete-snapshot".to_vec());
-    let new = envelope(b"new-complete-snapshot".to_vec());
+    let mut new = envelope(b"new-complete-snapshot".to_vec());
+    new.meta.last_log_id.as_mut().unwrap().index += 1;
     let initial = kasumi_store::test_utils::with_custody(
         fault_store(seed.clone()).await?,
         Arc::new(LocalKeyProvider::new([241; 32])),
     )
     .await?;
-    persist_snapshot(&initial, &postcard::to_allocvec(&old)?, 1024, &old.meta)?;
+    persist_snapshot(&initial, &postcard::to_allocvec(&old)?, 1024, &old)?;
     initial.custody().store().shutdown().await;
     drop(initial);
     let bytes = postcard::to_allocvec(&new)?;
@@ -302,7 +308,7 @@ async fn snapshot_install_power_loss_at_every_storage_operation_keeps_whole_old_
     )
     .await?;
     let start = baseline.operations();
-    persist_snapshot(&domains, &bytes, 1024, &new.meta)?;
+    persist_snapshot(&domains, &bytes, 1024, &new)?;
     let operations = baseline.operations() - start;
     ensure!(
         operations > 10,
@@ -317,7 +323,7 @@ async fn snapshot_install_power_loss_at_every_storage_operation_keeps_whole_old_
         )
         .await?;
         disk.fail_after(failure);
-        let written = persist_snapshot(&domains, &bytes, 1024, &new.meta);
+        let written = persist_snapshot(&domains, &bytes, 1024, &new);
         let recovered = fault_store(disk.crash()).await?;
         cleanup_snapshots(&recovered, 1024)?;
         let restored = load_snapshot(&recovered, 1024)?.context("snapshot lost")?;
@@ -404,3 +410,6 @@ async fn eight_mib_command_uses_compact_log_record_and_replays_after_reopen() ->
     assert_eq!(*backend.0.lock().unwrap(), bytes);
     Ok(())
 }
+
+#[path = "snapshot_custody_tests.rs"]
+mod snapshot_custody_tests;

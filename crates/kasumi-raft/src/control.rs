@@ -31,6 +31,25 @@ pub(crate) struct AppliedPosition {
     pub membership: StoredMembership<u64, BasicNode>,
     pub command_sha256: String,
 }
+/// A snapshot is an applied state boundary, not an invented log command.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) enum AppliedCursor {
+    Entry(AppliedPosition),
+    Snapshot {
+        meta: openraft::SnapshotMeta<u64, BasicNode>,
+        backend_sha256: String,
+        snapshot_sha256: String,
+    },
+}
+impl AppliedCursor {
+    pub(crate) fn log_id(&self) -> Option<LogId<u64>> {
+        match self {
+            Self::Entry(position) => Some(position.log_id),
+            Self::Snapshot { meta, .. } => meta.last_log_id,
+        }
+    }
+}
 impl AppliedEntryContext {
     pub(crate) fn record(&self) -> AppliedPosition {
         AppliedPosition {
@@ -42,7 +61,7 @@ impl AppliedEntryContext {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct LogHeader {
     pub log_id: LogId<u64>,
@@ -50,7 +69,7 @@ pub(crate) struct LogHeader {
     pub payload: HeaderPayload,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(crate) enum HeaderPayload {
     Blank,
@@ -135,6 +154,18 @@ pub(crate) fn load<T: DeserializeOwned>(
         .transpose()
 }
 
+pub(crate) fn committed_coverage(store: &TenantStore) -> Result<Option<LogId<u64>>> {
+    let log = load::<Option<LogId<u64>>>(store, META, b"committed")?.flatten();
+    let snapshot = crate::snapshot_custody::committed_snapshot(store)?;
+    if let (Some(log), Some(snapshot)) = (log, snapshot) {
+        ensure!(
+            log.index.cmp(&snapshot.index) == log.cmp(&snapshot),
+            "log and snapshot committed identities disagree"
+        );
+    }
+    Ok(log.max(snapshot))
+}
+
 /// A checked, locally committed seed. This type deliberately cannot construct
 /// VerifiedRetirementReceipt and does not establish current policy/lease/quorum.
 pub struct CommittedRetirementSeed {
@@ -181,7 +212,7 @@ impl ControlLog {
         load(self.custody.store(), META, b"vote")
     }
     pub fn committed(&self) -> Result<Option<LogId<u64>>> {
-        Ok(load::<Option<LogId<u64>>>(self.custody.store(), META, b"committed")?.flatten())
+        committed_coverage(self.custody.store())
     }
     pub fn retirement_seed(&self, index: u64) -> Result<Option<CommittedRetirementSeed>> {
         let store = self.custody.store();
@@ -223,10 +254,20 @@ impl ControlLog {
                 && seed.source().tenant == self.custody.binding().tenant(),
             "retirement seed installed source differs"
         );
+        // A committed snapshot supersedes any old candidate log beneath its
+        // floor. Only its exact accepted retirement capsule can retain a seed.
+        if crate::snapshot_custody::committed_snapshot(store)?.is_some_and(|id| id.index >= index)
+            && !crate::snapshot_custody::covers_seed(store, &record)?
+        {
+            return Ok(None);
+        }
         // If retained in the active prefix, compare its exact immutable header.
-        if let Some(active) = load::<LogHeader>(store, HEADERS, &index.to_be_bytes())? {
+        if crate::snapshot_custody::covers_seed(store, &record)? {
+            // Snapshot coverage supersedes conflicting uncommitted physical logs
+            // while Raft's separate purge operation is still pending.
+        } else if let Some(active) = load::<LogHeader>(store, HEADERS, &index.to_be_bytes())? {
             ensure!(
-                serde_json::to_vec(&active)? == serde_json::to_vec(&record.header)?,
+                active == record.header,
                 "retirement seed active header differs"
             );
         } else {
@@ -247,7 +288,7 @@ impl ControlLog {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RetainedSeed {
     pub header: LogHeader,
@@ -260,17 +301,17 @@ pub(crate) fn applied_write(context: &AppliedEntryContext) -> Result<WriteOp> {
     Ok(WriteOp::put(
         META,
         b"applied",
-        serde_json::to_vec(&context.record())?,
+        serde_json::to_vec(&AppliedCursor::Entry(context.record()))?,
     ))
 }
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RetiredBoundary {
-    position: AppliedPosition,
-    request: kasumi_types::RetireSourceRequest,
-    receipt: kasumi_types::RetirementReceipt,
-    seed_sha256: String,
+    pub(crate) position: AppliedPosition,
+    pub(crate) request: kasumi_types::RetireSourceRequest,
+    pub(crate) receipt: kasumi_types::RetirementReceipt,
+    pub(crate) seed_sha256: String,
 }
 
 pub(crate) fn retired_boundary(custody: &CustodyStore) -> Result<Option<RetiredBoundary>> {
@@ -293,9 +334,7 @@ fn validate_retired_boundary(custody: &CustodyStore, boundary: &RetiredBoundary)
         .context("retired boundary seed absent")?;
     source.header.validate()?;
     let seed = RetirementLogSeed::decode(&source.seed)?;
-    let committed = load::<Option<LogId<u64>>>(store, META, b"committed")?
-        .flatten()
-        .context("retired boundary commit absent")?;
+    let committed = committed_coverage(store)?.context("retired boundary commit absent")?;
     ensure!(
         committed >= boundary.position.log_id && committed.index >= boundary.position.log_id.index,
         "retired boundary is outside committed prefix"
@@ -368,14 +407,25 @@ pub(crate) fn persist_applied(
     if let (Some(existing), Some(new)) = (&existing_boundary, &boundary) {
         ensure!(existing == new, "immutable retired boundary differs");
     }
-    if let Some(previous) = load::<AppliedPosition>(store, META, b"applied")?
-        && previous.log_id.index >= context.log_id.index
+    if let Some(previous) = load::<AppliedCursor>(store, META, b"applied")?
+        && previous
+            .log_id()
+            .is_some_and(|id| id.index >= context.log_id.index)
     {
-        if previous.log_id.index == context.log_id.index {
+        if previous
+            .log_id()
+            .is_some_and(|id| id.index == context.log_id.index)
+        {
             ensure!(
-                previous == context.record(),
-                "replayed source applied position differs"
+                previous.log_id() == Some(context.log_id),
+                "replayed source log identity differs"
             );
+            if let AppliedCursor::Entry(previous) = &previous {
+                ensure!(
+                    *previous == context.record(),
+                    "replayed source applied position differs"
+                );
+            }
         }
         ensure!(
             boundary.is_none() || existing_boundary == boundary,
@@ -396,4 +446,4 @@ pub(crate) fn persist_applied(
 
 #[cfg(test)]
 #[path = "control_tests.rs"]
-mod tests;
+pub(crate) mod tests;

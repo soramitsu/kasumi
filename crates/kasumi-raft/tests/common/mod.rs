@@ -47,16 +47,18 @@ impl StateMachineBackend for Backend {
         data.insert(index, command.to_vec());
         Ok(kasumi_raft::AppliedResponse::application(command.to_vec()))
     }
-    fn snapshot(&self) -> Result<Vec<u8>> {
+    fn snapshot(&self) -> Result<kasumi_raft::BackendSnapshot> {
         ensure!(
             !self.fail_snapshot.load(Ordering::Acquire),
             "injected snapshot capture failure"
         );
-        Ok(serde_json::to_vec(&*self.data.lock().unwrap())?)
+        Ok(kasumi_raft::BackendSnapshot::application(
+            serde_json::to_vec(&*self.data.lock().unwrap())?,
+        ))
     }
-    fn validate_snapshot(&self, bytes: &[u8]) -> Result<()> {
+    fn validate_snapshot(&self, bytes: &[u8]) -> Result<Option<kasumi_raft::RetiredSnapshotState>> {
         serde_json::from_slice::<BTreeMap<u64, Vec<u8>>>(bytes)?;
-        Ok(())
+        Ok(None)
     }
     fn restore(&self, bytes: &[u8]) -> Result<()> {
         let restored = serde_json::from_slice(bytes)?;

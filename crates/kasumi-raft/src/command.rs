@@ -122,7 +122,22 @@ impl RetirementLogSeed {
         for principal in &self.source.administrators {
             validate_name(principal)?;
         }
-        let command = Command {
+        let command = self.command();
+        ensure!(
+            sha256(&serde_json::to_vec(&command)?) == self.command_sha256,
+            "retirement seed reconstructed command differs"
+        );
+        if let Some(record) = &self.source.existing_identity {
+            ensure!(
+                record.request.reference()? == self.request.reference()?
+                    && record.accepted_revision <= self.source.previous_revision,
+                "retirement seed retained identity differs"
+            );
+        }
+        Ok(())
+    }
+    fn command(&self) -> Command {
+        Command {
             context: kasumi_types::RequestContext {
                 authorization: self.authorization.clone(),
                 principal: self.principal.clone(),
@@ -136,19 +151,11 @@ impl RetirementLogSeed {
                 verified_closure_digest: self.verified_closure_digest.clone(),
                 observation: Some(self.observation.clone()),
             }),
-        };
-        ensure!(
-            sha256(&serde_json::to_vec(&command)?) == self.command_sha256,
-            "retirement seed reconstructed command differs"
-        );
-        if let Some(record) = &self.source.existing_identity {
-            ensure!(
-                record.request.reference()? == self.request.reference()?
-                    && record.accepted_revision <= self.source.previous_revision,
-                "retirement seed retained identity differs"
-            );
         }
-        Ok(())
+    }
+    pub(crate) fn reconstructed_command(&self) -> Result<Vec<u8>> {
+        self.validate()?;
+        Ok(serde_json::to_vec(&self.command())?)
     }
     pub fn request(&self) -> &RetireSourceRequest {
         &self.request

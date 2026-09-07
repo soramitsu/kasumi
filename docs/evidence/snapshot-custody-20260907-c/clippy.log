@@ -1,0 +1,5 @@
+    Checking kasumi-raft v0.1.0 (/private/tmp/kasumi-snapshot-custody/crates/kasumi-raft)
+    Checking kasumi-engine v0.1.0 (/private/tmp/kasumi-snapshot-custody/crates/kasumi-engine)
+    Checking kasumi-server v0.1.0 (/private/tmp/kasumi-snapshot-custody/crates/kasumi-server)
+    Checking kasumi-bench v0.1.0 (/private/tmp/kasumi-snapshot-custody/crates/kasumi-bench)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 38.36s

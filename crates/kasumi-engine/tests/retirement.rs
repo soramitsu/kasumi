@@ -845,3 +845,6 @@ async fn invisible_staged_identity_after_checkpoint_is_not_lost_by_retirement() 
     assert_eq!(proof.failure().code, ErrorCode::Conflict);
     fixture.close().await;
 }
+
+#[path = "common/retirement_snapshot.rs"]
+mod retirement_snapshot;

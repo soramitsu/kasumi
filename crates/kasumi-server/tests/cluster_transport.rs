@@ -29,12 +29,14 @@ impl StateMachineBackend for Backend {
         self.0.lock().unwrap().insert(index, command.to_vec());
         Ok(kasumi_raft::AppliedResponse::application(command.to_vec()))
     }
-    fn snapshot(&self) -> Result<Vec<u8>> {
-        Ok(serde_json::to_vec(&*self.0.lock().unwrap())?)
+    fn snapshot(&self) -> Result<kasumi_raft::BackendSnapshot> {
+        Ok(kasumi_raft::BackendSnapshot::application(
+            serde_json::to_vec(&*self.0.lock().unwrap())?,
+        ))
     }
-    fn validate_snapshot(&self, bytes: &[u8]) -> Result<()> {
+    fn validate_snapshot(&self, bytes: &[u8]) -> Result<Option<kasumi_raft::RetiredSnapshotState>> {
         serde_json::from_slice::<BTreeMap<u64, Vec<u8>>>(bytes)?;
-        Ok(())
+        Ok(None)
     }
     fn restore(&self, bytes: &[u8]) -> Result<()> {
         *self.0.lock().unwrap() = serde_json::from_slice(bytes)?;

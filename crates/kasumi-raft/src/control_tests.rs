@@ -10,16 +10,16 @@ use openraft::storage::{RaftLogStorage, RaftLogStorageExt};
 use std::collections::BTreeSet;
 
 const INCARNATION: &str = "f38b3bea-9d6e-4ecb-9eab-9c5e4cb412d6";
-fn group() -> String {
+pub(crate) fn group() -> String {
     format!("tenant/{INCARNATION}")
 }
-fn id(index: u64) -> LogId<u64> {
+pub(crate) fn id(index: u64) -> LogId<u64> {
     LogId::new(openraft::CommittedLeaderId::new(3, 1), index)
 }
 
 // This fixture is log metadata, not a verified full backup or successful source
 // retirement. The engine's retirement integration exercises its actual producer.
-fn seed() -> Result<(Command, RetirementLogSeed)> {
+pub(crate) fn seed() -> Result<(Command, RetirementLogSeed)> {
     let context = RequestContext {
         tenant: "tenant".into(),
         principal: "owner".into(),
@@ -77,7 +77,7 @@ fn seed() -> Result<(Command, RetirementLogSeed)> {
     let seed = RetirementLogSeed::prepare(&command, state)?;
     Ok((command, seed))
 }
-fn retirement_entry() -> Result<Entry<TypeConfig>> {
+pub(crate) fn retirement_entry() -> Result<Entry<TypeConfig>> {
     let (command, seed) = seed()?;
     Ok(Entry {
         log_id: id(1),
@@ -87,7 +87,7 @@ fn retirement_entry() -> Result<Entry<TypeConfig>> {
         )?),
     })
 }
-fn ordinary(index: u64) -> Entry<TypeConfig> {
+pub(crate) fn ordinary(index: u64) -> Entry<TypeConfig> {
     Entry {
         log_id: id(index),
         payload: EntryPayload::Normal(RaftCommand::application(
@@ -95,7 +95,7 @@ fn ordinary(index: u64) -> Entry<TypeConfig> {
         )),
     }
 }
-async fn fixture(
+pub(crate) async fn fixture(
     disk: FaultBackend,
 ) -> Result<(
     Arc<TenantStorageSet>,
@@ -150,7 +150,7 @@ async fn committed_seed_reopens_before_any_projection_without_application_key_ac
         view.retirement_seed(1)?.is_none(),
         "append is not commitment"
     );
-    assert!(load::<AppliedPosition>(stores.custody().store(), META, b"applied")?.is_none());
+    assert!(load::<AppliedCursor>(stores.custody().store(), META, b"applied")?.is_none());
     log.save_committed(Some(id(1))).await?;
     let original = view.retirement_seed(1)?.unwrap().seed().encoded()?;
     let crash = disk.crash();
@@ -173,7 +173,7 @@ async fn committed_seed_reopens_before_any_projection_without_application_key_ac
         original
     );
     assert_eq!(app_provider.probe_count(), probes);
-    assert!(load::<AppliedPosition>(control.store(), META, b"applied")?.is_none());
+    assert!(load::<AppliedCursor>(control.store(), META, b"applied")?.is_none());
     for (_, bytes) in control.store().scan(HEADERS)? {
         assert!(!String::from_utf8_lossy(&bytes).contains("municipal-sensitive-payload"));
     }
@@ -374,7 +374,7 @@ async fn accepted_boundary_and_exact_applied_position_publish_atomically_before_
         disk.disarm();
         drop(stores);
         let (reopened, _, _, mut log) = fixture(crash).await?;
-        let applied: Option<AppliedPosition> = load(reopened.custody().store(), META, b"applied")?;
+        let applied: Option<AppliedCursor> = load(reopened.custody().store(), META, b"applied")?;
         let boundary = retired_boundary(reopened.custody())?;
         assert_eq!(
             applied.is_some(),
@@ -382,7 +382,7 @@ async fn accepted_boundary_and_exact_applied_position_publish_atomically_before_
             "torn source transition {failure}"
         );
         if let Some(boundary) = boundary {
-            assert_eq!(applied.unwrap(), context.record());
+            assert_eq!(applied.unwrap(), AppliedCursor::Entry(context.record()));
             assert_eq!(boundary.receipt, receipt);
             log.purge(id(1)).await?;
             assert!(

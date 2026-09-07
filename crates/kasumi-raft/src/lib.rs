@@ -6,6 +6,8 @@ mod control;
 mod lifetime;
 mod network;
 mod snapshot_buffer;
+mod snapshot_custody;
+mod snapshot_state;
 mod storage;
 mod timing;
 
@@ -21,6 +23,7 @@ pub use network::{
 };
 pub use openraft::{BasicNode, Config, LogId, SnapshotPolicy};
 pub use snapshot_buffer::SnapshotBuffer;
+pub use snapshot_state::{BackendSnapshot, RetiredSnapshotState};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     sync::{
@@ -76,11 +79,11 @@ impl AppliedResponse {
 /// its returned bytes. `restore` must validate before atomically replacing state.
 pub trait StateMachineBackend: Send + Sync + 'static {
     fn apply(&self, position: &AppliedEntryContext, command: &[u8]) -> Result<AppliedResponse>;
-    fn snapshot(&self) -> Result<Vec<u8>>;
+    fn snapshot(&self) -> Result<BackendSnapshot>;
     /// Validate the complete logical snapshot without modifying published state.
     /// Called before durable installation; malformed snapshots must never replace
     /// the last recoverable durable snapshot.
-    fn validate_snapshot(&self, bytes: &[u8]) -> Result<()>;
+    fn validate_snapshot(&self, bytes: &[u8]) -> Result<Option<RetiredSnapshotState>>;
     fn restore(&self, bytes: &[u8]) -> Result<()>;
 }
 
@@ -107,10 +110,10 @@ impl StateMachineBackend for OwnedBackend {
     fn apply(&self, position: &AppliedEntryContext, command: &[u8]) -> Result<AppliedResponse> {
         self.inner.apply(position, command)
     }
-    fn snapshot(&self) -> Result<Vec<u8>> {
+    fn snapshot(&self) -> Result<BackendSnapshot> {
         self.inner.snapshot()
     }
-    fn validate_snapshot(&self, bytes: &[u8]) -> Result<()> {
+    fn validate_snapshot(&self, bytes: &[u8]) -> Result<Option<RetiredSnapshotState>> {
         self.inner.validate_snapshot(bytes)
     }
     fn restore(&self, bytes: &[u8]) -> Result<()> {

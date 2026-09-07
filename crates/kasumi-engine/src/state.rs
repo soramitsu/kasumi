@@ -1,3 +1,5 @@
+#[path = "custody_snapshot.rs"]
+mod custody_snapshot;
 use crate::accounting::{SnapshotAccounting, encoded_len};
 use arc_swap::ArcSwapOption;
 use kasumi_query::{QueryIndexes, check_unique, validate_collection, validate_document};
@@ -107,12 +109,19 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
             retirement,
         })
     }
-    fn snapshot(&self) -> anyhow::Result<Vec<u8>> {
-        Ok(TenantEngine::snapshot(self)?)
+    fn snapshot(&self) -> anyhow::Result<kasumi_raft::BackendSnapshot> {
+        let generation = self.generation()?;
+        Ok(kasumi_raft::BackendSnapshot {
+            data: Self::encode_generation(&generation)?,
+            retirement: custody_snapshot::retired(&generation.state)?,
+        })
     }
-    fn validate_snapshot(&self, bytes: &[u8]) -> anyhow::Result<()> {
-        self.prepare_snapshot(bytes)?;
-        Ok(())
+    fn validate_snapshot(
+        &self,
+        bytes: &[u8],
+    ) -> anyhow::Result<Option<kasumi_raft::RetiredSnapshotState>> {
+        let generation = self.prepare_snapshot(bytes)?;
+        custody_snapshot::retired(&generation.state).map_err(Into::into)
     }
     fn restore(&self, bytes: &[u8]) -> anyhow::Result<()> {
         Ok(TenantEngine::restore(self, bytes)?)
@@ -654,7 +663,10 @@ impl TenantEngine {
     }
 
     pub fn snapshot(&self) -> Result<Vec<u8>> {
-        let generation = self.generation()?;
+        Self::encode_generation(self.generation()?.as_ref())
+    }
+
+    fn encode_generation(generation: &Generation) -> Result<Vec<u8>> {
         let bytes = serde_json::to_vec(&generation.state)
             .map_err(|_| Error::new(ErrorCode::Corruption, "snapshot encoding failed"))?;
         if bytes.len() != generation.snapshot_accounting.bytes(&generation.state)?
