@@ -13,6 +13,9 @@ use std::{
 };
 use uuid::Uuid;
 
+#[path = "lifecycle_state.rs"]
+pub(crate) mod lifecycle_state;
+
 const NS: &str = "kasumi.independent-authority";
 const META: &[u8] = b"meta";
 const MAX_RECORD_BYTES: usize = 256 << 10;
@@ -70,6 +73,10 @@ struct Meta {
     active_fences: u64,
     preparations: u64,
     incarnations: u64,
+    target_stops: u64,
+    lifecycle_receipts: u64,
+    lifecycle_epochs: u64,
+    open_control_epochs: u64,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -83,12 +90,15 @@ pub(crate) struct TenantRecord {
     pub fence: Option<AuthorityReceipt>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", deny_unknown_fields)]
+#[serde(tag = "kind", content = "record", deny_unknown_fields)]
 enum Record {
     Tenant(TenantRecord),
     Receipt(AuthorityReceipt),
     Preparation(PreparationRecord),
     Incarnation(IncarnationRecord),
+    TargetStop(AuthorityReceipt),
+    Lifecycle(Box<LifecycleAuthorityReceipt>),
+    ControlEpoch(lifecycle_state::ControlEpochRecord),
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -131,6 +141,18 @@ pub(crate) struct PreparedCommand {
     pub drained_fence: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "prepared",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub(crate) enum PreparedOperation {
+    Administrative(Box<PreparedCommand>),
+    Lifecycle(Box<lifecycle_state::PreparedLifecycle>),
+}
+
 pub(crate) struct Backend {
     store: Arc<TenantStore>,
     installation: AuthorityInstallation,
@@ -144,6 +166,9 @@ fn key_receipt(tenant: &str, command: Uuid) -> String {
 }
 fn key_preparation(tenant: &str, incarnation: Uuid) -> String {
     format!("p/{tenant}/{incarnation}")
+}
+fn key_target_stop(tenant: &str, incarnation: Uuid) -> String {
+    format!("s/{tenant}/{incarnation}")
 }
 fn key_incarnation(tenant: &str, incarnation: Uuid) -> String {
     format!("i/{tenant}/{incarnation}")
@@ -191,6 +216,10 @@ impl Backend {
                 active_fences: 0,
                 preparations: 0,
                 incarnations: 0,
+                target_stops: 0,
+                lifecycle_receipts: 0,
+                lifecycle_epochs: 0,
+                open_control_epochs: 0,
             };
             store.write_batch(&[WriteOp::put(NS, META, serde_json::to_vec(&meta)?)])?;
         }
@@ -231,6 +260,35 @@ impl Backend {
             _ => anyhow::bail!("authority receipt type differs"),
         }
     }
+    pub fn revision(&self) -> Result<u64> {
+        Ok(self.meta()?.revision)
+    }
+    pub fn stopped_target(&self, reference: &TargetStopReference) -> Result<AuthorityReceipt> {
+        let _lock = self
+            .mutation
+            .lock()
+            .map_err(|_| anyhow::anyhow!("authority state poisoned"))?;
+        let request = self
+            .receipt(&reference.tenant, reference.command_id)?
+            .context("target stop absent")?;
+        ensure!(
+            request.digest()? == reference.receipt_digest,
+            "exact target stop receipt differs"
+        );
+        let AuthorityOutcome::TargetStopped { target, .. } = &request.outcome else {
+            anyhow::bail!("target stop did not commit");
+        };
+        match self.record(&key_target_stop(&reference.tenant, target.incarnation))? {
+            Some(Record::TargetStop(original)) => {
+                ensure!(
+                    original.outcome == request.outcome,
+                    "target stop identity differs"
+                );
+                Ok(original)
+            }
+            _ => anyhow::bail!("target incarnation tombstone absent"),
+        }
+    }
     pub fn authorize_admin(&self, context: &RequestContext) -> kasumi_types::Result<u64> {
         let _lock = self.mutation.lock().map_err(unavailable)?;
         self.authorize(&self.meta().map_err(unavailable)?, context)
@@ -259,6 +317,14 @@ impl Backend {
         let record = self
             .tenant_record(&request.identity.tenant)?
             .context("tenant is not enrolled")?;
+        ensure!(
+            self.record(&key_target_stop(
+                &request.identity.tenant,
+                request.identity.incarnation
+            ))?
+            .is_none(),
+            "target incarnation is permanently stopped"
+        );
         let view = match request.purpose {
             LeasePurpose::Serving => {
                 ensure!(
@@ -304,6 +370,11 @@ impl Backend {
         let record = self
             .tenant_record(&request.tenant)?
             .context("tenant is not enrolled")?;
+        ensure!(
+            self.record(&key_target_stop(&request.tenant, request.incarnation))?
+                .is_none(),
+            "target incarnation is permanently stopped"
+        );
         let epoch = match request.purpose {
             LeasePurpose::Serving => {
                 ensure!(
@@ -451,6 +522,19 @@ impl Backend {
                 }),
             );
         }
+        if let AuthorityOutcome::TargetStopped { target, .. } = &receipt.outcome {
+            // The first exact stop remains authoritative. Retries under another
+            // command ID cannot replace its original actor/position/identity.
+            if self
+                .record(&key_target_stop(&request.tenant, target.incarnation))?
+                .is_none()
+            {
+                additions.insert(
+                    key_target_stop(&request.tenant, target.incarnation),
+                    Record::TargetStop(receipt.clone()),
+                );
+            }
+        }
         if let Some(tenant) = tenant {
             additions.insert(key_tenant(&request.tenant), Record::Tenant(tenant));
         }
@@ -492,6 +576,10 @@ impl Backend {
                     Record::Receipt(_) => meta.receipts += 1,
                     Record::Preparation(_) => meta.preparations += 1,
                     Record::Incarnation(_) => meta.incarnations += 1,
+                    Record::TargetStop(_) => meta.target_stops += 1,
+                    Record::Lifecycle(_) | Record::ControlEpoch(_) => {
+                        unreachable!("administrative reducer cannot issue lifecycle records")
+                    }
                 }
             }
             meta.state_bytes = meta
@@ -506,10 +594,19 @@ impl Backend {
         // maximum-sized tenant update and permanent incarnation record. Other commands cannot spend that reserved
         // completion capacity. Rejecting a new fence leaves the source active.
         if meta.tenants > self.installation.max_tenants
-            || meta.receipts.saturating_add(meta.active_fences) > self.installation.max_receipts
+            || meta
+                .receipts
+                .saturating_add(meta.lifecycle_receipts)
+                .saturating_add(meta.active_fences)
+                .saturating_add(meta.open_control_epochs)
+                > self.installation.max_receipts
             || meta.state_bytes.saturating_add(
                 meta.active_fences
-                    .saturating_mul(3 * MAX_RECORD_BYTES as u64),
+                    .saturating_mul(3 * MAX_RECORD_BYTES as u64)
+                    .saturating_add(
+                        meta.open_control_epochs
+                            .saturating_mul(MAX_RECORD_BYTES as u64),
+                    ),
             ) > self.installation.max_state_bytes
         {
             return Ok(Err(Error::new(
@@ -533,6 +630,13 @@ impl Backend {
         let request = &prepared.command;
         match &request.action {
             AuthorityAction::Enroll { incarnation, nodes } => {
+                if self
+                    .record(&key_target_stop(&request.tenant, *incarnation))
+                    .map_err(unavailable)?
+                    .is_some()
+                {
+                    return Err(conflict("target incarnation is permanently stopped"));
+                }
                 if tenant.is_some() {
                     return Err(conflict("tenant already enrolled"));
                 }
@@ -587,6 +691,13 @@ impl Backend {
                     ));
                 }
                 if self
+                    .record(&key_target_stop(&request.tenant, target.incarnation))
+                    .map_err(unavailable)?
+                    .is_some()
+                {
+                    return Err(conflict("target incarnation is permanently stopped"));
+                }
+                if self
                     .record(&key_preparation(&request.tenant, target.incarnation))
                     .map_err(unavailable)?
                     .is_some()
@@ -626,6 +737,13 @@ impl Backend {
                     .validate(&request.tenant, record.incarnation)
                     .map_err(|_| conflict("backup or target incarnation differs"))?;
                 if self
+                    .record(&key_target_stop(&request.tenant, target.incarnation))
+                    .map_err(unavailable)?
+                    .is_some()
+                {
+                    return Err(conflict("target incarnation is permanently stopped"));
+                }
+                if self
                     .record(&key_incarnation(&request.tenant, target.incarnation))
                     .map_err(unavailable)?
                     .is_some()
@@ -654,6 +772,57 @@ impl Backend {
                 Ok(AuthorityOutcome::Activated {
                     target: target.clone(),
                     authority_epoch: record.authority_epoch,
+                })
+            }
+            AuthorityAction::StopTarget {
+                source_incarnation,
+                source_epoch,
+                target,
+            } => {
+                if let Some(Record::Incarnation(accepted)) = self
+                    .record(&key_incarnation(&request.tenant, target.incarnation))
+                    .map_err(unavailable)?
+                {
+                    if !matches!(&accepted.receipt.outcome,AuthorityOutcome::Activated { target:actual,authority_epoch } if actual==target && *authority_epoch==source_epoch.saturating_add(1))
+                    {
+                        return Err(conflict(
+                            "target has another permanent incarnation identity",
+                        ));
+                    }
+                    return Ok(AuthorityOutcome::TargetAlreadyActivated {
+                        original: Box::new(accepted.receipt),
+                    });
+                }
+                if let Some(record) = self
+                    .record(&key_target_stop(&request.tenant, target.incarnation))
+                    .map_err(unavailable)?
+                {
+                    return match record {
+                        Record::TargetStop(prior) if matches!(&prior.outcome,AuthorityOutcome::TargetStopped {source_incarnation:source,source_epoch:epoch,target:actual} if source==source_incarnation && epoch==source_epoch && actual==target) => {
+                            Ok(prior.outcome)
+                        }
+                        _ => Err(conflict("target stop permanent identity differs")),
+                    };
+                }
+                let source = tenant
+                    .as_ref()
+                    .ok_or_else(|| conflict("source is not enrolled"))?;
+                if source.incarnation != *source_incarnation
+                    || source.authority_epoch != *source_epoch
+                {
+                    return Err(conflict("target stop source epoch differs"));
+                }
+                if let Some(record) = self
+                    .record(&key_preparation(&request.tenant, target.incarnation))
+                    .map_err(unavailable)?
+                    && !matches!(record,Record::Preparation(ref p) if p.source_incarnation==*source_incarnation && p.source_epoch==*source_epoch && p.target==*target)
+                {
+                    return Err(conflict("target stop preparation differs"));
+                }
+                Ok(AuthorityOutcome::TargetStopped {
+                    source_incarnation: *source_incarnation,
+                    source_epoch: *source_epoch,
+                    target: target.clone(),
                 })
             }
             AuthorityAction::StopActivation { original } => {
@@ -715,9 +884,16 @@ impl StateMachineBackend for Backend {
             .mutation
             .lock()
             .map_err(|_| anyhow::anyhow!("authority state poisoned"))?;
-        let prepared: PreparedCommand = serde_json::from_slice(bytes)?;
-        let outcome = self.reduce(position, prepared)?;
-        Ok(AppliedResponse::application(serde_json::to_vec(&outcome)?))
+        let prepared: PreparedOperation = serde_json::from_slice(bytes)?;
+        let bytes = match prepared {
+            PreparedOperation::Administrative(prepared) => {
+                serde_json::to_vec(&self.reduce(position, *prepared)?)?
+            }
+            PreparedOperation::Lifecycle(prepared) => {
+                serde_json::to_vec(&self.reduce_lifecycle(position, *prepared)?)?
+            }
+        };
+        Ok(AppliedResponse::application(bytes))
     }
     fn snapshot(&self) -> Result<BackendSnapshot> {
         let _lock = self
@@ -754,6 +930,7 @@ impl StateMachineBackend for Backend {
             .lock()
             .map_err(|_| anyhow::anyhow!("authority state poisoned"))?;
         let snapshot = self.decode_snapshot(bytes)?;
+        self.validate_lifecycle_history(&snapshot)?;
         let mut writes = Vec::new();
         self.store.visit(NS, MAX_RECORD_BYTES, |key, _| {
             writes.push(WriteOp::delete(NS, key));
@@ -794,7 +971,8 @@ impl Backend {
             mut active_fences,
             mut preparations,
             mut incarnations,
-        ) = (0, 0, 0, 0, 0, 0);
+            mut target_stops,
+        ) = (0, 0, 0, 0, 0, 0, 0);
         for (key, record) in &snapshot.records {
             let bytes = serde_json::to_vec(record)?;
             ensure!(
@@ -803,6 +981,7 @@ impl Backend {
             );
             state_bytes += bytes.len() as u64;
             match record {
+                Record::Lifecycle(_) | Record::ControlEpoch(_) => {}
                 Record::Tenant(record) => {
                     tenants += 1;
                     ensure!(
@@ -911,6 +1090,44 @@ impl Backend {
                         _ => anyhow::bail!("preparation snapshot receipt absent"),
                     }
                 }
+                Record::TargetStop(stop) => {
+                    target_stops += 1;
+                    let (source, epoch, target) = match (&stop.command.action, &stop.outcome) {
+                        (
+                            AuthorityAction::StopTarget {
+                                source_incarnation,
+                                source_epoch,
+                                target,
+                            },
+                            AuthorityOutcome::TargetStopped {
+                                source_incarnation: actual_source,
+                                source_epoch: actual_epoch,
+                                target: actual,
+                            },
+                        ) if source_incarnation == actual_source
+                            && source_epoch == actual_epoch
+                            && target == actual =>
+                        {
+                            (*source_incarnation, *source_epoch, target)
+                        }
+                        _ => anyhow::bail!("target stop snapshot outcome differs"),
+                    };
+                    target.validate(&stop.command.tenant, source)?;
+                    ensure!(
+                        epoch > 0
+                            && epoch < u64::MAX
+                            && *key == key_target_stop(&stop.command.tenant, target.incarnation)
+                            && !snapshot.records.contains_key(&key_incarnation(
+                                &stop.command.tenant,
+                                target.incarnation
+                            )),
+                        "target stop snapshot identity differs"
+                    );
+                    ensure!(
+                        matches!(snapshot.records.get(&key_receipt(&stop.command.tenant,stop.command.command_id)),Some(Record::Receipt(receipt)) if receipt==stop),
+                        "target stop receipt absent or substituted"
+                    );
+                }
                 Record::Incarnation(accepted) => {
                     incarnations += 1;
                     ensure!(
@@ -970,23 +1187,33 @@ impl Backend {
                 state_bytes,
                 active_fences,
                 preparations,
-                incarnations
+                incarnations,
+                target_stops
             ) == (
                 snapshot.meta.tenants,
                 snapshot.meta.receipts,
                 snapshot.meta.state_bytes,
                 snapshot.meta.active_fences,
                 snapshot.meta.preparations,
-                snapshot.meta.incarnations
-            ) && preparations <= receipts
+                snapshot.meta.incarnations,
+                snapshot.meta.target_stops
+            ) && target_stops <= receipts
+                && preparations <= receipts
                 && incarnations >= tenants
                 && incarnations <= receipts
                 && tenants <= self.installation.max_tenants
-                && receipts + active_fences <= self.installation.max_receipts
-                && state_bytes + active_fences * (3 * MAX_RECORD_BYTES as u64)
+                && receipts
+                    + snapshot.meta.lifecycle_receipts
+                    + active_fences
+                    + snapshot.meta.open_control_epochs
+                    <= self.installation.max_receipts
+                && state_bytes
+                    + active_fences * (3 * MAX_RECORD_BYTES as u64)
+                    + snapshot.meta.open_control_epochs * MAX_RECORD_BYTES as u64
                     <= self.installation.max_state_bytes,
             "authority snapshot accounting differs"
         );
+        self.validate_lifecycle_snapshot(&snapshot)?;
         Ok(snapshot)
     }
 }

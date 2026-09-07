@@ -297,3 +297,5 @@ new key to discover whether the first write happened. Receipts are retained for
 alone does not prove that an uncertain write failed. CAS forms are
 `{"kind":"any"}`, `{"kind":"absent"}`, and
 `{"kind":"version","version":42}`.
+
+Closed control commitments and issuer epoch stops are documented in [control-lifecycle.md](control-lifecycle.md). These endpoints do not yet execute the physical target recovery runner.

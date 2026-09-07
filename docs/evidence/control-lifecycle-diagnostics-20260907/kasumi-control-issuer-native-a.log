@@ -1,0 +1,28 @@
+   Compiling kasumi-serving v0.1.0 (/private/tmp/kasumi-control-lifecycle/crates/kasumi-serving)
+   Compiling kasumi-store v0.1.0 (/private/tmp/kasumi-control-lifecycle/crates/kasumi-store)
+   Compiling kasumi-raft v0.1.0 (/private/tmp/kasumi-control-lifecycle/crates/kasumi-raft)
+   Compiling kasumi-client v0.1.0 (/private/tmp/kasumi-control-lifecycle/crates/kasumi-client)
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-control-lifecycle/crates/kasumi-engine)
+   Compiling kasumi-authority v0.1.0 (/private/tmp/kasumi-control-lifecycle/crates/kasumi-authority)
+   Compiling kasumi-server v0.1.0 (/private/tmp/kasumi-control-lifecycle/crates/kasumi-server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 40s
+     Running unittests src/lib.rs (/tmp/kasumi-custody-substrate-target/debug/deps/kasumi_server-b818e9cb0683f1df)
+
+running 1 test
+test rpc::lifecycle_tests::pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong_resource_and_partition ... FAILED
+
+failures:
+
+---- rpc::lifecycle_tests::pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong_resource_and_partition stdout ----
+
+thread 'rpc::lifecycle_tests::pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong_resource_and_partition' (16463016) panicked at crates/kasumi-server/src/rpc_lifecycle_tests.rs:445:10:
+called `Result::unwrap()` on an `Err` value: Transport(Status { code: PermissionDenied, message: "control intent or target is stopped or differs", details: b"{\"code\":\"FORBIDDEN\",\"message\":\"control intent or target is stopped or differs\"}", metadata: MetadataMap { headers: {"content-type": "application/grpc", "date": "Mon, 07 Sep 2026 11:04:10 GMT"} }, source: None })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    rpc::lifecycle_tests::pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong_resource_and_partition
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 54 filtered out; finished in 4.88s
+
+error: test failed, to rerun pass `-p kasumi-server --lib`

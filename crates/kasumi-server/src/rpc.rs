@@ -13,6 +13,9 @@ use tonic::{Request, Response, Status};
 
 pub use kasumi_client::proto;
 use proto::*;
+#[path = "rpc_lifecycle.rs"]
+mod lifecycle;
+pub use lifecycle::NativeLifecycleControl;
 #[path = "rpc_authority.rs"]
 mod authority;
 #[path = "rpc_retirement.rs"]
@@ -21,6 +24,9 @@ pub use authority::NativeAuthority;
 #[cfg(test)]
 #[path = "rpc_authority_tests.rs"]
 mod authority_tests;
+#[cfg(test)]
+#[path = "rpc_lifecycle_tests.rs"]
+mod lifecycle_tests;
 
 #[derive(Clone)]
 pub struct NativeData {

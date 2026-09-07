@@ -1,0 +1,11 @@
+   Compiling kasumi-authority v0.1.0 (/private/tmp/kasumi-control-lifecycle/crates/kasumi-authority)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.09s
+     Running unittests src/lib.rs (/tmp/kasumi-custody-substrate-target/debug/deps/kasumi_authority-fad8fb0008c4fbcc)
+
+running 3 tests
+test service::tests::issuer_tests::control_epoch_stop_preserves_exact_identity_replay_and_restarts_full_drain ... ok
+test service::tests::issuer_tests::control_stop_before_intent_and_reserved_capacity_defeat_late_publication ... ok
+test service::tests::issuer_tests::lifecycle_original_deadline_survives_queued_acceptance_delayed_reply_and_clock_regression ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 9.03s
+

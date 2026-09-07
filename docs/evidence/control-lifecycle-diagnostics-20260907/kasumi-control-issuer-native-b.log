@@ -1,0 +1,10 @@
+   Compiling kasumi-authority v0.1.0 (/private/tmp/kasumi-control-lifecycle/crates/kasumi-authority)
+   Compiling kasumi-server v0.1.0 (/private/tmp/kasumi-control-lifecycle/crates/kasumi-server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 47.55s
+     Running unittests src/lib.rs (/tmp/kasumi-custody-substrate-target/debug/deps/kasumi_server-b818e9cb0683f1df)
+
+running 1 test
+test rpc::lifecycle_tests::pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong_resource_and_partition ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 54 filtered out; finished in 6.20s
+

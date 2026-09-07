@@ -6,6 +6,8 @@ rust-version.workspace = true
 
 [dependencies]
 kasumi-clock.workspace = true
+kasumi-serving.workspace = true
+ring = "0.17"
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -24,7 +26,6 @@ libc = "=0.2.189"
 
 [dev-dependencies]
 kasumi-serving = { workspace = true, features = ["test-utils"] }
-ring = "0.17"
 openraft = { version = "=0.9.25", features = ["serde", "storage-v2"] }
 async-trait.workspace = true
 tempfile.workspace = true

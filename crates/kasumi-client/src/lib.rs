@@ -12,6 +12,8 @@ use serde::Serialize;
 use std::collections::BTreeSet;
 use tonic::{Request, transport::Channel};
 
+mod lifecycle;
+pub use lifecycle::KasumiLifecycleClient;
 mod authority;
 mod restore_lineage_proof;
 mod retirement_proof;

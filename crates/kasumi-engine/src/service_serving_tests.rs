@@ -19,6 +19,7 @@ impl ServingFixture {
                 .unwrap();
         let signer = kasumi_serving::AuthoritySigner::from_pkcs8(keys.as_ref()).unwrap();
         let manifest = kasumi_serving::AuthorityManifest {
+            lifecycle_controls: std::collections::BTreeMap::new(),
             authority_id: uuid::Uuid::new_v4(),
             max_lease_ms: 1000,
             clock_rate_error_ppm: 0,

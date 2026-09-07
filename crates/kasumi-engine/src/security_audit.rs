@@ -29,6 +29,13 @@ pub enum SecurityEventKind {
     Membership,
     Backup,
     Restore,
+    ControlCommitmentObserved {
+        control_incarnation: String,
+        command_id: String,
+        commitment_sha256: String,
+        control_policy_epoch: u64,
+        committed_revision: u64,
+    },
     RetirementObserved {
         source_incarnation: String,
         retirement_id: String,
@@ -209,6 +216,22 @@ impl SecurityAudit {
         .flatten()
         {
             kasumi_types::validate_name(value)?;
+        }
+        if let SecurityEventKind::ControlCommitmentObserved {
+            control_incarnation,
+            command_id,
+            commitment_sha256,
+            committed_revision,
+            ..
+        } = &event.kind
+        {
+            ensure!(
+                !uuid::Uuid::parse_str(control_incarnation)?.is_nil()
+                    && !uuid::Uuid::parse_str(command_id)?.is_nil()
+                    && *committed_revision > 0,
+                "invalid control observation identity"
+            );
+            kasumi_types::validate_sha256(commitment_sha256)?;
         }
         if let SecurityEventKind::RetirementObserved {
             source_incarnation,

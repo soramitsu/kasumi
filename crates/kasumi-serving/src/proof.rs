@@ -20,10 +20,62 @@ impl AuthoritySigner {
     pub fn public_key(&self) -> String {
         hex::encode(self.0.public_key().as_ref())
     }
+    pub fn sign_lifecycle_receipt(
+        &self,
+        receipt: LifecycleAuthorityReceipt,
+    ) -> Result<SignedLifecycleAuthorityReceipt> {
+        let signature = hex::encode(
+            self.0
+                .sign(&serde_json::to_vec(&(
+                    "kasumi.issuer-control-receipt.v1",
+                    &receipt,
+                ))?)
+                .as_ref(),
+        );
+        Ok(SignedLifecycleAuthorityReceipt { receipt, signature })
+    }
+    pub fn sign_control_epoch_stop(
+        &self,
+        observation: kasumi_types::ControlEpochStopObservation,
+    ) -> Result<kasumi_types::SignedControlEpochStop> {
+        let signature = hex::encode(
+            self.0
+                .sign(&serde_json::to_vec(&(
+                    "kasumi.control-epoch-drained.v1",
+                    &observation,
+                ))?)
+                .as_ref(),
+        );
+        Ok(kasumi_types::SignedControlEpochStop {
+            observation,
+            signature,
+        })
+    }
+    pub fn sign_lifecycle_lease(
+        &self,
+        claims: LifecycleLeaseClaims,
+    ) -> Result<SignedLifecycleLease> {
+        let signature = hex::encode(
+            self.0
+                .sign(&serde_json::to_vec(&(
+                    "kasumi.lifecycle-lease.v1",
+                    &claims,
+                ))?)
+                .as_ref(),
+        );
+        Ok(SignedLifecycleLease { claims, signature })
+    }
     pub fn sign_lease(&self, claims: LeaseClaims) -> Result<SignedLease> {
         let bytes = serde_json::to_vec(&("kasumi.serving-lease.v1", &claims))?;
         Ok(SignedLease {
             claims,
+            signature: hex::encode(self.0.sign(&bytes).as_ref()),
+        })
+    }
+    pub fn sign_target_stop(&self, observation: TargetStopObservation) -> Result<SignedTargetStop> {
+        let bytes = serde_json::to_vec(&("kasumi.target-stop-drained.v1", &observation))?;
+        Ok(SignedTargetStop {
+            observation,
             signature: hex::encode(self.0.sign(&bytes).as_ref()),
         })
     }
@@ -56,7 +108,7 @@ impl AuthorityTrust {
     pub fn digest(&self) -> &str {
         &self.digest
     }
-    fn verify<T: serde::Serialize>(
+    pub(crate) fn verify<T: serde::Serialize>(
         &self,
         partition: u16,
         domain: &str,
@@ -75,6 +127,41 @@ impl AuthorityTrust {
         UnparsedPublicKey::new(&ED25519, hex::decode(key)?)
             .verify(&bytes, &signature)
             .map_err(|_| anyhow::anyhow!("authority signature invalid"))
+    }
+    pub fn verify_target_stop(
+        &self,
+        signed: SignedTargetStop,
+        expected: &TargetStopReference,
+    ) -> Result<VerifiedTargetStop> {
+        let observation = &signed.observation;
+        let receipt = &observation.stop;
+        expected.validate()?;
+        receipt.command.validate()?;
+        ensure!(
+            observation.reference == *expected
+                && receipt.command.tenant == expected.tenant
+                && receipt.authority_id == self.manifest.authority_id
+                && receipt.manifest_digest == self.digest
+                && receipt.partition == self.manifest.partition(&expected.tenant)?
+                && receipt.revision > 0
+                && receipt.command_digest == receipt.command.digest()?
+                && observation.observed_revision >= receipt.revision
+                && observation.observed_term >= receipt.term
+                && observation.drain_ms == self.manifest.drain_ms()?,
+            "target stop proof binding differs"
+        );
+        ensure!(
+            matches!((&receipt.command.action,&receipt.outcome),
+            (AuthorityAction::StopTarget {source_incarnation,source_epoch,target},AuthorityOutcome::TargetStopped {source_incarnation:actual_source,source_epoch:actual_epoch,target:actual}) if source_incarnation==actual_source && source_epoch==actual_epoch && target==actual),
+            "target stop outcome differs"
+        );
+        self.verify(
+            receipt.partition,
+            "kasumi.target-stop-drained.v1",
+            observation,
+            &signed.signature,
+        )?;
+        Ok(VerifiedTargetStop::verified(signed))
     }
     pub fn verify_activation(&self, signed: SignedAuthorityReceipt) -> Result<VerifiedActivation> {
         self.verify_receipt(&signed)?;

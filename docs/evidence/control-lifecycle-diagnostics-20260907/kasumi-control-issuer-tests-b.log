@@ -1,0 +1,30 @@
+   Compiling kasumi-authority v0.1.0 (/private/tmp/kasumi-control-lifecycle/crates/kasumi-authority)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.18s
+     Running unittests src/lib.rs (/tmp/kasumi-custody-substrate-target/debug/deps/kasumi_authority-fad8fb0008c4fbcc)
+
+running 3 tests
+test service::tests::issuer_tests::control_epoch_stop_preserves_exact_identity_replay_and_restarts_full_drain ... FAILED
+test service::tests::issuer_tests::control_stop_before_intent_and_reserved_capacity_defeat_late_publication ... ok
+test service::tests::issuer_tests::lifecycle_original_deadline_survives_queued_acceptance_delayed_reply_and_clock_regression ... FAILED
+
+failures:
+
+---- service::tests::issuer_tests::control_epoch_stop_preserves_exact_identity_replay_and_restarts_full_drain stdout ----
+
+thread 'service::tests::issuer_tests::control_epoch_stop_preserves_exact_identity_replay_and_restarts_full_drain' (16476344) panicked at crates/kasumi-authority/src/issuer_tests.rs:169:10:
+called `Result::unwrap()` on an `Err` value: invalid type: string "1", expected u64
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- service::tests::issuer_tests::lifecycle_original_deadline_survives_queued_acceptance_delayed_reply_and_clock_regression stdout ----
+
+thread 'service::tests::issuer_tests::lifecycle_original_deadline_survives_queued_acceptance_delayed_reply_and_clock_regression' (16477666) panicked at crates/kasumi-authority/src/issuer_tests.rs:384:10:
+called `Result::unwrap()` on an `Err` value: invalid type: string "1", expected u64
+
+
+failures:
+    service::tests::issuer_tests::control_epoch_stop_preserves_exact_identity_replay_and_restarts_full_drain
+    service::tests::issuer_tests::lifecycle_original_deadline_survives_queued_acceptance_delayed_reply_and_clock_regression
+
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 12 filtered out; finished in 10.82s
+
+error: test failed, to rerun pass `-p kasumi-authority --lib`

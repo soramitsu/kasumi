@@ -1,0 +1,28 @@
+   Compiling kasumi-authority v0.1.0 (/private/tmp/kasumi-control-lifecycle/crates/kasumi-authority)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.53s
+     Running unittests src/lib.rs (/tmp/kasumi-custody-substrate-target/debug/deps/kasumi_authority-fad8fb0008c4fbcc)
+
+running 4 tests
+test service::tests::issuer_tests::control_epoch_stop_preserves_exact_identity_replay_and_restarts_full_drain ... FAILED
+test service::tests::issuer_tests::control_stop_before_intent_and_reserved_capacity_defeat_late_publication ... ok
+test service::tests::issuer_tests::lifecycle_byte_exhaustion_preserves_reserved_epoch_stop_and_exact_snapshot_history ... ok
+test service::tests::issuer_tests::lifecycle_original_deadline_survives_queued_acceptance_delayed_reply_and_clock_regression ... ok
+
+failures:
+
+---- service::tests::issuer_tests::control_epoch_stop_preserves_exact_identity_replay_and_restarts_full_drain stdout ----
+
+thread 'service::tests::issuer_tests::control_epoch_stop_preserves_exact_identity_replay_and_restarts_full_drain' (16548602) panicked at crates/kasumi-authority/src/tests.rs:225:88:
+called `Result::unwrap()` on an `Err` value: opening durable database
+
+Caused by:
+    Database already open. Cannot acquire lock.
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    service::tests::issuer_tests::control_epoch_stop_preserves_exact_identity_replay_and_restarts_full_drain
+
+test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 12 filtered out; finished in 9.54s
+
+error: test failed, to rerun pass `-p kasumi-authority --lib`

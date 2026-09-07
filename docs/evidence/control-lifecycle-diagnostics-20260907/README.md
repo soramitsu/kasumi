@@ -1,0 +1,1 @@
+Diagnostic runs before the source-bound control-lifecycle gate. These logs intentionally retain failed compilation, stored numeric-map decoding failures, and the successful corrective checks. They do not have an immutable before/after input inventory and are not release evidence. The separate control-lifecycle verification receipt records the final source-bound regression.

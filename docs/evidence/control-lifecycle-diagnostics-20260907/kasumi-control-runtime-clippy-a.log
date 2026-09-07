@@ -1,0 +1,9 @@
+    Checking kasumi-server v0.1.0 (/private/tmp/kasumi-control-lifecycle/crates/kasumi-server)
+error[E0432]: unresolved import `kasumi_engine::TenantState`
+ --> crates/kasumi-server/src/lifecycle_runtime.rs:5:48
+  |
+5 | use kasumi_engine::{Database, LifecycleSigner, TenantState};
+  |                                                ^^^^^^^^^^^ no `TenantState` in the root
+
+For more information about this error, try `rustc --explain E0432`.
+error: could not compile `kasumi-server` (lib) due to 1 previous error

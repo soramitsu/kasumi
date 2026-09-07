@@ -101,6 +101,9 @@ pub struct TenantConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ControlConfig {
+    /// Explicit installed closed lifecycle protocol; absence disables this service.
+    #[serde(deserialize_with = "kasumi_types::require_explicit_option")]
+    pub lifecycle: Option<crate::lifecycle_runtime::LifecycleRuntimeConfig>,
     /// Select an already-authorized operator independently of the immutable genesis policy.
     #[serde(default)]
     pub startup_principal: Option<String>,
@@ -235,6 +238,9 @@ impl RuntimeConfig {
         }
         validate_initial_policy(&self.control.initial_policy)?;
         configured_control_context(&self.control)?;
+        if let Some(lifecycle) = &self.control.lifecycle {
+            lifecycle.validate(self.mode, self.control.incarnation.as_deref())?;
+        }
         let mut tenants = BTreeSet::new();
         for tenant in &self.tenants {
             match &tenant.serving {
@@ -780,6 +786,12 @@ impl NodeRuntime {
         config.validate()?;
         let credential = Arc::new(credential);
         let admission = kasumi_engine::admission::NodeAdmission::new(config.admission.clone())?;
+        let lifecycle_signer = config
+            .control
+            .lifecycle
+            .as_ref()
+            .map(|settings| settings.signer())
+            .transpose()?;
         let auth = Authenticator::new(config.auth.clone())?;
         let registry = DatabaseRegistry::default();
         registry.set_approved_nodes(
@@ -1024,12 +1036,15 @@ impl NodeRuntime {
                 NativeData::new(registry.clone(), auth.clone()).service(),
             )
             .into_axum_router();
-            let admin = tonic::service::Routes::new(
-                NativeAdmin::new(registry.clone(), auth)
+            let mut admin = tonic::service::Routes::new(
+                NativeAdmin::new(registry.clone(), auth.clone())
                     .with_management(administration)
                     .service(),
-            )
-            .into_axum_router();
+            );
+            if let Some(signer) = lifecycle_signer {
+                admin = admin.add_service(crate::rpc::NativeLifecycleControl::new(runtime.control.database.clone(), signer, auth.clone())?.service());
+            }
+            let admin = admin.into_axum_router();
             runtime.data_listeners = vec![
                 BoundListener {
                     listener: mcp_socket,
@@ -1378,6 +1393,12 @@ impl NodeRuntime {
                             )
                             .await?;
                     }
+                    crate::lifecycle_runtime::publish(
+                        &self.control.database,
+                        &context,
+                        self.config.control.lifecycle.as_ref(),
+                    )
+                    .await?;
                     Ok::<_, anyhow::Error>(())
                 }
                 .await;
@@ -1411,7 +1432,12 @@ impl NodeRuntime {
                     let current: ControlTopology = serde_json::from_value(document.body.clone())?;
                     current.validate()?;
                     validate_configured_topology(&current, &expected)?;
-                    return Ok(true);
+                    if crate::lifecycle_runtime::applied(
+                        &generation.state,
+                        self.config.control.lifecycle.as_ref(),
+                    )? {
+                        return Ok(true);
+                    }
                 }
             }
             tokio::time::sleep(Duration::from_secs(1)).await;
@@ -1602,6 +1628,7 @@ pub fn example_config() -> RuntimeConfig {
             "storage-fence".into(),
             crate::serving_runtime::ServingAuthorityConfig {
                 manifest: kasumi_serving::AuthorityManifest {
+                    lifecycle_controls: std::collections::BTreeMap::new(),
                     authority_id: uuid::Uuid::from_u128(1),
                     max_lease_ms: 10_000,
                     clock_rate_error_ppm: 1000,
@@ -1651,6 +1678,7 @@ pub fn example_config() -> RuntimeConfig {
         native: mutual(9444),
         admin: mutual(9445),
         control: ControlConfig {
+            lifecycle: None,
             startup_principal: None,
             transit: transit("kasumi-control", "KASUMI_CONTROL_TRANSIT_TOKEN"),
             custody_transit: transit(

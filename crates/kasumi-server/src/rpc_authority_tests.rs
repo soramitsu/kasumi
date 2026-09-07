@@ -14,7 +14,7 @@ use std::{
     time::Duration,
 };
 
-fn certificates() -> (String, TlsIdentity, Vec<TlsIdentity>) {
+pub(super) fn certificates() -> (String, TlsIdentity, Vec<TlsIdentity>) {
     use rcgen::*;
     let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
     params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
@@ -75,6 +75,7 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
     let signing = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
     let signer = Arc::new(AuthoritySigner::from_pkcs8(&signing.serialize_der()).unwrap());
     let manifest = AuthorityManifest {
+        lifecycle_controls: std::collections::BTreeMap::new(),
         authority_id: uuid::Uuid::new_v4(),
         max_lease_ms: 1000,
         clock_rate_error_ppm: 0,
@@ -259,6 +260,47 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
         .await
         .unwrap();
     assert!(other.discover_lease(&node_token, &discovery).await.is_err());
+    // This tests actual issuer stop authority. The administrative checkpoint
+    // fixture is not a claim that application backup materialization occurred.
+    let target = RecoveryTarget {
+        incarnation: uuid::Uuid::new_v4(),
+        nodes: nodes.clone(),
+        checkpoint: kasumi_types::FullBackupCheckpoint {
+            tenant: "city".into(),
+            source_incarnation: incarnation.to_string(),
+            revision: 1,
+            resident_sha256: "1".repeat(64),
+            backup_id: uuid::Uuid::new_v4(),
+            manifest_ciphertext_sha256: "2".repeat(64),
+            key_lineage_digest: "3".repeat(64),
+        },
+    };
+    let mut target_stop = command.clone();
+    target_stop.command_id = uuid::Uuid::new_v4();
+    target_stop.action = AuthorityAction::StopTarget {
+        source_incarnation: incarnation,
+        source_epoch: 1,
+        target: target.clone(),
+    };
+    let stopped = client.execute(&admin, &target_stop).await.unwrap();
+    let stop_ref = TargetStopReference {
+        tenant: "city".into(),
+        command_id: target_stop.command_id,
+        receipt_digest: stopped.receipt.digest().unwrap(),
+    };
+    assert!(client.verify_target_stop(&admin, &stop_ref).await.is_err());
+    assert!(
+        client
+            .verify_target_stop(&node_token, &stop_ref)
+            .await
+            .is_err()
+    );
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    let proof = client.verify_target_stop(&admin, &stop_ref).await.unwrap();
+    assert_eq!(proof.target(), &target);
+    let mut wrong_ref = stop_ref.clone();
+    wrong_ref.receipt_digest = "0".repeat(64);
+    assert!(client.verify_target_stop(&admin, &wrong_ref).await.is_err());
     let mut replacement = command.clone();
     replacement.command_id = uuid::Uuid::new_v4();
     replacement.action = AuthorityAction::ReplaceAdministrators {
@@ -285,6 +327,16 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
         recovered.receipt.outcome,
         AuthorityOutcome::AdministratorsReplaced { policy_epoch: 2 }
     ));
+    assert!(client.verify_target_stop(&admin, &stop_ref).await.is_err());
+    assert_eq!(
+        client
+            .verify_target_stop(&token("custodian", "kasumi:admin"), &stop_ref)
+            .await
+            .unwrap()
+            .target(),
+        &target
+    );
+
     tokio::time::sleep(Duration::from_millis(1100)).await;
     assert!(gate.check_serving().is_err());
     stop.send_replace(true);

@@ -1,4 +1,4 @@
-use crate::state::{AuthorityInstallation, Backend, PreparedCommand};
+use crate::state::{AuthorityInstallation, Backend, PreparedCommand, PreparedOperation};
 use anyhow::{Context, ensure};
 use kasumi_clock::{EpochClock, LeaseClock};
 use kasumi_raft::{BasicNode, Config, RaftGroup, RaftTransport};
@@ -12,6 +12,11 @@ use std::{
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use uuid::Uuid;
+#[path = "lifecycle_service.rs"]
+mod lifecycle_service;
+#[path = "target_stop_service.rs"]
+mod target_stop_service;
+
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
@@ -67,6 +72,7 @@ pub struct AuthorityResponseFence {
     context: RequestContext,
     policy_epoch: Option<u64>,
     lease: Option<LeaseRequest>,
+    lifecycle_lease: Option<LifecycleLeaseRequest>,
     term: u64,
 }
 impl AuthorityResponseFence {
@@ -95,6 +101,21 @@ impl AuthorityResponseFence {
                 .backend
                 .lease_view(request)
                 .map_err(unavailable)?;
+        }
+        if let Some(request) = &self.lifecycle_lease {
+            let view = self
+                .authority
+                .backend
+                .lifecycle_lease_view(request)
+                .map_err(unavailable)?;
+            if self.authority.clock.now_ms().map_err(unavailable)?
+                >= view.commitment.intent.original_credential_expires_at_ms
+            {
+                return Err(Error::new(
+                    ErrorCode::Unauthorized,
+                    "original control credential expired before release",
+                ));
+            }
         }
         Ok(())
     }
@@ -270,6 +291,7 @@ impl IndependentAuthority {
             context,
             policy_epoch,
             lease,
+            lifecycle_lease: None,
             term,
         }
     }
@@ -503,7 +525,10 @@ impl IndependentAuthority {
         };
         let bytes = self
             .group
-            .write(serde_json::to_vec(&prepared).map_err(unavailable)?)
+            .write(
+                serde_json::to_vec(&PreparedOperation::Administrative(Box::new(prepared)))
+                    .map_err(unavailable)?,
+            )
             .await
             .map_err(unknown)?;
         let receipt: Result<AuthorityReceipt> = serde_json::from_slice(&bytes).map_err(unknown)?;
@@ -511,41 +536,19 @@ impl IndependentAuthority {
     }
     fn require_drain(&self, digest: &str, term: u64) -> Result<()> {
         let mut drains = self.drains.lock().map_err(unavailable)?;
-        // No retired fence witness from another term can survive leadership
-        // replacement. A fresh process starts empty and must wait in full.
-        drains.retain(|_, drain| drain.term == term);
-        let now = self.elapsed.now();
-        if !drains.contains_key(digest) && drains.len() >= 10_000 {
-            return Err(Error::new(
-                ErrorCode::ResourceExhausted,
-                "authority drain witness limit reached",
-            ));
-        }
-        let drain = drains.entry(digest.to_owned()).or_insert(Drain {
+        require_drain_witness(
+            &mut drains,
+            digest,
             term,
-            started: now,
-            last: now,
-        });
-        if now < drain.last {
-            drain.started = now;
-            drain.last = now;
-            return Err(unavailable("drain clock regressed"));
-        }
-        drain.last = now;
-        if now.checked_sub(drain.started).is_none_or(|elapsed| {
-            elapsed
-                < Duration::from_millis(
-                    self.installation()
-                        .manifest
-                        .drain_ms()
-                        .expect("validated immutable clock rate bound"),
-                )
-        }) {
-            return Err(Error::new(
-                ErrorCode::Unavailable,
-                "exact fence drain has not completed; retry the same activation identity",
-            ));
-        }
+            self.elapsed.now(),
+            Duration::from_millis(
+                self.installation()
+                    .manifest
+                    .drain_ms()
+                    .expect("validated immutable clock rate bound"),
+            ),
+            10_000,
+        )?;
         if self.term() != term {
             return Err(unavailable("drain authority term changed"));
         }
@@ -581,4 +584,55 @@ impl IndependentAuthority {
         let _gate = self.proposal.lock().await;
         self.group.shutdown().await
     }
+}
+
+/// Eviction only removes a completed observation. Its permanent stop remains in
+/// replicated state, and requesting an evicted witness starts a full new wait.
+fn require_drain_witness(
+    drains: &mut BTreeMap<String, Drain>,
+    digest: &str,
+    term: u64,
+    now: Duration,
+    required: Duration,
+    capacity: usize,
+) -> Result<()> {
+    drains.retain(|_, drain| drain.term == term);
+    // Reset all observations on regression before choosing an eviction; an
+    // unobserved backwards jump cannot preserve a previously completed witness.
+    for drain in drains.values_mut() {
+        if now < drain.last {
+            drain.started = now;
+        }
+        drain.last = now;
+    }
+    if !drains.contains_key(digest) && drains.len() >= capacity {
+        let evict = drains.iter().find_map(|(key, drain)| {
+            now.checked_sub(drain.started)
+                .filter(|elapsed| *elapsed >= required)
+                .map(|_| key.clone())
+        });
+        if let Some(key) = evict {
+            drains.remove(&key);
+        } else {
+            return Err(Error::new(
+                ErrorCode::ResourceExhausted,
+                "active authority drain witness limit reached",
+            ));
+        }
+    }
+    let drain = drains.entry(digest.to_owned()).or_insert(Drain {
+        term,
+        started: now,
+        last: now,
+    });
+    if now
+        .checked_sub(drain.started)
+        .is_none_or(|elapsed| elapsed < required)
+    {
+        return Err(Error::new(
+            ErrorCode::Unavailable,
+            "exact fence drain has not completed; retry the same identity",
+        ));
+    }
+    Ok(())
 }

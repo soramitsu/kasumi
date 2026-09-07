@@ -1,4 +1,7 @@
 //! Deterministic tenant state and the common authorized service layer.
+pub use service::lifecycle_service::{
+    LifecycleSigner, VerifiedLifecycleChange, VerifiedLifecycleIntent,
+};
 mod restore_lineage_proof;
 mod retirement_closure;
 mod retirement_proof;

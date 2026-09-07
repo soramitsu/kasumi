@@ -9,6 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 #[path = "history_state.rs"]
 pub(crate) mod history;
+#[path = "lifecycle_state.rs"]
+pub(crate) mod lifecycle;
 #[path = "retirement_state.rs"]
 pub(crate) mod retirement;
 #[path = "schema_activation.rs"]
@@ -262,6 +264,7 @@ impl TenantEngine {
             pending_restore: None,
             restored_from: None,
             restore_lineage: Vec::new(),
+            lifecycle_control: None,
             document_count: 0,
             logical_bytes: 0,
             policy,
@@ -544,6 +547,7 @@ impl TenantEngine {
         }
         // Audit events are part of the replicated result, never emitted as document-bearing logs.
         let action = match &command.operation {
+            Operation::LifecycleControl(_) => "lifecycle_control",
             Operation::PublishHistoryArchive(_) => "archive",
             Operation::Mutate(_) => "mutation",
             Operation::BeginStaged(_)
@@ -606,7 +610,7 @@ impl TenantEngine {
             &changed_receipts,
             &staged_changes(&previous.state, &command)?,
         )?;
-        if !snapshot_accounting.fits(&next)? {
+        if !snapshot_accounting.fits(&next)? || !lifecycle::completion_fits(&next)? {
             return self.reject_resource_budget(
                 &previous,
                 next,
@@ -728,6 +732,7 @@ impl TenantEngine {
             )?;
             if rejected.audits.len() <= rejected.limits.max_audit_records
                 && accounting.fits(&rejected)?
+                && lifecycle::completion_fits(&rejected)?
             {
                 self.current.store(Some(Arc::new(Generation {
                     state: rejected,
@@ -812,6 +817,55 @@ impl TenantEngine {
         }
         validate_limits(&state.limits)?;
         validate_policy(&state.policy, &state.limits)?;
+        lifecycle::validate(&state)?;
+        if let Ok(current) = self.generation()
+            && let Some(installed) = &current.state.lifecycle_control
+            && state.lifecycle_control.as_ref().is_none_or(|incoming| {
+                incoming.installation != installed.installation
+                    || incoming.installation_command_id != installed.installation_command_id
+                    || incoming.installation_revision != installed.installation_revision
+                    || incoming.installation_policy_epoch != installed.installation_policy_epoch
+                    || staged_digest(&incoming.installation_policy).ok()
+                        != staged_digest(&installed.installation_policy).ok()
+            })
+        {
+            return Err(Error::new(
+                ErrorCode::Corruption,
+                "snapshot substituted the immutable control installation",
+            ));
+        }
+        if let Ok(current) = self.generation()
+            && let (Some(old), Some(incoming)) =
+                (&current.state.lifecycle_control, &state.lifecycle_control)
+        {
+            for (id, intent) in &old.intents {
+                if incoming.intents.get(id) != Some(intent) {
+                    return Err(Error::new(
+                        ErrorCode::Corruption,
+                        "snapshot substituted a permanent lifecycle intent",
+                    ));
+                }
+            }
+            for (id, change) in &old.changes {
+                let Some(actual) = incoming.changes.get(id) else {
+                    return Err(Error::new(
+                        ErrorCode::Corruption,
+                        "snapshot removed a permanent control change",
+                    ));
+                };
+                let mut expected = change.clone();
+                if expected.completed_revision.is_none() {
+                    expected.completed_revision = actual.completed_revision;
+                    expected.completion_stops = actual.completion_stops.clone();
+                }
+                if staged_digest(&expected)? != staged_digest(actual)? {
+                    return Err(Error::new(
+                        ErrorCode::Corruption,
+                        "snapshot substituted permanent control history",
+                    ));
+                }
+            }
+        }
         validate_metadata_budget(&state.collections, &state.limits)?;
         if state.schema_epoch > state.policy_epoch
             || (!state.collections.is_empty() && state.schema_epoch == 0)
@@ -1047,7 +1101,9 @@ fn apply_operation(
             "database incarnation is permanently retired",
         ));
     }
+    lifecycle::guard(state, &command.operation)?;
     match &command.operation {
+        Operation::LifecycleControl(request) => lifecycle::apply(state, command, request, revision),
         Operation::PublishHistoryArchive(request) => {
             history::publish(state, command, request, revision)
         }

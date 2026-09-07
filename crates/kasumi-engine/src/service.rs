@@ -19,6 +19,8 @@ mod history_export;
 #[path = "history_reads.rs"]
 mod history_reads;
 pub use custody_service::{CustodyResponseFence, RetiredCustody};
+#[path = "lifecycle_service.rs"]
+pub(crate) mod lifecycle_service;
 #[path = "restore_lineage_service.rs"]
 mod restore_lineage_service;
 #[path = "retirement_service.rs"]
@@ -942,7 +944,12 @@ impl Database {
                 "operation is not administrative",
             ));
         }
-        self.submit(context, operation).await
+        let lifecycle = matches!(operation, Operation::LifecycleControl(_));
+        let receipt = self.submit(context.clone(), operation).await?;
+        if lifecycle {
+            self.lifecycle_write_release(&context)?;
+        }
+        Ok(receipt)
     }
 
     /// Finalize a prepared restore through consensus before it can be activated.

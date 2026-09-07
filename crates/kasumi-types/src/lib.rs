@@ -1,4 +1,6 @@
 //! Transport-independent, exact JSON contracts shared by every Kasumi interface.
+mod lifecycle;
+pub use lifecycle::*;
 mod authorization;
 pub use authorization::RequestAuthorization;
 mod credential_resource;
@@ -401,6 +403,7 @@ pub struct Command {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", content = "data", rename_all = "snake_case")]
 pub enum Operation {
+    LifecycleControl(LifecycleControlCommand),
     ActivateSchema(SchemaChangeSet),
     PublishHistoryArchive(PublishHistoryArchive),
     Mutate(MutationBatch),
@@ -458,6 +461,8 @@ pub struct TenantState {
     pub pending_restore: Option<PendingRestore>,
     pub restored_from: Option<FullBackupCheckpoint>,
     pub restore_lineage: Vec<RestoreLineageLink>,
+    #[serde(deserialize_with = "require_explicit_option")]
+    pub lifecycle_control: Option<LifecycleControlState>,
     pub document_count: u64,
     pub logical_bytes: u64,
     pub policy: Policy,
@@ -701,6 +706,18 @@ pub fn validate_name(value: &str) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+/// First-release nullable wire fields must be present explicitly. Serde's
+/// implicit missing-Option behavior is not a version migration mechanism.
+pub fn require_explicit_option<'de, D, T>(
+    deserializer: D,
+) -> std::result::Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
 }
 
 #[cfg(test)]

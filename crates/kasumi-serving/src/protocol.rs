@@ -15,6 +15,8 @@ pub fn digest<T: Serialize>(value: &T) -> Result<String> {
 #[serde(deny_unknown_fields)]
 pub struct AuthorityManifest {
     pub authority_id: Uuid,
+    /// Fixed bounded Control roots. Empty explicitly disables lifecycle grants.
+    pub lifecycle_controls: BTreeMap<Uuid, String>,
     pub partitions: BTreeMap<u16, AuthorityPartition>,
     pub max_lease_ms: u64,
     /// Installed bound on each participating suspend-aware clock's rate error.
@@ -30,6 +32,14 @@ pub struct AuthorityPartition {
 impl AuthorityManifest {
     pub fn validate(&self) -> Result<()> {
         ensure!(!self.authority_id.is_nil(), "nil authority identity");
+        ensure!(
+            self.lifecycle_controls.len() <= 1024,
+            "too many installed lifecycle control roots"
+        );
+        for (incarnation, key) in &self.lifecycle_controls {
+            ensure!(!incarnation.is_nil(), "nil installed control identity");
+            validate_sha256(key)?;
+        }
         ensure!(
             self.clock_rate_error_ppm <= 10_000,
             "clock rate error exceeds supported 1% bound"
@@ -247,6 +257,12 @@ pub enum AuthorityAction {
     StopActivation {
         original: Box<AuthorityCommand>,
     },
+    /// Permanent incarnation closure, including preparations not received yet.
+    StopTarget {
+        source_incarnation: Uuid,
+        source_epoch: u64,
+        target: RecoveryTarget,
+    },
     ReplaceAdministrators {
         administrators: BTreeSet<String>,
     },
@@ -273,6 +289,11 @@ impl AuthorityCommand {
                 );
             }
             AuthorityAction::PrepareTarget {
+                source_incarnation,
+                source_epoch,
+                target,
+            }
+            | AuthorityAction::StopTarget {
                 source_incarnation,
                 source_epoch,
                 target,
@@ -350,6 +371,14 @@ pub enum AuthorityOutcome {
     Activated {
         target: RecoveryTarget,
         authority_epoch: u64,
+    },
+    TargetStopped {
+        source_incarnation: Uuid,
+        source_epoch: u64,
+        target: RecoveryTarget,
+    },
+    TargetAlreadyActivated {
+        original: Box<AuthorityReceipt>,
     },
     ActivationStopped {
         original_digest: String,

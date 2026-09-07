@@ -1,0 +1,15 @@
+    Checking kasumi-serving v0.1.0 (/private/tmp/kasumi-control-lifecycle/crates/kasumi-serving)
+error[E0599]: no associated function or constant named `new` found for struct `SystemLeaseClock` in the current scope
+   --> crates/kasumi-serving/src/lifecycle_proof.rs:108:66
+    |
+108 |         Self::with_clock(trust, node, Arc::new(SystemLeaseClock::new()?))
+    |                                                                  ^^^ associated function or constant not found in `SystemLeaseClock`
+    |
+help: there is a method `now` with a similar name
+    |
+108 -         Self::with_clock(trust, node, Arc::new(SystemLeaseClock::new()?))
+108 +         Self::with_clock(trust, node, Arc::new(SystemLeaseClock::now()?))
+    |
+
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `kasumi-serving` (lib) due to 1 previous error

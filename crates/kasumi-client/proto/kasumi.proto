@@ -28,7 +28,12 @@ service KasumiData {
 // Bind only to an explicitly installed independent authority deployment. This
 // service has no document API and no caller-selected source route or issuer key.
 service KasumiAuthority {
+  rpc ExecuteLifecycle(AuthorityJsonRequest) returns (AuthorityJsonResponse);
+  rpc ReadLifecycleReceipt(AuthorityJsonRequest) returns (AuthorityJsonResponse);
+  rpc VerifyControlStop(AuthorityJsonRequest) returns (AuthorityJsonResponse);
+  rpc AcquireLifecycle(AuthorityJsonRequest) returns (AuthorityJsonResponse);
   rpc DiscoverLease(AuthorityJsonRequest) returns (AuthorityJsonResponse);
+  rpc VerifyTargetStop(AuthorityJsonRequest) returns (AuthorityJsonResponse);
   rpc AcquireLease(AuthorityJsonRequest) returns (AuthorityJsonResponse);
   rpc Execute(AuthorityJsonRequest) returns (AuthorityJsonResponse);
   rpc Receipt(AuthorityReceiptRequest) returns (AuthorityJsonResponse);
@@ -125,3 +130,17 @@ message RetirementStatusResponse { bytes response_json = 1; }
 message CustodyCommandRequest { bytes request_json = 1; }
 message CustodyReceiptResponse { bytes response_json = 1; }
 message CustodyStatusResponse { bytes response_json = 1; }
+
+// Installed lifecycle control commitment service, administrative mTLS listener
+// only. JSON statuses are recovery facts; only signed commitments can reach the
+// independent issuer, and only its separate finite grants authorize effects.
+service KasumiLifecycleControl {
+  rpc Execute(ControlJsonRequest) returns (ControlJsonResponse);
+  rpc ObserveIntent(ControlIntentReference) returns (ControlJsonResponse);
+  rpc ObserveChange(ControlChangeReference) returns (ControlJsonResponse);
+  rpc ReadStatus(ControlJsonRequest) returns (ControlJsonResponse);
+}
+message ControlJsonRequest { bytes request_json = 1; }
+message ControlJsonResponse { bytes response_json = 1; }
+message ControlIntentReference { string command_id = 1; }
+message ControlChangeReference { string command_id = 1; string authority_partition = 2; }

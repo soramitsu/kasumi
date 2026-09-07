@@ -20,6 +20,7 @@ fn fixture() -> (AuthoritySigner, ServingBoot, Arc<Clock>) {
         ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new()).unwrap();
     let signer = AuthoritySigner::from_pkcs8(bytes.as_ref()).unwrap();
     let manifest = AuthorityManifest {
+        lifecycle_controls: std::collections::BTreeMap::new(),
         authority_id: Uuid::new_v4(),
         partitions: BTreeMap::from([(
             0,

@@ -4,6 +4,7 @@ pub mod api;
 pub mod auth;
 pub mod authority_runtime;
 pub mod cluster;
+pub mod lifecycle_runtime;
 pub mod mcp;
 pub mod rpc;
 pub mod runtime;

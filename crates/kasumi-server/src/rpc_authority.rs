@@ -36,6 +36,162 @@ impl NativeAuthority {
 }
 #[tonic::async_trait]
 impl kasumi_authority_server::KasumiAuthority for NativeAuthority {
+    async fn execute_lifecycle(
+        &self,
+        request: Request<AuthorityJsonRequest>,
+    ) -> Result<Response<AuthorityJsonResponse>, Status> {
+        let context = verified(&self.auth, &request).await?;
+        let pin = request
+            .extensions()
+            .get::<crate::tls::AuthenticatedTlsPeer>()
+            .and_then(|peer| peer.certificate_pin())
+            .ok_or_else(|| {
+                Status::unauthenticated("actual mutually authenticated TLS peer required")
+            })?;
+        let body: kasumi_serving::LifecycleAuthorityRequest =
+            decode_json(&request.into_inner().request_json).map_err(status)?;
+        let _pin = pin;
+        let (signed, fence) = self
+            .auth
+            .audit_result(
+                &context,
+                self.authority
+                    .execute_lifecycle(context.clone(), body)
+                    .await,
+            )
+            .await
+            .map_err(status)?;
+        let response = AuthorityJsonResponse {
+            response_json: encode_json(&signed).map_err(|_| {
+                Status::unknown("lifecycle command accepted but response encoding failed")
+            })?,
+        };
+        self.release(&context, fence, response, true).await
+    }
+
+    async fn read_lifecycle_receipt(
+        &self,
+        request: Request<AuthorityJsonRequest>,
+    ) -> Result<Response<AuthorityJsonResponse>, Status> {
+        let context = verified(&self.auth, &request).await?;
+        let pin = request
+            .extensions()
+            .get::<crate::tls::AuthenticatedTlsPeer>()
+            .and_then(|peer| peer.certificate_pin())
+            .ok_or_else(|| {
+                Status::unauthenticated("actual mutually authenticated TLS peer required")
+            })?;
+        let body: kasumi_serving::LifecycleAuthorityReference =
+            decode_json(&request.into_inner().request_json).map_err(status)?;
+        let _pin = pin;
+        let (signed, fence) = self
+            .auth
+            .audit_result(
+                &context,
+                self.authority
+                    .read_lifecycle_receipt(context.clone(), body)
+                    .await,
+            )
+            .await
+            .map_err(status)?;
+        let response = AuthorityJsonResponse {
+            response_json: encode_json(&signed).map_err(status)?,
+        };
+        self.release(&context, fence, response, false).await
+    }
+
+    async fn verify_control_stop(
+        &self,
+        request: Request<AuthorityJsonRequest>,
+    ) -> Result<Response<AuthorityJsonResponse>, Status> {
+        let context = verified(&self.auth, &request).await?;
+        let pin = request
+            .extensions()
+            .get::<crate::tls::AuthenticatedTlsPeer>()
+            .and_then(|peer| peer.certificate_pin())
+            .ok_or_else(|| {
+                Status::unauthenticated("actual mutually authenticated TLS peer required")
+            })?;
+        let body: kasumi_serving::LifecycleAuthorityReference =
+            decode_json(&request.into_inner().request_json).map_err(status)?;
+        let _pin = pin;
+        let (signed, fence) = self
+            .auth
+            .audit_result(
+                &context,
+                self.authority
+                    .verify_control_stop(context.clone(), body)
+                    .await,
+            )
+            .await
+            .map_err(status)?;
+        let response = AuthorityJsonResponse {
+            response_json: encode_json(&signed).map_err(status)?,
+        };
+        self.release(&context, fence, response, false).await
+    }
+
+    async fn acquire_lifecycle(
+        &self,
+        request: Request<AuthorityJsonRequest>,
+    ) -> Result<Response<AuthorityJsonResponse>, Status> {
+        let context = verified(&self.auth, &request).await?;
+        let pin = request
+            .extensions()
+            .get::<crate::tls::AuthenticatedTlsPeer>()
+            .and_then(|peer| peer.certificate_pin())
+            .ok_or_else(|| {
+                Status::unauthenticated("actual mutually authenticated TLS peer required")
+            })?;
+        let body: kasumi_serving::LifecycleLeaseRequest =
+            decode_json(&request.into_inner().request_json).map_err(status)?;
+        let caller = AuthenticatedNode::from_verified_transport(context.clone(), hex::encode(pin))
+            .map_err(status)?;
+        let (signed, fence) = self
+            .auth
+            .audit_result(
+                &context,
+                self.authority.acquire_lifecycle(caller, body).await,
+            )
+            .await
+            .map_err(status)?;
+        let response = AuthorityJsonResponse {
+            response_json: encode_json(&signed).map_err(status)?,
+        };
+        self.release(&context, fence, response, false).await
+    }
+
+    async fn verify_target_stop(
+        &self,
+        request: Request<AuthorityJsonRequest>,
+    ) -> Result<Response<AuthorityJsonResponse>, Status> {
+        let context = verified(&self.auth, &request).await?;
+        if request
+            .extensions()
+            .get::<crate::tls::AuthenticatedTlsPeer>()
+            .and_then(|peer| peer.certificate_pin())
+            .is_none()
+        {
+            return Err(Status::unauthenticated(
+                "actual mutually authenticated TLS peer required",
+            ));
+        }
+        let input = decode_json(&request.into_inner().request_json).map_err(status)?;
+        let (signed, fence) = self
+            .auth
+            .audit_result(
+                &context,
+                self.authority
+                    .verify_target_stop(context.clone(), input)
+                    .await,
+            )
+            .await
+            .map_err(status)?;
+        let response = AuthorityJsonResponse {
+            response_json: encode_json(&signed).map_err(status)?,
+        };
+        self.release(&context, fence, response, false).await
+    }
     async fn discover_lease(
         &self,
         request: Request<AuthorityJsonRequest>,

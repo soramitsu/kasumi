@@ -35,12 +35,26 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> Self {
+        Self::with_receipt_limit(1000).await
+    }
+    async fn with_receipt_limit(max_receipts: u64) -> Self {
+        Self::with_controls(max_receipts, BTreeMap::new()).await
+    }
+    async fn with_controls(max_receipts: u64, controls: BTreeMap<Uuid, String>) -> Self {
+        Self::with_control_capacity(max_receipts, controls, 4 << 20).await
+    }
+    async fn with_control_capacity(
+        max_receipts: u64,
+        controls: BTreeMap<Uuid, String>,
+        max_state_bytes: u64,
+    ) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let router = Arc::new(InProcessRouter::default());
         let key = ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
             .unwrap();
         let signer = Arc::new(AuthoritySigner::from_pkcs8(key.as_ref()).unwrap());
         let manifest = AuthorityManifest {
+            lifecycle_controls: controls,
             authority_id: Uuid::new_v4(),
             max_lease_ms: 1000,
             clock_rate_error_ppm: 0,
@@ -57,8 +71,8 @@ impl Fixture {
             partition: 0,
             administrators: BTreeSet::from(["operator".into()]),
             max_tenants: 100,
-            max_receipts: 1000,
-            max_state_bytes: 4 << 20,
+            max_receipts,
+            max_state_bytes,
         };
         let clock = Arc::new(Clock(AtomicU64::new(0)));
         let epoch = Arc::new(EpochClock::new(clock.clone(), Arc::new(Wall)).unwrap());
@@ -929,3 +943,8 @@ async fn encrypted_restart_restarts_full_drain_and_never_reuses_an_old_incarnati
     ));
     fixture.close().await;
 }
+
+include!("target_stop_tests.rs");
+
+#[path = "issuer_tests.rs"]
+mod issuer_tests;

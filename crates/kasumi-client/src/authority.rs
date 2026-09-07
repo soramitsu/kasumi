@@ -14,6 +14,144 @@ pub struct KasumiAuthorityClient {
     certificate_sha256: String,
 }
 impl KasumiAuthorityClient {
+    pub async fn execute_lifecycle(
+        &mut self,
+        bearer: &str,
+        request: &kasumi_serving::LifecycleAuthorityRequest,
+    ) -> Result<kasumi_serving::SignedLifecycleAuthorityReceipt, ClientError> {
+        let reference = request.reference();
+        let partition = match request {
+            kasumi_serving::LifecycleAuthorityRequest::AcceptIntent(s) => {
+                s.observation.authority_partition.partition
+            }
+            kasumi_serving::LifecycleAuthorityRequest::StopEpoch(s) => {
+                s.observation.stop.authority_partition.partition
+            }
+        };
+        self.trust
+            .manifest()
+            .verify_lifecycle_request(partition, request)?;
+        let response = self
+            .inner
+            .execute_lifecycle(authorized(
+                bearer,
+                proto::AuthorityJsonRequest {
+                    request_json: encode(request)?,
+                },
+            )?)
+            .await?
+            .into_inner();
+        let signed: kasumi_serving::SignedLifecycleAuthorityReceipt =
+            serde_json::from_slice(&response.response_json)?;
+        self.trust.verify_lifecycle_receipt(&signed, &reference)?;
+        if signed.receipt.request_sha256 != request.digest()? {
+            return Err(anyhow::anyhow!("accepted control request differs").into());
+        }
+        Ok(signed)
+    }
+    pub async fn read_lifecycle_receipt(
+        &mut self,
+        bearer: &str,
+        reference: &kasumi_serving::LifecycleAuthorityReference,
+    ) -> Result<Option<kasumi_serving::SignedLifecycleAuthorityReceipt>, ClientError> {
+        reference.validate()?;
+        let response = self
+            .inner
+            .read_lifecycle_receipt(authorized(
+                bearer,
+                proto::AuthorityJsonRequest {
+                    request_json: encode(reference)?,
+                },
+            )?)
+            .await?
+            .into_inner();
+        let signed: Option<kasumi_serving::SignedLifecycleAuthorityReceipt> =
+            serde_json::from_slice(&response.response_json)?;
+        if let Some(signed) = &signed {
+            self.trust.verify_lifecycle_receipt(signed, reference)?;
+        }
+        Ok(signed)
+    }
+    pub async fn verify_control_stop(
+        &mut self,
+        bearer: &str,
+        expected: &kasumi_types::ControlEpochStop,
+    ) -> Result<kasumi_types::SignedControlEpochStop, ClientError> {
+        if expected.authority_partition
+            != self
+                .trust
+                .manifest()
+                .control_partition(expected.authority_partition.partition)?
+        {
+            return Err(anyhow::anyhow!("control stop issuer installation differs").into());
+        }
+        let reference = kasumi_serving::LifecycleAuthorityReference {
+            control_incarnation: expected.control_incarnation,
+            control_policy_epoch: expected.control_policy_epoch,
+            identity: kasumi_serving::LifecycleAuthorityIdentity::EpochStop,
+        };
+        let response = self
+            .inner
+            .verify_control_stop(authorized(
+                bearer,
+                proto::AuthorityJsonRequest {
+                    request_json: encode(&reference)?,
+                },
+            )?)
+            .await?
+            .into_inner();
+        let signed: kasumi_types::SignedControlEpochStop =
+            serde_json::from_slice(&response.response_json)?;
+        kasumi_serving::verify_control_epoch_stop(expected, &signed)?;
+        Ok(signed)
+    }
+    pub async fn acquire_lifecycle(
+        &mut self,
+        bearer: &str,
+        attempt: &kasumi_serving::LifecycleAttempt,
+    ) -> Result<kasumi_serving::VerifiedLifecycleLease, ClientError> {
+        if attempt.request().authority_manifest_sha256 != self.trust.digest()
+            || attempt.request().target_node.certificate_sha256 != self.certificate_sha256
+        {
+            return Err(anyhow::anyhow!(
+                "phase attempt differs from installed issuer or client TLS identity"
+            )
+            .into());
+        }
+        let response = self
+            .inner
+            .acquire_lifecycle(authorized(
+                bearer,
+                proto::AuthorityJsonRequest {
+                    request_json: encode(attempt.request())?,
+                },
+            )?)
+            .await?
+            .into_inner();
+        Ok(attempt.verify(serde_json::from_slice(&response.response_json)?)?)
+    }
+
+    pub async fn verify_target_stop(
+        &mut self,
+        bearer: &str,
+        reference: &kasumi_serving::TargetStopReference,
+    ) -> Result<kasumi_serving::VerifiedTargetStop, ClientError> {
+        reference.validate()?;
+        let response = self
+            .inner
+            .verify_target_stop(authorized(
+                bearer,
+                proto::AuthorityJsonRequest {
+                    request_json: encode(reference)?,
+                },
+            )?)
+            .await?
+            .into_inner();
+        let signed: kasumi_serving::SignedTargetStop =
+            serde_json::from_slice(&response.response_json)?;
+        Ok(self.trust.verify_target_stop(signed, reference)?)
+    }
+
     pub async fn connect(
         config: &KasumiClientConfig,
         trust: AuthorityTrust,
