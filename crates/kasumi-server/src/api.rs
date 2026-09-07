@@ -14,9 +14,44 @@ pub const MAX_RESPONSE_BYTES: usize = 16 << 20;
 pub struct DatabaseRegistry {
     databases: Arc<RwLock<BTreeMap<String, Arc<Database>>>>,
     approved_nodes: Arc<RwLock<BTreeSet<u64>>>,
+    retirement_sources:
+        Arc<RwLock<BTreeMap<(String, String), kasumi_engine::InstalledRetirementSource>>>,
 }
 
 impl DatabaseRegistry {
+    /// Installed source custody is retained separately from mutable data routes.
+    /// This takes a typed service handle, never wire-selected keys or locations.
+    pub fn install_retirement_source(
+        &self,
+        source: kasumi_engine::InstalledRetirementSource,
+    ) -> Result<()> {
+        let identity = source.identity()?;
+        if identity.0.starts_with("__kasumi_") {
+            return Ok(());
+        }
+        self.retirement_sources
+            .write()
+            .map_err(|_| Error::new(ErrorCode::Unavailable, "source registry unavailable"))?
+            .insert(identity, source);
+        Ok(())
+    }
+    pub fn retirement_source(
+        &self,
+        context: &RequestContext,
+        incarnation: &str,
+    ) -> Result<kasumi_engine::InstalledRetirementSource> {
+        context.authorization.check_live()?;
+        kasumi_types::validate_name(incarnation)?;
+        if context.tenant.starts_with("__kasumi_") {
+            return Err(Error::new(ErrorCode::Forbidden, "source access denied"));
+        }
+        self.retirement_sources
+            .read()
+            .map_err(|_| Error::new(ErrorCode::Unavailable, "source registry unavailable"))?
+            .get(&(context.tenant.clone(), incarnation.into()))
+            .cloned()
+            .ok_or_else(|| Error::new(ErrorCode::Forbidden, "source access denied"))
+    }
     pub(crate) fn set_approved_nodes(&self, nodes: BTreeSet<u64>) -> Result<()> {
         *self
             .approved_nodes
@@ -66,7 +101,14 @@ impl DatabaseRegistry {
     /// Register an opened tenant; its engine, rather than caller input, supplies
     /// the routing key. Replacing a serving tenant requires an explicit removal.
     pub fn insert(&self, database: Arc<Database>) -> Result<()> {
-        let tenant = database.engine().generation()?.state.tenant.clone();
+        let generation = database.engine().generation()?;
+        if generation.state.retired {
+            return Err(Error::new(
+                ErrorCode::Sealed,
+                "retired source cannot enter data routing",
+            ));
+        }
+        let tenant = generation.state.tenant.clone();
         if tenant.starts_with("__kasumi_") {
             return Err(Error::new(
                 ErrorCode::Forbidden,
@@ -83,6 +125,9 @@ impl DatabaseRegistry {
                 "tenant already registered",
             ));
         }
+        self.install_retirement_source(kasumi_engine::InstalledRetirementSource::Serving(
+            database.clone(),
+        ))?;
         databases.insert(tenant, database);
         Ok(())
     }
@@ -99,6 +144,12 @@ impl DatabaseRegistry {
     /// Existing request handles remain fenced by the retired source engine.
     pub(crate) fn replace_generation(&self, expected: &str, database: Arc<Database>) -> Result<()> {
         let state = database.engine().generation()?;
+        if state.state.retired {
+            return Err(Error::new(
+                ErrorCode::Sealed,
+                "retired source cannot enter data routing",
+            ));
+        }
         let tenant = state.state.tenant.clone();
         if tenant.starts_with("__kasumi_") {
             return Err(Error::new(ErrorCode::Forbidden, "reserved tenant"));
@@ -113,6 +164,9 @@ impl DatabaseRegistry {
         if previous.engine().generation()?.state.incarnation != expected {
             return Err(Error::new(ErrorCode::Conflict, "tenant generation changed"));
         }
+        self.install_retirement_source(kasumi_engine::InstalledRetirementSource::Serving(
+            database.clone(),
+        ))?;
         databases.insert(tenant, database);
         Ok(())
     }
@@ -177,7 +231,7 @@ pub(crate) fn mutation_release<T>(result: Result<T>) -> Result<T> {
 pub(crate) async fn release_response<T>(
     auth: &crate::auth::Authenticator,
     context: &RequestContext,
-    fence: kasumi_engine::ResponseFence<'_>,
+    fence: impl kasumi_engine::EncodedResponseFence,
     response: T,
     mutation: bool,
 ) -> Result<T> {
@@ -1686,6 +1740,7 @@ name: "docs".into(),
             }],
             BTreeMap::new(),
             kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+            BTreeMap::new(),
         )
         .unwrap();
         let token = fixture.token("person", tenant, "kasumi:admin kasumi:read kasumi:write");

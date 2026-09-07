@@ -10,6 +10,7 @@ use std::sync::Arc;
 pub(crate) const META: &str = "raft.meta";
 pub(crate) const HEADERS: &str = "raft.headers";
 pub(crate) const SEEDS: &str = "raft.retirement-seeds";
+pub(crate) const CUSTODY_STATE: &[u8] = b"retired_custody_state";
 
 /// Actual adapter-assigned execution position. No request can select its term,
 /// leader, predecessor or membership. The engine validates a seed against its
@@ -77,6 +78,9 @@ pub(crate) enum HeaderPayload {
     Application {
         command_sha256: String,
     },
+    Custody {
+        command_sha256: String,
+    },
     Retirement {
         command_sha256: String,
         seed_sha256: String,
@@ -95,6 +99,16 @@ impl LogHeader {
             }
             EntryPayload::Normal(command) => {
                 let command_sha256 = sha256(command.bytes());
+                if command.custody_command()?.is_some() {
+                    return Ok((
+                        Self {
+                            log_id: entry.log_id,
+                            entry_sha256: sha256(encoded),
+                            payload: HeaderPayload::Custody { command_sha256 },
+                        },
+                        None,
+                    ));
+                }
                 match command.seed_bytes()? {
                     Some(bytes) => (
                         HeaderPayload::Retirement {
@@ -119,7 +133,8 @@ impl LogHeader {
     pub(crate) fn validate(&self) -> Result<()> {
         kasumi_types::validate_sha256(&self.entry_sha256)?;
         match &self.payload {
-            HeaderPayload::Application { command_sha256 } => {
+            HeaderPayload::Application { command_sha256 }
+            | HeaderPayload::Custody { command_sha256 } => {
                 kasumi_types::validate_sha256(command_sha256)?;
             }
             HeaderPayload::Retirement {
@@ -149,7 +164,15 @@ pub(crate) fn load<T: DeserializeOwned>(
     key: &[u8],
 ) -> Result<Option<T>> {
     store
-        .get(namespace, key)?
+        .get_bounded(
+            namespace,
+            key,
+            if key == CUSTODY_STATE {
+                1 << 20
+            } else {
+                2 << 20
+            },
+        )?
         .map(|bytes| serde_json::from_slice(&bytes).context("invalid raft control record"))
         .transpose()
 }
@@ -194,8 +217,27 @@ impl CommittedRetirementSeed {
 pub struct ControlLog {
     custody: Arc<CustodyStore>,
     group: String,
+    node_id: u64,
 }
 impl ControlLog {
+    pub fn installed(custody: Arc<CustodyStore>) -> Result<Option<Self>> {
+        let node_id = load::<u64>(custody.store(), META, b"node_id")?;
+        let group = load::<String>(custody.store(), META, b"group")?;
+        match (node_id, group) {
+            (None, None) => Ok(None),
+            (Some(node_id), Some(group)) => Self::open(custody, node_id, group).map(Some),
+            _ => anyhow::bail!("installed consensus identity is incomplete"),
+        }
+    }
+    pub fn node_id(&self) -> u64 {
+        self.node_id
+    }
+    pub fn group(&self) -> &str {
+        &self.group
+    }
+    pub fn is_retired(&self) -> Result<bool> {
+        Ok(retired_boundary(&self.custody)?.is_some())
+    }
     pub fn open(custody: Arc<CustodyStore>, node_id: u64, group: String) -> Result<Self> {
         let store = custody.store();
         ensure!(
@@ -206,7 +248,150 @@ impl ControlLog {
             load::<String>(store, META, b"group")?.as_ref() == Some(&group),
             "control group identity differs"
         );
-        Ok(Self { custody, group })
+        Ok(Self {
+            custody,
+            group,
+            node_id,
+        })
+    }
+    /// Completes only an independently committed, deterministically successful
+    /// retirement seed. This is installed startup recovery, never current Admin
+    /// authorization or proof release. No application record is read.
+    pub fn recover_retired(&self) -> Result<bool> {
+        let gate = crate::storage::control_gate(&self.custody)?;
+        let _gate = gate
+            .lock()
+            .map_err(|_| anyhow::anyhow!("control gate poisoned"))?;
+        if retired_boundary(&self.custody)?.is_some() {
+            custody_state(&self.custody)?;
+            return Ok(true);
+        }
+        let store = self.custody.store();
+        let mut indices = Vec::new();
+        store.visit(SEEDS, 2 << 20, |key, _| {
+            ensure!(
+                indices.len() < 100_000,
+                "retirement recovery identity budget exceeded"
+            );
+            let key: [u8; 8] = key.try_into().context("invalid retirement index")?;
+            indices.push(u64::from_be_bytes(key));
+            Ok(())
+        })?;
+        indices.sort_unstable();
+        let mut candidate = None;
+        for index in indices {
+            let Some(seed) = self.retirement_seed(index)? else {
+                continue;
+            };
+            let revision = seed
+                .seed
+                .source()
+                .revision_base
+                .checked_add(index)
+                .context("retirement recovery revision overflow")?;
+            if let Some(receipt) = seed.seed.recovered_success(revision)? {
+                ensure!(
+                    candidate.is_none(),
+                    "multiple successful retirement candidates"
+                );
+                candidate = Some((seed, receipt));
+            }
+        }
+        let Some((committed, receipt)) = candidate else {
+            return Ok(false);
+        };
+        let old = load::<AppliedCursor>(store, META, b"applied")?;
+        ensure!(
+            old.as_ref()
+                .and_then(AppliedCursor::log_id)
+                .is_none_or(|id| id.index < committed.log_id.index),
+            "applied source lacks its atomic retirement boundary"
+        );
+        let floor = load::<crate::storage::SnapshotCoverage>(store, META, b"snapshot_coverage")?;
+        let mut membership = floor
+            .as_ref()
+            .map(|floor| floor.meta.last_membership.clone())
+            .unwrap_or_default();
+        let mut previous = floor.as_ref().and_then(|floor| floor.meta.last_log_id);
+        if let Some(old) = old {
+            match old {
+                AppliedCursor::Entry(position) => {
+                    membership = position.membership;
+                    previous = Some(position.log_id);
+                }
+                AppliedCursor::Snapshot { meta, .. } => {
+                    membership = meta.last_membership;
+                    previous = meta.last_log_id;
+                }
+            }
+        }
+        let mut latest_membership = *membership.log_id();
+        let mut count = 0usize;
+        store.visit(HEADERS, 2 << 20, |key, bytes| {
+            count += 1;
+            ensure!(
+                count <= 1_000_000,
+                "retirement recovery header work budget exceeded"
+            );
+            let key: [u8; 8] = key.try_into().context("invalid control header index")?;
+            let header: LogHeader = serde_json::from_slice(bytes)?;
+            header.validate()?;
+            ensure!(
+                header.log_id.index == u64::from_be_bytes(key),
+                "control header index differs"
+            );
+            if header.log_id.index < committed.log_id.index {
+                if previous.is_none_or(|id| header.log_id.index > id.index) {
+                    previous = Some(header.log_id);
+                }
+                if let HeaderPayload::Membership(value) = header.payload
+                    && latest_membership.is_none_or(|id| header.log_id.index > id.index)
+                {
+                    latest_membership = Some(header.log_id);
+                    membership = StoredMembership::new(Some(header.log_id), value);
+                }
+            }
+            Ok(())
+        })?;
+        ensure!(
+            previous.is_some_and(|id| id.index.checked_add(1) == Some(committed.log_id.index))
+                && membership.membership().voter_ids().next().is_some(),
+            "committed retirement predecessor or membership unavailable"
+        );
+        let position = AppliedPosition {
+            log_id: committed.log_id,
+            previous,
+            membership,
+            command_sha256: committed.seed.command_sha256().into(),
+        };
+        let boundary = RetiredBoundary {
+            position: position.clone(),
+            request: committed.seed.request().clone(),
+            receipt,
+            seed_sha256: sha256(&committed.seed.encoded()?),
+        };
+        validate_retired_boundary(&self.custody, &boundary)?;
+        let state = crate::custody_state::CustodyState::new(
+            crate::RetiredSnapshotState {
+                revision_base: committed.seed.source().revision_base,
+                revision: boundary.receipt.revision,
+                policy_epoch: boundary.receipt.policy_epoch,
+                administrators: committed.seed.source().administrators.clone(),
+                request: boundary.request.clone(),
+                receipt: boundary.receipt.clone(),
+            },
+            kasumi_types::CustodyLimits::default(),
+        )?;
+        store.write_batch(&[
+            WriteOp::put(META, b"retired_boundary", serde_json::to_vec(&boundary)?),
+            WriteOp::put(META, CUSTODY_STATE, serde_json::to_vec(&state)?),
+            WriteOp::put(
+                META,
+                b"applied",
+                serde_json::to_vec(&AppliedCursor::Entry(position))?,
+            ),
+        ])?;
+        Ok(true)
     }
     pub fn read_vote(&self) -> Result<Option<Vote<u64>>> {
         load(self.custody.store(), META, b"vote")
@@ -435,6 +620,33 @@ pub(crate) fn persist_applied(
     }
     let mut writes = vec![applied_write(context)?];
     if let Some(boundary) = boundary {
+        if existing_boundary.is_none() {
+            let seed = context
+                .retirement_seed
+                .as_ref()
+                .context("retirement seed missing")?;
+            let state = crate::custody_state::CustodyState::new(
+                crate::RetiredSnapshotState {
+                    revision_base: seed.source().revision_base,
+                    revision: boundary.receipt.revision,
+                    policy_epoch: boundary.receipt.policy_epoch,
+                    administrators: seed.source().administrators.clone(),
+                    request: boundary.request.clone(),
+                    receipt: boundary.receipt.clone(),
+                },
+                kasumi_types::CustodyLimits::default(),
+            )?;
+            writes.push(WriteOp::put(
+                META,
+                CUSTODY_STATE,
+                serde_json::to_vec(&state)?,
+            ));
+        } else {
+            ensure!(
+                load::<crate::custody_state::CustodyState>(store, META, CUSTODY_STATE)?.is_some(),
+                "accepted retirement lacks custody state"
+            );
+        }
         writes.push(WriteOp::put(
             META,
             b"retired_boundary",
@@ -442,6 +654,67 @@ pub(crate) fn persist_applied(
         ));
     }
     domains.write_batch(&[], &writes)
+}
+
+pub(crate) fn custody_state(custody: &CustodyStore) -> Result<crate::custody_state::CustodyState> {
+    let boundary = retired_boundary(custody)?.context("source is not proven retired")?;
+    let state: crate::custody_state::CustodyState =
+        load(custody.store(), META, CUSTODY_STATE)?.context("retired custody state absent")?;
+    state.validate()?;
+    ensure!(
+        state.origin.request == boundary.request && state.origin.receipt == boundary.receipt,
+        "custody state permanent retirement binding differs"
+    );
+    Ok(state)
+}
+
+/// Caller holds the shared control publication gate. Only the closed reducer
+/// runs here; application providers, snapshots and command decoders are absent.
+pub(crate) fn apply_custody(
+    custody: &CustodyStore,
+    position: &AppliedEntryContext,
+    command: &crate::CustodyCommand,
+) -> Result<Vec<u8>> {
+    custody.store().check_access()?;
+    ensure!(
+        position.retirement_seed.is_none()
+            && position.command_sha256 == sha256(&command.encoded()?),
+        "closed custody applied command differs"
+    );
+    let state = custody_state(custody)?;
+    let previous = load::<AppliedCursor>(custody.store(), META, b"applied")?
+        .context("retired custody applied cursor absent")?;
+    ensure!(
+        previous.log_id() == position.previous
+            && position
+                .previous
+                .is_some_and(|id| id.index < position.log_id.index),
+        "custody command predecessor differs"
+    );
+    let revision = state
+        .origin
+        .revision_base
+        .checked_add(position.log_id.index)
+        .context("custody revision exhausted")?;
+    let mut writes = vec![applied_write(position)?];
+    let result = match state.apply(
+        &command.context,
+        &command.request,
+        command.admitted_at_ms,
+        revision,
+    ) {
+        Ok((next, receipt)) => {
+            writes.push(WriteOp::put(
+                META,
+                CUSTODY_STATE,
+                serde_json::to_vec(&next)?,
+            ));
+            Ok(receipt)
+        }
+        Err(error) => Err(error),
+    };
+    custody.store().write_batch(&writes)?;
+    Ok(serde_json::to_vec(&result)?)
 }
 
 #[cfg(test)]

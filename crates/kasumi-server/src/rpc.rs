@@ -565,6 +565,19 @@ impl NativeAdmin {
 
 #[tonic::async_trait]
 impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
+    async fn read_custody(
+        &self,
+        request: Request<RetirementReference>,
+    ) -> Result<Response<CustodyStatusResponse>, Status> {
+        self.read_custody_rpc(request).await
+    }
+    async fn execute_custody(
+        &self,
+        request: Request<CustodyCommandRequest>,
+    ) -> Result<Response<CustodyReceiptResponse>, Status> {
+        self.execute_custody_rpc(request).await
+    }
+
     async fn abort_retirement(
         &self,
         request: Request<RetireSourceRequest>,

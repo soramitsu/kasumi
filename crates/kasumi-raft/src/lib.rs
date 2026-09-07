@@ -3,8 +3,14 @@
 
 mod command;
 mod control;
+mod custody_command;
+mod custody_group;
+mod custody_machine;
+mod custody_state;
+mod domains;
 mod lifetime;
 mod network;
+mod quorum;
 mod snapshot_buffer;
 mod snapshot_custody;
 mod snapshot_state;
@@ -16,6 +22,8 @@ pub use command::{
     MAX_RETIREMENT_SEED_BYTES, RaftCommand, RetirementLogSeed, RetirementReplayState,
 };
 pub use control::{AppliedEntryContext, CommittedRetirementSeed, ControlLog};
+pub use custody_command::{CustodyCommand, MAX_CUSTODY_COMMAND_BYTES};
+pub use custody_group::{CustodyRaftGroup, CustodyView};
 use kasumi_store::TenantStorageSet;
 use lifetime::StorageDrain;
 pub use network::{
@@ -32,7 +40,7 @@ use std::{
     },
     time::Duration,
 };
-pub use storage::{LogStore, StateMachine};
+pub use storage::{LogStore, StateMachine, recovery_snapshot_bytes};
 pub use timing::server_config;
 
 #[derive(Clone, Debug)]
@@ -85,6 +93,9 @@ pub trait StateMachineBackend: Send + Sync + 'static {
     /// the last recoverable durable snapshot.
     fn validate_snapshot(&self, bytes: &[u8]) -> Result<Option<RetiredSnapshotState>>;
     fn restore(&self, bytes: &[u8]) -> Result<()>;
+    /// Irreversibly evict resident application material before publishing an
+    /// installed closed custody snapshot. This cannot grant data access.
+    fn close_application(&self);
 }
 
 #[derive(Clone)]
@@ -107,6 +118,9 @@ struct OwnedBackend {
     _ownership: Arc<AtomicBool>,
 }
 impl StateMachineBackend for OwnedBackend {
+    fn close_application(&self) {
+        self.inner.close_application();
+    }
     fn apply(&self, position: &AppliedEntryContext, command: &[u8]) -> Result<AppliedResponse> {
         self.inner.apply(position, command)
     }
@@ -122,11 +136,15 @@ impl StateMachineBackend for OwnedBackend {
 }
 
 fn claim_store(store: &Arc<TenantStorageSet>) -> Result<Arc<AtomicBool>> {
+    claim_custody(store.custody())
+}
+
+fn claim_custody(store: &kasumi_store::CustodyStore) -> Result<Arc<AtomicBool>> {
     let mut groups = LIVE_GROUPS
         .lock()
         .map_err(|_| anyhow::anyhow!("group ownership unavailable"))?;
     groups.retain(|_, owner| owner.strong_count() > 0);
-    let key = Arc::as_ptr(store.application()) as usize;
+    let key = Arc::as_ptr(store.store()) as usize;
     ensure!(
         !groups
             .get(&key)
@@ -282,68 +300,28 @@ impl RaftGroup {
         Ok(response.data)
     }
 
-    pub async fn linearizable_barrier(&self) -> Result<Option<LogId<u64>>> {
+    pub fn custody_view(&self) -> Result<CustodyView> {
         self.check_access()?;
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-        let initial_term = self.raft.metrics().borrow().current_term;
-        let mut seals = self.store.application().seal_notifications();
-        let mut custody_seals = self.store.custody().store().seal_notifications();
-        tokio::time::timeout_at(deadline, async {
-            loop {
-                self.check_access()?;
-                ensure!(
-                    self.raft.metrics().borrow().current_term == initial_term,
-                    "leadership term changed during read barrier"
-                );
-                // OpenRaft 0.9.25 bounds each leadership probe by one heartbeat
-                // interval (250 ms in the server profile). A transient scheduling
-                // or storage stall need not consume the whole API deadline.
-                // Every round establishes a fresh quorum and waits for local
-                // application; failed rounds grant no authority to read.
-                let result = tokio::select! {
-                    result = self.raft.ensure_linearizable() => result,
-                    _ = seals.changed() => {
-                        self.check_access()?;
-                        anyhow::bail!("key authorization changed during read barrier");
-                    }
-                    _ = custody_seals.changed() => {
-                        self.check_access()?;
-                        anyhow::bail!("custody key authorization changed during read barrier");
-                    }
-                };
-                match result {
-                    Ok(id) => {
-                        self.check_access()?;
-                        ensure!(
-                            self.raft.metrics().borrow().current_term == initial_term,
-                            "leadership term changed during read barrier"
-                        );
-                        return Ok(id);
-                    }
-                    Err(openraft::error::RaftError::APIError(
-                        openraft::error::CheckIsLeaderError::QuorumNotEnough(_),
-                    )) => {
-                        self.check_access()?;
-                        // Immediate transport rejection must not busy-loop. The
-                        // original deadline bounds all probes and backoff together.
-                        tokio::select! {
-                            _ = tokio::time::sleep(Duration::from_millis(10)) => {},
-                            _ = seals.changed() => {
-                                self.check_access()?;
-                                anyhow::bail!("key authorization changed during read barrier");
-                            }
-                            _ = custody_seals.changed() => {
-                                self.check_access()?;
-                                anyhow::bail!("custody key authorization changed during read barrier");
-                            }
-                        }
-                    }
-                    Err(error) => return Err(error.into()),
-                }
-            }
-        })
+        Ok(CustodyView(control::custody_state(self.store.custody())?))
+    }
+
+    pub async fn write_custody(&self, command: CustodyCommand) -> Result<Vec<u8>> {
+        self.check_access()?;
+        let response = self
+            .raft
+            .client_write(RaftCommand::custody(&command)?)
+            .await?;
+        Ok(response.data)
+    }
+
+    pub async fn linearizable_barrier(&self) -> Result<Option<LogId<u64>>> {
+        quorum::barrier(
+            &self.raft,
+            || self.check_access(),
+            self.store.custody().store(),
+            Some(self.store.application()),
+        )
         .await
-        .context("read quorum deadline exceeded")?
     }
 
     pub async fn add_learner(&self, id: u64, node: BasicNode) -> Result<()> {

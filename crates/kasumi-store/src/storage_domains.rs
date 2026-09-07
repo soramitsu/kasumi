@@ -53,6 +53,13 @@ pub struct CustodyStore {
 }
 
 impl CustodyStore {
+    /// Wrapped-catalog probe only. No key provider is constructed or contacted.
+    pub fn catalog_installed(node: &NodeStore, application_tenant: &str) -> Result<bool> {
+        validate_application_tenant(application_tenant)?;
+        Ok(node
+            .catalog(&Self::catalog_name(application_tenant))?
+            .is_some())
+    }
     pub fn catalog_name(application_tenant: &str) -> String {
         format!("{CUSTODY_PREFIX}{application_tenant}")
     }

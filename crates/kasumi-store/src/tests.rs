@@ -851,3 +851,43 @@ async fn expiry_during_key_catalog_fsync_does_not_acknowledge_rotation() {
         Some(b"old ciphertext".to_vec())
     );
 }
+
+#[tokio::test]
+async fn bounded_encrypted_reads_reject_payload_before_plaintext_allocation() {
+    let (_dir, store, _, _) = fixture().await;
+    store
+        .write_batch(&[WriteOp::put("closed-control", b"current", vec![7; 8192])])
+        .unwrap();
+    let error = store
+        .get_bounded("closed-control", b"current", 8191)
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("encrypted record exceeds read budget")
+    );
+    assert_eq!(
+        store
+            .get_bounded("closed-control", b"current", 8192)
+            .unwrap()
+            .unwrap(),
+        vec![7; 8192]
+    );
+    let mut visited = false;
+    assert!(
+        store
+            .visit("closed-control", 64, |_, _| {
+                visited = true;
+                Ok(())
+            })
+            .is_err()
+    );
+    assert!(!visited);
+    assert!(
+        store
+            .get_bounded("closed-control", b"absent", 64)
+            .unwrap()
+            .is_none()
+    );
+    store.shutdown().await;
+}

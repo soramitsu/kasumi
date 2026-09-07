@@ -559,6 +559,21 @@ impl TenantStore {
     }
 
     pub fn get(&self, namespace: &str, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        self.get_bounded(namespace, key, MAX_RECORD)
+    }
+
+    /// Reject an oversized encrypted record before allocating its plaintext.
+    /// The exact value bound is checked again after authenticated decoding.
+    pub fn get_bounded(
+        &self,
+        namespace: &str,
+        key: &[u8],
+        max_value_bytes: usize,
+    ) -> Result<Option<Vec<u8>>> {
+        ensure!(
+            max_value_bytes <= MAX_RECORD,
+            "record read budget exceeds storage limit"
+        );
         let _access = AccessGuard(self);
         validate_record(namespace, key, 0)?;
         self.check_access()?;
@@ -574,7 +589,17 @@ impl TenantStore {
         let table = tx.open_table(RECORDS)?;
         let mut result = match table.get(disk_key.as_slice())? {
             Some(v) => {
+                check_encrypted_record_budget(
+                    v.value(),
+                    namespace.len(),
+                    key.len(),
+                    max_value_bytes,
+                )?;
                 let record = self.decode_record(&disk_key, v.value(), &state)?;
+                ensure!(
+                    record.value.len() <= max_value_bytes,
+                    "record value exceeds read budget"
+                );
                 ensure!(
                     record.namespace == namespace && record.key == key,
                     "record identity mismatch"
@@ -587,6 +612,49 @@ impl TenantStore {
         Ok(result
             .as_mut()
             .map(|record| std::mem::take(&mut record.value)))
+    }
+
+    /// Visits one authenticated record at a time without retaining a namespace's
+    /// values. The callback runs synchronously under the current key lease and
+    /// must bound its own accumulated result. It cannot perform async I/O.
+    pub fn visit(
+        &self,
+        namespace: &str,
+        max_value_bytes: usize,
+        mut visitor: impl FnMut(&[u8], &[u8]) -> Result<()>,
+    ) -> Result<()> {
+        ensure!(
+            max_value_bytes <= MAX_RECORD,
+            "record visit budget exceeds storage limit"
+        );
+        let _access = AccessGuard(self);
+        validate_record(namespace, &[], 0)?;
+        self.check_access()?;
+        let state = self.state.read();
+        self.require_access(&state)?;
+        let prefix = namespace_prefix(
+            &self.tenant,
+            namespace,
+            state.keys.get(INDEX_KEY).context("index key missing")?,
+        );
+        let tx = self.node.db.begin_read()?;
+        let table = tx.open_table(RECORDS)?;
+        for entry in table.range(prefix.as_slice()..)? {
+            let (key, value) = entry?;
+            if !key.value().starts_with(&prefix) {
+                break;
+            }
+            self.require_access(&state)?;
+            check_encrypted_record_budget(value.value(), namespace.len(), 4096, max_value_bytes)?;
+            let record = self.decode_record(key.value(), value.value(), &state)?;
+            ensure!(
+                record.value.len() <= max_value_bytes,
+                "record value exceeds visit budget"
+            );
+            ensure!(record.namespace == namespace, "record namespace mismatch");
+            visitor(&record.key, &record.value)?;
+        }
+        self.require_access(&state)
     }
 
     pub fn scan(&self, namespace: &str) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
@@ -902,6 +970,27 @@ fn take_bytes<'a>(input: &mut &'a [u8]) -> Result<&'a [u8]> {
     let result = &input[..len];
     *input = &input[len..];
     Ok(result)
+}
+
+fn check_encrypted_record_budget(
+    envelope: &[u8],
+    namespace_bytes: usize,
+    key_bytes: usize,
+    max_value_bytes: usize,
+) -> Result<()> {
+    let mut ciphertext = envelope;
+    // Key ID is borrowed; no plaintext/decryption allocation occurs here.
+    take_bytes(&mut ciphertext)?;
+    let max_ciphertext = max_value_bytes
+        .checked_add(namespace_bytes)
+        .and_then(|value| value.checked_add(key_bytes))
+        .and_then(|value| value.checked_add(12 + 40))
+        .context("record read budget overflow")?;
+    ensure!(
+        ciphertext.len() <= max_ciphertext,
+        "encrypted record exceeds read budget"
+    );
+    Ok(())
 }
 
 fn encode_plain_record(namespace: &str, key: &[u8], value: &[u8]) -> Result<Vec<u8>> {

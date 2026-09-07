@@ -1,9 +1,10 @@
-//! Actual source backup -> retirement -> snapshot-only replica catch-up. The
-//! custody-only reader remains recovery input and never becomes an Admin proof.
+//! Actual source backup -> retirement -> closed rotation -> snapshot-only catchup.
+//! The learner can recover closed metadata; it cannot manufacture quorum proof.
 use super::*;
-use kasumi_raft::{Config, ControlLog, InProcessRouter, RaftGroup, StateMachineBackend};
+use kasumi_raft::{
+    Config, ControlLog, CustodyRaftGroup, InProcessRouter, RaftGroup, StateMachineBackend,
+};
 use kasumi_store::{CustodyStore, TenantStorageSet, WriteOp};
-use openraft::storage::{RaftSnapshotBuilder, RaftStateMachine};
 use std::time::Duration;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -20,36 +21,85 @@ async fn actual_retired_snapshot_only_replica_preserves_rotated_custody_after_en
         .retire_source(context(), request.clone())
         .await
         .unwrap();
-    source
-        .db
-        .administer(
+    let reference = request.reference().unwrap();
+    let warm = source.db.retired_custody().unwrap();
+    assert_eq!(
+        warm.execute(
             context(),
-            Operation::SetPolicy(Policy {
-                grants: vec![Grant {
-                    principal: "new-custodian".into(),
-                    collection: None,
-                    actions: BTreeSet::from([Action::Admin]),
-                }],
-                strict_read_audit: false,
-            }),
+            CustodyRequest {
+                retirement: reference.clone(),
+                command_id: "snapshot-rotate".into(),
+                expected_policy_epoch: 1,
+                not_after_ms: u64::MAX,
+                action: CustodyAction::ReplaceAdministrators(BTreeSet::from([
+                    "new-custodian".into()
+                ])),
+            }
         )
         .await
-        .unwrap();
-    let expected = StateMachineBackend::snapshot(source.db.engine().as_ref())
-        .unwrap()
-        .retirement
-        .unwrap();
-    assert_eq!(
-        expected.administrators,
-        BTreeSet::from(["new-custodian".into()])
+        .unwrap_err()
+        .code,
+        ErrorCode::UnknownOutcome
     );
-    let base = expected.revision_base;
-    let retirement_index = proof.revision() - base;
-    source.db.raft_group().snapshot().await.unwrap();
+    drop(warm);
+    let source_store = source.db.detach_retired_custody().await.unwrap();
+    let group = format!(
+        "{}/{}",
+        context().tenant,
+        request.expected_source_incarnation
+    );
+    let router = Arc::new(InProcessRouter::default());
+    let closed = kasumi_engine::RetiredCustody::open_replicated(
+        source_store.clone(),
+        1,
+        group.clone(),
+        router.clone(),
+        Config::default(),
+        kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+        source.audit.clone(),
+    )
+    .await
+    .unwrap();
+    let raft = closed.raft_group().unwrap();
+    router.register(group.clone(), 1, raft.raft().clone());
+    raft.raft()
+        .wait(Some(Duration::from_secs(10)))
+        .current_leader(1, "closed source")
+        .await
+        .unwrap();
+    let custodian = RequestContext {
+        principal: "new-custodian".into(),
+        ..context()
+    };
+    assert_eq!(
+        closed
+            .verify_retirement_receipt(custodian, &reference)
+            .await
+            .unwrap()
+            .receipt(),
+        proof.receipt()
+    );
+    assert_eq!(
+        closed
+            .verify_retirement_receipt(context(), &reference)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Forbidden
+    );
+    // An old retained Database cannot seal the custody store after ownership moved.
+    source.db.shutdown().await.unwrap();
+    closed
+        .raft_group()
+        .unwrap()
+        .linearizable_barrier()
+        .await
+        .unwrap();
+    raft.snapshot().await.unwrap();
     let snapshot = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            if let Some(snapshot) = source.db.raft_group().raft().get_snapshot().await.unwrap()
-                && snapshot.meta.last_log_id.unwrap().index + base >= expected.revision
+            if let Some(snapshot) = raft.raft().get_snapshot().await.unwrap()
+                && snapshot.meta.last_log_id.unwrap().index >= raft.view().unwrap().revision()
             {
                 break snapshot;
             }
@@ -58,35 +108,21 @@ async fn actual_retired_snapshot_only_replica_preserves_rotated_custody_after_en
     })
     .await
     .unwrap();
-    let group = format!(
-        "{}/{}",
-        context().tenant,
-        request.expected_source_incarnation
+    assert!(
+        !snapshot
+            .snapshot
+            .as_bytes()
+            .windows(b"private-journal-entry".len())
+            .any(|bytes| bytes == b"private-journal-entry")
     );
-    let source_control = ControlLog::open(
-        source.db.raft_group().storage_domains().custody().clone(),
-        1,
-        group.clone(),
-    )
-    .unwrap();
+    let source_control = ControlLog::open(source_store.clone(), 1, group.clone()).unwrap();
     let vote = source_control.read_vote().unwrap().unwrap();
-    let source_binding = source
-        .db
-        .raft_group()
-        .storage_domains()
-        .custody()
-        .binding()
-        .digest()
-        .unwrap();
-    let bootstrap_digest = source
-        .db
-        .raft_group()
-        .storage_domains()
-        .custody()
+    let bootstrap_digest = source_store
         .store()
         .get("raft.meta", b"application_bootstrap_sha256")
         .unwrap()
         .unwrap();
+    let source_binding = source_store.binding().digest().unwrap();
     let recipient = tempfile::tempdir().unwrap();
     let path = recipient.path().join("replica.redb");
     let app_provider = Arc::new(LocalKeyProvider::new([0xe2; 32]));
@@ -99,8 +135,6 @@ async fn actual_retired_snapshot_only_replica_preserves_rotated_custody_after_en
     )
     .await
     .unwrap();
-    // Installed bootstrap identity comes from the trusted replica installer. No
-    // municipality payload or retirement log is copied by this fixture setup.
     domains
         .custody()
         .store()
@@ -123,7 +157,7 @@ async fn actual_retired_snapshot_only_replica_preserves_rotated_custody_after_en
         )
         .unwrap(),
     );
-    let raft = RaftGroup::open(
+    let recipient_group = RaftGroup::open(
         2,
         group.clone(),
         domains.clone(),
@@ -133,97 +167,34 @@ async fn actual_retired_snapshot_only_replica_preserves_rotated_custody_after_en
     )
     .await
     .unwrap();
-    raft.raft()
+    recipient_group
+        .raft()
         .install_full_snapshot(vote, snapshot)
         .await
         .unwrap();
-    assert_eq!(
-        StateMachineBackend::snapshot(backend.as_ref())
-            .unwrap()
-            .retirement,
-        Some(expected.clone())
-    );
-    assert!(backend.generation().unwrap().state.retired);
     assert!(
-        domains.application().scan("raft.log").unwrap().is_empty(),
-        "replica received snapshot only"
+        backend.generation().is_err(),
+        "closed snapshot must evict application state before publication"
     );
-    let control = ControlLog::open(domains.custody().clone(), 2, group.clone()).unwrap();
-    assert_eq!(
-        control
-            .retirement_seed(retirement_index)
+    assert!(domains.application().scan("raft.log").unwrap().is_empty());
+    assert!(
+        domains
+            .application()
+            .scan("raft.snapshot")
             .unwrap()
-            .unwrap()
-            .seed()
-            .request(),
-        &request
+            .is_empty(),
+        "closed snapshot cannot publish application chunks"
     );
-    drop(control);
-    raft.shutdown().await.unwrap();
-    domains.application().shutdown().await;
-    domains.custody().store().shutdown().await;
-    drop(raft);
-    drop(backend);
-    drop(domains);
-    // Normal encrypted replica restart validates the image and capsule together.
-    let domains = TenantStorageSet::open(
-        NodeStore::open(&path).unwrap(),
-        context().tenant,
-        app_provider.clone(),
-        custody_provider.clone(),
-    )
-    .await
-    .unwrap();
-    let backend = Arc::new(
-        kasumi_engine::TenantEngine::new(
-            context().tenant,
-            request.expected_source_incarnation.clone(),
-            policy(),
-            Limits::default(),
-        )
-        .unwrap(),
-    );
-    let raft = RaftGroup::open(
-        2,
-        group.clone(),
-        domains.clone(),
-        backend.clone(),
-        Arc::new(InProcessRouter::default()),
-        Config::default(),
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        StateMachineBackend::snapshot(backend.as_ref())
-            .unwrap()
-            .retirement,
-        Some(expected)
-    );
-    raft.shutdown().await.unwrap();
-    drop(raft);
-    // Reopening randomizes persistent map serialization order. Recapture at the
-    // same applied position must reuse the fully verified persisted image.
-    let mut machine = kasumi_raft::StateMachine::open(domains.clone(), backend.clone())
-        .await
-        .unwrap();
-    let before = machine.get_current_snapshot().await.unwrap().unwrap();
-    let rebuilt = machine
-        .get_snapshot_builder()
-        .await
-        .build_snapshot()
-        .await
-        .unwrap();
-    assert_eq!(rebuilt.meta, before.meta);
-    assert_eq!(rebuilt.snapshot.as_bytes(), before.snapshot.as_bytes());
-    drop(machine);
+    recipient_group.shutdown().await.unwrap();
     app_provider.revoke();
     assert!(domains.application().refresh_lease().await.is_err());
     let probes = app_provider.probe_count();
     domains.application().shutdown().await;
     domains.custody().store().shutdown().await;
+    drop(recipient_group);
     drop(backend);
     drop(domains);
-    // Closed metadata recovery never opens an application provider or decoder.
+    // Only the independently keyed domain is opened after the encrypted restart.
     let custody = CustodyStore::open(
         NodeStore::open(&path).unwrap(),
         context().tenant,
@@ -231,18 +202,32 @@ async fn actual_retired_snapshot_only_replica_preserves_rotated_custody_after_en
     )
     .await
     .unwrap();
-    let control = ControlLog::open(custody.clone(), 2, group).unwrap();
+    let learner = CustodyRaftGroup::open(
+        2,
+        group.clone(),
+        custody.clone(),
+        Arc::new(InProcessRouter::default()),
+        Config::default(),
+    )
+    .await
+    .unwrap();
+    let view = learner.view().unwrap();
+    assert_eq!(view.retirement(), proof.receipt());
+    assert_eq!(view.policy_epoch(), 2);
     assert_eq!(
-        control
-            .retirement_seed(retirement_index)
-            .unwrap()
-            .unwrap()
-            .seed()
-            .request(),
-        &request
+        view.administrators(),
+        &BTreeSet::from(["new-custodian".into()])
     );
     assert_eq!(app_provider.probe_count(), probes);
+    assert!(
+        learner.linearizable_barrier().await.is_err(),
+        "snapshot-only learner cannot claim current source quorum"
+    );
+    let control = ControlLog::open(custody.clone(), 2, group).unwrap();
+    assert!(control.recover_retired().unwrap());
+    learner.shutdown().await.unwrap();
     custody.store().shutdown().await;
+    closed.shutdown().await.unwrap();
     source.close().await;
 }
 

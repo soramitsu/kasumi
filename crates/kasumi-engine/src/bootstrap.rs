@@ -226,6 +226,7 @@ pub async fn open_replicated(
     bootstrap.validate()?;
     anyhow::ensure!(node_id > 0, "node ID must be positive");
     let _gate = BOOTSTRAP_GATE.lock().await;
+    reject_retired_serving_open(&stores)?;
     let binding = serde_json::to_vec(&("replicated", bootstrap))?;
     bind_deployment(&stores, &binding)?;
     let bytes = match load(&store)? {
@@ -394,6 +395,7 @@ pub async fn open_local(
 ) -> anyhow::Result<Arc<Database>> {
     let store = stores.application().clone();
     let _gate = BOOTSTRAP_GATE.lock().await;
+    reject_retired_serving_open(&stores)?;
     bind_deployment(&stores, b"local-v1")?;
     let bytes = match load(&store)? {
         Some(bytes) => bytes,
@@ -607,4 +609,33 @@ async fn restore_access(
             .into());
     }
     Ok(())
+}
+
+fn reject_retired_serving_open(stores: &TenantStorageSet) -> anyhow::Result<()> {
+    if let Some(control) = kasumi_raft::ControlLog::installed(stores.custody().clone())? {
+        anyhow::ensure!(
+            !control.is_retired()?,
+            "source is retired; use the installed custody-only opener"
+        );
+    }
+    Ok(())
+}
+
+/// Admission estimate from bounded authenticated bootstrap/snapshot manifests.
+/// It does not deserialize resident application state or authorize serving.
+pub fn recovery_workspace_bytes(stores: &TenantStorageSet) -> anyhow::Result<u64> {
+    let bytes = stores
+        .application()
+        .get(NS, b"manifest")?
+        .ok_or_else(|| anyhow::anyhow!("bootstrap manifest absent"))?;
+    let manifest: Manifest = serde_json::from_slice(&bytes)?;
+    anyhow::ensure!(
+        manifest.bytes <= MAX_BOOTSTRAP,
+        "bootstrap byte budget exceeded"
+    );
+    let snapshot = kasumi_raft::recovery_snapshot_bytes(stores)?;
+    Ok((manifest.bytes as u64)
+        .saturating_add(snapshot)
+        .saturating_mul(4)
+        .saturating_add(4 << 20))
 }

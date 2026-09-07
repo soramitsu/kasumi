@@ -36,8 +36,8 @@ bootstrap digest and catalog binding, preventing substitution across incarnation
 
 The state-machine adapter supplies the actual `LogId`, previous applied position,
 membership and command digest. The engine recomputes retirement seed metadata
-against its current ordered generation before executing. Only the actual retained
-successful retirement receipt can produce an accepted boundary. The adapter
+against its current ordered generation before executing. Ordinary application replay validates the actual retained successful retirement
+receipt before producing an accepted boundary. The adapter
 validates that receipt against the durable seed and writes the boundary together
 with its exact applied position. Interrupted projection publication can therefore
 be distinguished from a completed applied retirement.
@@ -55,17 +55,21 @@ not retroactively restore previously compacted log bodies.
 `CustodyStore::open` needs only the custody provider and checks the installed
 application catalog's wrapped identity. `ControlLog` reads a locally committed
 retirement seed without constructing an application provider, unwrapping its keys,
-opening an engine or decoding payload. A crash after commit but before applied
-projection therefore preserves enough closed metadata for the next deterministic
-custody reducer.
+opening an engine or decoding payload. A crash after commit but before applied projection preserves enough closed
+metadata for deterministic recovery. Before proposing a potentially successful
+retirement, the leader reserves its exact permanent receipt/audit completion
+headroom against the captured source accounting. Every replica checks the same
+reservation. A locally committed exact seed can finish only when that positive
+outcome is forced by the closed captured state and the actual apply predecessor
+and membership remain independently available. Exhausted capacity, a failed or
+expired attempt, an uncommitted seed, or an already-applied cursor without its
+atomic accepted boundary cannot be promoted.
 
 `CommittedRetirementSeed` establishes local durable log coverage. It cannot mint
 `VerifiedRetirementReceipt`, authorize a payload operation, establish a fresh
-quorum or enable an incarnation. The native server still starts its normal engine
-with both key domains. A closed custody-only native startup, deterministic policy
-rotation/recovery reducer, current authenticated proof release and independent
-serving-lease authority are subsequent prerequisites. This substrate does not
-enable source-quorum-unavailable restore activation.
+quorum or enable an incarnation. The closed service described below adds fresh
+current-quorum and current-Admin proof release. Independent serving-lease and
+source-quorum-unavailable fencing remain separate required protocols.
 
 The metadata-only reader also covers a replica that learns accepted retirement
 solely through a full Raft snapshot. The backend returns application bytes and
@@ -105,43 +109,90 @@ image only after checking its application and custody coverage together. Replaci
 the Admin set or policy epoch in both the incoming image and capsule still fails
 against the already published custody identity.
 
-Closed metadata is bounded at 2 MiB including the existing 256 KiB seed ceiling;
-a counting serializer rejects oversized metadata without allocating an additional
-unbounded JSON copy. These are first-release snapshot/cursor formats, with no old
-format decoder. The mandatory `StateMachineBackend` snapshot/validation contract
-returns `BackendSnapshot` / `Option<RetiredSnapshotState>`; engine, Database and
-Rust SDK openers are unchanged by this tranche.
+## Closed runtime and current administrative custody
 
-This capsule is immutable **local recovery input**, not a freshly authorized
-custody proof. Current policy rotation after the snapshot must still be replayed
-by the forthcoming closed native custody reducer. Native custody-only startup,
-current credential/revocation handling, quorum-authorized proof release and
-independent serving-lease/DR fencing remain required.
+`InstalledRetirementSource` has explicit `Serving(Arc<Database>)`,
+`RetiredCustody(Arc<RetiredCustody>)` and `RecoveringControl` routes. Source identity
+comes from installed storage, never a request URL, provider, path or credential.
+The native runtime opens the custody catalog first. An accepted retired source
+starts only the closed state machine; it does not construct an application key
+provider, request its credential, decrypt municipal logs or materialize documents.
+Ambiguous recovery remains `RecoveringControl`, with no normal/local fallback.
 
-A nonretired `Stopped` outcome continues to require the ordinary source serving
-and current administrative authority path for fresh proof recovery. Neither an
-uncommitted retirement seed nor a stopped identity can select retired custody
-mode. Planned retirement cannot substitute for independently fencing an unavailable
-source, and no copied application journal receipt grants current custody authority.
+Warm retirement drains and seals the application database, publishing the closed
+transition before discarding its handle. The existing Raft group, node ID, votes
+and membership reopen with the independently keyed custody store. Blank entries,
+membership and the typed custody command are the only closed log payloads. A
+normal replica receiving a validated closed snapshot evicts its application
+backend before publishing it and requires the same closed-runtime handoff.
+
+Closed snapshots have no application body. Their authenticated capsule contains
+the original immutable retirement binding plus the current complete custody
+state, exact committed/applied position and membership. Same-position replacement
+must equal actual current state for both entry and snapshot cursors. Reformatting
+an equivalent image is permitted; changing administrators, retained commands or
+audit at the same position is rejected. The required
+`StateMachineBackend::close_application` method makes receiver eviction explicit.
+
+`RetiredCustody` provides `status`, `execute`, `retirement_status` and
+`verify_retirement_receipt`; the secure `KasumiAdminClient` exposes
+`read_custody(bearer, &RetirementRef)` and
+`execute_custody(bearer, &CustodyRequest)` alongside existing private retirement
+proof methods. A verified credential still selects the tenant; its original
+suspend-aware expiry survives cloning, queueing and encoded response release.
+Serialized contexts cannot become new live service or credential authority.
+
+The deterministic reducer accepts only `ReplaceAdministrators` and `SetLimits`. It requires current global custody Admin,
+exact retirement reference, permanent full-request identity, expected custody
+policy epoch and inclusive action deadline. Original receipt principal and result
+remain immutable on replay, but current authority is checked for every attempt.
+A successful self-revocation or expired acknowledgement returns `UnknownOutcome`;
+a newly authorized custodian resolves the exact identity. Application policy,
+limits, collections and original retirement binding are permanently frozen.
+
+Custody has independent `CustodyLimits`: initial 1,024 command identities, 2,048
+audits and 1 MiB resident metadata; hard ceilings are 4,096 identities, 8,192 audits
+and 1 MiB. Every accepted mutation and exact replay consumes a bounded custody audit.
+Policy/limit changes include their own receipt and audit in candidate accounting
+before publication. A current custodian can expand a full configured budget:
+a pure expansion is admitted against its proposed complete limits, including its
+own records. No history is discarded. The hard ceilings still define a finite
+administrative lifetime; an archive/maintenance facility for that terminal limit
+is not implemented by this tranche. The immutable application receipt store is
+neither pruned nor used for these budgets.
+
+Proof and status observations do not create permanent mutation identities or
+consume the custody mutation budget. Their exact source/reference/revision and
+custody policy epoch are recorded in the separately keyed durable node security
+audit. That writer retains its own explicit operational capacity and fails closed
+if it cannot persist; its configured capacity can be raised through its installed
+lifecycle without municipal key access. Both read and mutation release repeat the
+existing quorum barrier after audit completion, then enforce the original live
+credential and current policy fence. A stalled audit cannot release authority
+from a now-isolated old leader. Closed snapshots are bounded at 2 MiB. Bounded storage reads
+reject excessive ciphertext before plaintext allocation, and sequential control
+recovery has finite identity/header work budgets.
+
+Closed proof release requires the same existing source quorum, including a fresh
+current-term quorum barrier. A retained old leader or snapshot-only learner cannot
+substitute local state for that authority. Service work retains its byte reservation
+and shutdown registration through actual completion even if a caller disappears.
+Key access, live credential, current Admin and policy epoch are checked through
+final native encoding; no wire-decoded observation can construct a private proof.
+
+A nonretired `Stopped` outcome continues to require ordinary source serving and
+current administrative authority for fresh proof recovery. It cannot enter closed
+retired custody or authorize payload materialization after a serving lease expires.
+A successful `Retired` outcome alone enters the closed route. Independently
+available serving leases, unavailable-source fencing and cross-host target
+activation remain required; this tranche creates none of those authorities.
 
 ## Verification scope
 
-Storage fault tests inject failures through transaction and fsync positions and
-reopen the last synchronized image. They check atomic cross-domain writes, key
-expiry, catalog substitution, commit-before-projection recovery with application
-key revocation, applied-boundary atomicity, stale seed removal and ordinary purge.
-Engine tests create real verified full backups, retire the actual database,
-rotate the custodian, install a snapshot into a second encrypted Raft replica,
-restart and recapture that replica, then recover its seed without opening source
-data. A stopped
-retirement retains no retired snapshot marker. Adapter tests inject every storage
-failure position during snapshot publication and check whole image/seed/boundary/
-cursor recovery, equivalent re-encoding, policy substitution at a fixed position,
-stale candidate suppression and late truncation. Quorum tests check
-that custody key sealing interrupts reads and rejects new writes. These checks
-run alongside upstream OpenRaft storage conformance and native mTLS regression.
-
-Metadata fixture receipts in low-level adapter tests exercise linkage and fault
-handling; they are not source administrative proofs. Physical power-loss tests,
-independent host failure domains and operator KMS policy custody remain deployment
-validation responsibilities.
+The current tranche adds actual encrypted source/restart, revoked application-key
+and credential-unavailable native startup, secure pinned-mTLS SDK rotation,
+three-voter quorum isolation, deterministic capacity and same-position snapshot
+substitution tests. [The final source-bound receipt](evidence/custody-rotation-20260907-b/verification.json)
+records 319 passing tests, two ignored opt-in external-provider tests and all strict
+gates passing against 152 unchanged inputs. The earlier failed candidate remains
+under `custody-rotation-20260907-a`; its results describe only its own inputs.

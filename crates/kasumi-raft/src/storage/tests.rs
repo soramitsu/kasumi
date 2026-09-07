@@ -77,6 +77,9 @@ async fn cancelled_log_future_retains_drain_lease_until_blocking_persistence_fin
 struct BytesBackend(Mutex<Vec<u8>>);
 
 impl StateMachineBackend for BytesBackend {
+    fn close_application(&self) {
+        self.0.lock().unwrap().clear();
+    }
     fn apply(
         &self,
         _: &crate::AppliedEntryContext,
@@ -119,6 +122,9 @@ async fn applied_metadata_does_not_block_runtime_while_snapshot_capture_holds_st
         release: Mutex<std::sync::mpsc::Receiver<()>>,
     }
     impl StateMachineBackend for PausedSnapshot {
+        fn close_application(&self) {
+            // This fixture retains no application state.
+        }
         fn apply(
             &self,
             _: &crate::AppliedEntryContext,
@@ -191,6 +197,7 @@ async fn applied_metadata_does_not_block_runtime_while_snapshot_capture_holds_st
 fn envelope(bytes: Vec<u8>) -> SnapshotEnvelope {
     SnapshotEnvelope {
         version: 1,
+        kind: SnapshotKind::Application,
         meta: SnapshotMeta {
             last_log_id: Some(LogId::new(openraft::CommittedLeaderId::new(1, 1), 3)),
             last_membership: StoredMembership::default(),

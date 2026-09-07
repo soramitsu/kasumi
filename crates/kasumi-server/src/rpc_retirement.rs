@@ -10,7 +10,7 @@ impl NativeAdmin {
             decode_json(&request.into_inner().request_json).map_err(status)?;
         let reference = request.reference().map_err(status)?;
         let database = self
-            .retirement_database(&context, &reference.source_incarnation)
+            .retirement_source(&context, &reference.source_incarnation)
             .await?;
         let resolution = database
             .abort_retirement(context.clone(), request)
@@ -46,54 +46,80 @@ impl NativeAdmin {
         ))
     }
 
-    async fn retirement_database(
+    async fn retirement_source(
         &self,
         context: &RequestContext,
         incarnation: &str,
-    ) -> Result<Arc<kasumi_engine::Database>, Status> {
-        validate_name(incarnation).map_err(status)?;
-        let database = if let Some(manager) = &self.management {
-            self.auth
-                .audit_result(
-                    context,
-                    manager
-                        .authorized_source_database(context, incarnation)
-                        .await,
-                )
-                .await
-                .map_err(status)?
-        } else {
-            self.database(context).await?
-        };
-        self.auth
+    ) -> Result<kasumi_engine::InstalledRetirementSource, Status> {
+        let source = self
+            .auth
             .audit_result(
                 context,
-                database
-                    .engine()
-                    .authorize(context, None, kasumi_types::Action::Admin),
+                self.registry.retirement_source(context, incarnation),
             )
             .await
             .map_err(status)?;
-        let result = if database
-            .engine()
-            .generation()
-            .map_err(status)?
-            .state
-            .incarnation
-            != incarnation
-        {
-            Err(kasumi_types::Error::new(
-                kasumi_types::ErrorCode::Conflict,
-                "source administrative route differs",
-            ))
-        } else {
-            Ok(())
-        };
         self.auth
-            .audit_result(context, result)
+            .audit_result(
+                context,
+                source
+                    .response_fence(context)
+                    .and_then(|fence| fence.check()),
+            )
             .await
             .map_err(status)?;
-        Ok(database)
+        Ok(source)
+    }
+
+    pub(super) async fn read_custody_rpc(
+        &self,
+        request: Request<RetirementReference>,
+    ) -> Result<Response<CustodyStatusResponse>, Status> {
+        let context = verified(&self.auth, &request).await?;
+        let reference: kasumi_types::RetirementRef =
+            decode_json(&request.into_inner().request_json).map_err(status)?;
+        let source = self
+            .retirement_source(&context, &reference.source_incarnation)
+            .await?;
+        let custody = source.retired().map_err(status)?;
+        let fence = custody.response_fence(&context).map_err(status)?;
+        let result = custody.status(&context, &reference).await.map_err(status)?;
+        let response = CustodyStatusResponse {
+            response_json: encode_json(&result).map_err(status)?,
+        };
+        Ok(Response::new(
+            release_response(&self.auth, &context, fence, response, false)
+                .await
+                .map_err(status)?,
+        ))
+    }
+    pub(super) async fn execute_custody_rpc(
+        &self,
+        request: Request<CustodyCommandRequest>,
+    ) -> Result<Response<CustodyReceiptResponse>, Status> {
+        let context = verified(&self.auth, &request).await?;
+        let request: kasumi_types::CustodyRequest =
+            decode_json(&request.into_inner().request_json).map_err(status)?;
+        let source = self
+            .retirement_source(&context, &request.retirement.source_incarnation)
+            .await?;
+        let custody = source.retired().map_err(status)?;
+        let result = custody
+            .execute(context.clone(), request)
+            .await
+            .map_err(status)?;
+        let fence = custody
+            .response_fence(&context)
+            .map_err(|error| status(mutation_release::<()>(Err(error)).unwrap_err()))?;
+        let response = CustodyReceiptResponse {
+            response_json: encode_json(&result)
+                .map_err(|error| status(mutation_release::<()>(Err(error)).unwrap_err()))?,
+        };
+        Ok(Response::new(
+            release_response(&self.auth, &context, fence, response, true)
+                .await
+                .map_err(status)?,
+        ))
     }
 
     pub(super) async fn retire_source_rpc(
@@ -104,7 +130,7 @@ impl NativeAdmin {
         let request: kasumi_types::RetireSourceRequest =
             decode_json(&request.into_inner().request_json).map_err(status)?;
         let database = self
-            .retirement_database(&context, &request.expected_source_incarnation)
+            .retirement_source(&context, &request.expected_source_incarnation)
             .await?;
         let proof = database
             .retire_source(context.clone(), request)
@@ -138,7 +164,7 @@ impl NativeAdmin {
         let reference: kasumi_types::RetirementRef =
             decode_json(&request.into_inner().request_json).map_err(status)?;
         let database = self
-            .retirement_database(&context, &reference.source_incarnation)
+            .retirement_source(&context, &reference.source_incarnation)
             .await?;
         let fence = self
             .auth
@@ -167,7 +193,7 @@ impl NativeAdmin {
         let reference: kasumi_types::RetirementRef =
             decode_json(&request.into_inner().request_json).map_err(status)?;
         let database = self
-            .retirement_database(&context, &reference.source_incarnation)
+            .retirement_source(&context, &reference.source_incarnation)
             .await?;
         let fence = self
             .auth

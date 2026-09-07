@@ -27,6 +27,8 @@ service KasumiData {
 // Bind only to the administrative listener. These methods still enforce the
 // current tenant/collection admin policy in consensus order.
 service KasumiAdmin {
+  rpc ReadCustody(RetirementReference) returns (CustodyStatusResponse);
+  rpc ExecuteCustody(CustodyCommandRequest) returns (CustodyReceiptResponse);
   rpc AbortRetirement(RetireSourceRequest) returns (RetirementStatusResponse);
   rpc RetireSource(RetireSourceRequest) returns (RetirementReceiptResponse);
   rpc RetirementStatus(RetirementReference) returns (RetirementStatusResponse);
@@ -104,3 +106,7 @@ message RetireSourceRequest { bytes request_json = 1; }
 message RetirementReference { bytes request_json = 1; }
 message RetirementReceiptResponse { bytes response_json = 1; }
 message RetirementStatusResponse { bytes response_json = 1; }
+
+message CustodyCommandRequest { bytes request_json = 1; }
+message CustodyReceiptResponse { bytes response_json = 1; }
+message CustodyStatusResponse { bytes response_json = 1; }

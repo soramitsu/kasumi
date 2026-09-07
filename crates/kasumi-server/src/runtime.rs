@@ -665,6 +665,12 @@ struct OpenedTenant {
     store: Arc<TenantStore>,
     bootstrap: Option<ReplicatedBootstrap>,
 }
+struct OpenedCustody {
+    tenant: String,
+    incarnation: String,
+    source: kasumi_engine::InstalledRetirementSource,
+    store: Arc<kasumi_store::CustodyStore>,
+}
 struct BoundListener {
     listener: TcpListener,
     tls: Arc<rustls::ServerConfig>,
@@ -729,6 +735,7 @@ pub struct NodeRuntime {
     config: RuntimeConfig,
     registry: DatabaseRegistry,
     tenants: Vec<OpenedTenant>,
+    custody_sources: Vec<OpenedCustody>,
     control: OpenedTenant,
     audit: Arc<SecurityAudit>,
     data_listeners: Vec<BoundListener>,
@@ -746,9 +753,10 @@ impl NodeRuntime {
 
     async fn open_using(
         config: RuntimeConfig,
-        credential: impl Fn(&str) -> Result<Zeroizing<String>>,
+        credential: impl Fn(&str) -> Result<Zeroizing<String>> + Send + Sync + 'static,
     ) -> Result<Self> {
         config.validate()?;
+        let credential = Arc::new(credential);
         let admission = kasumi_engine::admission::NodeAdmission::new(config.admission.clone())?;
         let auth = Authenticator::new(config.auth.clone())?;
         let registry = DatabaseRegistry::default();
@@ -762,7 +770,9 @@ impl NodeRuntime {
         let destinations = config
             .backup_destinations
             .iter()
-            .map(|(name, destination)| Ok((name.clone(), destination.open(&credential)?)))
+            .map(|(name, destination)| {
+                Ok((name.clone(), destination.open(&|name| credential(name))?))
+            })
             .collect::<Result<BTreeMap<_, _>>>()?;
         // Validate all TLS/credential material and bind all sockets before a
         // durable bootstrap can be created. No listener serves until `serve`.
@@ -771,17 +781,6 @@ impl NodeRuntime {
         let mcp_tls = kasumi_transport::server_config(&mcp_identity, ClientAuthentication::OAuth)?;
         let native_tls = config.native.load()?;
         let admin_tls = config.admin.load()?;
-        let mut providers = Vec::new();
-        for tenant in &config.tenants {
-            providers.push((
-                tenant
-                    .transit
-                    .provider_with_secret(credential(&tenant.transit.token_env)?)?,
-                tenant
-                    .custody_transit
-                    .provider_with_secret(credential(&tenant.custody_transit.token_env)?)?,
-            ));
-        }
         let control_provider = config
             .control
             .transit
@@ -866,6 +865,7 @@ impl NodeRuntime {
             config: config.clone(),
             registry: registry.clone(),
             tenants: Vec::new(),
+            custody_sources: Vec::new(),
             control,
             audit,
             data_listeners: Vec::new(),
@@ -884,7 +884,30 @@ impl NodeRuntime {
                 bootstrap: runtime.control.bootstrap.clone(),
                 descriptor: None,
             }];
-            for (tenant, (provider, custody_provider)) in config.tenants.iter().zip(providers) {
+            for tenant in &config.tenants {
+                let custody_provider = tenant.custody_transit.provider_with_secret(credential(&tenant.custody_transit.token_env)?)?;
+                if kasumi_store::CustodyStore::catalog_installed(&node, &tenant.tenant)? {
+                    let custody_store = kasumi_store::CustodyStore::open(node.clone(), tenant.tenant.clone(), custody_provider.clone()).await?;
+                    if let Some(control) = kasumi_raft::ControlLog::installed(custody_store.clone())? {
+                        let incarnation = control.group().strip_prefix(&format!("{}/", tenant.tenant)).context("installed source group differs")?.to_owned();
+                        if let Some(expected) = &tenant.incarnation { ensure!(*expected == incarnation, "configured source incarnation differs"); }
+                        let recovered = tokio::task::spawn_blocking(move || control.recover_retired()).await?;
+                        if !matches!(recovered, Ok(false)) {
+                            let source = if recovered.is_ok() {
+                                match open_retired_source(&config, custody_store.clone(), runtime.cluster.as_ref(), runtime.audit.clone(), admission.clone()).await {
+                                    Ok(custody) => kasumi_engine::InstalledRetirementSource::RetiredCustody(custody),
+                                    Err(_) => kasumi_engine::InstalledRetirementSource::RecoveringControl { tenant: tenant.tenant.clone(), source_incarnation: incarnation.clone() },
+                                }
+                            } else { kasumi_engine::InstalledRetirementSource::RecoveringControl { tenant: tenant.tenant.clone(), source_incarnation: incarnation.clone() } };
+                            registry.install_retirement_source(source.clone())?;
+                            runtime.custody_sources.push(OpenedCustody { tenant: tenant.tenant.clone(), incarnation, source, store: custody_store });
+                            continue;
+                        }
+                    }
+                }
+                // The application provider is constructed only after the closed
+                // installed control route has been excluded successfully.
+                let provider = tenant.transit.provider_with_secret(credential(&tenant.transit.token_env)?)?;
                 let stores = TenantStorageSet::open(
                     node.clone(),
                     tenant.tenant.clone(),
@@ -918,6 +941,17 @@ impl NodeRuntime {
                 });
                 runtime.tenants.push(opened);
             }
+            let provider_factories = config.tenants.iter().map(|tenant| {
+                let application = tenant.transit.clone();
+                let custody = tenant.custody_transit.clone();
+                let credential = credential.clone();
+                let factory: crate::administration::ProviderFactory = Arc::new(move || {
+                    let application: Arc<dyn kasumi_store::KeyProvider> = application.provider_with_secret(credential(&application.token_env)?)?;
+                    let custody: Arc<dyn kasumi_store::KeyProvider> = custody.provider_with_secret(credential(&custody.token_env)?)?;
+                    Ok((application, custody))
+                });
+                (tenant.tenant.clone(), factory)
+            }).collect();
             let administration = crate::administration::Administration::new(
                 config.clone(),
                 registry.clone(),
@@ -927,6 +961,7 @@ impl NodeRuntime {
                 managed,
                 destinations,
                 admission.clone(),
+                provider_factories,
             )?;
             if let Some(network) = &runtime.cluster {
                 let provider: Arc<dyn crate::cluster::RestoreReadinessProvider> =
@@ -1220,6 +1255,17 @@ impl NodeRuntime {
                 ))
             })
             .collect::<Result<_>>()?;
+        let mut tenants: BTreeMap<String, TenantRoute> = tenants;
+        for source in &self.custody_sources {
+            tenants.insert(
+                source.tenant.clone(),
+                TenantRoute {
+                    incarnation: source.incarnation.clone(),
+                    mode: mode.clone(),
+                    voters: voters.clone(),
+                },
+            );
+        }
         let topology = ControlTopology { nodes, tenants };
         topology.validate()?;
         Ok(topology)
@@ -1322,6 +1368,21 @@ impl NodeRuntime {
             }
             if let Err(error) = tenant.database.shutdown().await {
                 failure.get_or_insert(error);
+            }
+        }
+        for source in &self.custody_sources {
+            if let Some(cluster) = &self.cluster {
+                let _ =
+                    cluster.unregister_group(&format!("{}/{}", source.tenant, source.incarnation));
+            }
+            if let kasumi_engine::InstalledRetirementSource::RetiredCustody(custody) =
+                &source.source
+            {
+                if let Err(error) = custody.shutdown().await {
+                    failure.get_or_insert(error);
+                }
+            } else {
+                source.store.store().shutdown().await;
             }
         }
         self.audit.shutdown().await;
@@ -2411,6 +2472,8 @@ mod lifecycle_tests {
         .unwrap();
     }
 
+    include!("runtime_custody_tests.rs");
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn local_runtime_opens_real_transit_tls_publishes_control_serves_and_reopens_durable_state()
      {
@@ -2706,6 +2769,9 @@ mod lifecycle_tests {
                         .await
                         .is_err()
                 );
+                let old_source_fence = manager
+                    .response_fence(&context, &M::Status { incarnation: None })
+                    .unwrap();
                 manager
                     .execute(
                         context.clone(),
@@ -2725,10 +2791,8 @@ mod lifecycle_tests {
                     incarnation: restored,
                     retirement: retirement_request.reference().unwrap(),
                 };
+                manager.reconcile().await.unwrap();
                 let activation_fence = manager.response_fence(&context, &activation).unwrap();
-                let old_source_fence = manager
-                    .response_fence(&context, &M::Status { incarnation: None })
-                    .unwrap();
                 let activated = manager.execute(context.clone(), activation).await.unwrap();
                 let _encoded = serde_json::to_vec(&activated).unwrap();
                 activation_fence.check_release().unwrap();
@@ -3576,18 +3640,19 @@ mod lifecycle_tests {
         .unwrap();
         tokio::time::timeout(Duration::from_secs(20), async {
             loop {
-                for (manager, database) in managers.iter().zip(&databases) {
-                    let metrics = database.raft_group().raft().metrics().borrow().clone();
-                    if metrics.current_leader == Some(metrics.id)
-                        && manager
-                            .execute(
-                                context.clone(),
-                                M::RetireSource {
-                                    request: retirement_request.clone(),
-                                },
-                            )
-                            .await
-                            .is_ok()
+                for manager in &managers {
+                    // The original group can hand off to closed custody after
+                    // an uncertain acknowledgement; retry through installed
+                    // authority instead of polling the discarded warm handle.
+                    if manager
+                        .execute(
+                            context.clone(),
+                            M::RetireSource {
+                                request: retirement_request.clone(),
+                            },
+                        )
+                        .await
+                        .is_ok()
                     {
                         return;
                     }
@@ -3598,10 +3663,14 @@ mod lifecycle_tests {
         .await
         .unwrap();
         tokio::time::timeout(Duration::from_secs(20), async {
-            while !databases
-                .iter()
-                .all(|db| db.engine().generation().unwrap().state.retired)
-            {
+            while !databases.iter().all(|db| {
+                kasumi_raft::ControlLog::installed(
+                    db.raft_group().storage_domains().custody().clone(),
+                )
+                .ok()
+                .flatten()
+                .is_some_and(|control| control.is_retired().unwrap_or(false))
+            }) {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })
@@ -3621,13 +3690,11 @@ mod lifecycle_tests {
             while !registries.iter().all(|registry| {
                 registry
                     .database(&context)
-                    .unwrap()
-                    .engine()
-                    .generation()
-                    .unwrap()
-                    .state
-                    .incarnation
-                    == incarnation.to_string()
+                    .ok()
+                    .and_then(|database| database.engine().generation().ok())
+                    .is_some_and(|generation| {
+                        generation.state.incarnation == incarnation.to_string()
+                    })
             }) {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
@@ -3918,5 +3985,84 @@ mod lifecycle_tests {
         }
         mock_stop.send_replace(true);
         mock.await.unwrap().unwrap();
+    }
+}
+
+/// Open only the installed source's original consensus identity. The persisted
+/// deployment binding prevents configuration from downgrading replication.
+pub(crate) async fn open_retired_source(
+    config: &RuntimeConfig,
+    store: Arc<kasumi_store::CustodyStore>,
+    cluster: Option<&Arc<ClusterNetwork>>,
+    audit: Arc<SecurityAudit>,
+    admission: Arc<kasumi_engine::admission::NodeAdmission>,
+) -> Result<Arc<kasumi_engine::RetiredCustody>> {
+    let control = kasumi_raft::ControlLog::installed(store.clone())?
+        .context("installed custody consensus absent")?;
+    let group = control.group().to_owned();
+    let id = control.node_id();
+    let binding = store
+        .store()
+        .get("engine.deployment", b"mode")?
+        .context("custody deployment binding absent")?;
+    if let Some(replication) = &config.replication {
+        let (mode, bootstrap): (String, ReplicatedBootstrap) = serde_json::from_slice(&binding)?;
+        bootstrap.validate()?;
+        ensure!(
+            mode == "replicated"
+                && id == replication.node_id
+                && group == format!("{}/{}", store.binding().tenant(), bootstrap.incarnation),
+            "custody deployment differs from installed replication"
+        );
+        let network = cluster.context("custody peer transport absent")?;
+        let custody = kasumi_engine::RetiredCustody::open_replicated(
+            store,
+            id,
+            group.clone(),
+            network.clone(),
+            kasumi_raft::server_config(),
+            admission,
+            audit,
+        )
+        .await?;
+        if let Err(error) = network.register_group(
+            group,
+            custody
+                .raft_group()
+                .context("closed custody group absent")?
+                .raft()
+                .clone(),
+            replication.peers.iter().map(|peer| peer.node_id).collect(),
+        ) {
+            let _ = custody.shutdown().await;
+            return Err(error);
+        }
+        Ok(custody)
+    } else {
+        ensure!(
+            binding == b"local-v1" && id == 1,
+            "replicated custody cannot use local transport"
+        );
+        let router = Arc::new(kasumi_raft::InProcessRouter::default());
+        let custody = kasumi_engine::RetiredCustody::open_replicated(
+            store,
+            id,
+            group.clone(),
+            router.clone(),
+            kasumi_raft::Config::default(),
+            admission,
+            audit,
+        )
+        .await?;
+        router.register(
+            group,
+            id,
+            custody
+                .raft_group()
+                .context("closed custody group absent")?
+                .raft()
+                .clone(),
+        );
+        Ok(custody)
     }
 }

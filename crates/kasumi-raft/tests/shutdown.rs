@@ -22,6 +22,9 @@ struct PausedSnapshot {
 }
 
 impl StateMachineBackend for PausedSnapshot {
+    fn close_application(&self) {
+        self.inner.close_application();
+    }
     fn apply(
         &self,
         position: &kasumi_raft::AppliedEntryContext,

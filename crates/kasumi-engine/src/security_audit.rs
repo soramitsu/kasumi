@@ -29,6 +29,13 @@ pub enum SecurityEventKind {
     Membership,
     Backup,
     Restore,
+    RetirementObserved {
+        source_incarnation: String,
+        retirement_id: String,
+        request_digest: String,
+        source_revision: u64,
+        custody_policy_epoch: u64,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -202,6 +209,22 @@ impl SecurityAudit {
         .flatten()
         {
             kasumi_types::validate_name(value)?;
+        }
+        if let SecurityEventKind::RetirementObserved {
+            source_incarnation,
+            retirement_id,
+            request_digest,
+            source_revision,
+            custody_policy_epoch,
+        } = &event.kind
+        {
+            kasumi_types::validate_name(source_incarnation)?;
+            kasumi_types::validate_name(retirement_id)?;
+            kasumi_types::validate_sha256(request_digest)?;
+            ensure!(
+                *source_revision > 0 && *custody_policy_epoch > 0,
+                "invalid retirement observation position"
+            );
         }
         if let Some(pin) = transport
             .as_ref()

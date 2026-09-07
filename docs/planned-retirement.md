@@ -55,13 +55,13 @@ Quorum, authority or response uncertainty produces no stopped proof. Callers mus
 
 Permanent outcomes consume required `Limits.max_retirements` (default 4096, maximum 100,000) and exact snapshot byte accounting. They do not expire or enter application history archives. Identity quota is checked before backup I/O and again in ordered execution. Required audit/outcome storage must fit before any fence is published.
 
-After retirement, data reads/writes and `Suspend(false)` remain sealed. Authenticated policy and limit maintenance can rotate administrative custody without reopening data or modifying the original retirement binding. The later independent serving-lease mechanism must retain a protected retirement-attestation custody path; it must not turn source data serving back on to recover an uncertain acknowledgement.
+After retirement, all application commands, policy/limits and `Suspend(false)` remain sealed. The independently keyed closed custody reducer can rotate only its current global administrators and separate bounded metadata budgets; see [the custody contract](custody-control.md). It cannot reopen data or modify the original retirement binding. Native recovery can release current-authority retirement proofs without constructing the old application provider. Independent serving-lease authority remains required; this custody path does not issue serving permission.
 
 ## Restore and deployment boundaries
 
 Restores retain the exact authenticated source `FullBackupCheckpoint` in `TenantState.restored_from`, independently of the transient pending-restore flag. Completion cannot erase that identity. Local managed activation now requires a fresh source retirement proof whose target and checkpoint exactly match the completed suspended target.
 
-The local Administration activation path still requires both managed generations to be available to that control process. Native source proofs can be consumed by a remote executor, but these APIs alone do not complete cross-host control-plane activation or unavailable-source recovery. Deployment integration must provide the independently authenticated target/control authority path. External key custody, disaster-recovery capacity, RPO/RTO certification and operator signoff remain separate.
+The local Administration activation path requires the exact installed source custody route and managed target to be available to that control process. It can load an already control-authorized replacement generation independently of the retired source's application handle. Native source proofs can be consumed by a remote executor, but these APIs alone do not complete cross-host control-plane activation or unavailable-source recovery. Deployment integration must provide the independently authenticated target/control authority path. External key custody, disaster-recovery capacity, RPO/RTO certification and operator signoff remain separate.
 
 ## Verification
 

@@ -57,6 +57,9 @@ pub struct TenantEngine {
 }
 
 impl kasumi_raft::StateMachineBackend for TenantEngine {
+    fn close_application(&self) {
+        self.seal();
+    }
     fn apply(
         &self,
         position: &kasumi_raft::AppliedEntryContext,
@@ -69,6 +72,7 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
             "prepared retirement is missing its custody seed"
         );
         if let Some(seed) = &position.retirement_seed {
+            seed.reserve_success_capacity()?;
             let expected = kasumi_raft::RetirementLogSeed::prepare(
                 &command,
                 self.retirement_replay_state(&command)?,
@@ -398,6 +402,12 @@ impl TenantEngine {
                 ErrorCode::Corruption,
                 "applied revision must increase",
             ));
+        }
+        if previous.state.retired {
+            return Ok(Err(Error::new(
+                ErrorCode::Sealed,
+                "application state is permanently frozen after retirement",
+            )));
         }
         let mut next = previous.state.clone();
         let mut receipt_expiry = previous.receipt_expiry.clone();

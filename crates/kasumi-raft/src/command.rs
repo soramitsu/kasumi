@@ -168,6 +168,7 @@ impl RetirementLogSeed {
         revision: u64,
         receipt: &kasumi_types::RetirementReceipt,
     ) -> Result<()> {
+        self.reserve_success_capacity()?;
         receipt.validate()?;
         self.authorization.check_admitted_at(self.admitted_at_ms)?;
         ensure!(
@@ -193,6 +194,122 @@ impl RetirementLogSeed {
             "applied retirement outcome differs from committed seed"
         );
         Ok(())
+    }
+
+    fn successful_candidate(&self) -> bool {
+        self.authorization
+            .check_admitted_at(self.admitted_at_ms)
+            .is_ok()
+            && self.scopes.contains(&kasumi_types::Action::Admin)
+            && self.source.administrators.contains(&self.principal)
+            && !self.source.retired
+            && !self.source.pending_restore
+            && self.source.existing_identity.is_none()
+            && self.source.retirement_count < self.source.max_retirements
+            && self.source.audit_count < self.source.max_audit_records
+            && self.source.policy_epoch < u64::MAX
+            && self.admitted_at_ms <= self.request.not_after_ms
+            && self.request.checkpoint.revision <= self.source.previous_revision
+            && self.observation.revision == self.source.previous_revision
+            && self.observation.closure_digest == self.verified_closure_digest
+    }
+
+    fn receipt_at(&self, revision: u64) -> kasumi_types::RetirementReceipt {
+        kasumi_types::RetirementReceipt {
+            tenant: self.source.tenant.clone(),
+            source_incarnation: self.source.incarnation.clone(),
+            target_incarnation: self.request.target_incarnation.clone(),
+            retirement_id: self.request.retirement_id.clone(),
+            principal: self.principal.clone(),
+            admitted_at_ms: self.admitted_at_ms,
+            request_digest: self
+                .request
+                .reference()
+                .expect("validated request")
+                .request_digest,
+            checkpoint: self.request.checkpoint.clone(),
+            revision,
+            policy_epoch: self.source.policy_epoch.saturating_add(1),
+            closure_digest: self.verified_closure_digest.clone(),
+        }
+    }
+
+    /// The serialized leader reserves completion before proposing a potentially
+    /// successful retirement. Replicas recompute this from the exact same
+    /// source-generation seed. No future index width or post-fence application
+    /// quota consumer can make a committed positive seed unmaterializable.
+    pub fn reserve_success_capacity(&self) -> kasumi_types::Result<()> {
+        if !self.successful_candidate() {
+            return Ok(());
+        }
+        let record = StoredRetirement {
+            principal: self.principal.clone(),
+            request: self.request.clone(),
+            request_digest: self.request.reference()?.request_digest,
+            accepted_revision: u64::MAX,
+            outcome: Ok(self.receipt_at(u64::MAX)),
+        };
+        let audit = kasumi_types::AuditEvent {
+            event_id: format!("{}:{}", self.source.incarnation, u64::MAX),
+            principal: self.principal.clone(),
+            action: "retire".into(),
+            request_id: self.request_id.clone(),
+            timestamp_ms: self.admitted_at_ms,
+            data_revision: Some(u64::MAX),
+            outcome: "committed".into(),
+            collection: None,
+        };
+        let record_bytes = serde_json::to_vec(&record)
+            .map_err(|_| {
+                kasumi_types::Error::new(
+                    kasumi_types::ErrorCode::Corruption,
+                    "retirement reservation encoding failed",
+                )
+            })?
+            .len();
+        let audit_bytes = serde_json::to_vec(&audit)
+            .map_err(|_| {
+                kasumi_types::Error::new(
+                    kasumi_types::ErrorCode::Corruption,
+                    "retirement reservation encoding failed",
+                )
+            })?
+            .len();
+        // The only other changes are a 64-byte identity map key, commas,
+        // retired/suspended flags and decimal revision/policy/accounting scalars.
+        // 1024 bytes covers their complete worst-case growth without needing
+        // application collections, definitions, policy or document bodies.
+        let required = self
+            .source
+            .snapshot_bytes
+            .checked_add(record_bytes)
+            .and_then(|n| n.checked_add(audit_bytes))
+            .and_then(|n| n.checked_add(1024))
+            .and_then(|n| n.checked_add(self.source.staged_outcome_headroom));
+        if required.is_none_or(|bytes| bytes > self.source.max_snapshot_bytes) {
+            return Err(kasumi_types::Error::new(
+                kasumi_types::ErrorCode::QuotaExceeded,
+                "retirement completion capacity unavailable",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Deterministic success derivation for an independently validated committed
+    /// seed. Commitment and exact installed log coverage are checked separately;
+    /// this method alone is neither a current-authority proof nor a mode switch.
+    pub(crate) fn recovered_success(
+        &self,
+        revision: u64,
+    ) -> Result<Option<kasumi_types::RetirementReceipt>> {
+        self.validate()?;
+        if !self.successful_candidate() || revision <= self.source.previous_revision {
+            return Ok(None);
+        }
+        self.reserve_success_capacity()?;
+        let receipt = self.receipt_at(revision);
+        self.validate_receipt(revision, &receipt)?;
+        Ok(Some(receipt))
     }
     pub fn command_sha256(&self) -> &str {
         &self.command_sha256
@@ -239,39 +356,48 @@ impl RetirementLogSeed {
 /// does not support serde's internally tagged authorization enum.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RaftCommand {
-    application: Vec<u8>,
-    retirement_seed: Option<Vec<u8>>,
+pub enum RaftCommand {
+    Application(Vec<u8>),
+    Retirement { application: Vec<u8>, seed: Vec<u8> },
+    Custody(Vec<u8>),
 }
 impl RaftCommand {
     pub fn application(bytes: Vec<u8>) -> Self {
-        Self {
-            application: bytes,
-            retirement_seed: None,
-        }
+        Self::Application(bytes)
     }
     pub fn retirement(bytes: Vec<u8>, seed: RetirementLogSeed) -> Result<Self> {
         seed.check_command(&bytes)?;
-        Ok(Self {
+        Ok(Self::Retirement {
             application: bytes,
-            retirement_seed: Some(seed.encoded()?),
+            seed: seed.encoded()?,
         })
     }
+    pub fn custody(command: &crate::CustodyCommand) -> Result<Self> {
+        Ok(Self::Custody(command.encoded()?))
+    }
     pub fn bytes(&self) -> &[u8] {
-        &self.application
+        match self {
+            Self::Application(bytes) | Self::Custody(bytes) => bytes,
+            Self::Retirement { application, .. } => application,
+        }
+    }
+    pub fn custody_command(&self) -> Result<Option<crate::CustodyCommand>> {
+        match self {
+            Self::Custody(bytes) => Ok(Some(crate::CustodyCommand::decode(bytes)?)),
+            _ => Ok(None),
+        }
     }
     pub fn seed(&self) -> Result<Option<RetirementLogSeed>> {
-        self.retirement_seed
-            .as_ref()
-            .map(|bytes| {
-                let seed = RetirementLogSeed::decode(bytes)?;
-                seed.check_command(&self.application)?;
-                Ok(seed)
-            })
-            .transpose()
+        match self {
+            Self::Retirement { application, seed } => {
+                let seed = RetirementLogSeed::decode(seed)?;
+                seed.check_command(application)?;
+                Ok(Some(seed))
+            }
+            _ => Ok(None),
+        }
     }
     pub(crate) fn seed_bytes(&self) -> Result<Option<Vec<u8>>> {
-        self.seed()?;
-        Ok(self.retirement_seed.clone())
+        self.seed()?.map(|seed| seed.encoded()).transpose()
     }
 }

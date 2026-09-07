@@ -28,6 +28,10 @@ impl Backend {
 }
 
 impl StateMachineBackend for Backend {
+    fn close_application(&self) {
+        self.data.lock().unwrap().clear();
+        self.fail_apply.store(true, Ordering::Release);
+    }
     fn apply(
         &self,
         position: &kasumi_raft::AppliedEntryContext,

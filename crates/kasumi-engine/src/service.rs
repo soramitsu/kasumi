@@ -10,14 +10,18 @@ use sha2::{Digest, Sha256};
 mod backup_checkpoints;
 #[path = "change_feed.rs"]
 mod change_feed;
+#[path = "custody_service.rs"]
+mod custody_service;
 #[path = "full_backup.rs"]
 mod full_backup;
 #[path = "history_export.rs"]
 mod history_export;
 #[path = "history_reads.rs"]
 mod history_reads;
+pub use custody_service::{CustodyResponseFence, RetiredCustody};
 #[path = "retirement_service.rs"]
 mod retirement_service;
+pub use retirement_service::RetirementResponseFence;
 #[path = "schema_service.rs"]
 mod schema_service;
 #[path = "snapshot_leases.rs"]
@@ -50,7 +54,7 @@ struct ProposalWork {
     group: RaftGroup,
     admission_gate: Arc<tokio::sync::Mutex<()>>,
     clock: Arc<dyn CommandClock>,
-    schema_engine: Option<Arc<TenantEngine>>,
+    source_engine: Arc<TenantEngine>,
     admission: Arc<NodeAdmission>,
     _reservation: Reservation,
     _registration: Arc<WorkRegistration>,
@@ -65,9 +69,14 @@ impl ProposalWork {
         if let Err(error) = command.context.authorization.check_live() {
             return Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(error))?);
         }
-        if let (Some(engine), Operation::ActivateSchema(request)) =
-            (&self.schema_engine, &command.operation)
-        {
+        if self.source_engine.generation()?.state.retired {
+            return Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(Error::new(
+                ErrorCode::Sealed,
+                "application commands are frozen after retirement",
+            )))?);
+        }
+        if let Operation::ActivateSchema(request) = &command.operation {
+            let engine = &self.source_engine;
             let admitted = (|| -> Result<()> {
                 let generation = engine.generation()?;
                 crate::state::schema::authorize(&generation.state, &command.context, request)?;
@@ -79,9 +88,8 @@ impl ProposalWork {
                 return Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(error))?);
             }
         }
-        if let (Some(engine), Operation::RetireSource(prepared)) =
-            (&self.schema_engine, &mut command.operation)
-        {
+        if let Operation::RetireSource(prepared) = &mut command.operation {
+            let engine = &self.source_engine;
             let generation = engine.generation()?;
             let admitted = crate::state::retirement::admit(
                 &generation.state,
@@ -143,14 +151,14 @@ impl ProposalWork {
         );
         if matches!(&command.operation, Operation::RetireSource(prepared) if prepared.observation.is_some())
         {
-            let engine = self
-                .schema_engine
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("retirement source engine absent"))?;
+            let engine = &self.source_engine;
             let seed = kasumi_raft::RetirementLogSeed::prepare(
                 &command,
                 engine.retirement_replay_state(&command)?,
             )?;
+            if let Err(error) = seed.reserve_success_capacity() {
+                return Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(error))?);
+            }
             self.group.write_retirement(bytes, seed).await
         } else {
             self.group.write(bytes).await
@@ -325,6 +333,7 @@ pub struct Database {
     audit_work: Arc<WorkFence>,
     embedded: bool,
     closing: AtomicBool,
+    custody_detached: AtomicBool,
     shutdown_gate: tokio::sync::Mutex<()>,
     seal_monitor: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     proposal_gate: Arc<tokio::sync::Mutex<()>>,
@@ -512,6 +521,7 @@ impl Database {
             audit_work: Arc::new(WorkFence::default()),
             embedded,
             closing: AtomicBool::new(false),
+            custody_detached: AtomicBool::new(false),
             shutdown_gate: tokio::sync::Mutex::new(()),
             seal_monitor: tokio::sync::Mutex::new(None),
             proposal_gate: Arc::new(tokio::sync::Mutex::new(())),
@@ -546,7 +556,29 @@ impl Database {
     /// Retained application handles still own this database/store; drop them
     /// before reopening the same node file. A canceled shutdown can be awaited again.
     pub async fn shutdown(&self) -> anyhow::Result<()> {
+        self.shutdown_inner(false).await
+    }
+
+    /// Trusted installed lifecycle transition. The source is already permanently
+    /// retired; this neither authorizes a proof nor reopens an application route.
+    /// Retained old Database handles cannot later seal the new custody owner.
+    pub async fn detach_retired_custody(&self) -> anyhow::Result<Arc<kasumi_store::CustodyStore>> {
+        self.shutdown_inner(true).await?;
+        Ok(self.group.storage_domains().custody().clone())
+    }
+
+    async fn shutdown_inner(&self, detach_custody: bool) -> anyhow::Result<()> {
         let _shutdown = self.shutdown_gate.lock().await;
+        if detach_custody && !self.custody_detached.load(Ordering::Acquire) {
+            let control =
+                kasumi_raft::ControlLog::installed(self.group.storage_domains().custody().clone())?
+                    .ok_or_else(|| anyhow::anyhow!("installed custody identity absent"))?;
+            anyhow::ensure!(
+                control.recover_retired()?,
+                "source is not permanently retired"
+            );
+            self.custody_detached.store(true, Ordering::Release);
+        }
         self.closing.store(true, Ordering::Release);
         self.work.seal();
         self.audit_work.seal();
@@ -562,12 +594,14 @@ impl Database {
         self.work.drain().await;
         self.audit_work.drain().await;
         self.store.shutdown().await;
-        self.group
-            .storage_domains()
-            .custody()
-            .store()
-            .shutdown()
-            .await;
+        if !self.custody_detached.load(Ordering::Acquire) {
+            self.group
+                .storage_domains()
+                .custody()
+                .store()
+                .shutdown()
+                .await;
+        }
         self.engine.seal();
         self.snapshot_leases
             .lock()
@@ -1108,11 +1142,7 @@ impl Database {
         let registration = self.work.begin(QueryCancellation::default())?;
         let proposal = tokio::spawn(
             ProposalWork {
-                schema_engine: matches!(
-                    command.operation,
-                    Operation::ActivateSchema(_) | Operation::RetireSource(_)
-                )
-                .then(|| self.engine.clone()),
+                source_engine: self.engine.clone(),
                 admission: self.admission().clone(),
                 group: self.group.clone(),
                 admission_gate: self.proposal_gate.clone(),
@@ -1922,6 +1952,7 @@ mod tests {
     include!("service_schema_tests.rs");
     include!("service_credential_tests.rs");
     include!("service_retirement_tests.rs");
+    include!("service_custody_tests.rs");
     use super::*;
     use crate::admission::AdmissionConfig;
     use kasumi_store::{NodeStore, test_utils::LocalKeyProvider};

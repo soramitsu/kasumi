@@ -45,6 +45,57 @@ fn observed_status(
     Ok(status)
 }
 impl KasumiAdminClient {
+    pub async fn read_custody(
+        &mut self,
+        bearer: &str,
+        reference: &RetirementRef,
+    ) -> Result<kasumi_types::CustodyStatus, ClientError> {
+        reference.validate().map_err(invalid)?;
+        let response = self
+            .inner
+            .read_custody(authorized(
+                bearer,
+                proto::RetirementReference {
+                    request_json: encode(reference)?,
+                },
+            )?)
+            .await?
+            .into_inner();
+        let status: kasumi_types::CustodyStatus = serde_json::from_slice(&response.response_json)?;
+        if status.retirement != *reference || status.policy_epoch == 0 || status.revision == 0 {
+            return Err(invalid("custody response identity differs"));
+        }
+        status.limits.validate().map_err(invalid)?;
+        kasumi_types::validate_custody_administrators(&status.administrators).map_err(invalid)?;
+        Ok(status)
+    }
+    pub async fn execute_custody(
+        &mut self,
+        bearer: &str,
+        request: &kasumi_types::CustodyRequest,
+    ) -> Result<kasumi_types::CustodyReceipt, ClientError> {
+        request.validate().map_err(invalid)?;
+        let response = self
+            .inner
+            .execute_custody(authorized(
+                bearer,
+                proto::CustodyCommandRequest {
+                    request_json: encode(request)?,
+                },
+            )?)
+            .await?
+            .into_inner();
+        let receipt: kasumi_types::CustodyReceipt =
+            serde_json::from_slice(&response.response_json)?;
+        receipt.validate().map_err(invalid)?;
+        if receipt.command_id != request.command_id
+            || receipt.request_digest != request.digest().map_err(invalid)?
+        {
+            return Err(invalid("custody receipt identity differs"));
+        }
+        Ok(receipt)
+    }
+
     /// Source-incarnation-scoped permanent command. A repeated exact request
     /// observes the original actor/outcome under current Admin; it never renews
     /// serving authority or advances the retirement epoch again.

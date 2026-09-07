@@ -20,6 +20,9 @@ use tokio::{net::TcpListener, sync::watch};
 #[derive(Default)]
 struct Backend(Mutex<BTreeMap<u64, Vec<u8>>>);
 impl StateMachineBackend for Backend {
+    fn close_application(&self) {
+        self.0.lock().unwrap().clear();
+    }
     fn apply(
         &self,
         position: &kasumi_raft::AppliedEntryContext,

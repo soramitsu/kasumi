@@ -9,6 +9,8 @@ mod history;
 pub use history::*;
 mod retirement;
 pub use retirement::*;
+mod custody;
+pub use custody::*;
 mod schema;
 pub use schema::*;
 use serde::{Deserialize, Serialize};

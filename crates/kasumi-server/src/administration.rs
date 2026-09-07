@@ -224,6 +224,9 @@ pub(crate) struct GenerationDescriptor {
     pub bootstrap_sha256: String,
 }
 
+pub(crate) type ProviderFactory =
+    Arc<dyn Fn() -> Result<(Arc<dyn KeyProvider>, Arc<dyn KeyProvider>)> + Send + Sync>;
+
 pub struct Administration {
     pub(crate) config: RuntimeConfig,
     registry: DatabaseRegistry,
@@ -234,10 +237,12 @@ pub struct Administration {
     destinations: BTreeMap<String, Arc<dyn BackupDestination>>,
     // Includes active and prepared generations, keyed by immutable incarnation.
     generations: RwLock<BTreeMap<(String, String), ManagedTenant>>,
+    custody_generations: RwLock<BTreeMap<(String, String), Arc<kasumi_engine::RetiredCustody>>>,
     active: RwLock<BTreeMap<String, String>>,
     enabled: RwLock<BTreeSet<String>>,
     gate: tokio::sync::Mutex<()>,
     admission: Arc<kasumi_engine::admission::NodeAdmission>,
+    provider_factories: BTreeMap<String, ProviderFactory>,
 }
 /// Holds the exact source/target handles across adapter serialization. Activation
 /// deliberately retires the source, so its acknowledgement is fenced by the new
@@ -248,6 +253,7 @@ pub struct ManagementResponseFence {
     source: Option<ManagedTenant>,
     target: Option<Uuid>,
     provisioning: Option<ManagedTenant>,
+    retirement_source: Option<String>,
 }
 impl ManagementResponseFence {
     pub fn check_release(&self) -> kasumi_types::Result<()> {
@@ -266,6 +272,13 @@ impl ManagementResponseFence {
         };
         if let Some(source) = &self.source {
             check(source)?;
+        }
+        if let Some(incarnation) = &self.retirement_source {
+            self.manager
+                .registry
+                .retirement_source(&self.context, incarnation)?
+                .response_fence(&self.context)?
+                .check()?;
         }
         if let Some(incarnation) = self.target {
             let target = self
@@ -339,48 +352,28 @@ impl Administration {
                 })
         })
     }
-    /// Exact configured-generation administrative custody. This never selects
-    /// a caller URL or opens an arbitrary historical store.
-    pub async fn authorized_source_database(
-        &self,
-        context: &RequestContext,
-        incarnation: &str,
-    ) -> kasumi_types::Result<Arc<Database>> {
-        let result: Result<Arc<Database>> = async {
-            ensure!(
-                context.tenant != crate::runtime::SECURITY_TENANT,
-                "security tenant has no source route"
-            );
-            kasumi_types::validate_name(incarnation)?;
-            let source = self.generation(&context.tenant, incarnation)?;
-            self.authorized(&source, context, true).await?;
-            Ok(source.database)
-        }
-        .await;
-        result.map_err(|error| {
-            error
-                .downcast_ref::<kasumi_types::Error>()
-                .cloned()
-                .unwrap_or_else(|| {
-                    kasumi_types::Error::new(
-                        kasumi_types::ErrorCode::Unavailable,
-                        "source administrative custody unavailable",
-                    )
-                })
-        })
-    }
     pub fn response_fence(
         self: &Arc<Self>,
         context: &RequestContext,
         command: &ManagementCommand,
     ) -> kasumi_types::Result<ManagementResponseFence> {
-        let source = self.current(&context.tenant).map_err(|_| {
-            kasumi_types::Error::new(kasumi_types::ErrorCode::Forbidden, "tenant access denied")
-        })?;
-        source
-            .database
-            .engine()
-            .authorize(context, None, Action::Admin)?;
+        let retirement_source = lifecycle_source(command).map(str::to_owned);
+        let source = if let Some(incarnation) = &retirement_source {
+            self.registry
+                .retirement_source(context, incarnation)?
+                .response_fence(context)?
+                .check()?;
+            None
+        } else {
+            let source = self.current(&context.tenant).map_err(|_| {
+                kasumi_types::Error::new(kasumi_types::ErrorCode::Forbidden, "tenant access denied")
+            })?;
+            source
+                .database
+                .engine()
+                .authorize(context, None, Action::Admin)?;
+            Some(source)
+        };
         let target = match command {
             ManagementCommand::Status { incarnation } => *incarnation,
             ManagementCommand::PrepareRestore { incarnation, .. }
@@ -413,8 +406,8 @@ impl Administration {
             provisioning,
             manager: self.clone(),
             context: context.clone(),
-            source: (!matches!(command, ManagementCommand::ActivateRestore { .. }))
-                .then_some(source),
+            source,
+            retirement_source,
             target,
         })
     }
@@ -429,10 +422,14 @@ impl Administration {
         tenants: Vec<ManagedTenant>,
         destinations: BTreeMap<String, Arc<dyn BackupDestination>>,
         admission: Arc<kasumi_engine::admission::NodeAdmission>,
+        provider_factories: BTreeMap<String, ProviderFactory>,
     ) -> Result<Arc<Self>> {
         let mut generations = BTreeMap::new();
         let mut active = BTreeMap::new();
         for tenant in tenants {
+            registry.install_retirement_source(
+                kasumi_engine::InstalledRetirementSource::Serving(tenant.database.clone()),
+            )?;
             for (alias, destination) in &destinations {
                 tenant
                     .database
@@ -454,10 +451,12 @@ impl Administration {
             cluster,
             destinations,
             generations: RwLock::new(generations),
+            custody_generations: RwLock::new(BTreeMap::new()),
             active: RwLock::new(active),
             enabled: RwLock::new(BTreeSet::from([crate::runtime::CONTROL_TENANT.into()])),
             gate: tokio::sync::Mutex::new(()),
             admission,
+            provider_factories,
         }))
     }
     fn current(&self, tenant: &str) -> Result<ManagedTenant> {
@@ -559,9 +558,17 @@ impl Administration {
         let _guard = self.gate.lock().await;
         let mut admitted = false;
         let mutation = !matches!(command, ManagementCommand::Status { .. });
+        let retirement_source = lifecycle_source(&command).map(str::to_owned);
         let mut result: Result<serde_json::Value> = async {
-            let source = self.current(&context.tenant)?;
-            self.authorized(&source, &context, false).await?;
+            if let Some(incarnation) = &retirement_source {
+                self.registry
+                    .retirement_source(&context, incarnation)?
+                    .response_fence(&context)?
+                    .check()?;
+            } else {
+                let source = self.current(&context.tenant)?;
+                self.authorized(&source, &context, false).await?;
+            }
             // Management can perform several durable steps. Once execution is
             // admitted, credential expiry cannot assert those steps rolled back.
             admitted = true;
@@ -569,8 +576,15 @@ impl Administration {
             // administrative branch's workspace in their own async frame.
             // This remains the same future: dropping it still drops its guards.
             let result = Box::pin(self.execute_inner(&context, command)).await?;
-            let current = self.current(&context.tenant)?;
-            self.authorized(&current, &context, false).await?;
+            if let Some(incarnation) = &retirement_source {
+                self.registry
+                    .retirement_source(&context, incarnation)?
+                    .response_fence(&context)?
+                    .check()?;
+            } else {
+                let current = self.current(&context.tenant)?;
+                self.authorized(&current, &context, false).await?;
+            }
             Ok(result)
         }
         .await;
@@ -610,11 +624,153 @@ impl Administration {
             result
         }
     }
+    async fn execute_retirement_lifecycle(
+        &self,
+        context: &RequestContext,
+        command: ManagementCommand,
+    ) -> Result<serde_json::Value> {
+        match command {
+            ManagementCommand::RetireSource { request } => {
+                request.validate()?;
+                let target = self.generation(&context.tenant, &request.target_incarnation)?;
+                self.authorized(&target, context, false).await?;
+                let target_state = target.database.engine().generation()?;
+                ensure!(
+                    target_state.state.suspended
+                        && target_state.state.pending_restore.is_none()
+                        && target_state.state.restored_from.as_ref() == Some(&request.checkpoint),
+                    "target restore must match the exact retirement checkpoint"
+                );
+                let source = self
+                    .registry
+                    .retirement_source(context, &request.expected_source_incarnation)?;
+                let proof = source.retire_source(context.clone(), request).await?;
+                source.retirement_response_fence(context, &proof)?.check()?;
+                Ok(serde_json::to_value(proof.receipt())?)
+            }
+            ManagementCommand::ActivateRestore {
+                incarnation,
+                retirement,
+            } => {
+                retirement.validate()?;
+                let expected_source = retirement.source_incarnation.clone();
+                self.close_retired_generations().await?;
+                let retired_source = self.registry.retirement_source(context, &expected_source)?;
+                let proof = retired_source
+                    .verify_retirement_receipt(context.clone(), &retirement)
+                    .await?;
+                ensure!(
+                    proof.target_incarnation() == incarnation.to_string(),
+                    "retirement target differs"
+                );
+                let target = self.generation(&context.tenant, &incarnation.to_string())?;
+                self.authorized(&target, context, false).await?;
+                ensure!(
+                    target
+                        .database
+                        .engine()
+                        .generation()?
+                        .state
+                        .restored_from
+                        .as_ref()
+                        == Some(proof.checkpoint()),
+                    "target restored origin differs from source retirement"
+                );
+                let active = self
+                    .active
+                    .read()
+                    .map_err(|_| anyhow::anyhow!("active source route unavailable"))?
+                    .get(&context.tenant)
+                    .cloned();
+                if active.as_deref() == Some(incarnation.to_string().as_str()) {
+                    let plane = ControlPlane::new(self.control.clone())?;
+                    let topology = plane
+                        .topology(&self.control_context)
+                        .await?
+                        .context("control topology missing")?;
+                    ensure!(
+                        topology
+                            .topology
+                            .tenants
+                            .get(&context.tenant)
+                            .is_some_and(|route| route.incarnation == incarnation.to_string()),
+                        "control route changed"
+                    );
+                    self.event(
+                        context,
+                        SecurityEventKind::Restore,
+                        SecurityOutcome::Succeeded,
+                    )
+                    .await?;
+                    return Ok(
+                        serde_json::json!({"active_incarnation":incarnation,"suspended":target.database.engine().generation()?.state.suspended}),
+                    );
+                }
+                ensure!(
+                    active
+                        .as_deref()
+                        .is_none_or(|active| active == expected_source),
+                    "active source route changed"
+                );
+                let target_state = target.database.engine().generation()?;
+                ensure!(
+                    target_state.state.suspended && target_state.state.pending_restore.is_none(),
+                    "target must be a completed suspended restore"
+                );
+                let plane = ControlPlane::new(self.control.clone())?;
+                let current = plane
+                    .topology(&self.control_context)
+                    .await?
+                    .context("control topology missing")?;
+                let mut topology = current.topology;
+                let route = topology
+                    .tenants
+                    .get_mut(&context.tenant)
+                    .context("tenant route absent")?;
+                ensure!(
+                    route.incarnation == expected_source
+                        || route.incarnation == incarnation.to_string(),
+                    "control route changed"
+                );
+                let needs_publication = route.incarnation != incarnation.to_string();
+                route.incarnation = incarnation.to_string();
+                self.event(
+                    context,
+                    SecurityEventKind::Restore,
+                    SecurityOutcome::Started,
+                )
+                .await?;
+                if needs_publication {
+                    plane
+                        .replace_topology(
+                            self.control_context.clone(),
+                            topology,
+                            Precondition::Version(current.version),
+                            format!("activate-{incarnation}"),
+                        )
+                        .await?;
+                }
+                self.publish_target(&context.tenant, &expected_source, target)?;
+                self.event(
+                    context,
+                    SecurityEventKind::Restore,
+                    SecurityOutcome::Succeeded,
+                )
+                .await?;
+                Ok(serde_json::json!({"active_incarnation":incarnation,"suspended":true}))
+            }
+            _ => anyhow::bail!("not a retirement lifecycle operation"),
+        }
+    }
+
     async fn execute_inner(
         &self,
         context: &RequestContext,
         command: ManagementCommand,
     ) -> Result<serde_json::Value> {
+        if lifecycle_source(&command).is_some() {
+            return self.execute_retirement_lifecycle(context, command).await;
+        }
         let source = self.current(&context.tenant)?;
         self.authorized(&source, context, false).await?;
         let _maintenance = match &command {
@@ -776,8 +932,7 @@ impl Administration {
                         .generation(&context.tenant, &incarnation.to_string())
                         .is_err()
                 {
-                    self.load_generation(&source, &context.tenant, incarnation)
-                        .await?;
+                    self.load_generation(&context.tenant, incarnation).await?;
                 }
                 ensure!(
                     source.database.engine().generation()?.state.suspended,
@@ -955,132 +1110,8 @@ impl Administration {
                 .await?;
                 Ok(serde_json::json!({"completed":true,"incarnation":incarnation}))
             }
-            ManagementCommand::RetireSource { request } => {
-                request.validate()?;
-                let target = self.generation(&context.tenant, &request.target_incarnation)?;
-                self.authorized(&target, context, false).await?;
-                let target_state = target.database.engine().generation()?;
-                ensure!(
-                    target_state.state.suspended
-                        && target_state.state.pending_restore.is_none()
-                        && target_state.state.restored_from.as_ref() == Some(&request.checkpoint),
-                    "target restore must match the exact retirement checkpoint"
-                );
-                let source =
-                    self.generation(&context.tenant, &request.expected_source_incarnation)?;
-                let proof = source
-                    .database
-                    .retire_source(context.clone(), request)
-                    .await?;
-                source
-                    .database
-                    .retirement_response_fence(context, &proof)?
-                    .check()?;
-                Ok(serde_json::to_value(proof.receipt())?)
-            }
-            ManagementCommand::ActivateRestore {
-                incarnation,
-                retirement,
-            } => {
-                retirement.validate()?;
-                let expected_source = retirement.source_incarnation.clone();
-                let retired_source = self.generation(&context.tenant, &expected_source)?;
-                let proof = retired_source
-                    .database
-                    .verify_retirement_receipt(context.clone(), &retirement)
-                    .await?;
-                ensure!(
-                    proof.target_incarnation() == incarnation.to_string(),
-                    "retirement target differs"
-                );
-                let target = self.generation(&context.tenant, &incarnation.to_string())?;
-                self.authorized(&target, context, false).await?;
-                ensure!(
-                    target
-                        .database
-                        .engine()
-                        .generation()?
-                        .state
-                        .restored_from
-                        .as_ref()
-                        == Some(proof.checkpoint()),
-                    "target restored origin differs from source retirement"
-                );
-                let source_state = source.database.engine().generation()?;
-                if source_state.state.incarnation == incarnation.to_string() {
-                    let plane = ControlPlane::new(self.control.clone())?;
-                    let topology = plane
-                        .topology(&self.control_context)
-                        .await?
-                        .context("control topology missing")?;
-                    ensure!(
-                        topology
-                            .topology
-                            .tenants
-                            .get(&context.tenant)
-                            .is_some_and(|route| route.incarnation == incarnation.to_string()),
-                        "control route changed"
-                    );
-                    self.event(
-                        context,
-                        SecurityEventKind::Restore,
-                        SecurityOutcome::Succeeded,
-                    )
-                    .await?;
-                    return Ok(
-                        serde_json::json!({"active_incarnation":incarnation,"suspended":source_state.state.suspended}),
-                    );
-                }
-                ensure!(
-                    source_state.state.incarnation == expected_source && source_state.state.retired,
-                    "source must be durably retired"
-                );
-                let target_state = target.database.engine().generation()?;
-                ensure!(
-                    target_state.state.suspended && target_state.state.pending_restore.is_none(),
-                    "target must be a completed suspended restore"
-                );
-                let plane = ControlPlane::new(self.control.clone())?;
-                let current = plane
-                    .topology(&self.control_context)
-                    .await?
-                    .context("control topology missing")?;
-                let mut topology = current.topology;
-                let route = topology
-                    .tenants
-                    .get_mut(&context.tenant)
-                    .context("tenant route absent")?;
-                ensure!(
-                    route.incarnation == expected_source
-                        || route.incarnation == incarnation.to_string(),
-                    "control route changed"
-                );
-                let needs_publication = route.incarnation != incarnation.to_string();
-                route.incarnation = incarnation.to_string();
-                self.event(
-                    context,
-                    SecurityEventKind::Restore,
-                    SecurityOutcome::Started,
-                )
-                .await?;
-                if needs_publication {
-                    plane
-                        .replace_topology(
-                            self.control_context.clone(),
-                            topology,
-                            Precondition::Version(current.version),
-                            format!("activate-{incarnation}"),
-                        )
-                        .await?;
-                }
-                self.publish_target(&context.tenant, &expected_source, target)?;
-                self.event(
-                    context,
-                    SecurityEventKind::Restore,
-                    SecurityOutcome::Succeeded,
-                )
-                .await?;
-                Ok(serde_json::json!({"active_incarnation":incarnation,"suspended":true}))
+            ManagementCommand::RetireSource { .. } | ManagementCommand::ActivateRestore { .. } => {
+                anyhow::bail!("retirement lifecycle dispatch mismatch")
             }
             ManagementCommand::AddLearner { node_id } => {
                 self.authorized(&source, context, true).await?;
@@ -1735,7 +1766,9 @@ impl Administration {
         } else {
             self.registry.insert(target.database.clone())?;
         }
-        if let Ok(previous) = self.generation(tenant, expected) {
+        if expected != incarnation
+            && let Ok(previous) = self.generation(tenant, expected)
+        {
             previous.database.engine().seal();
             previous.store.seal();
         }
@@ -1777,33 +1810,24 @@ impl Administration {
         }
         Ok(())
     }
-    async fn load_generation(
-        &self,
-        source: &ManagedTenant,
-        tenant: &str,
-        incarnation: Uuid,
-    ) -> Result<ManagedTenant> {
+    async fn load_generation(&self, tenant: &str, incarnation: Uuid) -> Result<ManagedTenant> {
         let path = generation_path(&self.config.database_path, tenant, incarnation);
         ensure!(path.is_file(), "durably routed generation file is missing");
-        let _reservation = self.admission.reserve(
-            source
-                .database
-                .engine()
-                .generation()?
-                .state
-                .logical_bytes
-                .saturating_mul(8)
-                .saturating_add(1 << 20),
-            None,
-        )?;
+        let (provider, custody_provider) =
+            self.provider_factories
+                .get(tenant)
+                .context("tenant key factory is not installed")?()?;
         let node = NodeStore::open(path)?;
         let stores = TenantStorageSet::open(
             node,
             tenant.to_owned(),
-            source.provider.clone(),
-            source.custody_provider.clone(),
+            provider.clone(),
+            custody_provider.clone(),
         )
         .await?;
+        let _reservation = self
+            .admission
+            .reserve(kasumi_engine::recovery_workspace_bytes(&stores)?, None)?;
         let store = stores.application().clone();
         let descriptor: GenerationDescriptor = serde_json::from_slice(
             &store
@@ -1863,30 +1887,143 @@ impl Administration {
         let target = ManagedTenant {
             database,
             store,
-            provider: source.provider.clone(),
-            custody_provider: source.custody_provider.clone(),
+            provider,
+            custody_provider,
             bootstrap: descriptor.bootstrap.clone(),
             descriptor: Some(descriptor),
         };
+        self.registry.install_retirement_source(
+            kasumi_engine::InstalledRetirementSource::Serving(target.database.clone()),
+        )?;
         self.generations
             .write()
             .map_err(|_| anyhow::anyhow!("generation registry unavailable"))?
             .insert((tenant.to_owned(), incarnation.to_string()), target.clone());
         Ok(target)
     }
+    async fn close_retired_generations(&self) -> Result<()> {
+        let generations = self
+            .generations
+            .read()
+            .map_err(|_| anyhow::anyhow!("source registry unavailable"))?
+            .iter()
+            .map(|(identity, source)| (identity.clone(), source.clone()))
+            .collect::<Vec<_>>();
+        for ((tenant, incarnation), source) in generations {
+            if tenant.starts_with("__kasumi_") {
+                continue;
+            }
+            let context = RequestContext {
+                tenant: tenant.clone(),
+                ..self.control_context.clone()
+            };
+            if !matches!(
+                self.registry.retirement_source(&context, &incarnation),
+                Ok(kasumi_engine::InstalledRetirementSource::Serving(_))
+            ) {
+                continue;
+            }
+            let control = kasumi_raft::ControlLog::installed(
+                source
+                    .database
+                    .raft_group()
+                    .storage_domains()
+                    .custody()
+                    .clone(),
+            )?;
+            let Some(control) = control else {
+                continue;
+            };
+            if !control.is_retired()? {
+                continue;
+            }
+            let active = self
+                .active
+                .read()
+                .map_err(|_| anyhow::anyhow!("source routing unavailable"))?
+                .get(&tenant)
+                .cloned();
+            if active.as_deref() == Some(&incarnation) {
+                self.registry.remove(&tenant)?;
+            }
+            // Publish an explicit closed transition before sealing/draining the
+            // old handle. Concurrent native callers can retry unavailable
+            // custody; none observes a stale Serving route to a sealed engine.
+            self.registry.install_retirement_source(
+                kasumi_engine::InstalledRetirementSource::RecoveringControl {
+                    tenant: tenant.clone(),
+                    source_incarnation: incarnation.clone(),
+                },
+            )?;
+            let store = source.database.detach_retired_custody().await?;
+            let group = format!("{tenant}/{incarnation}");
+            if let Some(network) = &self.cluster {
+                network.unregister_group(&group)?;
+            }
+            let route = match crate::runtime::open_retired_source(
+                &self.config,
+                store,
+                self.cluster.as_ref(),
+                self.audit.clone(),
+                self.admission.clone(),
+            )
+            .await
+            {
+                Ok(custody) => {
+                    self.custody_generations
+                        .write()
+                        .map_err(|_| anyhow::anyhow!("custody routing unavailable"))?
+                        .insert((tenant.clone(), incarnation.clone()), custody.clone());
+                    kasumi_engine::InstalledRetirementSource::RetiredCustody(custody)
+                }
+                Err(_) => kasumi_engine::InstalledRetirementSource::RecoveringControl {
+                    tenant,
+                    source_incarnation: incarnation,
+                },
+            };
+            self.registry.install_retirement_source(route)?;
+        }
+        Ok(())
+    }
+
     pub(crate) async fn reconcile(&self) -> Result<()> {
         let _guard = self.gate.lock().await;
+        self.close_retired_generations().await?;
         let topology = self.committed_topology()?;
         for (tenant, route) in topology.tenants {
-            let source = self.configured(&tenant)?;
-            let old = source
-                .database
-                .engine()
-                .generation()?
-                .state
-                .incarnation
-                .clone();
-            if old == route.incarnation {
+            let custody_context = RequestContext {
+                tenant: tenant.clone(),
+                ..self.control_context.clone()
+            };
+            if matches!(
+                self.registry
+                    .retirement_source(&custody_context, &route.incarnation),
+                Ok(kasumi_engine::InstalledRetirementSource::RetiredCustody(_)
+                    | kasumi_engine::InstalledRetirementSource::RecoveringControl { .. })
+            ) {
+                continue;
+            }
+            let source = self.configured(&tenant).ok();
+            let old = self
+                .active
+                .read()
+                .map_err(|_| anyhow::anyhow!("active source routing unavailable"))?
+                .get(&tenant)
+                .cloned()
+                .or_else(|| {
+                    self.config
+                        .tenants
+                        .iter()
+                        .find(|source| source.tenant == tenant)
+                        .and_then(|source| source.incarnation.clone())
+                });
+            let old = old.unwrap_or_else(|| route.incarnation.clone());
+            if old == route.incarnation
+                && source
+                    .as_ref()
+                    .is_some_and(|source| source.database.engine().generation().is_ok())
+            {
+                let source = source.as_ref().expect("checked serving source");
                 if !self
                     .enabled
                     .read()
@@ -1904,7 +2041,7 @@ impl Administration {
             let target = match self.generation(&tenant, &route.incarnation) {
                 Ok(target) => target,
                 Err(_) => {
-                    self.load_generation(&source, &tenant, Uuid::parse_str(&route.incarnation)?)
+                    self.load_generation(&tenant, Uuid::parse_str(&route.incarnation)?)
                         .await?
                 }
             };
@@ -1932,6 +2069,16 @@ impl Administration {
             .collect::<Vec<_>>();
         for tenant in generations {
             let _ = tenant.database.shutdown().await;
+        }
+        let custody = self
+            .custody_generations
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for source in custody {
+            let _ = source.shutdown().await;
         }
     }
 }
@@ -2065,6 +2212,16 @@ fn validate_voters(topology: &ControlTopology, voters: &BTreeSet<u64>) -> Result
         "voters require three independent failure domains"
     );
     Ok(())
+}
+
+fn lifecycle_source(command: &ManagementCommand) -> Option<&str> {
+    match command {
+        ManagementCommand::RetireSource { request } => Some(&request.expected_source_incarnation),
+        ManagementCommand::ActivateRestore { retirement, .. } => {
+            Some(&retirement.source_incarnation)
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]

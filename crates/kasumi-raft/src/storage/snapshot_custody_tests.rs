@@ -40,19 +40,23 @@ async fn accepted_snapshot() -> Result<SnapshotEnvelope> {
     let state = RetiredSnapshotState {
         revision_base: 0,
         revision: 1,
-        policy_epoch: 3,
-        administrators: std::collections::BTreeSet::from(["new-custodian".into()]),
+        policy_epoch: 2,
+        administrators: std::collections::BTreeSet::from(["owner".into()]),
         request: seed.request().clone(),
         receipt,
     };
     let mut result = envelope(serde_json::to_vec(&state)?);
     result.meta.last_log_id = Some(id(1));
-    result.retirement = crate::snapshot_custody::capture(&domains, &result.meta, Some(state))?;
+    result.retirement =
+        crate::snapshot_custody::capture(domains.custody(), &result.meta, Some(state))?;
     Ok(result)
 }
 #[derive(Default)]
 struct ClosedBackend(Mutex<Option<RetiredSnapshotState>>);
 impl StateMachineBackend for ClosedBackend {
+    fn close_application(&self) {
+        *self.0.lock().unwrap() = None;
+    }
     fn apply(&self, _: &AppliedEntryContext, _: &[u8]) -> Result<crate::AppliedResponse> {
         anyhow::bail!("metadata test cannot apply payload")
     }
@@ -175,7 +179,7 @@ async fn retired_snapshot_installs_without_original_log_and_recovers_with_only_c
         .await?;
     assert_eq!(
         backend.0.lock().unwrap().as_ref().unwrap().administrators,
-        std::collections::BTreeSet::from(["new-custodian".into()])
+        std::collections::BTreeSet::from(["owner".into()])
     );
     assert!(
         log.get_log_state().await?.last_log_id.is_none(),

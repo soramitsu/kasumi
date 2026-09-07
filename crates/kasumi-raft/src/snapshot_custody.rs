@@ -8,7 +8,7 @@ use crate::{
     BasicNode, RaftCommand, RetiredSnapshotState, RetirementLogSeed, TypeConfig, command::sha256,
 };
 use anyhow::{Context, Result, ensure};
-use kasumi_store::{TenantStorageSet, TenantStore, WriteOp};
+use kasumi_store::{CustodyStore, TenantStore, WriteOp};
 use openraft::{Entry, EntryPayload, SnapshotMeta};
 use serde::{Deserialize, Serialize};
 
@@ -18,7 +18,8 @@ const PROJECTION: &[u8] = b"snapshot_retirement";
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SnapshotRetirement {
-    state: RetiredSnapshotState,
+    pub(crate) state: RetiredSnapshotState,
+    pub(crate) custody: crate::custody_state::CustodyState,
     boundary: RetiredBoundary,
     header: LogHeader,
     seed: Vec<u8>,
@@ -34,7 +35,7 @@ struct Projection {
 }
 
 impl SnapshotRetirement {
-    fn validate(&self, meta: &SnapshotMeta<u64, BasicNode>) -> Result<()> {
+    pub(crate) fn validate(&self, meta: &SnapshotMeta<u64, BasicNode>) -> Result<()> {
         ensure!(
             self.seed.len() <= crate::MAX_RETIREMENT_SEED_BYTES,
             "snapshot retirement seed quota exceeded"
@@ -56,6 +57,21 @@ impl SnapshotRetirement {
         }
         serde_json::to_writer(QuotaWriter(MAX_SNAPSHOT_CUSTODY_BYTES), self)?;
         self.state.validate(meta)?;
+        self.custody.validate()?;
+        ensure!(
+            self.custody.origin == self.state
+                && self.custody.revision
+                    <= self
+                        .state
+                        .revision_base
+                        .checked_add(
+                            meta.last_log_id
+                                .context("custody snapshot position absent")?
+                                .index
+                        )
+                        .context("custody snapshot revision overflow")?,
+            "snapshot custody state differs from immutable origin or applied position"
+        );
         kasumi_types::validate_sha256(&self.bootstrap_sha256)?;
         self.header.validate()?;
         let seed = RetirementLogSeed::decode(&self.seed)?;
@@ -92,11 +108,11 @@ impl SnapshotRetirement {
         );
         Ok(())
     }
-    fn check_installation(&self, domains: &TenantStorageSet) -> Result<()> {
-        let control = domains.custody().store();
+    fn check_installation(&self, custody: &CustodyStore) -> Result<()> {
+        let control = custody.store();
         let source = &self.state.receipt;
         ensure!(
-            domains.custody().binding().tenant() == source.tenant
+            custody.binding().tenant() == source.tenant
                 && load::<String>(control, META, b"group")?.as_deref()
                     == Some(format!("{}/{}", source.tenant, source.source_incarnation).as_str())
                 && load::<String>(control, META, b"application_bootstrap_sha256")?.as_ref()
@@ -105,33 +121,34 @@ impl SnapshotRetirement {
         );
         Ok(())
     }
-    fn local_seed(&self, domains: &TenantStorageSet) -> Result<RetainedSeed> {
+    fn local_seed(&self, custody: &CustodyStore) -> Result<RetainedSeed> {
         Ok(RetainedSeed {
             header: self.header.clone(),
             seed: self.seed.clone(),
             bootstrap_sha256: self.bootstrap_sha256.clone(),
-            storage_binding_sha256: domains.custody().binding().digest()?,
+            storage_binding_sha256: custody.binding().digest()?,
         })
     }
 }
 
 pub(crate) fn capture(
-    domains: &TenantStorageSet,
+    custody: &CustodyStore,
     meta: &SnapshotMeta<u64, BasicNode>,
     state: Option<RetiredSnapshotState>,
 ) -> Result<Option<SnapshotRetirement>> {
     let Some(state) = state else {
         return Ok(None);
     };
-    let boundary = control::retired_boundary(domains.custody())?
+    let boundary = control::retired_boundary(custody)?
         .context("retired snapshot lacks accepted custody boundary")?;
     let retained: RetainedSeed = load(
-        domains.custody().store(),
+        custody.store(),
         SEEDS,
         &boundary.position.log_id.index.to_be_bytes(),
     )?
     .context("retired snapshot lacks original seed")?;
     let retirement = SnapshotRetirement {
+        custody: control::custody_state(custody)?,
         state,
         boundary,
         header: retained.header,
@@ -139,7 +156,7 @@ pub(crate) fn capture(
         bootstrap_sha256: retained.bootstrap_sha256,
     };
     retirement.validate(meta)?;
-    retirement.check_installation(domains)?;
+    retirement.check_installation(custody)?;
     Ok(Some(retirement))
 }
 
@@ -178,7 +195,7 @@ pub(crate) fn check_same_retirement(
 /// Returns only custody writes. The caller publishes them atomically with the
 /// final application snapshot manifest, after complete backend validation.
 pub(crate) fn installation_writes(
-    domains: &TenantStorageSet,
+    custody: &CustodyStore,
     meta: &SnapshotMeta<u64, BasicNode>,
     retirement: Option<&SnapshotRetirement>,
     backend_sha256: &str,
@@ -186,20 +203,20 @@ pub(crate) fn installation_writes(
 ) -> Result<Vec<WriteOp>> {
     kasumi_types::validate_sha256(backend_sha256)?;
     kasumi_types::validate_sha256(snapshot_sha256)?;
-    let control = domains.custody().store();
+    let control = custody.store();
     let mut writes = Vec::new();
-    let existing_boundary = control::retired_boundary(domains.custody())?;
+    let existing_boundary = control::retired_boundary(custody)?;
     match retirement {
         Some(retirement) => {
             retirement.validate(meta)?;
-            retirement.check_installation(domains)?;
+            retirement.check_installation(custody)?;
             if let Some(existing) = &existing_boundary {
                 ensure!(
                     *existing == retirement.boundary,
                     "snapshot would replace permanent retirement binding"
                 );
             }
-            let local = retirement.local_seed(domains)?;
+            let local = retirement.local_seed(custody)?;
             if let Some(existing) = load::<RetainedSeed>(
                 control,
                 SEEDS,
@@ -225,6 +242,17 @@ pub(crate) fn installation_writes(
                 b"retired_boundary",
                 serde_json::to_vec(&retirement.boundary)?,
             ));
+            let current_position = load::<AppliedCursor>(control, META, b"applied")?
+                .and_then(|position| position.log_id());
+            if current_position
+                .is_none_or(|id| Some(id.index) <= meta.last_log_id.map(|id| id.index))
+            {
+                writes.push(WriteOp::put(
+                    META,
+                    crate::control::CUSTODY_STATE,
+                    serde_json::to_vec(&retirement.custody)?,
+                ));
+            }
             writes.push(WriteOp::put(
                 META,
                 PROJECTION,
@@ -256,6 +284,36 @@ pub(crate) fn installation_writes(
             old.index.cmp(&new.index) == old.cmp(&new),
             "snapshot applied position ordering differs"
         );
+        if old.index == new.index {
+            let previous = previous.as_ref().expect("checked applied cursor");
+            let membership = match previous {
+                AppliedCursor::Entry(position) => &position.membership,
+                AppliedCursor::Snapshot { meta, .. } => &meta.last_membership,
+            };
+            ensure!(
+                *membership == meta.last_membership,
+                "snapshot membership differs at the same applied position"
+            );
+            if let Some(retirement) = retirement {
+                ensure!(
+                    existing_boundary.as_ref() == Some(&retirement.boundary),
+                    "same-position snapshot cannot invent an accepted retirement"
+                );
+                ensure!(
+                    control::custody_state(custody)? == retirement.custody,
+                    "same-position snapshot would replace current custody state"
+                );
+            } else {
+                ensure!(
+                    existing_boundary.as_ref().is_none_or(|boundary| boundary
+                        .position
+                        .log_id
+                        .index
+                        > new.index),
+                    "same-position snapshot would erase retired custody"
+                );
+            }
+        }
     }
     if previous.as_ref().is_none_or(|previous| {
         previous.log_id().map(|id| id.index) <= meta.last_log_id.map(|id| id.index)
@@ -291,15 +349,15 @@ pub(crate) fn installation_writes(
 }
 
 pub(crate) fn check_published(
-    domains: &TenantStorageSet,
+    custody: &CustodyStore,
     meta: &SnapshotMeta<u64, BasicNode>,
     snapshot_sha256: &str,
     retirement: Option<&SnapshotRetirement>,
 ) -> Result<()> {
     if let Some(retirement) = retirement {
         retirement.validate(meta)?;
-        retirement.check_installation(domains)?;
-        let projection: Projection = load(domains.custody().store(), META, PROJECTION)?
+        retirement.check_installation(custody)?;
+        let projection: Projection = load(custody.store(), META, PROJECTION)?
             .context("snapshot custody projection absent")?;
         ensure!(
             projection.meta == *meta
@@ -307,8 +365,8 @@ pub(crate) fn check_published(
                 && projection.retirement == *retirement,
             "snapshot custody projection differs from published image"
         );
-        let boundary = control::retired_boundary(domains.custody())?
-            .context("snapshot retired boundary absent")?;
+        let boundary =
+            control::retired_boundary(custody)?.context("snapshot retired boundary absent")?;
         ensure!(
             boundary == retirement.boundary,
             "snapshot retired boundary differs"

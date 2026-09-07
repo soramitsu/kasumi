@@ -22,6 +22,7 @@ use std::{
 };
 
 const LOG: &str = "raft.log";
+pub(crate) const CUSTODY_LOG: &str = "raft.custody-log";
 const LOG_FORMAT: &[u8] = b"kasumi-log\x01";
 const META: &str = "raft.meta";
 const SNAPSHOT: &str = "raft.snapshot";
@@ -60,12 +61,12 @@ fn load<T: DeserializeOwned>(
 // per-store gate. It is process-local ordering, never durable authority.
 type ControlGateMap = Mutex<HashMap<usize, Weak<Mutex<()>>>>;
 static CONTROL_GATES: LazyLock<ControlGateMap> = LazyLock::new(|| Mutex::new(HashMap::new()));
-fn control_gate(domains: &TenantStorageSet) -> Result<Arc<Mutex<()>>> {
+pub(crate) fn control_gate(custody: &kasumi_store::CustodyStore) -> Result<Arc<Mutex<()>>> {
     let mut gates = CONTROL_GATES
         .lock()
         .map_err(|_| anyhow::anyhow!("control gate registry poisoned"))?;
     gates.retain(|_, gate| gate.strong_count() > 0);
-    let key = Arc::as_ptr(domains.application()) as usize;
+    let key = Arc::as_ptr(custody.store()) as usize;
     if let Some(gate) = gates.get(&key).and_then(Weak::upgrade) {
         return Ok(gate);
     }
@@ -77,7 +78,7 @@ fn control_gate(domains: &TenantStorageSet) -> Result<Arc<Mutex<()>>> {
 #[derive(Clone)]
 pub struct LogStore {
     store: StorageHandle<TenantStore>,
-    domains: StorageHandle<TenantStorageSet>,
+    domains: StorageHandle<crate::domains::Domains>,
     // Cloned log readers and snapshot writers can run concurrently. Every log/vote
     // mutation shares this gate, including read/modify/write deletion operations.
     io_gate: Arc<tokio::sync::Mutex<()>>,
@@ -89,7 +90,12 @@ pub struct LogStore {
 
 impl LogStore {
     pub async fn open(domains: Arc<TenantStorageSet>, node_id: u64) -> Result<Self> {
-        Self::open_inner(domains, node_id, None).await
+        Self::open_inner(
+            Arc::new(crate::domains::Domains::Serving(domains)),
+            node_id,
+            None,
+        )
+        .await
     }
 
     pub(crate) async fn open_tracked(
@@ -97,15 +103,33 @@ impl LogStore {
         node_id: u64,
         lease: Arc<StorageLease>,
     ) -> Result<Self> {
-        Self::open_inner(domains, node_id, Some(lease)).await
+        Self::open_inner(
+            Arc::new(crate::domains::Domains::Serving(domains)),
+            node_id,
+            Some(lease),
+        )
+        .await
+    }
+
+    pub(crate) async fn open_custody(
+        custody: Arc<kasumi_store::CustodyStore>,
+        node_id: u64,
+        lease: Arc<StorageLease>,
+    ) -> Result<Self> {
+        Self::open_inner(
+            Arc::new(crate::domains::Domains::Custody(custody)),
+            node_id,
+            Some(lease),
+        )
+        .await
     }
 
     async fn open_inner(
-        domains: Arc<TenantStorageSet>,
+        domains: Arc<crate::domains::Domains>,
         node_id: u64,
         lease: Option<Arc<StorageLease>>,
     ) -> Result<Self> {
-        let control_gate = control_gate(&domains)?;
+        let control_gate = control_gate(domains.custody())?;
         let store = StorageHandle::new(domains.custody().store().clone(), lease.clone());
         let domains = StorageHandle::new(domains, lease);
         let captured = store.clone();
@@ -245,9 +269,17 @@ impl RaftLogReader<TypeConfig> for LogStore {
                             log_id: id,
                             payload: EntryPayload::Membership(membership.clone()),
                         },
+                        HeaderPayload::Custody { .. } => {
+                            let encoded = store
+                                .get(CUSTODY_LOG, &index.to_be_bytes())?
+                                .context("missing closed custody raft body")?;
+                            let entry = decode_entry(&encoded)?;
+                            header.check_entry(&entry, &encoded)?;
+                            entry
+                        }
                         _ => {
                             let encoded = domains
-                                .application()
+                                .application()?
                                 .get(LOG, &index.to_be_bytes())?
                                 .context("missing application raft body")?;
                             let entry = decode_entry(&encoded)?;
@@ -347,6 +379,7 @@ impl RaftLogStorage<TypeConfig> for LogStore {
                 let (header, seed) = LogHeader::build(entry, &encoded)?;
                 header.validate()?;
                 let key = entry.log_id.index.to_be_bytes();
+                let closed = matches!(header.payload, HeaderPayload::Custody { .. });
                 let mut control = vec![put(HEADERS, &key, serde_json::to_vec(&header)?)];
                 if let Some(seed) = seed {
                     control.push(put(
@@ -364,7 +397,22 @@ impl RaftLogStorage<TypeConfig> for LogStore {
                 } else {
                     control.push(delete(SEEDS, key.to_vec()));
                 }
-                Ok((put(LOG, &key, encoded), control))
+                let application = if closed {
+                    control.push(put(CUSTODY_LOG, &key, encoded));
+                    self.domains.serving().map(|_| delete(LOG, key.to_vec()))
+                } else {
+                    control.push(delete(CUSTODY_LOG, key.to_vec()));
+                    if self.domains.serving().is_some() {
+                        Some(put(LOG, &key, encoded))
+                    } else {
+                        ensure!(
+                            !matches!(entry.payload, EntryPayload::Normal(_)),
+                            "payload log append forbidden in retired custody"
+                        );
+                        None
+                    }
+                };
+                Ok((application, control))
             })
             .collect::<Result<Vec<_>>>()
             .map_err(err)?;
@@ -376,6 +424,16 @@ impl RaftLogStorage<TypeConfig> for LogStore {
                 // That does not change the separately committed snapshot. Only
                 // an exact accepted retirement identity is immutable here.
                 if let Some(boundary) = crate::control::retired_boundary(domains.custody())? {
+                    for entry in &entries {
+                        if entry.log_id.index > boundary.position.log_id.index
+                            && let EntryPayload::Normal(command) = &entry.payload
+                        {
+                            ensure!(
+                                command.custody_command()?.is_some(),
+                                "application log entry after permanent retirement"
+                            );
+                        }
+                    }
                     for entry in entries
                         .iter()
                         .filter(|entry| entry.log_id.index == boundary.position.log_id.index)
@@ -399,8 +457,10 @@ impl RaftLogStorage<TypeConfig> for LogStore {
                     let mut data = Vec::new();
                     let mut control = Vec::new();
                     while end < writes.len() {
-                        let entry_ops = 1 + writes[end].1.len();
-                        let size = std::iter::once(&writes[end].0)
+                        let entry_ops = usize::from(writes[end].0.is_some()) + writes[end].1.len();
+                        let size = writes[end]
+                            .0
+                            .iter()
                             .chain(writes[end].1.iter())
                             .map(|op| match op {
                                 WriteOp::Put {
@@ -418,7 +478,7 @@ impl RaftLogStorage<TypeConfig> for LogStore {
                         }
                         bytes += size;
                         count += entry_ops;
-                        data.push(writes[end].0.clone());
+                        data.extend(writes[end].0.iter().cloned());
                         control.extend(writes[end].1.iter().cloned());
                         end += 1;
                     }
@@ -465,15 +525,23 @@ impl RaftLogStorage<TypeConfig> for LogStore {
             }
             let protected = crate::control::retired_boundary(domains.custody())?
                 .map(|boundary| boundary.position.log_id.index);
-            for ids in ids.chunks(21845) {
-                let writes = ids
-                    .iter()
-                    .map(|index| delete(LOG, index.to_be_bytes().to_vec()))
-                    .collect::<Vec<_>>();
+            for ids in ids.chunks(16384) {
+                let writes = if domains.serving().is_some() {
+                    ids.iter()
+                        .map(|index| delete(LOG, index.to_be_bytes().to_vec()))
+                        .collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
                 let control = ids
                     .iter()
                     .flat_map(|index| {
-                        std::iter::once(delete(HEADERS, index.to_be_bytes().to_vec())).chain(
+                        [
+                            delete(HEADERS, index.to_be_bytes().to_vec()),
+                            delete(CUSTODY_LOG, index.to_be_bytes().to_vec()),
+                        ]
+                        .into_iter()
+                        .chain(
                             (Some(*index) != protected)
                                 .then(|| delete(SEEDS, index.to_be_bytes().to_vec())),
                         )
@@ -503,10 +571,15 @@ impl RaftLogStorage<TypeConfig> for LogStore {
                 .collect::<Vec<_>>();
             // Move the purge cursor in the same transaction as every removed
             // prefix. Covered snapshots were persisted before Raft calls purge.
-            for ids in ids.chunks(32767) {
+            for ids in ids.chunks(21845) {
                 let mut writes = ids
                     .iter()
-                    .map(|id| delete(HEADERS, id.index.to_be_bytes().to_vec()))
+                    .flat_map(|id| {
+                        [
+                            delete(HEADERS, id.index.to_be_bytes().to_vec()),
+                            delete(CUSTODY_LOG, id.index.to_be_bytes().to_vec()),
+                        ]
+                    })
                     .collect::<Vec<_>>();
                 writes.push(put(
                     META,
@@ -535,12 +608,20 @@ impl RaftLogStorage<TypeConfig> for LogStore {
     }
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) enum SnapshotKind {
+    Application,
+    Custody,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
-struct SnapshotEnvelope {
-    version: u32,
-    meta: SnapshotMeta<u64, BasicNode>,
-    backend: Vec<u8>,
-    retirement: Option<crate::snapshot_custody::SnapshotRetirement>,
+#[serde(deny_unknown_fields)]
+pub(crate) struct SnapshotEnvelope {
+    pub(crate) version: u32,
+    pub(crate) kind: SnapshotKind,
+    pub(crate) meta: SnapshotMeta<u64, BasicNode>,
+    pub(crate) backend: Vec<u8>,
+    pub(crate) retirement: Option<crate::snapshot_custody::SnapshotRetirement>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -600,10 +681,20 @@ fn cleanup_snapshots(store: &TenantStore, limit: u64) -> Result<()> {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SnapshotCoverage {
+    pub(crate) kind: SnapshotKind,
     pub(crate) manifest_id: String,
     pub(crate) snapshot_sha256: String,
     pub(crate) backend_sha256: String,
     pub(crate) meta: SnapshotMeta<u64, BasicNode>,
+}
+
+pub fn recovery_snapshot_bytes(domains: &TenantStorageSet) -> Result<u64> {
+    Ok(load_manifest(
+        domains.application(),
+        b"current",
+        RaftLimits::default().max_snapshot_bytes,
+    )?
+    .map_or(0, |manifest| manifest.bytes))
 }
 
 fn validate_snapshot_coverage(
@@ -617,14 +708,16 @@ fn validate_snapshot_coverage(
         load(domains.custody().store(), META, b"snapshot_coverage")?
             .context("snapshot lacks independently readable control coverage")?;
     ensure!(
-        coverage.manifest_id == manifest.id
+        coverage.kind == SnapshotKind::Application
+            && snapshot.kind == SnapshotKind::Application
+            && coverage.manifest_id == manifest.id
             && coverage.snapshot_sha256 == manifest.sha256
             && coverage.backend_sha256 == sha256(&snapshot.backend)
             && coverage.meta == snapshot.meta,
         "snapshot/control coverage mismatch"
     );
     crate::snapshot_custody::check_published(
-        domains,
+        domains.custody(),
         &snapshot.meta,
         &manifest.sha256,
         snapshot.retirement.as_ref(),
@@ -680,6 +773,7 @@ fn stage_snapshot(
         install.push(put(SNAPSHOT, b"obsolete", serde_json::to_vec(&previous)?));
     }
     let coverage = SnapshotCoverage {
+        kind: SnapshotKind::Application,
         manifest_id: manifest.id,
         snapshot_sha256: manifest.sha256,
         backend_sha256: sha256(&snapshot.backend),
@@ -700,7 +794,7 @@ fn publish_snapshot(
 ) -> Result<()> {
     let coverage = pending.coverage;
     let mut custody = crate::snapshot_custody::installation_writes(
-        domains,
+        domains.custody(),
         &snapshot.meta,
         snapshot.retirement.as_ref(),
         &coverage.backend_sha256,
@@ -775,7 +869,7 @@ impl StateMachine {
         limits: RaftLimits,
         lease: Option<Arc<StorageLease>>,
     ) -> Result<Self> {
-        let control_gate = control_gate(&domains)?;
+        let control_gate = control_gate(domains.custody())?;
         let store = StorageHandle::new(domains.application().clone(), lease.clone());
         let domains = StorageHandle::new(domains, lease.clone());
         let backend = StorageHandle::new(backend, lease);
@@ -860,7 +954,7 @@ fn load_snapshot(store: &TenantStore, limit: u64) -> Result<Option<SnapshotEnvel
         .transpose()
 }
 
-fn as_snapshot(snapshot: &SnapshotEnvelope, limit: u64) -> Result<Snapshot<TypeConfig>> {
+pub(crate) fn as_snapshot(snapshot: &SnapshotEnvelope, limit: u64) -> Result<Snapshot<TypeConfig>> {
     Ok(Snapshot {
         meta: snapshot.meta.clone(),
         snapshot: Box::new(SnapshotBuffer::from_bytes(
@@ -978,6 +1072,19 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
                         crate::AppliedResponse::application(Vec::new())
                     }
                     EntryPayload::Normal(command) => {
+                        if let Some(closed) = command.custody_command()? {
+                            let _control = machine.control_gate.lock().map_err(|_| {
+                                anyhow::anyhow!("control publication lock poisoned")
+                            })?;
+                            let data = crate::control::apply_custody(
+                                machine.domains.custody(),
+                                &position,
+                                &closed,
+                            )?;
+                            state.log_id = Some(entry.log_id);
+                            responses.push(data);
+                            continue;
+                        }
                         machine.backend.apply(&position, command.bytes())?
                     }
                 };
@@ -1019,10 +1126,14 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
                 snapshot_id: uuid::Uuid::new_v4().to_string(),
             };
             let backend = machine.backend.snapshot()?;
-            let retirement =
-                crate::snapshot_custody::capture(&machine.domains, &meta, backend.retirement)?;
+            let retirement = crate::snapshot_custody::capture(
+                machine.domains.custody(),
+                &meta,
+                backend.retirement,
+            )?;
             Ok(SnapshotEnvelope {
                 version: 1,
+                kind: SnapshotKind::Application,
                 meta,
                 backend: backend.data,
                 retirement,
@@ -1074,6 +1185,30 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
                 envelope.meta.last_log_id.map(|id| id.index) >= state.log_id.map(|id| id.index),
                 "snapshot would revert applied state"
             );
+            if envelope.kind == SnapshotKind::Custody {
+                ensure!(
+                    envelope.backend.is_empty(),
+                    "custody snapshot contains application payload"
+                );
+                envelope
+                    .retirement
+                    .as_ref()
+                    .context("custody snapshot retirement absent")?
+                    .validate(&meta)?;
+                let _control = machine
+                    .control_gate
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("control publication lock poisoned"))?;
+                // A serving engine must stop releasing plaintext before the
+                // closed retirement boundary becomes visible. Recovery then
+                // opens the same group using custody storage only.
+                machine.failed.store(true, Ordering::Release);
+                machine.backend.close_application();
+                crate::custody_machine::publish(machine.domains.custody(), &envelope)?;
+                state.log_id = envelope.meta.last_log_id;
+                state.membership = envelope.meta.last_membership;
+                return Ok(());
+            }
             let actual = machine.backend.validate_snapshot(&envelope.backend)?;
             crate::snapshot_custody::check_backend(&meta, envelope.retirement.as_ref(), actual)?;
             // Durably install encrypted chunks and their manifest, then atomically publish backend state.

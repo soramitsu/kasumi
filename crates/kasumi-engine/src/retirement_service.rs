@@ -20,8 +20,14 @@ impl Database {
         request: RetireSourceRequest,
     ) -> Result<VerifiedRetirementReceipt> {
         self.access()?;
-        self.engine.authorize(context, None, Action::Admin)?;
         request.validate()?;
+        if self.engine.generation()?.state.retired {
+            return self
+                .retired_custody()?
+                .verify_retirement_receipt(context.clone(), &request.reference()?)
+                .await;
+        }
+        self.engine.authorize(context, None, Action::Admin)?;
         let reference = request.reference()?;
         self.barrier().await?;
         self.engine.authorize(context, None, Action::Admin)?;
@@ -78,6 +84,12 @@ impl Database {
         reference: &RetirementRef,
     ) -> Result<Option<RetirementStatus>> {
         self.access()?;
+        if self.engine.generation()?.state.retired {
+            return self
+                .retired_custody()?
+                .retirement_status(context, reference)
+                .await;
+        }
         self.engine.authorize(context, None, Action::Admin)?;
         reference.validate()?;
         let fence = self.response_fence(context)?;
@@ -108,6 +120,12 @@ impl Database {
         reference: &RetirementRef,
     ) -> Result<VerifiedRetirementReceipt> {
         let result = async {
+            if self.engine.generation()?.state.retired {
+                return self
+                    .retired_custody()?
+                    .verify_retirement_receipt(context.clone(), reference)
+                    .await;
+            }
             self.engine.authorize(&context, None, Action::Admin)?;
             let fence = self.response_fence(&context)?;
             let status = self
@@ -135,8 +153,15 @@ impl Database {
         request: RetireSourceRequest,
     ) -> Result<VerifiedRetirementResolution> {
         let result = async {
-            self.engine.authorize(&context, None, Action::Admin)?;
             let reference = request.reference()?;
+            if self.engine.generation()?.state.retired {
+                return self
+                    .retired_custody()?
+                    .verify_retirement_receipt(context.clone(), &reference)
+                    .await
+                    .map(VerifiedRetirementResolution::Retired);
+            }
+            self.engine.authorize(&context, None, Action::Admin)?;
             self.submit(context.clone(), Operation::AbortRetirement(request))
                 .await?;
             let resolved = async {
@@ -174,11 +199,11 @@ impl Database {
         &self,
         context: &RequestContext,
         resolution: &VerifiedRetirementResolution,
-    ) -> Result<ResponseFence<'_>> {
+    ) -> Result<RetirementResponseFence<'_>> {
         match resolution {
-            VerifiedRetirementResolution::Retired(proof) => {
-                self.retirement_response_fence(context, proof)
-            }
+            VerifiedRetirementResolution::Retired(proof) => self
+                .retirement_response_fence(context, proof)
+                .map(RetirementResponseFence::Custody),
             VerifiedRetirementResolution::Stopped(proof) => {
                 let fence = self.response_fence(context)?;
                 self.engine.authorize(context, None, Action::Admin)?;
@@ -202,7 +227,7 @@ impl Database {
                     ));
                 }
                 fence.check()?;
-                Ok(fence)
+                Ok(RetirementResponseFence::Application(fence))
             }
         }
     }
@@ -211,27 +236,21 @@ impl Database {
         &self,
         context: &RequestContext,
         proof: &VerifiedRetirementReceipt,
-    ) -> Result<ResponseFence<'_>> {
-        let fence = self.response_fence(context)?;
-        self.engine.authorize(context, None, Action::Admin)?;
-        let generation = self.engine.generation()?;
-        let reference = RetirementRef {
-            source_incarnation: proof.source_incarnation().into(),
-            retirement_id: proof.retirement_id().into(),
-            request_digest: proof.request_digest().into(),
-        };
-        let record = crate::state::retirement::lookup(&generation.state, context, &reference)?
-            .ok_or_else(|| Error::new(ErrorCode::NotFound, "retirement receipt absent"))?;
-        if !generation.state.retired
-            || !generation.state.suspended
-            || record.outcome.as_ref().ok() != Some(proof.receipt())
-        {
-            return Err(Error::new(
-                ErrorCode::Conflict,
-                "source retirement fence differs",
-            ));
+    ) -> Result<CustodyResponseFence> {
+        self.retired_custody()?
+            .retirement_response_fence(context, proof)
+    }
+}
+
+pub enum RetirementResponseFence<'a> {
+    Application(ResponseFence<'a>),
+    Custody(CustodyResponseFence),
+}
+impl RetirementResponseFence<'_> {
+    pub fn check(&self) -> Result<()> {
+        match self {
+            Self::Application(fence) => fence.check(),
+            Self::Custody(fence) => fence.check(),
         }
-        fence.check()?;
-        Ok(fence)
     }
 }

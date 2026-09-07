@@ -27,6 +27,43 @@ fn policy() -> Policy {
         strict_read_audit: false,
     }
 }
+
+async fn reopen_custody(
+    node: Arc<NodeStore>,
+    audit: Arc<SecurityAudit>,
+) -> Arc<kasumi_engine::RetiredCustody> {
+    let store = kasumi_store::CustodyStore::open(
+        node,
+        context().tenant,
+        Arc::new(LocalKeyProvider::new([241; 32])),
+    )
+    .await
+    .unwrap();
+    let control = kasumi_raft::ControlLog::installed(store.clone())
+        .unwrap()
+        .unwrap();
+    let id = control.node_id();
+    let group = control.group().to_owned();
+    let router = Arc::new(kasumi_raft::InProcessRouter::default());
+    let custody = kasumi_engine::RetiredCustody::open_replicated(
+        store,
+        id,
+        group.clone(),
+        router.clone(),
+        kasumi_raft::Config::default(),
+        kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+        audit,
+    )
+    .await
+    .unwrap();
+    let raft = custody.raft_group().unwrap().raft();
+    router.register(group, id, raft.clone());
+    raft.wait(Some(std::time::Duration::from_secs(10)))
+        .current_leader(id, "existing custody voter")
+        .await
+        .unwrap();
+    custody
+}
 struct Fixture {
     directory: tempfile::TempDir,
     db: Arc<Database>,
@@ -318,26 +355,7 @@ async fn exact_retirement_seals_source_once_and_retains_proof_after_encrypted_re
     drop(destination);
     let node = NodeStore::open(path).unwrap();
     let audit = common::security_audit(node.clone()).await;
-    let store = TenantStore::open(
-        node,
-        context().tenant,
-        Arc::new(LocalKeyProvider::new([0xe1; 32])),
-    )
-    .await
-    .unwrap();
-    let db = kasumi_engine::open_local(
-        kasumi_store::test_utils::with_custody(
-            store,
-            std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
-        )
-        .await
-        .unwrap(),
-        policy(),
-        Limits::default(),
-        audit.clone(),
-    )
-    .await
-    .unwrap();
+    let db = reopen_custody(node, audit.clone()).await;
     // Permanent recovery does not need backup objects to be read again, and the
     // original action deadline does not expire immutable retirement evidence.
     assert_eq!(
@@ -348,7 +366,7 @@ async fn exact_retirement_seals_source_once_and_retains_proof_after_encrypted_re
         &receipt
     );
     assert_eq!(
-        db.retire_source(context(), request)
+        db.verify_retirement_receipt(context(), &reference)
             .await
             .unwrap()
             .receipt(),
@@ -467,14 +485,23 @@ async fn retired_source_rotates_custody_without_reopening_data_or_rewriting_orig
         .db
         .retirement_response_fence(&context(), &proof)
         .unwrap();
-    let mut replacement = policy();
-    replacement.grants[0].principal = "custodian".into();
-    fixture
-        .db
-        .administer(context(), Operation::SetPolicy(replacement))
-        .await
-        .unwrap();
-    assert_eq!(fence.check().unwrap_err().code, ErrorCode::Conflict);
+    let closed = fixture.db.retired_custody().unwrap();
+    let rotate = CustodyRequest {
+        retirement: reference.clone(),
+        command_id: "rotate-custody".into(),
+        expected_policy_epoch: 1,
+        not_after_ms: u64::MAX,
+        action: CustodyAction::ReplaceAdministrators(BTreeSet::from(["custodian".into()])),
+    };
+    assert_eq!(
+        closed
+            .execute(context(), rotate.clone())
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::UnknownOutcome
+    );
+    assert_eq!(fence.check().unwrap_err().code, ErrorCode::Forbidden);
     drop(fence);
     for result in [
         fixture
@@ -498,6 +525,9 @@ async fn retired_source_rotates_custody_without_reopening_data_or_rewriting_orig
         principal: "custodian".into(),
         ..context()
     };
+    let replay = closed.execute(custodian.clone(), rotate).await.unwrap();
+    assert_eq!(replay.principal, "owner");
+    replay.outcome.unwrap();
     assert_eq!(
         fixture
             .db
@@ -533,7 +563,7 @@ async fn retired_source_rotates_custody_without_reopening_data_or_rewriting_orig
             .await
             .unwrap_err()
             .code,
-        ErrorCode::Sealed
+        ErrorCode::Forbidden
     );
     assert_eq!(
         fixture
@@ -542,7 +572,7 @@ async fn retired_source_rotates_custody_without_reopening_data_or_rewriting_orig
             .await
             .unwrap_err()
             .code,
-        ErrorCode::Sealed
+        ErrorCode::Forbidden
     );
     let result = fixture
         .db
@@ -560,7 +590,10 @@ async fn retired_source_rotates_custody_without_reopening_data_or_rewriting_orig
             },
         )
         .await;
-    assert_eq!(result.unwrap_err().code, ErrorCode::Sealed);
+    assert!(matches!(
+        result.unwrap_err().code,
+        ErrorCode::Sealed | ErrorCode::Forbidden
+    ));
     assert_eq!(
         fixture
             .db

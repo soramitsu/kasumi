@@ -404,3 +404,146 @@ async fn accepted_boundary_and_exact_applied_position_publish_atomically_before_
     assert!(successes > 0);
     Ok(())
 }
+
+fn membership(index: u64) -> Entry<TypeConfig> {
+    Entry {
+        log_id: id(index),
+        payload: EntryPayload::Membership(Membership::new(
+            vec![BTreeSet::from([1])],
+            [(1, BasicNode::new("local"))]
+                .into_iter()
+                .collect::<std::collections::BTreeMap<_, _>>(),
+        )),
+    }
+}
+
+#[tokio::test]
+async fn reserved_committed_retirement_recovers_atomic_custody_after_crash_without_app_key()
+-> Result<()> {
+    let disk = FaultBackend::new();
+    let (stores, app_provider, custody_provider, mut log) = fixture(disk.clone()).await?;
+    log.blocking_append([membership(0), retirement_entry()?])
+        .await?;
+    let reader = ControlLog::open(stores.custody().clone(), 1, group())?;
+    assert!(
+        !reader.recover_retired()?,
+        "uncommitted append cannot select retired mode"
+    );
+    log.save_committed(Some(id(1))).await?;
+    let crash = disk.crash();
+    app_provider.revoke();
+    assert!(stores.application().refresh_lease().await.is_err());
+    let probes = app_provider.probe_count();
+    drop(reader);
+    drop(log);
+    drop(stores);
+    let custody = CustodyStore::open(
+        NodeStore::open_with_backend(crash.clone())?,
+        "tenant".into(),
+        custody_provider.clone(),
+    )
+    .await?;
+    let reader = ControlLog::open(custody.clone(), 1, group())?;
+    assert!(reader.recover_retired()?);
+    let saved = custody_state(&custody)?;
+    assert_eq!(saved.origin.receipt.revision, 1);
+    assert_eq!(saved.origin.receipt.policy_epoch, 2);
+    assert_eq!(saved.policy_epoch, 1);
+    assert_eq!(app_provider.probe_count(), probes);
+    let restarted = crash.crash();
+    drop(reader);
+    drop(custody);
+    let custody = CustodyStore::open(
+        NodeStore::open_with_backend(restarted)?,
+        "tenant".into(),
+        custody_provider,
+    )
+    .await?;
+    assert!(ControlLog::open(custody.clone(), 1, group())?.recover_retired()?);
+    assert_eq!(custody_state(&custody)?, saved);
+    custody.store().shutdown().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn exhausted_seed_completion_budget_cannot_promote_a_committed_candidate() -> Result<()> {
+    let disk = FaultBackend::new();
+    let (stores, _, _, mut log) = fixture(disk).await?;
+    let (command, prior) = seed()?;
+    let mut source = prior.source().clone();
+    source.max_snapshot_bytes = source.snapshot_bytes + 100;
+    let seed = RetirementLogSeed::prepare(&command, source)?;
+    assert_eq!(
+        seed.reserve_success_capacity().unwrap_err().code,
+        ErrorCode::QuotaExceeded
+    );
+    log.blocking_append([
+        membership(0),
+        Entry {
+            log_id: id(1),
+            payload: EntryPayload::Normal(RaftCommand::retirement(
+                serde_json::to_vec(&command)?,
+                seed,
+            )?),
+        },
+    ])
+    .await?;
+    log.save_committed(Some(id(1))).await?;
+    assert!(
+        ControlLog::open(stores.custody().clone(), 1, group())?
+            .recover_retired()
+            .is_err()
+    );
+    assert!(retired_boundary(stores.custody())?.is_none());
+    assert!(load::<AppliedCursor>(stores.custody().store(), META, b"applied")?.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn failed_or_already_applied_without_boundary_cannot_be_reinterpreted_as_retired()
+-> Result<()> {
+    let disk = FaultBackend::new();
+    let (stores, _, _, mut log) = fixture(disk).await?;
+    let (mut command, prior) = seed()?;
+    command.timestamp_ms = 1001;
+    let seed = RetirementLogSeed::prepare(&command, prior.source().clone())?;
+    log.blocking_append([
+        membership(0),
+        Entry {
+            log_id: id(1),
+            payload: EntryPayload::Normal(RaftCommand::retirement(
+                serde_json::to_vec(&command)?,
+                seed,
+            )?),
+        },
+    ])
+    .await?;
+    log.save_committed(Some(id(1))).await?;
+    assert!(!ControlLog::open(stores.custody().clone(), 1, group())?.recover_retired()?);
+    let disk = FaultBackend::new();
+    let (stores, _, _, mut log) = fixture(disk).await?;
+    let entry = retirement_entry()?;
+    let digest = match &entry.payload {
+        EntryPayload::Normal(command) => sha256(command.bytes()),
+        _ => unreachable!(),
+    };
+    log.blocking_append([membership(0), entry]).await?;
+    log.save_committed(Some(id(1))).await?;
+    stores.custody().store().write_batch(&[WriteOp::put(
+        META,
+        b"applied",
+        serde_json::to_vec(&AppliedCursor::Entry(AppliedPosition {
+            log_id: id(1),
+            previous: Some(id(0)),
+            membership: StoredMembership::default(),
+            command_sha256: digest,
+        }))?,
+    )])?;
+    assert!(
+        ControlLog::open(stores.custody().clone(), 1, group())?
+            .recover_retired()
+            .is_err()
+    );
+    assert!(retired_boundary(stores.custody())?.is_none());
+    Ok(())
+}
