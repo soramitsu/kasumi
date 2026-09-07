@@ -54,6 +54,7 @@ pub struct TenantEngine {
     tenant: String,
     incarnation: String,
     revision_base: u64,
+    restoration_identity: String,
     access: std::sync::OnceLock<kasumi_store::StorageAccess>,
 }
 
@@ -260,6 +261,7 @@ impl TenantEngine {
             retired: false,
             pending_restore: None,
             restored_from: None,
+            restore_lineage: Vec::new(),
             document_count: 0,
             logical_bytes: 0,
             policy,
@@ -285,7 +287,10 @@ impl TenantEngine {
                 "bootstrap exceeds snapshot byte budget",
             ));
         }
+        let restoration_identity =
+            staged_digest(&(&state.restored_from, &state.restore_lineage))?.0;
         Ok(Self {
+            restoration_identity,
             access: std::sync::OnceLock::new(),
             current: ArcSwapOption::from_pointee(Generation {
                 state,
@@ -315,6 +320,7 @@ impl TenantEngine {
             tenant: state.tenant.clone(),
             incarnation: state.incarnation.clone(),
             revision_base: state.revision_base,
+            restoration_identity: staged_digest(&(&state.restored_from, &state.restore_lineage))?.0,
             apply_lock: Mutex::new(()),
             current: ArcSwapOption::empty(),
         };
@@ -346,6 +352,10 @@ impl TenantEngine {
                 "restored origin differs from verified snapshot",
             ));
         }
+        state.restore_lineage.push(RestoreLineageLink {
+            checkpoint: checkpoint.clone(),
+            target_incarnation: incarnation.clone(),
+        });
         state.restored_from = Some(checkpoint.clone());
         state.incarnation = incarnation;
         state.pending_restore = Some(PendingRestore {
@@ -396,6 +406,7 @@ impl TenantEngine {
             tenant: state.tenant.clone(),
             incarnation: state.incarnation.clone(),
             revision_base: state.revision_base,
+            restoration_identity: staged_digest(&(&state.restored_from, &state.restore_lineage))?.0,
             apply_lock: Mutex::new(()),
             current: ArcSwapOption::empty(),
         };
@@ -491,6 +502,8 @@ impl TenantEngine {
             .authorization
             .check_admitted_at(command.timestamp_ms)
         {
+            Err(error)
+        } else if let Err(error) = authorize_resource(&next, &command.context) {
             Err(error)
         } else {
             apply_operation(
@@ -789,6 +802,8 @@ impl TenantEngine {
             || state.incarnation != self.incarnation
             || state.revision_base != self.revision_base
             || state.revision < state.revision_base
+            || staged_digest(&(&state.restored_from, &state.restore_lineage))?.0
+                != self.restoration_identity
         {
             return Err(Error::new(
                 ErrorCode::Corruption,
@@ -885,6 +900,14 @@ impl TenantEngine {
         staging::validate_restored(&state)?;
         schema::validate_restored(&state)?;
         retirement::validate_restored(&state)?;
+        validate_restore_lineage(
+            &state.tenant,
+            &state.incarnation,
+            state.revision,
+            state.restored_from.as_ref(),
+            &state.restore_lineage,
+        )
+        .map_err(|_| Error::new(ErrorCode::Corruption, "invalid restore lineage"))?;
         if let Some(origin) = &state.restored_from {
             origin.validate()?;
             if origin.tenant != state.tenant
@@ -939,6 +962,7 @@ fn authorize_state(
     collection: Option<&str>,
     action: Action,
 ) -> Result<()> {
+    authorize_resource(state, context)?;
     if context.tenant != state.tenant {
         return Err(Error::new(ErrorCode::Forbidden, "tenant access denied"));
     }
@@ -965,6 +989,7 @@ fn authorize_discovery_state(
     context: &RequestContext,
     action: Action,
 ) -> Result<()> {
+    authorize_resource(state, context)?;
     if context.tenant != state.tenant
         || !context.scopes.contains(&action)
         || !state
@@ -982,6 +1007,16 @@ fn authorize_discovery_state(
         ));
     }
     Ok(())
+}
+
+/// Native credentials bind their exact installed purpose and incarnation.
+/// Replicas use this same immutable metadata without sampling local time.
+pub(crate) fn authorize_resource(state: &TenantState, context: &RequestContext) -> Result<()> {
+    if state.tenant == crate::control::CONTROL_TENANT {
+        context.authorization.require_control(&state.incarnation)
+    } else {
+        context.authorization.require_database(&state.incarnation)
+    }
 }
 
 fn apply_operation(
@@ -1224,7 +1259,9 @@ fn apply_operation(
         }
         Operation::Audit(event) => {
             let action = match event.action.as_str() {
-                "read" | "discovery" | "change_feed" | "archive_receipt" => Action::Read,
+                "read" | "discovery" | "change_feed" | "archive_receipt" | "restore_lineage" => {
+                    Action::Read
+                }
                 "receipt" => Action::Write,
                 "schema_activation_status" | "schema_read" => Action::Admin,
                 _ => {

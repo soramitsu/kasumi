@@ -57,6 +57,7 @@ struct Claims {
     tenant: String,
     scope: String,
     exp: u64,
+    kasumi_resource: kasumi_types::CredentialResource,
     #[serde(default)]
     token_use: Option<String>,
 }
@@ -411,6 +412,7 @@ impl Authenticator {
         let authorization = RequestAuthorization::from_verified_credential(
             claims.exp.checked_mul(1000).ok_or_else(unauthorized)?,
             &observation,
+            claims.kasumi_resource,
         )?;
         Ok(RequestContext {
             authorization,
@@ -487,7 +489,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        serde_json::json!({"iss":"https://issuer.example","aud":"https://kasumi.example/mcp","sub":"person","tenant":"tenant-a","scope":"kasumi:read kasumi:write unrelated","exp":now+300,"nbf":now-1,"token_use":"access"})
+        serde_json::json!({"iss":"https://issuer.example","aud":"https://kasumi.example/mcp","sub":"person","tenant":"tenant-a","kasumi_resource":{"kind":"database","incarnation":"00000000-0000-0000-0000-000000000001"},"scope":"kasumi:read kasumi:write unrelated","exp":now+300,"nbf":now-1,"token_use":"access"})
     }
     fn bearer(key: &EncodingKey, claims: &serde_json::Value, typ: &str) -> String {
         let mut header = Header::new(Algorithm::EdDSA);

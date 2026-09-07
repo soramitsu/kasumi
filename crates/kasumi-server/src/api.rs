@@ -179,12 +179,18 @@ impl DatabaseRegistry {
         if context.tenant.starts_with("__kasumi_") {
             return Err(Error::new(ErrorCode::Forbidden, "tenant access denied"));
         }
-        self.databases
+        context.authorization.check_live()?;
+        let database = self
+            .databases
             .read()
             .map_err(|_| Error::new(ErrorCode::Unavailable, "tenant registry unavailable"))?
             .get(&context.tenant)
             .cloned()
-            .ok_or_else(|| Error::new(ErrorCode::Forbidden, "tenant access denied"))
+            .ok_or_else(|| Error::new(ErrorCode::Forbidden, "tenant access denied"))?;
+        context
+            .authorization
+            .require_database(&database.engine().generation()?.state.incarnation)?;
+        Ok(database)
     }
 }
 
@@ -274,6 +280,7 @@ pub(crate) fn status(error: Error) -> tonic::Status {
 
 #[cfg(test)]
 mod tests {
+    include!("api_resource_lineage_tests.rs");
     include!("api_staging_tests.rs");
     include!("api_guarded_staging_tests.rs");
     include!("api_history_tests.rs");
@@ -307,6 +314,7 @@ mod tests {
     use tower::ServiceExt;
 
     struct Fixture {
+        incarnation: uuid::Uuid,
         _dir: tempfile::TempDir,
         db: Arc<Database>,
         registry: DatabaseRegistry,
@@ -408,7 +416,11 @@ mod tests {
             .unwrap();
             let registry = DatabaseRegistry::default();
             registry.insert(db.clone()).unwrap();
+            let incarnation =
+                uuid::Uuid::parse_str(&db.engine().generation().unwrap().state.incarnation)
+                    .unwrap();
             Self {
+                incarnation,
                 _dir: dir,
                 db,
                 registry,
@@ -419,6 +431,28 @@ mod tests {
             }
         }
         fn token(&self, principal: &str, tenant: &str, scope: &str) -> String {
+            self.resource_token(
+                principal,
+                tenant,
+                scope,
+                Some(json!({"kind":"database","incarnation":self.incarnation})),
+            )
+        }
+        fn custody_token(&self, principal: &str) -> String {
+            self.resource_token(
+                principal,
+                "tenant-a",
+                "kasumi:admin",
+                Some(json!({"kind":"custody","incarnation":self.incarnation})),
+            )
+        }
+        fn resource_token(
+            &self,
+            principal: &str,
+            tenant: &str,
+            scope: &str,
+            resource: Option<Value>,
+        ) -> String {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -426,7 +460,11 @@ mod tests {
             let mut header = Header::new(Algorithm::EdDSA);
             header.kid = Some("test-key".into());
             header.typ = Some("at+jwt".into());
-            format!("Bearer {}", encode(&header, &json!({"sub":principal,"tenant":tenant,"scope":scope,"iss":"https://issuer.example","aud":"https://kasumi.example/mcp","exp":now+300}), &self.key).unwrap())
+            let mut claims = json!({"sub":principal,"tenant":tenant,"scope":scope,"iss":"https://issuer.example","aud":"https://kasumi.example/mcp","exp":now+300});
+            if let Some(resource) = resource {
+                claims["kasumi_resource"] = resource;
+            }
+            format!("Bearer {}", encode(&header, &claims, &self.key).unwrap())
         }
         fn router(&self) -> Router {
             router(
@@ -1455,6 +1493,12 @@ name: "docs".into(),
                 authorization: kasumi_types::RequestAuthorization::from_verified_credential(
                     observation.utc_ms() + 1000,
                     &observation,
+                    kasumi_types::CredentialResource::Database {
+                        incarnation: uuid::Uuid::parse_str(
+                            &fixture.db.engine().generation().unwrap().state.incarnation,
+                        )
+                        .unwrap(),
+                    },
                 )
                 .unwrap(),
                 principal: "person".into(),
@@ -1747,7 +1791,7 @@ name: "docs".into(),
             Arc::new(|_| anyhow::bail!("fixture has no installed authority credential")),
         )
         .unwrap();
-        let token = fixture.token("person", tenant, "kasumi:admin kasumi:read kasumi:write");
+        let token = fixture.resource_token("person", tenant, "kasumi:admin kasumi:read kasumi:write", Some(json!({"kind":"control","incarnation":control.engine().generation().unwrap().state.incarnation})));
         let limits = Limits {
             max_audit_records: 10,
             ..Limits::default()
@@ -1767,7 +1811,7 @@ name: "docs".into(),
             Code::PermissionDenied
         );
         let admin = bare.with_management(manager);
-        let impostor = fixture.token("reader", tenant, "kasumi:admin");
+        let impostor = fixture.resource_token("reader", tenant, "kasumi:admin", Some(json!({"kind":"control","incarnation":control.engine().generation().unwrap().state.incarnation})));
         assert_eq!(
             admin
                 .set_limits(native(

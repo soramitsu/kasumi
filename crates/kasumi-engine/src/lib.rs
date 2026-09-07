@@ -1,6 +1,8 @@
 //! Deterministic tenant state and the common authorized service layer.
+mod restore_lineage_proof;
 mod retirement_closure;
 mod retirement_proof;
+pub use restore_lineage_proof::VerifiedRestoreLineage;
 mod retirement_source;
 pub use retirement_proof::{
     VerifiedRetirementReceipt, VerifiedRetirementResolution, VerifiedRetirementStop,
@@ -19,9 +21,9 @@ mod service;
 mod state;
 pub use bootstrap::{
     PreparedReplicaRestore, ReplicaPlacement, ReplicaRestoreConfig, ReplicatedBootstrap,
-    RestoreSource, initialize_replicated, open_local, open_replicated, prepare_replicated_restore,
-    recovery_workspace_bytes, restore_local, restore_local_with_incarnation,
-    restore_local_with_incarnation_and_admission,
+    RestoreSource, initialize_replicated, open_local, open_local_with_incarnation, open_replicated,
+    prepare_replicated_restore, recovery_workspace_bytes, restore_local,
+    restore_local_with_incarnation, restore_local_with_incarnation_and_admission,
 };
 pub use security_audit::{
     SECURITY_TENANT, SecurityAudit, SecurityEvent, SecurityEventKind, SecurityOutcome,

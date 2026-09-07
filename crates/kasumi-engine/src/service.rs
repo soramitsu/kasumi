@@ -19,6 +19,8 @@ mod history_export;
 #[path = "history_reads.rs"]
 mod history_reads;
 pub use custody_service::{CustodyResponseFence, RetiredCustody};
+#[path = "restore_lineage_service.rs"]
+mod restore_lineage_service;
 #[path = "retirement_service.rs"]
 mod retirement_service;
 pub use retirement_service::RetirementResponseFence;
@@ -376,6 +378,7 @@ impl ResponseFence<'_> {
             .admission()
             .check_release(&self.cancellation)?;
         let generation = self.database.engine.generation()?;
+        crate::state::authorize_resource(&generation.state, &self.context)?;
         if generation.state.tenant != self.context.tenant {
             return Err(Error::new(ErrorCode::Forbidden, "tenant access denied"));
         }
@@ -411,6 +414,7 @@ impl Database {
         context.authorization.check_live()?;
         self.access()?;
         let generation = self.engine.generation()?;
+        crate::state::authorize_resource(&generation.state, context)?;
         if generation.state.tenant != context.tenant {
             return Err(Error::new(ErrorCode::Forbidden, "tenant access denied"));
         }

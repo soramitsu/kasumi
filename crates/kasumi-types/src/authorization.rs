@@ -1,6 +1,6 @@
 //! Required first-release invocation validity. Deserialization yields replicated
 //! observations, never a new live service or bearer invocation.
-use crate::{Error, ErrorCode, Result};
+use crate::{CredentialResource, Error, ErrorCode, Result};
 use kasumi_clock::{ClockObservation, ElapsedDeadline};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::sync::Arc;
@@ -9,7 +9,10 @@ use std::sync::Arc;
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum AuthorizationMetadata {
     ServiceIdentity {},
-    Credential { expires_at_ms: u64 },
+    Credential {
+        expires_at_ms: u64,
+        resource: CredentialResource,
+    },
 }
 #[derive(Clone)]
 enum LiveAuthorization {
@@ -65,10 +68,15 @@ impl RequestAuthorization {
     pub fn from_verified_credential(
         expires_at_ms: u64,
         observation: &ClockObservation,
+        resource: CredentialResource,
     ) -> Result<Self> {
+        resource.validate()?;
         let deadline = observation.until(expires_at_ms).map_err(|_| expired())?;
         Ok(Self {
-            metadata: AuthorizationMetadata::Credential { expires_at_ms },
+            metadata: AuthorizationMetadata::Credential {
+                expires_at_ms,
+                resource,
+            },
             live: Some(Arc::new(LiveAuthorization::Credential(deadline))),
         })
     }
@@ -89,21 +97,53 @@ impl RequestAuthorization {
     /// Deterministic replica check against the trusted timestamp captured by the
     /// serialized leader. It deliberately does not sample a replica wall clock.
     pub fn check_admitted_at(&self, trusted_timestamp_ms: u64) -> Result<()> {
-        match self.metadata {
+        match &self.metadata {
             AuthorizationMetadata::ServiceIdentity {} => Ok(()),
-            AuthorizationMetadata::Credential { expires_at_ms }
-                if trusted_timestamp_ms < expires_at_ms =>
+            AuthorizationMetadata::Credential { expires_at_ms, .. }
+                if trusted_timestamp_ms < *expires_at_ms =>
             {
                 Ok(())
             }
             AuthorizationMetadata::Credential { .. } => Err(expired()),
         }
     }
-    pub fn expires_at_ms(&self) -> Option<u64> {
-        match self.metadata {
-            AuthorizationMetadata::ServiceIdentity {} => None,
-            AuthorizationMetadata::Credential { expires_at_ms } => Some(expires_at_ms),
+    /// Exact locally verified invocation identity. Equal serialized claims or a
+    /// second verification of the same token cannot recreate a captured fence.
+    pub fn same_live_invocation(&self, other: &Self) -> bool {
+        match (&self.live, &other.live) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            _ => false,
         }
+    }
+    pub fn expires_at_ms(&self) -> Option<u64> {
+        match &self.metadata {
+            AuthorizationMetadata::ServiceIdentity {} => None,
+            AuthorizationMetadata::Credential { expires_at_ms, .. } => Some(*expires_at_ms),
+        }
+    }
+    pub fn resource(&self) -> Option<&CredentialResource> {
+        match &self.metadata {
+            AuthorizationMetadata::ServiceIdentity {} => None,
+            AuthorizationMetadata::Credential { resource, .. } => Some(resource),
+        }
+    }
+    /// Deterministic scope checks apply equally to live leader invocations and
+    /// replicated credential metadata. They never turn metadata into a live call.
+    pub fn require_database(&self, incarnation: &str) -> Result<()> {
+        self.resource()
+            .map_or(Ok(()), |r| r.require_database(incarnation))
+    }
+    pub fn require_control(&self, incarnation: &str) -> Result<()> {
+        self.resource()
+            .map_or(Ok(()), |r| r.require_control(incarnation))
+    }
+    pub fn require_custody(&self, incarnation: &str) -> Result<()> {
+        self.resource()
+            .map_or(Ok(()), |r| r.require_custody(incarnation))
+    }
+    pub fn require_authority(&self, authority_id: uuid::Uuid, partition: u16) -> Result<()> {
+        self.resource()
+            .map_or(Ok(()), |r| r.require_authority(authority_id, partition))
     }
 }
 fn expired() -> Error {
@@ -118,6 +158,11 @@ mod tests {
         sync::atomic::{AtomicU64, Ordering},
         time::Duration,
     };
+    fn resource() -> CredentialResource {
+        CredentialResource::Database {
+            incarnation: uuid::Uuid::from_u128(1),
+        }
+    }
     struct Wall;
     impl WallClock for Wall {
         fn now_ms(&self) -> anyhow::Result<u64> {
@@ -134,9 +179,12 @@ mod tests {
     fn credential_clone_cannot_renew_expiry_and_serialization_cannot_mint_live_authority() {
         let clock = Arc::new(Clock(AtomicU64::new(20)));
         let epoch = EpochClock::new(clock.clone(), Arc::new(Wall)).unwrap();
-        let original =
-            RequestAuthorization::from_verified_credential(2000, &epoch.observe().unwrap())
-                .unwrap();
+        let original = RequestAuthorization::from_verified_credential(
+            2000,
+            &epoch.observe().unwrap(),
+            resource(),
+        )
+        .unwrap();
         clock.0.store(1000, Ordering::SeqCst);
         let delayed_clone = original.clone();
         delayed_clone.check_live().unwrap();
@@ -161,10 +209,14 @@ mod tests {
         let clock = Arc::new(Clock(AtomicU64::new(20)));
         let epoch = EpochClock::new(clock.clone(), Arc::new(Wall)).unwrap();
         let observation = epoch.observe().unwrap();
-        assert!(RequestAuthorization::from_verified_credential(1000, &observation).is_err());
-        assert!(RequestAuthorization::from_verified_credential(999, &observation).is_err());
+        assert!(
+            RequestAuthorization::from_verified_credential(1000, &observation, resource()).is_err()
+        );
+        assert!(
+            RequestAuthorization::from_verified_credential(999, &observation, resource()).is_err()
+        );
         let credential =
-            RequestAuthorization::from_verified_credential(2000, &observation).unwrap();
+            RequestAuthorization::from_verified_credential(2000, &observation, resource()).unwrap();
         clock.0.store(19, Ordering::SeqCst);
         assert!(credential.check_live().is_err());
         assert!(serde_json::from_str::<RequestAuthorization>(r#"{"kind":"credential"}"#).is_err());

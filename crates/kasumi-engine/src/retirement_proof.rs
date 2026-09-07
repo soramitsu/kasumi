@@ -62,10 +62,31 @@ impl VerifiedRetirementStop {
 #[derive(Clone, Debug)]
 pub struct VerifiedRetirementReceipt {
     receipt: RetirementReceipt,
+    invocation: Option<kasumi_types::RequestContext>,
 }
 impl VerifiedRetirementReceipt {
     pub(crate) fn new(receipt: RetirementReceipt) -> Self {
-        Self { receipt }
+        Self {
+            receipt,
+            invocation: None,
+        }
+    }
+    pub(crate) fn from_accepted_invocation(
+        receipt: RetirementReceipt,
+        context: &kasumi_types::RequestContext,
+    ) -> Self {
+        Self {
+            receipt,
+            invocation: Some(context.clone()),
+        }
+    }
+    pub(crate) fn is_accepted_invocation(&self, context: &kasumi_types::RequestContext) -> bool {
+        self.invocation.as_ref().is_some_and(|original| {
+            original == context
+                && original
+                    .authorization
+                    .same_live_invocation(&context.authorization)
+        })
     }
     pub fn tenant(&self) -> &str {
         &self.receipt.tenant

@@ -236,6 +236,10 @@ impl Backend {
         self.authorize(&self.meta().map_err(unavailable)?, context)
     }
     fn authorize(&self, meta: &Meta, context: &RequestContext) -> kasumi_types::Result<u64> {
+        context.authorization.require_authority(
+            self.installation.manifest.authority_id,
+            self.installation.partition,
+        )?;
         if context.tenant != self.installation.tenant()
             || !context.scopes.contains(&kasumi_types::Action::Admin)
             || !meta.administrators.contains(&context.principal)

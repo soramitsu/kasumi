@@ -407,6 +407,36 @@ pub async fn open_local(
     initial_limits: Limits,
     security_audit: Arc<SecurityAudit>,
 ) -> anyhow::Result<Arc<Database>> {
+    open_local_inner(stores, initial_policy, initial_limits, security_audit, None).await
+}
+
+/// Explicit genesis identity for local control storage and local test fixtures.
+/// It never accepts serving-authorized application storage or changes an
+/// existing incarnation. Remote production tenants remain replicated only.
+pub async fn open_local_with_incarnation(
+    stores: Arc<TenantStorageSet>,
+    initial_policy: Policy,
+    initial_limits: Limits,
+    security_audit: Arc<SecurityAudit>,
+    incarnation: uuid::Uuid,
+) -> anyhow::Result<Arc<Database>> {
+    anyhow::ensure!(!incarnation.is_nil(), "nil local incarnation");
+    open_local_inner(
+        stores,
+        initial_policy,
+        initial_limits,
+        security_audit,
+        Some(incarnation),
+    )
+    .await
+}
+async fn open_local_inner(
+    stores: Arc<TenantStorageSet>,
+    initial_policy: Policy,
+    initial_limits: Limits,
+    security_audit: Arc<SecurityAudit>,
+    incarnation: Option<uuid::Uuid>,
+) -> anyhow::Result<Arc<Database>> {
     let store = stores.application().clone();
     anyhow::ensure!(
         store.storage_access().serving_gate().is_none(),
@@ -420,7 +450,7 @@ pub async fn open_local(
         None => {
             let engine = TenantEngine::new(
                 store.tenant().into(),
-                uuid::Uuid::new_v4().to_string(),
+                incarnation.unwrap_or_else(uuid::Uuid::new_v4).to_string(),
                 initial_policy,
                 initial_limits,
             )?;
@@ -429,6 +459,13 @@ pub async fn open_local(
             bytes
         }
     };
+    if let Some(expected) = incarnation {
+        let state: TenantState = serde_json::from_slice(&bytes)?;
+        anyhow::ensure!(
+            state.incarnation == expected.to_string(),
+            "local incarnation differs from installed identity"
+        );
+    }
     start(stores, &bytes, security_audit).await
 }
 

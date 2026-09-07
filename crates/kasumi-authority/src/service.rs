@@ -284,6 +284,10 @@ impl IndependentAuthority {
             .map_err(|_| Error::new(ErrorCode::InvalidArgument, "invalid lease discovery"))?;
         self.route(&request.tenant)?;
         let context = caller.context;
+        context.authorization.require_authority(
+            self.installation().manifest.authority_id,
+            self.installation().partition,
+        )?;
         if context.tenant != self.installation().tenant()
             || !context.scopes.contains(&kasumi_types::Action::Read)
             || context.principal != request.node.principal
@@ -328,6 +332,10 @@ impl IndependentAuthority {
             .map_err(|_| Error::new(ErrorCode::InvalidArgument, "invalid lease request"))?;
         self.route(&request.identity.tenant)?;
         let context = caller.context;
+        context.authorization.require_authority(
+            self.installation().manifest.authority_id,
+            self.installation().partition,
+        )?;
         if context.tenant != self.installation().tenant()
             || !context.scopes.contains(&kasumi_types::Action::Read)
             || context.principal != request.identity.node.principal

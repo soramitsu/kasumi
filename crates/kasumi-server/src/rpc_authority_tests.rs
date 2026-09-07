@@ -201,7 +201,7 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
             .now_ms()
             .unwrap()
             / 1000;
-        jsonwebtoken::encode(&header, &json!({"sub":principal,"tenant":installation.tenant(),"scope":scopes,"iss":"https://identity.example","aud":"https://authority.example","exp":now+300}), &key).unwrap()
+        jsonwebtoken::encode(&header, &json!({"sub":principal,"tenant":installation.tenant(),"kasumi_resource":{"kind":"authority","authority_id":installation.manifest.authority_id,"partition":installation.partition},"scope":scopes,"iss":"https://identity.example","aud":"https://authority.example","exp":now+300}), &key).unwrap()
     };
     let admin = token("operator", "kasumi:admin");
     let incarnation = uuid::Uuid::new_v4();

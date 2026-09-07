@@ -13,8 +13,10 @@ use std::collections::BTreeSet;
 use tonic::{Request, transport::Channel};
 
 mod authority;
+mod restore_lineage_proof;
 mod retirement_proof;
 pub use authority::KasumiAuthorityClient;
+pub use restore_lineage_proof::VerifiedRestoreLineage;
 pub use retirement_proof::{
     VerifiedRetirementReceipt, VerifiedRetirementResolution, VerifiedRetirementStop,
 };
@@ -55,6 +57,36 @@ pub struct KasumiClient {
 }
 
 impl KasumiClient {
+    /// Current data authority observes immutable historical commitments. This
+    /// proof grants no present permission and exposes no backup/key locations.
+    pub async fn read_restore_lineage(
+        &mut self,
+        bearer: &str,
+        request: &kasumi_types::ReadRestoreLineage,
+    ) -> Result<VerifiedRestoreLineage, ClientError> {
+        let response = self
+            .inner
+            .read_restore_lineage(authorized(
+                bearer,
+                proto::ReadRestoreLineageRequest {
+                    request_json: encode(request)?,
+                },
+            )?)
+            .await?
+            .into_inner();
+        let observation: kasumi_types::RestoreLineageObservation =
+            serde_json::from_slice(&response.response_json)?;
+        observation
+            .validate()
+            .map_err(|_| ClientError::Authorization)?;
+        if observation.incarnation != request.expected_incarnation
+            || observation.collection != request.collection
+        {
+            return Err(ClientError::Authorization);
+        }
+        Ok(VerifiedRestoreLineage::from_verified_read(observation))
+    }
+
     pub async fn read_change_feed(
         &mut self,
         bearer: &str,

@@ -273,14 +273,18 @@ impl RuntimeConfig {
         match self.mode {
             DeploymentMode::Local => {
                 ensure!(
-                    self.replication.is_none()
-                        && self.control.incarnation.is_none()
-                        && self
-                            .tenants
-                            .iter()
-                            .all(|tenant| tenant.incarnation.is_none()),
+                    self.replication.is_none(),
                     "local mode cannot contain replicated bootstrap configuration"
                 );
+                for incarnation in std::iter::once(&self.control.incarnation)
+                    .chain(self.tenants.iter().map(|t| &t.incarnation))
+                    .flatten()
+                {
+                    ensure!(
+                        !uuid::Uuid::parse_str(incarnation)?.is_nil(),
+                        "nil local incarnation"
+                    );
+                }
             }
             DeploymentMode::Replicated => {
                 let replication = self
@@ -880,6 +884,7 @@ impl NodeRuntime {
             config.control.initial_policy.clone(),
             config.control.initial_limits.clone(),
             control_bootstrap,
+            config.control.incarnation.as_deref(),
             cluster.as_ref(),
             audit.clone(),
         )
@@ -967,6 +972,7 @@ impl NodeRuntime {
                     tenant.initial_policy.clone(),
                     tenant.initial_limits.clone(),
                     bootstrap,
+                    tenant.incarnation.as_deref(),
                     runtime.cluster.as_ref(),
                     runtime.audit.clone(),
                 )
@@ -1051,12 +1057,14 @@ impl NodeRuntime {
         Ok(runtime)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn open_database(
         config: &RuntimeConfig,
         stores: Arc<TenantStorageSet>,
         policy: Policy,
         limits: Limits,
         bootstrap: Option<ReplicatedBootstrap>,
+        installed_incarnation: Option<&str>,
         cluster: Option<&Arc<ClusterNetwork>>,
         audit: Arc<SecurityAudit>,
     ) -> Result<OpenedTenant> {
@@ -1091,7 +1099,19 @@ impl NodeRuntime {
             }
             database
         } else {
-            kasumi_engine::open_local(stores, policy, limits, audit).await?
+            match installed_incarnation {
+                Some(incarnation) => {
+                    kasumi_engine::open_local_with_incarnation(
+                        stores,
+                        policy,
+                        limits,
+                        audit,
+                        uuid::Uuid::parse_str(incarnation)?,
+                    )
+                    .await?
+                }
+                None => kasumi_engine::open_local(stores, policy, limits, audit).await?,
+            }
         };
         Ok(OpenedTenant {
             database,

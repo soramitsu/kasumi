@@ -151,13 +151,14 @@ fn token(
     issuer: &str,
     audience: &str,
     tenant: &str,
+    incarnation: uuid::Uuid,
 ) -> Result<Zeroizing<String>> {
     let mut header = Header::new(Algorithm::EdDSA);
     header.kid = Some("fixture-issuer".into());
     header.typ = Some("at+jwt".into());
     Ok(Zeroizing::new(jsonwebtoken::encode(
         &header,
-        &json!({"sub":"benchmark","tenant":tenant,"scope":"kasumi:read kasumi:write kasumi:admin kasumi:audit","iss":issuer,"aud":audience,"exp":SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()+86_400}),
+        &json!({"sub":"benchmark","tenant":tenant,"kasumi_resource":{"kind":"database","incarnation":incarnation},"scope":"kasumi:read kasumi:write kasumi:admin kasumi:audit","iss":issuer,"aud":audience,"exp":SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()+86_400}),
         key,
     )?))
 }
@@ -320,6 +321,7 @@ async fn benchmark(
     let mut targets = Vec::new();
     for tenant in 0..tenants {
         let name = format!("bench-{tenant:04}");
+        let incarnation = uuid::Uuid::new_v4();
         let env = format!("KASUMI_BENCH_TRANSIT_{tenant}");
         let secret = bao.provision_key(&name, false).await?;
         secrets.push((env.clone(), Zeroizing::new(secret)));
@@ -340,12 +342,12 @@ async fn benchmark(
                 max_receipts: documents.div_ceil(256) + operations * 4 + 1000,
                 ..Limits::default()
             },
-            incarnation: None,
+            incarnation: Some(incarnation.to_string()),
         });
         let token_env = format!("KASUMI_BENCH_ACCESS_{tenant}");
         oauth.push((
             token_env.clone(),
-            token(&signing_key, &issuer_url, &audience, &name)?,
+            token(&signing_key, &issuer_url, &audience, &name, incarnation)?,
         ));
     }
     // Match the local harness's deterministic key sequence rather than repeatedly
@@ -428,7 +430,13 @@ async fn benchmark(
         invalid.code() == tonic::Code::Unauthenticated,
         "invalid JWT was not rejected over native TLS"
     );
-    let forbidden_token = token(&signing_key, &issuer_url, &audience, "unconfigured-tenant")?;
+    let forbidden_token = token(
+        &signing_key,
+        &issuer_url,
+        &audience,
+        "unconfigured-tenant",
+        uuid::Uuid::new_v4(),
+    )?;
     let denied = data
         .collections(request(proto::CollectionsRequest {}, &forbidden_token)?)
         .await

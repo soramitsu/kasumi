@@ -93,7 +93,9 @@ async fn native_backup_proof_is_admin_only_configured_and_verified_through_secur
         "https://localhost:{}",
         listener.local_addr().unwrap().port()
     );
-    let router = tonic::service::Routes::new(admin.service()).into_axum_router();
+    let router = tonic::service::Routes::new(admin.service())
+        .add_service(fixture.data().service())
+        .into_axum_router();
     let (stop, shutdown) = tokio::sync::watch::channel(false);
     let serving = tokio::spawn(crate::tls::serve_tls(
         listener,
@@ -110,6 +112,33 @@ async fn native_backup_proof_is_admin_only_configured_and_verified_through_secur
         server_certificate_pins: BTreeSet::from([server_pin]),
     };
     let mut client = KasumiAdminClient::connect(&config).await.unwrap();
+    let mut data_client = kasumi_client::KasumiClient::connect(&config).await.unwrap();
+    let reader_token = fixture.token("reader", "tenant-a", "kasumi:read");
+    let lineage = data_client
+        .read_restore_lineage(
+            reader_token.strip_prefix("Bearer ").unwrap(),
+            &kasumi_types::ReadRestoreLineage {
+                expected_incarnation: fixture.incarnation.to_string(),
+                collection: "docs".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(lineage.tenant(), "tenant-a");
+    assert!(lineage.links().is_empty());
+    assert!(
+        data_client
+            .read_restore_lineage(
+                reader_token.strip_prefix("Bearer ").unwrap(),
+                &kasumi_types::ReadRestoreLineage {
+                    expected_incarnation: fixture.incarnation.to_string(),
+                    collection: "private".into()
+                }
+            )
+            .await
+            .is_err()
+    );
+
     let bearer = token.strip_prefix("Bearer ").unwrap();
     let proof = client
         .create_backup_checkpoint(
@@ -175,6 +204,15 @@ async fn native_backup_proof_is_admin_only_configured_and_verified_through_secur
             .is_err()
     );
     let retired = client.retire_source(bearer, &retirement).await.unwrap();
+    assert!(
+        client
+            .verify_retirement_receipt(bearer, &reference)
+            .await
+            .is_err(),
+        "a fresh database invocation cannot become custody authority"
+    );
+    let custody_token = fixture.custody_token("person");
+    let bearer = custody_token.strip_prefix("Bearer ").unwrap();
     let kasumi_client::VerifiedRetirementResolution::Retired(resolved) =
         client.abort_retirement(bearer, &retirement).await.unwrap()
     else {
@@ -247,7 +285,7 @@ async fn native_backup_proof_is_admin_only_configured_and_verified_through_secur
             .await
             .is_err()
     );
-    let custodian_token = fixture.token("custodian", "tenant-a", "kasumi:admin");
+    let custodian_token = fixture.custody_token("custodian");
     let custodian_bearer = custodian_token.strip_prefix("Bearer ").unwrap();
     let replay = client
         .execute_custody(custodian_bearer, &rotation)

@@ -55,18 +55,22 @@ impl Database {
         .await?;
         // Once consensus accepted the fence, an unavailable/expired proof
         // release is an uncertain acknowledgement, never a rolled-back source.
-        self.verify_retirement_receipt(context.clone(), &reference)
-            .await
-            .map_err(|error| {
-                if error.code == ErrorCode::UnknownOutcome {
-                    error
-                } else {
-                    Error::new(
-                        ErrorCode::UnknownOutcome,
-                        "retirement committed; resolve its exact permanent outcome",
-                    )
-                }
-            })
+        let release = async {
+            self.retired_custody()?
+                .accepted_retirement_invocation(context, &reference)
+                .await
+        }
+        .await;
+        release.map_err(|error| {
+            if error.code == ErrorCode::UnknownOutcome {
+                error
+            } else {
+                Error::new(
+                    ErrorCode::UnknownOutcome,
+                    "retirement committed; resolve its exact permanent outcome",
+                )
+            }
+        })
     }
 
     pub async fn retirement_status(

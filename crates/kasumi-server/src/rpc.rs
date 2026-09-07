@@ -170,6 +170,40 @@ impl kasumi_data_server::KasumiData for NativeData {
             .map_err(status)?;
         Ok(Response::new(response))
     }
+    async fn read_restore_lineage(
+        &self,
+        request: Request<ReadRestoreLineageRequest>,
+    ) -> Result<Response<ReadRestoreLineageResponse>, Status> {
+        let context = verified(&self.auth, &request).await?;
+        let input = decode_json(&request.into_inner().request_json).map_err(status)?;
+        let database = routed(&self.registry, &self.auth, &context).await?;
+        let fence = self
+            .auth
+            .audit_result(&context, database.response_fence(&context))
+            .await
+            .map_err(status)?;
+        let proof = database
+            .read_restore_lineage(&context, input)
+            .await
+            .map_err(|error| self.registry.status(&context, error))?;
+        let response = ReadRestoreLineageResponse {
+            response_json: encode_json(proof.observation()).map_err(status)?,
+        };
+        self.auth
+            .audit_result(
+                &context,
+                database
+                    .check_restore_lineage_release(&context, &proof)
+                    .await,
+            )
+            .await
+            .map_err(status)?;
+        Ok(Response::new(
+            release_response(&self.auth, &context, fence, response, false)
+                .await
+                .map_err(status)?,
+        ))
+    }
     async fn read_snapshot(
         &self,
         request: Request<ReadSnapshotRequest>,

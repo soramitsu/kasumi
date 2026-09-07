@@ -78,10 +78,18 @@ impl CredentialFixture {
         let epoch =
             kasumi_clock::EpochClock::new(clock, Arc::new(kasumi_clock::SystemWallClock)).unwrap();
         let observation = epoch.observe().unwrap();
+        let generation = self.db.engine().generation().unwrap();
+        let incarnation = uuid::Uuid::parse_str(&generation.state.incarnation).unwrap();
+        let resource = if generation.state.retired {
+            CredentialResource::Custody { incarnation }
+        } else {
+            CredentialResource::Database { incarnation }
+        };
         RequestContext {
             authorization: RequestAuthorization::from_verified_credential(
                 observation.utc_ms() + 1000,
                 &observation,
+                resource,
             )
             .unwrap(),
             ..self.context.clone()
@@ -121,6 +129,9 @@ fn replicated_credential_admission_uses_only_captured_time_after_local_expiry() 
         authorization: RequestAuthorization::from_verified_credential(
             2000,
             &epoch.observe().unwrap(),
+            CredentialResource::Database {
+                incarnation: uuid::Uuid::from_u128(1),
+            },
         )
         .unwrap(),
         tenant: "replica".into(),
@@ -138,14 +149,14 @@ fn replicated_credential_admission_uses_only_captured_time_after_local_expiry() 
     };
     let first = TenantEngine::new(
         "replica".into(),
-        "same-incarnation".into(),
+        uuid::Uuid::from_u128(1).to_string(),
         policy.clone(),
         Limits::default(),
     )
     .unwrap();
     let second = TenantEngine::new(
         "replica".into(),
-        "same-incarnation".into(),
+        uuid::Uuid::from_u128(1).to_string(),
         policy,
         Limits::default(),
     )
@@ -421,5 +432,108 @@ async fn long_backup_verification_and_encoded_read_recheck_original_credential()
     };
     let (result, ()) = tokio::join!(create, advance);
     assert_eq!(result.unwrap_err().code, ErrorCode::UnknownOutcome);
+    fixture.close().await;
+}
+
+struct LineageAuditClock(std::sync::Weak<TenantEngine>);
+impl LeaseClock for LineageAuditClock {
+    fn now(&self) -> Duration {
+        let observed = self
+            .0
+            .upgrade()
+            .and_then(|engine| engine.generation().ok())
+            .is_some_and(|g| g.state.audits.iter().any(|a| a.action == "restore_lineage"));
+        Duration::from_millis(if observed { 1000 } else { 0 })
+    }
+}
+#[tokio::test]
+async fn lineage_read_keeps_original_expiry_and_current_collection_policy_at_release() {
+    let fixture = CredentialFixture::new().await;
+    let mut definition = fixture.db.engine().generation().unwrap().state.collections["docs"]
+        .definition
+        .clone();
+    definition.strict_read_audit = true;
+    fixture
+        .db
+        .administer(
+            fixture.context.clone(),
+            Operation::ReplaceCollection(definition),
+        )
+        .await
+        .unwrap();
+    let request = ReadRestoreLineage {
+        expected_incarnation: fixture
+            .db
+            .engine()
+            .generation()
+            .unwrap()
+            .state
+            .incarnation
+            .clone(),
+        collection: "docs".into(),
+    };
+    let context = fixture.credential(Arc::new(LineageAuditClock(Arc::downgrade(
+        &fixture.db.engine,
+    ))));
+    assert_eq!(
+        fixture
+            .db
+            .read_restore_lineage(&context, request.clone())
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::AuditUnavailable
+    );
+    assert!(
+        fixture
+            .db
+            .engine()
+            .generation()
+            .unwrap()
+            .state
+            .audits
+            .iter()
+            .any(|a| a.action == "restore_lineage")
+    );
+    let clock = Arc::new(CredentialClock(std::sync::atomic::AtomicU64::new(0)));
+    let fresh = fixture.credential(clock.clone());
+    let proof = fixture
+        .db
+        .read_restore_lineage(&fresh, request)
+        .await
+        .unwrap();
+    assert!(proof.links().is_empty());
+    clock.0.store(1000, Ordering::SeqCst);
+    assert_eq!(
+        fixture
+            .db
+            .check_restore_lineage_release(&fresh, &proof)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Unauthorized
+    );
+    fixture
+        .db
+        .administer(
+            fixture.context.clone(),
+            Operation::SetPolicy(Policy {
+                grants: vec![Grant {
+                    principal: "successor".into(),
+                    collection: None,
+                    actions: BTreeSet::from([Action::Admin]),
+                }],
+                strict_read_audit: false,
+            }),
+        )
+        .await
+        .unwrap();
+    assert!(
+        fixture
+            .db
+            .check_restore_lineage_release(&fixture.context, &proof)
+            .await
+            .is_err()
+    );
     fixture.close().await;
 }

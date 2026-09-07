@@ -67,7 +67,7 @@ function arguments cannot change an existing tenant's grants or deployment mode.
 Keep one live database per store and share its `Arc` among callers.
 
 The trusted embedding application authenticates the caller before constructing
-`RequestContext { principal, tenant, scopes, request_id }`. Its scopes are a
+`RequestContext { authorization, principal, tenant, scopes, request_id }`. Its scopes are a
 `BTreeSet<Action>`; current tenant/collection grants must also allow the action.
 Create a collection once with an admin-authorized context using
 `database.administer(context, Operation::CreateCollection(definition)).await`.
@@ -139,8 +139,7 @@ the SDK does not depend on `kasumi-server` or storage internals.
 Every call also supplies `authorization: Bearer <access token>` metadata.
 Kasumi verifies signed JWT access tokens against its configured issuer, audience,
 JWKS and allowed algorithms/types (`at+jwt` in the example configuration).
-Claims `sub`, `tenant` and space-delimited `scope` select the principal, tenant
-and scopes. Data scopes are `kasumi:read` and `kasumi:write`; administrative calls
+Claims `sub`, `tenant`, mandatory signed `kasumi_resource`, and space-delimited `scope` select the principal, tenant, exact incarnation/purpose and scopes. See [credential resources and lineage](credential-resources-lineage.md); there is no token fallback across incarnations. Data scopes are `kasumi:read` and `kasumi:write`; administrative calls
 require `kasumi:admin` and their current policy grants. A service certificate
 alone does not grant document access.
 
@@ -149,6 +148,7 @@ alone does not grant document access.
 | `Get` | `collection`, `id` | Document ID, version and exact UTF-8 `body_json` bytes |
 | `Query` | UTF-8 `query_json` bytes | Snapshot revision, rows, JSON aggregate bytes and optional cursor |
 | `ReadSnapshot` | UTF-8 `request_json` bytes: document keys and queries | One coherent generation as UTF-8 `response_json`, including read assertions' source versions/epochs |
+| `ReadRestoreLineage` | Expected current incarnation and an existing collection | Opaque authenticated historical commitments under current collection Read permission |
 | `Mutate` | UTF-8 `batch_json` bytes, using the batch shape above | Revision and per-document versions |
 | `Collections` | Empty message | Authorized collection definitions as JSON bytes |
 | `Receipt` | `idempotency_key` | Committed receipt, rejected database error, or no retained outcome |

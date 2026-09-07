@@ -1,6 +1,10 @@
 //! Transport-independent, exact JSON contracts shared by every Kasumi interface.
 mod authorization;
 pub use authorization::RequestAuthorization;
+mod credential_resource;
+mod restore_lineage;
+pub use credential_resource::CredentialResource;
+pub use restore_lineage::*;
 mod backup;
 pub use backup::*;
 mod atomic;
@@ -453,6 +457,7 @@ pub struct TenantState {
     pub retired: bool,
     pub pending_restore: Option<PendingRestore>,
     pub restored_from: Option<FullBackupCheckpoint>,
+    pub restore_lineage: Vec<RestoreLineageLink>,
     pub document_count: u64,
     pub logical_bytes: u64,
     pub policy: Policy,

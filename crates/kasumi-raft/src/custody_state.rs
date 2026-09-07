@@ -50,6 +50,9 @@ impl CustodyState {
     }
 
     pub fn authorize(&self, context: &RequestContext) -> Result<()> {
+        context
+            .authorization
+            .require_custody(&self.origin.receipt.source_incarnation)?;
         validate_name(&context.principal)?;
         validate_name(&context.request_id)?;
         if context.tenant != self.origin.receipt.tenant

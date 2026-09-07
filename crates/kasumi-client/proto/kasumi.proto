@@ -9,6 +9,7 @@ service KasumiData {
   rpc Get(GetRequest) returns (Document);
   rpc Query(QueryRequest) returns (QueryResponse);
   rpc ReadSnapshot(ReadSnapshotRequest) returns (ReadSnapshotResponse);
+  rpc ReadRestoreLineage(ReadRestoreLineageRequest) returns (ReadRestoreLineageResponse);
   rpc ReadChangeFeed(ReadChangeFeedRequest) returns (ReadChangeFeedResponse);
   rpc BeginStagedTransaction(BeginStagedTransactionRequest) returns (WriteReceipt);
   rpc AppendStagedChunk(AppendStagedChunkRequest) returns (WriteReceipt);
@@ -65,6 +66,8 @@ message GetRequest { string collection = 1; string id = 2; }
 message Document { string id = 1; uint64 version = 2; bytes body_json = 3; }
 message QueryRequest { bytes query_json = 1; }
 message ReadSnapshotRequest { bytes request_json = 1; }
+message ReadRestoreLineageRequest { bytes request_json = 1; }
+message ReadRestoreLineageResponse { bytes response_json = 1; }
 message ReadSnapshotResponse { bytes response_json = 1; }
 message ReadChangeFeedRequest { bytes request_json = 1; }
 message ReadChangeFeedResponse { bytes response_json = 1; }

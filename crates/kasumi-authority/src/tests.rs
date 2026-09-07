@@ -146,6 +146,10 @@ impl Fixture {
             authorization: RequestAuthorization::from_verified_credential(
                 2_000_000,
                 &self.epoch.observe().unwrap(),
+                kasumi_types::CredentialResource::Authority {
+                    authority_id: self.installation.manifest.authority_id,
+                    partition: self.installation.partition,
+                },
             )
             .unwrap(),
         }

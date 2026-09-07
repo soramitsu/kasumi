@@ -73,6 +73,7 @@ pub struct CustodyResponseFence {
     group: CustodyGroup,
     context: RequestContext,
     policy_epoch: u64,
+    accepted_invocation: Option<Box<crate::VerifiedRetirementReceipt>>,
     admission: Arc<NodeAdmission>,
     cancellation: QueryCancellation,
     _reservation: Reservation,
@@ -82,7 +83,7 @@ impl CustodyResponseFence {
         self.context.authorization.check_live()?;
         self.admission.check_release(&self.cancellation)?;
         let view = self.group.view().map_err(unavailable)?;
-        view.authorize(&self.context)?;
+        authorize_observation(&view, &self.context, self.accepted_invocation.as_deref())?;
         if view.policy_epoch() != self.policy_epoch {
             return Err(Error::new(
                 ErrorCode::Conflict,
@@ -115,6 +116,33 @@ fn unknown(_: impl std::fmt::Display) -> Error {
         ErrorCode::UnknownOutcome,
         "custody command acknowledgement unavailable; recover its exact permanent identity with current authority",
     )
+}
+
+fn authorize_observation(
+    view: &CustodyView,
+    context: &RequestContext,
+    invocation: Option<&crate::VerifiedRetirementReceipt>,
+) -> Result<()> {
+    let Some(proof) = invocation else {
+        return view.authorize(context);
+    };
+    context.authorization.check_live()?;
+    context
+        .authorization
+        .require_database(&view.retirement().source_incarnation)?;
+    if !proof.is_accepted_invocation(context)
+        || proof.receipt() != view.retirement()
+        || context.principal != view.retirement().principal
+        || context.tenant != view.retirement().tenant
+        || !context.scopes.contains(&Action::Admin)
+        || !view.administrators().contains(&context.principal)
+    {
+        return Err(Error::new(
+            ErrorCode::Forbidden,
+            "original accepted retirement invocation required",
+        ));
+    }
+    Ok(())
 }
 
 impl RetiredCustody {
@@ -161,16 +189,29 @@ impl RetiredCustody {
         Ok(view)
     }
     pub fn response_fence(&self, context: &RequestContext) -> Result<CustodyResponseFence> {
+        self.observation_fence(context, None)
+    }
+    fn observation_fence(
+        &self,
+        context: &RequestContext,
+        invocation: Option<&crate::VerifiedRetirementReceipt>,
+    ) -> Result<CustodyResponseFence> {
+        if self.closing.load(Ordering::Acquire) {
+            return Err(unavailable("custody closing"));
+        }
+        context.authorization.check_live()?;
         let cancellation = QueryCancellation::default();
         let mut reservation = self
             .admission
             .reserve(4 << 20, Some(cancellation.clone()))?;
         reservation.retain(4 << 20);
-        let view = self.check(context)?;
+        let view = self.group.view().map_err(unavailable)?;
+        authorize_observation(&view, context, invocation)?;
         Ok(CustodyResponseFence {
             group: self.group.clone(),
             context: context.clone(),
             policy_epoch: view.policy_epoch(),
+            accepted_invocation: invocation.cloned().map(Box::new),
             admission: self.admission.clone(),
             cancellation,
             _reservation: reservation,
@@ -268,10 +309,19 @@ impl RetiredCustody {
         context: &RequestContext,
         reference: &RetirementRef,
     ) -> Result<Option<RetirementStatus>> {
+        self.observe_retirement(context, reference, None).await
+    }
+    async fn observe_retirement(
+        &self,
+        context: &RequestContext,
+        reference: &RetirementRef,
+        invocation: Option<&crate::VerifiedRetirementReceipt>,
+    ) -> Result<Option<RetirementStatus>> {
         let result = async {
-            let fence = self.response_fence(context)?;
+            let fence = self.observation_fence(context, invocation)?;
             self.group.barrier().await.map_err(unavailable)?;
-            let view = self.check(context)?;
+            let view = self.group.view().map_err(unavailable)?;
+            authorize_observation(&view, context, invocation)?;
             reference.validate()?;
             if *reference != view.request().reference()? {
                 return Err(Error::new(
@@ -343,13 +393,37 @@ impl RetiredCustody {
         self.retirement_response_fence(&context, &proof)?.check()?;
         Ok(proof)
     }
+    /// Called only after the exact RetireSource submission returned success.
+    /// No wire value or fresh proof read can select this transition path.
+    pub(crate) async fn accepted_retirement_invocation(
+        &self,
+        context: &RequestContext,
+        reference: &RetirementRef,
+    ) -> Result<crate::VerifiedRetirementReceipt> {
+        let view = self.group.view().map_err(unavailable)?;
+        if *reference != view.request().reference()? {
+            return Err(Error::new(
+                ErrorCode::Conflict,
+                "accepted retirement identity differs",
+            ));
+        }
+        let proof = crate::VerifiedRetirementReceipt::from_accepted_invocation(
+            view.retirement().clone(),
+            context,
+        );
+        self.observe_retirement(context, reference, Some(&proof))
+            .await?;
+        self.retirement_response_fence(context, &proof)?.check()?;
+        Ok(proof)
+    }
     pub fn retirement_response_fence(
         &self,
         context: &RequestContext,
         proof: &crate::VerifiedRetirementReceipt,
     ) -> Result<CustodyResponseFence> {
-        let fence = self.response_fence(context)?;
-        if self.check(context)?.retirement() != proof.receipt() {
+        let invocation = proof.is_accepted_invocation(context).then_some(proof);
+        let fence = self.observation_fence(context, invocation)?;
+        if self.group.view().map_err(unavailable)?.retirement() != proof.receipt() {
             return Err(Error::new(ErrorCode::Conflict, "retirement proof differs"));
         }
         fence.check()?;
