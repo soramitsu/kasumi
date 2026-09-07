@@ -148,25 +148,22 @@ impl KasumiClient {
         })
     }
 
-    pub async fn abort_staged_transaction(
+    pub async fn stop_staged_transaction(
         &mut self,
         bearer: &str,
-        request: &kasumi_types::StagedTransactionRef,
-    ) -> Result<WriteReceipt, ClientError> {
+        request: &kasumi_types::StopStagedTransaction,
+    ) -> Result<kasumi_types::StagedTransactionStatus, ClientError> {
         let response = self
             .inner
-            .abort_staged_transaction(authorized(
+            .stop_staged_transaction(authorized(
                 bearer,
-                proto::StagedTransactionReference {
+                proto::StopStagedTransactionRequest {
                     request_json: encode(request)?,
                 },
             )?)
             .await?
             .into_inner();
-        Ok(WriteReceipt {
-            revision: response.revision,
-            versions: response.versions.into_iter().collect(),
-        })
+        Ok(serde_json::from_slice(&response.response_json)?)
     }
 
     pub async fn staged_transaction_status(

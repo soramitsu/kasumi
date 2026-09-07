@@ -90,7 +90,7 @@ fn staged_entry(key: &str, stage: &StagedTransaction) -> Result<usize> {
         uploaded_payload_bytes: usize,
         uploaded_operations: usize,
         uploaded_read_assertions: usize,
-        expires_at_ms: u64,
+        expires_at_ms: Option<u64>,
         ttl_ms: u64,
         outcome: &'a StagedOutcome,
     }

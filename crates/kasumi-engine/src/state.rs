@@ -446,7 +446,7 @@ impl TenantEngine {
             Operation::BeginStaged(_)
             | Operation::AppendStaged(_)
             | Operation::FinalizeStaged(_)
-            | Operation::AbortStaged(_) => "staged_transaction",
+            | Operation::StopStaged(_) => "staged_transaction",
             Operation::ActivateSchema(_)
             | Operation::CreateCollection(_)
             | Operation::ReplaceCollection(_) => "schema",
@@ -926,7 +926,7 @@ fn apply_operation(
         Operation::BeginStaged(_)
         | Operation::AppendStaged(_)
         | Operation::FinalizeStaged(_)
-        | Operation::AbortStaged(_) => staging::apply(state, command, revision, indexes),
+        | Operation::StopStaged(_) => staging::apply(state, command, revision, indexes),
         Operation::Mutate(batch) => {
             for mutation in &batch.operations {
                 authorize_state(
@@ -1467,9 +1467,8 @@ fn staged_changes(state: &TenantState, command: &Command) -> Result<BTreeSet<Str
     let transaction_id = match &command.operation {
         Operation::BeginStaged(request) => &request.transaction_id,
         Operation::AppendStaged(request) => &request.transaction.transaction_id,
-        Operation::FinalizeStaged(reference) | Operation::AbortStaged(reference) => {
-            &reference.transaction_id
-        }
+        Operation::FinalizeStaged(reference) => &reference.transaction_id,
+        Operation::StopStaged(request) => &request.original.transaction_id,
         _ => return Ok(BTreeSet::new()),
     };
     let mut changed = state.active_staged_transactions.clone();

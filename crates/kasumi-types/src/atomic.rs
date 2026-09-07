@@ -62,6 +62,25 @@ pub struct BeginStagedTransaction {
     pub ttl_ms: u64,
 }
 
+/// Permanent stop binds the exact original Begin input. Admission assertions
+/// belong to this attempt and never become its permanent identity.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StopStagedTransaction {
+    pub original: BeginStagedTransaction,
+    pub admission: Vec<ReadAssertion>,
+}
+
+impl BeginStagedTransaction {
+    pub fn reference(&self) -> Result<StagedTransactionRef> {
+        crate::validate_name(&self.transaction_id)?;
+        Ok(StagedTransactionRef {
+            transaction_id: self.transaction_id.clone(),
+            manifest_digest: staged_digest(&self.manifest)?.0,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StagedTransactionRef {
@@ -109,8 +128,17 @@ pub struct StagedTransactionStatus {
     pub transaction: StagedTransactionRef,
     pub manifest: StagedManifest,
     pub received_chunks: Vec<usize>,
-    pub expires_at_ms: u64,
+    #[serde(deserialize_with = "required_expiry")]
+    pub expires_at_ms: Option<u64>,
     pub outcome: StagedOutcome,
+}
+
+// Option records an explicitly absent lease; a missing first-release wire field
+// must not silently become a never-started stop.
+fn required_expiry<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<u64>, D::Error> {
+    Option::<u64>::deserialize(deserializer)
 }
 
 /// Replicated internal staging state. Payloads never enter document indexes.
@@ -126,7 +154,8 @@ pub struct StagedTransaction {
     pub uploaded_payload_bytes: usize,
     pub uploaded_operations: usize,
     pub uploaded_read_assertions: usize,
-    pub expires_at_ms: u64,
+    #[serde(deserialize_with = "required_expiry")]
+    pub expires_at_ms: Option<u64>,
     pub ttl_ms: u64,
     pub outcome: StagedOutcome,
 }

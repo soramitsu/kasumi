@@ -275,26 +275,39 @@ impl kasumi_data_server::KasumiData for NativeData {
         Ok(Response::new(response))
     }
 
-    async fn abort_staged_transaction(
+    async fn stop_staged_transaction(
         &self,
-        request: Request<StagedTransactionReference>,
-    ) -> Result<Response<WriteReceipt>, Status> {
+        request: Request<StopStagedTransactionRequest>,
+    ) -> Result<Response<StagedTransactionStatusResponse>, Status> {
         let context = verified(&self.auth, &request).await?;
         let input = decode_json(&request.into_inner().request_json).map_err(status)?;
         let database = routed(&self.registry, &self.auth, &context).await?;
         let fence = self
             .auth
-            .audit_result(&context, database.response_fence(&context))
+            .audit_result(
+                &context,
+                database.staged_stop_response_fence(&context, &input),
+            )
             .await
             .map_err(status)?;
         let result = database
-            .abort_staged_transaction(context.clone(), input)
+            .stop_staged_transaction(context.clone(), input)
             .await
             .map_err(|error| self.registry.status(&context, error))?;
-        let response = release_response(&self.auth, &context, fence, receipt(result), true)
-            .await
-            .map_err(status)?;
-        Ok(Response::new(response))
+        let response = StagedTransactionStatusResponse {
+            response_json: encode_json(&result).map_err(|_| {
+                status(kasumi_types::Error::new(
+                    kasumi_types::ErrorCode::UnknownOutcome,
+                    "staged resolution encoding failed; recover the original identity",
+                ))
+            })?,
+        };
+        // An accepted stop or terminal resolution must not look like a definite
+        // rejection when its final authority/deadline check withholds disclosure.
+        let released = release_response(&self.auth, &context, fence, response, true).await
+            .map_err(|_| status(kasumi_types::Error::new(kasumi_types::ErrorCode::UnknownOutcome,
+                "staged resolution response was fenced; retry the original identity with fresh authority")))?;
+        Ok(Response::new(released))
     }
 
     async fn staged_transaction_status(

@@ -155,7 +155,7 @@ alone does not grant document access.
 | `BeginStagedTransaction` | `BeginStagedTransaction` as UTF-8 JSON | Reserved permanent identity and upload budget |
 | `AppendStagedChunk` | `AppendStagedChunk` as UTF-8 JSON | Durably accepted invisible chunk |
 | `FinalizeStagedTransaction` | `StagedTransactionRef` as UTF-8 JSON | One atomic commit revision, empty versions map |
-| `AbortStagedTransaction` | `StagedTransactionRef` as UTF-8 JSON | Original durable abort receipt |
+| `StopStagedTransaction` | Full original `BeginStagedTransaction` plus fresh `admission` assertions as UTF-8 JSON | Original permanent status, released only under current attempt authority |
 | `StagedTransactionStatus` | `StagedTransactionRef` as UTF-8 JSON | Manifest, received chunk indexes, expiry and permanent outcome |
 | `OpenSnapshotLease` | `OpenSnapshotLease` as UTF-8 JSON | Principal-bound lease and coherent snapshot identity |
 | `ReadSnapshotPage` | `ReadSnapshotPage` as UTF-8 JSON | Named documents/absence in `SnapshotReadResponse` |

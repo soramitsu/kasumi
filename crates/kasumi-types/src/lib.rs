@@ -401,7 +401,7 @@ pub enum Operation {
     BeginStaged(BeginStagedTransaction),
     AppendStaged(AppendStagedChunk),
     FinalizeStaged(StagedTransactionRef),
-    AbortStaged(StagedTransactionRef),
+    StopStaged(StopStagedTransaction),
     CreateCollection(CollectionDefinition),
     ReplaceCollection(CollectionDefinition),
     SetPolicy(Policy),

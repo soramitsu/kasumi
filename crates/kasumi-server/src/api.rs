@@ -219,6 +219,7 @@ pub(crate) fn status(error: Error) -> tonic::Status {
 #[cfg(test)]
 mod tests {
     include!("api_staging_tests.rs");
+    include!("api_guarded_staging_tests.rs");
     include!("api_history_tests.rs");
     include!("api_schema_tests.rs");
     include!("api_backup_checkpoint_tests.rs");

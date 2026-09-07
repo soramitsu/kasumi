@@ -1,0 +1,11 @@
+    Checking kasumi-clock v0.1.0 (/private/tmp/kasumi-custody-substrate/crates/kasumi-clock)
+    Checking kasumi-types v0.1.0 (/private/tmp/kasumi-custody-substrate/crates/kasumi-types)
+    Checking kasumi-store v0.1.0 (/private/tmp/kasumi-custody-substrate/crates/kasumi-store)
+    Checking kasumi-raft v0.1.0 (/private/tmp/kasumi-custody-substrate/crates/kasumi-raft)
+    Checking kasumi-query v0.1.0 (/private/tmp/kasumi-custody-substrate/crates/kasumi-query)
+    Checking kasumi-engine v0.1.0 (/private/tmp/kasumi-custody-substrate/crates/kasumi-engine)
+   Compiling kasumi-client v0.1.0 (/private/tmp/kasumi-custody-substrate/crates/kasumi-client)
+    Checking kasumi-transport v0.1.0 (/private/tmp/kasumi-custody-substrate/crates/kasumi-transport)
+    Checking kasumi-server v0.1.0 (/private/tmp/kasumi-custody-substrate/crates/kasumi-server)
+    Checking kasumi-bench v0.1.0 (/private/tmp/kasumi-custody-substrate/crates/kasumi-bench)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 39.31s

@@ -353,7 +353,7 @@ fn staged_identity_capacity_is_reserved_before_payload_and_expiry_never_reuses_i
             .code,
         ErrorCode::QuotaExceeded
     );
-    apply(&db, 12, Operation::BeginStaged(b)).unwrap();
+    apply(&db, 12, Operation::BeginStaged(b.clone())).unwrap();
     assert_eq!(
         apply(&db, 13, Operation::FinalizeStaged(ar))
             .unwrap_err()
@@ -388,8 +388,31 @@ fn staged_identity_capacity_is_reserved_before_payload_and_expiry_never_reuses_i
             .values()
             .all(|stage| stage.chunks.is_empty())
     );
-    let aborted = apply(&db, 14, Operation::AbortStaged(br.clone())).unwrap();
-    assert_eq!(apply(&db, 15, Operation::AbortStaged(br)).unwrap(), aborted);
+    let generation = db.generation().unwrap();
+    let stop = StopStagedTransaction {
+        original: b,
+        admission: vec![
+            ReadAssertion::Snapshot {
+                incarnation: generation.state.incarnation.clone(),
+                policy_epoch: generation.state.policy_epoch,
+                schema_epoch: generation.state.schema_epoch,
+            },
+            ReadAssertion::Before { not_after_ms: 1000 },
+        ],
+    };
+    drop(generation);
+    apply(&db, 14, Operation::StopStaged(stop.clone())).unwrap();
+    let key = staged_digest(&(context().principal, br.transaction_id))
+        .unwrap()
+        .0;
+    let aborted = db.generation().unwrap().state.staged_transactions[&key]
+        .outcome
+        .clone();
+    apply(&db, 15, Operation::StopStaged(stop)).unwrap();
+    assert_eq!(
+        db.generation().unwrap().state.staged_transactions[&key].outcome,
+        aborted
+    );
     assert!(
         db.generation()
             .unwrap()

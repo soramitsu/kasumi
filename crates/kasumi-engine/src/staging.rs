@@ -62,6 +62,70 @@ pub(crate) fn authorize_manifest(
     Ok(())
 }
 
+fn historical_limits() -> Limits {
+    Limits {
+        max_collections: 1024,
+        atomic: AtomicLimits::default(),
+        ..Limits::default()
+    }
+}
+
+pub(crate) fn authorize_stop(
+    state: &TenantState,
+    context: &RequestContext,
+    request: &StopStagedTransaction,
+) -> Result<()> {
+    authorize_discovery_state(state, context, Action::Write)?;
+    validate_name(&request.original.transaction_id)?;
+    if request.original.ttl_ms == 0 || request.original.ttl_ms > 86_400_000 {
+        return Err(Error::new(
+            ErrorCode::InvalidArgument,
+            "staged upload TTL outside bounds",
+        ));
+    }
+    validate_manifest(&request.original.manifest, &historical_limits())?;
+    authorize_manifest(state, context, &request.original.manifest)
+}
+
+pub(crate) fn validate_admission(
+    state: &TenantState,
+    context: &RequestContext,
+    assertions: &[ReadAssertion],
+    evaluated_at_ms: u64,
+) -> Result<()> {
+    if assertions.len() > state.limits.atomic.max_read_assertions {
+        return Err(Error::new(
+            ErrorCode::ResourceExhausted,
+            "staged stop admission exceeds assertion limit",
+        ));
+    }
+    if !assertions
+        .iter()
+        .any(|a| matches!(a, ReadAssertion::Snapshot { .. }))
+        || !assertions
+            .iter()
+            .any(|a| matches!(a, ReadAssertion::Before { .. }))
+    {
+        return Err(Error::new(
+            ErrorCode::InvalidArgument,
+            "staged stop requires snapshot and deadline assertions",
+        ));
+    }
+    for assertion in assertions {
+        if let ReadAssertion::Document { collection, .. }
+        | ReadAssertion::Collection { collection, .. } = assertion
+        {
+            authorize_state(state, context, Some(collection), Action::Read)?;
+        }
+    }
+    validate_read_assertions(
+        state,
+        &assertions.iter().collect::<Vec<_>>(),
+        evaluated_at_ms,
+        state.limits.atomic.max_read_assertions,
+    )
+}
+
 pub(crate) fn lookup<'a>(
     state: &'a TenantState,
     context: &RequestContext,
@@ -110,7 +174,7 @@ fn expire_active(state: &mut TenantState, now: u64, revision: u64) {
             state
                 .staged_transactions
                 .get(*key)
-                .is_some_and(|stage| stage.expires_at_ms <= now)
+                .is_some_and(|stage| stage.expires_at_ms.is_some_and(|expires| expires <= now))
         })
         .cloned()
         .collect();
@@ -180,6 +244,15 @@ pub(super) fn apply(
         revision,
         versions: BTreeMap::new(),
     };
+    if let Operation::StopStaged(request) = &command.operation {
+        authorize_stop(state, &command.context, request)?;
+        validate_admission(
+            state,
+            &command.context,
+            &request.admission,
+            command.timestamp_ms,
+        )?;
+    }
     // Expiry affects only invisible payloads and preserves their permanent ID.
     // All replicas consume the same trusted admission timestamp.
     expire_active(state, command.timestamp_ms, revision);
@@ -229,12 +302,14 @@ pub(super) fn apply(
                     uploaded_payload_bytes: 0,
                     uploaded_operations: 0,
                     uploaded_read_assertions: 0,
-                    expires_at_ms: command
-                        .timestamp_ms
-                        .checked_add(request.ttl_ms)
-                        .ok_or_else(|| {
-                            Error::new(ErrorCode::InvalidArgument, "staged expiry overflow")
-                        })?,
+                    expires_at_ms: Some(
+                        command
+                            .timestamp_ms
+                            .checked_add(request.ttl_ms)
+                            .ok_or_else(|| {
+                                Error::new(ErrorCode::InvalidArgument, "staged expiry overflow")
+                            })?,
+                    ),
                     ttl_ms: request.ttl_ms,
                     outcome: StagedOutcome::Uploading,
                 },
@@ -372,22 +447,57 @@ pub(super) fn apply(
             state.active_staged_transactions.remove(&key);
             Ok((outcome.clone(), outcome.is_ok()))
         }
-        Operation::AbortStaged(reference) => {
-            let stage = lookup(state, &command.context, reference)?;
-            if let StagedOutcome::Aborted { receipt } = &stage.outcome {
-                return Ok((Ok(receipt.clone()), false));
-            }
-            if let Some(outcome) = stage.outcome.resolved() {
-                return Ok((outcome, false));
-            }
+        Operation::StopStaged(request) => {
+            let original = &request.original;
+            let reference = original.reference()?;
             let key = identity(&command.context.principal, &reference.transaction_id)?;
-            let stage = state
-                .staged_transactions
-                .get_mut(&key)
-                .expect("staged identity validated");
-            clear_payload(stage);
-            stage.outcome = StagedOutcome::Aborted { receipt: receipt() };
-            state.active_staged_transactions.remove(&key);
+            if let Some(stage) = state.staged_transactions.get(&key) {
+                authorize_manifest(state, &command.context, &stage.manifest)?;
+                if stage.manifest_digest != reference.manifest_digest
+                    || stage.ttl_ms != original.ttl_ms
+                {
+                    return Err(Error::new(
+                        ErrorCode::Conflict,
+                        "staged transaction ID reused for different input",
+                    ));
+                }
+                // This is an acknowledgement of the guarded resolution attempt.
+                // The service separately returns the original permanent status.
+                if !stage.is_active() {
+                    return Ok((Ok(receipt()), false));
+                }
+                let stage = state
+                    .staged_transactions
+                    .get_mut(&key)
+                    .expect("stage just checked");
+                clear_payload(stage);
+                stage.outcome = StagedOutcome::Aborted { receipt: receipt() };
+                state.active_staged_transactions.remove(&key);
+            } else {
+                if state.staged_transactions.len() >= state.limits.atomic.max_transaction_records {
+                    return Err(Error::new(
+                        ErrorCode::QuotaExceeded,
+                        "permanent staged identity quota exhausted",
+                    ));
+                }
+                state.staged_transactions.insert(
+                    key,
+                    StagedTransaction {
+                        principal: command.context.principal.clone(),
+                        transaction_id: original.transaction_id.clone(),
+                        manifest_digest: reference.manifest_digest,
+                        manifest: original.manifest.clone(),
+                        chunks: BTreeMap::new(),
+                        stored_chunk_bytes: 0,
+                        uploaded_payload_bytes: 0,
+                        uploaded_operations: 0,
+                        uploaded_read_assertions: 0,
+                        expires_at_ms: None,
+                        ttl_ms: original.ttl_ms,
+                        outcome: StagedOutcome::Aborted { receipt: receipt() },
+                    },
+                );
+            }
             Ok((Ok(receipt()), false))
         }
         _ => Err(Error::new(
@@ -480,11 +590,7 @@ pub(super) fn validate_restored(state: &TenantState) -> Result<()> {
     validate_budget(state, &state.limits)?;
     // Permanent terminal identities describe historic requests. Lower limits
     // apply to future/active work and cannot invalidate those durable outcomes.
-    let historical_limits = Limits {
-        max_collections: 1024,
-        atomic: AtomicLimits::default(),
-        ..Limits::default()
-    };
+    let historical_limits = historical_limits();
     let mut active = BTreeSet::new();
     for (key, stage) in &state.staged_transactions {
         validate_manifest(&stage.manifest, &historical_limits)?;
@@ -492,7 +598,11 @@ pub(super) fn validate_restored(state: &TenantState) -> Result<()> {
             || staged_digest(&stage.manifest)?.0 != stage.manifest_digest
             || stage.ttl_ms == 0
             || stage.ttl_ms > 86_400_000
-            || stage.expires_at_ms < stage.ttl_ms
+            || stage
+                .expires_at_ms
+                .is_some_and(|expires| expires < stage.ttl_ms)
+            || (stage.expires_at_ms.is_none()
+                && !matches!(stage.outcome, StagedOutcome::Aborted { .. }))
         {
             return Err(Error::new(
                 ErrorCode::Corruption,

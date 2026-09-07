@@ -8,7 +8,7 @@ transaction primitives remain described in `transactions.md`.
 ## Staged transaction protocol
 
 Use `begin_staged_transaction`, `append_staged_chunk`,
-`finalize_staged_transaction`, `abort_staged_transaction`, and
+`finalize_staged_transaction`, `stop_staged_transaction`, and
 `staged_transaction_status` to embedded Rust and native gRPC. Every request is
 authenticated and tenant-selected by the existing boundary. Identity is the
 pair of authenticated principal and caller-chosen transaction ID.
@@ -106,13 +106,22 @@ required, from one millisecond to 24 hours. The serialized admission timestamp
 at begin fixes expiry; retries never extend it. Each ordered staged operation
 reclaims expired active payloads and persists their terminal identity. Expiry is
 therefore ordered cleanup, not an independent wall-clock write on each replica.
-Abort is idempotent and returns its original abort receipt. Finalize of an aborted
-or expired identity returns conflict. Incomplete finalize leaves the upload open;
+Guarded stop retains the exact original begin request (manifest and upload TTL)
+with fresh attempt-local read assertions. It requires a current snapshot fence
+and trusted authorization deadline; read dependencies are checked during ordered
+execution and again before final response release. Missing identities become
+permanent stopped identities without an upload lease or active payload reservation.
+Retries preserve the original terminal outcome. Finalize of an aborted or expired
+identity returns conflict. Incomplete finalize leaves the upload open;
 a complete finalize stores either its successful receipt or deterministic error.
 
 Status returns `Uploading`, `Finished { outcome }`, `Aborted { receipt }` or
 `Expired { receipt }`. Use `outcome.resolved()` to distinguish unfinished work
-from a permanent result. Terminal status keeps the manifest and no payload.
+from a permanent result. Terminal status keeps the manifest and no payload. The required `expires_at_ms`
+field is an explicit nullable value: `null` only for a never-started stopped
+identity, otherwise the original upload expiry. A missing field is invalid.
+See [guarded resolution](guarded-staged-stop.md) for authority and uncertain-outcome
+handling.
 
 Point pages accept at most 256 IDs. Scan pages accept up to 1,000 rows, use the
 maintained primary ID index and return `next_after_id`; the encoded result remains

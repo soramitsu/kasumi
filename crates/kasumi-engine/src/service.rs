@@ -339,7 +339,15 @@ pub struct ResponseFence<'a> {
     context: RequestContext,
     policy_epoch: u64,
     cancellation: QueryCancellation,
+    read_admission: Option<(Vec<ReadAssertion>, Reservation)>,
     _workspace: Reservation,
+}
+
+fn staged_stop_acknowledgement(_error: Error) -> Error {
+    Error::new(
+        ErrorCode::UnknownOutcome,
+        "staged resolution response was fenced; resolve the original transaction with fresh authority",
+    )
 }
 
 impl ResponseFence<'_> {
@@ -361,6 +369,20 @@ impl ResponseFence<'_> {
                 ErrorCode::Conflict,
                 "access policy changed before encoded response release",
             ));
+        }
+        if let Some((assertions, _workspace)) = &self.read_admission {
+            let now = self
+                .database
+                .command_clock
+                .lock()
+                .map_err(|_| Error::new(ErrorCode::Unavailable, "command clock unavailable"))?
+                .now_ms()?;
+            crate::state::staging::validate_admission(
+                &generation.state,
+                &self.context,
+                assertions,
+                now,
+            )?;
         }
         Ok(())
     }
@@ -398,8 +420,45 @@ impl Database {
             context: context.clone(),
             policy_epoch: generation.state.policy_epoch,
             cancellation,
+            read_admission: None,
             _workspace: workspace,
         })
+    }
+
+    /// Retains exactly this stop attempt's authority dependencies through final
+    /// native response encoding. Assertions never become permanent stop identity.
+    pub fn staged_stop_response_fence(
+        &self,
+        context: &RequestContext,
+        request: &StopStagedTransaction,
+    ) -> Result<ResponseFence<'_>> {
+        let mut fence = self.response_fence(context)?;
+        let generation = self.engine.generation()?;
+        crate::state::staging::authorize_stop(&generation.state, context, request)?;
+        if request.admission.len() > generation.state.limits.atomic.max_read_assertions {
+            return Err(Error::new(
+                ErrorCode::ResourceExhausted,
+                "staged stop admission exceeds assertion limit",
+            ));
+        }
+        let (_, bytes) = staged_digest(request)?;
+        if bytes > generation.state.limits.max_batch_bytes {
+            return Err(Error::new(
+                ErrorCode::ResourceExhausted,
+                "staged stop request too large",
+            ));
+        }
+        let charge = bytes
+            .saturating_mul(3)
+            .saturating_add(request.admission.len().saturating_mul(128))
+            as u64;
+        let mut workspace = self
+            .admission()
+            .reserve(charge, Some(fence.cancellation.clone()))?;
+        workspace.retain(charge);
+        fence.read_admission = Some((request.admission.clone(), workspace));
+        fence.check()?;
+        Ok(fence)
     }
 
     /// Bootstrap paths with internal operations (such as restore auditing) must
@@ -648,15 +707,33 @@ impl Database {
         self.audit_write_result(&context, result).await
     }
 
-    pub async fn abort_staged_transaction(
+    pub async fn stop_staged_transaction(
         &self,
         context: RequestContext,
-        reference: StagedTransactionRef,
-    ) -> Result<WriteReceipt> {
-        let result = self
-            .submit(context.clone(), Operation::AbortStaged(reference))
-            .await;
+        request: StopStagedTransaction,
+    ) -> Result<StagedTransactionStatus> {
+        let result = self.stop_staged_transaction_inner(&context, request).await;
         self.audit_write_result(&context, result).await
+    }
+
+    async fn stop_staged_transaction_inner(
+        &self,
+        context: &RequestContext,
+        request: StopStagedTransaction,
+    ) -> Result<StagedTransactionStatus> {
+        let fence = self.staged_stop_response_fence(context, &request)?;
+        let reference = request.original.reference()?;
+        self.submit(context.clone(), Operation::StopStaged(request))
+            .await?;
+        // From here, failure cannot establish that no stop/original outcome was
+        // accepted. The permanent identity is the recovery path after uncertainty.
+        let result = async {
+            let status = self.staged_transaction_status(context, &reference).await?;
+            fence.check()?;
+            Ok(status)
+        }
+        .await;
+        result.map_err(staged_stop_acknowledgement)
     }
 
     pub async fn staged_transaction_status(
@@ -799,7 +876,7 @@ impl Database {
                 | Operation::BeginStaged(_)
                 | Operation::AppendStaged(_)
                 | Operation::FinalizeStaged(_)
-                | Operation::AbortStaged(_)
+                | Operation::StopStaged(_)
                 | Operation::PublishHistoryArchive(_)
                 | Operation::RetireSource(_)
                 | Operation::AbortRetirement(_)
@@ -900,7 +977,12 @@ impl Database {
                     &request.transaction,
                 )?;
             }
-            Operation::FinalizeStaged(reference) | Operation::AbortStaged(reference) => {
+            Operation::StopStaged(request) => crate::state::staging::authorize_stop(
+                &self.engine.generation()?.state,
+                &context,
+                request,
+            )?,
+            Operation::FinalizeStaged(reference) => {
                 crate::state::staging::lookup(
                     &self.engine.generation()?.state,
                     &context,
@@ -1064,10 +1146,27 @@ impl Database {
                     "write task failed; resolve or retry with the same idempotency key",
                 )
             })?;
-        self.access()?;
-        let result = serde_json::from_slice::<Result<WriteReceipt>>(&result)
-            .map_err(|_| Error::new(ErrorCode::Corruption, "invalid state machine response"))?;
-        self.audit_write_result(&release_context, result).await
+        self.release_submitted_response(&release_context, &result)
+            .await
+    }
+
+    async fn release_submitted_response(
+        &self,
+        context: &RequestContext,
+        response: &[u8],
+    ) -> Result<WriteReceipt> {
+        // An ordered rejection remains definite. Once the state machine accepted
+        // an effect, loss of access cannot be reported as if it rejected that
+        // effect; only fresh authorized identity recovery can settle the caller.
+        let result = serde_json::from_slice::<Result<WriteReceipt>>(response)
+            .map_err(|_| Error::new(ErrorCode::UnknownOutcome, "state machine response could not be decoded; resolve the original operation identity"))?;
+        if result.is_ok() {
+            self.access().map_err(|_| Error::new(
+                ErrorCode::UnknownOutcome,
+                "access ended after effect acceptance; resolve the original operation with fresh authority",
+            ))?;
+        }
+        self.audit_write_result(context, result).await
     }
 
     pub async fn get(
@@ -1819,6 +1918,7 @@ fn credential_acknowledgement(error: Error) -> Error {
 #[cfg(test)]
 mod tests {
     include!("service_staging_tests.rs");
+    include!("service_staged_stop_tests.rs");
     include!("service_schema_tests.rs");
     include!("service_credential_tests.rs");
     include!("service_retirement_tests.rs");
