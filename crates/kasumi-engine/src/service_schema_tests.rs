@@ -32,7 +32,8 @@ async fn canceled_queued_schema_activation_finishes_once_and_checks_receipt_rele
         }],
         strict_read_audit: false,
     };
-    let db = crate::open_local(store, policy.clone(), Limits::default(), audit.clone())
+    let db = crate::open_local(
+        kasumi_store::test_utils::with_custody(store, std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32]))).await.unwrap(), policy.clone(), Limits::default(), audit.clone())
         .await
         .unwrap();
     let request = SchemaChangeSet {

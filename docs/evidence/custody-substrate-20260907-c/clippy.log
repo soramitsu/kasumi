@@ -1,0 +1,6 @@
+    Checking kasumi-store v0.1.0 (/private/tmp/kasumi-custody-substrate/crates/kasumi-store)
+    Checking kasumi-raft v0.1.0 (/private/tmp/kasumi-custody-substrate/crates/kasumi-raft)
+    Checking kasumi-engine v0.1.0 (/private/tmp/kasumi-custody-substrate/crates/kasumi-engine)
+    Checking kasumi-server v0.1.0 (/private/tmp/kasumi-custody-substrate/crates/kasumi-server)
+    Checking kasumi-bench v0.1.0 (/private/tmp/kasumi-custody-substrate/crates/kasumi-bench)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 22.33s

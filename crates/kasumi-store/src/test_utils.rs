@@ -7,13 +7,30 @@ use std::{
 use anyhow::{Result, ensure};
 use async_trait::async_trait;
 use base64::{Engine, engine::general_purpose::STANDARD};
+use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::{GeneratedKey, KeyProvider, SecretKey, WrappedKey, decrypt, encrypt};
 use kasumi_clock::LeaseClock;
 
+/// Explicitly install an independent custody provider for a trusted test store.
+/// Production configuration must supply both providers through TenantStorageSet.
+pub async fn with_custody(
+    application: std::sync::Arc<crate::TenantStore>,
+    custody_provider: std::sync::Arc<dyn KeyProvider>,
+) -> Result<std::sync::Arc<crate::TenantStorageSet>> {
+    let control = crate::TenantStore::open(
+        application.node.clone(),
+        crate::CustodyStore::catalog_name(application.tenant()),
+        custody_provider,
+    )
+    .await?;
+    crate::TenantStorageSet::install(application, control)
+}
+
 pub struct LocalKeyProvider {
     key: SecretKey,
+    key_ref: String,
     allowed: AtomicBool,
     version: AtomicU64,
     minimum: AtomicU64,
@@ -24,6 +41,7 @@ impl LocalKeyProvider {
     pub fn new(key: [u8; 32]) -> Self {
         Self {
             key: SecretKey::from_bytes(key),
+            key_ref: format!("test-only/{}", hex::encode(Sha256::digest(key))),
             allowed: AtomicBool::new(true),
             version: AtomicU64::new(1),
             minimum: AtomicU64::new(1),
@@ -45,6 +63,9 @@ impl LocalKeyProvider {
     pub fn probe_count(&self) -> u64 {
         self.probes.load(Ordering::SeqCst)
     }
+    pub fn key_ref(&self) -> &str {
+        &self.key_ref
+    }
     fn check(&self) -> Result<()> {
         ensure!(self.allowed.load(Ordering::SeqCst), "test key revoked");
         Ok(())
@@ -57,7 +78,7 @@ impl LocalKeyProvider {
         let version = self.version.load(Ordering::SeqCst);
         Ok(WrappedKey {
             provider: "test-only".into(),
-            key_ref: "local-test-key".into(),
+            key_ref: self.key_ref.clone(),
             version,
             ciphertext: STANDARD.encode(encrypt(
                 &self.key,
@@ -82,7 +103,9 @@ impl KeyProvider for LocalKeyProvider {
         self.probes.fetch_add(1, Ordering::SeqCst);
         self.check()?;
         ensure!(
-            wrapped.provider == "test-only" && wrapped.context.as_deref() == Some(tenant),
+            wrapped.provider == "test-only"
+                && wrapped.key_ref == self.key_ref
+                && wrapped.context.as_deref() == Some(tenant),
             "test key tenant mismatch"
         );
         ensure!(

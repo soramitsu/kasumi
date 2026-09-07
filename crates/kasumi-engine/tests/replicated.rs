@@ -130,7 +130,12 @@ async fn replicated_service_preserves_batches_receipts_and_cursor_fences_across_
         audits.insert(id, audit.clone());
         let db = open_replicated(
             id,
-            node_store,
+            kasumi_store::test_utils::with_custody(
+                node_store,
+                std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
+            )
+            .await
+            .unwrap(),
             &bootstrap,
             router.clone(),
             Config {
@@ -322,7 +327,12 @@ async fn replicated_service_preserves_batches_receipts_and_cursor_fences_across_
         audits.insert(id, audit.clone());
         let db = open_replicated(
             id,
-            node_store,
+            kasumi_store::test_utils::with_custody(
+                node_store,
+                std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
+            )
+            .await
+            .unwrap(),
             &bootstrap,
             router.clone(),
             Config::default(),
@@ -370,7 +380,12 @@ async fn deployment_modes_and_live_store_ownership_cannot_be_overridden() {
     let (store, audit) = store(&root.path().join("local.redb")).await;
     let bootstrap = bootstrap();
     let db = open_local(
-        store.clone(),
+        kasumi_store::test_utils::with_custody(
+            store.clone(),
+            std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
+        )
+        .await
+        .unwrap(),
         bootstrap.initial_policy.clone(),
         Limits::default(),
         audit.clone(),
@@ -379,7 +394,12 @@ async fn deployment_modes_and_live_store_ownership_cannot_be_overridden() {
     .unwrap();
     assert!(
         open_local(
-            store.clone(),
+            kasumi_store::test_utils::with_custody(
+                store.clone(),
+                std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32]))
+            )
+            .await
+            .unwrap(),
             bootstrap.initial_policy.clone(),
             Limits::default(),
             audit.clone(),
@@ -393,7 +413,12 @@ async fn deployment_modes_and_live_store_ownership_cannot_be_overridden() {
     assert!(
         open_replicated(
             1,
-            store.clone(),
+            kasumi_store::test_utils::with_custody(
+                store.clone(),
+                std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32]))
+            )
+            .await
+            .unwrap(),
             &bootstrap,
             Arc::new(InProcessRouter::default()),
             Config::default(),
@@ -402,9 +427,19 @@ async fn deployment_modes_and_live_store_ownership_cannot_be_overridden() {
         .await
         .is_err()
     );
-    let reopened = open_local(store, Policy::default(), Limits::default(), audit.clone())
+    let reopened = open_local(
+        kasumi_store::test_utils::with_custody(
+            store,
+            std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
+        )
         .await
-        .unwrap();
+        .unwrap(),
+        Policy::default(),
+        Limits::default(),
+        audit.clone(),
+    )
+    .await
+    .unwrap();
     assert_eq!(
         reopened.engine().generation().unwrap().state.policy.grants[0].principal,
         "owner"
@@ -425,7 +460,12 @@ async fn replicated_restore_has_identical_genesis_and_requires_quorum_audit_befo
     let initial = bootstrap();
     let (source_store, source_audit) = store(&root.path().join("source.redb")).await;
     let source = open_local(
-        source_store,
+        kasumi_store::test_utils::with_custody(
+            source_store,
+            std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
+        )
+        .await
+        .unwrap(),
         initial.initial_policy.clone(),
         Limits::default(),
         source_audit.clone(),
@@ -489,7 +529,12 @@ async fn replicated_restore_has_identical_genesis_and_requires_quorum_audit_befo
                 keys: Arc::new(LocalKeyProvider::new([43; 32])),
             },
             backup_id,
-            node_store,
+            kasumi_store::test_utils::with_custody(
+                node_store,
+                std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
+            )
+            .await
+            .unwrap(),
             context(),
             ReplicaRestoreConfig {
                 node_id: id,
@@ -574,7 +619,12 @@ async fn replicated_restore_has_identical_genesis_and_requires_quorum_audit_befo
         audits.insert(id, audit.clone());
         let db = open_replicated(
             id,
-            node_store,
+            kasumi_store::test_utils::with_custody(
+                node_store,
+                std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
+            )
+            .await
+            .unwrap(),
             &restored_bootstrap,
             router.clone(),
             Config::default(),

@@ -12,7 +12,7 @@ use kasumi_engine::{
 };
 use kasumi_store::{
     BackupDestination, FilesystemBackupDestination, KeyProvider, NodeStore, S3BackupConfig,
-    S3BackupDestination, TenantStore, WriteOp,
+    S3BackupDestination, TenantStorageSet, TenantStore, WriteOp,
 };
 use kasumi_types::{Action, Operation, Precondition, RequestContext};
 use serde::{Deserialize, Serialize};
@@ -209,6 +209,7 @@ pub(crate) struct ManagedTenant {
     pub database: Arc<Database>,
     pub store: Arc<TenantStore>,
     pub provider: Arc<dyn KeyProvider>,
+    pub custody_provider: Arc<dyn KeyProvider>,
     pub bootstrap: Option<ReplicatedBootstrap>,
     pub descriptor: Option<GenerationDescriptor>,
 }
@@ -800,9 +801,14 @@ impl Administration {
                     generation_path(&self.config.database_path, &context.tenant, incarnation);
                 fresh_file(&path)?;
                 let node = NodeStore::open(&path)?;
-                let store =
-                    TenantStore::open(node, context.tenant.clone(), source.provider.clone())
-                        .await?;
+                let stores = TenantStorageSet::open(
+                    node,
+                    context.tenant.clone(),
+                    source.provider.clone(),
+                    source.custody_provider.clone(),
+                )
+                .await?;
+                let store = stores.application().clone();
                 let (database, bootstrap, hash) = if let (Some(_bootstrap), Some(network)) =
                     (&source.bootstrap, &self.cluster)
                 {
@@ -833,7 +839,7 @@ impl Administration {
                             keys: source.provider.clone(),
                         },
                         backup_id,
-                        store.clone(),
+                        stores.clone(),
                         context.clone(),
                         kasumi_engine::ReplicaRestoreConfig {
                             node_id: self
@@ -874,7 +880,7 @@ impl Administration {
                             keys: source.provider.clone(),
                         },
                         backup_id,
-                        store.clone(),
+                        stores.clone(),
                         context.clone(),
                         incarnation,
                         self.admission.clone(),
@@ -905,6 +911,7 @@ impl Administration {
                             database,
                             store,
                             provider: source.provider.clone(),
+                            custody_provider: source.custody_provider.clone(),
                             bootstrap,
                             descriptor: Some(descriptor.clone()),
                         },
@@ -1357,9 +1364,12 @@ impl Administration {
         // state enter the fingerprint. All immutable policy/schema limits and
         // voter identities must match, including the configured wrapping key.
         let settings = &configuration.transit;
+        let custody = &configuration.custody_transit;
         let bytes = serde_json::to_vec(&serde_json::json!({
             "format":1,"tenant":tenant,"route":route,"nodes":nodes,
             "initial_policy":configuration.initial_policy,"initial_limits":configuration.initial_limits,
+            "custody_transit":{"endpoint":custody.endpoint,"mount":custody.mount,"key_name":custody.key_name,
+                "namespace":custody.namespace,"derived":custody.derived},
             "transit":{"endpoint":settings.endpoint,"mount":settings.mount,"key_name":settings.key_name,
                 "namespace":settings.namespace,"derived":settings.derived}
         }))?;
@@ -1787,7 +1797,14 @@ impl Administration {
             None,
         )?;
         let node = NodeStore::open(path)?;
-        let store = TenantStore::open(node, tenant.to_owned(), source.provider.clone()).await?;
+        let stores = TenantStorageSet::open(
+            node,
+            tenant.to_owned(),
+            source.provider.clone(),
+            source.custody_provider.clone(),
+        )
+        .await?;
+        let store = stores.application().clone();
         let descriptor: GenerationDescriptor = serde_json::from_slice(
             &store
                 .get("runtime.generation", b"descriptor")?
@@ -1810,7 +1827,7 @@ impl Administration {
                     .as_ref()
                     .context("replication absent")?
                     .node_id,
-                store.clone(),
+                stores.clone(),
                 bootstrap,
                 network.clone(),
                 kasumi_raft::server_config(),
@@ -1829,7 +1846,7 @@ impl Administration {
             db
         } else {
             kasumi_engine::open_local(
-                store.clone(),
+                stores.clone(),
                 self.config
                     .tenants
                     .iter()
@@ -1847,6 +1864,7 @@ impl Administration {
             database,
             store,
             provider: source.provider.clone(),
+            custody_provider: source.custody_provider.clone(),
             bootstrap: descriptor.bootstrap.clone(),
             descriptor: Some(descriptor),
         };

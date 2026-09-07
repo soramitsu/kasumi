@@ -2,7 +2,7 @@
 
 use anyhow::{Result, ensure};
 use kasumi_raft::{Config, SnapshotPolicy, StateMachineBackend};
-use kasumi_store::{NodeStore, TenantStore, test_utils::LocalKeyProvider};
+use kasumi_store::{NodeStore, test_utils::LocalKeyProvider};
 use std::{
     collections::BTreeMap,
     path::Path,
@@ -28,7 +28,12 @@ impl Backend {
 }
 
 impl StateMachineBackend for Backend {
-    fn apply(&self, index: u64, command: &[u8]) -> Result<Vec<u8>> {
+    fn apply(
+        &self,
+        position: &kasumi_raft::AppliedEntryContext,
+        command: &[u8],
+    ) -> Result<kasumi_raft::AppliedResponse> {
+        let index = position.log_id.index;
         ensure!(
             !self.fail_apply.load(Ordering::Acquire),
             "injected application allocation failure"
@@ -40,7 +45,7 @@ impl StateMachineBackend for Backend {
             "reapplied command"
         );
         data.insert(index, command.to_vec());
-        Ok(command.to_vec())
+        Ok(kasumi_raft::AppliedResponse::application(command.to_vec()))
     }
     fn snapshot(&self) -> Result<Vec<u8>> {
         ensure!(
@@ -60,11 +65,12 @@ impl StateMachineBackend for Backend {
     }
 }
 
-pub async fn store(path: &Path) -> Result<Arc<TenantStore>> {
-    TenantStore::open(
+pub async fn store(path: &Path) -> Result<Arc<kasumi_store::TenantStorageSet>> {
+    kasumi_store::TenantStorageSet::open(
         NodeStore::open(path)?,
         "tenant-a".into(),
         Arc::new(LocalKeyProvider::new([19; 32])),
+        Arc::new(LocalKeyProvider::new([241; 32])),
     )
     .await
 }

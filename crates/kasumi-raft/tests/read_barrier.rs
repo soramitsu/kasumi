@@ -3,7 +3,7 @@ mod common;
 use anyhow::Result;
 use async_trait::async_trait;
 use kasumi_raft::{BasicNode, InProcessRouter, RaftGroup, RaftTransport, RpcRequest, RpcResponse};
-use kasumi_store::TenantStore;
+use kasumi_store::TenantStorageSet;
 use openraft::error::{CheckIsLeaderError, RaftError};
 use std::{
     sync::{
@@ -43,7 +43,7 @@ struct Fixture {
     _dir: tempfile::TempDir,
     transport: Arc<PausedTransport>,
     groups: Vec<RaftGroup>,
-    stores: Vec<Arc<TenantStore>>,
+    stores: Vec<Arc<TenantStorageSet>>,
 }
 impl Fixture {
     async fn new() -> Result<Self> {
@@ -168,10 +168,30 @@ async fn key_seal_interrupts_pending_quorum_probe_without_waiting_for_deadline()
     let start = Instant::now();
     let (barrier, ()) = tokio::join!(fixture.groups[0].linearizable_barrier(), async {
         tokio::time::sleep(Duration::from_millis(50)).await;
-        fixture.stores[0].seal();
+        fixture.stores[0].application().seal();
     });
     assert!(barrier.is_err());
     assert!(start.elapsed() < Duration::from_millis(250));
+    fixture.close().await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn custody_key_seal_interrupts_pending_probe_and_denies_new_writes() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    fixture.pause(Duration::from_secs(60));
+    let start = Instant::now();
+    let (barrier, ()) = tokio::join!(fixture.groups[0].linearizable_barrier(), async {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        fixture.stores[0].custody().store().seal();
+    });
+    assert!(barrier.is_err());
+    assert!(start.elapsed() < Duration::from_millis(250));
+    assert!(
+        fixture.groups[0]
+            .write(b"after custody seal".to_vec())
+            .await
+            .is_err()
+    );
     fixture.close().await
 }
 

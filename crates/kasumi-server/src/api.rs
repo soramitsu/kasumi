@@ -238,8 +238,6 @@ mod tests {
     };
     use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
     use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
-    use kasumi_engine::TenantEngine;
-    use kasumi_raft::RaftGroup;
     use kasumi_store::{NodeStore, TenantStore, test_utils::LocalKeyProvider};
     use kasumi_types::{
         Action, CollectionDefinition, Grant, IndexDefinition, IndexField, Limits, Operation,
@@ -311,24 +309,19 @@ mod tests {
                 ],
                 strict_read_audit: false,
             };
-            let engine = Arc::new(
-                TenantEngine::new(
-                    "tenant-a".into(),
-                    "incarnation-a".into(),
-                    policy,
-                    Limits::default(),
+            let db = kasumi_engine::open_local(
+                kasumi_store::test_utils::with_custody(
+                    store.clone(),
+                    Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
                 )
+                .await
                 .unwrap(),
-            );
-            let group = RaftGroup::local(
-                1,
-                "tenant-a/incarnation-a".into(),
-                store.clone(),
-                engine.clone(),
+                policy,
+                Limits::default(),
+                audit.clone(),
             )
             .await
             .unwrap();
-            let db = Database::new(engine, group, store, audit.clone());
             db.administer(
                 RequestContext {
                     authorization: kasumi_types::RequestAuthorization::service_identity(),
@@ -1656,10 +1649,19 @@ name: "docs".into(),
             max_audit_records: 1,
             ..Limits::default()
         };
-        let control =
-            kasumi_engine::open_local(store.clone(), policy.clone(), limits, fixture.audit.clone())
-                .await
-                .unwrap();
+        let control = kasumi_engine::open_local(
+            kasumi_store::test_utils::with_custody(
+                store.clone(),
+                std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
+            )
+            .await
+            .unwrap(),
+            policy.clone(),
+            limits,
+            fixture.audit.clone(),
+        )
+        .await
+        .unwrap();
         control
             .administer(context.clone(), Operation::SetPolicy(policy.clone()))
             .await
@@ -1677,6 +1679,7 @@ name: "docs".into(),
                 database: control.clone(),
                 store,
                 provider,
+                custody_provider: Arc::new(LocalKeyProvider::new([241; 32])),
                 bootstrap: None,
                 descriptor: None,
             }],

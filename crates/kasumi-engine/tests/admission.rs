@@ -49,7 +49,12 @@ async fn pressure_rejects_new_proposals_and_queries_but_committed_raft_work_stil
     let group = RaftGroup::local(
         1,
         "tenant/incarnation".into(),
-        store.clone(),
+        kasumi_store::test_utils::with_custody(
+            store.clone(),
+            Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
+        )
+        .await
+        .unwrap(),
         engine.clone(),
     )
     .await
@@ -162,10 +167,19 @@ async fn explicit_local_bootstrap_reads_the_complete_committed_generation() {
         }],
         strict_read_audit: false,
     };
-    let database =
-        kasumi_engine::open_local(store.clone(), policy, Limits::default(), audit.clone())
-            .await
-            .unwrap();
+    let database = kasumi_engine::open_local(
+        kasumi_store::test_utils::with_custody(
+            store.clone(),
+            std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
+        )
+        .await
+        .unwrap(),
+        policy,
+        Limits::default(),
+        audit.clone(),
+    )
+    .await
+    .unwrap();
     assert_eq!(
         store.get("engine.deployment", b"mode").unwrap().as_deref(),
         Some(b"local-v1".as_slice())

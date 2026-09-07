@@ -22,8 +22,12 @@ struct PausedSnapshot {
 }
 
 impl StateMachineBackend for PausedSnapshot {
-    fn apply(&self, index: u64, command: &[u8]) -> Result<Vec<u8>> {
-        self.inner.apply(index, command)
+    fn apply(
+        &self,
+        position: &kasumi_raft::AppliedEntryContext,
+        command: &[u8],
+    ) -> Result<kasumi_raft::AppliedResponse> {
+        self.inner.apply(position, command)
     }
 
     fn snapshot(&self) -> Result<Vec<u8>> {
@@ -59,7 +63,11 @@ async fn shutdown_drains_snapshot_worker_before_releasing_group_or_file_ownershi
     let group = RaftGroup::local(
         1,
         "tenant-a".into(),
-        store.clone(),
+        kasumi_store::test_utils::with_custody(
+            store.clone(),
+            Arc::new(LocalKeyProvider::new([241; 32])),
+        )
+        .await?,
         Arc::new(PausedSnapshot {
             inner: common::Backend::default(),
             entered: Mutex::new(Some(entered)),
@@ -81,7 +89,11 @@ async fn shutdown_drains_snapshot_worker_before_releasing_group_or_file_ownershi
         RaftGroup::local(
             1,
             "tenant-a".into(),
-            store.clone(),
+            kasumi_store::test_utils::with_custody(
+                store.clone(),
+                Arc::new(LocalKeyProvider::new([241; 32]))
+            )
+            .await?,
             Arc::new(common::Backend::default()),
         )
         .await

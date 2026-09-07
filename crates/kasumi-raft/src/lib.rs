@@ -1,6 +1,8 @@
 //! Durable byte-command replication. Application outcomes are encoded in response bytes;
 //! backend errors are fatal materialization failures, never replica-local rejections.
 
+mod command;
+mod control;
 mod lifetime;
 mod network;
 mod snapshot_buffer;
@@ -8,7 +10,11 @@ mod storage;
 mod timing;
 
 use anyhow::{Context, Result, ensure};
-use kasumi_store::TenantStore;
+pub use command::{
+    MAX_RETIREMENT_SEED_BYTES, RaftCommand, RetirementLogSeed, RetirementReplayState,
+};
+pub use control::{AppliedEntryContext, CommittedRetirementSeed, ControlLog};
+use kasumi_store::TenantStorageSet;
 use lifetime::StorageDrain;
 pub use network::{
     InProcessRouter, RaftTransport, RpcPayloadTooLarge, RpcRequest, RpcResponse, dispatch_rpc,
@@ -40,7 +46,7 @@ impl Default for RaftLimits {
 
 openraft::declare_raft_types!(
     pub TypeConfig:
-        D = Vec<u8>,
+        D = RaftCommand,
         R = Vec<u8>,
         NodeId = u64,
         Node = BasicNode,
@@ -49,11 +55,27 @@ openraft::declare_raft_types!(
 
 pub type Raft = openraft::Raft<TypeConfig>;
 
+/// Trusted state-machine output. It has no wire deserializer and does not mint
+/// a current administrative proof. The adapter validates terminal metadata
+/// against the exact committed seed before recording an immutable boundary.
+pub struct AppliedResponse {
+    pub data: Vec<u8>,
+    pub retirement: Option<kasumi_types::RetirementReceipt>,
+}
+impl AppliedResponse {
+    pub fn application(data: Vec<u8>) -> Self {
+        Self {
+            data,
+            retirement: None,
+        }
+    }
+}
+
 /// Only the Raft adapter may call mutation methods after the group starts.
 /// `apply` must publish the complete command atomically; business errors belong in
 /// its returned bytes. `restore` must validate before atomically replacing state.
 pub trait StateMachineBackend: Send + Sync + 'static {
-    fn apply(&self, index: u64, command: &[u8]) -> Result<Vec<u8>>;
+    fn apply(&self, position: &AppliedEntryContext, command: &[u8]) -> Result<AppliedResponse>;
     fn snapshot(&self) -> Result<Vec<u8>>;
     /// Validate the complete logical snapshot without modifying published state.
     /// Called before durable installation; malformed snapshots must never replace
@@ -67,7 +89,7 @@ pub struct RaftGroup {
     raft: Raft,
     machine_failed: Arc<AtomicBool>,
     storage_drain: StorageDrain,
-    store: Arc<TenantStore>,
+    store: Arc<TenantStorageSet>,
     ownership: Arc<AtomicBool>,
 }
 
@@ -82,8 +104,8 @@ struct OwnedBackend {
     _ownership: Arc<AtomicBool>,
 }
 impl StateMachineBackend for OwnedBackend {
-    fn apply(&self, index: u64, command: &[u8]) -> Result<Vec<u8>> {
-        self.inner.apply(index, command)
+    fn apply(&self, position: &AppliedEntryContext, command: &[u8]) -> Result<AppliedResponse> {
+        self.inner.apply(position, command)
     }
     fn snapshot(&self) -> Result<Vec<u8>> {
         self.inner.snapshot()
@@ -96,12 +118,12 @@ impl StateMachineBackend for OwnedBackend {
     }
 }
 
-fn claim_store(store: &Arc<TenantStore>) -> Result<Arc<AtomicBool>> {
+fn claim_store(store: &Arc<TenantStorageSet>) -> Result<Arc<AtomicBool>> {
     let mut groups = LIVE_GROUPS
         .lock()
         .map_err(|_| anyhow::anyhow!("group ownership unavailable"))?;
     groups.retain(|_, owner| owner.strong_count() > 0);
-    let key = Arc::as_ptr(store) as usize;
+    let key = Arc::as_ptr(store.application()) as usize;
     ensure!(
         !groups
             .get(&key)
@@ -120,7 +142,7 @@ impl RaftGroup {
     pub async fn open(
         id: u64,
         group: String,
-        store: Arc<TenantStore>,
+        store: Arc<TenantStorageSet>,
         backend: Arc<dyn StateMachineBackend>,
         transport: Arc<dyn RaftTransport>,
         config: Config,
@@ -140,7 +162,7 @@ impl RaftGroup {
     pub async fn open_with_limits(
         id: u64,
         group: String,
-        store: Arc<TenantStore>,
+        store: Arc<TenantStorageSet>,
         backend: Arc<dyn StateMachineBackend>,
         transport: Arc<dyn RaftTransport>,
         mut config: Config,
@@ -185,7 +207,7 @@ impl RaftGroup {
     pub async fn local(
         id: u64,
         group: String,
-        store: Arc<TenantStore>,
+        store: Arc<TenantStorageSet>,
         backend: Arc<dyn StateMachineBackend>,
     ) -> Result<Self> {
         let router = Arc::new(InProcessRouter::default());
@@ -217,6 +239,10 @@ impl RaftGroup {
         &self.raft
     }
 
+    pub fn storage_domains(&self) -> &Arc<TenantStorageSet> {
+        &self.store
+    }
+
     pub async fn initialize(&self, members: BTreeMap<u64, BasicNode>) -> Result<()> {
         self.check_access()?;
         ensure!(!members.is_empty(), "membership cannot be empty");
@@ -231,7 +257,24 @@ impl RaftGroup {
     /// Timeout/cancellation does not imply rollback: retry with an application idempotency key.
     pub async fn write(&self, command: Vec<u8>) -> Result<Vec<u8>> {
         self.check_access()?;
-        let response = self.raft.client_write(command).await?;
+        let response = self
+            .raft
+            .client_write(RaftCommand::application(command))
+            .await?;
+        self.check_access()?;
+        Ok(response.data)
+    }
+
+    pub async fn write_retirement(
+        &self,
+        command: Vec<u8>,
+        seed: RetirementLogSeed,
+    ) -> Result<Vec<u8>> {
+        self.check_access()?;
+        let response = self
+            .raft
+            .client_write(RaftCommand::retirement(command, seed)?)
+            .await?;
         self.check_access()?;
         Ok(response.data)
     }
@@ -240,7 +283,8 @@ impl RaftGroup {
         self.check_access()?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         let initial_term = self.raft.metrics().borrow().current_term;
-        let mut seals = self.store.seal_notifications();
+        let mut seals = self.store.application().seal_notifications();
+        let mut custody_seals = self.store.custody().store().seal_notifications();
         tokio::time::timeout_at(deadline, async {
             loop {
                 self.check_access()?;
@@ -258,6 +302,10 @@ impl RaftGroup {
                     _ = seals.changed() => {
                         self.check_access()?;
                         anyhow::bail!("key authorization changed during read barrier");
+                    }
+                    _ = custody_seals.changed() => {
+                        self.check_access()?;
+                        anyhow::bail!("custody key authorization changed during read barrier");
                     }
                 };
                 match result {
@@ -280,6 +328,10 @@ impl RaftGroup {
                             _ = seals.changed() => {
                                 self.check_access()?;
                                 anyhow::bail!("key authorization changed during read barrier");
+                            }
+                            _ = custody_seals.changed() => {
+                                self.check_access()?;
+                                anyhow::bail!("custody key authorization changed during read barrier");
                             }
                         }
                     }

@@ -47,10 +47,19 @@ impl Fixture {
         )
         .await
         .unwrap();
-        let db =
-            kasumi_engine::open_local(store.clone(), policy(), Limits::default(), audit.clone())
-                .await
-                .unwrap();
+        let db = kasumi_engine::open_local(
+            kasumi_store::test_utils::with_custody(
+                store.clone(),
+                std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
+            )
+            .await
+            .unwrap(),
+            policy(),
+            Limits::default(),
+            audit.clone(),
+        )
+        .await
+        .unwrap();
         // Each fixture models a separate node, with its own unchanged admission budget.
         db.install_admission(
             kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
@@ -204,9 +213,19 @@ async fn checkpoint_binds_actual_generation_complete_graph_keys_and_encrypted_re
     )
     .await
     .unwrap();
-    let db = kasumi_engine::open_local(store, policy(), Limits::default(), audit.clone())
+    let db = kasumi_engine::open_local(
+        kasumi_store::test_utils::with_custody(
+            store,
+            std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
+        )
         .await
-        .unwrap();
+        .unwrap(),
+        policy(),
+        Limits::default(),
+        audit.clone(),
+    )
+    .await
+    .unwrap();
     assert_eq!(
         db.verify_backup_checkpoint(context(), destination.as_ref(), proof.backup_id())
             .await

@@ -31,7 +31,12 @@ async fn encoded_response_is_fenced_by_policy_changes_and_actual_key_denial() {
         strict_read_audit: true,
     };
     let database = open_local(
-        store.clone(),
+        kasumi_store::test_utils::with_custody(
+            store.clone(),
+            std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
+        )
+        .await
+        .unwrap(),
         policy.clone(),
         Limits::default(),
         audit.clone(),

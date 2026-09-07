@@ -1,7 +1,9 @@
+use crate::command::sha256;
+use crate::control::{AppliedEntryContext, HEADERS, HeaderPayload, LogHeader, RetainedSeed, SEEDS};
 use crate::lifetime::{StorageHandle, StorageLease};
 use crate::{BasicNode, RaftLimits, SnapshotBuffer, StateMachineBackend, TypeConfig};
 use anyhow::{Context, Result, ensure};
-use kasumi_store::{TenantStore, WriteOp};
+use kasumi_store::{TenantStorageSet, TenantStore, WriteOp};
 use openraft::{
     Entry, EntryPayload, LogId, LogState, OptionalSend, RaftLogReader, RaftSnapshotBuilder,
     Snapshot, SnapshotMeta, StorageError, StorageIOError, StoredMembership, Vote,
@@ -57,6 +59,7 @@ fn load<T: DeserializeOwned>(
 #[derive(Clone)]
 pub struct LogStore {
     store: StorageHandle<TenantStore>,
+    domains: StorageHandle<TenantStorageSet>,
     // Cloned log readers and snapshot writers can run concurrently. Every log/vote
     // mutation shares this gate, including read/modify/write deletion operations.
     io_gate: Arc<tokio::sync::Mutex<()>>,
@@ -66,24 +69,25 @@ pub struct LogStore {
 }
 
 impl LogStore {
-    pub async fn open(store: Arc<TenantStore>, node_id: u64) -> Result<Self> {
-        Self::open_inner(store, node_id, None).await
+    pub async fn open(domains: Arc<TenantStorageSet>, node_id: u64) -> Result<Self> {
+        Self::open_inner(domains, node_id, None).await
     }
 
     pub(crate) async fn open_tracked(
-        store: Arc<TenantStore>,
+        domains: Arc<TenantStorageSet>,
         node_id: u64,
         lease: Arc<StorageLease>,
     ) -> Result<Self> {
-        Self::open_inner(store, node_id, Some(lease)).await
+        Self::open_inner(domains, node_id, Some(lease)).await
     }
 
     async fn open_inner(
-        store: Arc<TenantStore>,
+        domains: Arc<TenantStorageSet>,
         node_id: u64,
         lease: Option<Arc<StorageLease>>,
     ) -> Result<Self> {
-        let store = StorageHandle::new(store, lease);
+        let store = StorageHandle::new(domains.custody().store().clone(), lease.clone());
+        let domains = StorageHandle::new(domains, lease);
         let captured = store.clone();
         let index = tokio::task::spawn_blocking(move || -> Result<BTreeMap<u64, LogId<u64>>> {
             if let Some(saved) = load::<u64>(&captured, META, b"node_id")? {
@@ -95,7 +99,7 @@ impl LogStore {
                 captured.write_batch(&[put(META, b"node_id", serde_json::to_vec(&node_id)?)])?;
             }
             // Detect malformed keys/entries before handing state to Raft.
-            let entries = read_entries(&captured)?;
+            let entries = read_headers(&captured)?;
             for pair in entries.windows(2) {
                 ensure!(
                     pair[1].log_id.index == pair[0].log_id.index + 1,
@@ -110,6 +114,7 @@ impl LogStore {
         .await??;
         Ok(Self {
             store,
+            domains,
             io_gate: Arc::new(tokio::sync::Mutex::new(())),
             index: Arc::new(Mutex::new(index)),
         })
@@ -155,18 +160,19 @@ impl LogStore {
     }
 }
 
-fn read_entries(store: &TenantStore) -> Result<Vec<Entry<TypeConfig>>> {
+fn read_headers(store: &TenantStore) -> Result<Vec<LogHeader>> {
     let mut result = Vec::new();
-    for (key, value) in store.scan(LOG)? {
+    for (key, value) in store.scan(HEADERS)? {
         let key: [u8; 8] = key
             .try_into()
             .map_err(|_| anyhow::anyhow!("invalid raft index key"))?;
-        let entry = decode_entry(&value)?;
+        let header: LogHeader = serde_json::from_slice(&value)?;
+        header.validate()?;
         ensure!(
-            entry.log_id.index == u64::from_be_bytes(key),
+            header.log_id.index == u64::from_be_bytes(key),
             "raft key/index mismatch"
         );
-        result.push(entry);
+        result.push(header);
     }
     result.sort_by_key(|entry| entry.log_id.index);
     Ok(result)
@@ -179,15 +185,10 @@ fn encode_entry(entry: &Entry<TypeConfig>) -> Result<Vec<u8>> {
 }
 
 fn decode_entry(bytes: &[u8]) -> Result<Entry<TypeConfig>> {
-    if let Some(bytes) = bytes.strip_prefix(LOG_FORMAT) {
-        postcard::from_bytes(bytes).context("invalid binary raft log entry")
-    } else if bytes.first() == Some(&b'{') {
-        // Read early development stores; all subsequent writes use the compact,
-        // versioned binary format. No fallback is attempted for malformed binary.
-        serde_json::from_slice(bytes).context("invalid legacy raft log entry")
-    } else {
-        anyhow::bail!("unknown raft log record format")
-    }
+    let bytes = bytes
+        .strip_prefix(LOG_FORMAT)
+        .context("unknown raft log record format")?;
+    postcard::from_bytes(bytes).context("invalid binary raft log entry")
 }
 
 impl RaftLogReader<TypeConfig> for LogStore {
@@ -196,6 +197,7 @@ impl RaftLogReader<TypeConfig> for LogStore {
         range: RB,
     ) -> Result<Vec<Entry<TypeConfig>>, StorageError<u64>> {
         let index = self.index.clone();
+        let domains = self.domains.clone();
         let bounds = (range.start_bound().cloned(), range.end_bound().cloned());
         self.read(move |store| {
             let ids = index
@@ -206,12 +208,28 @@ impl RaftLogReader<TypeConfig> for LogStore {
                 .collect::<Vec<_>>();
             ids.into_iter()
                 .map(|(index, id)| {
-                    let entry = decode_entry(
-                        &store
-                            .get(LOG, &index.to_be_bytes())?
-                            .context("missing cached raft log entry")?,
-                    )?;
-                    ensure!(entry.log_id == id, "raft cached log ID mismatch");
+                    let header: LogHeader = load(store, HEADERS, &index.to_be_bytes())?
+                        .context("missing cached raft header")?;
+                    ensure!(header.log_id == id, "raft cached log ID mismatch");
+                    let entry = match &header.payload {
+                        HeaderPayload::Blank => Entry {
+                            log_id: id,
+                            payload: EntryPayload::Blank,
+                        },
+                        HeaderPayload::Membership(membership) => Entry {
+                            log_id: id,
+                            payload: EntryPayload::Membership(membership.clone()),
+                        },
+                        _ => {
+                            let encoded = domains
+                                .application()
+                                .get(LOG, &index.to_be_bytes())?
+                                .context("missing application raft body")?;
+                            let entry = decode_entry(&encoded)?;
+                            header.check_entry(&entry, &encoded)?;
+                            entry
+                        }
+                    };
                     Ok(entry)
                 })
                 .collect()
@@ -260,8 +278,23 @@ impl RaftLogStorage<TypeConfig> for LogStore {
         committed: Option<LogId<u64>>,
     ) -> Result<(), StorageError<u64>> {
         let bytes = serde_json::to_vec(&committed).map_err(err)?;
-        self.mutate(move |store| store.write_batch(&[put(META, b"committed", bytes)]))
-            .await
+        self.mutate(move |store| {
+            let previous = load::<Option<LogId<u64>>>(store, META, b"committed")?.flatten();
+            ensure!(
+                committed >= previous,
+                "committed source position cannot regress"
+            );
+            if let Some(id) = committed {
+                let active = load::<LogHeader>(store, HEADERS, &id.index.to_be_bytes())?;
+                let covered = load::<LogId<u64>>(store, META, b"purged")?;
+                ensure!(
+                    active.is_some_and(|header| header.log_id == id) || covered == Some(id),
+                    "commit position lacks exact source log coverage"
+                );
+            }
+            store.write_batch(&[put(META, b"committed", bytes)])
+        })
+        .await
     }
 
     async fn read_committed(&mut self) -> Result<Option<LogId<u64>>, StorageError<u64>> {
@@ -279,47 +312,78 @@ impl RaftLogStorage<TypeConfig> for LogStore {
         I::IntoIter: OptionalSend,
     {
         let entries = entries.into_iter().collect::<Vec<_>>();
+        let bootstrap_sha256 =
+            load::<String>(&self.store, META, b"application_bootstrap_sha256").map_err(err)?;
+        let storage_binding_sha256 = self.domains.custody().binding().digest().map_err(err)?;
         let writes = entries
             .iter()
             .map(|entry| {
-                Ok(put(
-                    LOG,
-                    &entry.log_id.index.to_be_bytes(),
-                    encode_entry(entry)?,
-                ))
+                let encoded = encode_entry(entry)?;
+                let (header, seed) = LogHeader::build(entry, &encoded)?;
+                header.validate()?;
+                let key = entry.log_id.index.to_be_bytes();
+                let mut control = vec![put(HEADERS, &key, serde_json::to_vec(&header)?)];
+                if let Some(seed) = seed {
+                    control.push(put(
+                        SEEDS,
+                        &key,
+                        serde_json::to_vec(&RetainedSeed {
+                            header,
+                            seed,
+                            bootstrap_sha256: bootstrap_sha256
+                                .clone()
+                                .context("retirement seed lacks installed application bootstrap")?,
+                            storage_binding_sha256: storage_binding_sha256.clone(),
+                        })?,
+                    ));
+                } else {
+                    control.push(delete(SEEDS, key.to_vec()));
+                }
+                Ok((put(LOG, &key, encoded), control))
             })
             .collect::<Result<Vec<_>>>()
             .map_err(err)?;
         let index = self.index.clone();
+        let domains = self.domains.clone();
         let result = self
-            .mutate(move |store| {
+            .mutate(move |_| {
                 let mut index = index
                     .lock()
                     .map_err(|_| anyhow::anyhow!("raft index lock poisoned"))?;
-                // Appending may be larger than one store transaction. Persist a
-                // contiguous prefix in each bounded transaction; signal completion
-                // only after every entry is durable. Recovery accepts partial tails.
+                // Each prefix commits bodies and their headers/seeds together. The
+                // I/O callback observes only complete durable entries, never a sidecar.
                 let mut start = 0;
                 while start < writes.len() {
                     let mut end = start;
-                    let mut bytes = 0;
-                    while end < writes.len() && end - start < 65536 {
-                        let WriteOp::Put {
-                            namespace,
-                            key,
-                            value,
-                        } = &writes[end]
-                        else {
-                            unreachable!()
-                        };
-                        let size = namespace.len() + key.len() + value.len();
-                        if end > start && bytes + size > 48 * 1024 * 1024 {
+                    let mut bytes = 0usize;
+                    let mut count = 0usize;
+                    let mut data = Vec::new();
+                    let mut control = Vec::new();
+                    while end < writes.len() {
+                        let entry_ops = 1 + writes[end].1.len();
+                        let size = std::iter::once(&writes[end].0)
+                            .chain(writes[end].1.iter())
+                            .map(|op| match op {
+                                WriteOp::Put {
+                                    namespace,
+                                    key,
+                                    value,
+                                } => namespace.len() + key.len() + value.len(),
+                                WriteOp::Delete { namespace, key } => namespace.len() + key.len(),
+                            })
+                            .sum::<usize>();
+                        if end > start
+                            && (bytes + size > 48 * 1024 * 1024 || count + entry_ops > 65536)
+                        {
                             break;
                         }
                         bytes += size;
+                        count += entry_ops;
+                        data.push(writes[end].0.clone());
+                        control.extend(writes[end].1.iter().cloned());
                         end += 1;
                     }
-                    store.write_batch(&writes[start..end])?;
+                    domains.write_batch(&data, &control)?;
                     for entry in &entries[start..end] {
                         index.insert(entry.log_id.index, entry.log_id);
                     }
@@ -340,6 +404,7 @@ impl RaftLogStorage<TypeConfig> for LogStore {
 
     async fn truncate(&mut self, log_id: LogId<u64>) -> Result<(), StorageError<u64>> {
         let index = self.index.clone();
+        let domains = self.domains.clone();
         self.mutate(move |store| {
             let mut index = index
                 .lock()
@@ -351,12 +416,29 @@ impl RaftLogStorage<TypeConfig> for LogStore {
                 .rev()
                 .map(|(&index, _)| index)
                 .collect::<Vec<_>>();
-            for ids in ids.chunks(65536) {
+            if let Some(committed) =
+                load::<Option<LogId<u64>>>(store, META, b"committed")?.flatten()
+            {
+                ensure!(
+                    log_id.index > committed.index,
+                    "cannot truncate committed source log"
+                );
+            }
+            for ids in ids.chunks(21845) {
                 let writes = ids
                     .iter()
                     .map(|index| delete(LOG, index.to_be_bytes().to_vec()))
                     .collect::<Vec<_>>();
-                store.write_batch(&writes)?;
+                let control = ids
+                    .iter()
+                    .flat_map(|index| {
+                        [
+                            delete(HEADERS, index.to_be_bytes().to_vec()),
+                            delete(SEEDS, index.to_be_bytes().to_vec()),
+                        ]
+                    })
+                    .collect::<Vec<_>>();
+                domains.write_batch(&writes, &control)?;
                 for id in ids {
                     index.remove(id);
                 }
@@ -368,27 +450,37 @@ impl RaftLogStorage<TypeConfig> for LogStore {
 
     async fn purge(&mut self, log_id: LogId<u64>) -> Result<(), StorageError<u64>> {
         let index = self.index.clone();
+        let domains = self.domains.clone();
         self.mutate(move |store| {
             let mut index = index
                 .lock()
                 .map_err(|_| anyhow::anyhow!("raft index lock poisoned"))?;
+            let retired = crate::control::retired_boundary(domains.custody())?.is_some();
             let ids = index
                 .range(..=log_id.index)
                 .map(|(_, &id)| id)
                 .collect::<Vec<_>>();
             // Move the purge cursor in the same transaction as every removed
             // prefix. Covered snapshots were persisted before Raft calls purge.
-            for ids in ids.chunks(65535) {
+            for ids in ids.chunks(32767) {
                 let mut writes = ids
                     .iter()
-                    .map(|id| delete(LOG, id.index.to_be_bytes().to_vec()))
+                    .map(|id| delete(HEADERS, id.index.to_be_bytes().to_vec()))
                     .collect::<Vec<_>>();
                 writes.push(put(
                     META,
                     b"purged",
                     serde_json::to_vec(ids.last().unwrap())?,
                 ));
-                store.write_batch(&writes)?;
+                if retired {
+                    store.write_batch(&writes)?;
+                } else {
+                    let bodies = ids
+                        .iter()
+                        .map(|id| delete(LOG, id.index.to_be_bytes().to_vec()))
+                        .collect::<Vec<_>>();
+                    domains.write_batch(&bodies, &writes)?;
+                }
                 for id in ids {
                     index.remove(&id.index);
                 }
@@ -412,6 +504,7 @@ struct SnapshotEnvelope {
 #[derive(Clone, Serialize, Deserialize)]
 struct SnapshotManifest {
     version: u32,
+    sha256: String,
     id: String,
     bytes: u64,
     chunks: u64,
@@ -427,6 +520,7 @@ fn chunk_key(manifest: &SnapshotManifest, chunk: u64) -> Vec<u8> {
 fn load_manifest(store: &TenantStore, key: &[u8], limit: u64) -> Result<Option<SnapshotManifest>> {
     let manifest = load::<SnapshotManifest>(store, SNAPSHOT, key)?;
     if let Some(manifest) = &manifest {
+        kasumi_types::validate_sha256(&manifest.sha256)?;
         ensure!(
             manifest.version == 1 && uuid::Uuid::parse_str(&manifest.id).is_ok(),
             "invalid snapshot manifest"
@@ -461,12 +555,46 @@ fn cleanup_snapshots(store: &TenantStore, limit: u64) -> Result<()> {
     Ok(())
 }
 
-fn persist_snapshot(store: &TenantStore, bytes: &[u8], limit: u64) -> Result<()> {
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SnapshotCoverage {
+    manifest_id: String,
+    snapshot_sha256: String,
+    meta: SnapshotMeta<u64, BasicNode>,
+}
+
+fn validate_snapshot_coverage(
+    domains: &TenantStorageSet,
+    snapshot: &SnapshotEnvelope,
+    limit: u64,
+) -> Result<()> {
+    let manifest = load_manifest(domains.application(), b"current", limit)?
+        .context("snapshot manifest absent")?;
+    let coverage: SnapshotCoverage =
+        load(domains.custody().store(), META, b"snapshot_coverage")?
+            .context("snapshot lacks independently readable control coverage")?;
+    ensure!(
+        coverage.manifest_id == manifest.id
+            && coverage.snapshot_sha256 == manifest.sha256
+            && coverage.meta == snapshot.meta,
+        "snapshot/control coverage mismatch"
+    );
+    Ok(())
+}
+
+fn persist_snapshot(
+    domains: &TenantStorageSet,
+    bytes: &[u8],
+    limit: u64,
+    meta: &SnapshotMeta<u64, BasicNode>,
+) -> Result<()> {
+    let store = domains.application();
     ensure!(bytes.len() as u64 <= limit, "snapshot exceeds byte limit");
     cleanup_snapshots(store, limit)?;
     let previous = load_manifest(store, b"current", limit)?;
     let manifest = SnapshotManifest {
         version: 1,
+        sha256: sha256(bytes),
         id: uuid::Uuid::new_v4().to_string(),
         bytes: bytes.len() as u64,
         chunks: bytes.len().div_ceil(SNAPSHOT_CHUNK_BYTES) as u64,
@@ -495,7 +623,19 @@ fn persist_snapshot(store: &TenantStore, bytes: &[u8], limit: u64) -> Result<()>
     if let Some(previous) = previous {
         install.push(put(SNAPSHOT, b"obsolete", serde_json::to_vec(&previous)?));
     }
-    store.write_batch(&install)?;
+    let coverage = SnapshotCoverage {
+        manifest_id: manifest.id,
+        snapshot_sha256: manifest.sha256,
+        meta: meta.clone(),
+    };
+    domains.write_batch(
+        &install,
+        &[put(
+            META,
+            b"snapshot_coverage",
+            serde_json::to_vec(&coverage)?,
+        )],
+    )?;
     cleanup_snapshots(store, limit)
 }
 
@@ -507,6 +647,7 @@ struct AppliedState {
 
 #[derive(Clone)]
 pub struct StateMachine {
+    domains: StorageHandle<TenantStorageSet>,
     store: StorageHandle<TenantStore>,
     backend: StorageHandle<dyn StateMachineBackend>,
     state: Arc<Mutex<AppliedState>>,
@@ -517,43 +658,47 @@ pub struct StateMachine {
 
 impl StateMachine {
     pub async fn open(
-        store: Arc<TenantStore>,
+        domains: Arc<TenantStorageSet>,
         backend: Arc<dyn StateMachineBackend>,
     ) -> Result<Self> {
-        Self::open_with_limits(store, backend, RaftLimits::default()).await
+        Self::open_with_limits(domains, backend, RaftLimits::default()).await
     }
 
     pub async fn open_with_limits(
-        store: Arc<TenantStore>,
+        domains: Arc<TenantStorageSet>,
         backend: Arc<dyn StateMachineBackend>,
         limits: RaftLimits,
     ) -> Result<Self> {
-        Self::open_inner(store, backend, limits, None).await
+        Self::open_inner(domains, backend, limits, None).await
     }
 
     pub(crate) async fn open_tracked(
-        store: Arc<TenantStore>,
+        domains: Arc<TenantStorageSet>,
         backend: Arc<dyn StateMachineBackend>,
         limits: RaftLimits,
         lease: Arc<StorageLease>,
     ) -> Result<Self> {
-        Self::open_inner(store, backend, limits, Some(lease)).await
+        Self::open_inner(domains, backend, limits, Some(lease)).await
     }
 
     async fn open_inner(
-        store: Arc<TenantStore>,
+        domains: Arc<TenantStorageSet>,
         backend: Arc<dyn StateMachineBackend>,
         limits: RaftLimits,
         lease: Option<Arc<StorageLease>>,
     ) -> Result<Self> {
-        let store = StorageHandle::new(store, lease.clone());
+        let store = StorageHandle::new(domains.application().clone(), lease.clone());
+        let domains = StorageHandle::new(domains, lease.clone());
         let backend = StorageHandle::new(backend, lease);
+        let captured_domains = domains.clone();
         let captured = store.clone();
         let target = backend.clone();
         let limit = limits.max_snapshot_bytes;
         let state = tokio::task::spawn_blocking(move || -> Result<AppliedState> {
+            captured_domains.check_access()?;
             cleanup_snapshots(&captured, limit)?;
             if let Some(snapshot) = load_snapshot(&captured, limit)? {
+                validate_snapshot_coverage(&captured_domains, &snapshot, limit)?;
                 ensure!(snapshot.version == 1, "unsupported raft snapshot version");
                 target.validate_snapshot(&snapshot.backend)?;
                 target.restore(&snapshot.backend)?;
@@ -567,6 +712,7 @@ impl StateMachine {
         })
         .await??;
         Ok(Self {
+            domains,
             store,
             backend,
             state: Arc::new(Mutex::new(state)),
@@ -610,6 +756,10 @@ fn load_snapshot(store: &TenantStore, limit: u64) -> Result<Option<SnapshotEnvel
                 bytes.extend_from_slice(&data);
             }
             ensure!(bytes.len() as u64 == manifest.bytes, "incomplete snapshot");
+            ensure!(
+                sha256(&bytes) == manifest.sha256,
+                "snapshot content digest differs"
+            );
             Ok(postcard::from_bytes(&bytes)?)
         })
         .transpose()
@@ -629,10 +779,12 @@ impl RaftSnapshotBuilder<TypeConfig> for SnapshotBuilder {
     async fn build_snapshot(&mut self) -> Result<Snapshot<TypeConfig>, StorageError<u64>> {
         let gate = self.machine.snapshot_gate.clone().lock_owned().await;
         let captured = self.captured.as_ref().map_err(err)?.clone();
+        let domains = self.machine.domains.clone();
         let store = self.machine.store.clone();
         let limit = self.machine.limits.max_snapshot_bytes;
         tokio::task::spawn_blocking(move || -> Result<Snapshot<TypeConfig>> {
             let _gate = gate;
+            domains.check_access()?;
             if let Some(current) = load_snapshot(&store, limit)?
                 && current.meta.last_log_id.map(|id| id.index)
                     > captured.meta.last_log_id.map(|id| id.index)
@@ -640,7 +792,12 @@ impl RaftSnapshotBuilder<TypeConfig> for SnapshotBuilder {
                 return as_snapshot(&current, limit);
             }
             let snapshot = as_snapshot(&captured, limit)?;
-            persist_snapshot(&store, snapshot.snapshot.as_bytes(), limit)?;
+            persist_snapshot(
+                &domains,
+                snapshot.snapshot.as_bytes(),
+                limit,
+                &snapshot.meta,
+            )?;
             Ok(snapshot)
         })
         .await
@@ -677,7 +834,7 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
         let entries = entries.into_iter().collect::<Vec<_>>();
         let machine = self.clone();
         tokio::task::spawn_blocking(move || -> Result<Vec<Vec<u8>>> {
-            machine.store.check_access()?;
+            machine.domains.check_access()?;
             ensure!(!machine.failed(), "state machine requires recovery");
             let mut state = machine
                 .state
@@ -685,19 +842,35 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
                 .map_err(|_| anyhow::anyhow!("state machine lock poisoned"))?;
             let mut responses = Vec::with_capacity(entries.len());
             for entry in entries {
+                machine.domains.check_access()?;
+                let (command_sha256, retirement_seed) = match &entry.payload {
+                    EntryPayload::Normal(command) => (sha256(command.bytes()), command.seed()?),
+                    _ => (sha256(&encode_entry(&entry)?), None),
+                };
+                let mut position = AppliedEntryContext {
+                    log_id: entry.log_id,
+                    previous: state.log_id,
+                    membership: state.membership.clone(),
+                    command_sha256,
+                    retirement_seed,
+                };
                 let response = match entry.payload {
-                    EntryPayload::Blank => Vec::new(),
+                    EntryPayload::Blank => crate::AppliedResponse::application(Vec::new()),
                     EntryPayload::Membership(membership) => {
                         state.membership = StoredMembership::new(Some(entry.log_id), membership);
-                        Vec::new()
+                        position.membership = state.membership.clone();
+                        crate::AppliedResponse::application(Vec::new())
                     }
                     EntryPayload::Normal(command) => {
-                        machine.backend.apply(entry.log_id.index, &command)?
+                        machine.backend.apply(&position, command.bytes())?
                     }
                 };
+                // A crash before this marker leaves the committed seed available
+                // independently; it never falsely marks a projection as applied.
+                crate::control::persist_applied(&machine.domains, &position, response.retirement)?;
                 // Backend has published its complete generation before advancing this cursor.
                 state.log_id = Some(entry.log_id);
-                responses.push(response);
+                responses.push(response.data);
             }
             Ok(responses)
         })
@@ -709,7 +882,7 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
     async fn get_snapshot_builder(&mut self) -> Self::SnapshotBuilder {
         let machine = self.clone();
         let captured = tokio::task::spawn_blocking(move || -> Result<SnapshotEnvelope> {
-            machine.store.check_access()?;
+            machine.domains.check_access()?;
             let state = machine
                 .state
                 .lock()
@@ -774,9 +947,10 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
             // Durably install encrypted chunks and their manifest, then atomically publish backend state.
             // A crash between these steps recovers the new snapshot on restart.
             persist_snapshot(
-                &machine.store,
+                &machine.domains,
                 snapshot.as_bytes(),
                 machine.limits.max_snapshot_bytes,
+                &meta,
             )?;
             machine.backend.restore(&envelope.backend)?;
             state.log_id = envelope.meta.last_log_id;
@@ -792,11 +966,18 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
         &mut self,
     ) -> Result<Option<Snapshot<TypeConfig>>, StorageError<u64>> {
         let store = self.store.clone();
+        let domains = self.domains.clone();
         let limit = self.limits.max_snapshot_bytes;
         tokio::task::spawn_blocking(move || {
-            load_snapshot(&store, limit)?
-                .map(|snapshot| as_snapshot(&snapshot, limit))
-                .transpose()
+            domains.check_access()?;
+            let result = load_snapshot(&store, limit)?
+                .map(|snapshot| {
+                    validate_snapshot_coverage(&domains, &snapshot, limit)?;
+                    as_snapshot(&snapshot, limit)
+                })
+                .transpose()?;
+            domains.check_access()?;
+            Ok::<_, anyhow::Error>(result)
         })
         .await
         .map_err(err)?

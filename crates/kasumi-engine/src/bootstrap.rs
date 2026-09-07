@@ -1,7 +1,9 @@
 //! Persisted bootstrap and logical restore, separate from node-bound Raft snapshots.
 use crate::{Database, SecurityAudit, TenantEngine};
 use kasumi_raft::{BasicNode, Config, RaftGroup, RaftTransport};
-use kasumi_store::{BackupDestination, EncryptedBackup, KeyProvider, TenantStore, WriteOp};
+use kasumi_store::{
+    BackupDestination, EncryptedBackup, KeyProvider, TenantStorageSet, TenantStore, WriteOp,
+};
 use kasumi_types::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -68,17 +70,23 @@ pub struct PreparedReplicaRestore {
 pub async fn prepare_replicated_restore(
     source: &RestoreSource,
     backup_id: uuid::Uuid,
-    target: Arc<TenantStore>,
+    targets: Arc<TenantStorageSet>,
     context: RequestContext,
     replica: ReplicaRestoreConfig,
     transport: Arc<dyn RaftTransport>,
     security_audit: Arc<SecurityAudit>,
 ) -> anyhow::Result<PreparedReplicaRestore> {
+    let target = targets.application().clone();
     let deadline = source.deadline()?;
     let _gate = deadline.run(BOOTSTRAP_GATE.lock()).await?;
     restore_access(&target, &security_audit, &context).await?;
     anyhow::ensure!(
-        target.get(NS, b"manifest")?.is_none() && target.get("raft.meta", b"node_id")?.is_none(),
+        target.get(NS, b"manifest")?.is_none()
+            && targets
+                .custody()
+                .store()
+                .get("raft.meta", b"node_id")?
+                .is_none(),
         "restore target is already initialized"
     );
     anyhow::ensure!(
@@ -121,13 +129,13 @@ pub async fn prepare_replicated_restore(
         .await?;
     deadline.check()?;
     restore_access(&target, &security_audit, &context).await?;
-    bind_deployment(&target, &serde_json::to_vec(&("replicated", &bootstrap))?)?;
-    persist_new(&target, &restored.bytes)?;
+    bind_deployment(&targets, &serde_json::to_vec(&("replicated", &bootstrap))?)?;
+    persist_new(&targets, &restored.bytes)?;
     let engine = restored.engine;
     let group = RaftGroup::open(
         replica.node_id,
         format!("{}/{}", target.tenant(), bootstrap.incarnation),
-        target.clone(),
+        targets.clone(),
         engine.clone(),
         transport,
         replica.raft,
@@ -171,19 +179,33 @@ impl ReplicatedBootstrap {
     }
 }
 
-fn bind_deployment(store: &TenantStore, binding: &[u8]) -> anyhow::Result<()> {
+fn bind_deployment(stores: &TenantStorageSet, binding: &[u8]) -> anyhow::Result<()> {
+    let store = stores.application();
     const DEPLOYMENT: &str = "engine.deployment";
     if let Some(existing) = store.get(DEPLOYMENT, b"mode")? {
         anyhow::ensure!(
-            existing == binding,
+            existing == binding
+                && stores
+                    .custody()
+                    .store()
+                    .get(DEPLOYMENT, b"mode")?
+                    .as_deref()
+                    == Some(binding),
             "deployment bootstrap differs from persisted configuration"
         );
     } else {
         anyhow::ensure!(
-            store.get("raft.meta", b"node_id")?.is_none(),
+            stores
+                .custody()
+                .store()
+                .get("raft.meta", b"node_id")?
+                .is_none(),
             "existing Raft storage lacks a deployment binding"
         );
-        store.write_batch(&[WriteOp::put(DEPLOYMENT, b"mode", binding)])?;
+        stores.write_batch(
+            &[WriteOp::put(DEPLOYMENT, b"mode", binding)],
+            &[WriteOp::put(DEPLOYMENT, b"mode", binding)],
+        )?;
     }
     Ok(())
 }
@@ -194,17 +216,18 @@ fn bind_deployment(store: &TenantStore, binding: &[u8]) -> anyhow::Result<()> {
 /// policy. New learners use the same bootstrap and their own approved node ID.
 pub async fn open_replicated(
     node_id: u64,
-    store: Arc<TenantStore>,
+    stores: Arc<TenantStorageSet>,
     bootstrap: &ReplicatedBootstrap,
     transport: Arc<dyn RaftTransport>,
     config: Config,
     security_audit: Arc<SecurityAudit>,
 ) -> anyhow::Result<Arc<Database>> {
+    let store = stores.application().clone();
     bootstrap.validate()?;
     anyhow::ensure!(node_id > 0, "node ID must be positive");
     let _gate = BOOTSTRAP_GATE.lock().await;
     let binding = serde_json::to_vec(&("replicated", bootstrap))?;
-    bind_deployment(&store, &binding)?;
+    bind_deployment(&stores, &binding)?;
     let bytes = match load(&store)? {
         Some(bytes) => bytes,
         None => {
@@ -215,10 +238,11 @@ pub async fn open_replicated(
                 bootstrap.initial_limits.clone(),
             )?;
             let bytes = engine.snapshot()?;
-            persist_new(&store, &bytes)?;
+            persist_new(&stores, &bytes)?;
             bytes
         }
     };
+    validate_bootstrap_control(&stores, &bytes)?;
     let engine = Arc::new(TenantEngine::from_bootstrap(store.tenant(), &bytes)?);
     anyhow::ensure!(
         engine.generation()?.state.incarnation == bootstrap.incarnation,
@@ -227,7 +251,7 @@ pub async fn open_replicated(
     let group = RaftGroup::open(
         node_id,
         format!("{}/{}", store.tenant(), bootstrap.incarnation),
-        store.clone(),
+        stores.clone(),
         engine.clone(),
         transport,
         config,
@@ -310,10 +334,31 @@ fn load(store: &TenantStore) -> anyhow::Result<Option<Vec<u8>>> {
     Ok(Some(snapshot))
 }
 
-fn persist_new(store: &TenantStore, bytes: &[u8]) -> anyhow::Result<()> {
+fn validate_bootstrap_control(stores: &TenantStorageSet, bytes: &[u8]) -> anyhow::Result<()> {
+    stores.check_access()?;
+    let expected = serde_json::to_vec(&hex::encode(Sha256::digest(bytes)))?;
+    anyhow::ensure!(
+        stores
+            .custody()
+            .store()
+            .get("raft.meta", b"application_bootstrap_sha256")?
+            .as_deref()
+            == Some(expected.as_slice()),
+        "application bootstrap/control identity differs"
+    );
+    Ok(())
+}
+
+fn persist_new(stores: &TenantStorageSet, bytes: &[u8]) -> anyhow::Result<()> {
+    let store = stores.application();
     anyhow::ensure!(bytes.len() <= MAX_BOOTSTRAP, "bootstrap exceeds size limit");
     anyhow::ensure!(
-        store.get(NS, b"manifest")?.is_none() && store.get("raft.meta", b"node_id")?.is_none(),
+        store.get(NS, b"manifest")?.is_none()
+            && stores
+                .custody()
+                .store()
+                .get("raft.meta", b"node_id")?
+                .is_none(),
         "target tenant already initialized; restore never overwrites it"
     );
     for (i, chunk) in bytes.chunks(CHUNK).enumerate() {
@@ -326,11 +371,15 @@ fn persist_new(store: &TenantStore, bytes: &[u8]) -> anyhow::Result<()> {
         digest: hex::encode(Sha256::digest(bytes)),
     };
     // Only this durable manifest makes the bootstrap eligible to start Raft.
-    store.write_batch(&[WriteOp::put(
-        NS,
-        b"manifest",
-        serde_json::to_vec(&manifest)?,
-    )])?;
+    let encoded = serde_json::to_vec(&manifest)?;
+    stores.write_batch(
+        &[WriteOp::put(NS, b"manifest", encoded)],
+        &[WriteOp::put(
+            "raft.meta",
+            b"application_bootstrap_sha256",
+            serde_json::to_vec(&manifest.digest)?,
+        )],
+    )?;
     Ok(())
 }
 
@@ -338,13 +387,14 @@ fn persist_new(store: &TenantStore, bytes: &[u8]) -> anyhow::Result<()> {
 /// caller-supplied creation defaults cannot change existing permissions or limits.
 /// The node must own exactly one live Database instance for each TenantStore.
 pub async fn open_local(
-    store: Arc<TenantStore>,
+    stores: Arc<TenantStorageSet>,
     initial_policy: Policy,
     initial_limits: Limits,
     security_audit: Arc<SecurityAudit>,
 ) -> anyhow::Result<Arc<Database>> {
+    let store = stores.application().clone();
     let _gate = BOOTSTRAP_GATE.lock().await;
-    bind_deployment(&store, b"local-v1")?;
+    bind_deployment(&stores, b"local-v1")?;
     let bytes = match load(&store)? {
         Some(bytes) => bytes,
         None => {
@@ -355,42 +405,47 @@ pub async fn open_local(
                 initial_limits,
             )?;
             let bytes = engine.snapshot()?;
-            persist_new(&store, &bytes)?;
+            persist_new(&stores, &bytes)?;
             bytes
         }
     };
-    start(store, &bytes, security_audit).await
+    start(stores, &bytes, security_audit).await
 }
 
 async fn start(
-    store: Arc<TenantStore>,
+    stores: Arc<TenantStorageSet>,
     bytes: &[u8],
     security_audit: Arc<SecurityAudit>,
 ) -> anyhow::Result<Arc<Database>> {
-    start_with_optional_admission(store, bytes, None, security_audit).await
+    start_with_optional_admission(stores, bytes, None, security_audit).await
 }
 
 async fn start_with_optional_admission(
-    store: Arc<TenantStore>,
+    stores: Arc<TenantStorageSet>,
     bytes: &[u8],
     admission: Option<Arc<crate::admission::NodeAdmission>>,
     security_audit: Arc<SecurityAudit>,
 ) -> anyhow::Result<Arc<Database>> {
-    let engine = Arc::new(TenantEngine::from_bootstrap(store.tenant(), bytes)?);
-    start_prepared(store, engine, admission, security_audit).await
+    validate_bootstrap_control(&stores, bytes)?;
+    let engine = Arc::new(TenantEngine::from_bootstrap(
+        stores.application().tenant(),
+        bytes,
+    )?);
+    start_prepared(stores, engine, admission, security_audit).await
 }
 
 async fn start_prepared(
-    store: Arc<TenantStore>,
+    stores: Arc<TenantStorageSet>,
     engine: Arc<TenantEngine>,
     admission: Option<Arc<crate::admission::NodeAdmission>>,
     security_audit: Arc<SecurityAudit>,
 ) -> anyhow::Result<Arc<Database>> {
+    let store = stores.application().clone();
     let incarnation = engine.generation()?.state.incarnation.clone();
     let group = RaftGroup::local(
         1,
         format!("{}/{incarnation}", store.tenant()),
-        store.clone(),
+        stores.clone(),
         engine.clone(),
     )
     .await?;
@@ -408,14 +463,14 @@ async fn start_prepared(
 pub async fn restore_local(
     source: &RestoreSource,
     backup_id: uuid::Uuid,
-    target: Arc<TenantStore>,
+    targets: Arc<TenantStorageSet>,
     context: RequestContext,
     security_audit: Arc<SecurityAudit>,
 ) -> anyhow::Result<Arc<Database>> {
     restore_local_with_incarnation(
         source,
         backup_id,
-        target,
+        targets,
         context,
         uuid::Uuid::new_v4(),
         security_audit,
@@ -428,7 +483,7 @@ pub async fn restore_local(
 pub async fn restore_local_with_incarnation(
     source: &RestoreSource,
     backup_id: uuid::Uuid,
-    target: Arc<TenantStore>,
+    targets: Arc<TenantStorageSet>,
     context: RequestContext,
     incarnation: uuid::Uuid,
     security_audit: Arc<SecurityAudit>,
@@ -436,7 +491,7 @@ pub async fn restore_local_with_incarnation(
     restore_local_with_incarnation_and_admission(
         source,
         backup_id,
-        target,
+        targets,
         context,
         incarnation,
         crate::admission::NodeAdmission::process_default(),
@@ -450,17 +505,23 @@ pub async fn restore_local_with_incarnation(
 pub async fn restore_local_with_incarnation_and_admission(
     source: &RestoreSource,
     backup_id: uuid::Uuid,
-    target: Arc<TenantStore>,
+    targets: Arc<TenantStorageSet>,
     context: RequestContext,
     incarnation: uuid::Uuid,
     admission: Arc<crate::admission::NodeAdmission>,
     security_audit: Arc<SecurityAudit>,
 ) -> anyhow::Result<Arc<Database>> {
+    let target = targets.application().clone();
     let deadline = source.deadline()?;
     let _gate = deadline.run(BOOTSTRAP_GATE.lock()).await?;
     restore_access(&target, &security_audit, &context).await?;
     anyhow::ensure!(
-        target.get(NS, b"manifest")?.is_none() && target.get("raft.meta", b"node_id")?.is_none(),
+        target.get(NS, b"manifest")?.is_none()
+            && targets
+                .custody()
+                .store()
+                .get("raft.meta", b"node_id")?
+                .is_none(),
         "restore target is already initialized"
     );
     let verified = deadline
@@ -486,9 +547,10 @@ pub async fn restore_local_with_incarnation_and_admission(
         .await?;
     deadline.check()?;
     restore_access(&target, &security_audit, &context).await?;
-    bind_deployment(&target, b"local-v1")?;
-    persist_new(&target, &restored.bytes)?;
-    let database = start_prepared(target, restored.engine, Some(admission), security_audit).await?;
+    bind_deployment(&targets, b"local-v1")?;
+    persist_new(&targets, &restored.bytes)?;
+    let database =
+        start_prepared(targets, restored.engine, Some(admission), security_audit).await?;
     database.install_archive_destination(
         source.destination_alias.clone(),
         source.destination.clone(),

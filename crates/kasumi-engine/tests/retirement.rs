@@ -46,10 +46,19 @@ impl Fixture {
         )
         .await
         .unwrap();
-        let db =
-            kasumi_engine::open_local(store.clone(), policy(), Limits::default(), audit.clone())
-                .await
-                .unwrap();
+        let db = kasumi_engine::open_local(
+            kasumi_store::test_utils::with_custody(
+                store.clone(),
+                std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
+            )
+            .await
+            .unwrap(),
+            policy(),
+            Limits::default(),
+            audit.clone(),
+        )
+        .await
+        .unwrap();
         db.install_admission(
             kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
         )
@@ -117,6 +126,77 @@ impl Fixture {
         self.db.shutdown().await.unwrap();
         self.audit.shutdown().await;
     }
+}
+
+#[tokio::test]
+async fn actual_retirement_seed_reopens_through_control_domain_without_loading_source_payload() {
+    let fixture = Fixture::new().await;
+    fixture.write("private-journal-entry").await;
+    let request = fixture.request("custody-seed").await;
+    let proof = fixture
+        .db
+        .retire_source(context(), request.clone())
+        .await
+        .unwrap();
+    let revision_base = fixture
+        .db
+        .engine()
+        .generation()
+        .unwrap()
+        .state
+        .revision_base;
+    let index = proof.revision() - revision_base;
+    let group = format!(
+        "{}/{}",
+        context().tenant,
+        request.expected_source_incarnation
+    );
+    let control = kasumi_raft::ControlLog::open(
+        fixture.db.raft_group().storage_domains().custody().clone(),
+        1,
+        group.clone(),
+    )
+    .unwrap();
+    let stored = control.retirement_seed(index).unwrap().unwrap();
+    assert_eq!(stored.seed().request(), &request);
+    assert_eq!(stored.log_id().index + revision_base, proof.revision());
+    let original = stored.seed().encoded().unwrap();
+    drop(stored);
+    drop(control);
+    fixture.db.shutdown().await.unwrap();
+    fixture.audit.shutdown().await;
+    let Fixture {
+        directory,
+        db,
+        audit,
+        store,
+        destination,
+    } = fixture;
+    drop(db);
+    drop(audit);
+    drop(store);
+    drop(destination);
+    // The custody opener has no application provider or Database parameter.
+    // This observation is recovery input; it is not a fresh Admin proof.
+    let custody = kasumi_store::CustodyStore::open(
+        NodeStore::open(directory.path().join("node.redb")).unwrap(),
+        context().tenant,
+        Arc::new(LocalKeyProvider::new([241; 32])),
+    )
+    .await
+    .unwrap();
+    let reopened = kasumi_raft::ControlLog::open(custody.clone(), 1, group).unwrap();
+    assert_eq!(
+        reopened
+            .retirement_seed(index)
+            .unwrap()
+            .unwrap()
+            .seed()
+            .encoded()
+            .unwrap(),
+        original
+    );
+    custody.store().shutdown().await;
 }
 
 #[tokio::test]
@@ -245,9 +325,19 @@ async fn exact_retirement_seals_source_once_and_retains_proof_after_encrypted_re
     )
     .await
     .unwrap();
-    let db = kasumi_engine::open_local(store, policy(), Limits::default(), audit.clone())
+    let db = kasumi_engine::open_local(
+        kasumi_store::test_utils::with_custody(
+            store,
+            std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
+        )
         .await
-        .unwrap();
+        .unwrap(),
+        policy(),
+        Limits::default(),
+        audit.clone(),
+    )
+    .await
+    .unwrap();
     // Permanent recovery does not need backup objects to be read again, and the
     // original action deadline does not expire immutable retirement evidence.
     assert_eq!(
@@ -674,9 +764,19 @@ async fn durable_retirement_stop_defeats_inflight_backup_verification_and_surviv
     )
     .await
     .unwrap();
-    let db = kasumi_engine::open_local(store, policy(), Limits::default(), audit.clone())
+    let db = kasumi_engine::open_local(
+        kasumi_store::test_utils::with_custody(
+            store,
+            std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
+        )
         .await
-        .unwrap();
+        .unwrap(),
+        policy(),
+        Limits::default(),
+        audit.clone(),
+    )
+    .await
+    .unwrap();
     let kasumi_engine::VerifiedRetirementResolution::Stopped(replayed) = db
         .abort_retirement(context(), request.clone())
         .await

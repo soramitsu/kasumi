@@ -36,7 +36,7 @@ fn openraft_storage_conformance_suite() -> Result<()> {
 fn entry(index: u64, data: &[u8]) -> Entry<TypeConfig> {
     Entry {
         log_id: LogId::new(openraft::CommittedLeaderId::new(3, 1), index),
-        payload: EntryPayload::Normal(data.to_vec()),
+        payload: EntryPayload::Normal(kasumi_raft::RaftCommand::application(data.to_vec())),
     }
 }
 
@@ -124,12 +124,17 @@ async fn committed_log_replay_survives_every_append_and_commit_io_failure() -> R
         test_utils::{FaultBackend, LocalKeyProvider, ManualClock},
     };
     use openraft::storage::StorageHelper;
-    async fn open(disk: FaultBackend) -> Result<Arc<TenantStore>> {
-        TenantStore::open_with_clock(
+    async fn open(disk: FaultBackend) -> Result<Arc<kasumi_store::TenantStorageSet>> {
+        let application = TenantStore::open_with_clock(
             NodeStore::open_with_backend(disk)?,
             "log-crash".into(),
             Arc::new(LocalKeyProvider::new([4; 32])),
             Arc::new(ManualClock::new()),
+        )
+        .await?;
+        kasumi_store::test_utils::with_custody(
+            application,
+            Arc::new(LocalKeyProvider::new([241; 32])),
         )
         .await
     }

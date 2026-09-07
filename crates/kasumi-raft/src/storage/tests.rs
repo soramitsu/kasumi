@@ -24,7 +24,16 @@ async fn cancelled_log_future_retains_drain_lease_until_blocking_persistence_fin
     )
     .await?;
     let (drain, lease) = StorageDrain::new();
-    let log = LogStore::open_tracked(store.clone(), 1, lease).await?;
+    let log = LogStore::open_tracked(
+        kasumi_store::test_utils::with_custody(
+            store.clone(),
+            Arc::new(LocalKeyProvider::new([241; 32])),
+        )
+        .await?,
+        1,
+        lease,
+    )
+    .await?;
     let (entered, ready) = tokio::sync::oneshot::channel();
     let (release, wait) = std::sync::mpsc::channel();
     let operation = tokio::spawn(async move {
@@ -42,7 +51,21 @@ async fn cancelled_log_future_retains_drain_lease_until_blocking_persistence_fin
     assert!(poll_fn(|cx| Poll::Ready(drained.as_mut().poll(cx).is_pending())).await);
     release.send(())?;
     tokio::time::timeout(Duration::from_secs(10), drained).await?;
-    assert_eq!(store.get("test", b"committed")?.unwrap(), b"whole-write");
+    let domains = kasumi_store::test_utils::with_custody(
+        store.clone(),
+        Arc::new(LocalKeyProvider::new([241; 32])),
+    )
+    .await?;
+    assert_eq!(
+        domains
+            .custody()
+            .store()
+            .get("test", b"committed")?
+            .unwrap(),
+        b"whole-write"
+    );
+    domains.custody().store().shutdown().await;
+    drop(domains);
     drop(store);
     // An abandoned response does not detach persistence from its drain lease.
     let reopened = NodeStore::open(&path)?;
@@ -54,9 +77,13 @@ async fn cancelled_log_future_retains_drain_lease_until_blocking_persistence_fin
 struct BytesBackend(Mutex<Vec<u8>>);
 
 impl StateMachineBackend for BytesBackend {
-    fn apply(&self, _: u64, bytes: &[u8]) -> Result<Vec<u8>> {
+    fn apply(
+        &self,
+        _: &crate::AppliedEntryContext,
+        bytes: &[u8],
+    ) -> Result<crate::AppliedResponse> {
         *self.0.lock().unwrap() = bytes.to_vec();
-        Ok(bytes.to_vec())
+        Ok(crate::AppliedResponse::application(bytes.to_vec()))
     }
     fn snapshot(&self) -> Result<Vec<u8>> {
         Ok(self.0.lock().unwrap().clone())
@@ -90,8 +117,12 @@ async fn applied_metadata_does_not_block_runtime_while_snapshot_capture_holds_st
         release: Mutex<std::sync::mpsc::Receiver<()>>,
     }
     impl StateMachineBackend for PausedSnapshot {
-        fn apply(&self, _: u64, bytes: &[u8]) -> Result<Vec<u8>> {
-            Ok(bytes.to_vec())
+        fn apply(
+            &self,
+            _: &crate::AppliedEntryContext,
+            bytes: &[u8],
+        ) -> Result<crate::AppliedResponse> {
+            Ok(crate::AppliedResponse::application(bytes.to_vec()))
         }
         fn snapshot(&self) -> Result<Vec<u8>> {
             self.entered
@@ -119,7 +150,11 @@ async fn applied_metadata_does_not_block_runtime_while_snapshot_capture_holds_st
     let (entered, ready) = tokio::sync::oneshot::channel();
     let (release, wait) = std::sync::mpsc::channel();
     let mut machine = StateMachine::open(
-        fault_store(FaultBackend::new()).await?,
+        kasumi_store::test_utils::with_custody(
+            fault_store(FaultBackend::new()).await?,
+            Arc::new(LocalKeyProvider::new([241; 32])),
+        )
+        .await?,
         Arc::new(PausedSnapshot {
             entered: Mutex::new(Some(entered)),
             release: Mutex::new(wait),
@@ -165,7 +200,15 @@ fn envelope(bytes: Vec<u8>) -> SnapshotEnvelope {
 async fn invalid_backend_snapshot_never_replaces_durable_recoverable_state() -> Result<()> {
     let disk = FaultBackend::new();
     let store = fault_store(disk.clone()).await?;
-    let mut machine = StateMachine::open(store.clone(), Arc::new(BytesBackend::default())).await?;
+    let mut machine = StateMachine::open(
+        kasumi_store::test_utils::with_custody(
+            store.clone(),
+            Arc::new(LocalKeyProvider::new([241; 32])),
+        )
+        .await?,
+        Arc::new(BytesBackend::default()),
+    )
+    .await?;
     let valid = envelope(b"valid".to_vec());
     machine
         .install_snapshot(
@@ -191,7 +234,15 @@ async fn invalid_backend_snapshot_never_replaces_durable_recoverable_state() -> 
     );
     assert_eq!(load_snapshot(&store, 1024)?.unwrap().backend, b"valid");
     let restored = Arc::new(BytesBackend::default());
-    StateMachine::open(fault_store(disk.crash()).await?, restored.clone()).await?;
+    StateMachine::open(
+        kasumi_store::test_utils::with_custody(
+            fault_store(disk.crash()).await?,
+            Arc::new(LocalKeyProvider::new([241; 32])),
+        )
+        .await?,
+        restored.clone(),
+    )
+    .await?;
     assert_eq!(*restored.0.lock().unwrap(), b"valid");
     Ok(())
 }
@@ -207,7 +258,12 @@ async fn snapshots_larger_than_store_record_limit_are_chunked_and_recovered() ->
     .await?;
     let value = envelope(vec![42; 33 * 1024 * 1024]);
     let bytes = postcard::to_allocvec(&value)?;
-    persist_snapshot(&store, &bytes, 64 * 1024 * 1024)?;
+    let domains = kasumi_store::test_utils::with_custody(
+        store.clone(),
+        Arc::new(LocalKeyProvider::new([241; 32])),
+    )
+    .await?;
+    persist_snapshot(&domains, &bytes, 64 * 1024 * 1024, &value.meta)?;
     assert!(
         load_manifest(&store, b"current", 64 * 1024 * 1024)?
             .unwrap()
@@ -229,16 +285,24 @@ async fn snapshot_install_power_loss_at_every_storage_operation_keeps_whole_old_
     let seed = FaultBackend::new();
     let old = envelope(b"old-complete-snapshot".to_vec());
     let new = envelope(b"new-complete-snapshot".to_vec());
-    persist_snapshot(
-        fault_store(seed.clone()).await?.as_ref(),
-        &postcard::to_allocvec(&old)?,
-        1024,
-    )?;
+    let initial = kasumi_store::test_utils::with_custody(
+        fault_store(seed.clone()).await?,
+        Arc::new(LocalKeyProvider::new([241; 32])),
+    )
+    .await?;
+    persist_snapshot(&initial, &postcard::to_allocvec(&old)?, 1024, &old.meta)?;
+    initial.custody().store().shutdown().await;
+    drop(initial);
     let bytes = postcard::to_allocvec(&new)?;
     let baseline = seed.crash();
     let store = fault_store(baseline.clone()).await?;
+    let domains = kasumi_store::test_utils::with_custody(
+        store.clone(),
+        Arc::new(LocalKeyProvider::new([241; 32])),
+    )
+    .await?;
     let start = baseline.operations();
-    persist_snapshot(&store, &bytes, 1024)?;
+    persist_snapshot(&domains, &bytes, 1024, &new.meta)?;
     let operations = baseline.operations() - start;
     ensure!(
         operations > 10,
@@ -247,11 +311,22 @@ async fn snapshot_install_power_loss_at_every_storage_operation_keeps_whole_old_
     for failure in 0..=operations {
         let disk = seed.crash();
         let store = fault_store(disk.clone()).await?;
+        let domains = kasumi_store::test_utils::with_custody(
+            store.clone(),
+            Arc::new(LocalKeyProvider::new([241; 32])),
+        )
+        .await?;
         disk.fail_after(failure);
-        let written = persist_snapshot(&store, &bytes, 1024);
+        let written = persist_snapshot(&domains, &bytes, 1024, &new.meta);
         let recovered = fault_store(disk.crash()).await?;
         cleanup_snapshots(&recovered, 1024)?;
         let restored = load_snapshot(&recovered, 1024)?.context("snapshot lost")?;
+        let recovered_domains = kasumi_store::test_utils::with_custody(
+            recovered.clone(),
+            Arc::new(LocalKeyProvider::new([241; 32])),
+        )
+        .await?;
+        validate_snapshot_coverage(&recovered_domains, &restored, 1024)?;
         assert!(
             restored.backend == old.backend || restored.backend == new.backend,
             "torn snapshot at storage operation {failure}"
@@ -284,10 +359,18 @@ async fn eight_mib_command_uses_compact_log_record_and_replays_after_reopen() ->
     }
     {
         let store = open(&path).await?;
-        let mut log = LogStore::open(store.clone(), 1).await?;
+        let mut log = LogStore::open(
+            kasumi_store::test_utils::with_custody(
+                store.clone(),
+                Arc::new(LocalKeyProvider::new([241; 32])),
+            )
+            .await?,
+            1,
+        )
+        .await?;
         let entry = Entry::<TypeConfig> {
             log_id: LogId::new(openraft::CommittedLeaderId::new(1, 1), 0),
-            payload: EntryPayload::Normal(bytes.clone()),
+            payload: EntryPayload::Normal(crate::RaftCommand::application(bytes.clone())),
         };
         log.blocking_append([entry.clone()]).await?;
         log.save_committed(Some(entry.log_id)).await?;
@@ -299,9 +382,22 @@ async fn eight_mib_command_uses_compact_log_record_and_replays_after_reopen() ->
         );
     }
     let store = open(&path).await?;
-    let mut log = LogStore::open(store.clone(), 1).await?;
+    let mut log = LogStore::open(
+        kasumi_store::test_utils::with_custody(
+            store.clone(),
+            Arc::new(LocalKeyProvider::new([241; 32])),
+        )
+        .await?,
+        1,
+    )
+    .await?;
     let backend = Arc::new(BytesBackend::default());
-    let mut machine = StateMachine::open(store, backend.clone()).await?;
+    let mut machine = StateMachine::open(
+        kasumi_store::test_utils::with_custody(store, Arc::new(LocalKeyProvider::new([241; 32])))
+            .await?,
+        backend.clone(),
+    )
+    .await?;
     StorageHelper::new(&mut log, &mut machine)
         .get_initial_state()
         .await?;

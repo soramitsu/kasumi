@@ -89,9 +89,19 @@ async fn control_updates_require_operator_authority_cas_and_survive_reopen() {
         ],
         strict_read_audit: true,
     };
-    let db = open_local(store.clone(), policy, Limits::default(), audit.clone())
+    let db = open_local(
+        kasumi_store::test_utils::with_custody(
+            store.clone(),
+            std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
+        )
         .await
-        .unwrap();
+        .unwrap(),
+        policy,
+        Limits::default(),
+        audit.clone(),
+    )
+    .await
+    .unwrap();
     let control = ControlPlane::new(db.clone()).unwrap();
     let operator = context("operator", CONTROL_TENANT);
     control.initialize(operator.clone()).await.unwrap();
@@ -157,9 +167,19 @@ async fn control_updates_require_operator_authority_cas_and_survive_reopen() {
     );
     db.raft_group().shutdown().await.unwrap();
     audit.drain().await;
-    let reopened = open_local(store, Policy::default(), Limits::default(), audit.clone())
+    let reopened = open_local(
+        kasumi_store::test_utils::with_custody(
+            store,
+            std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
+        )
         .await
-        .unwrap();
+        .unwrap(),
+        Policy::default(),
+        Limits::default(),
+        audit.clone(),
+    )
+    .await
+    .unwrap();
     let control = ControlPlane::new(reopened.clone()).unwrap();
     assert_eq!(
         control.topology(&operator).await.unwrap().unwrap().topology,

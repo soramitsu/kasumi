@@ -18,7 +18,8 @@ impl CredentialFixture {
         };
         let store = TenantStore::open(node, context.tenant.clone(), provider).await.unwrap();
         let policy = Policy { grants: vec![Grant { principal: context.principal.clone(), collection: None, actions: context.scopes.clone() }], strict_read_audit: false };
-        let db = crate::open_local(store, policy, Limits::default(), audit.clone()).await.unwrap();
+        let db = crate::open_local(
+        kasumi_store::test_utils::with_custody(store, std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32]))).await.unwrap(), policy, Limits::default(), audit.clone()).await.unwrap();
         db.install_admission(NodeAdmission::new(AdmissionConfig::default()).unwrap()).unwrap();
         db.administer(context.clone(), Operation::CreateCollection(CollectionDefinition {
             name: "docs".into(), write_mode: CollectionWriteMode::Mutable, retention_class: CollectionRetentionClass::Operational,

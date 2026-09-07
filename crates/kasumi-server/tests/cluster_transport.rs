@@ -20,9 +20,14 @@ use tokio::{net::TcpListener, sync::watch};
 #[derive(Default)]
 struct Backend(Mutex<BTreeMap<u64, Vec<u8>>>);
 impl StateMachineBackend for Backend {
-    fn apply(&self, index: u64, command: &[u8]) -> Result<Vec<u8>> {
+    fn apply(
+        &self,
+        position: &kasumi_raft::AppliedEntryContext,
+        command: &[u8],
+    ) -> Result<kasumi_raft::AppliedResponse> {
+        let index = position.log_id.index;
         self.0.lock().unwrap().insert(index, command.to_vec());
-        Ok(command.to_vec())
+        Ok(kasumi_raft::AppliedResponse::application(command.to_vec()))
     }
     fn snapshot(&self) -> Result<Vec<u8>> {
         Ok(serde_json::to_vec(&*self.0.lock().unwrap())?)
@@ -94,7 +99,11 @@ async fn real_three_node_raft_replicates_over_pinned_mutual_tls_http() -> Result
         let group = RaftGroup::open(
             id,
             "tenant-a".into(),
-            store(&dir.path().join(format!("node-{id}.redb"))).await?,
+            kasumi_store::test_utils::with_custody(
+                store(&dir.path().join(format!("node-{id}.redb"))).await?,
+                Arc::new(LocalKeyProvider::new([241; 32])),
+            )
+            .await?,
             backend.clone(),
             network.clone(),
             config,
@@ -223,7 +232,11 @@ async fn peer_requests_bind_certificate_source_candidate_target_and_group_and_li
     let group = RaftGroup::open(
         1,
         "tenant-a".into(),
-        store(&dir.path().join("node.redb")).await?,
+        kasumi_store::test_utils::with_custody(
+            store(&dir.path().join("node.redb")).await?,
+            Arc::new(LocalKeyProvider::new([241; 32])),
+        )
+        .await?,
         Arc::new(Backend::default()),
         network.clone(),
         config,
@@ -354,7 +367,7 @@ async fn peer_requests_bind_certificate_source_candidate_target_and_group_and_li
             .await
             .is_err()
     );
-    let entries = (0..4).map(|index| serde_json::json!({"log_id":{"leader_id":{"term":1,"node_id":1},"index":index},"payload":{"Normal":vec![171; 100]}})).collect::<Vec<_>>();
+    let entries = (0..4).map(|index| serde_json::json!({"log_id":{"leader_id":{"term":1,"node_id":1},"index":index},"payload":{"Normal":kasumi_raft::RaftCommand::application(vec![171; 100])}})).collect::<Vec<_>>();
     let oversized: RpcRequest = serde_json::from_value(
         serde_json::json!({"rpc":"append","payload":{"vote":{"leader_id":{"term":1,"node_id":1},"committed":true},"prev_log_id":null,"leader_commit":null,"entries":entries}}),
     )?;

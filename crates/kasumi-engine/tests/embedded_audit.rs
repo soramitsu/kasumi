@@ -30,7 +30,12 @@ async fn fixture(
         .unwrap();
     let audit = SecurityAudit::open(service, 100).unwrap();
     let db = open_local(
-        store.clone(),
+        kasumi_store::test_utils::with_custody(
+            store.clone(),
+            std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
+        )
+        .await
+        .unwrap(),
         Policy {
             grants: vec![Grant {
                 principal: "owner".into(),
@@ -242,6 +247,12 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
     )
     .await
     .unwrap();
+    let target_domains = kasumi_store::test_utils::with_custody(
+        target_store.clone(),
+        Arc::new(LocalKeyProvider::new([241; 32])),
+    )
+    .await
+    .unwrap();
     let service_key = Arc::new(LocalKeyProvider::new([54; 32]));
     let service_store = TenantStore::open(
         target_node.clone(),
@@ -259,7 +270,7 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
             keys: source_key.clone(),
         },
         backup,
-        target_store.clone(),
+        target_domains.clone(),
         context("visitor"),
         audit.clone(),
     )
@@ -293,7 +304,7 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
             keys: source_key.clone(),
         },
         backup,
-        target_store.clone(),
+        target_domains.clone(),
         context("visitor"),
         replica,
         Arc::new(InProcessRouter::default()),
@@ -315,7 +326,14 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
             .unwrap()
             .is_none()
     );
-    assert!(target_store.get("raft.meta", b"node_id").unwrap().is_none());
+    assert!(
+        target_domains
+            .custody()
+            .store()
+            .get("raft.meta", b"node_id")
+            .unwrap()
+            .is_none()
+    );
     target_store.seal();
     let sealed = restore_local(
         &kasumi_engine::RestoreSource {
@@ -325,7 +343,7 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
             keys: source_key,
         },
         backup,
-        target_store.clone(),
+        target_domains.clone(),
         context("owner"),
         audit.clone(),
     )
@@ -346,6 +364,7 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
     target_store.shutdown().await;
     audit.shutdown().await;
     drop(target_store);
+    drop(target_domains);
     drop(audit);
     drop(target_node);
     let reopened = NodeStore::open(&target_path).unwrap();

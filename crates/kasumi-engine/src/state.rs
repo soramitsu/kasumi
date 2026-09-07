@@ -55,13 +55,57 @@ pub struct TenantEngine {
 }
 
 impl kasumi_raft::StateMachineBackend for TenantEngine {
-    fn apply(&self, index: u64, bytes: &[u8]) -> anyhow::Result<Vec<u8>> {
+    fn apply(
+        &self,
+        position: &kasumi_raft::AppliedEntryContext,
+        bytes: &[u8],
+    ) -> anyhow::Result<kasumi_raft::AppliedResponse> {
         let command: Command = serde_json::from_slice(bytes)?;
+        anyhow::ensure!(
+            !matches!(&command.operation, Operation::RetireSource(prepared) if prepared.observation.is_some())
+                || position.retirement_seed.is_some(),
+            "prepared retirement is missing its custody seed"
+        );
+        if let Some(seed) = &position.retirement_seed {
+            let expected = kasumi_raft::RetirementLogSeed::prepare(
+                &command,
+                self.retirement_replay_state(&command)?,
+            )?;
+            anyhow::ensure!(
+                expected.encoded()? == seed.encoded()?,
+                "committed retirement seed differs from ordered source state"
+            );
+        }
         let revision = self
             .revision_base
-            .checked_add(index)
+            .checked_add(position.log_id.index)
             .ok_or_else(|| anyhow::anyhow!("logical revision exhausted"))?;
-        Ok(serde_json::to_vec(&self.apply_command(revision, command)?)?)
+        let reference = position
+            .retirement_seed
+            .as_ref()
+            .map(|seed| seed.request().reference())
+            .transpose()?;
+        let actor = command.context.clone();
+        let outcome = self.apply_command(revision, command)?;
+        let retirement = if outcome.is_ok() {
+            if let Some(reference) = reference {
+                let generation = self.generation()?;
+                Some(
+                    retirement::lookup(&generation.state, &actor, &reference)?
+                        .ok_or_else(|| anyhow::anyhow!("successful retirement outcome missing"))?
+                        .outcome
+                        .clone()?,
+                )
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        Ok(kasumi_raft::AppliedResponse {
+            data: serde_json::to_vec(&outcome)?,
+            retirement,
+        })
     }
     fn snapshot(&self) -> anyhow::Result<Vec<u8>> {
         Ok(TenantEngine::snapshot(self)?)
@@ -76,6 +120,52 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
 }
 
 impl TenantEngine {
+    pub(crate) fn retirement_replay_state(
+        &self,
+        command: &Command,
+    ) -> Result<kasumi_raft::RetirementReplayState> {
+        let Operation::RetireSource(prepared) = &command.operation else {
+            return Err(Error::new(
+                ErrorCode::InvalidArgument,
+                "retirement replay state requires retirement",
+            ));
+        };
+        let generation = self.generation()?;
+        let state = &generation.state;
+        let existing_identity =
+            retirement::lookup(state, &command.context, &prepared.request.reference()?)?.cloned();
+        Ok(kasumi_raft::RetirementReplayState {
+            tenant: state.tenant.clone(),
+            incarnation: state.incarnation.clone(),
+            previous_revision: state.revision,
+            revision_base: state.revision_base,
+            policy_epoch: state.policy_epoch,
+            administrators: state
+                .policy
+                .grants
+                .iter()
+                .filter(|grant| {
+                    grant.collection.is_none() && grant.actions.contains(&Action::Admin)
+                })
+                .map(|grant| grant.principal.clone())
+                .collect(),
+            suspended: state.suspended,
+            retired: state.retired,
+            pending_restore: state.pending_restore.is_some(),
+            existing_identity,
+            retirement_count: state.retirements.len(),
+            retirement_bytes: state.retirement_bytes,
+            max_retirements: state.limits.max_retirements,
+            audit_count: state.audits.len(),
+            max_audit_records: state.limits.max_audit_records,
+            snapshot_bytes: generation.snapshot_bytes()?,
+            max_snapshot_bytes: state.limits.max_snapshot_bytes,
+            staged_outcome_headroom: state
+                .active_staged_transactions
+                .len()
+                .saturating_mul(STAGED_OUTCOME_HEADROOM),
+        })
+    }
     /// A tenant bootstrap is trusted control-plane input, identical on all replicas.
     pub fn new(
         tenant: String,

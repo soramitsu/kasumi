@@ -9,6 +9,7 @@
 mod archive_objects;
 mod backup;
 mod keys;
+mod storage_domains;
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_utils;
 
@@ -21,6 +22,7 @@ use kasumi_clock::{LeaseClock, SystemLeaseClock};
 pub use keys::{
     GeneratedKey, KeyProvider, SecretKey, TransitConfig, TransitKeyProvider, WrappedKey,
 };
+pub use storage_domains::{CustodyStore, StorageBinding, TenantStorageSet};
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -192,6 +194,7 @@ impl NodeStore {
 #[serde(deny_unknown_fields)]
 struct KeyCatalog {
     format: u32,
+    catalog_id: Uuid,
     tenant: String,
     active: String,
     keys: BTreeMap<String, WrappedKey>,
@@ -204,7 +207,7 @@ impl KeyCatalog {
             "invalid catalog tenant"
         );
         ensure!(
-            self.format == 1 && self.tenant == tenant,
+            self.format == 1 && !self.catalog_id.is_nil() && self.tenant == tenant,
             "key catalog tenant/format mismatch"
         );
         ensure!(
@@ -346,6 +349,7 @@ impl TenantStore {
             let active = Uuid::new_v4().to_string();
             let catalog = KeyCatalog {
                 format: 1,
+                catalog_id: Uuid::new_v4(),
                 tenant: tenant.clone(),
                 active: active.clone(),
                 keys: BTreeMap::from([
@@ -624,61 +628,16 @@ impl TenantStore {
 
     pub fn write_batch(&self, operations: &[WriteOp]) -> Result<()> {
         let _access = AccessGuard(self);
-        let mut bytes = 0usize;
-        for op in operations {
-            let (namespace, key, value_len) = match op {
-                WriteOp::Put {
-                    namespace,
-                    key,
-                    value,
-                } => (namespace, key, value.len()),
-                WriteOp::Delete { namespace, key } => (namespace, key, 0),
-            };
-            validate_record(namespace, key, value_len)?;
-            bytes = bytes
-                .checked_add(namespace.len() + key.len() + value_len)
-                .context("batch too large")?;
-            ensure!(bytes <= MAX_BATCH, "batch exceeds 64 MiB");
-        }
-        ensure!(operations.len() <= 65536, "too many batch operations");
+        validate_batch(&[operations])?;
         self.check_access()?;
         let _mutation = self.mutations.lock();
         let state = self.state.read();
         self.require_access(&state)?;
         let catalog = self.catalog.read();
-        let index = state.keys.get(INDEX_KEY).context("index key missing")?;
-        let data = state
-            .keys
-            .get(&catalog.active)
-            .context("active data key missing")?;
         let mut tx = self.node.db.begin_write()?;
         tx.set_durability(Durability::Immediate)?;
         tx.set_two_phase_commit(true);
-        {
-            let mut table = tx.open_table(RECORDS)?;
-            for op in operations {
-                self.require_access(&state)?;
-                match op {
-                    WriteOp::Put {
-                        namespace,
-                        key,
-                        value,
-                    } => {
-                        let disk_key = record_key(&self.tenant, namespace, key, index);
-                        let plaintext = Zeroizing::new(encode_plain_record(namespace, key, value)?);
-                        let aad = record_aad(&self.tenant, &disk_key);
-                        let mut envelope = Vec::new();
-                        append_bytes(&mut envelope, catalog.active.as_bytes())?;
-                        envelope.extend(encrypt(data, &plaintext, &aad)?);
-                        table.insert(disk_key.as_slice(), envelope.as_slice())?;
-                    }
-                    WriteOp::Delete { namespace, key } => {
-                        let disk_key = record_key(&self.tenant, namespace, key, index);
-                        table.remove(disk_key.as_slice())?;
-                    }
-                }
-            }
-        }
+        write_domain(&tx, self, &state, &catalog, operations)?;
         self.require_access(&state)?;
         tx.commit()
             .context("durable encrypted batch commit failed; outcome may be unknown")?;
@@ -791,6 +750,71 @@ impl TenantStore {
         ensure!(expected == disk_key, "encrypted record identity mismatch");
         Ok(record)
     }
+}
+
+fn validate_batch(domains: &[&[WriteOp]]) -> Result<()> {
+    let mut bytes = 0usize;
+    let mut count = 0usize;
+    for operations in domains {
+        count = count
+            .checked_add(operations.len())
+            .context("too many batch operations")?;
+        ensure!(count <= 65536, "too many batch operations");
+        for op in *operations {
+            let (namespace, key, value_len) = match op {
+                WriteOp::Put {
+                    namespace,
+                    key,
+                    value,
+                } => (namespace, key, value.len()),
+                WriteOp::Delete { namespace, key } => (namespace, key, 0),
+            };
+            validate_record(namespace, key, value_len)?;
+            bytes = bytes
+                .checked_add(namespace.len() + key.len() + value_len)
+                .context("batch too large")?;
+            ensure!(bytes <= MAX_BATCH, "batch exceeds 64 MiB");
+        }
+    }
+    Ok(())
+}
+
+fn write_domain(
+    tx: &redb::WriteTransaction,
+    store: &TenantStore,
+    state: &KeyState,
+    catalog: &KeyCatalog,
+    operations: &[WriteOp],
+) -> Result<()> {
+    let index = state.keys.get(INDEX_KEY).context("index key missing")?;
+    let data = state
+        .keys
+        .get(&catalog.active)
+        .context("active data key missing")?;
+    let mut table = tx.open_table(RECORDS)?;
+    for op in operations {
+        store.require_access(state)?;
+        match op {
+            WriteOp::Put {
+                namespace,
+                key,
+                value,
+            } => {
+                let disk_key = record_key(&store.tenant, namespace, key, index);
+                let plaintext = Zeroizing::new(encode_plain_record(namespace, key, value)?);
+                let aad = record_aad(&store.tenant, &disk_key);
+                let mut envelope = Vec::new();
+                append_bytes(&mut envelope, catalog.active.as_bytes())?;
+                envelope.extend(encrypt(data, &plaintext, &aad)?);
+                table.insert(disk_key.as_slice(), envelope.as_slice())?;
+            }
+            WriteOp::Delete { namespace, key } => {
+                let disk_key = record_key(&store.tenant, namespace, key, index);
+                table.remove(disk_key.as_slice())?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn same_key(left: &SecretKey, right: &SecretKey) -> bool {

@@ -43,7 +43,7 @@ async fn native_backup_proof_is_admin_only_configured_and_verified_through_secur
     let bearer = token.strip_prefix("Bearer ").unwrap();
     let proof = client.create_backup_checkpoint(bearer, &kasumi_types::CreateBackupCheckpoint { destination: "approved".into() }).await.unwrap();
     assert_eq!(proof.tenant(), "tenant-a");
-    assert_eq!(proof.source_incarnation(), "incarnation-a");
+    assert_eq!(proof.source_incarnation(), fixture.db.engine().generation().unwrap().state.incarnation);
     assert_eq!(proof.resident_sha256().len(), 64);
     assert_eq!(proof.manifest_ciphertext_sha256().len(), 64);
     assert_eq!(proof.key_lineage_digest().len(), 64);

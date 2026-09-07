@@ -1,7 +1,6 @@
 mod common;
 
 use kasumi_engine::{Database, TenantEngine};
-use kasumi_raft::RaftGroup;
 use kasumi_store::{NodeStore, TenantStore, test_utils::LocalKeyProvider};
 use kasumi_types::*;
 use serde_json::json;
@@ -715,16 +714,19 @@ async fn database(
     let store = TenantStore::open(node, "tenant-a".into(), key.clone())
         .await
         .unwrap();
-    let engine = Arc::new(engine(strict, Limits::default()));
-    let group = RaftGroup::local(
-        1,
-        "tenant-a/incarnation-a".into(),
-        store.clone(),
-        engine.clone(),
+    let db = kasumi_engine::open_local(
+        kasumi_store::test_utils::with_custody(
+            store.clone(),
+            Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
+        )
+        .await
+        .unwrap(),
+        policy(strict),
+        Limits::default(),
+        audit.clone(),
     )
     .await
     .unwrap();
-    let db = Database::new(engine, group, store.clone(), audit.clone());
     db.administer(context("owner"), Operation::CreateCollection(definition()))
         .await
         .unwrap();
@@ -1042,9 +1044,19 @@ async fn strict_empty_discovery_is_audited_and_failed_audit_persistence_blocks_r
     )
     .await
     .unwrap();
-    let db = kasumi_engine::open_local(store, policy(true), Limits::default(), audit.clone())
+    let db = kasumi_engine::open_local(
+        kasumi_store::test_utils::with_custody(
+            store,
+            std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
+        )
         .await
-        .unwrap();
+        .unwrap(),
+        policy(true),
+        Limits::default(),
+        audit.clone(),
+    )
+    .await
+    .unwrap();
     assert!(db.collections(&context("owner")).await.unwrap().is_empty());
     assert_eq!(
         db.engine()
@@ -1231,7 +1243,12 @@ async fn logical_backup_restores_suspended_with_new_incarnation_and_increasing_r
             keys: source_key.clone(),
         },
         id,
-        target_store.clone(),
+        kasumi_store::test_utils::with_custody(
+            target_store.clone(),
+            std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
+        )
+        .await
+        .unwrap(),
         context("owner"),
         target_incarnation,
         target_audit.clone(),
@@ -1270,7 +1287,12 @@ async fn logical_backup_restores_suspended_with_new_incarnation_and_increasing_r
                 keys: source_key
             },
             id,
-            target_store,
+            kasumi_store::test_utils::with_custody(
+                target_store,
+                std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32]))
+            )
+            .await
+            .unwrap(),
             context("owner"),
             target_audit.clone()
         )
@@ -1331,9 +1353,19 @@ async fn durable_engine_worker() {
     )
     .await
     .unwrap();
-    let db = kasumi_engine::open_local(store, policy(false), Limits::default(), audit.clone())
+    let db = kasumi_engine::open_local(
+        kasumi_store::test_utils::with_custody(
+            store,
+            std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
+        )
         .await
-        .unwrap();
+        .unwrap(),
+        policy(false),
+        Limits::default(),
+        audit.clone(),
+    )
+    .await
+    .unwrap();
     db.administer(context("owner"), Operation::CreateCollection(definition()))
         .await
         .unwrap();
@@ -1402,9 +1434,19 @@ async fn killed_process_recovers_acknowledged_documents_receipts_and_bootstrap_p
         }],
         strict_read_audit: true,
     };
-    let db = kasumi_engine::open_local(store, attacker_defaults, Limits::default(), audit.clone())
+    let db = kasumi_engine::open_local(
+        kasumi_store::test_utils::with_custody(
+            store,
+            std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
+        )
         .await
-        .unwrap();
+        .unwrap(),
+        attacker_defaults,
+        Limits::default(),
+        audit.clone(),
+    )
+    .await
+    .unwrap();
     assert_eq!(
         db.get(&context("owner"), "people", "a").await.unwrap().body["email"],
         "survives"

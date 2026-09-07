@@ -35,9 +35,19 @@ async fn open(path: &std::path::Path, limits: Limits) -> (Arc<Database>, Arc<Sec
     )
     .await
     .unwrap();
-    let db = kasumi_engine::open_local(store, policy(), limits, audit.clone())
+    let db = kasumi_engine::open_local(
+        kasumi_store::test_utils::with_custody(
+            store,
+            std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
+        )
         .await
-        .unwrap();
+        .unwrap(),
+        policy(),
+        limits,
+        audit.clone(),
+    )
+    .await
+    .unwrap();
     (db, audit)
 }
 async fn collection(db: &Database, name: &str, retention_class: CollectionRetentionClass) {
@@ -646,7 +656,12 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
     let restored = kasumi_engine::restore_local(
         &restore_source,
         backup_id,
-        target,
+        kasumi_store::test_utils::with_custody(
+            target,
+            std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
+        )
+        .await
+        .unwrap(),
         context(),
         restored_audit.clone(),
     )
@@ -755,7 +770,12 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
             kasumi_engine::restore_local(
                 &restore_source,
                 selected_id,
-                target.clone(),
+                kasumi_store::test_utils::with_custody(
+                    target.clone(),
+                    std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32]))
+                )
+                .await
+                .unwrap(),
                 context(),
                 audit.clone()
             )
@@ -768,7 +788,19 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
                 .unwrap()
                 .is_none()
         );
-        assert!(target.get("raft.meta", b"node_id").unwrap().is_none());
+        assert!(
+            kasumi_store::test_utils::with_custody(
+                target.clone(),
+                Arc::new(LocalKeyProvider::new([241; 32])),
+            )
+            .await
+            .unwrap()
+            .custody()
+            .store()
+            .get("raft.meta", b"node_id")
+            .unwrap()
+            .is_none()
+        );
         audit.shutdown().await;
         if suffix == "corrupt" {
             std::fs::write(&dependency_path, &valid_dependency).unwrap();

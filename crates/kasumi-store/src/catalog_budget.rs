@@ -20,10 +20,14 @@ impl KeyProvider for WideReferences {
         Ok(generated)
     }
     async fn unwrap_key(&self, tenant: &str, wrapped: &WrappedKey) -> Result<SecretKey> {
-        self.inner.unwrap_key(tenant, wrapped).await
+        let mut inner = wrapped.clone();
+        inner.key_ref = self.inner.key_ref().into();
+        self.inner.unwrap_key(tenant, &inner).await
     }
     async fn rewrap_key(&self, tenant: &str, wrapped: &WrappedKey) -> Result<WrappedKey> {
-        let mut wrapped = self.inner.rewrap_key(tenant, wrapped).await?;
+        let mut inner = wrapped.clone();
+        inner.key_ref = self.inner.key_ref().into();
+        let mut wrapped = self.inner.rewrap_key(tenant, &inner).await?;
         self.pad(&mut wrapped);
         Ok(wrapped)
     }

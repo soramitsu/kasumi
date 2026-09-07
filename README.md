@@ -19,8 +19,9 @@ New first-release [conditional transaction contracts](docs/transactions.md),
 [chunked full backups](docs/chunked-backup-plan.md),
 [atomic schema activation](docs/schema-activation.md),
 [verified backup checkpoints](docs/backup-checkpoints.md),
-[credential lifetime fences](docs/credential-lifetime.md), and
-[exact planned source retirement](docs/planned-retirement.md) extend that recorded baseline. Their regression tests do not replace
+[credential lifetime fences](docs/credential-lifetime.md),
+[exact planned source retirement](docs/planned-retirement.md), and
+[independent custody storage](docs/custody-control.md) extend that recorded baseline. Their regression tests do not replace
 the baseline's full platform and performance gates for the changed source.
 
 ## Deployment contracts

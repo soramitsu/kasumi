@@ -66,9 +66,19 @@ async fn snapshot_pages_overlap_atomic_writers_and_current_policy_revocation() {
     )
     .await
     .unwrap();
-    let database = open_local(store, policy(true), Limits::default(), audit.clone())
+    let database = open_local(
+        kasumi_store::test_utils::with_custody(
+            store,
+            std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
+        )
         .await
-        .unwrap();
+        .unwrap(),
+        policy(true),
+        Limits::default(),
+        audit.clone(),
+    )
+    .await
+    .unwrap();
     database
         .administer(
             identity("owner"),

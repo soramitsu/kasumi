@@ -326,11 +326,11 @@ mod tests {
             })
         }
     }
-    fn local(wrapped: &str) -> WrappedKey {
+    fn local(provider: &LocalKeyProvider, wrapped: &str) -> WrappedKey {
         let version = version(wrapped).unwrap();
         WrappedKey {
             provider: "test-only".into(),
-            key_ref: "local-test-key".into(),
+            key_ref: provider.key_ref().into(),
             version,
             ciphertext: wrapped.splitn(3, ':').nth(2).unwrap().into(),
             context: Some("tenant".into()),
@@ -403,7 +403,10 @@ mod tests {
             "decrypt/tenant-key" => {
                 let key = match state
                     .wrapping
-                    .unwrap_key("tenant", &local(body["ciphertext"].as_str().unwrap()))
+                    .unwrap_key(
+                        "tenant",
+                        &local(&state.wrapping, body["ciphertext"].as_str().unwrap()),
+                    )
                     .await
                 {
                     Ok(key) => key,
@@ -415,7 +418,10 @@ mod tests {
             "rewrap/tenant-key" => {
                 let key = state
                     .wrapping
-                    .rewrap_key("tenant", &local(body["ciphertext"].as_str().unwrap()))
+                    .rewrap_key(
+                        "tenant",
+                        &local(&state.wrapping, body["ciphertext"].as_str().unwrap()),
+                    )
                     .await
                     .unwrap();
                 Json(serde_json::json!({"data":{"ciphertext":vault(&key)}})).into_response()

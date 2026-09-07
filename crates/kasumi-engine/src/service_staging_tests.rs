@@ -25,7 +25,7 @@ async fn queued_staged_finalize_checks_fresh_time_and_canceled_callers_keep_dura
     .await
     .unwrap();
     let db = crate::open_local(
-        store,
+        kasumi_store::test_utils::with_custody(store, std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32]))).await.unwrap(),
         Policy {
             grants: vec![Grant {
                 principal: context.principal.clone(),

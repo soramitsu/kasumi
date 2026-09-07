@@ -69,7 +69,12 @@ async fn restore_deadline_bounds_source_io_and_gate_queue_without_blocking_anoth
                     timeout_ms: 400,
                 },
                 uuid::Uuid::new_v4(),
-                first,
+                kasumi_store::test_utils::with_custody(
+                    first,
+                    std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
+                )
+                .await
+                .unwrap(),
                 context("first"),
                 audit,
             )
@@ -87,7 +92,12 @@ async fn restore_deadline_bounds_source_io_and_gate_queue_without_blocking_anoth
             timeout_ms: 30,
         },
         uuid::Uuid::new_v4(),
-        queued.clone(),
+        kasumi_store::test_utils::with_custody(
+            queued.clone(),
+            std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
+        )
+        .await
+        .unwrap(),
         context("queued"),
         audit.clone(),
     )
@@ -104,7 +114,12 @@ async fn restore_deadline_bounds_source_io_and_gate_queue_without_blocking_anoth
         let audit = audit.clone();
         async move {
             open_local(
-                other,
+                kasumi_store::test_utils::with_custody(
+                    other,
+                    std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
+                )
+                .await
+                .unwrap(),
                 Policy {
                     grants: vec![Grant {
                         principal: "owner".into(),
@@ -133,7 +148,19 @@ async fn restore_deadline_bounds_source_io_and_gate_queue_without_blocking_anoth
                 .unwrap()
                 .is_none()
         );
-        assert!(target.get("raft.meta", b"node_id").unwrap().is_none());
+        assert!(
+            kasumi_store::test_utils::with_custody(
+                target.clone(),
+                Arc::new(LocalKeyProvider::new([241; 32])),
+            )
+            .await
+            .unwrap()
+            .custody()
+            .store()
+            .get("raft.meta", b"node_id")
+            .unwrap()
+            .is_none()
+        );
     }
     let database = tokio::time::timeout(Duration::from_secs(2), other_open)
         .await

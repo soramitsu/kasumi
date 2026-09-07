@@ -297,6 +297,12 @@ async fn benchmark(
     let control = bao.provision_key("control", false).await?;
     secrets.push(("KASUMI_BENCH_CONTROL".to_owned(), Zeroizing::new(control)));
     config.control.transit = transit("control", "KASUMI_BENCH_CONTROL");
+    let custody_control = bao.provision_key("control-custody", false).await?;
+    secrets.push((
+        "KASUMI_BENCH_CONTROL_CUSTODY".to_owned(),
+        Zeroizing::new(custody_control),
+    ));
+    config.control.custody_transit = transit("control-custody", "KASUMI_BENCH_CONTROL_CUSTODY");
     config.control.initial_policy = policy();
     let security = bao.provision_key("security", false).await?;
     secrets.push(("KASUMI_BENCH_SECURITY".to_owned(), Zeroizing::new(security)));
@@ -310,10 +316,15 @@ async fn benchmark(
         let env = format!("KASUMI_BENCH_TRANSIT_{tenant}");
         let secret = bao.provision_key(&name, false).await?;
         secrets.push((env.clone(), Zeroizing::new(secret)));
+        let custody_name = format!("{name}-custody");
+        let custody_env = format!("KASUMI_BENCH_CUSTODY_{tenant}");
+        let custody_secret = bao.provision_key(&custody_name, false).await?;
+        secrets.push((custody_env.clone(), Zeroizing::new(custody_secret)));
         let count = documents.div_ceil(tenants);
         config.tenants.push(TenantConfig {
             tenant: name.clone(),
             transit: transit(&name, &env),
+            custody_transit: transit(&custody_name, &custody_env),
             initial_policy: policy(),
             initial_limits: Limits {
                 max_documents: count as u64 + 1,

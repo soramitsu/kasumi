@@ -34,7 +34,12 @@ async fn full_shutdown_reopens_immediately_with_receipts_and_retained_plaintext(
             .await
             .unwrap();
         let database = open_local(
-            store.clone(),
+            kasumi_store::test_utils::with_custody(
+                store.clone(),
+                std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
+            )
+            .await
+            .unwrap(),
             policy.clone(),
             Limits::default(),
             audit.clone(),

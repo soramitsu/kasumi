@@ -12,7 +12,7 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use kasumi_engine::{Database, ReplicaPlacement, ReplicatedBootstrap};
-use kasumi_store::{NodeStore, TenantStore, TransitConfig, TransitKeyProvider};
+use kasumi_store::{NodeStore, TenantStorageSet, TenantStore, TransitConfig, TransitKeyProvider};
 use kasumi_transport::{CertificatePin, ClientAuthentication, TlsIdentity};
 use kasumi_types::{Action, Grant, Limits, Policy, Precondition, RequestContext};
 use serde::{Deserialize, Serialize};
@@ -88,6 +88,7 @@ pub struct TransitSettings {
 pub struct TenantConfig {
     pub tenant: String,
     pub transit: TransitSettings,
+    pub custody_transit: TransitSettings,
     pub initial_policy: Policy,
     #[serde(default)]
     pub initial_limits: Limits,
@@ -103,6 +104,7 @@ pub struct ControlConfig {
     #[serde(default)]
     pub startup_principal: Option<String>,
     pub transit: TransitSettings,
+    pub custody_transit: TransitSettings,
     pub initial_policy: Policy,
     #[serde(default)]
     pub initial_limits: Limits,
@@ -213,12 +215,16 @@ impl RuntimeConfig {
         );
         let mut key_refs = BTreeSet::new();
         for transit in std::iter::once(&self.security_audit.transit)
-            .chain(std::iter::once(&self.control.transit))
-            .chain(self.tenants.iter().map(|tenant| &tenant.transit))
+            .chain([&self.control.transit, &self.control.custody_transit])
+            .chain(
+                self.tenants
+                    .iter()
+                    .flat_map(|tenant| [&tenant.transit, &tenant.custody_transit]),
+            )
         {
             ensure!(
                 key_refs.insert(transit.validate()?),
-                "tenant, control, and security stores require distinct Transit wrapping keys"
+                "application, custody, control, and security domains require distinct Transit wrapping keys"
             );
         }
         validate_initial_policy(&self.control.initial_policy)?;
@@ -227,7 +233,9 @@ impl RuntimeConfig {
         for tenant in &self.tenants {
             kasumi_types::validate_name(&tenant.tenant)?;
             ensure!(
-                !tenant.tenant.starts_with("__kasumi_") && tenants.insert(&tenant.tenant),
+                !tenant.tenant.starts_with("__kasumi_")
+                    && !tenant.tenant.starts_with("kasumi.custody/")
+                    && tenants.insert(&tenant.tenant),
                 "duplicate or reserved tenant name"
             );
             validate_initial_policy(&tenant.initial_policy)?;
@@ -765,16 +773,23 @@ impl NodeRuntime {
         let admin_tls = config.admin.load()?;
         let mut providers = Vec::new();
         for tenant in &config.tenants {
-            providers.push(
+            providers.push((
                 tenant
                     .transit
                     .provider_with_secret(credential(&tenant.transit.token_env)?)?,
-            );
+                tenant
+                    .custody_transit
+                    .provider_with_secret(credential(&tenant.custody_transit.token_env)?)?,
+            ));
         }
         let control_provider = config
             .control
             .transit
             .provider_with_secret(credential(&config.control.transit.token_env)?)?;
+        let control_custody_provider = config
+            .control
+            .custody_transit
+            .provider_with_secret(credential(&config.control.custody_transit.token_env)?)?;
         let security_provider = config
             .security_audit
             .transit
@@ -824,10 +839,11 @@ impl NodeRuntime {
         if let Some(cluster) = &cluster {
             cluster.install_audit(audit.clone())?;
         }
-        let control_store = TenantStore::open(
+        let control_stores = TenantStorageSet::open(
             node.clone(),
             CONTROL_TENANT.into(),
             control_provider.clone(),
+            control_custody_provider.clone(),
         )
         .await?;
         let control_bootstrap = config.bootstrap(
@@ -837,7 +853,7 @@ impl NodeRuntime {
         )?;
         let control = Self::open_database(
             &config,
-            control_store,
+            control_stores,
             config.control.initial_policy.clone(),
             config.control.initial_limits.clone(),
             control_bootstrap,
@@ -864,13 +880,18 @@ impl NodeRuntime {
                 database: runtime.control.database.clone(),
                 store: runtime.control.store.clone(),
                 provider: control_provider,
+                custody_provider: control_custody_provider,
                 bootstrap: runtime.control.bootstrap.clone(),
                 descriptor: None,
             }];
-            for (tenant, provider) in config.tenants.iter().zip(providers) {
-                let store =
-                    TenantStore::open(node.clone(), tenant.tenant.clone(), provider.clone())
-                        .await?;
+            for (tenant, (provider, custody_provider)) in config.tenants.iter().zip(providers) {
+                let stores = TenantStorageSet::open(
+                    node.clone(),
+                    tenant.tenant.clone(),
+                    provider.clone(),
+                    custody_provider.clone(),
+                )
+                .await?;
                 let bootstrap = config.bootstrap(
                     &tenant.initial_policy,
                     &tenant.initial_limits,
@@ -878,7 +899,7 @@ impl NodeRuntime {
                 )?;
                 let opened = Self::open_database(
                     &config,
-                    store,
+                    stores,
                     tenant.initial_policy.clone(),
                     tenant.initial_limits.clone(),
                     bootstrap,
@@ -891,6 +912,7 @@ impl NodeRuntime {
                     database: opened.database.clone(),
                     store: opened.store.clone(),
                     provider,
+                    custody_provider,
                     bootstrap: opened.bootstrap.clone(),
                     descriptor: None,
                 });
@@ -953,13 +975,14 @@ impl NodeRuntime {
 
     async fn open_database(
         config: &RuntimeConfig,
-        store: Arc<TenantStore>,
+        stores: Arc<TenantStorageSet>,
         policy: Policy,
         limits: Limits,
         bootstrap: Option<ReplicatedBootstrap>,
         cluster: Option<&Arc<ClusterNetwork>>,
         audit: Arc<SecurityAudit>,
     ) -> Result<OpenedTenant> {
+        let store = stores.application().clone();
         let database = if let Some(bootstrap) = &bootstrap {
             let replication = config
                 .replication
@@ -968,7 +991,7 @@ impl NodeRuntime {
             let network = cluster.context("cluster transport missing")?;
             let database = kasumi_engine::open_replicated(
                 replication.node_id,
-                store.clone(),
+                stores.clone(),
                 bootstrap,
                 network.clone(),
                 kasumi_raft::server_config(),
@@ -990,7 +1013,7 @@ impl NodeRuntime {
             }
             database
         } else {
-            kasumi_engine::open_local(store.clone(), policy, limits, audit).await?
+            kasumi_engine::open_local(stores, policy, limits, audit).await?
         };
         Ok(OpenedTenant {
             database,
@@ -1465,6 +1488,10 @@ pub fn example_config() -> RuntimeConfig {
         control: ControlConfig {
             startup_principal: None,
             transit: transit("kasumi-control", "KASUMI_CONTROL_TRANSIT_TOKEN"),
+            custody_transit: transit(
+                "kasumi-control-custody",
+                "KASUMI_CONTROL_CUSTODY_TRANSIT_TOKEN",
+            ),
             initial_policy: policy("operator"),
             initial_limits: Limits::default(),
             incarnation: None,
@@ -1476,6 +1503,7 @@ pub fn example_config() -> RuntimeConfig {
         tenants: vec![TenantConfig {
             tenant: "acme".into(),
             transit: transit("acme-wrapping-key", "KASUMI_ACME_TRANSIT_TOKEN"),
+            custody_transit: transit("acme-custody-key", "KASUMI_ACME_CUSTODY_TRANSIT_TOKEN"),
             initial_policy: policy("acme-admin"),
             initial_limits: Limits::default(),
             incarnation: None,
@@ -1565,10 +1593,19 @@ mod tests {
         config.control.transit = config.tenants[0].transit.clone();
         assert!(config.validate().is_err());
         let mut config = example_config();
+        config.tenants[0].custody_transit = config.tenants[0].transit.clone();
+        assert!(config.validate().is_err());
+        let mut config = example_config();
+        config.control.custody_transit = config.tenants[0].custody_transit.clone();
+        assert!(config.validate().is_err());
+        let mut config = example_config();
         config.security_audit.transit = config.tenants[0].transit.clone();
         assert!(config.validate().is_err());
         let mut config = example_config();
         config.tenants[0].tenant = CONTROL_TENANT.into();
+        assert!(config.validate().is_err());
+        let mut config = example_config();
+        config.tenants[0].tenant = "kasumi.custody/other".into();
         assert!(config.validate().is_err());
         let mut config = example_config();
         config.tenants.push(config.tenants[0].clone());
@@ -1862,7 +1899,7 @@ mod lifecycle_tests {
                 let (version, ciphertext) = rest.split_once(':').unwrap();
                 let wrapped = WrappedKey {
                     provider: "test-only".into(),
-                    key_ref: "local-test-key".into(),
+                    key_ref: key.key_ref().into(),
                     ciphertext: ciphertext.into(),
                     version: version.parse().unwrap(),
                     context: Some(key_name.into()),
@@ -2130,6 +2167,7 @@ mod lifecycle_tests {
         next.tenant = tenant.into();
         next.incarnation = Some(incarnation);
         next.transit.key_name = format!("{tenant}-wrapping-key");
+        next.custody_transit.key_name = format!("{tenant}-custody-key");
         next.initial_policy.grants = vec![Grant {
             principal: format!("{tenant}-admin"),
             collection: None,
@@ -2409,10 +2447,18 @@ mod lifecycle_tests {
         config.admin.listen = admin;
         config.mcp.protocol =
             McpConfig::new(format!("https://localhost:{}/mcp", mcp.port())).unwrap();
-        for transit in std::iter::once(&mut config.control.transit)
-            .chain(std::iter::once(&mut config.security_audit.transit))
-            .chain(config.tenants.iter_mut().map(|tenant| &mut tenant.transit))
-        {
+        for transit in [
+            &mut config.control.transit,
+            &mut config.control.custody_transit,
+            &mut config.security_audit.transit,
+        ]
+        .into_iter()
+        .chain(
+            config
+                .tenants
+                .iter_mut()
+                .flat_map(|tenant| [&mut tenant.transit, &mut tenant.custody_transit]),
+        ) {
             transit.endpoint = transit_endpoint.clone();
             transit.ca_certificate = Some(files.certificate.clone());
         }
@@ -2925,10 +2971,18 @@ mod lifecycle_tests {
             config.tenants[0].incarnation = Some(incarnation.clone());
             config.control.incarnation = Some(control_incarnation.clone());
             config.security_audit.transit.key_name = format!("node{node}-security");
-            for settings in std::iter::once(&mut config.control.transit)
-                .chain(std::iter::once(&mut config.security_audit.transit))
-                .chain(config.tenants.iter_mut().map(|tenant| &mut tenant.transit))
-            {
+            for settings in [
+                &mut config.control.transit,
+                &mut config.control.custody_transit,
+                &mut config.security_audit.transit,
+            ]
+            .into_iter()
+            .chain(
+                config
+                    .tenants
+                    .iter_mut()
+                    .flat_map(|tenant| [&mut tenant.transit, &mut tenant.custody_transit]),
+            ) {
                 settings.endpoint = kms_endpoint.clone();
                 settings.ca_certificate = Some(mock_files.certificate.clone());
             }

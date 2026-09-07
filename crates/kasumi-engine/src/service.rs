@@ -141,7 +141,20 @@ impl ProposalWork {
             bytes.len() <= max_bytes,
             "command exceeds proposal byte budget"
         );
-        self.group.write(bytes).await
+        if matches!(&command.operation, Operation::RetireSource(prepared) if prepared.observation.is_some())
+        {
+            let engine = self
+                .schema_engine
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("retirement source engine absent"))?;
+            let seed = kasumi_raft::RetirementLogSeed::prepare(
+                &command,
+                engine.retirement_replay_state(&command)?,
+            )?;
+            self.group.write_retirement(bytes, seed).await
+        } else {
+            self.group.write(bytes).await
+        }
     }
 }
 
@@ -490,6 +503,12 @@ impl Database {
         self.work.drain().await;
         self.audit_work.drain().await;
         self.store.shutdown().await;
+        self.group
+            .storage_domains()
+            .custody()
+            .store()
+            .shutdown()
+            .await;
         self.engine.seal();
         self.snapshot_leases
             .lock()
@@ -977,6 +996,11 @@ impl Database {
             .saturating_add(64 << 10)
             .saturating_mul(3)
             .saturating_add(staged_workspace)
+            .saturating_add(if matches!(operation, Operation::RetireSource(_)) {
+                kasumi_raft::MAX_RETIREMENT_SEED_BYTES.saturating_mul(4)
+            } else {
+                0
+            })
             .saturating_add(if needs_writer { 15_000_000 } else { 0 })
             as u64;
         drop(generation);
@@ -1838,7 +1862,12 @@ mod tests {
         .await
         .unwrap();
         let db = crate::open_local(
-            store,
+            kasumi_store::test_utils::with_custody(
+                store,
+                std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
+            )
+            .await
+            .unwrap(),
             Policy {
                 grants: vec![Grant {
                     principal: context.principal.clone(),

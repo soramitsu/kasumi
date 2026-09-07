@@ -326,7 +326,14 @@ impl Databases {
                 let database = if let Some(bootstrap) = &bootstrap {
                     let database = open_replicated(
                         replica as u64 + 1,
-                        store,
+                        kasumi_store::test_utils::with_custody(
+                            store,
+                            std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new(
+                                [241; 32],
+                            )),
+                        )
+                        .await
+                        .unwrap(),
                         bootstrap,
                         router.clone(),
                         server_config(),
@@ -341,7 +348,14 @@ impl Databases {
                     database
                 } else {
                     open_local(
-                        store,
+                        kasumi_store::test_utils::with_custody(
+                            store,
+                            std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new(
+                                [241; 32],
+                            )),
+                        )
+                        .await
+                        .unwrap(),
                         policy(),
                         limits(count, operations),
                         audits[replica].clone(),

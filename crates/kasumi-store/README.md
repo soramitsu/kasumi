@@ -74,6 +74,24 @@ deployment responsibility and is not established by these software tests.
 provider is not available in a default production build or selectable by server
 configuration.
 
+## Independent application and custody storage
+
+Engine and Raft openers require `Arc<TenantStorageSet>`. Create it with
+`TenantStorageSet::open(node, tenant, application_provider, custody_provider)`.
+Both providers are explicit. The installed catalogs must have distinct identities,
+wrapping policies and actual key bytes. Their immutable encrypted binding prevents
+a substituted application/control pair. The same node transaction can publish
+application and custody records together, retaining both key-access guards through
+fsync and reporting an unknown outcome if access expires after commitment.
+
+`CustodyStore::open(node, tenant, custody_provider)` opens only an already installed
+control domain. It inspects wrapped application catalog identity without creating
+an application provider or decrypting application keys. It grants no application
+data authority. Native tenant and control configuration therefore requires a
+separate `custody_transit` setting. Test embeddings can explicitly use
+`test_utils::with_custody(existing_application_store, distinct_test_provider)`;
+this feature is unavailable to native configuration.
+
 
 ## Actual S3 interoperability
 

@@ -485,9 +485,19 @@ async fn open(
     )
     .await
     .unwrap();
-    let db = kasumi_engine::open_local(store, policy(), Limits::default(), audit.clone())
+    let db = kasumi_engine::open_local(
+        kasumi_store::test_utils::with_custody(
+            store,
+            std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
+        )
         .await
-        .unwrap();
+        .unwrap(),
+        policy(),
+        Limits::default(),
+        audit.clone(),
+    )
+    .await
+    .unwrap();
     (db, audit)
 }
 
