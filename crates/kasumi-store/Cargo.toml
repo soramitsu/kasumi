@@ -9,6 +9,8 @@ test-utils = []
 
 [dependencies]
 kasumi-clock.workspace = true
+kasumi-serving.workspace = true
+kasumi-types.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 serde.workspace = true

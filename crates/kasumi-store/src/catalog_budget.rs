@@ -43,7 +43,7 @@ async fn catalog_byte_quota_rejects_initialization_rotation_and_rewrap_before_pe
     });
     let clock = Arc::new(ManualClock::new());
     assert!(
-        TenantStore::open_with_clock(
+        TenantStore::open_fixture_with_clock(
             node.clone(),
             "tenant".into(),
             provider.clone(),
@@ -54,7 +54,7 @@ async fn catalog_byte_quota_rejects_initialization_rotation_and_rewrap_before_pe
     );
     assert!(node.catalog("tenant").unwrap().is_none());
     provider.padding.store(0, Ordering::SeqCst);
-    let store = TenantStore::open_with_clock(
+    let store = TenantStore::open_fixture_with_clock(
         node.clone(),
         "tenant".into(),
         provider.clone(),
@@ -89,7 +89,7 @@ async fn catalog_byte_quota_rejects_initialization_rotation_and_rewrap_before_pe
     let bytes = backup.to_bytes().unwrap();
     let restored = EncryptedBackup::from_bytes(&bytes, 1024)
         .unwrap()
-        .decrypt("tenant", provider)
+        .decrypt_fixture("tenant", provider)
         .await
         .unwrap();
     assert_eq!(restored.snapshot.as_slice(), b"snapshot");
@@ -102,7 +102,7 @@ async fn exact_catalog_boundary_leaves_room_for_worst_case_manifest_tenant_encod
     let node = NodeStore::open(directory.path().join("boundary.redb")).unwrap();
     let tenant = "\u{0001}".repeat(1024);
     let provider = Arc::new(LocalKeyProvider::new([62; 32]));
-    let store = TenantStore::open_with_clock(
+    let store = TenantStore::open_fixture_with_clock(
         node.clone(),
         tenant.clone(),
         provider,

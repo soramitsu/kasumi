@@ -212,6 +212,7 @@ pub(crate) struct ManagedTenant {
     pub custody_provider: Arc<dyn KeyProvider>,
     pub bootstrap: Option<ReplicatedBootstrap>,
     pub descriptor: Option<GenerationDescriptor>,
+    pub lease: Option<Arc<crate::serving_runtime::RuntimeLease>>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -243,6 +244,7 @@ pub struct Administration {
     gate: tokio::sync::Mutex<()>,
     admission: Arc<kasumi_engine::admission::NodeAdmission>,
     provider_factories: BTreeMap<String, ProviderFactory>,
+    credential: crate::serving_runtime::CredentialSource,
 }
 /// Holds the exact source/target handles across adapter serialization. Activation
 /// deliberately retires the source, so its acknowledgement is fenced by the new
@@ -423,6 +425,7 @@ impl Administration {
         destinations: BTreeMap<String, Arc<dyn BackupDestination>>,
         admission: Arc<kasumi_engine::admission::NodeAdmission>,
         provider_factories: BTreeMap<String, ProviderFactory>,
+        credential: crate::serving_runtime::CredentialSource,
     ) -> Result<Arc<Self>> {
         let mut generations = BTreeMap::new();
         let mut active = BTreeMap::new();
@@ -457,6 +460,7 @@ impl Administration {
             gate: tokio::sync::Mutex::new(()),
             admission,
             provider_factories,
+            credential,
         }))
     }
     fn current(&self, tenant: &str) -> Result<ManagedTenant> {
@@ -664,6 +668,9 @@ impl Administration {
                     "retirement target differs"
                 );
                 let target = self.generation(&context.tenant, &incarnation.to_string())?;
+                if let Some(lease) = &target.lease {
+                    lease.promote().await?;
+                }
                 self.authorized(&target, context, false).await?;
                 ensure!(
                     target
@@ -954,6 +961,14 @@ impl Administration {
                 .await?;
                 let path =
                     generation_path(&self.config.database_path, &context.tenant, incarnation);
+                let (storage_access, lease) = crate::serving_runtime::acquire_tenant_access(
+                    &self.config,
+                    self.credential.clone(),
+                    &context.tenant,
+                    incarnation,
+                    kasumi_serving::LeasePurpose::RestorePreparation,
+                )
+                .await?;
                 fresh_file(&path)?;
                 let node = NodeStore::open(&path)?;
                 let stores = TenantStorageSet::open(
@@ -961,6 +976,7 @@ impl Administration {
                     context.tenant.clone(),
                     source.provider.clone(),
                     source.custody_provider.clone(),
+                    storage_access,
                 )
                 .await?;
                 let store = stores.application().clone();
@@ -1069,6 +1085,7 @@ impl Administration {
                             custody_provider: source.custody_provider.clone(),
                             bootstrap,
                             descriptor: Some(descriptor.clone()),
+                            lease,
                         },
                     );
                 self.event(
@@ -1813,6 +1830,27 @@ impl Administration {
     async fn load_generation(&self, tenant: &str, incarnation: Uuid) -> Result<ManagedTenant> {
         let path = generation_path(&self.config.database_path, tenant, incarnation);
         ensure!(path.is_file(), "durably routed generation file is missing");
+        let (storage_access, lease) = match crate::serving_runtime::acquire_tenant_access(
+            &self.config,
+            self.credential.clone(),
+            tenant,
+            incarnation,
+            kasumi_serving::LeasePurpose::Serving,
+        )
+        .await
+        {
+            Ok(active) => active,
+            Err(_) => {
+                crate::serving_runtime::acquire_tenant_access(
+                    &self.config,
+                    self.credential.clone(),
+                    tenant,
+                    incarnation,
+                    kasumi_serving::LeasePurpose::RestorePreparation,
+                )
+                .await?
+            }
+        };
         let (provider, custody_provider) =
             self.provider_factories
                 .get(tenant)
@@ -1823,6 +1861,7 @@ impl Administration {
             tenant.to_owned(),
             provider.clone(),
             custody_provider.clone(),
+            storage_access,
         )
         .await?;
         let _reservation = self
@@ -1891,6 +1930,7 @@ impl Administration {
             custody_provider,
             bootstrap: descriptor.bootstrap.clone(),
             descriptor: Some(descriptor),
+            lease,
         };
         self.registry.install_retirement_source(
             kasumi_engine::InstalledRetirementSource::Serving(target.database.clone()),

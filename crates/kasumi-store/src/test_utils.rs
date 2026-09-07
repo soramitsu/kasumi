@@ -23,6 +23,7 @@ pub async fn with_custody(
         application.node.clone(),
         crate::CustodyStore::catalog_name(application.tenant()),
         custody_provider,
+        crate::StorageAccess::custody(application.tenant()),
     )
     .await?;
     crate::TenantStorageSet::install(application, control)

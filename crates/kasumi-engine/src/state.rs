@@ -54,6 +54,7 @@ pub struct TenantEngine {
     tenant: String,
     incarnation: String,
     revision_base: u64,
+    access: std::sync::OnceLock<kasumi_store::StorageAccess>,
 }
 
 impl kasumi_raft::StateMachineBackend for TenantEngine {
@@ -133,6 +134,64 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
 }
 
 impl TenantEngine {
+    pub(crate) fn check_operation_access(&self, operation: &Operation) -> Result<()> {
+        if let Some(access) = self.access.get() {
+            access
+                .check()
+                .map_err(|_| Error::new(ErrorCode::Sealed, "independent access grant expired"))?;
+            if access.check_serving().is_err() {
+                let generation = self.generation()?;
+                if !generation.state.suspended
+                    || !matches!(operation, Operation::MaintenanceAudit(event) if event.action == "restore" && event.outcome == "completed")
+                {
+                    return Err(Error::new(
+                        ErrorCode::Forbidden,
+                        "restore preparation permits only exact restore completion",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+    /// Installed before Raft replay or native publication. Pure arithmetic
+    /// engine fixtures have no store; a serving database retains this exact
+    /// capability through generation reads and ordered state publication.
+    pub(crate) fn install_storage_access(&self, store: &kasumi_store::TenantStore) -> Result<()> {
+        store
+            .check_access()
+            .map_err(|_| Error::new(ErrorCode::Sealed, "storage serving authority unavailable"))?;
+        let access = store.storage_access().clone();
+        if let Some(gate) = access.serving_gate() {
+            let generation = self.generation()?;
+            if gate.identity().tenant != generation.state.tenant
+                || gate.identity().incarnation.to_string() != generation.state.incarnation
+                || gate
+                    .recovery_checkpoint()
+                    .map_err(|_| Error::new(ErrorCode::Sealed, "serving grant expired"))?
+                    != generation.state.restored_from
+            {
+                self.seal();
+                return Err(Error::new(
+                    ErrorCode::Conflict,
+                    "serving authority incarnation or exact restored checkpoint differs",
+                ));
+            }
+        }
+        self.access.set(access).map_err(|_| {
+            Error::new(
+                ErrorCode::Conflict,
+                "engine storage authority already installed",
+            )
+        })?;
+        if self.generation().is_err() {
+            self.seal();
+            return Err(Error::new(
+                ErrorCode::Sealed,
+                "serving authority expired during materialization",
+            ));
+        }
+        Ok(())
+    }
     pub(crate) fn retirement_replay_state(
         &self,
         command: &Command,
@@ -227,6 +286,7 @@ impl TenantEngine {
             ));
         }
         Ok(Self {
+            access: std::sync::OnceLock::new(),
             current: ArcSwapOption::from_pointee(Generation {
                 state,
                 indexes,
@@ -251,6 +311,7 @@ impl TenantEngine {
             ));
         }
         let engine = Self {
+            access: std::sync::OnceLock::new(),
             tenant: state.tenant.clone(),
             incarnation: state.incarnation.clone(),
             revision_base: state.revision_base,
@@ -313,6 +374,14 @@ impl TenantEngine {
     }
 
     pub fn generation(&self) -> Result<Arc<Generation>> {
+        if let Some(access) = self.access.get() {
+            access.check().map_err(|_| {
+                Error::new(
+                    ErrorCode::Sealed,
+                    "independent serving authority unavailable",
+                )
+            })?;
+        }
         self.current
             .load_full()
             .ok_or_else(|| Error::new(ErrorCode::Sealed, "tenant requires authorized recovery"))
@@ -323,6 +392,7 @@ impl TenantEngine {
     /// its revision base.
     pub(crate) fn verify_logical_snapshot(bytes: &[u8], state: &TenantState) -> Result<()> {
         let verifier = Self {
+            access: std::sync::OnceLock::new(),
             tenant: state.tenant.clone(),
             incarnation: state.incarnation.clone(),
             revision_base: state.revision_base,
@@ -397,6 +467,7 @@ impl TenantEngine {
             .lock()
             .map_err(|_| Error::new(ErrorCode::Unavailable, "tenant apply lock poisoned"))?;
         let previous = self.generation()?;
+        self.check_operation_access(&command.operation)?;
         if revision <= previous.state.revision {
             return Err(Error::new(
                 ErrorCode::Corruption,

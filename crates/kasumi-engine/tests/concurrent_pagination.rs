@@ -59,7 +59,7 @@ async fn snapshot_pages_overlap_atomic_writers_and_current_policy_revocation() {
     let directory = tempfile::tempdir().unwrap();
     let node = NodeStore::open(directory.path().join("node.redb")).unwrap();
     let audit = common::security_audit(node.clone()).await;
-    let store = TenantStore::open(
+    let store = TenantStore::open_fixture(
         node,
         "pages".into(),
         Arc::new(LocalKeyProvider::new([62; 32])),

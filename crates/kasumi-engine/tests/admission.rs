@@ -15,7 +15,7 @@ async fn pressure_rejects_new_proposals_and_queries_but_committed_raft_work_stil
     let directory = tempfile::tempdir().unwrap();
     let node = NodeStore::open(directory.path().join("node.redb")).unwrap();
     let audit = common::security_audit(node.clone()).await;
-    let store = TenantStore::open(
+    let store = TenantStore::open_fixture(
         node,
         "tenant".into(),
         Arc::new(LocalKeyProvider::new([9; 32])),
@@ -145,7 +145,7 @@ async fn explicit_local_bootstrap_reads_the_complete_committed_generation() {
     let directory = tempfile::tempdir().unwrap();
     let node = NodeStore::open(directory.path().join("local.redb")).unwrap();
     let audit = common::security_audit(node.clone()).await;
-    let store = TenantStore::open(
+    let store = TenantStore::open_fixture(
         node,
         "local".into(),
         Arc::new(LocalKeyProvider::new([8; 32])),

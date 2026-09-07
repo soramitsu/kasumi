@@ -2,14 +2,14 @@ use super::*;
 use crate::test_utils::{FaultBackend, LocalKeyProvider, ManualClock};
 
 async fn installed(node: Arc<NodeStore>) -> Result<Arc<TenantStorageSet>> {
-    let app = TenantStore::open_with_clock(
+    let app = TenantStore::open_fixture_with_clock(
         node.clone(),
         "tenant".into(),
         Arc::new(LocalKeyProvider::new([11; 32])),
         Arc::new(ManualClock::new()),
     )
     .await?;
-    let custody = TenantStore::open_with_clock(
+    let custody = TenantStore::open_fixture_with_clock(
         node,
         CustodyStore::catalog_name("tenant"),
         Arc::new(LocalKeyProvider::new([12; 32])),
@@ -24,11 +24,12 @@ async fn domains_require_distinct_actual_wrapping_policies_and_same_node() -> Re
     let dir = tempfile::tempdir()?;
     let node = NodeStore::open(dir.path().join("same.redb"))?;
     let provider = Arc::new(LocalKeyProvider::new([1; 32]));
-    let app = TenantStore::open(node.clone(), "tenant".into(), provider.clone()).await?;
-    let control = TenantStore::open(node, CustodyStore::catalog_name("tenant"), provider).await?;
+    let app = TenantStore::open_fixture(node.clone(), "tenant".into(), provider.clone()).await?;
+    let control =
+        TenantStore::open_fixture(node, CustodyStore::catalog_name("tenant"), provider).await?;
     assert!(TenantStorageSet::install(app.clone(), control.clone()).is_err());
     assert!(control.get(BINDING_NS, BINDING_KEY)?.is_none());
-    let other = TenantStore::open(
+    let other = TenantStore::open_fixture(
         NodeStore::open(dir.path().join("other.redb"))?,
         CustodyStore::catalog_name("tenant"),
         Arc::new(LocalKeyProvider::new([2; 32])),
@@ -37,7 +38,7 @@ async fn domains_require_distinct_actual_wrapping_policies_and_same_node() -> Re
     assert!(TenantStorageSet::install(app, other).is_err());
     let reserved = NodeStore::open(dir.path().join("reserved.redb"))?;
     assert!(
-        TenantStorageSet::open(
+        TenantStorageSet::open_fixture(
             reserved.clone(),
             "kasumi.custody/tenant".into(),
             Arc::new(LocalKeyProvider::new([3; 32])),
@@ -60,7 +61,7 @@ async fn control_reopens_without_any_application_key_probe_after_revocation() ->
     let app_provider = Arc::new(LocalKeyProvider::new([11; 32]));
     let control_provider = Arc::new(LocalKeyProvider::new([12; 32]));
     let node = NodeStore::open(&path)?;
-    let stores = TenantStorageSet::open(
+    let stores = TenantStorageSet::open_fixture(
         node.clone(),
         "tenant".into(),
         app_provider.clone(),
@@ -152,14 +153,14 @@ async fn post_commit_domain_expiry_reports_uncertainty_and_retains_complete_writ
     let disk = FaultBackend::new();
     let node = NodeStore::open_with_backend(disk.clone())?;
     let clock = Arc::new(ManualClock::new());
-    let app = TenantStore::open_with_clock(
+    let app = TenantStore::open_fixture_with_clock(
         node.clone(),
         "tenant".into(),
         Arc::new(LocalKeyProvider::new([11; 32])),
         clock.clone(),
     )
     .await?;
-    let custody = TenantStore::open_with_clock(
+    let custody = TenantStore::open_fixture_with_clock(
         node,
         CustodyStore::catalog_name("tenant"),
         Arc::new(LocalKeyProvider::new([12; 32])),

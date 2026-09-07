@@ -51,7 +51,7 @@ fn bootstrap() -> ReplicatedBootstrap {
 async fn store(path: &std::path::Path) -> (Arc<TenantStore>, Arc<kasumi_engine::SecurityAudit>) {
     let node = NodeStore::open(path).unwrap();
     let audit = common::security_audit(node.clone()).await;
-    let store = TenantStore::open(
+    let store = TenantStore::open_fixture(
         node,
         "tenant-a".into(),
         Arc::new(LocalKeyProvider::new([43; 32])),

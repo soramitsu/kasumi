@@ -711,7 +711,7 @@ async fn database(
     let node = NodeStore::open(dir.path().join("node.redb")).unwrap();
     let audit = common::security_audit(node.clone()).await;
     let key = Arc::new(LocalKeyProvider::new([7; 32]));
-    let store = TenantStore::open(node, "tenant-a".into(), key.clone())
+    let store = TenantStore::open_fixture(node, "tenant-a".into(), key.clone())
         .await
         .unwrap();
     let db = kasumi_engine::open_local(
@@ -1037,7 +1037,7 @@ async fn strict_empty_discovery_is_audited_and_failed_audit_persistence_blocks_r
     let backend = kasumi_store::test_utils::FaultBackend::new();
     let node = NodeStore::open_with_backend(backend.clone()).unwrap();
     let audit = common::security_audit(node.clone()).await;
-    let store = TenantStore::open(
+    let store = TenantStore::open_fixture(
         node,
         "tenant-a".into(),
         Arc::new(LocalKeyProvider::new([45; 32])),
@@ -1232,7 +1232,7 @@ async fn logical_backup_restores_suspended_with_new_incarnation_and_increasing_r
     let node = NodeStore::open(target_dir.path().join("node.redb")).unwrap();
     let target_audit = common::security_audit(node.clone()).await;
     let target_key = Arc::new(LocalKeyProvider::new([9; 32]));
-    let target_store = TenantStore::open(node, "tenant-a".into(), target_key)
+    let target_store = TenantStore::open_fixture(node, "tenant-a".into(), target_key)
         .await
         .unwrap();
     let restored = kasumi_engine::restore_local_with_incarnation(
@@ -1346,7 +1346,7 @@ async fn durable_engine_worker() {
     let root = std::path::PathBuf::from(root);
     let node = NodeStore::open(root.join("node.redb")).unwrap();
     let audit = common::security_audit(node.clone()).await;
-    let store = TenantStore::open(
+    let store = TenantStore::open_fixture(
         node,
         "tenant-a".into(),
         Arc::new(LocalKeyProvider::new([42; 32])),
@@ -1419,7 +1419,7 @@ async fn killed_process_recovers_acknowledged_documents_receipts_and_bootstrap_p
         serde_json::from_slice(&std::fs::read(dir.path().join("ack.json")).unwrap()).unwrap();
     let node = NodeStore::open(dir.path().join("node.redb")).unwrap();
     let audit = common::security_audit(node.clone()).await;
-    let store = TenantStore::open(
+    let store = TenantStore::open_fixture(
         node,
         "tenant-a".into(),
         Arc::new(LocalKeyProvider::new([42; 32])),

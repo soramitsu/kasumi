@@ -87,7 +87,11 @@ async fn object(
         "backup object identity mismatch"
     );
     let contents = envelope
-        .decrypt(target.tenant(), source.keys.clone())
+        .decrypt(
+            target.tenant(),
+            source.keys.clone(),
+            target.storage_access(),
+        )
         .await?;
     target.check_access()?;
     if target_history_keys {
@@ -108,6 +112,7 @@ struct RestoreReader<'a> {
     target: &'a TenantStore,
     context: &'a RequestContext,
     audit: &'a SecurityAudit,
+    bound_checkpoint: Option<FullBackupCheckpoint>,
 }
 impl BackupReader for RestoreReader<'_> {
     fn tenant(&self) -> &str {
@@ -141,6 +146,18 @@ impl BackupReader for RestoreReader<'_> {
         expected_ciphertext: Option<&'a str>,
         history: bool,
     ) -> anyhow::Result<kasumi_store::BackupContents> {
+        let expected_ciphertext = match &self.bound_checkpoint {
+            Some(checkpoint) if id == checkpoint.backup_id => {
+                if let Some(expected) = expected_ciphertext {
+                    anyhow::ensure!(
+                        expected == checkpoint.manifest_ciphertext_sha256,
+                        "restore manifest dependency differs from authority binding"
+                    );
+                }
+                Some(checkpoint.manifest_ciphertext_sha256.as_str())
+            }
+            _ => expected_ciphertext,
+        };
         object(
             self.source,
             self.target,
@@ -163,16 +180,36 @@ pub(super) async fn load(
     deadline: VerificationDeadline,
 ) -> anyhow::Result<VerifiedBackup> {
     validate_name(&source.destination_alias)?;
+    let bound_checkpoint = match target.storage_access().serving_gate() {
+        Some(gate) => {
+            let checkpoint = gate.recovery_checkpoint()?.ok_or_else(|| {
+                anyhow::anyhow!("serving authority has not authorized a restore checkpoint")
+            })?;
+            anyhow::ensure!(
+                checkpoint.backup_id == backup_id && checkpoint.tenant == target.tenant(),
+                "restore request differs from signed authority checkpoint"
+            );
+            Some(checkpoint)
+        }
+        None => None,
+    };
     let reader = RestoreReader {
         source,
         target,
         context,
         audit,
+        bound_checkpoint,
     };
     let verified = Box::pin(crate::backup_verify::verify(
         &reader, backup_id, admission, deadline,
     ))
     .await?;
+    if let Some(expected) = &reader.bound_checkpoint {
+        anyhow::ensure!(
+            &verified.checkpoint == expected,
+            "verified restore graph differs from signed authority checkpoint"
+        );
+    }
     let VerifiedBackup {
         mut state,
         bytes,

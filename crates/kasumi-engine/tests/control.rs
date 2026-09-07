@@ -67,7 +67,7 @@ async fn control_updates_require_operator_authority_cas_and_survive_reopen() {
     let root = tempfile::tempdir().unwrap();
     let node = NodeStore::open(root.path().join("control.redb")).unwrap();
     let audit = common::security_audit(node.clone()).await;
-    let store = TenantStore::open(
+    let store = TenantStore::open_fixture(
         node,
         CONTROL_TENANT.into(),
         Arc::new(LocalKeyProvider::new([44; 32])),

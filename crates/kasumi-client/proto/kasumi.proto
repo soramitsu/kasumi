@@ -24,6 +24,18 @@ service KasumiData {
   rpc Receipt(ReceiptRequest) returns (ReceiptResponse);
 }
 
+// Bind only to an explicitly installed independent authority deployment. This
+// service has no document API and no caller-selected source route or issuer key.
+service KasumiAuthority {
+  rpc DiscoverLease(AuthorityJsonRequest) returns (AuthorityJsonResponse);
+  rpc AcquireLease(AuthorityJsonRequest) returns (AuthorityJsonResponse);
+  rpc Execute(AuthorityJsonRequest) returns (AuthorityJsonResponse);
+  rpc Receipt(AuthorityReceiptRequest) returns (AuthorityJsonResponse);
+}
+message AuthorityJsonRequest { bytes request_json = 1; }
+message AuthorityJsonResponse { bytes response_json = 1; }
+message AuthorityReceiptRequest { string tenant = 1; string command_id = 2; }
+
 // Bind only to the administrative listener. These methods still enforce the
 // current tenant/collection admin policy in consensus order.
 service KasumiAdmin {

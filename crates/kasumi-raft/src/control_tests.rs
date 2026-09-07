@@ -106,14 +106,14 @@ pub(crate) async fn fixture(
     let node = NodeStore::open_with_backend(disk)?;
     let app_provider = Arc::new(LocalKeyProvider::new([11; 32]));
     let custody_provider = Arc::new(LocalKeyProvider::new([12; 32]));
-    let app = TenantStore::open_with_clock(
+    let app = TenantStore::open_fixture_with_clock(
         node.clone(),
         "tenant".into(),
         app_provider.clone(),
         Arc::new(ManualClock::new()),
     )
     .await?;
-    let custody = TenantStore::open_with_clock(
+    let custody = TenantStore::open_fixture_with_clock(
         node,
         CustodyStore::catalog_name("tenant"),
         custody_provider.clone(),

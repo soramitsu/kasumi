@@ -16,7 +16,7 @@ async fn cancelled_log_future_retains_drain_lease_until_blocking_persistence_fin
 
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("cancelled-persistence.redb");
-    let store = TenantStore::open_with_clock(
+    let store = TenantStore::open_fixture_with_clock(
         NodeStore::open(&path)?,
         "cancelled-persistence".into(),
         Arc::new(LocalKeyProvider::new([19; 32])),
@@ -105,7 +105,7 @@ impl StateMachineBackend for BytesBackend {
 }
 
 async fn fault_store(disk: FaultBackend) -> Result<Arc<TenantStore>> {
-    TenantStore::open_with_clock(
+    TenantStore::open_fixture_with_clock(
         NodeStore::open_with_backend(disk)?,
         "snapshot-test".into(),
         Arc::new(LocalKeyProvider::new([7; 32])),
@@ -262,7 +262,7 @@ async fn invalid_backend_snapshot_never_replaces_durable_recoverable_state() -> 
 #[tokio::test]
 async fn snapshots_larger_than_store_record_limit_are_chunked_and_recovered() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let store = TenantStore::open(
+    let store = TenantStore::open_fixture(
         NodeStore::open(dir.path().join("large.redb"))?,
         "large".into(),
         Arc::new(LocalKeyProvider::new([8; 32])),
@@ -363,7 +363,7 @@ async fn eight_mib_command_uses_compact_log_record_and_replays_after_reopen() ->
     let path = dir.path().join("large-command.redb");
     let bytes = vec![171u8; (8 << 20) + (64 << 10)];
     async fn open(path: &std::path::Path) -> Result<Arc<TenantStore>> {
-        TenantStore::open(
+        TenantStore::open_fixture(
             NodeStore::open(path)?,
             "large-command".into(),
             Arc::new(LocalKeyProvider::new([9; 32])),

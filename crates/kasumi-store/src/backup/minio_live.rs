@@ -190,7 +190,7 @@ async fn actual_minio_tls_sigv4_encrypted_roundtrip_create_only_and_access_denia
         response.status()
     );
     let provider = Arc::new(crate::test_utils::LocalKeyProvider::new([73; 32]));
-    let store = TenantStore::open(
+    let store = TenantStore::open_fixture(
         crate::NodeStore::open(root.path().join("source.redb"))?,
         "customer".into(),
         provider.clone(),
@@ -209,7 +209,7 @@ async fn actual_minio_tls_sigv4_encrypted_roundtrip_create_only_and_access_denia
             .is_err()
     );
     let recovered = EncryptedBackup::from_bytes(&destination.get(id, 16 << 20).await?, 1 << 20)?
-        .decrypt("customer", provider)
+        .decrypt_fixture("customer", provider)
         .await?;
     assert_eq!(recovered.snapshot.as_slice(), snapshot);
     assert_eq!(recovered.revision, 17);

@@ -1757,6 +1757,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "kasumi-authority"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "hex",
+ "kasumi-clock",
+ "kasumi-raft",
+ "kasumi-serving",
+ "kasumi-store",
+ "kasumi-types",
+ "ring",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "kasumi-bench"
 version = "0.1.0"
 dependencies = [
@@ -1790,6 +1810,8 @@ name = "kasumi-client"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "hex",
+ "kasumi-serving",
  "kasumi-transport",
  "kasumi-types",
  "prost",
@@ -1824,10 +1846,12 @@ dependencies = [
  "kasumi-clock",
  "kasumi-query",
  "kasumi-raft",
+ "kasumi-serving",
  "kasumi-store",
  "kasumi-types",
  "libc",
  "openraft",
+ "ring",
  "serde",
  "serde_json",
  "sha2",
@@ -1884,14 +1908,17 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.22.1",
+ "hex",
  "http-body-util",
  "hyper",
  "hyper-util",
  "jsonwebtoken",
+ "kasumi-authority",
  "kasumi-client",
  "kasumi-clock",
  "kasumi-engine",
  "kasumi-raft",
+ "kasumi-serving",
  "kasumi-store",
  "kasumi-transport",
  "kasumi-types",
@@ -1917,6 +1944,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "kasumi-serving"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "hex",
+ "kasumi-clock",
+ "kasumi-types",
+ "ring",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "kasumi-store"
 version = "0.1.0"
 dependencies = [
@@ -1930,6 +1973,8 @@ dependencies = [
  "hmac",
  "hyper-util",
  "kasumi-clock",
+ "kasumi-serving",
+ "kasumi-types",
  "libc",
  "parking_lot",
  "rcgen",

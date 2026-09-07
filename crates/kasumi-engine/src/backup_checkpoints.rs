@@ -123,7 +123,8 @@ impl Database {
             .and_then(|result| result);
         let result = self.audit_result(&context, result).await;
         if publication_admitted {
-            result.map_err(credential_acknowledgement)
+            result.map_err(|_| Error::new(ErrorCode::UnknownOutcome,
+                "backup publication was admitted but complete proof release failed; immutable artifacts may exist and no verified proof was released"))
         } else {
             result
         }

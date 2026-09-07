@@ -266,6 +266,13 @@ async fn benchmark(
     let [mcp, native, admin] = addresses()?;
     let audience = format!("https://localhost:{}/mcp", mcp.port());
     let mut config = example_config();
+    // This benchmark explicitly exercises the fixture-only local deployment.
+    // Its daemon must be built with kasumi-server/test-utils; production builds
+    // reject this configuration instead of bypassing the serving authority.
+    config.mode = kasumi_server::runtime::DeploymentMode::Local;
+    config.replication = None;
+    config.control.incarnation = None;
+    config.serving_authorities.clear();
     config.database_path = path.join("node.redb");
     config.auth = AuthConfig {
         issuer: issuer_url.clone(),
@@ -322,6 +329,7 @@ async fn benchmark(
         secrets.push((custody_env.clone(), Zeroizing::new(custody_secret)));
         let count = documents.div_ceil(tenants);
         config.tenants.push(TenantConfig {
+            serving: kasumi_server::serving_runtime::TenantServingConfig::LocalFixture,
             tenant: name.clone(),
             transit: transit(&name, &env),
             custody_transit: transit(&custody_name, &custody_env),

@@ -2,7 +2,7 @@
 async fn queued_staged_finalize_checks_fresh_time_and_canceled_callers_keep_durable_outcomes() {
     let directory = tempfile::tempdir().unwrap();
     let node = NodeStore::open(directory.path().join("node.redb")).unwrap();
-    let audit_store = TenantStore::open(
+    let audit_store = TenantStore::open_fixture(
         node.clone(),
         crate::SECURITY_TENANT.into(),
         Arc::new(LocalKeyProvider::new([0xA7; 32])),
@@ -17,7 +17,7 @@ async fn queued_staged_finalize_checks_fresh_time_and_canceled_callers_keep_dura
         scopes: BTreeSet::from([Action::Read, Action::Write, Action::Admin, Action::Audit]),
         request_id: "stage-time".into(),
     };
-    let store = TenantStore::open(
+    let store = TenantStore::open_fixture(
         node,
         context.tenant.clone(),
         Arc::new(LocalKeyProvider::new([0xC7; 32])),
@@ -25,7 +25,12 @@ async fn queued_staged_finalize_checks_fresh_time_and_canceled_callers_keep_dura
     .await
     .unwrap();
     let db = crate::open_local(
-        kasumi_store::test_utils::with_custody(store, std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32]))).await.unwrap(),
+        kasumi_store::test_utils::with_custody(
+            store,
+            std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
+        )
+        .await
+        .unwrap(),
         Policy {
             grants: vec![Grant {
                 principal: context.principal.clone(),

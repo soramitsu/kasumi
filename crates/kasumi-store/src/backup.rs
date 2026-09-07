@@ -160,8 +160,18 @@ impl EncryptedBackup {
         &self,
         source_tenant: &str,
         provider: Arc<dyn KeyProvider>,
+        access: &crate::StorageAccess,
     ) -> Result<BackupContents> {
-        self.decrypt_with_clock(source_tenant, provider, &SystemLeaseClock)
+        self.decrypt_with_clock(source_tenant, provider, &SystemLeaseClock, access)
+            .await
+    }
+    #[cfg(any(test, feature = "test-utils"))]
+    pub async fn decrypt_fixture(
+        &self,
+        tenant: &str,
+        provider: Arc<dyn KeyProvider>,
+    ) -> Result<BackupContents> {
+        self.decrypt(tenant, provider, &crate::StorageAccess::fixture())
             .await
     }
 
@@ -170,7 +180,9 @@ impl EncryptedBackup {
         source_tenant: &str,
         provider: Arc<dyn KeyProvider>,
         clock: &dyn LeaseClock,
+        access: &crate::StorageAccess,
     ) -> Result<BackupContents> {
+        access.validate_tenant(source_tenant)?;
         ensure!(
             self.manifest.tenant == source_tenant,
             "backup source tenant mismatch"
@@ -180,10 +192,12 @@ impl EncryptedBackup {
         let keys = tokio::time::timeout(PROVIDER_TIMEOUT, async {
             let mut keys = std::collections::BTreeMap::new();
             for (id, wrapped) in &self.manifest.catalog.keys {
+                access.check()?;
                 keys.insert(
                     id.clone(),
                     provider.unwrap_key(source_tenant, wrapped).await?,
                 );
+                access.check()?;
             }
             Ok::<_, anyhow::Error>(keys)
         })
@@ -193,6 +207,7 @@ impl EncryptedBackup {
             .checked_add(MAX_KEY_LEASE)
             .context("backup key lease overflow")?;
         ensure!(clock.now() < deadline, "backup key authorization expired");
+        access.check()?;
         let key = keys
             .get(&self.manifest.catalog.active)
             .context("backup key missing")?;
@@ -221,6 +236,7 @@ impl EncryptedBackup {
         let ciphertext_sha256 = hex::encode(ciphertext_digest.finalize());
         let key_catalog_sha256 =
             hex::encode(Sha256::digest(serde_json::to_vec(&self.manifest.catalog)?));
+        access.check()?;
         ensure!(
             clock.now() < deadline,
             "backup key authorization expired before digest release"
@@ -573,7 +589,7 @@ mod tests {
     async fn encrypted_bundle_round_trip_filesystem_reopen_and_tamper_rejection() {
         let dir = tempfile::tempdir().unwrap();
         let provider = Arc::new(LocalKeyProvider::new([17; 32]));
-        let store = TenantStore::open_with_clock(
+        let store = TenantStore::open_fixture_with_clock(
             NodeStore::open(dir.path().join("db")).unwrap(),
             "tenant".into(),
             provider.clone(),
@@ -599,30 +615,38 @@ mod tests {
         let read = destination.get(backup.id(), 16 << 20).await.unwrap();
         assert_eq!(bytes, read);
         let parsed = EncryptedBackup::from_bytes(&read, 1 << 20).unwrap();
-        let plain = parsed.decrypt("tenant", provider.clone()).await.unwrap();
+        let plain = parsed
+            .decrypt_fixture("tenant", provider.clone())
+            .await
+            .unwrap();
         assert_eq!(&*plain.snapshot, snapshot);
         assert_eq!(plain.revision, 42);
-        assert!(parsed.decrypt("another", provider.clone()).await.is_err());
+        assert!(
+            parsed
+                .decrypt_fixture("another", provider.clone())
+                .await
+                .is_err()
+        );
         assert!(EncryptedBackup::from_bytes(&read, 1).is_err());
         let mut damaged = read;
         *damaged.last_mut().unwrap() ^= 1;
         assert!(
             EncryptedBackup::from_bytes(&damaged, 1 << 20)
                 .unwrap()
-                .decrypt("tenant", provider.clone())
+                .decrypt_fixture("tenant", provider.clone())
                 .await
                 .is_err()
         );
         let mut swapped = backup;
         swapped.manifest.revision += 1;
-        assert!(swapped.decrypt("tenant", provider).await.is_err());
+        assert!(swapped.decrypt_fixture("tenant", provider).await.is_err());
     }
 
     #[tokio::test]
     async fn historical_backup_keeps_original_key_dependencies_after_rewrap() {
         let dir = tempfile::tempdir().unwrap();
         let provider = Arc::new(LocalKeyProvider::new([22; 32]));
-        let store = TenantStore::open_with_clock(
+        let store = TenantStore::open_fixture_with_clock(
             NodeStore::open(dir.path().join("db")).unwrap(),
             "t".into(),
             provider.clone(),
@@ -635,15 +659,18 @@ mod tests {
         store.rewrap_keys().await.unwrap();
         let new = store.encrypt_backup(1, b"new").unwrap();
         provider.set_minimum_version(2);
-        assert!(old.decrypt("t", provider.clone()).await.is_err());
-        assert_eq!(&*new.decrypt("t", provider).await.unwrap().snapshot, b"new");
+        assert!(old.decrypt_fixture("t", provider.clone()).await.is_err());
+        assert_eq!(
+            &*new.decrypt_fixture("t", provider).await.unwrap().snapshot,
+            b"new"
+        );
     }
 
     #[tokio::test]
     async fn removal_of_an_inactive_backup_key_dependency_breaks_authentication() {
         let dir = tempfile::tempdir().unwrap();
         let provider = Arc::new(LocalKeyProvider::new([31; 32]));
-        let store = TenantStore::open_with_clock(
+        let store = TenantStore::open_fixture_with_clock(
             NodeStore::open(dir.path().join("db")).unwrap(),
             "tenant".into(),
             provider.clone(),
@@ -665,7 +692,7 @@ mod tests {
         backup.manifest.catalog.keys.remove(&inactive);
         // Parsing cannot grant trust even when the remaining catalog is well-formed.
         let parsed = EncryptedBackup::from_bytes(&backup.to_bytes().unwrap(), 1024).unwrap();
-        assert!(parsed.decrypt("tenant", provider).await.is_err());
+        assert!(parsed.decrypt_fixture("tenant", provider).await.is_err());
     }
 
     #[tokio::test]

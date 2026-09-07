@@ -22,10 +22,10 @@ async fn fixture(
     provider: Arc<LocalKeyProvider>,
     audit_provider: Arc<LocalKeyProvider>,
 ) -> (Arc<Database>, Arc<TenantStore>, Arc<SecurityAudit>) {
-    let store = TenantStore::open(node.clone(), "tenant".into(), provider)
+    let store = TenantStore::open_fixture(node.clone(), "tenant".into(), provider)
         .await
         .unwrap();
-    let service = TenantStore::open(node, SECURITY_TENANT.into(), audit_provider)
+    let service = TenantStore::open_fixture(node, SECURITY_TENANT.into(), audit_provider)
         .await
         .unwrap();
     let audit = SecurityAudit::open(service, 100).unwrap();
@@ -150,7 +150,7 @@ async fn every_embedded_request_boundary_durably_audits_denials_and_sealed_tenan
     drop(audit);
     drop(node);
     let reopened = NodeStore::open(&path).unwrap();
-    let service = TenantStore::open(reopened, SECURITY_TENANT.into(), service_provider)
+    let service = TenantStore::open_fixture(reopened, SECURITY_TENANT.into(), service_provider)
         .await
         .unwrap();
     assert_eq!(service.scan("security.audit").unwrap().len(), 12);
@@ -209,7 +209,7 @@ fn cancelled_embedded_denial_writer_is_drained_before_shutdown_and_reopen() {
         drop(node);
         assert!(weak.upgrade().is_none());
         let reopened = NodeStore::open(&path).unwrap();
-        let service = TenantStore::open(reopened, SECURITY_TENANT.into(), service_provider)
+        let service = TenantStore::open_fixture(reopened, SECURITY_TENANT.into(), service_provider)
             .await
             .unwrap();
         assert_eq!(service.scan("security.audit").unwrap().len(), 1);
@@ -240,7 +240,7 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
         .unwrap();
     let target_path = dir.path().join("target.redb");
     let target_node = NodeStore::open(&target_path).unwrap();
-    let target_store = TenantStore::open(
+    let target_store = TenantStore::open_fixture(
         target_node.clone(),
         "tenant".into(),
         Arc::new(LocalKeyProvider::new([53; 32])),
@@ -254,7 +254,7 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
     .await
     .unwrap();
     let service_key = Arc::new(LocalKeyProvider::new([54; 32]));
-    let service_store = TenantStore::open(
+    let service_store = TenantStore::open_fixture(
         target_node.clone(),
         SECURITY_TENANT.into(),
         service_key.clone(),
@@ -368,7 +368,7 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
     drop(audit);
     drop(target_node);
     let reopened = NodeStore::open(&target_path).unwrap();
-    let service = TenantStore::open(reopened, SECURITY_TENANT.into(), service_key)
+    let service = TenantStore::open_fixture(reopened, SECURITY_TENANT.into(), service_key)
         .await
         .unwrap();
     assert_eq!(service.scan("security.audit").unwrap().len(), 3);

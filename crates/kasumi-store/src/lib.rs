@@ -9,7 +9,9 @@
 mod archive_objects;
 mod backup;
 mod keys;
+mod serving_access;
 mod storage_domains;
+pub use serving_access::{StorageAccess, StoragePurpose};
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_utils;
 
@@ -196,6 +198,7 @@ struct KeyCatalog {
     format: u32,
     catalog_id: Uuid,
     tenant: String,
+    purpose: StoragePurpose,
     active: String,
     keys: BTreeMap<String, WrappedKey>,
 }
@@ -257,6 +260,7 @@ struct DecodedRecord {
 pub struct TenantStore {
     node: Arc<NodeStore>,
     tenant: String,
+    access: StorageAccess,
     provider: Arc<dyn KeyProvider>,
     catalog: RwLock<KeyCatalog>,
     state: RwLock<KeyState>,
@@ -298,18 +302,47 @@ impl TenantStore {
         node: Arc<NodeStore>,
         tenant: String,
         provider: Arc<dyn KeyProvider>,
+        access: StorageAccess,
     ) -> Result<Arc<Self>> {
-        Self::open_inner(node, tenant, provider, Arc::new(SystemLeaseClock), true).await
+        Self::open_inner(
+            node,
+            tenant,
+            provider,
+            Arc::new(SystemLeaseClock),
+            true,
+            access,
+        )
+        .await
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
+    pub async fn open_fixture(
+        node: Arc<NodeStore>,
+        tenant: String,
+        provider: Arc<dyn KeyProvider>,
+    ) -> Result<Arc<Self>> {
+        let access = StorageAccess::fixture_for(&tenant);
+        Self::open(node, tenant, provider, access).await
+    }
+    #[cfg(any(test, feature = "test-utils"))]
+    pub async fn open_fixture_with_clock(
+        node: Arc<NodeStore>,
+        tenant: String,
+        provider: Arc<dyn KeyProvider>,
+        clock: Arc<dyn LeaseClock>,
+    ) -> Result<Arc<Self>> {
+        let access = StorageAccess::fixture_for(&tenant);
+        Self::open_inner(node, tenant, provider, clock, false, access).await
+    }
     #[cfg(any(test, feature = "test-utils"))]
     pub async fn open_with_clock(
         node: Arc<NodeStore>,
         tenant: String,
         provider: Arc<dyn KeyProvider>,
         clock: Arc<dyn LeaseClock>,
+        access: StorageAccess,
     ) -> Result<Arc<Self>> {
-        Self::open_inner(node, tenant, provider, clock, false).await
+        Self::open_inner(node, tenant, provider, clock, false, access).await
     }
 
     async fn open_inner(
@@ -318,7 +351,9 @@ impl TenantStore {
         provider: Arc<dyn KeyProvider>,
         clock: Arc<dyn LeaseClock>,
         renew: bool,
+        access: StorageAccess,
     ) -> Result<Arc<Self>> {
+        access.validate_tenant(&tenant)?;
         ensure!(
             !tenant.is_empty() && tenant.len() <= 1024,
             "invalid tenant identifier"
@@ -334,23 +369,42 @@ impl TenantStore {
             .clone();
         let mut slot = gate.lock().await;
         if let Some(existing) = slot.upgrade() {
+            ensure!(
+                existing.access.purpose() == access.purpose(),
+                "existing storage purpose differs"
+            );
+            // A new boot cannot replace a live handle's original capability.
+            if let (Some(old), Some(new)) = (existing.access.serving_gate(), access.serving_gate())
+            {
+                ensure!(
+                    Arc::ptr_eq(old, new),
+                    "live store belongs to another serving capability"
+                );
+            }
             existing.check_access()?;
             return Ok(existing);
         }
         let catalog = if let Some(catalog) = node.catalog(&tenant)? {
+            ensure!(
+                &catalog.purpose == access.purpose(),
+                "wrapped catalog storage authority differs"
+            );
             catalog
         } else {
             let root = tokio::time::timeout(PROVIDER_TIMEOUT, provider.generate_key(&tenant))
                 .await
                 .context("key generation timed out")??;
+            access.check()?;
             let data = tokio::time::timeout(PROVIDER_TIMEOUT, provider.generate_key(&tenant))
                 .await
                 .context("key generation timed out")??;
+            access.check()?;
             let active = Uuid::new_v4().to_string();
             let catalog = KeyCatalog {
                 format: 1,
                 catalog_id: Uuid::new_v4(),
                 tenant: tenant.clone(),
+                purpose: access.purpose().clone(),
                 active: active.clone(),
                 keys: BTreeMap::from([
                     (INDEX_KEY.to_owned(), root.wrapped),
@@ -359,12 +413,14 @@ impl TenantStore {
             };
             // Drop plaintext generation responses. Initial access requires fresh decrypts.
             node.save_catalog(&tenant, &catalog)?;
+            access.check()?;
             catalog
         };
         let (seal_notifier, _) = watch::channel(0);
         let store = Arc::new(Self {
             node: node.clone(),
             tenant: tenant.clone(),
+            access,
             provider,
             catalog: RwLock::new(catalog),
             state: RwLock::new(KeyState {
@@ -451,6 +507,9 @@ impl TenantStore {
     pub fn tenant(&self) -> &str {
         &self.tenant
     }
+    pub fn storage_access(&self) -> &StorageAccess {
+        &self.access
+    }
     pub fn generation(&self) -> u64 {
         self.access_epoch.load(Ordering::Acquire) >> 1
     }
@@ -488,7 +547,8 @@ impl TenantStore {
     }
 
     fn valid(&self, state: &KeyState) -> bool {
-        !self.shutdown_requested.load(Ordering::Acquire)
+        self.access.check().is_ok()
+            && !self.shutdown_requested.load(Ordering::Acquire)
             && self.access_epoch.load(Ordering::Acquire) & 1 == 0
             && !state.sealed
             && !state.keys.is_empty()
@@ -508,6 +568,7 @@ impl TenantStore {
     pub async fn refresh_lease(&self) -> Result<()> {
         let _access = AccessGuard(self);
         let _refresh = self.refresh.lock().await;
+        self.access.check()?;
         ensure!(
             !self.shutdown_requested.load(Ordering::Acquire),
             "tenant store has shut down"
@@ -518,10 +579,12 @@ impl TenantStore {
         let refresh = async {
             let mut keys = BTreeMap::new();
             for (id, wrapped) in &catalog.keys {
+                self.access.check()?;
                 keys.insert(
                     id.clone(),
                     self.provider.unwrap_key(&self.tenant, wrapped).await?,
                 );
+                self.access.check()?;
             }
             Ok::<_, anyhow::Error>(keys)
         };
@@ -541,6 +604,7 @@ impl TenantStore {
             .checked_add(MAX_KEY_LEASE)
             .context("key-access lease overflow")?;
         let mut state = self.state.write();
+        self.access.check()?;
         ensure!(
             !self.shutdown_requested.load(Ordering::Acquire),
             "tenant store has shut down"

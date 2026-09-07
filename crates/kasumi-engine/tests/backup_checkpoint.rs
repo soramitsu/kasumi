@@ -40,7 +40,7 @@ impl Fixture {
         let directory = tempfile::tempdir().unwrap();
         let node = NodeStore::open(directory.path().join("node.redb")).unwrap();
         let audit = common::security_audit(node.clone()).await;
-        let store = TenantStore::open(
+        let store = TenantStore::open_fixture(
             node,
             "checkpoint".into(),
             Arc::new(LocalKeyProvider::new([0xD8; 32])),
@@ -206,7 +206,7 @@ async fn checkpoint_binds_actual_generation_complete_graph_keys_and_encrypted_re
     drop(store);
     let node = NodeStore::open(&path).unwrap();
     let audit = common::security_audit(node.clone()).await;
-    let store = TenantStore::open(
+    let store = TenantStore::open_fixture(
         node,
         "checkpoint".into(),
         Arc::new(LocalKeyProvider::new([0xD8; 32])),

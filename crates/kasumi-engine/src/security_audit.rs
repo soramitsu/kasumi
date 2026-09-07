@@ -334,9 +334,10 @@ mod tests {
             let node = NodeStore::open(&path).unwrap();
             let weak_node = Arc::downgrade(&node);
             let provider = Arc::new(LocalKeyProvider::new([83; 32]));
-            let store = TenantStore::open(node.clone(), SECURITY_TENANT.into(), provider.clone())
-                .await
-                .unwrap();
+            let store =
+                TenantStore::open_fixture(node.clone(), SECURITY_TENANT.into(), provider.clone())
+                    .await
+                    .unwrap();
             let audit = SecurityAudit::open(store.clone(), 10).unwrap();
             let (entered, started) = tokio::sync::oneshot::channel();
             let (release, paused) = std::sync::mpsc::sync_channel(1);
@@ -386,7 +387,7 @@ mod tests {
             drop(node);
             assert!(weak_node.upgrade().is_none());
 
-            let reopened = TenantStore::open(
+            let reopened = TenantStore::open_fixture(
                 NodeStore::open(&path).unwrap(),
                 SECURITY_TENANT.into(),
                 provider,
@@ -413,9 +414,10 @@ mod tests {
         let node = NodeStore::open(&path).unwrap();
         let weak_node = Arc::downgrade(&node);
         let provider = Arc::new(LocalKeyProvider::new([85; 32]));
-        let store = TenantStore::open(node.clone(), SECURITY_TENANT.into(), provider.clone())
-            .await
-            .unwrap();
+        let store =
+            TenantStore::open_fixture(node.clone(), SECURITY_TENANT.into(), provider.clone())
+                .await
+                .unwrap();
         let first = SecurityAudit::open(store.clone(), 10).unwrap();
         let second = SecurityAudit::open(store.clone(), 10).unwrap();
         assert!(Arc::ptr_eq(&first.writer, &second.writer));
@@ -442,7 +444,7 @@ mod tests {
         drop(node);
         assert!(weak_node.upgrade().is_none());
 
-        let reopened = TenantStore::open(
+        let reopened = TenantStore::open_fixture(
             NodeStore::open(&path).unwrap(),
             SECURITY_TENANT.into(),
             provider,
@@ -478,7 +480,7 @@ mod tests {
         let disk = FaultBackend::new();
         let clock = Arc::new(ManualClock::new());
         let provider = Arc::new(LocalKeyProvider::new([84; 32]));
-        let store = TenantStore::open_with_clock(
+        let store = TenantStore::open_fixture_with_clock(
             NodeStore::open_with_backend(disk.clone()).unwrap(),
             SECURITY_TENANT.into(),
             provider.clone(),
@@ -499,7 +501,7 @@ mod tests {
         assert!(audit.record_sync(event()).is_err());
         assert_eq!(store.scan("security.audit").unwrap().len(), 1);
 
-        let recovered = TenantStore::open_with_clock(
+        let recovered = TenantStore::open_fixture_with_clock(
             NodeStore::open_with_backend(disk.crash()).unwrap(),
             SECURITY_TENANT.into(),
             provider,

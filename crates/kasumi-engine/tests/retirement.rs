@@ -76,7 +76,7 @@ impl Fixture {
         let directory = tempfile::tempdir().unwrap();
         let node = NodeStore::open(directory.path().join("node.redb")).unwrap();
         let audit = common::security_audit(node.clone()).await;
-        let store = TenantStore::open(
+        let store = TenantStore::open_fixture(
             node,
             context().tenant,
             Arc::new(LocalKeyProvider::new([0xe1; 32])),
@@ -790,7 +790,7 @@ async fn durable_retirement_stop_defeats_inflight_backup_verification_and_surviv
     drop(destination);
     let node = NodeStore::open(path).unwrap();
     let audit = common::security_audit(node.clone()).await;
-    let store = TenantStore::open(
+    let store = TenantStore::open_fixture(
         node,
         context().tenant,
         Arc::new(LocalKeyProvider::new([0xe1; 32])),

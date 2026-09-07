@@ -101,6 +101,7 @@ impl DatabaseRegistry {
     /// Register an opened tenant; its engine, rather than caller input, supplies
     /// the routing key. Replacing a serving tenant requires an explicit removal.
     pub fn insert(&self, database: Arc<Database>) -> Result<()> {
+        database.check_serving()?;
         let generation = database.engine().generation()?;
         if generation.state.retired {
             return Err(Error::new(
@@ -143,6 +144,7 @@ impl DatabaseRegistry {
     /// Publish one fully recovered generation after the durable control route CAS.
     /// Existing request handles remain fenced by the retired source engine.
     pub(crate) fn replace_generation(&self, expected: &str, database: Arc<Database>) -> Result<()> {
+        database.check_serving()?;
         let state = database.engine().generation()?;
         if state.state.retired {
             return Err(Error::new(
@@ -332,7 +334,7 @@ mod tests {
             let key = EncodingKey::from_ed_pem(key.serialize_pem().as_bytes()).unwrap();
             let dir = tempfile::tempdir().unwrap();
             let node = NodeStore::open(dir.path().join("node.redb")).unwrap();
-            let audit_store = TenantStore::open(
+            let audit_store = TenantStore::open_fixture(
                 node.clone(),
                 crate::runtime::SECURITY_TENANT.into(),
                 Arc::new(LocalKeyProvider::new([9; 32])),
@@ -341,7 +343,7 @@ mod tests {
             .unwrap();
             let audit = crate::runtime::SecurityAudit::open(audit_store.clone(), 10_000).unwrap();
             auth.install_audit(audit.clone()).unwrap();
-            let store = TenantStore::open(
+            let store = TenantStore::open_fixture(
                 node,
                 "tenant-a".into(),
                 Arc::new(LocalKeyProvider::new([3; 32])),
@@ -1693,7 +1695,7 @@ name: "docs".into(),
             strict_read_audit: true,
         };
         let provider = Arc::new(LocalKeyProvider::new([61; 32]));
-        let store = TenantStore::open(
+        let store = TenantStore::open_fixture(
             NodeStore::open(fixture._dir.path().join("control.redb")).unwrap(),
             tenant.into(),
             provider.clone(),
@@ -1737,10 +1739,12 @@ name: "docs".into(),
                 custody_provider: Arc::new(LocalKeyProvider::new([241; 32])),
                 bootstrap: None,
                 descriptor: None,
+                lease: None,
             }],
             BTreeMap::new(),
             kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
             BTreeMap::new(),
+            Arc::new(|_| anyhow::bail!("fixture has no installed authority credential")),
         )
         .unwrap();
         let token = fixture.token("person", tenant, "kasumi:admin kasumi:read kasumi:write");

@@ -4,8 +4,14 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+test-utils = ["kasumi-store/test-utils"]
+
 [dependencies]
 kasumi-clock.workspace = true
+kasumi-authority.workspace = true
+kasumi-serving.workspace = true
+hex.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 kasumi-types.workspace = true

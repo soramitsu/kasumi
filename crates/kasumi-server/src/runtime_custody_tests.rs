@@ -22,7 +22,7 @@ async fn retired_runtime_reopens_current_custody_without_constructing_applicatio
         Arc::new(FixtureAudit),
         mock_shutdown,
     ));
-    let mut config = example_config();
+    let mut config = fixture_config();
     config.database_path = dir.path().join("node.redb");
     config.mcp.tls = files.clone();
     config.native.tls = files.clone();

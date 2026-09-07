@@ -125,7 +125,7 @@ async fn committed_log_replay_survives_every_append_and_commit_io_failure() -> R
     };
     use openraft::storage::StorageHelper;
     async fn open(disk: FaultBackend) -> Result<Arc<kasumi_store::TenantStorageSet>> {
-        let application = TenantStore::open_with_clock(
+        let application = TenantStore::open_fixture_with_clock(
             NodeStore::open_with_backend(disk)?,
             "log-crash".into(),
             Arc::new(LocalKeyProvider::new([4; 32])),

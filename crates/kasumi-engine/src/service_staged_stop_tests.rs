@@ -189,7 +189,7 @@ async fn accepted_stop_release_failure_is_unknown_and_reopen_recovers_exact_tomb
     let node = NodeStore::open(directory.path().join("node.redb")).unwrap();
     let provider = Arc::new(LocalKeyProvider::new([0x97; 32]));
     let audit = SecurityAudit::open(
-        TenantStore::open(
+        TenantStore::open_fixture(
             node.clone(),
             crate::SECURITY_TENANT.into(),
             provider.clone(),
@@ -199,7 +199,7 @@ async fn accepted_stop_release_failure_is_unknown_and_reopen_recovers_exact_tomb
         100_000,
     )
     .unwrap();
-    let application = TenantStore::open(node, context.tenant.clone(), provider)
+    let application = TenantStore::open_fixture(node, context.tenant.clone(), provider)
         .await
         .unwrap();
     let stores = kasumi_store::test_utils::with_custody(

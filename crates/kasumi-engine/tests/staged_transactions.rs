@@ -501,7 +501,7 @@ async fn open(
 ) {
     let node = NodeStore::open(path).unwrap();
     let audit = common::security_audit(node.clone()).await;
-    let store = TenantStore::open(
+    let store = TenantStore::open_fixture(
         node,
         "tenant".into(),
         Arc::new(LocalKeyProvider::new([0xB3; 32])),

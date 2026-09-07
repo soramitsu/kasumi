@@ -167,7 +167,7 @@ async fn actual_openbao_transit_roundtrip_rotation_backups_and_warm_revocation()
                     .is_err()
             );
         }
-        let store = TenantStore::open(
+        let store = TenantStore::open_fixture(
             NodeStore::open(root.path().join(format!("{key_name}.redb")))?,
             "tenant-a".into(),
             provider.clone(),
@@ -211,13 +211,13 @@ async fn actual_openbao_transit_roundtrip_rotation_backups_and_warm_revocation()
         );
         assert!(
             EncryptedBackup::from_bytes(&before_rotation, 1 << 20)?
-                .decrypt("tenant-a", provider.clone())
+                .decrypt_fixture("tenant-a", provider.clone())
                 .await
                 .is_err()
         );
         assert_eq!(
             &*EncryptedBackup::from_bytes(&after_rotation, 1 << 20)?
-                .decrypt("tenant-a", provider.clone())
+                .decrypt_fixture("tenant-a", provider.clone())
                 .await?
                 .snapshot,
             b"rotated logical snapshot"

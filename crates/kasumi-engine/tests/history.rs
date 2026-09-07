@@ -28,7 +28,7 @@ fn policy() -> Policy {
 async fn open(path: &std::path::Path, limits: Limits) -> (Arc<Database>, Arc<SecurityAudit>) {
     let node = NodeStore::open(path).unwrap();
     let audit = common::security_audit(node.clone()).await;
-    let store = TenantStore::open(
+    let store = TenantStore::open_fixture(
         node,
         "history".into(),
         Arc::new(LocalKeyProvider::new([0xD3; 32])),
@@ -624,7 +624,7 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
     let encrypted = backups.get(backup_id, 8 << 20).await.unwrap();
     let full = kasumi_store::EncryptedBackup::from_bytes(&encrypted, 4 << 20)
         .unwrap()
-        .decrypt("history", Arc::new(LocalKeyProvider::new([0xD3; 32])))
+        .decrypt_fixture("history", Arc::new(LocalKeyProvider::new([0xD3; 32])))
         .await
         .unwrap();
     let full: serde_json::Value = serde_json::from_slice(&full.snapshot).unwrap();
@@ -640,7 +640,7 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
     std::fs::remove_dir_all(&cold_path).unwrap();
     let node = NodeStore::open(root.path().join("restored.redb")).unwrap();
     let restored_audit = common::security_audit(node.clone()).await;
-    let target = TenantStore::open(
+    let target = TenantStore::open_fixture(
         node,
         "history".into(),
         Arc::new(LocalKeyProvider::new([0xD3; 32])),
@@ -757,7 +757,7 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
         }
         let node = NodeStore::open(root.path().join(format!("{suffix}.redb"))).unwrap();
         let audit = common::security_audit(node.clone()).await;
-        let target = TenantStore::open(
+        let target = TenantStore::open_fixture(
             node,
             "history".into(),
             Arc::new(LocalKeyProvider::new(

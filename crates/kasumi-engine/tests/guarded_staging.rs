@@ -18,7 +18,7 @@ fn context() -> RequestContext {
 async fn open(path: &Path, limits: Limits) -> (Arc<Database>, Arc<SecurityAudit>) {
     let node = NodeStore::open(path).unwrap();
     let audit = common::security_audit(node.clone()).await;
-    let stores = TenantStorageSet::open(
+    let stores = TenantStorageSet::open_fixture(
         node,
         context().tenant,
         Arc::new(LocalKeyProvider::new([0x95; 32])),

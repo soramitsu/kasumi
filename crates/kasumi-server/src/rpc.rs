@@ -13,8 +13,14 @@ use tonic::{Request, Response, Status};
 
 pub use kasumi_client::proto;
 use proto::*;
+#[path = "rpc_authority.rs"]
+mod authority;
 #[path = "rpc_retirement.rs"]
 mod retirement;
+pub use authority::NativeAuthority;
+#[cfg(test)]
+#[path = "rpc_authority_tests.rs"]
+mod authority_tests;
 
 #[derive(Clone)]
 pub struct NativeData {

@@ -77,6 +77,12 @@ pub async fn prepare_replicated_restore(
     security_audit: Arc<SecurityAudit>,
 ) -> anyhow::Result<PreparedReplicaRestore> {
     let target = targets.application().clone();
+    if let Some(gate) = target.storage_access().serving_gate() {
+        anyhow::ensure!(
+            gate.identity().incarnation == replica.incarnation,
+            "restore target incarnation differs from its signed serving authority"
+        );
+    }
     let deadline = source.deadline()?;
     let _gate = deadline.run(BOOTSTRAP_GATE.lock()).await?;
     restore_access(&target, &security_audit, &context).await?;
@@ -132,6 +138,7 @@ pub async fn prepare_replicated_restore(
     bind_deployment(&targets, &serde_json::to_vec(&("replicated", &bootstrap))?)?;
     persist_new(&targets, &restored.bytes)?;
     let engine = restored.engine;
+    engine.install_storage_access(&target)?;
     let group = RaftGroup::open(
         replica.node_id,
         format!("{}/{}", target.tenant(), bootstrap.incarnation),
@@ -224,6 +231,12 @@ pub async fn open_replicated(
 ) -> anyhow::Result<Arc<Database>> {
     let store = stores.application().clone();
     bootstrap.validate()?;
+    if let Some(gate) = store.storage_access().serving_gate() {
+        anyhow::ensure!(
+            gate.identity().incarnation.to_string() == bootstrap.incarnation,
+            "replicated incarnation differs from its signed serving authority"
+        );
+    }
     anyhow::ensure!(node_id > 0, "node ID must be positive");
     let _gate = BOOTSTRAP_GATE.lock().await;
     reject_retired_serving_open(&stores)?;
@@ -245,6 +258,7 @@ pub async fn open_replicated(
     };
     validate_bootstrap_control(&stores, &bytes)?;
     let engine = Arc::new(TenantEngine::from_bootstrap(store.tenant(), &bytes)?);
+    engine.install_storage_access(&store)?;
     anyhow::ensure!(
         engine.generation()?.state.incarnation == bootstrap.incarnation,
         "replicated incarnation differs from bootstrap"
@@ -394,6 +408,10 @@ pub async fn open_local(
     security_audit: Arc<SecurityAudit>,
 ) -> anyhow::Result<Arc<Database>> {
     let store = stores.application().clone();
+    anyhow::ensure!(
+        store.storage_access().serving_gate().is_none(),
+        "independent serving authority requires replicated storage; local downgrade is forbidden"
+    );
     let _gate = BOOTSTRAP_GATE.lock().await;
     reject_retired_serving_open(&stores)?;
     bind_deployment(&stores, b"local-v1")?;
@@ -443,6 +461,7 @@ async fn start_prepared(
     security_audit: Arc<SecurityAudit>,
 ) -> anyhow::Result<Arc<Database>> {
     let store = stores.application().clone();
+    engine.install_storage_access(&store)?;
     let incarnation = engine.generation()?.state.incarnation.clone();
     let group = RaftGroup::local(
         1,
@@ -514,6 +533,10 @@ pub async fn restore_local_with_incarnation_and_admission(
     security_audit: Arc<SecurityAudit>,
 ) -> anyhow::Result<Arc<Database>> {
     let target = targets.application().clone();
+    anyhow::ensure!(
+        target.storage_access().serving_gate().is_none(),
+        "independent restore authority requires replicated storage; local downgrade is forbidden"
+    );
     let deadline = source.deadline()?;
     let _gate = deadline.run(BOOTSTRAP_GATE.lock()).await?;
     restore_access(&target, &security_audit, &context).await?;

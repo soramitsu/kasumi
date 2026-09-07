@@ -1,0 +1,300 @@
+use super::*;
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use kasumi_authority::{AuthorityInstallation, IndependentAuthority};
+use kasumi_client::{KasumiAuthorityClient, KasumiClientConfig};
+use kasumi_serving::*;
+use kasumi_store::{
+    NodeStore, StorageAccess, TenantStorageSet, TenantStore, test_utils::LocalKeyProvider,
+};
+use kasumi_transport::{ClientAuthentication, TlsIdentity};
+use serde_json::json;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+    time::Duration,
+};
+
+fn certificates() -> (String, TlsIdentity, Vec<TlsIdentity>) {
+    use rcgen::*;
+    let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
+    params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    params.key_usages = vec![
+        KeyUsagePurpose::KeyCertSign,
+        KeyUsagePurpose::DigitalSignature,
+    ];
+    let key = KeyPair::generate().unwrap();
+    let certificate = params.self_signed(&key).unwrap();
+    let issuer = Issuer::new(params, key);
+    let issue = |name: &str| {
+        let mut params = CertificateParams::new(vec![name.into()]).unwrap();
+        params.extended_key_usages = vec![
+            ExtendedKeyUsagePurpose::ServerAuth,
+            ExtendedKeyUsagePurpose::ClientAuth,
+        ];
+        params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+        let key = KeyPair::generate().unwrap();
+        let certificate = params.signed_by(&key, &issuer).unwrap();
+        TlsIdentity::from_pem(certificate.pem().as_bytes(), key.serialize_pem().as_bytes()).unwrap()
+    };
+    (
+        certificate.pem(),
+        issue("localhost"),
+        (1..=3).map(|i| issue(&format!("node-{i}"))).collect(),
+    )
+}
+
+#[tokio::test]
+async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_recovery() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ca, server_identity, mut identities) = certificates();
+    let issuer = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
+    let keys = serde_json::from_value(json!({"keys":[{"kty":"OKP","crv":"Ed25519","alg":"EdDSA","use":"sig","kid":"identity-key","x":URL_SAFE_NO_PAD.encode(issuer.public_key_raw())}]})).unwrap();
+    let auth = Authenticator::with_test_keys(
+        crate::auth::AuthConfig {
+            issuer: "https://identity.example".into(),
+            audience: "https://authority.example".into(),
+            jwks_uri: "https://identity.example/keys".into(),
+            jwks_trusted_ca_pem: None,
+            algorithms: vec![jsonwebtoken::Algorithm::EdDSA],
+            access_token_types: BTreeSet::from(["at+jwt".into()]),
+        },
+        keys,
+    )
+    .await;
+    let audit_node = NodeStore::open(dir.path().join("audit.redb")).unwrap();
+    let audit_store = TenantStore::open(
+        audit_node,
+        kasumi_engine::SECURITY_TENANT.into(),
+        Arc::new(LocalKeyProvider::new([88; 32])),
+        StorageAccess::security_audit(),
+    )
+    .await
+    .unwrap();
+    let audit = kasumi_engine::SecurityAudit::open(audit_store.clone(), 10_000).unwrap();
+    auth.install_audit(audit.clone()).unwrap();
+    let signing = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
+    let signer = Arc::new(AuthoritySigner::from_pkcs8(&signing.serialize_der()).unwrap());
+    let manifest = AuthorityManifest {
+        authority_id: uuid::Uuid::new_v4(),
+        max_lease_ms: 1000,
+        clock_rate_error_ppm: 0,
+        partitions: BTreeMap::from([(
+            0,
+            AuthorityPartition {
+                group: "independent-authority".into(),
+                public_key: signer.public_key(),
+            },
+        )]),
+    };
+    let installation = AuthorityInstallation {
+        manifest: manifest.clone(),
+        partition: 0,
+        administrators: BTreeSet::from(["operator".into()]),
+        max_tenants: 10,
+        max_receipts: 100,
+        max_state_bytes: 4 << 20,
+    };
+    let trust = AuthorityTrust::install(manifest.clone()).unwrap();
+    let router = Arc::new(kasumi_raft::InProcessRouter::default());
+    let voters: BTreeMap<_, _> = (1..=3)
+        .map(|id| (id, kasumi_raft::BasicNode::new(format!("authority-{id}"))))
+        .collect();
+    let mut services = Vec::new();
+    let mut stores = Vec::new();
+    for id in 1..=3 {
+        let node = NodeStore::open(dir.path().join(format!("authority-{id}.redb"))).unwrap();
+        let storage = TenantStorageSet::open(
+            node,
+            installation.tenant(),
+            Arc::new(LocalKeyProvider::new([id as u8; 32])),
+            Arc::new(LocalKeyProvider::new([id as u8 + 10; 32])),
+            StorageAccess::independent_authority(&manifest, 0).unwrap(),
+        )
+        .await
+        .unwrap();
+        let service = IndependentAuthority::open_replicated(
+            storage.clone(),
+            installation.clone(),
+            signer.clone(),
+            id,
+            voters.clone(),
+            router.clone(),
+            kasumi_raft::Config {
+                heartbeat_interval: 30,
+                election_timeout_min: 100,
+                election_timeout_max: 180,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        router.register(
+            "independent-authority".into(),
+            id,
+            service.raft_group().raft().clone(),
+        );
+        services.push(service);
+        stores.push(storage);
+    }
+    services[0].initialize().await.unwrap();
+    let leader = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            for service in &services {
+                let metric = service.raft_group().raft().metrics().borrow().clone();
+                if metric.current_leader == Some(metric.id)
+                    && service.raft_group().linearizable_barrier().await.is_ok()
+                {
+                    return service.clone();
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("https://localhost:{}", socket.local_addr().unwrap().port());
+    let server_pin = server_identity.certificate_pin();
+    let tls = kasumi_transport::server_config(
+        &server_identity,
+        ClientAuthentication::Required {
+            trusted_ca_pem: ca.as_bytes(),
+        },
+    )
+    .unwrap();
+    let routes = tonic::service::Routes::new(NativeAuthority::new(leader.clone(), auth).service())
+        .into_axum_router();
+    let (stop, stopped) = tokio::sync::watch::channel(false);
+    let serving = tokio::spawn(crate::tls::serve_tls(
+        socket,
+        tls,
+        routes,
+        crate::tls::ListenerLimits::default(),
+        audit.clone(),
+        stopped,
+    ));
+    let nodes: BTreeSet<_> = identities
+        .iter()
+        .enumerate()
+        .map(|(index, identity)| NodeIdentity {
+            node_id: index as u64 + 1,
+            principal: format!("node-{}", index + 1),
+            certificate_sha256: hex::encode(identity.certificate_pin()),
+        })
+        .collect();
+    let config = KasumiClientConfig {
+        endpoint: endpoint.clone(),
+        identity: identities.remove(0),
+        trusted_ca_pem: ca.as_bytes().to_vec(),
+        server_certificate_pins: BTreeSet::from([server_pin]),
+    };
+    let mut client = KasumiAuthorityClient::connect(&config, trust.clone())
+        .await
+        .unwrap();
+    let key = jsonwebtoken::EncodingKey::from_ed_pem(issuer.serialize_pem().as_bytes()).unwrap();
+    let token = |principal: &str, scopes: &str| {
+        let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::EdDSA);
+        header.kid = Some("identity-key".into());
+        header.typ = Some("at+jwt".into());
+        let now = kasumi_clock::EpochClock::system()
+            .unwrap()
+            .now_ms()
+            .unwrap()
+            / 1000;
+        jsonwebtoken::encode(&header, &json!({"sub":principal,"tenant":installation.tenant(),"scope":scopes,"iss":"https://identity.example","aud":"https://authority.example","exp":now+300}), &key).unwrap()
+    };
+    let admin = token("operator", "kasumi:admin");
+    let incarnation = uuid::Uuid::new_v4();
+    let command = AuthorityCommand {
+        tenant: "city".into(),
+        command_id: uuid::Uuid::new_v4(),
+        expected_policy_epoch: 1,
+        not_after_ms: kasumi_clock::EpochClock::system()
+            .unwrap()
+            .now_ms()
+            .unwrap()
+            + 60_000,
+        action: AuthorityAction::Enroll {
+            incarnation,
+            nodes: nodes.clone(),
+        },
+    };
+    let enrolled = client.execute(&admin, &command).await.unwrap();
+    assert!(matches!(
+        enrolled.receipt.outcome,
+        AuthorityOutcome::Enrolled { .. }
+    ));
+    let discovery = LeaseDiscovery {
+        tenant: "city".into(),
+        incarnation,
+        node: nodes.first().unwrap().clone(),
+        purpose: LeasePurpose::Serving,
+    };
+    let node_token = token("node-1", "kasumi:read");
+    let identity = client
+        .discover_lease(&node_token, &discovery)
+        .await
+        .unwrap();
+    let boot = ServingBoot::new(trust.clone(), identity).unwrap();
+    let attempt = boot.begin_acquisition().unwrap();
+    let lease = client.acquire_lease(&node_token, &attempt).await.unwrap();
+    let gate = ServingGate::new(lease).unwrap();
+    gate.check_serving().unwrap();
+    assert!(
+        client
+            .acquire_lease(
+                &token("node-2", "kasumi:read"),
+                &boot.begin_acquisition().unwrap()
+            )
+            .await
+            .is_err()
+    );
+    let other_config = KasumiClientConfig {
+        endpoint,
+        identity: identities.remove(0),
+        trusted_ca_pem: ca.as_bytes().to_vec(),
+        server_certificate_pins: BTreeSet::from([server_pin]),
+    };
+    let mut other = KasumiAuthorityClient::connect(&other_config, trust)
+        .await
+        .unwrap();
+    assert!(other.discover_lease(&node_token, &discovery).await.is_err());
+    let mut replacement = command.clone();
+    replacement.command_id = uuid::Uuid::new_v4();
+    replacement.action = AuthorityAction::ReplaceAdministrators {
+        administrators: BTreeSet::from(["custodian".into()]),
+    };
+    assert!(client.execute(&admin, &replacement).await.is_err());
+    assert!(
+        client
+            .receipt(&admin, "city", replacement.command_id)
+            .await
+            .is_err()
+    );
+    let recovered = client
+        .receipt(
+            &token("custodian", "kasumi:admin"),
+            "city",
+            replacement.command_id,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(recovered.receipt.command, replacement);
+    assert!(matches!(
+        recovered.receipt.outcome,
+        AuthorityOutcome::AdministratorsReplaced { policy_epoch: 2 }
+    ));
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    assert!(gate.check_serving().is_err());
+    stop.send_replace(true);
+    serving.await.unwrap().unwrap();
+    for service in services {
+        service.shutdown().await.unwrap();
+    }
+    for storage in stores {
+        storage.application().shutdown().await;
+        storage.custody().store().shutdown().await;
+    }
+    audit.shutdown().await;
+}

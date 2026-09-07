@@ -12,7 +12,7 @@ async fn encoded_response_is_fenced_by_policy_changes_and_actual_key_denial() {
     let keys = Arc::new(LocalKeyProvider::new([41; 32]));
     let node = NodeStore::open(directory.path().join("node.redb")).unwrap();
     let audit = common::security_audit(node.clone()).await;
-    let store = TenantStore::open(node, "tenant".into(), keys.clone())
+    let store = TenantStore::open_fixture(node, "tenant".into(), keys.clone())
         .await
         .unwrap();
     let context = RequestContext {

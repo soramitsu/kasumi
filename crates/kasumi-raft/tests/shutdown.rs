@@ -56,7 +56,7 @@ async fn shutdown_drains_snapshot_worker_before_releasing_group_or_file_ownershi
     let path = directory.path().join("shutdown.redb");
     let (entered, ready) = tokio::sync::oneshot::channel();
     let (release, wait) = mpsc::channel();
-    let store = TenantStore::open_with_clock(
+    let store = TenantStore::open_fixture_with_clock(
         NodeStore::open(&path)?,
         "tenant-a".into(),
         Arc::new(LocalKeyProvider::new([19; 32])),

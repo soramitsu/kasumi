@@ -2,7 +2,7 @@
 async fn canceled_queued_schema_activation_finishes_once_and_checks_receipt_release_authority() {
     let root = tempfile::tempdir().unwrap();
     let node = NodeStore::open(root.path().join("node.redb")).unwrap();
-    let audit_store = TenantStore::open(
+    let audit_store = TenantStore::open_fixture(
         node.clone(),
         crate::SECURITY_TENANT.into(),
         Arc::new(LocalKeyProvider::new([0x91; 32])),
@@ -10,7 +10,7 @@ async fn canceled_queued_schema_activation_finishes_once_and_checks_receipt_rele
     .await
     .unwrap();
     let audit = SecurityAudit::open(audit_store, 100_000).unwrap();
-    let store = TenantStore::open(
+    let store = TenantStore::open_fixture(
         node,
         "schema-cancel".into(),
         Arc::new(LocalKeyProvider::new([0x92; 32])),
@@ -33,9 +33,18 @@ async fn canceled_queued_schema_activation_finishes_once_and_checks_receipt_rele
         strict_read_audit: false,
     };
     let db = crate::open_local(
-        kasumi_store::test_utils::with_custody(store, std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32]))).await.unwrap(), policy.clone(), Limits::default(), audit.clone())
+        kasumi_store::test_utils::with_custody(
+            store,
+            std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
+        )
         .await
-        .unwrap();
+        .unwrap(),
+        policy.clone(),
+        Limits::default(),
+        audit.clone(),
+    )
+    .await
+    .unwrap();
     let request = SchemaChangeSet {
         activation_id: "cancel".into(),
         expected_incarnation: db.engine.generation().unwrap().state.incarnation.clone(),

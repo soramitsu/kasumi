@@ -42,13 +42,13 @@ async fn restore_deadline_bounds_source_io_and_gate_queue_without_blocking_anoth
     let node = NodeStore::open(root.path().join("node.redb")).unwrap();
     let audit = common::security_audit(node.clone()).await;
     let keys = Arc::new(LocalKeyProvider::new([0xA6; 32]));
-    let first = TenantStore::open(node.clone(), "first".into(), keys.clone())
+    let first = TenantStore::open_fixture(node.clone(), "first".into(), keys.clone())
         .await
         .unwrap();
-    let queued = TenantStore::open(node.clone(), "queued".into(), keys.clone())
+    let queued = TenantStore::open_fixture(node.clone(), "queued".into(), keys.clone())
         .await
         .unwrap();
-    let other = TenantStore::open(node, "other".into(), keys.clone())
+    let other = TenantStore::open_fixture(node, "other".into(), keys.clone())
         .await
         .unwrap();
     let pending = Arc::new(PendingSource {

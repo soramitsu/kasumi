@@ -7,7 +7,7 @@ default-run = "kasumi-bench"
 
 [features]
 network = ["dep:kasumi-server", "dep:kasumi-transport", "dep:reqwest", "dep:tonic", "dep:zeroize"]
-loopback = ["network", "dep:rcgen", "dep:jsonwebtoken", "dep:base64", "dep:axum", "dep:async-trait"]
+loopback = ["network", "kasumi-server/test-utils", "dep:rcgen", "dep:jsonwebtoken", "dep:base64", "dep:axum", "dep:async-trait"]
 
 [[bin]]
 name = "kasumi-bench-network"

@@ -69,6 +69,12 @@ impl ProposalWork {
         if let Err(error) = command.context.authorization.check_live() {
             return Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(error))?);
         }
+        if let Err(error) = self
+            .source_engine
+            .check_operation_access(&command.operation)
+        {
+            return Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(error))?);
+        }
         if self.source_engine.generation()?.state.retired {
             return Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(Error::new(
                 ErrorCode::Sealed,
@@ -618,6 +624,18 @@ impl Database {
     }
 
     fn access(&self) -> Result<()> {
+        self.materialization_access()?;
+        self.store.storage_access().check_serving().map_err(|_| {
+            Error::new(
+                ErrorCode::Forbidden,
+                "restore preparation cannot serve ordinary tenant operations",
+            )
+        })
+    }
+    pub fn check_serving(&self) -> Result<()> {
+        self.access()
+    }
+    fn materialization_access(&self) -> Result<()> {
         if self.closing.load(Ordering::Acquire) {
             return Err(Error::new(
                 ErrorCode::Unavailable,
@@ -931,15 +949,22 @@ impl Database {
     }
 
     async fn complete_restore_inner(&self, context: RequestContext) -> Result<()> {
+        self.materialization_access()?;
         self.engine.authorize(&context, None, Action::Admin)?;
-        self.barrier().await?;
+        self.group.linearizable_barrier().await.map_err(|_| {
+            Error::new(
+                ErrorCode::Unavailable,
+                "prepared restore quorum unavailable",
+            )
+        })?;
+        self.materialization_access()?;
         self.engine.authorize(&context, None, Action::Admin)?;
         let pending = self.engine.generation()?.state.pending_restore.clone();
         if let Some(pending) = pending {
             self.maintenance_audit_inner(context, "restore", "completed", pending.source_revision)
                 .await?;
         }
-        self.access()
+        self.materialization_access()
     }
 
     pub async fn maintenance_audit(
@@ -988,7 +1013,9 @@ impl Database {
 
     async fn submit(&self, context: RequestContext, operation: Operation) -> Result<WriteReceipt> {
         context.authorization.check_live()?;
-        self.access()?;
+        self.materialization_access()?;
+        self.engine.check_operation_access(&operation)?;
+        let restore_completion = matches!(&operation, Operation::MaintenanceAudit(event) if event.action == "restore" && event.outcome == "completed");
         if context.tenant != self.engine.generation()?.state.tenant {
             return Err(Error::new(ErrorCode::Forbidden, "tenant access denied"));
         }
@@ -1176,8 +1203,23 @@ impl Database {
                     "write task failed; resolve or retry with the same idempotency key",
                 )
             })?;
-        self.release_submitted_response(&release_context, &result)
-            .await
+        if restore_completion {
+            let outcome =
+                serde_json::from_slice::<Result<WriteReceipt>>(&result).map_err(|_| {
+                    Error::new(
+                        ErrorCode::UnknownOutcome,
+                        "restore completion response unavailable",
+                    )
+                })?;
+            if outcome.is_ok() {
+                self.materialization_access()
+                    .map_err(staged_stop_acknowledgement)?;
+            }
+            self.audit_write_result(&release_context, outcome).await
+        } else {
+            self.release_submitted_response(&release_context, &result)
+                .await
+        }
     }
 
     async fn release_submitted_response(
@@ -1951,6 +1993,7 @@ mod tests {
     include!("service_staged_stop_tests.rs");
     include!("service_schema_tests.rs");
     include!("service_credential_tests.rs");
+    include!("service_serving_tests.rs");
     include!("service_retirement_tests.rs");
     include!("service_custody_tests.rs");
     use super::*;
@@ -1970,7 +2013,7 @@ mod tests {
     async fn queued_deadlines_use_admission_time_and_survive_caller_cancellation() {
         let directory = tempfile::tempdir().unwrap();
         let node = NodeStore::open(directory.path().join("node.redb")).unwrap();
-        let audit_store = TenantStore::open(
+        let audit_store = TenantStore::open_fixture(
             node.clone(),
             crate::SECURITY_TENANT.into(),
             Arc::new(LocalKeyProvider::new([0xA7; 32])),
@@ -1985,7 +2028,7 @@ mod tests {
             scopes: BTreeSet::from([Action::Read, Action::Write, Action::Admin, Action::Audit]),
             request_id: "deadline-test".into(),
         };
-        let store = TenantStore::open(
+        let store = TenantStore::open_fixture(
             node,
             context.tenant.clone(),
             Arc::new(LocalKeyProvider::new([0xB7; 32])),

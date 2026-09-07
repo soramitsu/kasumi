@@ -278,7 +278,7 @@ impl Databases {
         }
         let mut audits = Vec::new();
         for node in &nodes {
-            let service_store = TenantStore::open(
+            let service_store = TenantStore::open_fixture(
                 node.clone(),
                 SECURITY_TENANT.into(),
                 Arc::new(LocalKeyProvider::new([0xA7; 32])),
@@ -320,9 +320,12 @@ impl Databases {
             };
             let mut databases = Vec::new();
             for (replica, node) in nodes.iter().enumerate() {
-                let store =
-                    TenantStore::open(node.clone(), context(tenant).tenant, provider.clone())
-                        .await?;
+                let store = TenantStore::open_fixture(
+                    node.clone(),
+                    context(tenant).tenant,
+                    provider.clone(),
+                )
+                .await?;
                 let database = if let Some(bootstrap) = &bootstrap {
                     let database = open_replicated(
                         replica as u64 + 1,

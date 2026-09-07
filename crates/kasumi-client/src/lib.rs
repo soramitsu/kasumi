@@ -12,7 +12,9 @@ use serde::Serialize;
 use std::collections::BTreeSet;
 use tonic::{Request, transport::Channel};
 
+mod authority;
 mod retirement_proof;
+pub use authority::KasumiAuthorityClient;
 pub use retirement_proof::{
     VerifiedRetirementReceipt, VerifiedRetirementResolution, VerifiedRetirementStop,
 };
