@@ -2,7 +2,11 @@
 
 `SchemaChangeSet` is an administrative provisioning/migration command. It names
 one permanent `activation_id`, the exact source incarnation and schema epoch,
-and up to 128 explicit create/replace actions in at most 8 MiB of canonical JSON.
+a required immutable `read_set`, and up to 128 explicit create/replace actions
+in at most 8 MiB of canonical JSON. At most 512 read assertions bind current
+document versions/absence, collection epochs, snapshot epochs and a trusted
+`Before` deadline. Referenced collections require current Read authority in
+addition to each target's Admin authority.
 Every replace also names the collection's exact document `data_epoch`. Duplicate
 collection targets are invalid. No action edits document bodies or versions.
 
@@ -13,7 +17,22 @@ receipt expiry, later schema changes, encrypted restart or full restore. A
 different request with that identity conflicts. `request.reference()` computes
 the digest used by `schema_activation_status`; this read requires the same
 principal and current administration authority on every original target and
-durably audits release. The digest is an identity check, never authority.
+durably audits release. Original dependency collections also require current
+Read authority. The digest is an identity check, never authority.
+
+Fresh ordered activation checks its immutable transaction assertions before
+publishing any schema effects. A successful activation increments schema and
+policy epochs, so its pre-transition Snapshot is not evaluated again on
+response release or historical replay. Its original Before deadline and native
+credential lifetime still fence that invocation's acknowledgement; an expired
+acknowledgement is resolved through current status admission.
+
+Status accepts `ReadSchemaActivation { reference, read_set }`. Its required
+explicit current read-set belongs to this lookup only and does not alter the
+stored effect identity. Current assertions are evaluated against a coherent
+generation and retained through audited response encoding. A stale lookup
+returns an error without changing the original committed receipt. The old bare
+reference JSON request is rejected.
 
 For a new accepted identity, every source fence, schema, existing document,
 unique index and metadata quota is validated against one ordered state. All
@@ -44,9 +63,10 @@ bundle. Cold index/schema rebuilding needs a separately verified rebuild
 generation before activation; it is not implemented by this operation.
 
 `kasumictl read-schema <request.json>`, `activate-schema <request.json>` and
-`schema-status <reference.json>` use the same private native methods.
+`schema-status <lookup.json>` use the same private native methods.
 
 The focused suite covers 32-collection installation, all-or-nothing structured
 and text indexes, failed/replayed requests, source fences, scoped administration,
 revocation, serialized resource growth, cancellation, encrypted restart and full
-restore. Complete workspace regression evidence is captured with this change.
+restore. The new schema-fence tests and complete workspace gates must pass before this
+branch is accepted; retained historical evidence does not establish that result.

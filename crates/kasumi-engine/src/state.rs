@@ -1220,9 +1220,13 @@ fn apply_operation(
             let changed = outcome.is_ok();
             Ok((outcome, changed))
         }
-        Operation::ActivateSchema(request) => {
-            schema::apply(state, &command.context, request, revision)
-        }
+        Operation::ActivateSchema(request) => schema::apply(
+            state,
+            &command.context,
+            request,
+            revision,
+            command.timestamp_ms,
+        ),
         Operation::CreateCollection(definition) | Operation::ReplaceCollection(definition) => {
             authorize_state(
                 state,

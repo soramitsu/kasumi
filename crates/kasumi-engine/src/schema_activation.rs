@@ -9,6 +9,7 @@ pub(crate) fn authorize(
     request: &SchemaChangeSet,
 ) -> Result<()> {
     authorize_discovery_state(state, context, Action::Admin)?;
+    authorize_dependencies(state, context, &request.read_set)?;
     for change in &request.changes {
         authorize_state(
             state,
@@ -18,6 +19,42 @@ pub(crate) fn authorize(
         )?;
     }
     Ok(())
+}
+
+pub(crate) fn authorize_dependencies(
+    state: &TenantState,
+    context: &RequestContext,
+    assertions: &[ReadAssertion],
+) -> Result<()> {
+    if assertions.len() > MAX_SCHEMA_READ_ASSERTIONS {
+        return Err(Error::new(
+            ErrorCode::ResourceExhausted,
+            "schema read assertion limit exceeded",
+        ));
+    }
+    for assertion in assertions {
+        if let ReadAssertion::Document { collection, .. }
+        | ReadAssertion::Collection { collection, .. } = assertion
+        {
+            authorize_state(state, context, Some(collection), Action::Read)?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_admission(
+    state: &TenantState,
+    context: &RequestContext,
+    assertions: &[ReadAssertion],
+    evaluated_at_ms: u64,
+) -> Result<()> {
+    authorize_dependencies(state, context, assertions)?;
+    validate_read_assertions(
+        state,
+        &assertions.iter().collect::<Vec<_>>(),
+        evaluated_at_ms,
+        MAX_SCHEMA_READ_ASSERTIONS,
+    )
 }
 
 fn identity(principal: &str, activation_id: &str) -> Result<String> {
@@ -46,6 +83,9 @@ pub(crate) fn lookup<'a>(
     for collection in &record.collections {
         authorize_state(state, context, Some(collection), Action::Admin)?;
     }
+    for collection in &record.read_collections {
+        authorize_state(state, context, Some(collection), Action::Read)?;
+    }
     if record.request_digest != reference.request_digest {
         return Err(Error::new(
             ErrorCode::Conflict,
@@ -60,6 +100,7 @@ pub(super) fn apply(
     context: &RequestContext,
     request: &SchemaChangeSet,
     revision: u64,
+    evaluated_at_ms: u64,
 ) -> Result<(Result<WriteReceipt>, bool)> {
     authorize(state, context, request)?;
     let key = identity(&context.principal, &request.activation_id)?;
@@ -96,10 +137,12 @@ pub(super) fn apply(
     }
 
     let mut next = state.clone();
-    let outcome = activate(&mut next, request).map(|()| WriteReceipt {
-        revision,
-        versions: BTreeMap::new(),
-    });
+    let outcome = validate_admission(&next, context, &request.read_set, evaluated_at_ms)
+        .and_then(|()| activate(&mut next, request))
+        .map(|()| WriteReceipt {
+            revision,
+            versions: BTreeMap::new(),
+        });
     let changed = outcome.is_ok();
     if changed {
         *state = next;
@@ -112,6 +155,15 @@ pub(super) fn apply(
             activation_id: request.activation_id.clone(),
             request_digest: reference.request_digest,
             collections,
+            read_collections: request
+                .read_set
+                .iter()
+                .filter_map(|a| match a {
+                    ReadAssertion::Document { collection, .. }
+                    | ReadAssertion::Collection { collection, .. } => Some(collection.clone()),
+                    _ => None,
+                })
+                .collect(),
             outcome: outcome.clone(),
         },
     )?;
@@ -295,6 +347,7 @@ pub(super) fn validate_restored(state: &TenantState) -> Result<()> {
             || !valid_digest(&record.request_digest)
             || record.collections.is_empty()
             || record.collections.len() > MAX_SCHEMA_CHANGESET_COLLECTIONS
+            || record.read_collections.len() > MAX_SCHEMA_READ_ASSERTIONS
             || record.outcome.as_ref().is_ok_and(|receipt| {
                 receipt.revision == 0
                     || receipt.revision > state.revision
@@ -306,7 +359,7 @@ pub(super) fn validate_restored(state: &TenantState) -> Result<()> {
                 "invalid schema activation record",
             ));
         }
-        for collection in &record.collections {
+        for collection in record.collections.iter().chain(&record.read_collections) {
             validate_name(collection)?;
         }
         bytes = bytes

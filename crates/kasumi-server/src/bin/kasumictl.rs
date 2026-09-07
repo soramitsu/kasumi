@@ -5,7 +5,7 @@ use kasumi_server::{
     api::MAX_REQUEST_BYTES,
     rpc::proto::{
         CollectionDefinitionRequest, ManagementRequest, ReadSchemaRequest,
-        SchemaActivationReference, SchemaChangeSetRequest, SetLimitsRequest, SetPolicyRequest,
+        SchemaActivationStatusRequest, SchemaChangeSetRequest, SetLimitsRequest, SetPolicyRequest,
         SetSuspendedRequest,
     },
     runtime::AdminClientConfig,
@@ -125,7 +125,7 @@ async fn main() -> Result<()> {
         } else {
             client
                 .schema_activation_status(request(
-                    SchemaActivationReference {
+                    SchemaActivationStatusRequest {
                         request_json: payload.unwrap(),
                     },
                     &authorization,

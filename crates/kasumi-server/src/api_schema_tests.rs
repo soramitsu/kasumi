@@ -11,17 +11,34 @@ async fn native_schema_activation_is_atomic_scoped_permanent_and_private() {
     let admin = NativeAdmin::new(fixture.registry.clone(), fixture.auth.clone());
     let generation = fixture.db.engine().generation().unwrap();
     let request = kasumi_types::SchemaChangeSet {
-        activation_id: "native-financial-schema".into(), expected_incarnation: generation.state.incarnation.clone(), expected_schema_epoch: generation.state.schema_epoch,
+        activation_id: "native-financial-schema".into(), expected_incarnation: generation.state.incarnation.clone(), expected_schema_epoch: generation.state.schema_epoch, read_set: vec![kasumi_types::ReadAssertion::Snapshot { incarnation: generation.state.incarnation.clone(), schema_epoch: generation.state.schema_epoch, policy_epoch: generation.state.policy_epoch }, kasumi_types::ReadAssertion::Before { not_after_ms: u64::MAX }],
         changes: ["journal", "balances"].map(|name| kasumi_types::SchemaChange::Create {
             definition: kasumi_types::CollectionDefinition { name: name.into(), write_mode: kasumi_types::CollectionWriteMode::Mutable, retention_class: kasumi_types::CollectionRetentionClass::Operational,
             schema: serde_json::from_str(r#"{"type":"object","properties":{"amount":{"type":"number","maximum":90071992547409931234567890.123456789}}}"#).unwrap(), indexes: vec![], strict_read_audit: true },
         }).into(),
     };
     let reference = request.reference().unwrap();
-    let read = || proto::ReadSchemaRequest { request_json: serde_json::to_vec(&kasumi_types::ReadSchema { collections: BTreeSet::from(["journal".into(), "balances".into()]) }).unwrap() };
-    assert_eq!(admin.read_schema(native(read(), &read_only)).await.unwrap_err().code(), Code::PermissionDenied);
-    let before = admin.read_schema(native(read(), &token)).await.unwrap().into_inner();
-    let before: kasumi_types::SchemaSnapshot = serde_json::from_slice(&before.response_json).unwrap();
+    let read = || proto::ReadSchemaRequest {
+        request_json: serde_json::to_vec(&kasumi_types::ReadSchema {
+            collections: BTreeSet::from(["journal".into(), "balances".into()]),
+        })
+        .unwrap(),
+    };
+    assert_eq!(
+        admin
+            .read_schema(native(read(), &read_only))
+            .await
+            .unwrap_err()
+            .code(),
+        Code::PermissionDenied
+    );
+    let before = admin
+        .read_schema(native(read(), &token))
+        .await
+        .unwrap()
+        .into_inner();
+    let before: kasumi_types::SchemaSnapshot =
+        serde_json::from_slice(&before.response_json).unwrap();
     assert!(before.collections.values().all(Option::is_none));
     let wire = || proto::SchemaChangeSetRequest {
         request_json: serde_json::to_vec(&request).unwrap(),
@@ -55,8 +72,13 @@ async fn native_schema_activation_is_atomic_scoped_permanent_and_private() {
         .await
         .unwrap()
         .into_inner();
-    let installed = admin.read_schema(native(read(), &token)).await.unwrap().into_inner();
-    let installed: kasumi_types::SchemaSnapshot = serde_json::from_slice(&installed.response_json).unwrap();
+    let installed = admin
+        .read_schema(native(read(), &token))
+        .await
+        .unwrap()
+        .into_inner();
+    let installed: kasumi_types::SchemaSnapshot =
+        serde_json::from_slice(&installed.response_json).unwrap();
     assert_eq!(installed.schema_epoch, before.schema_epoch + 1);
     assert!(installed.collections.values().all(Option::is_some));
     let replay = admin
@@ -65,8 +87,21 @@ async fn native_schema_activation_is_atomic_scoped_permanent_and_private() {
         .unwrap()
         .into_inner();
     assert_eq!(receipt.revision, replay.revision);
-    let status_wire = || proto::SchemaActivationReference {
-        request_json: serde_json::to_vec(&reference).unwrap(),
+    let lookup = kasumi_types::ReadSchemaActivation {
+        reference: reference.clone(),
+        read_set: vec![
+            kasumi_types::ReadAssertion::Snapshot {
+                incarnation: installed.incarnation.clone(),
+                schema_epoch: installed.schema_epoch,
+                policy_epoch: installed.policy_epoch,
+            },
+            kasumi_types::ReadAssertion::Before {
+                not_after_ms: u64::MAX,
+            },
+        ],
+    };
+    let status_wire = || proto::SchemaActivationStatusRequest {
+        request_json: serde_json::to_vec(&lookup).unwrap(),
     };
     assert_eq!(
         admin
@@ -84,6 +119,55 @@ async fn native_schema_activation_is_atomic_scoped_permanent_and_private() {
     let status: kasumi_types::SchemaActivationStatus =
         serde_json::from_slice(&status.response_json).unwrap();
     assert_eq!(status.outcome.unwrap().revision, receipt.revision);
+    let stale_lookup = kasumi_types::ReadSchemaActivation {
+        reference: reference.clone(),
+        read_set: request.read_set.clone(),
+    };
+    assert_eq!(
+        admin
+            .schema_activation_status(native(
+                proto::SchemaActivationStatusRequest {
+                    request_json: serde_json::to_vec(&stale_lookup).unwrap()
+                },
+                &token
+            ))
+            .await
+            .unwrap_err()
+            .code(),
+        Code::Aborted
+    );
+    assert_eq!(
+        admin
+            .schema_activation_status(native(
+                proto::SchemaActivationStatusRequest {
+                    request_json: serde_json::to_vec(&reference).unwrap()
+                },
+                &token
+            ))
+            .await
+            .unwrap_err()
+            .code(),
+        Code::InvalidArgument
+    );
+    let mut missing_effect_dependencies = serde_json::to_value(&request).unwrap();
+    missing_effect_dependencies
+        .as_object_mut()
+        .unwrap()
+        .remove("read_set");
+    assert_eq!(
+        admin
+            .activate_schema(native(
+                proto::SchemaChangeSetRequest {
+                    request_json: serde_json::to_vec(&missing_effect_dependencies).unwrap()
+                },
+                &token
+            ))
+            .await
+            .unwrap_err()
+            .code(),
+        Code::InvalidArgument
+    );
+
     let current = fixture.db.engine().generation().unwrap();
     assert_eq!(
         current.state.schema_epoch,
@@ -96,6 +180,7 @@ async fn native_schema_activation_is_atomic_scoped_permanent_and_private() {
     );
     let mut bad = request.clone();
     bad.expected_schema_epoch = current.state.schema_epoch;
+    bad.read_set = lookup.read_set.clone();
     bad.activation_id = "native-bad".into();
     bad.changes[0] = kasumi_types::SchemaChange::Create {
         definition: kasumi_types::CollectionDefinition {

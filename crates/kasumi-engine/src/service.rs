@@ -359,6 +359,7 @@ pub struct ResponseFence<'a> {
     policy_epoch: u64,
     cancellation: QueryCancellation,
     read_admission: Option<(Vec<ReadAssertion>, Reservation)>,
+    schema_admission: Option<(Vec<ReadAssertion>, Reservation)>,
     _workspace: Reservation,
 }
 
@@ -404,6 +405,20 @@ impl ResponseFence<'_> {
                 now,
             )?;
         }
+        if let Some((assertions, _workspace)) = &self.schema_admission {
+            let now = self
+                .database
+                .command_clock
+                .lock()
+                .map_err(|_| Error::new(ErrorCode::Unavailable, "command clock unavailable"))?
+                .now_ms()?;
+            crate::state::schema::validate_admission(
+                &generation.state,
+                &self.context,
+                assertions,
+                now,
+            )?;
+        }
         Ok(())
     }
 }
@@ -442,6 +457,7 @@ impl Database {
             policy_epoch: generation.state.policy_epoch,
             cancellation,
             read_admission: None,
+            schema_admission: None,
             _workspace: workspace,
         })
     }

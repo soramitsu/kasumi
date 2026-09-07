@@ -1,10 +1,11 @@
 //! Atomic, permanently identified administrative schema/index activation.
-use crate::{CollectionDefinition, Result, WriteReceipt, staged_digest};
+use crate::{CollectionDefinition, ReadAssertion, Result, WriteReceipt, staged_digest};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const MAX_SCHEMA_CHANGESET_BYTES: usize = 8 << 20;
 pub const MAX_SCHEMA_CHANGESET_COLLECTIONS: usize = 128;
+pub const MAX_SCHEMA_READ_ASSERTIONS: usize = 512;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -36,6 +37,10 @@ pub struct SchemaChangeSet {
     pub activation_id: String,
     pub expected_incarnation: String,
     pub expected_schema_epoch: u64,
+    /// Immutable pre-transition dependencies, included in the permanent digest.
+    /// Evaluate only when applying a fresh effect, never after its own schema
+    /// transition or when recovering its historical result.
+    pub read_set: Vec<ReadAssertion>,
     pub changes: Vec<SchemaChange>,
 }
 
@@ -75,6 +80,15 @@ pub struct SchemaActivationRef {
     pub request_digest: String,
 }
 
+/// Current admission for historical status. These assertions are separate from
+/// the original immutable effect and remain live through response release.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReadSchemaActivation {
+    pub reference: SchemaActivationRef,
+    pub read_set: Vec<ReadAssertion>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct SchemaActivationStatus {
@@ -91,5 +105,7 @@ pub struct StoredSchemaActivation {
     pub activation_id: String,
     pub request_digest: String,
     pub collections: BTreeSet<String>,
+    /// Retained dependency access is reauthorized even on historical recovery.
+    pub read_collections: BTreeSet<String>,
     pub outcome: Result<WriteReceipt>,
 }

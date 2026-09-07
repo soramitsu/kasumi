@@ -6,21 +6,24 @@ impl Database {
         context: RequestContext,
         request: SchemaChangeSet,
     ) -> Result<WriteReceipt> {
-        let reference = request.reference()?;
         let result = async {
             let receipt = self
-                .administer(context.clone(), Operation::ActivateSchema(request))
+                .administer(context.clone(), Operation::ActivateSchema(request.clone()))
                 .await?;
             let release = self
-                .schema_activation_response_fence(&context, &reference)
+                .schema_activation_response_fence(&context, &request)
                 .and_then(|fence| fence.check());
             self.audit_result(&context, release)
                 .await
-                .map_err(credential_acknowledgement)?;
+                .map_err(schema_acknowledgement)?;
             Ok(receipt)
         }
         .await;
-        self.audit_write_result(&context, result).await
+        let receipt = self.audit_write_result(&context, result).await?;
+        self.schema_activation_response_fence(&context, &request)
+            .and_then(|fence| fence.check())
+            .map_err(schema_acknowledgement)?;
+        Ok(receipt)
     }
 
     /// Capture the acknowledgement epoch before rechecking current authority.
@@ -28,12 +31,58 @@ impl Database {
     pub fn schema_activation_response_fence(
         &self,
         context: &RequestContext,
-        reference: &SchemaActivationRef,
+        request: &SchemaChangeSet,
     ) -> Result<ResponseFence<'_>> {
-        let fence = self.response_fence(context)?;
-        crate::state::schema::lookup(&self.engine.generation()?.state, context, reference)?;
+        let reference = request.reference()?;
+        // Only the original deadline survives this transition. Its Snapshot
+        // described pre-activation state, whose schema/policy epochs advanced.
+        let deadlines = request
+            .read_set
+            .iter()
+            .filter(|a| matches!(a, ReadAssertion::Before { .. }))
+            .cloned()
+            .collect::<Vec<_>>();
+        let fence = self.schema_read_response_fence(context, &deadlines)?;
+        crate::state::schema::lookup(&self.engine.generation()?.state, context, &reference)?;
         fence.check()?;
         Ok(fence)
+    }
+
+    fn schema_read_response_fence(
+        &self,
+        context: &RequestContext,
+        assertions: &[ReadAssertion],
+    ) -> Result<ResponseFence<'_>> {
+        let mut fence = self.response_fence(context)?;
+        if assertions.len() > MAX_SCHEMA_READ_ASSERTIONS
+            || staged_digest(&assertions)?.1 > MAX_SCHEMA_CHANGESET_BYTES
+        {
+            return Err(Error::new(
+                ErrorCode::ResourceExhausted,
+                "schema admission exceeds bounds",
+            ));
+        }
+        let charge = staged_digest(&assertions)?
+            .1
+            .saturating_mul(3)
+            .saturating_add(assertions.len().saturating_mul(128)) as u64;
+        let mut workspace = self
+            .admission()
+            .reserve(charge.max(1), Some(fence.cancellation.clone()))?;
+        workspace.retain(charge.max(1));
+        fence.schema_admission = Some((assertions.to_vec(), workspace));
+        fence.check()?;
+        Ok(fence)
+    }
+
+    /// Current lookup admission is independent of the historical effect and
+    /// remains attached through the adapter's encoded response handoff.
+    pub fn schema_status_response_fence(
+        &self,
+        context: &RequestContext,
+        request: &ReadSchemaActivation,
+    ) -> Result<ResponseFence<'_>> {
+        self.schema_read_response_fence(context, &request.read_set)
     }
 
     pub async fn read_schema(
@@ -131,18 +180,24 @@ impl Database {
     pub async fn schema_activation_status(
         &self,
         context: &RequestContext,
-        reference: &SchemaActivationRef,
+        request: &ReadSchemaActivation,
     ) -> Result<SchemaActivationStatus> {
-        let result = self
-            .schema_activation_status_inner(context, reference)
-            .await;
-        self.audit_result(context, result).await
+        let fence = self.schema_status_response_fence(context, request);
+        let result = match &fence {
+            Ok(_) => self.schema_activation_status_inner(context, request).await,
+            Err(error) => Err(error.clone()),
+        };
+        let audited = self.audit_result(context, result).await;
+        if let Ok(fence) = fence {
+            fence.check()?;
+        }
+        audited
     }
 
     async fn schema_activation_status_inner(
         &self,
         context: &RequestContext,
-        reference: &SchemaActivationRef,
+        request: &ReadSchemaActivation,
     ) -> Result<SchemaActivationStatus> {
         self.access()?;
         self.engine
@@ -150,7 +205,18 @@ impl Database {
         let mut reservation = self.admission().reserve(1 << 20, None)?;
         self.barrier().await?;
         let generation = self.engine.generation()?;
-        let record = crate::state::schema::lookup(&generation.state, context, reference)?;
+        let now = self
+            .command_clock
+            .lock()
+            .map_err(|_| Error::new(ErrorCode::Unavailable, "command clock unavailable"))?
+            .now_ms()?;
+        crate::state::schema::validate_admission(
+            &generation.state,
+            context,
+            &request.read_set,
+            now,
+        )?;
+        let record = crate::state::schema::lookup(&generation.state, context, &request.reference)?;
         let status = SchemaActivationStatus {
             request_digest: record.request_digest.clone(),
             outcome: record.outcome.clone(),
@@ -174,7 +240,25 @@ impl Database {
             .await?;
         }
         self.access()?;
-        crate::state::schema::lookup(&self.engine.generation()?.state, context, reference)?;
+        crate::state::schema::lookup(
+            &self.engine.generation()?.state,
+            context,
+            &request.reference,
+        )?;
         Ok(status)
+    }
+}
+
+// This path is reached only after the original effect succeeded. An expired
+// Before assertion or changed release policy must not look like a rejected
+// activation: its permanent identity is the authoritative recovery path.
+fn schema_acknowledgement(error: Error) -> Error {
+    if matches!(error.code, ErrorCode::Conflict | ErrorCode::Unauthorized) {
+        Error::new(
+            ErrorCode::UnknownOutcome,
+            "schema response release was fenced; resolve the original activation with current lookup admission",
+        )
+    } else {
+        error
     }
 }

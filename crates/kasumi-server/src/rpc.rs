@@ -763,17 +763,16 @@ impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
         let context = verified(&self.auth, &request).await?;
         let request: kasumi_types::SchemaChangeSet =
             decode_json(&request.into_inner().request_json).map_err(status)?;
-        let reference = request.reference().map_err(status)?;
         let database = self.database(&context).await?;
         let result = database
-            .activate_schema(context.clone(), request)
+            .activate_schema(context.clone(), request.clone())
             .await
             .map_err(|error| self.registry.status(&context, error))?;
         let fence = self
             .auth
             .audit_result(
                 &context,
-                database.schema_activation_response_fence(&context, &reference),
+                database.schema_activation_response_fence(&context, &request),
             )
             .await
             .map_err(|error| status(mutation_release::<()>(Err(error)).unwrap_err()))?;
@@ -786,18 +785,22 @@ impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
 
     async fn schema_activation_status(
         &self,
-        request: Request<SchemaActivationReference>,
+        request: Request<SchemaActivationStatusRequest>,
     ) -> Result<Response<SchemaActivationStatusResponse>, Status> {
         let context = verified(&self.auth, &request).await?;
-        let reference = decode_json(&request.into_inner().request_json).map_err(status)?;
+        let lookup: kasumi_types::ReadSchemaActivation =
+            decode_json(&request.into_inner().request_json).map_err(status)?;
         let database = self.database(&context).await?;
         let fence = self
             .auth
-            .audit_result(&context, database.response_fence(&context))
+            .audit_result(
+                &context,
+                database.schema_status_response_fence(&context, &lookup),
+            )
             .await
             .map_err(status)?;
         let result = database
-            .schema_activation_status(&context, &reference)
+            .schema_activation_status(&context, &lookup)
             .await
             .map_err(|error| self.registry.status(&context, error))?;
         let response = SchemaActivationStatusResponse {

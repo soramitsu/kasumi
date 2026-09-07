@@ -43,6 +43,7 @@ fn request(db: &TenantEngine, id: &str, changes: Vec<SchemaChange>) -> SchemaCha
         activation_id: id.into(),
         expected_incarnation: g.state.incarnation.clone(),
         expected_schema_epoch: g.state.schema_epoch,
+        read_set: vec![],
         changes,
     }
 }
@@ -599,11 +600,17 @@ async fn encrypted_restart_and_full_restore_preserve_permanent_activation_receip
     assert_eq!(db.engine().generation().unwrap().state.schema_epoch, 1);
     assert_eq!(db.collections(&context("owner")).await.unwrap().len(), 32);
     assert_eq!(
-        db.schema_activation_status(&context("owner"), &reference)
-            .await
-            .unwrap()
-            .outcome
-            .unwrap(),
+        db.schema_activation_status(
+            &context("owner"),
+            &ReadSchemaActivation {
+                reference: reference.clone(),
+                read_set: vec![]
+            }
+        )
+        .await
+        .unwrap()
+        .outcome
+        .unwrap(),
         receipt
     );
     db.administer(context("owner"), Operation::Suspend(true))
@@ -635,11 +642,17 @@ async fn encrypted_restart_and_full_restore_preserve_permanent_activation_receip
         receipt
     );
     assert_eq!(
-        db.schema_activation_status(&context("owner"), &reference)
-            .await
-            .unwrap()
-            .outcome
-            .unwrap(),
+        db.schema_activation_status(
+            &context("owner"),
+            &ReadSchemaActivation {
+                reference: reference.clone(),
+                read_set: vec![]
+            }
+        )
+        .await
+        .unwrap()
+        .outcome
+        .unwrap(),
         receipt
     );
     db.shutdown().await.unwrap();
@@ -686,7 +699,13 @@ async fn encrypted_restart_and_full_restore_preserve_permanent_activation_receip
     );
     assert_eq!(
         restored
-            .schema_activation_status(&context("owner"), &reference)
+            .schema_activation_status(
+                &context("owner"),
+                &ReadSchemaActivation {
+                    reference: reference.clone(),
+                    read_set: vec![]
+                }
+            )
             .await
             .unwrap()
             .outcome
@@ -813,14 +832,26 @@ async fn cold_schema_change_rejects_whole_bundle_and_scoped_status_rechecks_auth
         .code,
         ErrorCode::Forbidden
     );
-    db.schema_activation_status(&context("scoped"), &reference)
-        .await
-        .unwrap();
+    db.schema_activation_status(
+        &context("scoped"),
+        &ReadSchemaActivation {
+            reference: reference.clone(),
+            read_set: vec![],
+        },
+    )
+    .await
+    .unwrap();
     assert_eq!(
-        db.schema_activation_status(&context("owner"), &reference)
-            .await
-            .unwrap_err()
-            .code,
+        db.schema_activation_status(
+            &context("owner"),
+            &ReadSchemaActivation {
+                reference: reference.clone(),
+                read_set: vec![]
+            }
+        )
+        .await
+        .unwrap_err()
+        .code,
         ErrorCode::NotFound
     );
     db.administer(context("owner"), Operation::SetPolicy(policy()))
@@ -834,12 +865,267 @@ async fn cold_schema_change_rejects_whole_bundle_and_scoped_status_rechecks_auth
         ErrorCode::Forbidden
     );
     assert_eq!(
-        db.schema_activation_status(&context("scoped"), &reference)
-            .await
-            .unwrap_err()
-            .code,
+        db.schema_activation_status(
+            &context("scoped"),
+            &ReadSchemaActivation {
+                reference: reference.clone(),
+                read_set: vec![]
+            }
+        )
+        .await
+        .unwrap_err()
+        .code,
         ErrorCode::Forbidden
     );
     db.shutdown().await.unwrap();
     audit.shutdown().await;
+}
+
+fn guard_assertions(db: &TenantEngine) -> Vec<ReadAssertion> {
+    let current = db.generation().unwrap();
+    vec![
+        ReadAssertion::Snapshot {
+            incarnation: current.state.incarnation.clone(),
+            policy_epoch: current.state.policy_epoch,
+            schema_epoch: current.state.schema_epoch,
+        },
+        ReadAssertion::Before {
+            not_after_ms: u64::MAX,
+        },
+        ReadAssertion::Document {
+            collection: "guards".into(),
+            id: "held".into(),
+            expected: ReadPrecondition::Version(
+                current.state.collections["guards"].documents["held"].version,
+            ),
+        },
+        ReadAssertion::Collection {
+            collection: "guards".into(),
+            data_epoch: current.state.collections["guards"].data_epoch,
+        },
+    ]
+}
+
+#[test]
+fn ordered_schema_dependencies_reject_changed_document_phantom_snapshot_and_expired_deadline() {
+    for fault in 0..6 {
+        let db = engine(Limits::default());
+        apply(
+            &db,
+            Operation::ActivateSchema(creates(&db, "guards-install", &["guards"])),
+        )
+        .unwrap();
+        mutate(&db, "held", vec![put("guards", "held", 1)]);
+        let mut upgrade = creates(&db, "fenced-install", &["journal", "balances"]);
+        upgrade.read_set = guard_assertions(&db);
+        match fault {
+            0 => mutate(&db, "changed", vec![put("guards", "held", 2)]),
+            1 => mutate(&db, "phantom", vec![put("guards", "new", 2)]),
+            2 => {
+                if let ReadAssertion::Snapshot { policy_epoch, .. } = &mut upgrade.read_set[0] {
+                    *policy_epoch += 1;
+                }
+            }
+            3 => {
+                if let ReadAssertion::Snapshot { incarnation, .. } = &mut upgrade.read_set[0] {
+                    *incarnation = "another".into();
+                }
+            }
+            4 => upgrade.read_set[1] = ReadAssertion::Before { not_after_ms: 1 },
+            _ => {
+                upgrade.read_set[2] = ReadAssertion::Document {
+                    collection: "guards".into(),
+                    id: "held".into(),
+                    expected: ReadPrecondition::Absent,
+                }
+            }
+        }
+        let reference = upgrade.reference().unwrap();
+        assert_eq!(
+            apply(&db, Operation::ActivateSchema(upgrade.clone()))
+                .unwrap_err()
+                .code,
+            ErrorCode::Conflict,
+            "fault {fault}"
+        );
+        assert_eq!(
+            apply(&db, Operation::ActivateSchema(upgrade))
+                .unwrap_err()
+                .code,
+            ErrorCode::Conflict
+        );
+        let state = db.generation().unwrap();
+        assert_eq!(state.state.schema_epoch, 1);
+        assert!(!state.state.collections.contains_key("journal"));
+        assert!(!state.state.collections.contains_key("balances"));
+        let stored = state
+            .state
+            .schema_activations
+            .values()
+            .find(|record| record.request_digest == reference.request_digest)
+            .unwrap();
+        assert_eq!(stored.read_collections, BTreeSet::from(["guards".into()]));
+        assert_eq!(
+            stored.outcome.as_ref().unwrap_err().code,
+            ErrorCode::Conflict
+        );
+    }
+}
+
+#[test]
+fn schema_effect_digest_binds_dependencies_and_current_read_permission_is_required_on_replay() {
+    let db = engine(Limits::default());
+    apply(
+        &db,
+        Operation::ActivateSchema(creates(&db, "guards-install", &["guards"])),
+    )
+    .unwrap();
+    mutate(&db, "held", vec![put("guards", "held", 1)]);
+    let mut upgrade = creates(&db, "fenced-install", &["journal"]);
+    upgrade.read_set = guard_assertions(&db);
+    let receipt = apply(&db, Operation::ActivateSchema(upgrade.clone())).unwrap();
+    // The old pre-transition Snapshot does not run again after its own increment.
+    assert_eq!(
+        apply(&db, Operation::ActivateSchema(upgrade.clone())).unwrap(),
+        receipt
+    );
+    let mut rebound = upgrade.clone();
+    rebound.read_set.clear();
+    assert_ne!(
+        rebound.reference().unwrap().request_digest,
+        upgrade.reference().unwrap().request_digest
+    );
+    assert_eq!(
+        apply(&db, Operation::ActivateSchema(rebound))
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    let restricted = Policy {
+        grants: vec![Grant {
+            principal: "owner".into(),
+            collection: None,
+            actions: BTreeSet::from([Action::Admin]),
+        }],
+        strict_read_audit: false,
+    };
+    apply(&db, Operation::SetPolicy(restricted)).unwrap();
+    assert_eq!(
+        apply(&db, Operation::ActivateSchema(upgrade))
+            .unwrap_err()
+            .code,
+        ErrorCode::Forbidden
+    );
+}
+
+#[tokio::test]
+async fn encrypted_schema_lookup_checks_current_fences_without_rewriting_original_effect() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("schema-fences.redb");
+    let (db, audit) = open(&path).await;
+    let mut install = creates(db.engine(), "fenced-initial", &["guards", "journal"]);
+    let before = db.engine().generation().unwrap();
+    install.read_set = vec![
+        ReadAssertion::Snapshot {
+            incarnation: before.state.incarnation.clone(),
+            schema_epoch: before.state.schema_epoch,
+            policy_epoch: before.state.policy_epoch,
+        },
+        ReadAssertion::Before {
+            not_after_ms: u64::MAX,
+        },
+    ];
+    let reference = install.reference().unwrap();
+    let original = db
+        .activate_schema(context("owner"), install.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        db.activate_schema(context("owner"), install).await.unwrap(),
+        original
+    );
+    let stale = ReadSchemaActivation {
+        reference: reference.clone(),
+        read_set: vec![ReadAssertion::Snapshot {
+            incarnation: before.state.incarnation.clone(),
+            schema_epoch: before.state.schema_epoch,
+            policy_epoch: before.state.policy_epoch,
+        }],
+    };
+    assert_eq!(
+        db.schema_activation_status(&context("owner"), &stale)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    db.shutdown().await.unwrap();
+    audit.shutdown().await;
+    drop(db);
+    drop(audit);
+    let (db, audit) = open(&path).await;
+    let current = db.engine().generation().unwrap();
+    let lookup = ReadSchemaActivation {
+        reference: reference.clone(),
+        read_set: vec![
+            ReadAssertion::Snapshot {
+                incarnation: current.state.incarnation.clone(),
+                schema_epoch: current.state.schema_epoch,
+                policy_epoch: current.state.policy_epoch,
+            },
+            ReadAssertion::Before {
+                not_after_ms: u64::MAX,
+            },
+        ],
+    };
+    assert_eq!(
+        db.schema_activation_status(&context("owner"), &lookup)
+            .await
+            .unwrap()
+            .outcome
+            .unwrap(),
+        original
+    );
+    let owner = context("owner");
+    let release = db.schema_status_response_fence(&owner, &lookup).unwrap();
+    db.activate_schema(context("owner"), creates(db.engine(), "later", &["later"]))
+        .await
+        .unwrap();
+    assert_eq!(release.check().unwrap_err().code, ErrorCode::Conflict);
+    let fresh = ReadSchemaActivation {
+        reference,
+        read_set: vec![],
+    };
+    assert_eq!(
+        db.schema_activation_status(&context("owner"), &fresh)
+            .await
+            .unwrap()
+            .outcome
+            .unwrap(),
+        original
+    );
+    drop(release);
+    db.shutdown().await.unwrap();
+    audit.shutdown().await;
+}
+
+#[test]
+fn first_release_schema_wire_requires_explicit_effect_and_lookup_dependencies() {
+    let db = engine(Limits::default());
+    let request = creates(&db, "strict-wire", &["journal"]);
+    let mut encoded = serde_json::to_value(&request).unwrap();
+    encoded.as_object_mut().unwrap().remove("read_set");
+    assert!(serde_json::from_value::<SchemaChangeSet>(encoded).is_err());
+    let reference = request.reference().unwrap();
+    assert!(
+        serde_json::from_value::<ReadSchemaActivation>(serde_json::to_value(&reference).unwrap())
+            .is_err()
+    );
+    let mut lookup = serde_json::to_value(ReadSchemaActivation {
+        reference,
+        read_set: vec![],
+    })
+    .unwrap();
+    lookup.as_object_mut().unwrap().remove("read_set");
+    assert!(serde_json::from_value::<ReadSchemaActivation>(lookup).is_err());
 }

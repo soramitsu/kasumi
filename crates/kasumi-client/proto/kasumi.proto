@@ -55,7 +55,7 @@ service KasumiAdmin {
   rpc VerifyBackupCheckpoint(VerifyBackupCheckpointRequest) returns (BackupCheckpointResponse);
   rpc ReadSchema(ReadSchemaRequest) returns (ReadSchemaResponse);
   rpc ActivateSchema(SchemaChangeSetRequest) returns (WriteReceipt);
-  rpc SchemaActivationStatus(SchemaActivationReference) returns (SchemaActivationStatusResponse);
+  rpc SchemaActivationStatus(SchemaActivationStatusRequest) returns (SchemaActivationStatusResponse);
   rpc ArchiveHistory(ArchiveHistoryRequest) returns (WriteReceipt);
   rpc CreateCollection(CollectionDefinitionRequest) returns (WriteReceipt);
   rpc ReplaceCollection(CollectionDefinitionRequest) returns (WriteReceipt);
@@ -80,7 +80,7 @@ message ArchiveHistoryRequest { bytes request_json = 1; }
 message SchemaChangeSetRequest { bytes request_json = 1; }
 message ReadSchemaRequest { bytes request_json = 1; }
 message ReadSchemaResponse { bytes response_json = 1; }
-message SchemaActivationReference { bytes request_json = 1; }
+message SchemaActivationStatusRequest { bytes request_json = 1; }
 message SchemaActivationStatusResponse { bytes response_json = 1; }
 message BeginStagedTransactionRequest { bytes request_json = 1; }
 message AppendStagedChunkRequest { bytes request_json = 1; }

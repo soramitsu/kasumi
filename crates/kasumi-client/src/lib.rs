@@ -477,14 +477,14 @@ impl KasumiAdminClient {
     pub async fn schema_activation_status(
         &mut self,
         bearer: &str,
-        reference: &kasumi_types::SchemaActivationRef,
+        request: &kasumi_types::ReadSchemaActivation,
     ) -> Result<kasumi_types::SchemaActivationStatus, ClientError> {
         let response = self
             .inner
             .schema_activation_status(authorized(
                 bearer,
-                proto::SchemaActivationReference {
-                    request_json: encode(reference)?,
+                proto::SchemaActivationStatusRequest {
+                    request_json: encode(request)?,
                 },
             )?)
             .await?
