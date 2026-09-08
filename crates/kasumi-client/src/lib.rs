@@ -14,6 +14,8 @@ use std::collections::BTreeSet;
 use tonic::{Request, transport::Channel};
 
 mod credentials;
+mod security_audit;
+pub use security_audit::VerifiedSecurityAuditArchive;
 mod lifecycle;
 pub use lifecycle::KasumiLifecycleClient;
 mod authority;

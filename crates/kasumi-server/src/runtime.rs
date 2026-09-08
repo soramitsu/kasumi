@@ -862,6 +862,8 @@ pub struct NodeRuntime {
     target_recovery: Option<Arc<crate::target_runtime::TargetRecoveryRuntime>>,
     tls_reload: Option<crate::tls_reload::RuntimeTlsReload>,
     _standalone_lock: Option<kasumi_store::private_files::ExclusiveLock>,
+    #[cfg(test)]
+    audit_release_gate: Arc<tokio::sync::Mutex<Option<crate::rpc::AuditReleaseGate>>>,
 }
 
 impl NodeRuntime {
@@ -1020,6 +1022,8 @@ impl NodeRuntime {
             cluster,
             local_certificate_pin,
             closed: false,
+            #[cfg(test)]
+            audit_release_gate: Arc::new(tokio::sync::Mutex::new(None)),
             administration: None,
             target_recovery: None,
             tls_reload: None,
@@ -1166,11 +1170,10 @@ impl NodeRuntime {
                 NativeData::new(registry.clone(), auth.clone()).service(),
             )
             .into_axum_router();
-            let mut admin = tonic::service::Routes::new(
-                NativeAdmin::new(registry.clone(), auth.clone())
-                    .with_management(administration)
-                    .service(),
-            );
+            let native_admin = NativeAdmin::new(registry.clone(), auth.clone()).with_management(administration);
+            #[cfg(test)]
+            { runtime.audit_release_gate = native_admin.audit_release_gate(); }
+            let mut admin = tonic::service::Routes::new(native_admin.service());
             if let Some(signer) = lifecycle_signer {
                 admin = admin.add_service(crate::rpc::NativeLifecycleControl::new(runtime.control.database.clone(), signer, auth.clone())?.service());
             }
@@ -4340,3 +4343,7 @@ pub(crate) async fn open_retired_source(
         Ok(custody)
     }
 }
+
+#[cfg(test)]
+#[path = "runtime_audit_tests.rs"]
+mod audit_tests;

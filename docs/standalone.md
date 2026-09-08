@@ -72,3 +72,43 @@ Materialization writes an isolated `data/generations/<target-incarnation>/node.r
 A pending operation prevents the installed server from starting. A finished operation publishes a fresh private database profile in `profiles/recovery-<operation-id>.json`; run its renewal watcher and use it after restarting the same listener. Existing credentials remain bound to their original resource and cannot access the restored incarnation. Key rotation and stopped-instance administrator recovery select the committed active generation. Missing activated storage causes startup to fail instead of recreating an empty database.
 
 Local recovery fences only the exclusively owned installation. It does not attest that an independently running copy or a distributed source quorum has stopped. Distributed recovery requires the Control recovery coordinator and its issuer fencing evidence.
+
+## Protected service audit
+
+The separate administrative listener exposes service authentication, key maintenance,
+backup, and recovery audit records only to a current Control administrator. Tenant
+administrator credentials do not grant access. The server checks the original
+credential and current Control policy again after encoding every response.
+
+```sh
+kasumid audit status /var/lib/kasumi/profiles/control.json
+kasumid audit export /var/lib/kasumi/profiles/control.json /secure/audit-request.json /secure/audit-page.json
+kasumid audit archives /var/lib/kasumi/profiles/control.json /secure/archive-request.json /secure/archive-page.json
+kasumid audit verify /var/lib/kasumi/profiles/control.json STREAM_UUID ARCHIVE_INDEX
+```
+
+For the first export or archive page, the request is `{"cursor":null,"limit":256}`.
+The CLI fixes its exact stream and exclusive end using the status response, then
+persists those inputs in an owner-only `*.audit-attempt.json` beside the output
+before dispatching the page request. After transport failure, repeat the same
+command with that journal and a renewed credential from the same family. A changed
+endpoint, resource, trust configuration, or request is rejected. Page outputs must
+have an absolute path beneath an existing owner-only directory. A published page
+is never overwritten.
+
+For the next export page, set `cursor` to `{"stream_id":STREAM_UUID,
+"next_sequence":NEXT_SEQUENCE,"through_sequence":ORIGINAL_END}` from the prior
+page and choose a new output path. Archive cursors use `next_index` and
+`through_index`. Stop when the next position equals the exclusive end. Both retain
+the original range while new audit events are written or hot records are archived.
+Export limits are 1–1024 records; archive limits are 1–256 segments. A response is
+at most 1 MiB and may contain fewer records to satisfy that bound.
+
+The Rust SDK provides `security_audit_status`, `export_security_audit`,
+`security_audit_archives`, and `verify_security_audit_archive` on
+`KasumiAdminClient`. Its page `.cursor()` returns the next exact cursor or `None`
+at completion. The client rejects changed stream/end positions, missing sequence
+numbers, and oversized responses. Archive listing reports dependencies; the
+verification method returns a `VerifiedSecurityAuditArchive` only after the
+server reads and authenticates the exact encrypted segment. These observations
+are not a grant to delete archives or retire their wrapping keys.
