@@ -309,7 +309,7 @@ pub struct ControlEpochStopObservation {
 #[serde(deny_unknown_fields)]
 pub struct SignedControlEpochStop {
     pub observation: ControlEpochStopObservation,
-    pub signature: String,
+    pub signature: crate::GenerationSignature,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

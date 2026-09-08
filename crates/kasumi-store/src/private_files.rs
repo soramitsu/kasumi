@@ -68,6 +68,20 @@ pub(crate) fn open_database(path: &Path) -> Result<File> {
     Ok(file)
 }
 
+/// Open existing private metadata without a create flag or following a symlink.
+/// Redb's file-handle constructor accepts creation, so reject empty files before
+/// handing over this exact descriptor as an existing installation.
+pub(crate) fn open_existing_database(path: &Path) -> Result<File> {
+    let file = options().read(true).write(true).open(path)?;
+    let metadata = file.metadata()?;
+    ensure!(
+        metadata.is_file() && metadata.len() > 0,
+        "existing nonempty database required"
+    );
+    check_permissions(&metadata)?;
+    Ok(file)
+}
+
 pub fn read(path: &Path, maximum: usize) -> Result<Zeroizing<Vec<u8>>> {
     let file = options().read(true).open(path)?;
     let metadata = file.metadata()?;

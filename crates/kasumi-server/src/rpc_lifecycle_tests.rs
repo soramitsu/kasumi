@@ -59,8 +59,9 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
     };
     let signer = Arc::new(LifecycleSigner::from_pkcs8(root.clone(), &key.serialize_der()).unwrap());
     let issuer_key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
-    let issuer_signer =
-        Arc::new(kasumi_serving::AuthoritySigner::from_pkcs8(&issuer_key.serialize_der()).unwrap());
+    let issuer_root =
+        kasumi_serving::test_utils::FixtureSigningRoot::from_pkcs8(&issuer_key.serialize_der())
+            .unwrap();
     let manifest = kasumi_serving::AuthorityManifest {
         authority_id: Uuid::new_v4(),
         lifecycle_controls: BTreeMap::from([(incarnation, root.public_key.clone())]),
@@ -68,12 +69,15 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
             0,
             kasumi_serving::AuthorityPartition {
                 group: "lifecycle-issuer".into(),
-                public_key: issuer_signer.public_key(),
+                public_key: issuer_root.public_key(),
             },
         )]),
         max_lease_ms: 1000,
         clock_rate_error_ppm: 0,
     };
+    let issuer_signing = issuer_root.install(manifest.clone(), 0).unwrap();
+    let issuer_signer = issuer_signing.signer;
+    let issuer_trust = issuer_signing.trust;
     let partition = manifest.control_partition(0).unwrap();
     let issuer_install = kasumi_authority::AuthorityInstallation {
         manifest: manifest.clone(),
@@ -403,12 +407,10 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
     };
     let authority_admin = issuer_token("operator", "kasumi:admin");
     let node_token = issuer_token("target-1", "kasumi:read");
-    let mut authority_client = kasumi_client::KasumiAuthorityClient::connect(
-        &config,
-        kasumi_serving::AuthorityTrust::install(manifest.clone()).unwrap(),
-    )
-    .await
-    .unwrap();
+    let mut authority_client =
+        kasumi_client::KasumiAuthorityClient::connect(&config, issuer_trust.clone())
+            .await
+            .unwrap();
     let target = kasumi_serving::RecoveryTarget {
         incarnation: intent.target_incarnation,
         checkpoint: intent.checkpoint.clone(),
@@ -484,7 +486,7 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
         .unwrap();
     assert_eq!(accepted.receipt.request_sha256, accept.digest().unwrap());
     let boot = kasumi_serving::LifecycleBoot::new(
-        kasumi_serving::AuthorityTrust::install(manifest.clone()).unwrap(),
+        issuer_trust.clone(),
         target
             .nodes
             .iter()

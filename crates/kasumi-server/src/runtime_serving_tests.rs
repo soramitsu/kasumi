@@ -66,6 +66,25 @@ async fn fenced_source_startup_keeps_control_handle_without_constructing_applica
     authority.server_ca = files.certificate.clone();
     authority.endpoints.get_mut(&0).unwrap().get_mut(&1).unwrap().endpoint =
         format!("https://localhost:{}", unavailable_address.port());
+    // Even an unavailable authority requires explicit current local trust;
+    // startup must not manufacture it from the root manifest or a wire reply.
+    let root_key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
+    authority.manifest.partitions.get_mut(&0).unwrap().public_key = hex::encode(root_key.public_key_raw());
+    let root = kasumi_serving::InstallationSigningRoot::from_pkcs8(
+        authority.manifest.signing_domain(0).unwrap(), &root_key.serialize_der(),
+    ).unwrap();
+    let operational = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
+    let trust_directory = dir.path().join("signer-verifier");
+    kasumi_store::private_files::create_directory(&trust_directory).unwrap();
+    let wrapping = trust_directory.join("keys.json");
+    kasumi_store::FileKeyProvider::initialize(&wrapping, "runtime-verifier").unwrap();
+    let verifier = config.signer_verifier.as_mut().unwrap();
+    verifier.database_path = trust_directory.join("trust.redb");
+    verifier.keys = KeyProviderSettings::File { path: wrapping };
+    crate::signer_runtime::InitializeSignerVerifier {
+        verifier: verifier.clone(),
+        initial_certificates: vec![root.certify(1, hex::encode(operational.public_key_raw())).unwrap()],
+    }.initialize().await.unwrap();
     let application_token = config.tenants[0].keys.transit_mut().unwrap().token_file.clone();
     let probes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let observed = probes.clone();

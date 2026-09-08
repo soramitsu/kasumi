@@ -4,7 +4,7 @@ async fn permanent_target_stop_defeats_missing_and_prepared_generations_then_reo
     let mut fixture = Fixture::new().await;
     let service = fixture.leader().await;
     let source = fixture.enroll(&service).await;
-    let trust = AuthorityTrust::install(fixture.installation.manifest.clone()).unwrap();
+    let trust = fixture.trust.clone();
     let replacement = target(source);
     let prepare = fixture.command(AuthorityAction::PrepareTarget {
         source_incarnation: source,

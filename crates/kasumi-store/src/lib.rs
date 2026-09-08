@@ -165,6 +165,25 @@ impl NodeStore {
         Ok(node)
     }
 
+    /// Reopen an installed database without creating directories or an absent
+    /// file. Validation and redb operate on the same owner-only descriptor.
+    pub fn open_existing(path: impl AsRef<Path>) -> Result<Arc<Self>> {
+        let path = path.as_ref();
+        let file = private_files::open_existing_database(path)?;
+        let db = Database::builder().create_file(file)?;
+        // A valid unrelated redb file is not an initialized Kasumi store.
+        {
+            let tx = db.begin_read()?;
+            tx.open_table(CATALOG)?;
+            tx.open_table(RECORDS)?;
+        }
+        Ok(Arc::new(Self {
+            db,
+            path: Some(std::fs::canonicalize(path)?),
+            tenants: AsyncMutex::new(HashMap::new()),
+        }))
+    }
+
     #[cfg(any(test, feature = "test-utils"))]
     pub fn open_with_backend(backend: impl redb::StorageBackend) -> Result<Arc<Self>> {
         Self::from_database(Database::builder().create_with_backend(backend)?, None)
@@ -341,6 +360,23 @@ impl TenantStore {
             access,
         )
         .await
+    }
+
+    /// Open an explicitly initialized tenant catalog. This is required for
+    /// independent verifier metadata; a wrong physical identity cannot seed a
+    /// fresh catalog in an existing application or unrelated metadata file.
+    pub async fn open_existing(
+        node: Arc<NodeStore>,
+        tenant: String,
+        provider: Arc<dyn KeyProvider>,
+        access: StorageAccess,
+    ) -> Result<Arc<Self>> {
+        access.validate_tenant(&tenant)?;
+        ensure!(
+            node.catalog(&tenant)?.is_some(),
+            "tenant catalog is not initialized"
+        );
+        Self::open(node, tenant, provider, access).await
     }
 
     #[cfg(any(test, feature = "test-utils"))]

@@ -112,6 +112,7 @@ impl RuntimeLease {
     }
     pub(crate) async fn acquire(
         config: &ServingAuthorityConfig,
+        trust: AuthorityTrust,
         credential: CredentialSource,
         tenant: &str,
         incarnation: Uuid,
@@ -132,7 +133,10 @@ impl RuntimeLease {
                 certificate_sha256: hex::encode(tls.certificate_pin()),
             },
         };
-        let trust = AuthorityTrust::install(config.manifest.clone())?;
+        ensure!(
+            trust.manifest() == &config.manifest,
+            "installed live authority verifier differs"
+        );
         let connections = endpoints
             .iter()
             .map(|(id, endpoint)| {
@@ -255,6 +259,7 @@ impl RuntimeLease {
 
 pub(crate) async fn acquire_tenant_access(
     config: &crate::runtime::RuntimeConfig,
+    trusts: &BTreeMap<String, AuthorityTrust>,
     credential: CredentialSource,
     tenant: &str,
     incarnation: Uuid,
@@ -286,9 +291,19 @@ pub(crate) async fn acquire_tenant_access(
                 .as_ref()
                 .context("independent serving requires replicated data storage")?
                 .node_id;
-            let lease =
-                RuntimeLease::acquire(installed, credential, tenant, incarnation, node_id, purpose)
-                    .await?;
+            let lease = RuntimeLease::acquire(
+                installed,
+                trusts
+                    .get(authority)
+                    .context("live authority verifier absent")?
+                    .clone(),
+                credential,
+                tenant,
+                incarnation,
+                node_id,
+                purpose,
+            )
+            .await?;
             Ok((lease.access()?, Some(lease)))
         }
         #[cfg(any(test, feature = "test-utils"))]

@@ -15,10 +15,10 @@ impl LeaseClock for Clock {
         Duration::from_millis(self.0.load(Ordering::SeqCst))
     }
 }
-fn fixture() -> (AuthoritySigner, ServingBoot, Arc<Clock>) {
+fn fixture() -> (Arc<AuthoritySigner>, ServingBoot, Arc<Clock>) {
     let bytes =
         ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new()).unwrap();
-    let signer = AuthoritySigner::from_pkcs8(bytes.as_ref()).unwrap();
+    let root = test_utils::FixtureSigningRoot::from_pkcs8(bytes.as_ref()).unwrap();
     let manifest = AuthorityManifest {
         lifecycle_controls: std::collections::BTreeMap::new(),
         authority_id: Uuid::new_v4(),
@@ -26,12 +26,14 @@ fn fixture() -> (AuthoritySigner, ServingBoot, Arc<Clock>) {
             0,
             AuthorityPartition {
                 group: "independent-0".into(),
-                public_key: signer.public_key(),
+                public_key: root.public_key(),
             },
         )]),
         max_lease_ms: 1000,
         clock_rate_error_ppm: 0,
     };
+    let signing = root.install(manifest, 0).unwrap();
+    let signer = signing.signer;
     let identity = ServingIdentity {
         tenant: "city".into(),
         incarnation: Uuid::new_v4(),
@@ -43,12 +45,7 @@ fn fixture() -> (AuthoritySigner, ServingBoot, Arc<Clock>) {
         },
     };
     let clock = Arc::new(Clock(AtomicU64::new(0)));
-    let boot = ServingBoot::with_test_clock(
-        AuthorityTrust::install(manifest).unwrap(),
-        identity,
-        clock.clone(),
-    )
-    .unwrap();
+    let boot = ServingBoot::with_test_clock(signing.trust, identity, clock.clone()).unwrap();
     (signer, boot, clock)
 }
 fn signed(signer: &AuthoritySigner, boot: &ServingBoot, attempt: &LeaseAttempt) -> SignedLease {
@@ -102,7 +99,7 @@ fn boot_incarnation_epoch_peer_issuer_and_signature_substitution_are_rejected() 
             3 => bad.claims.request.identity.node.certificate_sha256 = "f".repeat(64),
             4 => bad.claims.authority_id = Uuid::new_v4(),
             5 => bad.claims.lifetime_ms += 1,
-            _ => bad.signature = "0".repeat(128),
+            _ => bad.signature.signature = "0".repeat(128),
         }
         assert!(attempt.verify(bad).is_err());
     }

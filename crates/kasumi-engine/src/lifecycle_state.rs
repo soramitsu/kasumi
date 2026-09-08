@@ -334,7 +334,23 @@ pub(crate) fn completion_fits(state: &TenantState) -> Result<bool> {
                         observed_term: u64::MAX,
                         drain_ms: partition.drain_ms,
                     },
-                    signature: "f".repeat(128),
+                    signature: GenerationSignature {
+                        certificate: SigningCertificate {
+                            identity: SigningGeneration {
+                                domain: SigningDomain {
+                                    authority_id: partition.authority_id,
+                                    partition: partition.partition,
+                                    manifest_sha256: partition.manifest_sha256.clone(),
+                                    root_public_key: partition.signing_public_key.clone(),
+                                    retirement_drain_ms: partition.drain_ms,
+                                },
+                                generation: u64::MAX,
+                                public_key: "f".repeat(64),
+                            },
+                            root_signature: "f".repeat(128),
+                        },
+                        signature: "f".repeat(128),
+                    },
                 },
             ))
         })

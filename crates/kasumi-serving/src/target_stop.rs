@@ -35,7 +35,7 @@ pub struct TargetStopObservation {
 #[serde(deny_unknown_fields)]
 pub struct SignedTargetStop {
     pub observation: TargetStopObservation,
-    pub signature: String,
+    pub signature: kasumi_types::GenerationSignature,
 }
 /// Irrevocable completed drain evidence, not a data or lifecycle lease. Local
 /// jobs/storage must still close and drain before physical cleanup is claimed.

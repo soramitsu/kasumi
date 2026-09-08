@@ -36,6 +36,7 @@ quick-xml = "=0.42.0"
 time = { version = "0.3", features = ["formatting", "macros"] }
 
 [dev-dependencies]
+kasumi-serving = { workspace = true, features = ["test-utils"] }
 tokio = { workspace = true, features = ["test-util"] }
 axum = "0.8"
 rcgen = "0.14"
