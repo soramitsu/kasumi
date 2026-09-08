@@ -192,19 +192,25 @@ pub(crate) fn check_same_retirement(
     Ok(())
 }
 
-/// Returns only custody writes. The caller publishes them atomically with the
-/// final application snapshot manifest, after complete backend validation.
+pub(crate) struct Installation {
+    pub(crate) writes: Vec<WriteOp>,
+    pub(crate) records: Option<crate::custody_tables::Replacement>,
+}
+
+/// The caller publishes metadata and streamed custody tables atomically with
+/// the final application snapshot manifest after complete backend validation.
 pub(crate) fn installation_writes(
     custody: &CustodyStore,
     meta: &SnapshotMeta<u64, BasicNode>,
     retirement: Option<&SnapshotRetirement>,
     backend_sha256: &str,
     snapshot_sha256: &str,
-) -> Result<Vec<WriteOp>> {
+) -> Result<Installation> {
     kasumi_types::validate_sha256(backend_sha256)?;
     kasumi_types::validate_sha256(snapshot_sha256)?;
     let control = custody.store();
     let mut writes = Vec::new();
+    let mut records = None;
     let existing_boundary = control::retired_boundary(custody)?;
     match retirement {
         Some(retirement) => {
@@ -247,10 +253,10 @@ pub(crate) fn installation_writes(
             if current_position
                 .is_none_or(|id| Some(id.index) <= meta.last_log_id.map(|id| id.index))
             {
-                writes.extend(crate::custody_tables::installation_writes(
-                    control,
-                    &retirement.custody,
-                )?);
+                let replacement =
+                    crate::custody_tables::prepare_replacement(control, &retirement.custody)?;
+                writes.push(replacement.head.write()?);
+                records = Some(replacement);
             }
             writes.push(WriteOp::put(
                 META,
@@ -344,7 +350,7 @@ pub(crate) fn installation_writes(
             })?,
         ));
     }
-    Ok(writes)
+    Ok(Installation { writes, records })
 }
 
 pub(crate) fn check_published(

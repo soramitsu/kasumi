@@ -998,12 +998,32 @@ async fn pinned_read_roots_and_streamed_namespace_publication_preserve_isolation
     let staged = EncryptedTable::new(64 << 20).unwrap();
     staged.insert(b"new", b"replacement").unwrap();
     assert!(staged.insert(b"new", b"substituted").is_err());
-    store.replace_namespace("authority", &staged).unwrap();
+    store
+        .replace_namespaces(
+            &[("authority", &staged)],
+            &[WriteOp::put("meta", b"position", b"new")],
+        )
+        .unwrap();
     assert_eq!(
         pinned.get("authority", b"old", 1024).unwrap().unwrap(),
         b"original"
     );
     assert!(pinned.get("authority", b"new", 1024).unwrap().is_none());
+    assert!(pinned.get("meta", b"position", 1024).unwrap().is_none());
+    assert_eq!(store.get("meta", b"position").unwrap().unwrap(), b"new");
+    assert!(
+        store
+            .replace_namespaces(
+                &[("authority", &staged)],
+                &[WriteOp::put("authority", b"unexpected", b"overlap")]
+            )
+            .is_err()
+    );
+    assert!(
+        store
+            .replace_namespaces(&[("authority", &staged), ("authority", &staged)], &[])
+            .is_err()
+    );
     assert!(store.get("authority", b"old").unwrap().is_none());
     assert_eq!(
         store.get("authority", b"new").unwrap().unwrap(),
@@ -1013,7 +1033,7 @@ async fn pinned_read_roots_and_streamed_namespace_publication_preserve_isolation
         store.get("unrelated", b"key").unwrap().unwrap(),
         b"must-stay"
     );
-    assert!(store.replace_namespace("", &staged).is_err());
+    assert!(store.replace_namespaces(&[("", &staged)], &[]).is_err());
     assert_eq!(
         store.get("authority", b"new").unwrap().unwrap(),
         b"replacement"
