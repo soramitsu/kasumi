@@ -288,3 +288,25 @@ gate above and usable installation artifacts.
   and strict Raft Clippy passed. Evidence and the corrected initial hostile-test
   failure are in `docs/evidence/custody-stream-format-20260908`. Fixed custody
   lifetime quotas and the closed transport budget remain the next storage work.
+
+- `0735672` binds enrolled data/Control nodes and authority members to exact
+  physical verifier identities; installations require the matching verifier
+  roster. Authority tests passed 36, serving/types 18, TLS tests five, stored
+  trust seven and initializer tests three, with strict workspace Clippy and
+  production checks. `d190465` fixes the finite lifecycle fixture by resolving
+  an ambiguous original completion against fresh quorum state before retrying
+  the unchanged command; all four lifecycle tests pass with unchanged deadlines.
+  Bound evidence is in `docs/evidence/physical-verifier-bindings-20260908`.
+
+## Native resource reservation dependency
+
+The financial integration consumer requires an ordered, durable reservation for
+an exact finite prefix whose derived upper demand is 80,563 new documents and
+2,558,574,592 canonical serialized bytes (up to 19,843 chunks, 128 profiles and
+156 segments). These numbers exclude framing, index, journal and audit overhead
+and are not capacity measurements. Existing staged admission reserves uploaded
+chunk bytes; `NativeAdmission` is an invocation fence. Neither is a durable
+reservation for final concurrent document/index/journal/audit headroom. The
+resource-budget milestone must define server-accounted consumption, original
+attempt/service binding, recovery/release and permanent outcome resolution;
+a read-only quota getter or caller capacity claim cannot close this dependency.
