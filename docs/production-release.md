@@ -494,3 +494,23 @@ a read-only quota getter or caller capacity claim cannot close this dependency.
   evidence and the initial Clippy fixture failure are retained in
   `docs/evidence/permanent-history-byte-budgets-20260908`. Resident permanent-map
   migration, persistent disk admission and native import reservations remain open.
+
+- Recipe `42bf607` built the pinned Linux validation image and passed an initial
+  native ARM64 runtime-image and exact systemd data-unit smoke with historical
+  `8e90ff2` binaries. Offline initialization, native audit/credential access,
+  encrypted backup verification, TLS reload, restart and drained shutdown pass.
+  The original 2 GiB work-admission rejection and same-session success after a
+  clean 4 GiB restart are preserved. Both units pass static verification; the
+  authority service was not run. Evidence:
+  `docs/evidence/linux-image-systemd-smoke-20260908`. These recipe checks do not
+  approve the failed historical workspace source or close final OCI/SBOM,
+  compiler reproducibility, capacity and endurance gates.
+
+- `8c99af9` coordinates permanent issuer activation, exact StopActivation
+  resolution, all-voter fresh startup and signed local confirmations. Planned
+  retirement receives its finite cutoff at the actual source-fencing phase;
+  activation voter comparisons include physical verifier identity. Ten lifecycle
+  and fifteen snapshot tests, two focused regressions, strict workspace and
+  fixture-free checks pass. Evidence:
+  `docs/evidence/control-recovery-activation-20260908`. Actual target processes,
+  route publication and expired original Complete resolution remain open.

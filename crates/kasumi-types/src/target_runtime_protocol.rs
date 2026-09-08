@@ -21,6 +21,12 @@ pub enum TargetRuntimeStep {
     Start(TargetReplicaInput),
     Initialize(TargetQuorumInput),
     Complete(TargetQuorumInput),
+    /// Open one voter under the exact independently committed issuer winner.
+    /// This does not propose or confirm target activation.
+    StartActivation {
+        quorum: TargetQuorumInput,
+        issuer_command_id: Uuid,
+    },
     Activate {
         quorum: TargetQuorumInput,
         issuer_command_id: Uuid,
@@ -52,7 +58,11 @@ impl TargetRuntimeRequest {
             TargetRuntimeStep::Initialize(input) | TargetRuntimeStep::Complete(input) => {
                 input.digest()?;
             }
-            TargetRuntimeStep::Activate {
+            TargetRuntimeStep::StartActivation {
+                quorum,
+                issuer_command_id,
+            }
+            | TargetRuntimeStep::Activate {
                 quorum,
                 issuer_command_id,
             } => {

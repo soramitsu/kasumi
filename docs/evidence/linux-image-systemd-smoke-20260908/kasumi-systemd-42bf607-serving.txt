@@ -1,0 +1,13 @@
+MainPID=84147
+Result=success
+MemoryCurrent=3616768
+CapabilityBoundingSet=
+User=kasumi
+Group=kasumi
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectHome=yes
+ProtectSystem=strict
+NoNewPrivileges=yes
+ActiveState=active
+SubState=running

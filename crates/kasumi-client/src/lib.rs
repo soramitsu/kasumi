@@ -22,6 +22,8 @@ mod lifecycle;
 pub use lifecycle::KasumiLifecycleClient;
 mod authority;
 mod authority_pool;
+mod control_signer;
+pub use control_signer::CurrentControlSignerObservation;
 mod data_pool;
 pub use authority_pool::KasumiAuthorityPool;
 pub use data_pool::{KasumiClientPool, RoutedQueryPage, RoutedSnapshotLease};

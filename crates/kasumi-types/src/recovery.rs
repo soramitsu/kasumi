@@ -12,7 +12,8 @@ pub const MAX_RECOVERY_START_BYTES: usize = 64 << 10;
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RecoverySourceMode {
     Planned {
-        retirement: Box<RetireSourceRequest>,
+        retirement_id: String,
+        source_backup_destination: String,
     },
     /// Requires the complete installed issuer drain. This mode cannot produce
     /// an independently verified planned-retirement observation.
@@ -93,15 +94,13 @@ impl RecoveryStart {
                 "recovery placement or failure domains differ",
             )?;
         }
-        if let RecoverySourceMode::Planned { retirement } = &self.source_mode {
-            retirement.validate()?;
-            require_recovery(
-                retirement.expected_source_incarnation == self.source_incarnation.to_string()
-                    && retirement.target_incarnation == self.target_incarnation.to_string()
-                    && retirement.checkpoint == self.checkpoint
-                    && retirement.destination == self.materialization.destination_alias,
-                "planned recovery retirement differs from the frozen source and target",
-            )?;
+        if let RecoverySourceMode::Planned {
+            retirement_id,
+            source_backup_destination,
+        } = &self.source_mode
+        {
+            validate_name(retirement_id)?;
+            validate_name(source_backup_destination)?;
         }
         bounded_recovery(self, MAX_RECOVERY_START_BYTES)
     }
@@ -179,6 +178,8 @@ pub struct RecoveryRecord {
     #[serde(deserialize_with = "crate::require_explicit_option")]
     pub source_fence: Option<Uuid>,
     #[serde(deserialize_with = "crate::require_explicit_option")]
+    pub activation_attempt: Option<Uuid>,
+    #[serde(deserialize_with = "crate::require_explicit_option")]
     pub activation: Option<Uuid>,
     #[serde(deserialize_with = "crate::require_explicit_option")]
     pub route_publication: Option<Uuid>,
@@ -230,10 +231,15 @@ pub enum RecoveryDispatch {
 )]
 pub enum RecoveryDispatchOutcome {
     Authority(Box<SignedAuthorityReceipt>),
+    /// The signed StopActivation receipt authenticates the nested exact original
+    /// outcome. Its later observation never extends the original effect deadline.
+    AuthorityResolution(Box<SignedAuthorityReceipt>),
     ControlIntent(Box<LifecycleIntent>),
     Target(Box<TargetRuntimeResponse>),
     SourceRetired(Box<RetirementReceipt>),
-    RoutePublished { revision: u64 },
+    RoutePublished {
+        revision: u64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -390,4 +396,26 @@ pub struct RecoveryStop {
 pub struct RecoveryPhaseRequest {
     pub operation_id: Uuid,
     pub phase_id: Uuid,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn planned_start_names_identity_without_a_premature_retirement_deadline() {
+        let mode = RecoverySourceMode::Planned {
+            retirement_id: "retirement-one".into(),
+            source_backup_destination: "source-archive".into(),
+        };
+        let mut encoded = serde_json::to_value(&mode).unwrap();
+        assert_eq!(
+            serde_json::from_value::<RecoverySourceMode>(encoded.clone()).unwrap(),
+            mode
+        );
+        encoded["retirement"] = serde_json::json!({"not_after_ms": 99});
+        assert!(
+            serde_json::from_value::<RecoverySourceMode>(encoded).is_err(),
+            "unsupported embedded retirement requests must not be accepted"
+        );
+    }
 }

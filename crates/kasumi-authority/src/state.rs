@@ -1223,5 +1223,7 @@ impl Backend {
 #[path = "signing_state.rs"]
 mod signing_state;
 
+#[path = "control_signer_state.rs"]
+mod control_signer_state;
 #[path = "signer_roster.rs"]
 mod signer_roster;

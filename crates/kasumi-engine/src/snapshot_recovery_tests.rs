@@ -119,6 +119,7 @@ fn coordinator() -> TenantState {
         completion: None,
         retirement: None,
         source_fence: None,
+        activation_attempt: None,
         activation: None,
         route_publication: None,
         stop_request: None,

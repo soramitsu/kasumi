@@ -659,6 +659,29 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
         recovered.receipt.accepted_revision,
         accepted.receipt.accepted_revision
     );
+    super::control_signer_tests::exercise(super::control_signer_tests::Fixture {
+        directory: directory.path(),
+        control: leader.clone(),
+        issuer: issuer.clone(),
+        auth: auth.clone(),
+        audit: audit.clone(),
+        installation: installation.clone(),
+        manifest: manifest.clone(),
+        initial_certificate: issuer_signing.signer.certificate().clone(),
+        root: kasumi_serving::InstallationSigningRoot::from_pkcs8(
+            manifest.signing_domain(0).unwrap(),
+            &issuer_key.serialize_der(),
+        )
+        .unwrap(),
+        issuer_admin: &authority_admin,
+        receiver_tokens: (1..=3)
+            .map(|id| (id, issuer_token(&format!("control-{id}"), "kasumi:read")))
+            .collect(),
+        control_admin: &admin,
+        wrong_resource: &data,
+        readonly: &readonly,
+    })
+    .await;
     drop(authority_client);
     for issuer in &issuers {
         issuer.shutdown().await.unwrap();

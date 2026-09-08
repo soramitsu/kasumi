@@ -296,6 +296,7 @@ impl IndependentAuthority {
                     }
                 }
                 AuthorityMaintenanceAction::EnrollSignerVerifier { .. }
+                | AuthorityMaintenanceAction::AuthorizeControlSigner { .. }
                 | AuthorityMaintenanceAction::AdmitControlVerifiers { .. }
                 | AuthorityMaintenanceAction::StageSignerGeneration { .. }
                 | AuthorityMaintenanceAction::ActivateSignerGeneration { .. }

@@ -1773,6 +1773,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "hex",
+ "kasumi-clock",
  "kasumi-serving",
  "kasumi-transport",
  "kasumi-types",

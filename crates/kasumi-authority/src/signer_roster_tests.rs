@@ -5,6 +5,10 @@ async fn signing_transition(
 ) -> AuthoritySigningResponse {
     let mut command = f.maintenance_command(action).await;
     command.not_after_ms = 1_050_000;
+    if let AuthorityMaintenanceAction::AuthorizeControlSigner { directive } = &command.action {
+        command.operation_id = directive.command.operation_id;
+        command.not_after_ms = directive.command.not_after_ms;
+    }
     let request = AuthoritySigningRequest {
         observation_id: Uuid::new_v4(),
         domain_sha256: f

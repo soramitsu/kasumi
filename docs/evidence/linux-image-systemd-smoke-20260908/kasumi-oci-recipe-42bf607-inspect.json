@@ -1,0 +1,64 @@
+[
+    {
+        "Id": "sha256:0aca030443262a93d2ccaa5501396d37e7431c506a2ae8a327ff8fa3a7f14b42",
+        "RepoTags": [],
+        "RepoDigests": [],
+        "Parent": "sha256:8133814bdb1e36020e0e7a08d2b337c51c42685a2dc73a1370e85046027bc841",
+        "Comment": "",
+        "Created": "2026-09-08T11:58:42.358616923Z",
+        "DockerVersion": "26.1.5+dfsg1",
+        "Author": "",
+        "Config": {
+            "Hostname": "",
+            "Domainname": "",
+            "User": "65532:65532",
+            "AttachStdin": false,
+            "AttachStdout": false,
+            "AttachStderr": false,
+            "Tty": false,
+            "OpenStdin": false,
+            "StdinOnce": false,
+            "Env": [
+                "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            ],
+            "Cmd": [
+                "serve",
+                "/var/lib/kasumi/installation/kasumi.json"
+            ],
+            "Image": "sha256:8133814bdb1e36020e0e7a08d2b337c51c42685a2dc73a1370e85046027bc841",
+            "Volumes": null,
+            "WorkingDir": "/var/lib/kasumi",
+            "Entrypoint": [
+                "/opt/kasumi/bin/kasumid"
+            ],
+            "OnBuild": null,
+            "Labels": null,
+            "StopSignal": "SIGTERM"
+        },
+        "Architecture": "arm64",
+        "Variant": "v8",
+        "Os": "linux",
+        "Size": 227584842,
+        "GraphDriver": {
+            "Data": {
+                "LowerDir": "/var/lib/docker/overlay2/f7c41cd5d2cd7886f441ee286a008e0154902524e15bac6cda618d4437095ca9/diff:/var/lib/docker/overlay2/94cfbef052b1298b6fe9b85497953d75ae79dbf0fd0e4ada07a452dae4e678f1/diff:/var/lib/docker/overlay2/4e39f60cd3275815ddfa5acc3c2438bb692f64d8b651c8b4d9279ff291fb3e71/diff",
+                "MergedDir": "/var/lib/docker/overlay2/3d26eb51fd179dc230163ef9641caf312390090e89b03ce73b6f2c06e23ebaa0/merged",
+                "UpperDir": "/var/lib/docker/overlay2/3d26eb51fd179dc230163ef9641caf312390090e89b03ce73b6f2c06e23ebaa0/diff",
+                "WorkDir": "/var/lib/docker/overlay2/3d26eb51fd179dc230163ef9641caf312390090e89b03ce73b6f2c06e23ebaa0/work"
+            },
+            "Name": "overlay2"
+        },
+        "RootFS": {
+            "Type": "layers",
+            "Layers": [
+                "sha256:13a56b6535801be2adde694dabaf1c2df1d862a390661907dac821c42cd565cc",
+                "sha256:1990ace8ac2a11ee944b8bccbc3ea58ac229fbbe7f1d1b6b4a59f51eefad9f1d",
+                "sha256:8cdac05c2d953ffada757488f57c03cb3cf4f093ba8d3759fc871efd0a1ee637",
+                "sha256:e878ddcddc8d241196bf52349b12cdd48b9e8d594a7260cfd7e54a9bc1af8ec1"
+            ]
+        },
+        "Metadata": {
+            "LastTagTime": "0001-01-01T00:00:00Z"
+        }
+    }
+]

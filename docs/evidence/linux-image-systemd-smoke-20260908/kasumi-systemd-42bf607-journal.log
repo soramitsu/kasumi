@@ -1,0 +1,13 @@
+Starting kasumid.service - Kasumi database...
+Started kasumid.service - Kasumi database.
+{"timestamp":"2026-09-08T12:03:49.486829Z","level":"INFO","fields":{"message":"opening installed daemon configuration","event":"daemon_starting"},"target":"kasumi_server::logging"}
+{"timestamp":"2026-09-08T12:03:49.798309Z","level":"INFO","fields":{"message":"node serving state changed","event":"node_lifecycle","state":"Serving"},"target":"kasumi_server::observability"}
+Reloading kasumid.service - Kasumi database...
+Reloaded kasumid.service - Kasumi database.
+{"timestamp":"2026-09-08T12:04:06.780852Z","level":"INFO","fields":{"message":"TLS listener generations replaced; prior connections draining","generations":"[2, 2, 2]"},"target":"kasumi_server::tls_reload"}
+Stopping kasumid.service - Kasumi database...
+{"timestamp":"2026-09-08T12:04:07.029813Z","level":"INFO","fields":{"message":"node serving state changed","event":"node_lifecycle","state":"Draining"},"target":"kasumi_server::observability"}
+{"timestamp":"2026-09-08T12:04:07.237939Z","level":"INFO","fields":{"message":"node serving state changed","event":"node_lifecycle","state":"Closed"},"target":"kasumi_server::observability"}
+{"timestamp":"2026-09-08T12:04:07.242140Z","level":"INFO","fields":{"message":"daemon owners drained","event":"daemon_stopped"},"target":"kasumi_server::logging"}
+kasumid.service: Deactivated successfully.
+Stopped kasumid.service - Kasumi database.

@@ -39,13 +39,12 @@ impl LifecycleAuthorityRequest {
     /// the complete installed signature before lookup/release.
     pub fn digest(&self) -> Result<String> {
         match self {
-            Self::AcceptIntent(signed) => digest(&(
-                "kasumi.issuer-control-intent.v1",
+            Self::AcceptIntent(signed) => accepted_control_intent_digest(
                 &signed.observation.intent,
                 &signed.observation.root,
                 &signed.observation.authority_partition,
                 &signed.observation.partition_set_sha256,
-            )),
+            ),
             Self::StopEpoch(signed) => digest(&(
                 "kasumi.issuer-control-stop.v1",
                 &signed.observation.root,
@@ -53,6 +52,22 @@ impl LifecycleAuthorityRequest {
             )),
         }
     }
+}
+/// Immutable issuer acceptance identity, available before signing a fresh live
+/// observation. Computing this digest never supplies observation authority.
+pub fn accepted_control_intent_digest(
+    intent: &LifecycleIntent,
+    root: &ControlSigningRoot,
+    authority_partition: &ControlAuthorityPartition,
+    partition_set_sha256: &str,
+) -> Result<String> {
+    digest(&(
+        "kasumi.issuer-control-intent.v1",
+        intent,
+        root,
+        authority_partition,
+        partition_set_sha256,
+    ))
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

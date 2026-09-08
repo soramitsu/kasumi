@@ -119,6 +119,9 @@ impl AuthorityMembership {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AuthorityMaintenanceAction {
+    AuthorizeControlSigner {
+        directive: Box<crate::ControlSignerDirective>,
+    },
     EnrollSignerVerifier {
         enrollment: crate::SignerVerifierEnrollment,
     },
@@ -158,6 +161,7 @@ impl AuthorityMaintenanceAction {
         matches!(
             self,
             Self::StageSignerGeneration { .. }
+                | Self::AuthorizeControlSigner { .. }
                 | Self::ActivateSignerGeneration { .. }
                 | Self::EnrollSignerVerifier { .. }
                 | Self::AdmitControlVerifiers { .. }
@@ -165,6 +169,7 @@ impl AuthorityMaintenanceAction {
     }
     pub fn validate(&self) -> Result<()> {
         match self {
+            Self::AuthorizeControlSigner { directive } => directive.validate()?,
             Self::EnrollSignerVerifier { enrollment } => enrollment.validate()?,
             Self::AdmitControlVerifiers { admission } => admission.validate()?,
             Self::StageSignerGeneration { certificate } => {
@@ -235,6 +240,13 @@ impl AuthorityMaintenanceCommand {
                 command.operation_id == self.operation_id
                     && command.not_after_ms == self.not_after_ms,
                 "signer directive must preserve the original operation and deadline"
+            );
+        }
+        if let AuthorityMaintenanceAction::AuthorizeControlSigner { directive } = &self.action {
+            ensure!(
+                directive.command.operation_id == self.operation_id
+                    && directive.command.not_after_ms == self.not_after_ms,
+                "remote signer directive must preserve original operation and deadline"
             );
         }
         self.action.validate()
