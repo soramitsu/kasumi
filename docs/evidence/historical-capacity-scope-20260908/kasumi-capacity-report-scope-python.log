@@ -1,0 +1,32 @@
+test_failed_reopen_preserves_pre_shutdown_observations (test_benchmark_matrix.CapacityLifecycleTests.test_failed_reopen_preserves_pre_shutdown_observations) ... ok
+test_network_cleanup_failure_keeps_separate_completed_lifecycle_times (test_benchmark_matrix.CapacityLifecycleTests.test_network_cleanup_failure_keeps_separate_completed_lifecycle_times) ... ok
+test_node_audit_stores_are_distinct_from_raft_groups_and_legacy_results (test_benchmark_matrix.CapacityLifecycleTests.test_node_audit_stores_are_distinct_from_raft_groups_and_legacy_results) ... ok
+test_failed_case_preserves_exit_hash_and_runs_other_cases (test_benchmark_matrix.MatrixFailureTests.test_failed_case_preserves_exit_hash_and_runs_other_cases) ... running raw-1
+running local-1
+running replicated-1
+running text-1
+running network-1
+/private/var/folders/dt/80zwnvxn61l7nc0ttr4tgtf80000gn/T/kasumi-matrix-test-l4_fm1fb/results/capacity.json
+ok
+test_low_disk_remains_fatal_when_host_load_is_allowed (test_benchmark_matrix.MatrixFailureTests.test_low_disk_remains_fatal_when_host_load_is_allowed) ... ok
+test_source_change_still_aborts_before_cases (test_benchmark_matrix.MatrixFailureTests.test_source_change_still_aborts_before_cases) ... ok
+test_architecture_cannot_be_relabeled (test_package_release.PackageReleaseTests.test_architecture_cannot_be_relabeled) ... ok
+test_archive_is_identical_across_paths_mtimes_and_creation_order (test_package_release.PackageReleaseTests.test_archive_is_identical_across_paths_mtimes_and_creation_order) ... ok
+test_cached_notice_must_match_locked_archive_and_cannot_follow_symlink (test_package_release.PackageReleaseTests.test_cached_notice_must_match_locked_archive_and_cannot_follow_symlink) ... ok
+test_changed_binary_log_source_and_failed_gate_cannot_be_packaged (test_package_release.PackageReleaseTests.test_changed_binary_log_source_and_failed_gate_cannot_be_packaged) ... ok
+test_archive_refuses_escape_and_links_without_writing_outside_source (test_release_gate.ReleaseGateTests.test_archive_refuses_escape_and_links_without_writing_outside_source) ... ok
+test_artifact_outside_owned_target_is_rejected (test_release_gate.ReleaseGateTests.test_artifact_outside_owned_target_is_rejected) ... ok
+test_build_inventory_includes_fresh_non_executable_dependencies (test_release_gate.ReleaseGateTests.test_build_inventory_includes_fresh_non_executable_dependencies) ... ok
+test_child_oom_counters_survive_failed_gate_without_claiming_private_peak (test_release_gate.ReleaseGateTests.test_child_oom_counters_survive_failed_gate_without_claiming_private_peak) ... ok
+test_cleanup_error_preserves_original_rejection_and_cleanup_failure (test_release_gate.ReleaseGateTests.test_cleanup_error_preserves_original_rejection_and_cleanup_failure) ... ok
+test_compiled_fixture_or_test_artifact_cannot_pass_production_driver (test_release_gate.ReleaseGateTests.test_compiled_fixture_or_test_artifact_cannot_pass_production_driver) ... ok
+test_content_and_new_inputs_change_inventory_without_relying_on_mtime (test_release_gate.ReleaseGateTests.test_content_and_new_inputs_change_inventory_without_relying_on_mtime) ... ok
+test_failed_gate_retains_log_and_exact_executable_hash (test_release_gate.ReleaseGateTests.test_failed_gate_retains_log_and_exact_executable_hash) ... ok
+test_container_root_and_stricter_ancestor_bound_physical_memory (test_release_host.EffectiveMemoryTests.test_container_root_and_stricter_ancestor_bound_physical_memory) ... ok
+test_v1_limits_and_invalid_kernel_values_are_not_ignored (test_release_host.EffectiveMemoryTests.test_v1_limits_and_invalid_kernel_values_are_not_ignored) ... ok
+
+----------------------------------------------------------------------
+Ran 20 tests in 6.777s
+
+OK
+/private/var/folders/dt/80zwnvxn61l7nc0ttr4tgtf80000gn/T/kasumi-matrix-test-l4_fm1fb/results/matrix.json

@@ -613,3 +613,8 @@ a read-only quota getter or caller capacity claim cannot close this dependency.
   native Linux container reports its actual15GiB/zero-swap ceilings. Failures and
   scope are in `docs/evidence/release-cgroup-provenance-20260908`. The hosted
   workflow and pressure/OOM injection are not claimed by this checkpoint.
+
+- `0aaaae5` keeps the historical fixture matrix's scope and input hash in derived
+  capacity JSON/Markdown and explicitly marks production acceptance false. All20
+  Python checks pass; no new benchmark measurement is claimed. Evidence is in
+  `docs/evidence/historical-capacity-scope-20260908`.

@@ -1,0 +1,6 @@
+{
+  "source_commit": "0aaaae5",
+  "result": "All20Python checks passed; no benchmark executed",
+  "log_sha256": "6ca2b06313d3ba9a4631f6f25c2ab69380e5a42930054c17ab4772e9d1b2410e",
+  "scope": "Derived historical reports retain the original matrix scope/hash and explicitly decline production-release acceptance."
+}
