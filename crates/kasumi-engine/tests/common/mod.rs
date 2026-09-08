@@ -5,6 +5,18 @@ use std::sync::Arc;
 /// The node's service security ledger uses its own encrypted tenant namespace
 /// and wrapping key, independently of customer tenant revocation.
 pub async fn security_audit(node: Arc<NodeStore>) -> Arc<SecurityAudit> {
+    security_audit_with_admission(
+        node,
+        kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+    )
+    .await
+}
+
+#[allow(dead_code)]
+pub async fn security_audit_with_admission(
+    node: Arc<NodeStore>,
+    admission: Arc<kasumi_engine::admission::NodeAdmission>,
+) -> Arc<SecurityAudit> {
     let store = TenantStore::open_fixture(
         node,
         SECURITY_TENANT.into(),
@@ -15,7 +27,7 @@ pub async fn security_audit(node: Arc<NodeStore>) -> Arc<SecurityAudit> {
     SecurityAudit::open(
         store,
         kasumi_types::AuditRetentionBudget::default(),
-        kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+        admission,
     )
     .unwrap()
 }

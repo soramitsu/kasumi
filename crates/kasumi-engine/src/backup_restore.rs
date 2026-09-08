@@ -47,7 +47,9 @@ impl VerifiedBackup {
                 self._registration.clone(),
                 move || {
                     let bytes = TenantEngine::restored_bootstrap(
-                        &self.bytes,
+                        self.bytes
+                            .as_ref()
+                            .ok_or_else(|| anyhow::anyhow!("restore snapshot image missing"))?,
                         &tenant,
                         incarnation,
                         self.checkpoint.clone(),
@@ -322,7 +324,7 @@ pub(super) async fn load_authorized(
         token,
     };
     let verified = Box::pin(crate::backup_verify::verify(
-        &reader, backup_id, admission, deadline,
+        &reader, backup_id, admission, deadline, None,
     ))
     .await?;
     if let Some(expected) = &reader.bound_checkpoint {
@@ -332,7 +334,7 @@ pub(super) async fn load_authorized(
         );
     }
     let VerifiedBackup {
-        mut state,
+        state,
         bytes,
         checkpoint,
         source_purpose,
@@ -344,7 +346,13 @@ pub(super) async fn load_authorized(
     let alias = source.destination_alias.clone();
     let (state, bytes) = deadline
         .blocking(reservation.clone(), registration.clone(), move || {
-            drop(bytes);
+            drop(bytes.ok_or_else(|| anyhow::anyhow!("restore snapshot image missing"))?);
+            let mut state = match state {
+                crate::backup_verify::VerifiedState::Decoded(state) => state,
+                crate::backup_verify::VerifiedState::Captured(_) => {
+                    anyhow::bail!("restore requires independently decoded state")
+                }
+            };
             state.history_archive_bytes = 0;
             for (id, mut archive) in state.history_archives.clone() {
                 archive.storage_destination = alias.clone();
@@ -367,8 +375,8 @@ pub(super) async fn load_authorized(
     reader.check_access().await?;
     Ok(VerifiedBackup {
         source_purpose,
-        state,
-        bytes,
+        state: crate::backup_verify::VerifiedState::Decoded(state),
+        bytes: Some(bytes),
         checkpoint,
         _reservation: reservation,
         _registration: registration,

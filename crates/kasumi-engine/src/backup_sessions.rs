@@ -168,7 +168,12 @@ impl Database {
                 // its full graph and completion before deciding whether abort can win.
                 if root.is_some() {
                     let checkpoint = self
-                        .verify_pending_backup_checkpoint(&context, destination.as_ref(), &session)
+                        .verify_pending_backup_checkpoint(
+                            &context,
+                            destination.as_ref(),
+                            &session,
+                            None,
+                        )
                         .await?;
                     let resolved = self
                         .finish_backup_session(

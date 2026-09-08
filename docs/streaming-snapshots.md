@@ -47,7 +47,10 @@ then a constant-size final root. Pages form an immutable reverse chain with
 ciphertext digests on every edge. Verification first checks that chain into an
 encrypted fixed-slot spool, then traverses it forward while checking chunk
 counts, lengths, hashes, origin, key dependencies and the final resident digest.
-Resident state is decoded into unpublished state from its encrypted spool.
+Historical resident state is decoded into unpublished state from its encrypted
+spool. Immediate backup completion instead compares the full authenticated stream
+to private evidence from the exact captured generation and reuses its immutable
+roots; it still verifies every transitive dependency and key catalog.
 Genesis/bootstrap persistence, target materialization readback and Raft restore
 also consume streaming readers. Bootstrap manifest format 2 uses checked 64-bit
 byte and chunk counts and binds the same image digest in custody metadata.

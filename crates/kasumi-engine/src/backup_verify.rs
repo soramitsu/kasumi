@@ -183,12 +183,34 @@ impl VerificationDeadline {
 }
 
 pub(crate) struct VerifiedBackup {
-    pub state: TenantState,
-    pub bytes: kasumi_store::SnapshotImage,
+    pub state: VerifiedState,
+    pub bytes: Option<kasumi_store::SnapshotImage>,
     pub checkpoint: FullBackupCheckpoint,
     pub source_purpose: kasumi_store::StoragePurpose,
     pub _reservation: Arc<Reservation>,
     pub _registration: Option<Arc<VerificationWork>>,
+}
+
+/// A private receipt for the canonical bytes emitted from an already validated
+/// committed generation. It is never accepted from a request or durable object.
+pub(crate) struct ResidentCapture {
+    pub generation: Arc<crate::Generation>,
+    pub bytes: u64,
+    pub sha256: String,
+    pub source: kasumi_store::StoragePurpose,
+}
+pub(crate) enum VerifiedState {
+    Captured(Arc<crate::Generation>),
+    Decoded(Box<TenantState>),
+}
+impl std::ops::Deref for VerifiedState {
+    type Target = TenantState;
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Captured(generation) => &generation.state,
+            Self::Decoded(state) => state,
+        }
+    }
 }
 
 /// Checked, constant-space commitment to catalogs in canonical graph traversal
@@ -245,6 +267,7 @@ pub(crate) async fn verify(
     backup_id: uuid::Uuid,
     admission: &Arc<NodeAdmission>,
     deadline: VerificationDeadline,
+    capture: Option<ResidentCapture>,
 ) -> anyhow::Result<VerifiedBackup> {
     reader.check_access().await?;
     // Bound the envelope before trusting its declared resident size.
@@ -269,15 +292,29 @@ pub(crate) async fn verify(
     );
     drop(envelope);
     drop(reservation);
-    let reservation = Arc::new(
-        admission.reserve(
+    if let Some(capture) = &capture {
+        let state = &capture.generation.state;
+        anyhow::ensure!(
+            capture.bytes == manifest.resident_bytes
+                && capture.sha256 == manifest.resident_sha256
+                && capture.source == source_purpose
+                && state.tenant == manifest.tenant
+                && state.incarnation == manifest.source_incarnation
+                && state.revision == manifest.revision,
+            "backup differs from exact captured generation"
+        );
+    }
+    let reservation = Arc::new(admission.reserve(
+        if capture.is_some() {
+            64 << 20
+        } else {
             manifest
                 .resident_bytes
                 .saturating_mul(3)
-                .saturating_add(64 << 20),
-            reader.cancellation(),
-        )?,
-    );
+                .saturating_add(64 << 20)
+        },
+        reader.cancellation(),
+    )?);
     let ownership = reader.work_registration();
     // Walk the authenticated reverse page chain into an encrypted fixed-slot
     // spool. Reversing it needs one page of workspace, independent of backup size.
@@ -321,7 +358,12 @@ pub(crate) async fn verify(
         reference.is_none(),
         "backup page chain has trailing ancestors"
     );
-    let mut spool = kasumi_store::EncryptedSpool::new(manifest.resident_bytes)?;
+    let mut spool = if capture.is_some() {
+        None
+    } else {
+        Some(kasumi_store::EncryptedSpool::new(manifest.resident_bytes)?)
+    };
+    let mut resident_bytes = 0u64;
     let mut digest = Sha256::new();
     let mut chunk_count = 0u64;
     for index in (0..manifest.page_count).rev() {
@@ -360,7 +402,13 @@ pub(crate) async fn verify(
             );
             key_catalogs.add(&contents.key_catalog_sha256)?;
             digest.update(&contents.snapshot);
-            spool.write_all(&contents.snapshot)?;
+            resident_bytes = resident_bytes
+                .checked_add(contents.snapshot.len() as u64)
+                .filter(|bytes| *bytes <= manifest.resident_bytes)
+                .ok_or_else(|| anyhow::anyhow!("backup resident byte count exceeded"))?;
+            if let Some(spool) = &mut spool {
+                spool.write_all(&contents.snapshot)?;
+            }
         }
     }
     anyhow::ensure!(
@@ -368,16 +416,28 @@ pub(crate) async fn verify(
         "backup chunk count differs"
     );
     anyhow::ensure!(
-        spool.len() == manifest.resident_bytes
+        resident_bytes == manifest.resident_bytes
             && hex::encode(digest.finalize()) == manifest.resident_sha256,
         "full backup resident stream differs"
     );
     let (state, bytes) = deadline
-        .blocking(reservation.clone(), ownership.clone(), move || {
-            let bytes = kasumi_store::SnapshotImage::freeze(spool)?;
-            let state = crate::snapshot_codec::read(&mut bytes.reader())?;
-            Ok((state, bytes))
-        })
+        .blocking(
+            reservation.clone(),
+            ownership.clone(),
+            move || match capture {
+                Some(capture) => Ok((VerifiedState::Captured(capture.generation), None)),
+                None => {
+                    let bytes =
+                        kasumi_store::SnapshotImage::freeze(spool.ok_or_else(|| {
+                            anyhow::anyhow!("historical backup staging missing")
+                        })?)?;
+                    let state = VerifiedState::Decoded(Box::new(crate::snapshot_codec::read(
+                        &mut bytes.reader(),
+                    )?));
+                    Ok((state, Some(bytes)))
+                }
+            },
+        )
         .await?;
     reader.authorize_state(&state).await?;
     anyhow::ensure!(
@@ -391,7 +451,14 @@ pub(crate) async fn verify(
     // references before trusting any transitive catalog descriptor.
     let (state, bytes) = deadline
         .blocking(reservation.clone(), ownership.clone(), move || {
-            TenantEngine::verify_logical_snapshot(&bytes, &state)?;
+            if matches!(state, VerifiedState::Decoded(_)) {
+                TenantEngine::verify_logical_snapshot(
+                    bytes
+                        .as_ref()
+                        .ok_or_else(|| anyhow::anyhow!("historical snapshot image missing"))?,
+                    &state,
+                )?;
+            }
             Ok((state, bytes))
         })
         .await?;
