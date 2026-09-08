@@ -534,11 +534,15 @@ impl TenantEngine {
         incarnation: String,
         checkpoint: FullBackupCheckpoint,
         target_origin: Option<TargetOrigin>,
+        handoff_workspace: impl FnOnce() -> Result<()>,
     ) -> Result<(kasumi_store::SnapshotImage, Self)> {
         if source.header().tenant != expected_tenant {
             return Err(Error::new(ErrorCode::Forbidden, "backup tenant mismatch"));
         }
         let image = source.into_image();
+        // Both encrypted point-table caches are now destroyed. Reserve the
+        // actual target allocation before decoding, under the same owned job.
+        handoff_workspace()?;
         let scratch_disk = image.disk().clone();
         let mut state = crate::snapshot_codec::read(&mut image.reader())
             .map_err(|error| Error::new(ErrorCode::Corruption, error.to_string()))?;

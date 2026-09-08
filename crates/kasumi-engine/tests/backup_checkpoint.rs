@@ -79,6 +79,110 @@ async fn captured_and_historical_backup_verification_fit_fixed_production_worksp
     fixture.close().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn restore_hands_off_verified_workspace_with_production_and_destination_reserves() {
+    let fixture = Fixture::with_admission(
+        Limits::default(),
+        kasumi_engine::admission::AdmissionConfig {
+            max_inflight_bytes: Some(512 << 20),
+            ..Default::default()
+        },
+        true,
+    )
+    .await;
+    fixture.write("retained").await;
+    let checkpoint = fixture
+        .db
+        .backup_checkpoint_named(context(), "approved", uuid::Uuid::new_v4())
+        .await
+        .unwrap()
+        .checkpoint()
+        .clone();
+    let admission = fixture.audit.admission().clone();
+    assert!(fixture.db.audit_maintenance_status().is_some());
+    assert_eq!(admission.snapshot().reserved_bytes, 192 << 20);
+    // Keep the real service/tenant maintenance pools plus the native destination
+    // charge installed throughout verification, materialization and publication.
+    let destination_workspace = admission.reserve(128 << 20, None).unwrap();
+    let previous_verification = admission.reserve(128 << 20, None).unwrap();
+    assert!(
+        admission.reserve((64 << 20) + 1, None).is_err(),
+        "the previous additive materialization strategy must not fit"
+    );
+    drop(previous_verification);
+    let node = NodeStore::open(
+        fixture.directory.path().join("restore-budget.redb"),
+        fixture.store.scratch_disk().clone(),
+    )
+    .unwrap();
+    let target = TenantStore::open_fixture(
+        node,
+        "checkpoint".into(),
+        Arc::new(LocalKeyProvider::new([0xD8; 32])),
+    )
+    .await
+    .unwrap();
+    let domains = kasumi_store::test_utils::with_custody(
+        target.clone(),
+        Arc::new(LocalKeyProvider::new([241; 32])),
+    )
+    .await
+    .unwrap();
+    let source = kasumi_engine::RestoreSource {
+        destination_alias: "approved".into(),
+        destination: fixture.destination.clone(),
+        keys: Arc::new(LocalKeyProvider::new([0xD8; 32])),
+        timeout_ms: 60_000,
+    };
+    let restored = kasumi_engine::restore_local(
+        &source,
+        domains.clone(),
+        common::local_restore_request(context(), &checkpoint, uuid::Uuid::new_v4()),
+        admission.clone(),
+        fixture.audit.clone(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        restored.engine().generation().unwrap().state.document_count,
+        1
+    );
+    assert_eq!(admission.snapshot().reserved_bytes, 320 << 20);
+    restored.shutdown().await.unwrap();
+    drop(restored);
+    drop(domains);
+    drop(target);
+    let node = NodeStore::open(
+        fixture.directory.path().join("restore-budget.redb"),
+        fixture.store.scratch_disk().clone(),
+    )
+    .unwrap();
+    let target = TenantStore::open_fixture(
+        node,
+        "checkpoint".into(),
+        Arc::new(LocalKeyProvider::new([0xD8; 32])),
+    )
+    .await
+    .unwrap();
+    let domains =
+        kasumi_store::test_utils::with_custody(target, Arc::new(LocalKeyProvider::new([241; 32])))
+            .await
+            .unwrap();
+    let reopened =
+        kasumi_engine::open_local(domains, policy(), Limits::default(), fixture.audit.clone())
+            .await
+            .unwrap();
+    assert_eq!(
+        reopened.engine().generation().unwrap().state.document_count,
+        1
+    );
+    assert_eq!(admission.snapshot().reserved_bytes, 320 << 20);
+    reopened.shutdown().await.unwrap();
+    drop(destination_workspace);
+    assert_eq!(admission.snapshot().reserved_bytes, 192 << 20);
+    fixture.close().await;
+}
+
 fn policy() -> Policy {
     Policy {
         grants: vec![Grant {

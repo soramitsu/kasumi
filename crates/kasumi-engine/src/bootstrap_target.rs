@@ -231,7 +231,6 @@ async fn materialize_origin(
         kasumi_types::staged_digest(&verified.source_purpose)?.0 == input.source_purpose_sha256,
         "materialization source purpose differs from the authenticated backup root"
     );
-    let _workspace = verified._reservation.clone();
     let bootstrap = ReplicatedBootstrap {
         incarnation: replica.incarnation.to_string(),
         initial_policy: verified.state.metadata().policy.clone(),
