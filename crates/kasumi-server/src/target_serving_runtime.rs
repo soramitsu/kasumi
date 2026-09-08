@@ -156,7 +156,10 @@ impl TargetRecoveryRuntime {
         );
         let path = self.path(&key)?;
         ensure!(path.is_file(), "activated target file is missing");
-        g.node = Some(NodeStore::open(path)?);
+        g.node = Some(NodeStore::open(
+            path,
+            self.audit.store().scratch_disk().clone(),
+        )?);
         self.placement(&projection.execution()?.origin.input)?;
         // Closed retirement recovery consults only independently keyed control
         // storage. It remains available after ordinary serving expires, without

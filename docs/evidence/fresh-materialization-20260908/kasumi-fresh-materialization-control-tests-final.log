@@ -1,0 +1,13 @@
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.47s
+     Running tests/lifecycle.rs (/tmp/kasumi-production-standalone-target/debug/deps/lifecycle-11aab87d84f8fd79)
+
+running 5 tests
+test control_rejects_unfinishable_byte_budget_and_substituted_authenticated_history ... ok
+test control_completion_audit_reservation_survives_denials_and_current_admin_status_recovery ... ok
+test fresh_control_materialization_requires_exact_retained_original_after_expiry_and_reopen ... ok
+test replicated_control_change_pins_all_partitions_freezes_issuance_and_recovers_self_revocation ... ok
+test replicated_control_intent_is_exact_original_expiry_bound_current_quorum_and_permanent_after_reopen ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 19.37s
+

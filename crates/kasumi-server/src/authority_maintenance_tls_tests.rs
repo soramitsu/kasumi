@@ -170,6 +170,7 @@ async fn actual_tls_peer_readiness_enrolls_replaces_and_fences_revoked_member() 
     };
     let signing = root.install(installation.manifest.clone(), 0).unwrap();
     let bootstrap = AuthorityBootstrap {
+        initial_signer_certificate: signing.signer.certificate().clone(),
         administrators: BTreeSet::from(["operator".into()]),
         capacity: AuthorityCapacity {
             max_tenants: 100,
@@ -210,7 +211,11 @@ async fn actual_tls_peer_readiness_enrolls_replaces_and_fences_revoked_member() 
         .unwrap();
         network.install_audit(Arc::new(TestAudit)).unwrap();
         let store = TenantStorageSet::open(
-            NodeStore::open(dir.path().join(format!("node-{id}.redb"))).unwrap(),
+            NodeStore::open(
+                dir.path().join(format!("node-{id}.redb")),
+                kasumi_store::ScratchDisk::fixture(),
+            )
+            .unwrap(),
             installation.tenant(),
             Arc::new(LocalKeyProvider::new([id as u8; 32])),
             Arc::new(LocalKeyProvider::new([id as u8 + 10; 32])),

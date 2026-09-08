@@ -20,6 +20,9 @@ struct LiveBackupReader<'a> {
     session_key_catalog: &'a str,
 }
 impl BackupReader for LiveBackupReader<'_> {
+    fn scratch_disk(&self) -> &Arc<kasumi_store::ScratchDisk> {
+        self.database.store.scratch_disk()
+    }
     fn session_key_catalog(&self) -> &str {
         self.session_key_catalog
     }

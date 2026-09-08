@@ -186,7 +186,7 @@ async fn accepted_stop_release_failure_is_unknown_and_reopen_recovers_exact_tomb
     audit.shutdown().await;
     drop(db);
     drop(audit);
-    let node = NodeStore::open(directory.path().join("node.redb")).unwrap();
+    let node = NodeStore::open(directory.path().join("node.redb"), kasumi_store::ScratchDisk::fixture()).unwrap();
     let provider = Arc::new(LocalKeyProvider::new([0x97; 32]));
     let audit = SecurityAudit::open(
         TenantStore::open_fixture(

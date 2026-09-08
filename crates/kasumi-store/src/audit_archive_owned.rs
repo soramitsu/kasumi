@@ -141,7 +141,11 @@ mod tests {
     {
         let directory = tempfile::tempdir().unwrap();
         let store = TenantStore::open_fixture(
-            crate::NodeStore::open(directory.path().join("node.redb")).unwrap(),
+            crate::NodeStore::open(
+                directory.path().join("node.redb"),
+                crate::ScratchDisk::fixture(),
+            )
+            .unwrap(),
             "tenant-a".into(),
             Arc::new(crate::test_utils::LocalKeyProvider::new([73; 32])),
         )

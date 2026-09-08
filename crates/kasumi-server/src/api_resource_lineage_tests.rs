@@ -110,7 +110,7 @@ async fn native_resources_and_two_restore_hops_preserve_immutable_issuer_facts()
                 .is_err()
         );
         let dir = tempfile::tempdir().unwrap();
-        let node = NodeStore::open(dir.path().join("node.redb")).unwrap();
+        let node = NodeStore::open(dir.path().join("node.redb"), kasumi_store::ScratchDisk::fixture()).unwrap();
         let key = Arc::new(LocalKeyProvider::new([20 + hop as u8; 32]));
         let store = TenantStore::open_fixture(node, "tenant-a".into(), key.clone())
             .await
@@ -190,7 +190,7 @@ async fn native_resources_and_two_restore_hops_preserve_immutable_issuer_facts()
         drop(restored);
         drop(stores);
         let reopened_store = TenantStore::open_fixture(
-            NodeStore::open(dir.path().join("node.redb")).unwrap(),
+            NodeStore::open(dir.path().join("node.redb"), kasumi_store::ScratchDisk::fixture()).unwrap(),
             "tenant-a".into(),
             key.clone(),
         )

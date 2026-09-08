@@ -405,7 +405,11 @@ mod tests {
             .await;
             let key = EncodingKey::from_ed_pem(key.serialize_pem().as_bytes()).unwrap();
             let dir = tempfile::tempdir().unwrap();
-            let node = NodeStore::open(dir.path().join("node.redb")).unwrap();
+            let node = NodeStore::open(
+                dir.path().join("node.redb"),
+                kasumi_store::ScratchDisk::fixture(),
+            )
+            .unwrap();
             let audit_store = TenantStore::open_fixture(
                 node.clone(),
                 crate::runtime::SECURITY_TENANT.into(),
@@ -1818,7 +1822,11 @@ name: "docs".into(),
             strict_read_audit: true,
         };
         let provider = Arc::new(LocalKeyProvider::new([61; 32]));
-        let node = NodeStore::open(fixture._dir.path().join("control.redb")).unwrap();
+        let node = NodeStore::open(
+            fixture._dir.path().join("control.redb"),
+            kasumi_store::ScratchDisk::fixture(),
+        )
+        .unwrap();
         let store = TenantStore::open_fixture(node.clone(), tenant.into(), provider.clone())
             .await
             .unwrap();

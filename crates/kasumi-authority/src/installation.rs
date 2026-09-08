@@ -1,5 +1,8 @@
 use anyhow::{Result, ensure};
-use kasumi_serving::{AuthorityCapacity, AuthorityManifest, AuthorityMembership};
+use kasumi_serving::{
+    AuthorityCapacity, AuthorityManifest, AuthorityMembership, SigningCertificate,
+    SigningCertificateVerification,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -33,12 +36,19 @@ impl AuthorityInstallation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AuthorityBootstrap {
+    pub initial_signer_certificate: SigningCertificate,
     pub administrators: BTreeSet<String>,
     pub capacity: AuthorityCapacity,
     pub membership: AuthorityMembership,
 }
 impl AuthorityBootstrap {
     pub fn validate(&self) -> Result<()> {
+        self.initial_signer_certificate
+            .verify(&self.initial_signer_certificate.identity.domain)?;
+        ensure!(
+            self.initial_signer_certificate.identity.generation == 1,
+            "bootstrap signer generation must be one"
+        );
         ensure!(
             !self.administrators.is_empty() && self.administrators.len() <= 64,
             "invalid initial authority administrators"

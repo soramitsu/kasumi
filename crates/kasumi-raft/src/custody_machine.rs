@@ -51,7 +51,7 @@ pub(crate) fn capture(custody: &CustodyStore) -> Result<SnapshotEnvelope> {
         version: 1,
         kind: SnapshotKind::Custody,
         meta,
-        backend: kasumi_store::SnapshotImage::from_bytes(&[])?,
+        backend: kasumi_store::SnapshotImage::from_bytes(custody.store().scratch_disk(), &[])?,
         retirement,
     })
 }
@@ -113,7 +113,7 @@ pub(crate) fn load_snapshot(
     let Some(bytes) = crate::custody_snapshot_storage::load_image(custody, limit)? else {
         return Ok(None);
     };
-    let snapshot = SnapshotEnvelope::decode(&mut bytes.reader(), limit)?;
+    let snapshot = SnapshotEnvelope::decode(bytes.disk(), &mut bytes.reader(), limit)?;
     ensure!(
         snapshot.kind == SnapshotKind::Custody
             && snapshot.version == 1
@@ -322,7 +322,8 @@ impl RaftStateMachine<TypeConfig> for CustodyMachine {
     async fn begin_receiving_snapshot(&mut self) -> Result<Box<SnapshotBuffer>, StorageError<u64>> {
         self.custody.store().check_access().map_err(err)?;
         Ok(Box::new(
-            SnapshotBuffer::new(self.snapshot_limit).map_err(err)?,
+            SnapshotBuffer::new(self.custody.store().scratch_disk(), self.snapshot_limit)
+                .map_err(err)?,
         ))
     }
     async fn install_snapshot(
@@ -338,7 +339,11 @@ impl RaftStateMachine<TypeConfig> for CustodyMachine {
                 "closed snapshot byte budget exceeded"
             );
             let image = snapshot.into_image()?;
-            let envelope = SnapshotEnvelope::decode(&mut image.reader(), machine.snapshot_limit)?;
+            let envelope = SnapshotEnvelope::decode(
+                image.disk(),
+                &mut image.reader(),
+                machine.snapshot_limit,
+            )?;
             ensure!(envelope.meta == meta, "closed snapshot metadata differs");
             let _gate = machine
                 .control_gate
@@ -726,7 +731,11 @@ mod tests {
         let bytes = snapshot
             .encode(MAX_CLOSED_SNAPSHOT_BYTES)?
             .read_bounded(MAX_CLOSED_SNAPSHOT_BYTES as usize)?;
-        let decoded = SnapshotEnvelope::decode(&mut bytes.as_slice(), MAX_CLOSED_SNAPSHOT_BYTES)?;
+        let decoded = SnapshotEnvelope::decode(
+            &kasumi_store::ScratchDisk::fixture(),
+            &mut bytes.as_slice(),
+            MAX_CLOSED_SNAPSHOT_BYTES,
+        )?;
         assert_eq!(
             decoded.retirement.as_ref().unwrap().history_sha256,
             snapshot.retirement.as_ref().unwrap().history_sha256
@@ -770,7 +779,12 @@ mod tests {
                 _ => unreachable!(),
             }
             assert!(
-                SnapshotEnvelope::decode(&mut bad.as_slice(), MAX_CLOSED_SNAPSHOT_BYTES).is_err(),
+                SnapshotEnvelope::decode(
+                    &kasumi_store::ScratchDisk::fixture(),
+                    &mut bad.as_slice(),
+                    MAX_CLOSED_SNAPSHOT_BYTES
+                )
+                .is_err(),
                 "accepted corruption {case}"
             );
         }

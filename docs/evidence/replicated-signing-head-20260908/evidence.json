@@ -1,0 +1,75 @@
+{
+  "source_commit": "5859d8e5764c5215a3d307340c884150d24543af",
+  "source_dirty": "",
+  "lockfile_sha256": "a4a3883969dc9486548a1aea841ecf45c482c99e4ea1e0d47b56f6c52b2afa08",
+  "captured_at_utc": "2026-09-08T09:50:55.976217+00:00",
+  "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-apple-darwin\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+  "scope": "Replicated authority signing head, explicit stage/activation, exact current authenticated admin observations and immutable request generation fences. Scoped macOS gates only, not final release certification. Complete verifier roster, remote acknowledgments/revocations, global stage abort and complete issuer retirement drain remain unfinished.",
+  "gates": [
+    {
+      "gate": "authority-tests",
+      "log": "/tmp/kasumi-runtime-global-head-authority-final.log",
+      "log_sha256": "269b010a9d25256215c616bc7cb41cb6df52427707772f2098648923f86e93ee",
+      "binaries": [
+        {
+          "path": "/tmp/kasumi-production-runtime-target/debug/deps/kasumi_authority-481ba410417b8d16",
+          "sha256": "bec2981cf5229e261c6f9ae4275a15348337afab8e6fe37838d226f0a3af954f",
+          "bytes": 168135776
+        }
+      ],
+      "results": [
+        "    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.88s",
+        "test result: ok. 40 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 73.88s"
+      ]
+    },
+    {
+      "gate": "tls-tests",
+      "log": "/tmp/kasumi-runtime-global-head-tls-final.log",
+      "log_sha256": "fd4f4c27236605561e54fc03e7c7dc0bf6fd8be846861e2609cdbf2d12823162",
+      "binaries": [
+        {
+          "path": "/tmp/kasumi-production-runtime-target/debug/deps/kasumi_server-8b9768f86cabe832",
+          "sha256": "4dfe0547098b97f19abfbe5668dc5e10d88a87a2b2c78c8643664327d8d6c4fb",
+          "bytes": 276099504
+        }
+      ],
+      "results": [
+        "    Finished `test` profile [unoptimized + debuginfo] target(s) in 23.61s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 79 filtered out; finished in 13.73s"
+      ]
+    },
+    {
+      "gate": "clippy",
+      "log": "/tmp/kasumi-runtime-global-head-clippy.log",
+      "log_sha256": "f2f8d32709da3907123fca6e7f81a293ab81d8ca3cbabca9fc96a4ae1cdea211",
+      "binaries": [],
+      "results": [
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 58.88s"
+      ]
+    },
+    {
+      "gate": "production",
+      "log": "/tmp/kasumi-runtime-global-head-production.log",
+      "log_sha256": "bf9deb4abd70007d151a300becf8518a1af922587512b9760b7c1514a4b1577a",
+      "binaries": [],
+      "results": [
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 27.27s"
+      ]
+    },
+    {
+      "gate": "format",
+      "log": "/tmp/kasumi-runtime-global-head-format.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "binaries": [],
+      "results": []
+    }
+  ],
+  "initial_failures": [
+    {
+      "log": "/tmp/kasumi-runtime-global-head-unit.log",
+      "log_sha256": "7bdc2236cb7691a8292de70764f4d7234d880a35bdd37f1f3ff0bcf32b3333d6",
+      "executable_hash": "not captured before rebuilding; no historical binary hash inferred",
+      "disposition": "The first test attempted to remove a required Meta field through a helper which itself deserializes typed frames, so that helper panicked before calling restore. Missing-field rejection is now asserted directly; authenticated snapshot rollback and erased-retirement mutations still pass through the actual closed restore validator. The corrected regression additionally reopens all encrypted replicas and verifies the global head still fences locally valid old keys."
+    }
+  ]
+}

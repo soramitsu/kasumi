@@ -1,0 +1,12 @@
+   Compiling kasumi-server v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 24.38s
+     Running unittests src/lib.rs (/tmp/kasumi-production-runtime-target/debug/deps/kasumi_server-836de15f40a715c9)
+
+running 4 tests
+test signer_runtime::tests::initialization_rejects_noninitial_and_mismatched_domains_without_publishing ... ok
+test signer_runtime::tests::explicit_encrypted_verifier_initialization_never_bootstraps_runtime_trust ... ok
+test signer_runtime::tests::operational_source_is_private_bounded_and_cannot_substitute_installed_trust ... ok
+test signer_runtime::tests::partial_initializer_resumes_only_exact_initial_heads_and_rejects_corruption ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 76 filtered out; finished in 1.00s
+

@@ -1,7 +1,7 @@
 #[tokio::test]
 async fn canceled_queued_schema_activation_finishes_once_and_checks_receipt_release_authority() {
     let root = tempfile::tempdir().unwrap();
-    let node = NodeStore::open(root.path().join("node.redb")).unwrap();
+    let node = NodeStore::open(root.path().join("node.redb"), kasumi_store::ScratchDisk::fixture()).unwrap();
     let audit_store = TenantStore::open_fixture(
         node.clone(),
         crate::SECURITY_TENANT.into(),

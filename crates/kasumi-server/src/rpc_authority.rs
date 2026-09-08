@@ -2,13 +2,16 @@
 //! from the completed mTLS handshake extension, never a body/header assertion.
 use super::*;
 use kasumi_authority::{AuthenticatedNode, AuthorityResponseFence, IndependentAuthority};
-use kasumi_serving::{AuthorityCommand, LeaseDiscovery, LeaseRequest};
+use kasumi_serving::{
+    AuthorityCommand, LeaseDiscovery, LeaseRequest, SigningCertificateVerification,
+};
 
 #[derive(Clone)]
 pub struct NativeAuthority {
     authority: Arc<IndependentAuthority>,
     auth: Arc<Authenticator>,
     signer_verifier: Option<Arc<crate::signer_runtime::InstalledSignerVerifier>>,
+    operational_signer_file: Option<std::path::PathBuf>,
 }
 impl NativeAuthority {
     pub fn new(authority: Arc<IndependentAuthority>, auth: Arc<Authenticator>) -> Self {
@@ -16,6 +19,7 @@ impl NativeAuthority {
             authority,
             auth,
             signer_verifier: None,
+            operational_signer_file: None,
         }
     }
     pub(crate) fn with_signer_verifier(
@@ -23,6 +27,10 @@ impl NativeAuthority {
         verifier: Arc<crate::signer_runtime::InstalledSignerVerifier>,
     ) -> Self {
         self.signer_verifier = Some(verifier);
+        self
+    }
+    pub(crate) fn with_operational_signer_file(mut self, path: std::path::PathBuf) -> Self {
+        self.operational_signer_file = Some(path);
         self
     }
     pub fn service(self) -> kasumi_authority_server::KasumiAuthorityServer<Self> {
@@ -48,6 +56,64 @@ impl NativeAuthority {
 }
 #[tonic::async_trait]
 impl kasumi_authority_server::KasumiAuthority for NativeAuthority {
+    async fn signing_maintenance(
+        &self,
+        request: Request<AuthorityJsonRequest>,
+    ) -> Result<Response<AuthorityJsonResponse>, Status> {
+        let context = verified(&self.auth, &request).await?;
+        request
+            .extensions()
+            .get::<crate::tls::AuthenticatedTlsPeer>()
+            .and_then(|peer| peer.certificate_pin())
+            .ok_or_else(|| {
+                Status::unauthenticated("actual mutually authenticated TLS peer required")
+            })?;
+        let body: kasumi_serving::AuthoritySigningRequest =
+            decode_json(&request.into_inner().request_json).map_err(status)?;
+        let mutation = matches!(
+            body.action,
+            kasumi_serving::AuthoritySigningAction::Start { .. }
+        );
+        let (reply, fence) = self
+            .auth
+            .audit_result(
+                &context,
+                self.authority
+                    .signing_maintenance(context.clone(), body)
+                    .await,
+            )
+            .await
+            .map_err(status)?;
+        let response = AuthorityJsonResponse {
+            response_json: encode_json(&reply).map_err(|error| {
+                if mutation {
+                    Status::unknown(format!(
+                        "global signer outcome retained; encoding failed: {error}"
+                    ))
+                } else {
+                    status(error)
+                }
+            })?,
+        };
+        let outcome = self
+            .auth
+            .audit_result(&context, fence.release().await)
+            .await;
+        let outcome = match outcome {
+            Ok(()) => fence.release().await,
+            Err(error) => Err(error),
+        };
+        outcome.map_err(|error| {
+            if mutation {
+                Status::unknown(format!(
+                    "global signer outcome retained; recover original identity: {error}"
+                ))
+            } else {
+                status(error)
+            }
+        })?;
+        Ok(Response::new(response))
+    }
     async fn signer_maintenance(
         &self,
         request: Request<AuthorityJsonRequest>,
@@ -108,7 +174,8 @@ impl kasumi_authority_server::KasumiAuthority for NativeAuthority {
             .await
             .map_err(status)?;
         let authorization = match &body.action {
-            SignerVerifierAction::Observe => None,
+            SignerVerifierAction::Observe
+            | SignerVerifierAction::ReloadOperationalSigner { .. } => None,
             SignerVerifierAction::Receipt { operation_id } => self
                 .auth
                 .audit_result(
@@ -143,11 +210,80 @@ impl kasumi_authority_server::KasumiAuthority for NativeAuthority {
                     .clone(),
             ),
         };
-        let mutated = matches!(body.action, SignerVerifierAction::Administer { .. });
-        let mut effect_dispatched = false;
+        let mutated = matches!(
+            body.action,
+            SignerVerifierAction::Administer { .. }
+                | SignerVerifierAction::ReloadOperationalSigner { .. }
+        );
+        let loaded_signer = if let SignerVerifierAction::ReloadOperationalSigner {
+            expected_revision,
+            certificate_sha256,
+            not_after_ms,
+        } = &body.action
+        {
+            let load = || -> anyhow::Result<_> {
+                anyhow::ensure!(
+                    context
+                        .authorization
+                        .expires_at_ms()
+                        .is_some_and(|expiry| *not_after_ms <= expiry),
+                    "reload deadline exceeds original credential"
+                );
+                let deadline = self.auth.signer_admission_deadline(*not_after_ms)?;
+                scope.bind_deadline(deadline.clone())?;
+                scope.check()?;
+                let current = owner.current()?;
+                anyhow::ensure!(
+                    current.revision == *expected_revision
+                        && current.active.digest()? == *certificate_sha256,
+                    "reload requires the exact current durable signer head"
+                );
+                let path = self.operational_signer_file.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!("installed operational signer source unavailable")
+                })?;
+                let source = crate::signer_runtime::OperationalSignerConfig::load(path, &domain)?;
+                anyhow::ensure!(
+                    source.certificate == current.active,
+                    "configured signer is not the requested active generation"
+                );
+                Ok((source.open(verifier)?, deadline))
+            };
+            let (signer, deadline) = self
+                .auth
+                .audit_result(
+                    &context,
+                    load().map_err(|error| {
+                        kasumi_types::Error::new(
+                            kasumi_types::ErrorCode::Conflict,
+                            error.to_string(),
+                        )
+                    }),
+                )
+                .await
+                .map_err(status)?;
+            // Candidate validation is complete before publication. The original
+            // finite admission and physical owner remain fenced through release.
+            scope
+                .check()
+                .map_err(|error| Status::failed_precondition(error.to_string()))?;
+            self.auth
+                .audit_result(
+                    &context,
+                    self.authority
+                        .replace_operational_signer(fence.clone(), signer.clone(), deadline)
+                        .await,
+                )
+                .await
+                .map_err(status)?;
+            Some(signer)
+        } else {
+            None
+        };
+        let mut effect_dispatched = loaded_signer.is_some();
         let execute = || -> anyhow::Result<_> {
             let receipt = match &body.action {
-                SignerVerifierAction::Observe => None,
+                SignerVerifierAction::Observe
+                | SignerVerifierAction::ReloadOperationalSigner { .. } => None,
                 SignerVerifierAction::Receipt { operation_id } => {
                     owner.status(&context, *operation_id)?
                 }
@@ -177,9 +313,13 @@ impl kasumi_authority_server::KasumiAuthority for NativeAuthority {
             let observation = owner.observe()?;
             let reply = SignerVerifierResponse {
                 observation_id: body.observation_id,
+                request_sha256: body.digest()?,
                 domain_sha256: body.domain_sha256.clone(),
                 current: observation.record().clone(),
                 receipt,
+                loaded_certificate: loaded_signer
+                    .as_ref()
+                    .map(|signer| signer.certificate().clone()),
                 authorization,
             };
             reply.validate_for(&body, &domain)?;
@@ -197,7 +337,7 @@ impl kasumi_authority_server::KasumiAuthority for NativeAuthority {
                         } else {
                             kasumi_types::ErrorCode::Conflict
                         },
-                        format!("resolve the exact signer operation identity: {error}"),
+                        format!("signer maintenance failed; resolve the exact requested operation or reload head: {error}"),
                     )
                 }),
             )
@@ -218,6 +358,11 @@ impl kasumi_authority_server::KasumiAuthority for NativeAuthority {
             scope
                 .check()
                 .and_then(|_| observation.check())
+                .and_then(|_| {
+                    loaded_signer
+                        .as_ref()
+                        .map_or(Ok(()), |signer| signer.check())
+                })
                 .map_err(|error| {
                     kasumi_types::Error::new(
                         kasumi_types::ErrorCode::Unavailable,

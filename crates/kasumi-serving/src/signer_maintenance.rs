@@ -9,8 +9,20 @@ use uuid::Uuid;
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SignerVerifierAction {
     Observe,
-    Receipt { operation_id: Uuid },
-    Administer { command: SignerTrustCommand },
+    /// Reopen the installed key source for this already activated durable head.
+    /// This changes only the in-memory signer; it is not a trust transition or
+    /// a permanent rotation completion receipt.
+    ReloadOperationalSigner {
+        expected_revision: u64,
+        certificate_sha256: String,
+        not_after_ms: u64,
+    },
+    Receipt {
+        operation_id: Uuid,
+    },
+    Administer {
+        command: SignerTrustCommand,
+    },
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -22,6 +34,10 @@ pub struct SignerVerifierRequest {
     pub action: SignerVerifierAction,
 }
 impl SignerVerifierRequest {
+    pub fn digest(&self) -> Result<String> {
+        self.validate()?;
+        crate::digest(&("kasumi.signer-verifier-request.v1", self))
+    }
     pub fn validate(&self) -> Result<()> {
         ensure!(
             !self.observation_id.is_nil(),
@@ -31,6 +47,14 @@ impl SignerVerifierRequest {
         kasumi_types::validate_sha256(&self.domain_sha256)?;
         match &self.action {
             SignerVerifierAction::Observe => {}
+            SignerVerifierAction::ReloadOperationalSigner {
+                certificate_sha256,
+                not_after_ms,
+                ..
+            } => {
+                kasumi_types::validate_sha256(certificate_sha256)?;
+                ensure!(*not_after_ms > 0, "reload admission deadline required");
+            }
             SignerVerifierAction::Receipt { operation_id } => {
                 ensure!(!operation_id.is_nil(), "receipt identity required")
             }
@@ -45,9 +69,12 @@ impl SignerVerifierRequest {
 #[serde(deny_unknown_fields)]
 pub struct SignerVerifierResponse {
     pub observation_id: Uuid,
+    pub request_sha256: String,
     pub domain_sha256: String,
     pub current: LocalSignerTrustRecord,
     pub receipt: Option<SignerTrustReceipt>,
+    /// A current reload observation, never a historical authorization proof.
+    pub loaded_certificate: Option<SigningCertificate>,
     /// Permanent consensus authorization. Local publication is evidenced only
     /// by `receipt`; this field alone does not complete rotation or local drain.
     pub authorization: Option<AuthorityMaintenanceStatus>,
@@ -64,6 +91,7 @@ impl SignerVerifierResponse {
         self.current.validate()?;
         ensure!(
             self.observation_id == request.observation_id
+                && self.request_sha256 == request.digest()?
                 && self.domain_sha256 == request.domain_sha256
                 && self.domain_sha256 == domain.digest()?
                 && self.current.verifier == request.verifier
@@ -72,6 +100,7 @@ impl SignerVerifierResponse {
         );
         match (&request.action, &self.receipt) {
             (SignerVerifierAction::Observe, None)
+            | (SignerVerifierAction::ReloadOperationalSigner { .. }, None)
             | (SignerVerifierAction::Receipt { .. }, None) => {}
             (SignerVerifierAction::Receipt { operation_id }, Some(receipt)) => ensure!(
                 receipt.command.operation_id == *operation_id,
@@ -82,6 +111,29 @@ impl SignerVerifierResponse {
                 "accepted signer command differs"
             ),
             _ => anyhow::bail!("verifier response kind differs"),
+        }
+        match (&request.action, &self.loaded_certificate) {
+            (
+                SignerVerifierAction::ReloadOperationalSigner {
+                    expected_revision,
+                    certificate_sha256,
+                    ..
+                },
+                Some(certificate),
+            ) => {
+                certificate.verify(domain)?;
+                ensure!(
+                    *expected_revision == self.current.revision
+                        && *certificate == self.current.active
+                        && certificate.digest()? == *certificate_sha256,
+                    "loaded signer differs from requested durable generation"
+                );
+            }
+            (SignerVerifierAction::ReloadOperationalSigner { .. }, None) => {
+                anyhow::bail!("reload observation lacks its loaded signer")
+            }
+            (_, None) => {}
+            (_, Some(_)) => anyhow::bail!("unrequested signer reload observation"),
         }
         if let Some(authorization) = &self.authorization {
             authorization.validate()?;
@@ -98,7 +150,8 @@ impl SignerVerifierResponse {
                 "consensus directive targets another verifier"
             );
             let requested_id = match &request.action {
-                SignerVerifierAction::Observe => {
+                SignerVerifierAction::Observe
+                | SignerVerifierAction::ReloadOperationalSigner { .. } => {
                     anyhow::bail!("observation cannot carry an unrelated directive")
                 }
                 SignerVerifierAction::Receipt { operation_id } => *operation_id,

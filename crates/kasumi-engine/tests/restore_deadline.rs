@@ -51,7 +51,11 @@ fn context(tenant: &str) -> RequestContext {
 #[tokio::test]
 async fn restore_deadline_bounds_source_io_and_gate_queue_without_blocking_another_tenant() {
     let root = tempfile::tempdir().unwrap();
-    let node = NodeStore::open(root.path().join("node.redb")).unwrap();
+    let node = NodeStore::open(
+        root.path().join("node.redb"),
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
     let audit = common::security_audit(node.clone()).await;
     let keys = Arc::new(LocalKeyProvider::new([0xA6; 32]));
     let first = TenantStore::open_fixture(node.clone(), "first".into(), keys.clone())

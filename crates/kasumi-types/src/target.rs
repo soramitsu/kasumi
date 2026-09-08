@@ -469,21 +469,18 @@ pub struct SignedTargetInspection {
     pub signature: String,
 }
 
-/// Bounded permanent per-node metadata, separate from application quotas.
+/// Configured permanent per-node metadata budget, separate from application quotas.
+/// Record counts never expire or impose a fixed installation lifetime.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TargetJournalLimits {
-    pub max_intents: u32,
-    pub max_generation_records: u32,
     pub max_metadata_bytes: u64,
 }
 impl TargetJournalLimits {
     pub fn validate(&self) -> Result<()> {
         require(
-            (1..=100_000).contains(&self.max_intents)
-                && (1..=100_000).contains(&self.max_generation_records)
-                && (262_144..=268_435_456).contains(&self.max_metadata_bytes),
-            "target journal quota exceeds hard bounds",
+            self.max_metadata_bytes >= 262_144,
+            "target journal byte budget cannot hold its metadata record",
         )
     }
 }
@@ -522,4 +519,29 @@ impl TargetActivationObservation {
 pub struct SignedTargetActivation {
     pub observation: TargetActivationObservation,
     pub signature: String,
+}
+
+#[cfg(test)]
+mod journal_limit_tests {
+    use super::*;
+    #[test]
+    fn target_metadata_capacity_has_no_lifetime_count_or_aggregate_format_ceiling() {
+        let limits: TargetJournalLimits = serde_json::from_value(serde_json::json!({
+            "max_metadata_bytes": 1u64 << 40,
+        }))
+        .unwrap();
+        limits.validate().unwrap();
+        for field in ["max_intents", "max_generation_records"] {
+            let mut obsolete = serde_json::to_value(&limits).unwrap();
+            obsolete[field] = 100_000.into();
+            assert!(serde_json::from_value::<TargetJournalLimits>(obsolete).is_err());
+        }
+        assert!(
+            TargetJournalLimits {
+                max_metadata_bytes: 262_143
+            }
+            .validate()
+            .is_err()
+        );
+    }
 }

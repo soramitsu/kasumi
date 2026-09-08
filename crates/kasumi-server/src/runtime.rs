@@ -233,6 +233,7 @@ pub struct RuntimeConfig {
     pub format: u32,
     pub mode: DeploymentMode,
     pub database_path: PathBuf,
+    pub scratch_disk: kasumi_store::ScratchDiskConfig,
     pub auth: AuthConfig,
     pub mcp: McpEndpoint,
     pub native: MutualTlsEndpoint,
@@ -259,6 +260,7 @@ impl RuntimeConfig {
         ensure!(self.format == 1, "unsupported runtime configuration format");
         absolute(&self.database_path)?;
         self.admission.validate()?;
+        self.scratch_disk.validate()?;
         for (tenant, archive) in &self.tenant_audit_archives {
             kasumi_types::validate_name(tenant)?;
             ensure!(
@@ -702,24 +704,8 @@ pub(crate) fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 pub(crate) fn read_private_file(path: &Path, limit: usize) -> Result<Zeroizing<Vec<u8>>> {
-    let file = std::fs::File::open(path)
-        .with_context(|| format!("opening private key {}", path.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        ensure!(
-            file.metadata()?.permissions().mode() & 0o077 == 0,
-            "private key must not be readable or writable by group/other users"
-        );
-    }
-    ensure!(
-        file.metadata()?.len() <= limit as u64,
-        "private key file exceeds byte limit"
-    );
-    let mut bytes = Zeroizing::new(Vec::new());
-    file.take(limit as u64 + 1).read_to_end(&mut bytes)?;
-    ensure!(bytes.len() <= limit, "private key file exceeds byte limit");
-    Ok(bytes)
+    kasumi_store::private_files::read(path, limit)
+        .with_context(|| format!("opening private key {}", path.display()))
 }
 
 pub fn parse_certificate_pin(value: &str) -> Result<CertificatePin> {
@@ -915,6 +901,7 @@ impl NodeRuntime {
     ) -> Result<Self> {
         config.validate()?;
         let standalone_lock = crate::standalone::claim(&config)?;
+        let scratch_disk = kasumi_store::ScratchDisk::open(config.scratch_disk.clone())?;
         let credential = Arc::new(credential);
         let signer_verifier = if let Some(verifier) = &config.signer_verifier {
             let mut domains = BTreeMap::new();
@@ -924,7 +911,11 @@ impl NodeRuntime {
                     domains.insert(domain.digest()?, domain);
                 }
             }
-            Some(verifier.open(domains, credential.clone()).await?)
+            Some(
+                verifier
+                    .open(domains, credential.clone(), scratch_disk.clone())
+                    .await?,
+            )
         } else {
             None
         };
@@ -1011,7 +1002,7 @@ impl NodeRuntime {
         } else {
             (None, None)
         };
-        let node = NodeStore::open(&config.database_path)?;
+        let node = NodeStore::open(&config.database_path, scratch_disk.clone())?;
         let security_store = TenantStore::open(
             node.clone(),
             SECURITY_TENANT.into(),
@@ -1106,7 +1097,7 @@ impl NodeRuntime {
                 let tenant_node = match &active {
                     Some(active) => {
                         tenant.incarnation = Some(active.incarnation.to_string());
-                        NodeStore::open(active.directory.join("node.redb"))?
+                        NodeStore::open(active.directory.join("node.redb"), scratch_disk.clone())?
                     }
                     None => node.clone(),
                 };
@@ -1851,6 +1842,11 @@ pub fn example_config() -> RuntimeConfig {
         strict_read_audit: false,
     };
     RuntimeConfig {
+        scratch_disk: kasumi_store::ScratchDiskConfig {
+            directory: "/var/lib/kasumi/scratch".into(),
+            max_bytes: 64 << 30,
+            min_free_bytes: 256 << 20,
+        },
         tenant_audit_archives: BTreeMap::new(),
         signer_verifier: Some(crate::signer_runtime::SignerVerifierConfig {
             identity: kasumi_serving::TrustVerifierIdentity {
@@ -2161,7 +2157,7 @@ mod tests {
     async fn service_audit_survives_reopen_and_tenant_sealing_and_fails_closed_at_quota() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("node.redb");
-        let node = NodeStore::open(&path).unwrap();
+        let node = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
         let keys = Arc::new(LocalKeyProvider::new([33; 32]));
         let clock = Arc::new(ManualClock::new());
         let service = TenantStore::open_fixture_with_clock(
@@ -2213,7 +2209,7 @@ mod tests {
         drop(service);
         drop(tenant);
         let service = TenantStore::open_fixture_with_clock(
-            NodeStore::open(&path).unwrap(),
+            NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap(),
             SECURITY_TENANT.into(),
             keys,
             clock,
@@ -2249,6 +2245,13 @@ mod tests {
             &*read_private_file(&path, 1024).unwrap(),
             b"test private material"
         );
+        assert!(read_private_file(&path, 4).is_err());
+        let link = dir.path().join("linked-key.pem");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        assert!(read_private_file(&link, 1024).is_err());
+        let directory = dir.path().join("directory-key.pem");
+        kasumi_store::private_files::create_directory(&directory).unwrap();
+        assert!(read_private_file(&directory, 1024).is_err());
     }
 
     #[test]
@@ -2456,7 +2459,7 @@ mod lifecycle_tests {
         for startup in [true, false] {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("listener.redb");
-            let node = NodeStore::open(&path).unwrap();
+            let node = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
             let weak = Arc::downgrade(&node);
             let (files, pem) = certificate_files(directory.path());
             let socket = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2544,7 +2547,7 @@ mod lifecycle_tests {
                 "listener or request retained the node after drain"
             );
             // No delay or lock retry after the same drain used by every serve exit.
-            drop(NodeStore::open(&path).unwrap());
+            drop(NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap());
         }
     }
 
@@ -2919,6 +2922,7 @@ mod lifecycle_tests {
         ));
         let mut config = fixture_config();
         config.database_path = dir.path().join("node.redb");
+        config.scratch_disk.directory = dir.path().join("scratch");
         config.mcp.tls = files.clone();
         config.native.tls = files.clone();
         config.admin.tls = files.clone();
@@ -3374,6 +3378,7 @@ mod lifecycle_tests {
             let mut config = fixture_config();
             config.mode = DeploymentMode::Replicated;
             config.database_path = dir.path().join(format!("node{node}.redb"));
+            config.scratch_disk.directory = dir.path().join(format!("scratch-{node}"));
             config.mcp.tls = files[node].clone();
             config.native.tls = files[node].clone();
             config.admin.tls = files[node].clone();
@@ -3887,7 +3892,15 @@ mod lifecycle_tests {
                 },
             )
             .await
-            .unwrap();
+            .unwrap_or_else(|error| panic!(
+                "first replicated PrepareRestore failed: {error:#}; admission after failure={:?}; destination chunk limit={:?}; source limits={:?}",
+                managers[0].security_audit().admission().snapshot(),
+                configurations[0].backup_destinations.get("primary").map(|destination| match destination {
+                    crate::administration::DestinationConfig::Filesystem { max_bytes, .. }
+                    | crate::administration::DestinationConfig::S3 { max_bytes, .. } => *max_bytes,
+                }),
+                databases[0].engine().generation().map(|generation| generation.state.limits.clone()),
+            ));
         // A single prepared replica cannot start a replacement quorum.
         assert!(
             managers[0]

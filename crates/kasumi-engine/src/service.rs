@@ -2174,7 +2174,11 @@ mod tests {
     #[tokio::test]
     async fn queued_deadlines_use_admission_time_and_survive_caller_cancellation() {
         let directory = tempfile::tempdir().unwrap();
-        let node = NodeStore::open(directory.path().join("node.redb")).unwrap();
+        let node = NodeStore::open(
+            directory.path().join("node.redb"),
+            kasumi_store::ScratchDisk::fixture(),
+        )
+        .unwrap();
         let audit_store = TenantStore::open_fixture(
             node.clone(),
             crate::SECURITY_TENANT.into(),

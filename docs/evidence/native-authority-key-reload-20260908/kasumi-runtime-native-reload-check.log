@@ -1,0 +1,37 @@
+    Checking kasumi-serving v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-serving)
+    Checking kasumi-store v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-store)
+    Checking kasumi-client v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-client)
+    Checking kasumi-raft v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-raft)
+    Checking kasumi-engine v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-engine)
+    Checking kasumi-authority v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-authority)
+    Checking kasumi-server v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-server)
+error[E0599]: no method named `digest` found for struct `kasumi_types::SigningCertificate` in the current scope
+   --> crates/kasumi-server/src/rpc_authority.rs:178:43
+    |
+178 |                         && current.active.digest()? == *certificate_sha256,
+    |                                           ^^^^^^
+    |
+   ::: crates/kasumi-serving/src/signing.rs:29:8
+    |
+ 29 |     fn digest(&self) -> Result<String>;
+    |        ------ the method is available for `kasumi_types::SigningCertificate` here
+    |
+    = help: items from traits can only be used if the trait is in scope
+help: one of the expressions' fields has a method of the same name
+    |
+178 |                         && current.active.identity.domain.digest()? == *certificate_sha256,
+    |                                           ++++++++++++++++
+help: trait `SigningCertificateVerification` which provides `digest` is implemented but not in scope; perhaps you want to import it
+    |
+  3 + use kasumi_serving::SigningCertificateVerification;
+    |
+help: there is a method `test` with a similar name
+    |
+178 -                         && current.active.digest()? == *certificate_sha256,
+178 +                         && current.active.test()? == *certificate_sha256,
+    |
+
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `kasumi-server` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `kasumi-server` (lib test) due to 1 previous error

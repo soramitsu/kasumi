@@ -88,16 +88,38 @@ The trusted runtime can explicitly replace its operational key under a current
 administrative fence after activation. The replacement must use the exact same
 live verifier owner, not a copied store with an equal public identity. Existing
 requests retain their old signer and response fences. There is no implicit
-key-file reload or fallback to the installation root; native key-source reload
-and the distributed rotation coordinator still need operational wiring.
+key-file watcher or fallback to the installation root. Explicit native reload
+uses the installed private descriptor; the distributed rotation coordinator
+still needs operational wiring.
 
 ## Runtime installation
 
 The authority manifest partition `public_key` is the installation root's public
 key. Its private key belongs in separate operator backup and is never loaded by
-an authority daemon. The authority configuration uses `operational_signer` with
-an explicit root-certified `certificate` and an absolute private PKCS#8
-`key_file`. The operational key must differ from the root key.
+an authority daemon. The authority configuration requires `operational_signer_file`, an absolute
+owner-only JSON descriptor containing an explicit root-certified `certificate`
+and an absolute private PKCS#8 `key_file`. The operational key must differ from
+the root key. Replace the complete descriptor atomically when preparing a new
+key; its certificate must match the key file. The runtime reads one bounded
+private descriptor snapshot at startup and on an explicit authenticated reload.
+
+After activating the intended local durable head, use the native client's
+`signer_maintenance` with `reload_operational_signer`, its exact
+`expected_revision`, `certificate_sha256`, and finite `not_after_ms`. The request
+also names the exact physical verifier and independently installed domain. The
+mTLS/JWT/current-quorum administrative boundary is required even if the former
+operational signer is sealed. The original elapsed deadline fences publication
+and response release. Invalid, staged, retired, mismatched, or oversized key
+sources leave the previous slot intact. Existing requests always retain their
+original signer and cannot be re-signed by a successful reload.
+
+A successful reply's `loaded_certificate` is a current reload observation for
+that request, not a permanent completion receipt or a remote activation proof.
+Reload does not change the durable trust revision. If its response is uncertain,
+repeat the same request while its admission remains valid; a later fresh
+administrative invocation must still name the same current durable head. A
+restart reads the currently installed descriptor and validates it against the
+retained encrypted trust state before admitting any lease.
 
 Each authority and data/Control runtime configures `signer_verifier` with:
 
@@ -187,3 +209,47 @@ rotation still requires durable dispatch and acknowledgements for every other
 authority, data and Control verifier, permanent revocation for unavailable
 members, coordinated operational-key loading, and the complete issuer drain.
 The local API must not be used to declare that this remaining work has happened.
+
+## Replicated issuer signing head
+
+Authority bootstrap configuration requires `initial_signer_certificate`, the
+exact generation-one operational certificate. It is part of the immutable
+bootstrap binding, separately from the installation root and the replaceable
+`operational_signer_file`. An existing authority store rejects a different
+bootstrap certificate. Encrypted snapshots retain the current global signing
+head and permanent stage/activation receipts; restore verifies their causal
+positions and rejects a head that omits or rolls back retained transitions.
+
+Use the native authority client's `signing_maintenance` with an independently
+installed `domain_sha256`, fresh `observation_id` and typed `observe`, `receipt`
+or `start` action. Replies supply the current `policy_epoch` and
+`operational_revision` for a new exact command. `start` accepts
+`StageSignerGeneration` and `ActivateSignerGeneration` commands. The former
+retains the successor certificate; the latter names that exact stage operation
+and certificate digest. The original command UUID, expected revisions and finite
+`not_after_ms` remain unchanged across retries. This endpoint uses current
+mTLS/JWT policy and quorum authorization, so operators can resolve an activation
+that has sealed the loaded operational key.
+
+Global activation changes the replicated accepted issuer certificate. Every
+lease admission and captured authority response checks that certificate after
+its current quorum barrier, in addition to the exact local verifier and original
+request authority. A member whose local signer still uses the prior generation
+can continue authenticated administrative recovery while its old lease issuance
+and responses fail. Restart preserves this fence. Explicit local trust activation
+and key reload then install the selected key on each issuer member.
+
+Global retirement remains pending after activation. A local retirement receipt
+cannot clear it, and a new global stage is rejected while retirement is pending.
+The coordinator still needs the complete enrolled receiver/issuer roster,
+current authenticated acknowledgments or permanent revocations, and the full
+issuer drain before global retirement can complete. Global stage abort and
+retirement completion are not exposed yet. These prerequisites are required
+before the release can claim complete distributed signer rotation.
+
+The authority runtime and signer-verifier initialization request require an
+explicit `scratch_disk` object: `directory` (absolute private leaf beneath an
+existing parent), `max_bytes`, and `min_free_bytes`. Use the same installed
+runtime scratch configuration when initializing its separate verifier store.
+Runtime opening passes the shared node owner to both stores; it does not create
+an independent per-request or per-verifier allowance.

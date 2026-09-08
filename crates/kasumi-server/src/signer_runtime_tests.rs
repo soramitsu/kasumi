@@ -41,6 +41,11 @@ impl Fixture {
         private_files::create(&key_file, &key.serialize_der()).unwrap();
         Self {
             input: InitializeSignerVerifier {
+                scratch_disk: kasumi_store::ScratchDiskConfig {
+                    directory: directory.path().join("scratch"),
+                    max_bytes: 64 << 30,
+                    min_free_bytes: 256 << 20,
+                },
                 verifier: SignerVerifierConfig {
                     identity: TrustVerifierIdentity {
                         installation_id: Uuid::new_v4(),
@@ -67,6 +72,7 @@ impl Fixture {
             .open(
                 BTreeMap::from([(domain.digest()?, domain)]),
                 Arc::new(file_secret),
+                kasumi_store::ScratchDisk::open(self.input.scratch_disk.clone())?,
             )
             .await
     }
@@ -136,7 +142,11 @@ async fn partial_initializer_resumes_only_exact_initial_heads_and_rejects_corrup
     let store = f
         .input
         .verifier
-        .store(Arc::new(file_secret), true)
+        .store(
+            Arc::new(file_secret),
+            true,
+            kasumi_store::ScratchDisk::fixture(),
+        )
         .await
         .unwrap();
     store
@@ -156,7 +166,11 @@ async fn partial_initializer_resumes_only_exact_initial_heads_and_rejects_corrup
     let store = f
         .input
         .verifier
-        .store(Arc::new(file_secret), true)
+        .store(
+            Arc::new(file_secret),
+            true,
+            kasumi_store::ScratchDisk::fixture(),
+        )
         .await
         .unwrap();
     let digest = f.manifest.signing_domain(0).unwrap().digest().unwrap();
@@ -175,7 +189,11 @@ async fn partial_initializer_resumes_only_exact_initial_heads_and_rejects_corrup
     let store = f
         .input
         .verifier
-        .store(Arc::new(file_secret), true)
+        .store(
+            Arc::new(file_secret),
+            true,
+            kasumi_store::ScratchDisk::fixture(),
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -208,7 +226,11 @@ async fn initialization_rejects_noninitial_and_mismatched_domains_without_publis
     assert!(
         f.input
             .verifier
-            .open(BTreeMap::new(), Arc::new(file_secret))
+            .open(
+                BTreeMap::new(),
+                Arc::new(file_secret),
+                kasumi_store::ScratchDisk::fixture()
+            )
             .await
             .is_err()
     );
@@ -218,7 +240,8 @@ async fn initialization_rejects_noninitial_and_mismatched_domains_without_publis
         other_identity
             .open(
                 BTreeMap::from([(domain.digest().unwrap(), domain)]),
-                Arc::new(file_secret)
+                Arc::new(file_secret),
+                kasumi_store::ScratchDisk::fixture()
             )
             .await
             .is_err()
@@ -263,4 +286,51 @@ async fn initialization_rejects_noninitial_and_mismatched_domains_without_publis
         "production maintenance requires the current coordinator"
     );
     installed.shutdown().await;
+}
+
+#[tokio::test]
+async fn operational_source_is_private_bounded_and_cannot_substitute_installed_trust() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    f.input.initialize().await.unwrap();
+    let installed = f.open().await.unwrap();
+    let domain = f.manifest.signing_domain(0).unwrap();
+    let path = f._directory.path().join("current.json");
+    let bytes = serde_json::to_vec(&f.operational).unwrap();
+    private_files::create(&path, &bytes).unwrap();
+    let retained = OperationalSignerConfig::load(&path, &domain)
+        .unwrap()
+        .open(&installed)
+        .unwrap();
+    assert!(OperationalSignerConfig::load(Path::new("relative.json"), &domain).is_err());
+    let link = f._directory.path().join("alias.json");
+    std::os::unix::fs::symlink(&path, &link).unwrap();
+    assert!(OperationalSignerConfig::load(&link, &domain).is_err());
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(OperationalSignerConfig::load(&path, &domain).is_err());
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    private_files::replace(&path, &vec![b' '; (128 << 10) + 1]).unwrap();
+    assert!(OperationalSignerConfig::load(&path, &domain).is_err());
+    let mut forged = f.operational.clone();
+    forged.certificate.root_signature = "00".repeat(64);
+    private_files::replace(&path, &serde_json::to_vec(&forged).unwrap()).unwrap();
+    assert!(OperationalSignerConfig::load(&path, &domain).is_err());
+    retained.check().unwrap();
+    private_files::replace(&path, &bytes).unwrap();
+    installed.shutdown().await;
+    assert!(retained.check().is_err());
+    drop(installed);
+    assert!(
+        f.open().await.is_err(),
+        "retained metadata owners must drain before reopening"
+    );
+    drop(retained);
+    let reopened = f.open().await.unwrap();
+    OperationalSignerConfig::load(&path, &domain)
+        .unwrap()
+        .open(&reopened)
+        .unwrap()
+        .check()
+        .unwrap();
+    reopened.shutdown().await;
 }

@@ -24,6 +24,7 @@ async fn retired_runtime_reopens_current_custody_without_constructing_applicatio
     ));
     let mut config = fixture_config();
     config.database_path = dir.path().join("node.redb");
+    config.scratch_disk.directory = dir.path().join("scratch");
     config.mcp.tls = files.clone();
     config.native.tls = files.clone();
     config.admin.tls = files.clone();

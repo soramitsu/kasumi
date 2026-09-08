@@ -1,0 +1,10 @@
+   Compiling kasumi-authority v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-authority)
+   Compiling kasumi-server v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 23.61s
+     Running unittests src/lib.rs (/tmp/kasumi-production-runtime-target/debug/deps/kasumi_server-8b9768f86cabe832)
+
+running 1 test
+test rpc::authority_tests::actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_recovery ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 79 filtered out; finished in 13.73s
+

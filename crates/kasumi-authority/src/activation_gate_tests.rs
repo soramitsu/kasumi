@@ -458,7 +458,11 @@ async fn target_storage_retains_original_phase_and_cannot_install_late_renewal_o
     )
     .unwrap();
     let captured = phase.capture().unwrap();
-    let node_store = NodeStore::open(f._dir.path().join("actual-target.redb")).unwrap();
+    let node_store = NodeStore::open(
+        f._dir.path().join("actual-target.redb"),
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
     let provider = Arc::new(LocalKeyProvider::new([91; 32]));
     let access = kasumi_store::StorageAccess::target_phase(serving.clone(), phase.clone()).unwrap();
     let store = kasumi_store::TenantStore::open(

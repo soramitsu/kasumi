@@ -42,6 +42,10 @@ impl TenantStore {
     }
 }
 impl TenantReadView {
+    pub fn scratch_disk(&self) -> &Arc<ScratchDisk> {
+        self.store.scratch_disk()
+    }
+
     pub fn get(
         &self,
         namespace: &str,

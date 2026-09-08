@@ -505,7 +505,7 @@ async fn open(
     Arc<kasumi_engine::Database>,
     Arc<kasumi_engine::SecurityAudit>,
 ) {
-    let node = NodeStore::open(path).unwrap();
+    let node = NodeStore::open(path, kasumi_store::ScratchDisk::fixture()).unwrap();
     let audit = common::security_audit(node.clone()).await;
     let store = TenantStore::open_fixture(
         node,

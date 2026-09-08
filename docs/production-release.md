@@ -337,3 +337,58 @@ a read-only quota getter or caller capacity claim cannot close this dependency.
   and strict workspace Clippy/production checks passed. Bound evidence is in
   `docs/evidence/immutable-authority-signers-20260908`; native key-file reload and
   coordinated global rotation remain separate unfinished work.
+
+- `679a8e8` verifies historical backup snapshots through bounded encrypted point
+  indexes and the canonical engine record rules. All 62 engine library tests and
+  strict engine Clippy passed. Bound evidence and every retained stalled/failed
+  attempt are in `docs/evidence/indexed-backup-verification-20260908`; earlier
+  uncommitted-source tests remain explicitly qualified. This does not establish
+  the 3 GiB/RSS gate or cross-member backup-key failover. Combined workspace
+  checks passed at integration `3ee5787` and then `cf369cd`.
+- `00b1446` permits exact retained target materialization only through a separately
+  committed fresh Control intent and verified source-purpose digest. Authority
+  materialization tests passed ten, Control lifecycle tests five, and strict
+  workspace Clippy/fixture-free production checks passed. Exact evidence and the
+  corrected assertion failure are in `docs/evidence/fresh-materialization-20260908`.
+  The durable distributed recovery coordinator remains in progress.
+
+- `7d8c817` adds explicit native reload of the exact activated operational signer
+  from private descriptor/key files. Source tests passed four, actual TLS reload
+  passed one and authority tests passed 37, with strict workspace Clippy and
+  fixture-free production checks. Evidence in
+  `docs/evidence/native-authority-key-reload-20260908` preserves initial failures.
+  The replicated signing head and coordinated verifier/issuer drains remain open.
+- `ee0b1e0` includes typed Control recovery records in canonical snapshots and
+  moves cold-history semantic verification into owned blocking workers. Snapshot
+  tests passed 14, backup tests ten, and affected strict Clippy/production checks
+  passed. Evidence is in `docs/evidence/recovery-records-cold-workers-20260908`.
+  The distributed recovery reducer and dispatch remain under implementation.
+
+- Frozen `3ee5787` native Linux ARM64 functional validation completed **failed**:
+  479 workspace tests passed, three failed and two were ignored. The failures
+  cover ambiguous voter replacement observation, resource-destructor timing and
+  overlapping restore reservations; the last also reproduces in isolation.
+  Formatting, Python/dependency checks, strict workspace Clippy and all three
+  fixture-free production binaries passed. Exact source, logs and executable
+  hashes are in `docs/evidence/frozen-linux-arm64-functional-3ee5787-20260908`.
+  Binaries are preserved separately in the dedicated VM. Subsequent fixes require
+  a fresh final-source run; this failed attempt is never substituted by a pass.
+
+- `ad71568` removes target-journal lifetime count caps and the 256 MiB metadata
+  ceiling. Checked 64-bit counts and configurable byte capacity retain completion,
+  activation and permanent-stop reserves. Actual encrypted exhaustion, drained
+  expansion, original retry, full-budget stop/restart and unsupported-head
+  rejection pass; nine materialization-filter cases and affected strict Clippy
+  pass. Combined `a59ddb4` passes fixture-free server checks and strict runtime
+  private-key validation. Evidence is in `docs/evidence/expandable-target-journal-20260908`.
+- `5859d8e` adds a replicated authority signing head, explicit staged activation,
+  generation fences and current administrative outcome resolution. Authority
+  tests pass 40, actual TLS transition passes, and strict workspace/production
+  checks pass. Evidence is in `docs/evidence/replicated-signing-head-20260908`.
+  Complete verifier enrollment, remote acknowledgments and global retirement
+  drains remain unfinished.
+- Exact voter replacement and actual restore-worker drain regressions pass on
+  their recorded macOS sources. Evidence is in
+  `docs/evidence/exact-voter-replacement-20260908` and
+  `docs/evidence/restore-worker-drain-20260908`. These do not replace the failed
+  frozen Linux workspace gate.

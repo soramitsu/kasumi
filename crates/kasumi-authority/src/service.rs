@@ -88,7 +88,7 @@ impl AuthorityResponseFence {
     }
     pub fn check(&self) -> Result<()> {
         self.context.authorization.check_live()?;
-        self.signer.check().map_err(unavailable)?;
+        self.authority.check_active_signer(&self.signer)?;
         self.authority.group.check_access().map_err(unavailable)?;
         self.authority
             .check_installed_configuration()
@@ -197,6 +197,16 @@ impl IndependentAuthority {
                     .manifest
                     .signing_domain(installation.partition)?,
             "installed operational signer differs from authority installation root"
+        );
+        settings.bootstrap.initial_signer_certificate.verify(
+            &installation
+                .manifest
+                .signing_domain(installation.partition)?,
+        )?;
+        ensure!(
+            signer.certificate().identity.generation != 1
+                || *signer.certificate() == settings.bootstrap.initial_signer_certificate,
+            "generation-one signer differs from immutable bootstrap certificate"
         );
         signer.check()?;
         let binding = serde_json::to_vec(&(
@@ -376,6 +386,15 @@ impl IndependentAuthority {
         }
         Ok(())
     }
+    fn check_active_signer(&self, signer: &AuthoritySigner) -> Result<()> {
+        signer.check().map_err(unavailable)?;
+        if self.backend.signing_head().map_err(unavailable)?.active != *signer.certificate() {
+            return Err(unavailable(
+                "operational signer differs from replicated current generation",
+            ));
+        }
+        Ok(())
+    }
     fn request_signer(&self) -> Result<Arc<AuthoritySigner>> {
         // Capture identity only. An admitted administrative effect can commit
         // while its old signer is sealed; signing and release then return an
@@ -492,6 +511,7 @@ impl IndependentAuthority {
             .and_then(|expiry| expiry.checked_sub(now))
             .filter(|value| *value > 0)
             .ok_or_else(|| Error::new(ErrorCode::Unauthorized, "lease credential expired"))?;
+        self.check_active_signer(&signer)?;
         let signed = signer
             .sign_lease(LeaseClaims {
                 request: request.clone(),
@@ -757,3 +777,7 @@ fn require_drain_witness(
 #[path = "signer_administration.rs"]
 mod signer_administration;
 pub use signer_administration::{AuthorityAdministrativeFence, CommittedSignerDirective};
+
+#[path = "signing_administration.rs"]
+mod signing_administration;
+pub use signing_administration::AuthoritySigningResponseFence;

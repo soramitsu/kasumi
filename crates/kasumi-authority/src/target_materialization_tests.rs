@@ -43,7 +43,11 @@ impl MaterialFixture {
     async fn new() -> Self {
         let control = ControlFixture::new();
         let issuer = control.issuer().await;
-        let node = NodeStore::open(issuer._dir.path().join("source.redb")).unwrap();
+        let node = NodeStore::open(
+            issuer._dir.path().join("source.redb"),
+            kasumi_store::ScratchDisk::fixture(),
+        )
+        .unwrap();
         let source_admission =
             kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap();
         let security = audit(node.clone(), source_admission.clone()).await;
@@ -279,8 +283,11 @@ impl MaterialFixture {
         // Production runner obtains this original operation before providers.
         // The helper's actual opener is under the same opaque gate; each tested
         // materialization still explicitly obtains its registered operation.
-        let node =
-            NodeStore::open(self.issuer._dir.path().join(format!("target-{id}.redb"))).unwrap();
+        let node = NodeStore::open(
+            self.issuer._dir.path().join(format!("target-{id}.redb")),
+            kasumi_store::ScratchDisk::fixture(),
+        )
+        .unwrap();
         let security = audit(node.clone(), self.admissions[&id].clone()).await;
         let stores = TenantStorageSet::open(
             node,
@@ -985,7 +992,7 @@ async fn exact_actual_completion_is_required_for_issuer_and_target_activation() 
         StorageAccess::target_journal(&journal_installation.root, &journal_installation.node)
             .unwrap();
     let journal_store = TenantStore::open(
-        NodeStore::open(&journal_path).unwrap(),
+        NodeStore::open(&journal_path, kasumi_store::ScratchDisk::fixture()).unwrap(),
         journal_tenant.clone(),
         journal_provider.clone(),
         journal_access.clone(),
@@ -993,8 +1000,6 @@ async fn exact_actual_completion_is_required_for_issuer_and_target_activation() 
     .await
     .unwrap();
     let journal_limits = TargetJournalLimits {
-        max_intents: 1,
-        max_generation_records: 1,
         max_metadata_bytes: 4 << 20,
     };
     let journal = kasumi_engine::TargetJournal::open(
@@ -1093,7 +1098,7 @@ async fn exact_actual_completion_is_required_for_issuer_and_target_activation() 
     // Reopen only the separately encrypted journal, independently of all app
     // providers. Exact signatures survive restart; substituted facts fail closed.
     let journal_store = TenantStore::open(
-        NodeStore::open(&journal_path).unwrap(),
+        NodeStore::open(&journal_path, kasumi_store::ScratchDisk::fixture()).unwrap(),
         journal_tenant.clone(),
         journal_provider.clone(),
         journal_access.clone(),
@@ -1186,7 +1191,7 @@ async fn exact_actual_completion_is_required_for_issuer_and_target_activation() 
     // Ordinary startup uses only the independent journal, current issuer and
     // existing target keys. No source provider or old Control JWT is consulted.
     let journal_store = TenantStore::open(
-        NodeStore::open(&journal_path).unwrap(),
+        NodeStore::open(&journal_path, kasumi_store::ScratchDisk::fixture()).unwrap(),
         journal_tenant,
         journal_provider,
         journal_access,
@@ -1241,6 +1246,7 @@ async fn exact_actual_completion_is_required_for_issuer_and_target_activation() 
             ._dir
             .path()
             .join(format!("target-{projected_node_id}.redb")),
+        kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();
     let security = audit(node.clone(), f.admissions[&projected_node_id].clone()).await;
@@ -1519,7 +1525,7 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
         node: nodes().first().unwrap().clone(),
     };
     let path = f.issuer._dir.path().join("independent-target-journal.redb");
-    let node = NodeStore::open(&path).unwrap();
+    let node = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
     let tenant = format!("kasumi.target.{}.1", f.control.root.control_incarnation);
     let provider = Arc::new(LocalKeyProvider::new([238; 32]));
     let access = StorageAccess::target_journal(&installation.root, &installation.node).unwrap();
@@ -1541,9 +1547,7 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
     )
     .await
     .unwrap();
-    let limits = TargetJournalLimits {
-        max_intents: 1,
-        max_generation_records: 1,
+    let mut limits = TargetJournalLimits {
         max_metadata_bytes: 4 << 20,
     };
     let journal = TargetJournal::open(
@@ -1579,6 +1583,17 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
             .unwrap();
     assert_eq!(metadata["intents"], 1);
     assert_eq!(metadata["generations"], 1);
+    // Exhaust the actual charged byte budget, including the already reserved
+    // completion/stop/activation records. No lifetime record count is involved.
+    limits.max_metadata_bytes = metadata["charged_bytes"].as_u64().unwrap();
+    drop(journal);
+    let journal = TargetJournal::open(
+        store.clone(),
+        installation.clone(),
+        limits.clone(),
+        f.admissions[&1].clone(),
+    )
+    .unwrap();
     let extra = f
         .commit_phase_input(
             LifecyclePhase::Materialize,
@@ -1593,6 +1608,45 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
             .prepare(&extra_op, &f.input.digest().unwrap())
             .is_err()
     );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(
+            &store.get("target.journal", b"metadata").unwrap().unwrap()
+        )
+        .unwrap(),
+        metadata
+    );
+    // Operational expansion after owner drain preserves the installation and
+    // accepts the exact previously rejected phase under its original deadline.
+    drop(journal);
+    limits.max_metadata_bytes = limits.max_metadata_bytes.checked_mul(2).unwrap();
+    let journal = TargetJournal::open(
+        store.clone(),
+        installation.clone(),
+        limits.clone(),
+        f.admissions[&1].clone(),
+    )
+    .unwrap();
+    let retained = journal
+        .prepare(&extra_op, &f.input.digest().unwrap())
+        .unwrap();
+    assert_eq!(retained.intent(), &extra.observation.intent);
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&store.get("target.journal", b"metadata").unwrap().unwrap())
+            .unwrap();
+    assert_eq!(metadata["intents"], 2);
+    assert_eq!(metadata["generations"], 1);
+    limits.max_metadata_bytes = metadata["charged_bytes"].as_u64().unwrap();
+    drop(journal);
+    let journal = TargetJournal::open(
+        store.clone(),
+        installation.clone(),
+        limits.clone(),
+        f.admissions[&1].clone(),
+    )
+    .unwrap();
+    journal
+        .prepare(&extra_op, &f.input.digest().unwrap())
+        .unwrap();
     drop(extra_op);
     extra_scope.close();
     extra_scope.drain().await;
@@ -1654,14 +1708,14 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
     store.shutdown().await;
     drop(store);
     drop(node);
-    let node = NodeStore::open(path).unwrap();
+    let node = NodeStore::open(path, kasumi_store::ScratchDisk::fixture()).unwrap();
     let store = TenantStore::open(node, tenant, provider, access)
         .await
         .unwrap();
     let reopened = TargetJournal::open(
         store.clone(),
-        installation,
-        limits,
+        installation.clone(),
+        limits.clone(),
         f.admissions[&1].clone(),
     )
     .unwrap();
@@ -1678,6 +1732,64 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
     stop_scope.close();
     stop_scope.drain().await;
     drop(reopened);
+    // Unsupported or missing heads are rejected without a migration, rewrite,
+    // or loss of the permanent stop. Large forged counts cannot truncate to u32.
+    let mut no_format = metadata.clone();
+    no_format.as_object_mut().unwrap().remove("format");
+    let mut unsupported = metadata.clone();
+    unsupported["format"] = 99.into();
+    let mut forged_count = metadata.clone();
+    forged_count["intents"] = (u64::from(u32::MAX) + 1).into();
+    for head in [no_format, unsupported, forged_count] {
+        let bytes = serde_json::to_vec(&head).unwrap();
+        store
+            .write_batch(&[kasumi_store::WriteOp::put(
+                "target.journal",
+                b"metadata",
+                bytes.clone(),
+            )])
+            .unwrap();
+        assert!(
+            TargetJournal::open(
+                store.clone(),
+                installation.clone(),
+                limits.clone(),
+                f.admissions[&1].clone()
+            )
+            .is_err()
+        );
+        assert_eq!(
+            store.get("target.journal", b"metadata").unwrap().unwrap(),
+            bytes
+        );
+        assert_eq!(
+            store
+                .get("target.journal", stop_key.as_bytes())
+                .unwrap()
+                .unwrap(),
+            terminal
+        );
+    }
+    store
+        .write_batch(&[kasumi_store::WriteOp::delete("target.journal", b"metadata")])
+        .unwrap();
+    assert!(
+        TargetJournal::open(
+            store.clone(),
+            installation,
+            limits,
+            f.admissions[&1].clone()
+        )
+        .is_err()
+    );
+    assert!(store.get("target.journal", b"metadata").unwrap().is_none());
+    assert_eq!(
+        store
+            .get("target.journal", stop_key.as_bytes())
+            .unwrap()
+            .unwrap(),
+        terminal
+    );
     store.shutdown().await;
     drop(store);
     drop(issuer);

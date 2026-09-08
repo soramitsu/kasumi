@@ -109,7 +109,11 @@ impl Fixture {
         production: bool,
     ) -> Self {
         let directory = tempfile::tempdir().unwrap();
-        let node = NodeStore::open(directory.path().join("node.redb")).unwrap();
+        let node = NodeStore::open(
+            directory.path().join("node.redb"),
+            kasumi_store::ScratchDisk::fixture(),
+        )
+        .unwrap();
         let admission = kasumi_engine::admission::NodeAdmission::new(config).unwrap();
         let audit = common::security_audit_with_admission(node.clone(), admission.clone()).await;
         let store = TenantStore::open_fixture(
@@ -281,7 +285,7 @@ async fn checkpoint_binds_actual_generation_complete_graph_keys_and_encrypted_re
     drop(db);
     drop(audit);
     drop(store);
-    let node = NodeStore::open(&path).unwrap();
+    let node = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
     let audit = common::security_audit(node.clone()).await;
     let store = TenantStore::open_fixture(
         node,
@@ -882,7 +886,11 @@ async fn local_restore_binds_exact_source_purpose_even_without_cold_archives() {
         .backup_checkpoint_named(context(), "approved", uuid::Uuid::new_v4())
         .await
         .unwrap();
-    let node = NodeStore::open(fixture.directory.path().join("restore.redb")).unwrap();
+    let node = NodeStore::open(
+        fixture.directory.path().join("restore.redb"),
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
     let target = TenantStore::open_fixture(
         node,
         "checkpoint".into(),
@@ -1026,7 +1034,11 @@ async fn archived_audit_backup_is_self_contained_and_source_unavailable_restore_
     // Restore must neither consult a live source quorum nor its local cache.
     fixture.close().await;
     let target_directory = tempfile::tempdir().unwrap();
-    let node = NodeStore::open(target_directory.path().join("target.redb")).unwrap();
+    let node = NodeStore::open(
+        target_directory.path().join("target.redb"),
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
     let target_audit = common::security_audit(node.clone()).await;
     let target = TenantStore::open_fixture(
         node,
@@ -1085,7 +1097,11 @@ async fn archived_audit_backup_is_self_contained_and_source_unavailable_restore_
     // Source verification alone is insufficient: an independently installed
     // target provider must also retain every original historical archive key.
     let wrong_directory = tempfile::tempdir().unwrap();
-    let wrong_node = NodeStore::open(wrong_directory.path().join("wrong.redb")).unwrap();
+    let wrong_node = NodeStore::open(
+        wrong_directory.path().join("wrong.redb"),
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
     let wrong_audit = common::security_audit(wrong_node.clone()).await;
     let wrong_store = TenantStore::open_fixture(
         wrong_node,
@@ -1159,7 +1175,11 @@ async fn archived_audit_backup_is_self_contained_and_source_unavailable_restore_
         .join("tenant-audit-archives")
         .join(format!("{}.audit", head.object.object_id));
     std::fs::remove_file(&cache_path).unwrap();
-    let node = NodeStore::open(target_directory.path().join("target.redb")).unwrap();
+    let node = NodeStore::open(
+        target_directory.path().join("target.redb"),
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
     let reopened_audit = common::security_audit(node.clone()).await;
     let reopened_store = TenantStore::open_fixture(
         node,

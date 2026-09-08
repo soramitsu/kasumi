@@ -276,6 +276,7 @@ async fn benchmark(
     config.serving_authorities.clear();
     config.signer_verifier = None;
     config.database_path = path.join("node.redb");
+    config.scratch_disk.directory = path.join("scratch");
     config.auth = AuthConfig {
         issuer: issuer_url.clone(),
         audience: audience.clone(),

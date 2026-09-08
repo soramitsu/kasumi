@@ -144,7 +144,11 @@ impl Fixture {
     }
     async fn open(&mut self) {
         for id in 1..=3 {
-            let node = NodeStore::open(self.root.path().join(format!("{id}.redb"))).unwrap();
+            let node = NodeStore::open(
+                self.root.path().join(format!("{id}.redb")),
+                kasumi_store::ScratchDisk::fixture(),
+            )
+            .unwrap();
             let audit = common::security_audit(node.clone()).await;
             let store = TenantStore::open_fixture(
                 node,

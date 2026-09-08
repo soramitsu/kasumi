@@ -1,0 +1,8 @@
+    Checking kasumi-serving v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-serving)
+    Checking kasumi-store v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-store)
+    Checking kasumi-client v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-client)
+    Checking kasumi-raft v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-raft)
+    Checking kasumi-authority v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-authority)
+    Checking kasumi-engine v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-engine)
+    Checking kasumi-server v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-server)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 31.09s

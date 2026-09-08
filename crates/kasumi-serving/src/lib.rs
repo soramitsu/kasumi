@@ -48,3 +48,6 @@ pub use kasumi_types::{
     SignedTargetStop, TargetRuntimeOutcome, TargetRuntimeRequest, TargetRuntimeResponse,
     TargetRuntimeStep, TargetStopObservation, TargetStopReference, validate_nodes,
 };
+
+mod authority_signing;
+pub use authority_signing::*;

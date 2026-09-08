@@ -70,9 +70,10 @@ impl GenerationBinding {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Metadata {
+    format: u32,
     installation: TargetJournalInstallation,
-    intents: u32,
-    generations: u32,
+    intents: u64,
+    generations: u64,
     charged_bytes: u64,
 }
 /// The unique store catalog owns the mutation lock; runtime retains this one
@@ -139,7 +140,13 @@ impl TargetJournal {
             .get_bounded(NS, b"metadata", MAX_RECORD)?
             .is_none()
         {
+            // An absent head cannot initialize over retained records or an
+            // unsupported journal. Reject before writing any replacement head.
+            journal.store.visit(NS, MAX_RECORD, |_, _| {
+                anyhow::bail!("target journal records exist without a canonical head")
+            })?;
             let metadata = Metadata {
+                format: 1,
                 installation: journal.installed.clone(),
                 intents: 0,
                 generations: 0,
@@ -154,8 +161,8 @@ impl TargetJournal {
         let metadata = journal.metadata()?;
         // Streaming startup verification retains one bounded encrypted record at
         // a time. Permanent identities are never silently dropped or truncated.
-        let mut intents = 0u32;
-        let mut generations = 0u32;
+        let mut intents = 0u64;
+        let mut generations = 0u64;
         let mut charged = MAX_RECORD as u64;
         journal.store.visit(NS, MAX_RECORD, |key, value| {
             if key.starts_with(b"intent/") {
@@ -216,9 +223,8 @@ impl TargetJournal {
             .context("target journal metadata missing")?;
         let m: Metadata = serde_json::from_slice(&value)?;
         ensure!(
-            m.installation == self.installed
-                && m.intents <= self.limits.max_intents
-                && m.generations <= self.limits.max_generation_records
+            m.format == 1
+                && m.installation == self.installed
                 && m.charged_bytes <= self.limits.max_metadata_bytes,
             "target journal binding or capacity differs"
         );
@@ -342,9 +348,7 @@ impl TargetJournal {
             ));
         }
         ensure!(
-            metadata.intents <= self.limits.max_intents
-                && metadata.generations <= self.limits.max_generation_records
-                && metadata.charged_bytes <= self.limits.max_metadata_bytes,
+            metadata.charged_bytes <= self.limits.max_metadata_bytes,
             "target journal permanent capacity exhausted"
         );
         writes.push(WriteOp::put(
@@ -472,9 +476,7 @@ impl TargetJournal {
             ));
         }
         ensure!(
-            metadata.intents <= self.limits.max_intents
-                && metadata.generations <= self.limits.max_generation_records
-                && metadata.charged_bytes <= self.limits.max_metadata_bytes,
+            metadata.charged_bytes <= self.limits.max_metadata_bytes,
             "permanent stop publication capacity exhausted"
         );
         writes.push(WriteOp::put(

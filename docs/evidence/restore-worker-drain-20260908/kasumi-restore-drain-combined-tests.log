@@ -1,0 +1,9 @@
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 29.64s
+     Running unittests src/lib.rs (/tmp/kasumi-production-root-target/debug/deps/kasumi_engine-e86d7e092c5bb129)
+
+running 1 test
+test bootstrap::backup_restore::tests::expired_restore_worker_keeps_its_admission_charge_until_actual_completion ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 63 filtered out; finished in 0.11s
+

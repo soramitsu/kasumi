@@ -1,7 +1,7 @@
 #[tokio::test]
 async fn queued_staged_finalize_checks_fresh_time_and_canceled_callers_keep_durable_outcomes() {
     let directory = tempfile::tempdir().unwrap();
-    let node = NodeStore::open(directory.path().join("node.redb")).unwrap();
+    let node = NodeStore::open(directory.path().join("node.redb"), kasumi_store::ScratchDisk::fixture()).unwrap();
     let audit_store = TenantStore::open_fixture(
         node.clone(),
         crate::SECURITY_TENANT.into(),

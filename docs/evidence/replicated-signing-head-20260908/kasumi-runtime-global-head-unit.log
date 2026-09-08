@@ -1,0 +1,26 @@
+   Compiling kasumi-serving v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-serving)
+   Compiling kasumi-store v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-store)
+   Compiling kasumi-raft v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-engine)
+   Compiling kasumi-authority v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-authority)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 00s
+     Running unittests src/lib.rs (/tmp/kasumi-production-runtime-target/debug/deps/kasumi_authority-481ba410417b8d16)
+
+running 1 test
+test service::tests::replicated_signer_head_fences_unchanged_local_keys_and_rejects_snapshot_regression ... FAILED
+
+failures:
+
+---- service::tests::replicated_signer_head_fences_unchanged_local_keys_and_rejects_snapshot_regression stdout ----
+
+thread 'service::tests::replicated_signer_head_fences_unchanged_local_keys_and_rejects_snapshot_regression' (20373343) panicked at crates/kasumi-authority/src/snapshot.rs:188:58:
+called `Result::unwrap()` on an `Err` value: Error("missing field `signing`", line: 0, column: 0)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    service::tests::replicated_signer_head_fences_unchanged_local_keys_and_rejects_snapshot_regression
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 39 filtered out; finished in 2.46s
+
+error: test failed, to rerun pass `-p kasumi-authority --lib`

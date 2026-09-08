@@ -187,7 +187,10 @@ impl TargetRecoveryRuntime {
             Ed25519KeyPair::from_pkcs8(&key).map_err(|_| anyhow::anyhow!("invalid target key"))?;
         // Only the independent journal KMS provider is constructed at startup.
         let provider = installed.journal_keys.provider(credential.clone())?;
-        let node = NodeStore::open(&installed.journal_path)?;
+        let node = NodeStore::open(
+            &installed.journal_path,
+            audit.store().scratch_disk().clone(),
+        )?;
         let access = StorageAccess::target_journal(&installed.control_root, &installed.node)?;
         let store = TenantStore::open(
             node,
@@ -636,7 +639,10 @@ impl TargetRecoveryRuntime {
         );
         if g.node.is_none() {
             op.check()?;
-            g.node = Some(NodeStore::open(self.path(&key)?)?);
+            g.node = Some(NodeStore::open(
+                self.path(&key)?,
+                self.audit.store().scratch_disk().clone(),
+            )?);
             op.check()?;
         }
         if g.stores.is_none() {
@@ -915,7 +921,7 @@ impl TargetRecoveryRuntime {
         if path.exists() {
             // An exclusive redb owner proves no other process owns the file;
             // no application provider/key is constructed by this closed path.
-            let node = NodeStore::open(&path)?;
+            let node = NodeStore::open(&path, self.audit.store().scratch_disk().clone())?;
             let node = Arc::try_unwrap(node)
                 .map_err(|_| anyhow::anyhow!("target file has another owner"))?;
             op.check()?;

@@ -45,7 +45,10 @@ pub(super) fn write(view: &TenantReadView, maximum: u64, output: &mut dyn Write)
             .get(NS, META, MAX_RECORD_BYTES)?
             .context("authority metadata missing")?,
     )?;
-    let records = SnapshotRecords(EncryptedTable::new(disk_budget(maximum)?)?);
+    let records = SnapshotRecords(EncryptedTable::new(
+        view.scratch_disk(),
+        disk_budget(maximum)?,
+    )?);
     view.visit(NS, MAX_RECORD_BYTES, |key, bytes| {
         if key != META {
             let record: Record = serde_json::from_slice(bytes)?;
@@ -84,7 +87,11 @@ pub(super) fn write(view: &TenantReadView, maximum: u64, output: &mut dyn Write)
     output.write_all(&digest.finalize())?;
     Ok(())
 }
-pub(super) fn read(input: &mut dyn Read, maximum: u64) -> Result<Snapshot> {
+pub(super) fn read(
+    scratch_disk: &Arc<kasumi_store::ScratchDisk>,
+    input: &mut dyn Read,
+    maximum: u64,
+) -> Result<Snapshot> {
     let mut magic = [0; 8];
     input.read_exact(&mut magic)?;
     ensure!(&magic == MAGIC, "unsupported authority snapshot format");
@@ -93,7 +100,7 @@ pub(super) fn read(input: &mut dyn Read, maximum: u64) -> Result<Snapshot> {
     let (mut count, mut total, mut record_bytes) = (0u64, 8u64, 0u64);
     let mut meta = None;
     let mut previous = None;
-    let records = SnapshotRecords(EncryptedTable::new(disk_budget(maximum)?)?);
+    let records = SnapshotRecords(EncryptedTable::new(scratch_disk, disk_budget(maximum)?)?);
     loop {
         let mut length = [0; 8];
         input.read_exact(&mut length)?;

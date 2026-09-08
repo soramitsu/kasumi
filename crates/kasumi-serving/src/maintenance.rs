@@ -119,6 +119,13 @@ impl AuthorityMembership {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AuthorityMaintenanceAction {
+    StageSignerGeneration {
+        certificate: crate::SigningCertificate,
+    },
+    ActivateSignerGeneration {
+        stage_operation_id: Uuid,
+        certificate_sha256: String,
+    },
     /// Consensus records permission for one exact local verifier effect. A
     /// completed directive is not proof that the verifier published that effect.
     AuthorizeSignerTrust {
@@ -141,8 +148,34 @@ pub enum AuthorityMaintenanceAction {
     },
 }
 impl AuthorityMaintenanceAction {
+    pub fn is_signing_head_transition(&self) -> bool {
+        matches!(
+            self,
+            Self::StageSignerGeneration { .. } | Self::ActivateSignerGeneration { .. }
+        )
+    }
     pub fn validate(&self) -> Result<()> {
         match self {
+            Self::StageSignerGeneration { certificate } => {
+                crate::SigningCertificateVerification::verify(
+                    certificate,
+                    &certificate.identity.domain,
+                )?;
+                ensure!(
+                    certificate.identity.generation > 1,
+                    "successor signer generation required"
+                );
+            }
+            Self::ActivateSignerGeneration {
+                stage_operation_id,
+                certificate_sha256,
+            } => {
+                ensure!(
+                    !stage_operation_id.is_nil(),
+                    "exact global stage identity required"
+                );
+                validate_sha256(certificate_sha256)?;
+            }
             Self::AuthorizeSignerTrust {
                 verifier,
                 domain_sha256,

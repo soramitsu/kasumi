@@ -453,9 +453,11 @@ impl TenantEngine {
         }
         Self::verify_logical_snapshot(bytes, &state)?;
         Self::rebind_restored_state(&mut state, incarnation, checkpoint, target_origin)?;
-        kasumi_store::SnapshotImage::capture(state.limits.max_snapshot_bytes, |writer| {
-            crate::snapshot_codec::write(&state, writer)
-        })
+        kasumi_store::SnapshotImage::capture(
+            bytes.disk(),
+            state.limits.max_snapshot_bytes,
+            |writer| crate::snapshot_codec::write(&state, writer),
+        )
         .map_err(|e| Error::new(ErrorCode::Corruption, e.to_string()))
     }
 
@@ -542,12 +544,13 @@ impl TenantEngine {
             return Err(Error::new(ErrorCode::Forbidden, "backup tenant mismatch"));
         }
         let image = source.into_image();
+        let scratch_disk = image.disk().clone();
         let mut state = crate::snapshot_codec::read(&mut image.reader())
             .map_err(|error| Error::new(ErrorCode::Corruption, error.to_string()))?;
         drop(image);
         Self::rebind_restored_state(&mut state, incarnation, checkpoint, target_origin)?;
         let engine = Self::from_bootstrap_state(expected_tenant, state)?;
-        let image = engine.logical_snapshot()?;
+        let image = engine.logical_snapshot(&scratch_disk)?;
         Ok((image, engine))
     }
 
@@ -947,11 +950,16 @@ impl TenantEngine {
             .map_err(|_| Error::new(ErrorCode::Corruption, "snapshot encoding failed"))
     }
 
-    pub(crate) fn logical_snapshot(&self) -> Result<kasumi_store::SnapshotImage> {
+    pub(crate) fn logical_snapshot(
+        &self,
+        scratch_disk: &Arc<kasumi_store::ScratchDisk>,
+    ) -> Result<kasumi_store::SnapshotImage> {
         let generation = self.generation()?;
-        kasumi_store::SnapshotImage::capture(generation.state.limits.max_snapshot_bytes, |writer| {
-            Ok(Self::write_generation(&generation, writer)?)
-        })
+        kasumi_store::SnapshotImage::capture(
+            scratch_disk,
+            generation.state.limits.max_snapshot_bytes,
+            |writer| Ok(Self::write_generation(&generation, writer)?),
+        )
         .map_err(|e| Error::new(ErrorCode::Corruption, e.to_string()))
     }
 
@@ -2198,6 +2206,6 @@ mod restore_budget_tests {
             None,
         );
         assert_eq!(outcome.unwrap_err().code, ErrorCode::QuotaExceeded);
-        assert_eq!(engine.logical_snapshot().unwrap(), bytes);
+        assert_eq!(engine.logical_snapshot(bytes.disk()).unwrap(), bytes);
     }
 }

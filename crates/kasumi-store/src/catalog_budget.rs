@@ -36,7 +36,11 @@ impl KeyProvider for WideReferences {
 #[tokio::test]
 async fn catalog_byte_quota_rejects_initialization_rotation_and_rewrap_before_persistence() {
     let directory = tempfile::tempdir().unwrap();
-    let node = NodeStore::open(directory.path().join("catalog.redb")).unwrap();
+    let node = NodeStore::open(
+        directory.path().join("catalog.redb"),
+        crate::ScratchDisk::fixture(),
+    )
+    .unwrap();
     let provider = Arc::new(WideReferences {
         inner: LocalKeyProvider::new([33; 32]),
         padding: AtomicUsize::new(MAX_KEY_CATALOG_BYTES),
@@ -99,7 +103,11 @@ async fn catalog_byte_quota_rejects_initialization_rotation_and_rewrap_before_pe
 #[tokio::test]
 async fn exact_catalog_boundary_leaves_room_for_worst_case_manifest_tenant_encoding() {
     let directory = tempfile::tempdir().unwrap();
-    let node = NodeStore::open(directory.path().join("boundary.redb")).unwrap();
+    let node = NodeStore::open(
+        directory.path().join("boundary.redb"),
+        crate::ScratchDisk::fixture(),
+    )
+    .unwrap();
     let tenant = "\u{0001}".repeat(1024);
     let provider = Arc::new(LocalKeyProvider::new([62; 32]));
     let store = TenantStore::open_fixture_with_clock(

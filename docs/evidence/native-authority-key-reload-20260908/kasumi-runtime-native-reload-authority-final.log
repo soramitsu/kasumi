@@ -1,0 +1,51 @@
+   Compiling kasumi-types v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-types)
+   Compiling kasumi-serving v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-serving)
+   Compiling kasumi-query v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-query)
+   Compiling kasumi-store v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-store)
+   Compiling kasumi-raft v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-engine)
+   Compiling kasumi-authority v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-authority)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 36.99s
+     Running unittests src/lib.rs (/tmp/kasumi-production-runtime-target/debug/deps/kasumi_authority-4dc8c28d94b8f3ab)
+
+running 37 tests
+test service::tests::completed_drain_witness_eviction_preserves_active_waits_and_restarts_evicted_identity ... ok
+test service::tests::authority_signer_cannot_substitute_another_physical_verifier_with_the_same_node_id ... ok
+test service::tests::current_admin_self_revocation_yields_unknown_and_new_custodian_recovers_exact_identity ... ok
+test service::tests::independent_quorum_fence_drains_original_lease_and_competing_activations_cannot_overlap ... ok
+test service::tests::exact_target_preparation_cannot_serve_and_needs_a_fresh_active_lease_after_drain ... ok
+test service::tests::exact_stop_defeats_delayed_activation_and_committed_activation_wins_resolution ... ok
+test service::tests::actual_encrypted_source_materialization_is_fenced_but_independent_custody_stays_available ... ok
+test service::tests::encrypted_restart_restarts_full_drain_and_never_reuses_an_old_incarnation ... ok
+test service::tests::issuer_tests::activation_gate_tests::target_storage_retains_original_phase_and_cannot_install_late_renewal_or_new_gate ... ok
+test service::tests::issuer_tests::activation_gate_tests::committed_activation_rejects_raw_bypass_preserves_exact_winner_and_encrypted_recovery ... ok
+test service::tests::issuer_tests::lifecycle_original_deadline_survives_queued_acceptance_delayed_reply_and_clock_regression ... ok
+test service::tests::issuer_tests::activation_gate_tests::stopped_control_epoch_and_queued_original_expiry_defeat_new_activation_effects ... ok
+test service::tests::issuer_tests::lifecycle_byte_exhaustion_preserves_reserved_epoch_stop_and_exact_snapshot_history ... ok
+test service::tests::actual_authority_quorum_loss_rejects_lease_and_activation_without_source_fallback ... ok
+test service::tests::issuer_tests::control_epoch_stop_preserves_exact_identity_replay_and_restarts_full_drain ... ok
+test service::tests::issuer_tests::control_stop_before_intent_and_reserved_capacity_defeat_late_publication ... ok
+test service::tests::maintenance_learner_must_fit_current_capacity_after_bootstrap_growth ... ok
+test service::tests::issuer_tests::target_materialization_tests::actual_target_materialization_preserves_image_and_original_operation_fence ... ok
+test service::tests::issuer_tests::target_materialization_tests::followup_request_keeps_both_original_credential_fences_and_cannot_reopen_phase ... ok
+test service::tests::maintenance_byte_budget_expands_after_exhaustion_and_preserves_exact_history ... ok
+test service::tests::maintenance_prepared_stop_and_dispatched_restart_are_exact ... ok
+test service::tests::issuer_tests::target_materialization_tests::independent_target_journal_reserves_stop_after_normal_quota_and_recovers_encrypted ... ok
+test service::tests::maintenance_requires_every_installed_peer_before_admission ... ok
+test service::tests::maintenance_resource_acknowledgement_survives_lost_reply_before_admission ... ok
+test service::tests::maintenance_store_cannot_reopen_as_another_member_identity ... ok
+test service::tests::signer_replacement_requires_current_authorization_and_exact_live_owner ... ok
+test service::tests::issuer_tests::target_materialization_tests::dropping_target_on_non_runtime_thread_retains_shutdown_work_until_real_drain ... ok
+test service::tests::target_stop_and_activation_ordering_preserves_committed_winner_and_current_admin_release ... ok
+test service::tests::maintenance_removing_the_leader_resumes_the_same_committed_operation ... ok
+test service::tests::signer_directive_is_ordered_exact_finite_and_preserved_in_encrypted_snapshots ... ok
+test service::tests::maintenance_replaces_voter_then_permanently_revokes_and_restarts_full_drain ... ok
+test service::tests::permanent_target_stop_defeats_missing_and_prepared_generations_then_reopens_after_full_drain ... ok
+test service::tests::target_stop_queued_past_original_credential_expiry_accepts_no_tombstone ... ok
+test service::tests::issuer_tests::target_materialization_tests::expired_completion_with_missing_journal_recovers_only_exact_inspection_facts ... ok
+test service::tests::issuer_tests::target_materialization_tests::three_actual_materializations_initialize_and_commit_completion_with_restart_proof ... ok
+test service::tests::issuer_tests::target_materialization_tests::exact_actual_completion_is_required_for_issuer_and_target_activation ... ok
+test service::tests::target_stop_history_exceeds_former_record_ceiling_and_current_fences_are_explicit ... ok
+
+test result: ok. 37 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 43.59s
+

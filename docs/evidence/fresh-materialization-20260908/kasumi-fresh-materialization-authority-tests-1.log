@@ -1,0 +1,37 @@
+   Compiling kasumi-types v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-types)
+   Compiling kasumi-serving v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-serving)
+   Compiling kasumi-store v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-store)
+   Compiling kasumi-query v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-query)
+   Compiling kasumi-raft v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-engine)
+   Compiling kasumi-authority v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-authority)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 15s
+     Running unittests src/lib.rs (/tmp/kasumi-production-standalone-target/debug/deps/kasumi_authority-481ba410417b8d16)
+
+running 10 tests
+test service::tests::actual_encrypted_source_materialization_is_fenced_but_independent_custody_stays_available ... ok
+test service::tests::issuer_tests::target_materialization_tests::actual_target_materialization_preserves_image_and_original_operation_fence ... ok
+test service::tests::issuer_tests::target_materialization_tests::dropping_target_on_non_runtime_thread_retains_shutdown_work_until_real_drain ... ok
+test service::tests::issuer_tests::target_materialization_tests::exact_actual_completion_is_required_for_issuer_and_target_activation ... ok
+test service::tests::issuer_tests::target_materialization_tests::expired_completion_with_missing_journal_recovers_only_exact_inspection_facts ... ok
+test service::tests::issuer_tests::target_materialization_tests::followup_request_keeps_both_original_credential_fences_and_cannot_reopen_phase ... ok
+test service::tests::issuer_tests::target_materialization_tests::independent_target_journal_reserves_stop_after_normal_quota_and_recovers_encrypted ... ok
+test service::tests::issuer_tests::target_materialization_tests::fresh_materialization_admission_preserves_expired_origin_and_exact_published_image ... ok
+test service::tests::issuer_tests::target_materialization_tests::materialization_rejects_authenticated_backup_purpose_substitution_before_publication ... FAILED
+test service::tests::issuer_tests::target_materialization_tests::three_actual_materializations_initialize_and_commit_completion_with_restart_proof ... ok
+
+failures:
+
+---- service::tests::issuer_tests::target_materialization_tests::materialization_rejects_authenticated_backup_purpose_substitution_before_publication stdout ----
+
+thread 'service::tests::issuer_tests::target_materialization_tests::materialization_rejects_authenticated_backup_purpose_substitution_before_publication' (20201444) panicked at crates/kasumi-authority/src/target_materialization_tests.rs:580:5:
+materialization source purpose differs from the authenticated backup root
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    service::tests::issuer_tests::target_materialization_tests::materialization_rejects_authenticated_backup_purpose_substitution_before_publication
+
+test result: FAILED. 9 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 53.27s
+
+error: test failed, to rerun pass `-p kasumi-authority --lib`

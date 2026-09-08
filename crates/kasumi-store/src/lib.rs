@@ -21,7 +21,9 @@ pub use backup_sessions::{
 };
 mod keys;
 mod read_view;
+mod scratch_disk;
 mod scratch_table;
+pub use scratch_disk::{ScratchDisk, ScratchDiskConfig, ScratchDiskSnapshot};
 mod serving_access;
 mod spool;
 pub use read_view::TenantReadView;
@@ -140,12 +142,13 @@ pub(crate) fn durable_directory(path: &Path) -> Result<()> {
 
 pub struct NodeStore {
     db: Database,
+    scratch_disk: Arc<ScratchDisk>,
     path: Option<PathBuf>,
     tenants: AsyncMutex<HashMap<String, Arc<AsyncMutex<Weak<TenantStore>>>>>,
 }
 
 impl NodeStore {
-    pub fn open(path: impl AsRef<Path>) -> Result<Arc<Self>> {
+    pub fn open(path: impl AsRef<Path>, scratch_disk: Arc<ScratchDisk>) -> Result<Arc<Self>> {
         let path = path.as_ref();
         let parent = path
             .parent()
@@ -156,7 +159,7 @@ impl NodeStore {
         let db = Database::builder()
             .create_file(file)
             .context("opening durable database")?;
-        let node = Self::from_database(db, Some(std::fs::canonicalize(path)?))?;
+        let node = Self::from_database(db, Some(std::fs::canonicalize(path)?), scratch_disk)?;
         // redb synchronizes file contents; a new directory entry needs its own
         // persistence before any acknowledged first write can be crash durable.
         std::fs::File::open(parent)?
@@ -167,7 +170,10 @@ impl NodeStore {
 
     /// Reopen an installed database without creating directories or an absent
     /// file. Validation and redb operate on the same owner-only descriptor.
-    pub fn open_existing(path: impl AsRef<Path>) -> Result<Arc<Self>> {
+    pub fn open_existing(
+        path: impl AsRef<Path>,
+        scratch_disk: Arc<ScratchDisk>,
+    ) -> Result<Arc<Self>> {
         let path = path.as_ref();
         let file = private_files::open_existing_database(path)?;
         let db = Database::builder().create_file(file)?;
@@ -179,17 +185,34 @@ impl NodeStore {
         }
         Ok(Arc::new(Self {
             db,
+            scratch_disk,
             path: Some(std::fs::canonicalize(path)?),
             tenants: AsyncMutex::new(HashMap::new()),
         }))
     }
 
     #[cfg(any(test, feature = "test-utils"))]
-    pub fn open_with_backend(backend: impl redb::StorageBackend) -> Result<Arc<Self>> {
-        Self::from_database(Database::builder().create_with_backend(backend)?, None)
+    pub fn open_with_backend(
+        backend: impl redb::StorageBackend,
+        scratch_disk: Arc<ScratchDisk>,
+    ) -> Result<Arc<Self>> {
+        Self::from_database(
+            Database::builder().create_with_backend(backend)?,
+            None,
+            scratch_disk,
+        )
     }
 
-    fn from_database(db: Database, path: Option<PathBuf>) -> Result<Arc<Self>> {
+    /// Every temporary image/table on this node shares this explicit owner.
+    pub fn scratch_disk(&self) -> &Arc<ScratchDisk> {
+        &self.scratch_disk
+    }
+
+    fn from_database(
+        db: Database,
+        path: Option<PathBuf>,
+        scratch_disk: Arc<ScratchDisk>,
+    ) -> Result<Arc<Self>> {
         let mut tx = db.begin_write()?;
         tx.set_durability(Durability::Immediate)?;
         tx.set_two_phase_commit(true);
@@ -200,6 +223,7 @@ impl NodeStore {
         tx.commit()?;
         Ok(Arc::new(Self {
             db,
+            scratch_disk,
             path,
             tenants: AsyncMutex::new(HashMap::new()),
         }))
@@ -345,6 +369,10 @@ impl Drop for AccessGuard<'_> {
 }
 
 impl TenantStore {
+    pub fn scratch_disk(&self) -> &Arc<ScratchDisk> {
+        self.node.scratch_disk()
+    }
+
     pub async fn open(
         node: Arc<NodeStore>,
         tenant: String,

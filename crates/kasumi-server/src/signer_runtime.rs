@@ -1,7 +1,7 @@
 //! Explicitly initialized, separately encrypted local signer-verifier state.
 //! Runtime opening never bootstraps trust from a certificate received on a wire.
 use crate::{
-    runtime::{KeyProviderSettings, file_secret, read_bounded, read_private_file},
+    runtime::{KeyProviderSettings, file_secret, read_bounded},
     serving_runtime::CredentialSource,
 };
 use anyhow::{Context, Result, ensure};
@@ -39,6 +39,7 @@ impl SignerVerifierConfig {
         &self,
         credential: CredentialSource,
         initialize: bool,
+        scratch_disk: Arc<kasumi_store::ScratchDisk>,
     ) -> Result<Arc<TenantStore>> {
         self.validate()?;
         private_files::check_directory(
@@ -47,9 +48,9 @@ impl SignerVerifierConfig {
                 .context("verifier directory missing")?,
         )?;
         let node = if initialize {
-            NodeStore::open(&self.database_path)?
+            NodeStore::open(&self.database_path, scratch_disk.clone())?
         } else {
-            NodeStore::open_existing(&self.database_path)?
+            NodeStore::open_existing(&self.database_path, scratch_disk.clone())?
         };
         let provider = self.keys.provider(credential)?;
         let access = StorageAccess::live_signer_trust(self.identity.clone())?;
@@ -63,12 +64,13 @@ impl SignerVerifierConfig {
         &self,
         domains: BTreeMap<String, SigningDomain>,
         credential: CredentialSource,
+        scratch_disk: Arc<kasumi_store::ScratchDisk>,
     ) -> Result<Arc<InstalledSignerVerifier>> {
         ensure!(
             self.database_path.is_file(),
             "signer verifier must be explicitly initialized before runtime startup"
         );
-        let store = self.store(credential, false).await?;
+        let store = self.store(credential, false, scratch_disk).await?;
         let administrator = Arc::new(ScopedSignerAdministrator::default());
         let result = (|| -> Result<BTreeMap<String, Arc<LiveSignerTrust>>> {
             let installed: VerifierInstallation = serde_json::from_slice(
@@ -178,6 +180,18 @@ pub struct OperationalSignerConfig {
     pub key_file: PathBuf,
 }
 impl OperationalSignerConfig {
+    /// Read one bounded private descriptor snapshot. Its installed path is never
+    /// chosen by a network request, and a changed key must match its certificate.
+    pub(crate) fn load(path: &Path, domain: &SigningDomain) -> Result<Self> {
+        ensure!(
+            path.is_absolute(),
+            "operational signer descriptor requires an absolute path"
+        );
+        let config: Self = serde_json::from_slice(&private_files::read(path, 128 << 10)?)?;
+        config.validate(domain)?;
+        Ok(config)
+    }
+
     pub fn validate(&self, domain: &SigningDomain) -> Result<()> {
         ensure!(
             self.key_file.is_absolute(),
@@ -188,7 +202,7 @@ impl OperationalSignerConfig {
     pub(crate) fn open(&self, verifier: &InstalledSignerVerifier) -> Result<Arc<AuthoritySigner>> {
         let signer = GenerationSigner::from_pkcs8(
             self.certificate.clone(),
-            &read_private_file(&self.key_file, 64 << 10)?,
+            &private_files::read(&self.key_file, 64 << 10)?,
         )?;
         Ok(Arc::new(AuthoritySigner::new(
             LiveGenerationSigner::install(
@@ -223,12 +237,14 @@ impl VerifierInstallation {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InitializeSignerVerifier {
+    pub scratch_disk: kasumi_store::ScratchDiskConfig,
     pub verifier: SignerVerifierConfig,
     pub initial_certificates: Vec<SigningCertificate>,
 }
 impl InitializeSignerVerifier {
     pub async fn initialize(&self) -> Result<()> {
         self.verifier.validate()?;
+        self.scratch_disk.validate()?;
         ensure!(
             !self.initial_certificates.is_empty() && self.initial_certificates.len() <= 1024,
             "verifier requires a bounded explicit domain set"
@@ -261,7 +277,14 @@ impl InitializeSignerVerifier {
         if !parent.exists() {
             private_files::create_directory(parent)?;
         }
-        let store = self.verifier.store(Arc::new(file_secret), true).await?;
+        let store = self
+            .verifier
+            .store(
+                Arc::new(file_secret),
+                true,
+                kasumi_store::ScratchDisk::open(self.scratch_disk.clone())?,
+            )
+            .await?;
         let result = (|| -> Result<()> {
             if let Some(previous) = store.get_bounded(NS, b"installation", 256 << 10)? {
                 ensure!(

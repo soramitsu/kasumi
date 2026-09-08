@@ -82,6 +82,7 @@ fn coordinator() -> TenantState {
             source_purpose_sha256: "78".repeat(32),
             destination_alias: "backup".into(),
             backup_id: checkpoint.backup_id,
+            source_purpose_sha256: "78".repeat(32),
             target_incarnation: target,
             voters: (1..=3)
                 .map(|id| {
@@ -164,7 +165,8 @@ fn coordinator() -> TenantState {
 }
 
 fn image(state: &TenantState) -> kasumi_store::SnapshotImage {
-    let mut spool = kasumi_store::EncryptedSpool::new(16 << 20).unwrap();
+    let mut spool =
+        kasumi_store::EncryptedSpool::new(&kasumi_store::ScratchDisk::fixture(), 16 << 20).unwrap();
     write(state, &mut spool).unwrap();
     kasumi_store::SnapshotImage::freeze(spool).unwrap()
 }

@@ -88,7 +88,11 @@ fn query() -> QueryRequest {
 #[tokio::test]
 async fn one_epoch_ages_commands_and_leases_without_renewing_original_credentials() {
     let directory = tempfile::tempdir().unwrap();
-    let node = NodeStore::open(directory.path().join("node.redb")).unwrap();
+    let node = NodeStore::open(
+        directory.path().join("node.redb"),
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
     let admission = NodeAdmission::new(Default::default()).unwrap();
     let audit = audit(node.clone(), admission.clone()).await;
     let elapsed = Arc::new(ManualClock::new());
@@ -232,7 +236,11 @@ async fn one_epoch_ages_commands_and_leases_without_renewing_original_credential
 #[tokio::test]
 async fn fixture_epoch_rejects_production_storage_before_bootstrap() {
     let directory = tempfile::tempdir().unwrap();
-    let node = NodeStore::open(directory.path().join("node.redb")).unwrap();
+    let node = NodeStore::open(
+        directory.path().join("node.redb"),
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
     let admission = NodeAdmission::new(Default::default()).unwrap();
     let audit = audit(node.clone(), admission.clone()).await;
     let epoch = Arc::new(EpochClock::new(Arc::new(ManualClock::new()), Arc::new(Wall)).unwrap());

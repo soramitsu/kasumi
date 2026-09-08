@@ -441,7 +441,11 @@ mod tests {
             FileKeyProvider::initialize(&private.join("security.json"), "security").unwrap(),
         );
         let store = TenantStore::open(
-            NodeStore::open(root.path().join("database")).unwrap(),
+            NodeStore::open(
+                root.path().join("database"),
+                kasumi_store::ScratchDisk::fixture(),
+            )
+            .unwrap(),
             kasumi_engine::SECURITY_TENANT.into(),
             keys,
             StorageAccess::security_audit(),

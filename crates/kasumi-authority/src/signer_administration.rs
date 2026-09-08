@@ -4,7 +4,7 @@
 use super::*;
 
 pub struct AuthorityAdministrativeFence {
-    authority: Arc<IndependentAuthority>,
+    pub(super) authority: Arc<IndependentAuthority>,
     context: RequestContext,
     policy_epoch: u64,
     term: u64,
@@ -56,6 +56,7 @@ impl IndependentAuthority {
         self: &Arc<Self>,
         authorization: Arc<AuthorityAdministrativeFence>,
         signer: Arc<AuthoritySigner>,
+        deadline: kasumi_clock::ElapsedDeadline,
     ) -> Result<()> {
         if !Arc::ptr_eq(self, &authorization.authority) {
             return Err(Error::new(
@@ -63,6 +64,7 @@ impl IndependentAuthority {
                 "signer replacement authority differs",
             ));
         }
+        deadline.check().map_err(unavailable)?;
         authorization.release().await?;
         {
             let mut current = self.signer.write().map_err(unavailable)?;
@@ -77,11 +79,13 @@ impl IndependentAuthority {
                 ));
             }
             authorization.check()?;
-            signer.check().map_err(unavailable)?;
+            deadline.check().map_err(unavailable)?;
+            self.check_active_signer(&signer)?;
             *current = signer.clone();
         }
         authorization.release().await.map_err(unknown)?;
-        signer.check().map_err(unknown)
+        deadline.check().map_err(unknown)?;
+        self.check_active_signer(&signer).map_err(unknown)
     }
     pub async fn authorize_signer_maintenance(
         self: &Arc<Self>,

@@ -525,7 +525,11 @@ mod tests {
         tenant: &str,
     ) -> (tempfile::TempDir, Arc<TenantEngine>, Arc<TenantStore>) {
         let directory = tempfile::tempdir().unwrap();
-        let node = NodeStore::open(directory.path().join("node.redb")).unwrap();
+        let node = NodeStore::open(
+            directory.path().join("node.redb"),
+            kasumi_store::ScratchDisk::fixture(),
+        )
+        .unwrap();
         let store = TenantStore::open_fixture(
             node,
             tenant.into(),
@@ -619,7 +623,9 @@ mod tests {
         let (_target_dir, target, target_store) = fixture(&incarnation).await;
         let references = install_chain(&source, &source_store);
         let snapshot = capture(source.clone()).await.unwrap();
-        let logical = source.logical_snapshot().unwrap();
+        let logical = source
+            .logical_snapshot(&kasumi_store::ScratchDisk::fixture())
+            .unwrap();
         let incomplete_target = target.clone();
         let candidate = logical.clone();
         assert!(
@@ -705,7 +711,9 @@ mod tests {
         assert!(restore(target.clone(), trailing).await.is_err());
         assert_eq!(target.generation().unwrap().state.audit_retention, before);
         // The logical-only encoding is not a supported transport fallback.
-        let logical = source.logical_snapshot().unwrap();
+        let logical = source
+            .logical_snapshot(&kasumi_store::ScratchDisk::fixture())
+            .unwrap();
         let mut logical_bytes = Vec::new();
         logical.reader().read_to_end(&mut logical_bytes).unwrap();
         assert!(restore(target.clone(), logical_bytes).await.is_err());
@@ -794,7 +802,9 @@ mod tests {
         assert!(
             target
                 .prepare_snapshot_restore(
-                    source.logical_snapshot().unwrap(),
+                    source
+                        .logical_snapshot(&kasumi_store::ScratchDisk::fixture())
+                        .unwrap(),
                     admission.clone(),
                     60_000
                 )

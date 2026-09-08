@@ -118,7 +118,7 @@ pub(crate) async fn fixture(
     Arc<LocalKeyProvider>,
     LogStore,
 )> {
-    let node = NodeStore::open_with_backend(disk)?;
+    let node = NodeStore::open_with_backend(disk, kasumi_store::ScratchDisk::fixture())?;
     let app_provider = Arc::new(LocalKeyProvider::new([11; 32]));
     let custody_provider = Arc::new(LocalKeyProvider::new([12; 32]));
     let app = TenantStore::open_fixture_with_clock(
@@ -177,7 +177,7 @@ async fn committed_seed_reopens_before_any_projection_without_application_key_ac
     drop(stores);
     // No source state machine, application provider or payload decoder is opened.
     let control = CustodyStore::open(
-        NodeStore::open_with_backend(crash)?,
+        NodeStore::open_with_backend(crash, kasumi_store::ScratchDisk::fixture())?,
         "tenant".into(),
         custody_provider,
     )
@@ -222,7 +222,7 @@ async fn truncation_permanently_removes_uncommitted_seed_before_overwrite_and_re
     drop(log);
     drop(stores);
     let control = CustodyStore::open(
-        NodeStore::open_with_backend(crash)?,
+        NodeStore::open_with_backend(crash, kasumi_store::ScratchDisk::fixture())?,
         "tenant".into(),
         provider,
     )
@@ -453,7 +453,7 @@ async fn reserved_committed_retirement_recovers_atomic_custody_after_crash_witho
     drop(log);
     drop(stores);
     let custody = CustodyStore::open(
-        NodeStore::open_with_backend(crash.clone())?,
+        NodeStore::open_with_backend(crash.clone(), kasumi_store::ScratchDisk::fixture())?,
         "tenant".into(),
         custody_provider.clone(),
     )
@@ -469,7 +469,7 @@ async fn reserved_committed_retirement_recovers_atomic_custody_after_crash_witho
     drop(reader);
     drop(custody);
     let custody = CustodyStore::open(
-        NodeStore::open_with_backend(restarted)?,
+        NodeStore::open_with_backend(restarted, kasumi_store::ScratchDisk::fixture())?,
         "tenant".into(),
         custody_provider,
     )

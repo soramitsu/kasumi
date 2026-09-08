@@ -35,6 +35,7 @@ struct Fixture {
     trust: AuthorityTrust,
     settings: AuthorityNodeSettings,
     signing: kasumi_serving::test_utils::FixtureAuthority,
+    signing_root: InstallationSigningRoot,
     readiness: Arc<TestMaintenanceTransport>,
 }
 impl Fixture {
@@ -93,6 +94,9 @@ impl Fixture {
                 },
             )]),
         };
+        let signing_root =
+            InstallationSigningRoot::from_pkcs8(manifest.signing_domain(0).unwrap(), key.as_ref())
+                .unwrap();
         let signing = root.install(manifest.clone(), 0).unwrap();
         let trust = signing.trust.clone();
         let installation = AuthorityInstallation {
@@ -101,12 +105,16 @@ impl Fixture {
         };
         let clock = Arc::new(Clock(AtomicU64::new(0)));
         let epoch = Arc::new(EpochClock::new(clock.clone(), Arc::new(Wall)).unwrap());
-        let settings = test_settings(ordinary_state_bytes);
+        let settings = test_settings(ordinary_state_bytes, signing.signer.certificate().clone());
         let readiness = Arc::new(TestMaintenanceTransport::default());
         let mut services = Vec::new();
         let mut stores = Vec::new();
         for id in 1..=3 {
-            let node = NodeStore::open(dir.path().join(format!("authority-{id}.redb"))).unwrap();
+            let node = NodeStore::open(
+                dir.path().join(format!("authority-{id}.redb")),
+                kasumi_store::ScratchDisk::fixture(),
+            )
+            .unwrap();
             let store = TenantStorageSet::open(
                 node,
                 installation.tenant(),
@@ -163,6 +171,7 @@ impl Fixture {
             trust,
             settings,
             signing,
+            signing_root,
             readiness,
         };
         fixture.services[0].initialize().await.unwrap();
@@ -262,8 +271,11 @@ impl Fixture {
         self.router = Arc::new(InProcessRouter::default());
         self.readiness = Arc::new(TestMaintenanceTransport::default());
         for id in member_ids {
-            let node =
-                NodeStore::open(self._dir.path().join(format!("authority-{id}.redb"))).unwrap();
+            let node = NodeStore::open(
+                self._dir.path().join(format!("authority-{id}.redb")),
+                kasumi_store::ScratchDisk::fixture(),
+            )
+            .unwrap();
             let stores = TenantStorageSet::open(
                 node,
                 self.installation.tenant(),
@@ -642,7 +654,7 @@ async fn actual_encrypted_source_materialization_is_fenced_but_independent_custo
     let lease_boot = boot(&fixture, source, 1);
     let gate = ServingGate::new(acquire(&fixture, &service, &lease_boot).await).unwrap();
     let path = fixture._dir.path().join("separate-municipality.redb");
-    let node = NodeStore::open(&path).unwrap();
+    let node = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
     let provider = Arc::new(LocalKeyProvider::new([90; 32]));
     let custody_provider = Arc::new(LocalKeyProvider::new([91; 32]));
     let stores = TenantStorageSet::open(
@@ -706,7 +718,7 @@ async fn actual_encrypted_source_materialization_is_fenced_but_independent_custo
     stores.custody().store().shutdown().await;
     drop(stores);
     drop(node);
-    let reopened = NodeStore::open(&path).unwrap();
+    let reopened = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
     let custody =
         kasumi_store::CustodyStore::open(reopened.clone(), "city".into(), custody_provider)
             .await
@@ -1000,7 +1012,10 @@ include!("target_stop_tests.rs");
 #[path = "issuer_tests.rs"]
 mod issuer_tests;
 
-fn test_settings(ordinary_state_bytes: u64) -> AuthorityNodeSettings {
+fn test_settings(
+    ordinary_state_bytes: u64,
+    initial_signer_certificate: SigningCertificate,
+) -> AuthorityNodeSettings {
     let installed_members: BTreeMap<_, _> = (1..=4)
         .map(|id| {
             (
@@ -1016,6 +1031,7 @@ fn test_settings(ordinary_state_bytes: u64) -> AuthorityNodeSettings {
         .collect();
     AuthorityNodeSettings {
         bootstrap: crate::AuthorityBootstrap {
+            initial_signer_certificate,
             administrators: BTreeSet::from(["operator".into()]),
             capacity: AuthorityCapacity {
                 max_tenants: 100,

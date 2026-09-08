@@ -15,6 +15,41 @@ pub struct KasumiAuthorityClient {
     deadline: Option<tokio::time::Instant>,
 }
 impl KasumiAuthorityClient {
+    /// Current authenticated global signer maintenance. Preserve the exact
+    /// operation and request when resolving an uncertain activation.
+    pub async fn signing_maintenance(
+        &mut self,
+        bearer: &str,
+        request: &kasumi_serving::AuthoritySigningRequest,
+    ) -> Result<kasumi_serving::AuthoritySigningResponse, ClientError> {
+        request.validate()?;
+        let domain = self
+            .trust
+            .manifest()
+            .partitions
+            .keys()
+            .map(|partition| self.trust.manifest().signing_domain(*partition))
+            .collect::<anyhow::Result<Vec<_>>>()?
+            .into_iter()
+            .find(|domain| domain.digest().ok().as_deref() == Some(&request.domain_sha256))
+            .ok_or_else(|| {
+                anyhow::anyhow!("global signer domain is not independently installed")
+            })?;
+        let response = self
+            .inner
+            .signing_maintenance(self.authorized(
+                bearer,
+                proto::AuthorityJsonRequest {
+                    request_json: encode(request)?,
+                },
+            )?)
+            .await?
+            .into_inner();
+        let response: kasumi_serving::AuthoritySigningResponse =
+            serde_json::from_slice(&response.response_json)?;
+        response.validate_for(request, &domain)?;
+        Ok(response)
+    }
     /// This operates on the exact local verifier in the request. Do not route
     /// it to another member or interpret its receipt as global rotation completion.
     pub async fn signer_maintenance(

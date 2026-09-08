@@ -1,0 +1,46 @@
+{
+  "recorded_at": "2026-09-08T09:15:36.023958+00:00",
+  "checkpoint": "ee0b1e02891271207452bbbbbf71d81db8f67bf4",
+  "tree": "11c794fa8ea6e935411ab93c373992941046f66b",
+  "logs": {
+    "snapshots": {
+      "path": "/tmp/kasumi-streaming-recovery-snapshot-tests.log",
+      "sha256": "1fa816cf77a49728b701c9515aeabcc3c07a8f89cfdc397de78978acf8ff6701",
+      "result": "14 passed,7.73s"
+    },
+    "backups": {
+      "path": "/tmp/kasumi-streaming-cold-worker-backup-tests.log",
+      "sha256": "c0652382ff0db3ea3d34a2f7103d835ef9cba2a28de5442b1818c56a43d70d2d",
+      "result": "10 passed,180.88s"
+    },
+    "clippy": {
+      "path": "/tmp/kasumi-streaming-recovery-codec-clippy.log",
+      "sha256": "6c52df7856fa5ec5938475bc6d3b43f20960cf6b2d1fb8ebdf1c070fb6e619cb",
+      "result": "strict engine/types all-target/all-feature passed,32.37s"
+    },
+    "production": {
+      "path": "/tmp/kasumi-streaming-recovery-production-check.log",
+      "sha256": "c3123550c76cac4fd7efa063ec77d91cb2d9dd0369f0a4fb7e03f4cd79f8fbca",
+      "result": "server bins no-default-features passed,31.09s"
+    },
+    "workspace_initial": {
+      "path": "/tmp/kasumi-streaming-recovery-codec-check.log",
+      "sha256": "6d0e290d60d425cb9139d134caf33adbad3eedd59c653f20a93d51fd636a829f",
+      "result": "all-target/all-feature check before cold-worker finalization passed"
+    },
+    "cold_initial_failure": {
+      "path": "/tmp/kasumi-streaming-cold-worker-check.log",
+      "sha256": "ec60a94a854acc312da07131fb39de59d1e3690255543c6032eee29293783f79",
+      "result": "preserved moved key_catalogs compile error; fixed by keeping rolling catalog on caller"
+    }
+  },
+  "executables": {
+    "/tmp/kasumi-production-streaming-target/debug/deps/kasumi_engine-e86d7e092c5bb129": "53a4803e084aa607811781f5ddc8400afd20cdccbd111be8406d6aa7fb092426",
+    "/tmp/kasumi-production-streaming-target/debug/deps/backup_checkpoint-0be93bcfb8732918": "0fa641f4291a964d2ae0170dfcdc022701982365f964dddbc3a6a403d965f10a"
+  },
+  "limitations": [
+    "No real3GiB incompressible/RSS/endurance gate here; capacity fixture is about30MiB,384MiB governor with192MiB production maintenance reserves.",
+    "Control recovery relational state validation/dispatch coordinator is sibling-owned and not enabled by this codec checkpoint.",
+    "Shared aggregate scratch disk governor not installed yet; root owns next constructor changes."
+  ]
+}

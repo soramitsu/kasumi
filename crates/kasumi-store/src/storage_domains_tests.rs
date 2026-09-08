@@ -22,7 +22,7 @@ async fn installed(node: Arc<NodeStore>) -> Result<Arc<TenantStorageSet>> {
 #[tokio::test]
 async fn domains_require_distinct_actual_wrapping_policies_and_same_node() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let node = NodeStore::open(dir.path().join("same.redb"))?;
+    let node = NodeStore::open(dir.path().join("same.redb"), crate::ScratchDisk::fixture())?;
     let provider = Arc::new(LocalKeyProvider::new([1; 32]));
     let app = TenantStore::open_fixture(node.clone(), "tenant".into(), provider.clone()).await?;
     let control =
@@ -30,13 +30,16 @@ async fn domains_require_distinct_actual_wrapping_policies_and_same_node() -> Re
     assert!(TenantStorageSet::install(app.clone(), control.clone()).is_err());
     assert!(control.get(BINDING_NS, BINDING_KEY)?.is_none());
     let other = TenantStore::open_fixture(
-        NodeStore::open(dir.path().join("other.redb"))?,
+        NodeStore::open(dir.path().join("other.redb"), crate::ScratchDisk::fixture())?,
         CustodyStore::catalog_name("tenant"),
         Arc::new(LocalKeyProvider::new([2; 32])),
     )
     .await?;
     assert!(TenantStorageSet::install(app, other).is_err());
-    let reserved = NodeStore::open(dir.path().join("reserved.redb"))?;
+    let reserved = NodeStore::open(
+        dir.path().join("reserved.redb"),
+        crate::ScratchDisk::fixture(),
+    )?;
     assert!(
         TenantStorageSet::open_fixture(
             reserved.clone(),
@@ -60,7 +63,7 @@ async fn control_reopens_without_any_application_key_probe_after_revocation() ->
     let path = dir.path().join("revoked.redb");
     let app_provider = Arc::new(LocalKeyProvider::new([11; 32]));
     let control_provider = Arc::new(LocalKeyProvider::new([12; 32]));
-    let node = NodeStore::open(&path)?;
+    let node = NodeStore::open(&path, crate::ScratchDisk::fixture())?;
     let stores = TenantStorageSet::open_fixture(
         node.clone(),
         "tenant".into(),
@@ -93,8 +96,12 @@ async fn control_reopens_without_any_application_key_probe_after_revocation() ->
     stores.custody().store().shutdown().await;
     drop(stores);
     drop(node);
-    let reopened =
-        CustodyStore::open(NodeStore::open(&path)?, "tenant".into(), control_provider).await?;
+    let reopened = CustodyStore::open(
+        NodeStore::open(&path, crate::ScratchDisk::fixture())?,
+        "tenant".into(),
+        control_provider,
+    )
+    .await?;
     assert_eq!(reopened.binding(), &binding);
     assert_eq!(
         reopened.store().get("control", b"position")?.unwrap(),
@@ -108,7 +115,11 @@ async fn control_reopens_without_any_application_key_probe_after_revocation() ->
 #[tokio::test]
 async fn every_interrupted_domain_transaction_recovers_whole_old_or_whole_new() -> Result<()> {
     let original = FaultBackend::new();
-    let stores = installed(NodeStore::open_with_backend(original.clone())?).await?;
+    let stores = installed(NodeStore::open_with_backend(
+        original.clone(),
+        crate::ScratchDisk::fixture(),
+    )?)
+    .await?;
     stores.write_batch(
         &[WriteOp::put("data", b"entry", b"old")],
         &[WriteOp::put("control", b"entry", b"old")],
@@ -119,7 +130,11 @@ async fn every_interrupted_domain_transaction_recovers_whole_old_or_whole_new() 
     let mut failures = 0;
     for failure in 0..40 {
         let disk = starting.crash();
-        let stores = installed(NodeStore::open_with_backend(disk.clone())?).await?;
+        let stores = installed(NodeStore::open_with_backend(
+            disk.clone(),
+            crate::ScratchDisk::fixture(),
+        )?)
+        .await?;
         disk.fail_after(failure);
         let result = stores.write_batch(
             &[WriteOp::put("data", b"entry", b"new")],
@@ -128,7 +143,11 @@ async fn every_interrupted_domain_transaction_recovers_whole_old_or_whole_new() 
         let crashed = disk.crash();
         disk.disarm();
         drop(stores);
-        let reopened = installed(NodeStore::open_with_backend(crashed)?).await?;
+        let reopened = installed(NodeStore::open_with_backend(
+            crashed,
+            crate::ScratchDisk::fixture(),
+        )?)
+        .await?;
         let data = reopened.application().get("data", b"entry")?.unwrap();
         let control = reopened
             .custody()
@@ -151,7 +170,7 @@ async fn every_interrupted_domain_transaction_recovers_whole_old_or_whole_new() 
 #[tokio::test]
 async fn post_commit_domain_expiry_reports_uncertainty_and_retains_complete_write() -> Result<()> {
     let disk = FaultBackend::new();
-    let node = NodeStore::open_with_backend(disk.clone())?;
+    let node = NodeStore::open_with_backend(disk.clone(), crate::ScratchDisk::fixture())?;
     let clock = Arc::new(ManualClock::new());
     let app = TenantStore::open_fixture_with_clock(
         node.clone(),
@@ -179,7 +198,11 @@ async fn post_commit_domain_expiry_reports_uncertainty_and_retains_complete_writ
     assert!(stores.application().check_access().is_err());
     let recovered = disk.crash();
     drop(stores);
-    let reopened = installed(NodeStore::open_with_backend(recovered)?).await?;
+    let reopened = installed(NodeStore::open_with_backend(
+        recovered,
+        crate::ScratchDisk::fixture(),
+    )?)
+    .await?;
     assert_eq!(
         reopened.application().get("data", b"entry")?.unwrap(),
         b"new"
@@ -198,7 +221,10 @@ async fn post_commit_domain_expiry_reports_uncertainty_and_retains_complete_writ
 #[tokio::test]
 async fn combined_quota_and_substituted_catalog_binding_fail_before_publication() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let node = NodeStore::open(dir.path().join("binding.redb"))?;
+    let node = NodeStore::open(
+        dir.path().join("binding.redb"),
+        crate::ScratchDisk::fixture(),
+    )?;
     let stores = installed(node.clone()).await?;
     let ops = vec![WriteOp::put("data", b"entry", b"a"); 32769];
     assert!(stores.write_batch(&ops, &ops).is_err());

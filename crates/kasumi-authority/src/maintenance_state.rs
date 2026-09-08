@@ -55,7 +55,7 @@ pub(crate) struct PreparedMaintenance {
     pub admitted_at_ms: u64,
     pub authority_term: u64,
 }
-fn operation_key(id: Uuid) -> String {
+pub(super) fn operation_key(id: Uuid) -> String {
     format!("maintenance/{id}")
 }
 fn revoked_key(id: u64) -> String {
@@ -191,14 +191,15 @@ impl Backend {
                         ))
                     });
                 }
-                if matches!(
+                if (matches!(
                     command.action,
                     AuthorityMaintenanceAction::AuthorizeSignerTrust { .. }
-                ) && !prepared
-                    .context
-                    .authorization
-                    .expires_at_ms()
-                    .is_some_and(|expiry| command.not_after_ms <= expiry)
+                ) || command.action.is_signing_head_transition())
+                    && !prepared
+                        .context
+                        .authorization
+                        .expires_at_ms()
+                        .is_some_and(|expiry| command.not_after_ms <= expiry)
                 {
                     return Ok(Err(Error::new(
                         ErrorCode::Unauthorized,
@@ -206,7 +207,7 @@ impl Backend {
                     )));
                 }
                 if command.expected_policy_epoch != meta.policy_epoch
-                    || prepared.admitted_at_ms > command.not_after_ms
+                    || prepared.admitted_at_ms >= command.not_after_ms
                 {
                     return Ok(Err(conflict(
                         "maintenance admission deadline or policy epoch changed",
@@ -231,6 +232,9 @@ impl Backend {
                     meta.operational.capacity = capacity.clone();
                     status.phase = AuthorityMaintenancePhase::Completed;
                     meta.operational.revision = position.log_id.index;
+                } else if command.action.is_signing_head_transition() {
+                    Self::apply_signing_transition(&mut meta, command, position.log_id.index)?;
+                    status.phase = AuthorityMaintenancePhase::Completed;
                 } else if matches!(
                     command.action,
                     AuthorityMaintenanceAction::AuthorizeSignerTrust { .. }
@@ -342,7 +346,9 @@ impl Backend {
                             .context("member revocation count exhausted")?;
                         status.phase = AuthorityMaintenancePhase::Draining;
                     }
-                    AuthorityMaintenanceAction::SetCapacity { .. }
+                    AuthorityMaintenanceAction::StageSignerGeneration { .. }
+                    | AuthorityMaintenanceAction::ActivateSignerGeneration { .. }
+                    | AuthorityMaintenanceAction::SetCapacity { .. }
                     | AuthorityMaintenanceAction::AuthorizeSignerTrust { .. } => {
                         anyhow::bail!("capacity maintenance requires no dispatch")
                     }
@@ -421,6 +427,11 @@ impl Backend {
         }
         let mut next = meta.operational.membership.clone();
         match &command.action {
+            AuthorityMaintenanceAction::StageSignerGeneration { .. }
+            | AuthorityMaintenanceAction::ActivateSignerGeneration { .. } => {
+                return Self::validate_signing_transition(meta, command)
+                    .map_err(|error| conflict(&error.to_string()));
+            }
             AuthorityMaintenanceAction::AuthorizeSignerTrust {
                 verifier,
                 domain_sha256,
