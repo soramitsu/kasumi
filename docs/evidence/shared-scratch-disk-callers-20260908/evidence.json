@@ -1,0 +1,252 @@
+{
+  "source": "cc7fbebc241bace6aaf5116ae2c9c8c36068e250",
+  "tree": "39ae13fac4174c9fae9a642849e471d84374f1d6",
+  "lockfile_sha256": "a4a3883969dc9486548a1aea841ecf45c482c99e4ea1e0d47b56f6c52b2afa08",
+  "target": "/tmp/kasumi-production-streaming-target",
+  "gates": [
+    {
+      "name": "store",
+      "command": [
+        "cargo",
+        "+1.97.1",
+        "test",
+        "-p",
+        "kasumi-store",
+        "--all-features",
+        "--lib",
+        "-j2"
+      ],
+      "exit": 0,
+      "seconds": 34.965,
+      "log": "/tmp/kasumi-streaming-scratch-cc7fbeb-store.log",
+      "log_sha256": "cbf2481229104eb6b608eb59c394abdcde6870ef1b877997161f9db29464e658",
+      "executables": {
+        "/tmp/kasumi-production-streaming-target/debug/deps/kasumi_store-41ed7df4e6a1a1f2": "066a96534b44627aa52fb44c4499be696ffdd4573565d5589129b1decbf90672"
+      }
+    },
+    {
+      "name": "raft",
+      "command": [
+        "cargo",
+        "+1.97.1",
+        "test",
+        "-p",
+        "kasumi-raft",
+        "--all-features",
+        "--lib",
+        "-j2"
+      ],
+      "exit": 0,
+      "seconds": 155.414,
+      "log": "/tmp/kasumi-streaming-scratch-cc7fbeb-raft.log",
+      "log_sha256": "a04123098919ea2f7341a9bab69a69625bf4cf92f829f31ea7f9ebe0790cbb50",
+      "executables": {
+        "/tmp/kasumi-production-streaming-target/debug/deps/kasumi_raft-26a99c63397d883e": "85a4c39f6efb62c5ec4786ca60e2aa493fb23c5e7fcec6f0950935595bec1dad"
+      }
+    },
+    {
+      "name": "snapshots",
+      "command": [
+        "cargo",
+        "+1.97.1",
+        "test",
+        "-p",
+        "kasumi-engine",
+        "--all-features",
+        "--lib",
+        "snapshot",
+        "-j2"
+      ],
+      "exit": 0,
+      "seconds": 161.17,
+      "log": "/tmp/kasumi-streaming-scratch-cc7fbeb-snapshots.log",
+      "log_sha256": "85fddb4ac160bf944261890d076caff5e1b1c28adfd68c48b28c388e0938ee2c",
+      "executables": {
+        "/tmp/kasumi-production-streaming-target/debug/deps/kasumi_engine-e86d7e092c5bb129": "18f335090e9af94d5280b1cb19a7848f6b844b30a91824e3ec962e56526ac1db"
+      }
+    },
+    {
+      "name": "backups",
+      "command": [
+        "cargo",
+        "+1.97.1",
+        "test",
+        "-p",
+        "kasumi-engine",
+        "--all-features",
+        "--test",
+        "backup_checkpoint",
+        "-j2"
+      ],
+      "exit": 0,
+      "seconds": 217.263,
+      "log": "/tmp/kasumi-streaming-scratch-cc7fbeb-backups.log",
+      "log_sha256": "062e8799fe811ef3ba4e2314cb53dbda7a906212d63addebace16bd61759c982",
+      "executables": {
+        "/tmp/kasumi-production-streaming-target/debug/deps/backup_checkpoint-0be93bcfb8732918": "3692f29d1d65c57deb300add81456e80fd65e962738b1d1da31989e50aa79c5e"
+      }
+    },
+    {
+      "name": "standalone",
+      "command": [
+        "cargo",
+        "+1.97.1",
+        "test",
+        "-p",
+        "kasumi-server",
+        "--all-features",
+        "--lib",
+        "standalone_tests",
+        "-j2"
+      ],
+      "exit": 0,
+      "seconds": 115.985,
+      "log": "/tmp/kasumi-streaming-scratch-cc7fbeb-standalone.log",
+      "log_sha256": "85fd50c4458832610b22912e200cead77508625c16ef2db64073fb0663775b83",
+      "executables": {
+        "/tmp/kasumi-production-streaming-target/debug/deps/kasumi_server-3ef3c426e5743964": "fb1853251c60170b47301f8d5a9f0193eff09248d9fb65e51443b2b06faf74f0"
+      }
+    },
+    {
+      "name": "recovery",
+      "command": [
+        "cargo",
+        "+1.97.1",
+        "test",
+        "-p",
+        "kasumi-server",
+        "--all-features",
+        "--lib",
+        "local_recovery_tests",
+        "-j2"
+      ],
+      "exit": 0,
+      "seconds": 0.955,
+      "log": "/tmp/kasumi-streaming-scratch-cc7fbeb-recovery.log",
+      "log_sha256": "c666a3aedc56c3aa1dc7012c64408ee07c90f0c0ccc111c5351474382003f970",
+      "executables": {
+        "/tmp/kasumi-production-streaming-target/debug/deps/kasumi_server-3ef3c426e5743964": "fb1853251c60170b47301f8d5a9f0193eff09248d9fb65e51443b2b06faf74f0"
+      }
+    },
+    {
+      "name": "signer",
+      "command": [
+        "cargo",
+        "+1.97.1",
+        "test",
+        "-p",
+        "kasumi-server",
+        "--all-features",
+        "--lib",
+        "signer_runtime_tests",
+        "-j2"
+      ],
+      "exit": 0,
+      "seconds": 0.466,
+      "log": "/tmp/kasumi-streaming-scratch-cc7fbeb-signer.log",
+      "log_sha256": "cfa43e9d5da3d41633abce0f59c5cbfe476c1c575a27e12571ed1a5fc48b7f0c",
+      "executables": {
+        "/tmp/kasumi-production-streaming-target/debug/deps/kasumi_server-3ef3c426e5743964": "fb1853251c60170b47301f8d5a9f0193eff09248d9fb65e51443b2b06faf74f0"
+      }
+    },
+    {
+      "name": "clippy",
+      "command": [
+        "cargo",
+        "+1.97.1",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "-j2",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit": 0,
+      "seconds": 65.255,
+      "log": "/tmp/kasumi-streaming-scratch-cc7fbeb-clippy.log",
+      "log_sha256": "7d83c915fad4680db26383f715ad3ca05403ae17741693338aecf8a889e954e1",
+      "executables": {}
+    },
+    {
+      "name": "production",
+      "command": [
+        "cargo",
+        "+1.97.1",
+        "check",
+        "-p",
+        "kasumi-server",
+        "--bins",
+        "--no-default-features",
+        "-j2"
+      ],
+      "exit": 0,
+      "seconds": 31.142,
+      "log": "/tmp/kasumi-streaming-scratch-cc7fbeb-production.log",
+      "log_sha256": "69b2f53fbbd5ef450394b3db5bf2b10ccf651d5ec3fc7ad745300a8351f1f688",
+      "executables": {}
+    },
+    {
+      "name": "format",
+      "command": [
+        "cargo",
+        "+1.97.1",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit": 0,
+      "seconds": 1.212,
+      "log": "/tmp/kasumi-streaming-scratch-cc7fbeb-format.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "executables": {}
+    },
+    {
+      "name": "standalone-actual",
+      "command": [
+        "/tmp/kasumi-production-streaming-target/debug/deps/kasumi_server-3ef3c426e5743964",
+        "standalone::tests",
+        "--test-threads=2"
+      ],
+      "exit": 0,
+      "seconds": 6.846,
+      "log": "/tmp/kasumi-streaming-scratch-cc7fbeb-standalone-actual.log",
+      "log_sha256": "f7ec44e3ae018821ecef81a4bc32c216f35019c524e849fa0a1f135cfce9b5e9",
+      "executables": {
+        "/tmp/kasumi-production-streaming-target/debug/deps/kasumi_server-3ef3c426e5743964": "fb1853251c60170b47301f8d5a9f0193eff09248d9fb65e51443b2b06faf74f0"
+      }
+    },
+    {
+      "name": "recovery-actual",
+      "command": [
+        "/tmp/kasumi-production-streaming-target/debug/deps/kasumi_server-3ef3c426e5743964",
+        "local_recovery::tests",
+        "--test-threads=2"
+      ],
+      "exit": 0,
+      "seconds": 14.862,
+      "log": "/tmp/kasumi-streaming-scratch-cc7fbeb-recovery-actual.log",
+      "log_sha256": "1dca2401e07a2e2299742cccb49afbc46bffce1cb1875caf2738eada0ddea245",
+      "executables": {
+        "/tmp/kasumi-production-streaming-target/debug/deps/kasumi_server-3ef3c426e5743964": "fb1853251c60170b47301f8d5a9f0193eff09248d9fb65e51443b2b06faf74f0"
+      }
+    },
+    {
+      "name": "signer-actual",
+      "command": [
+        "/tmp/kasumi-production-streaming-target/debug/deps/kasumi_server-3ef3c426e5743964",
+        "signer_runtime::tests",
+        "--test-threads=2"
+      ],
+      "exit": 0,
+      "seconds": 1.897,
+      "log": "/tmp/kasumi-streaming-scratch-cc7fbeb-signer-actual.log",
+      "log_sha256": "ee4b30730efff483e617af5ccc30628333e50d5c76a7bc70f61460cb74aa9608",
+      "executables": {
+        "/tmp/kasumi-production-streaming-target/debug/deps/kasumi_server-3ef3c426e5743964": "fb1853251c60170b47301f8d5a9f0193eff09248d9fb65e51443b2b06faf74f0"
+      }
+    }
+  ]
+}

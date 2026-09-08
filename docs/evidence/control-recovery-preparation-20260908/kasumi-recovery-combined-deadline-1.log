@@ -1,0 +1,9 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.35s
+     Running unittests src/lib.rs (/tmp/kasumi-production-standalone-target/debug/deps/kasumi_engine-e86d7e092c5bb129)
+
+running 2 tests
+test target_invocation::admission_tests::original_short_timeout_expires_during_acquisition_and_cannot_reanchor_after_suspend ... ok
+test target_invocation::admission_tests::native_absolute_dispatch_cap_survives_retry_and_never_expands_node_work_limit ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 64 filtered out; finished in 0.00s
+

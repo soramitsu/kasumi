@@ -1,0 +1,30 @@
+   Compiling kasumi-types v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-types)
+   Compiling kasumi-serving v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-serving)
+   Compiling kasumi-query v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-query)
+   Compiling kasumi-store v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-store)
+   Compiling kasumi-client v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-client)
+   Compiling kasumi-raft v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-raft)
+   Compiling kasumi-authority v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-authority)
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-engine)
+   Compiling kasumi-server v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 35s
+     Running unittests src/lib.rs (/tmp/kasumi-production-standalone-target/debug/deps/kasumi_server-8b9768f86cabe832)
+
+running 1 test
+test rpc::lifecycle_tests::pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong_resource_and_partition ... FAILED
+
+failures:
+
+---- rpc::lifecycle_tests::pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong_resource_and_partition stdout ----
+
+thread 'rpc::lifecycle_tests::pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong_resource_and_partition' (20476108) panicked at crates/kasumi-server/src/rpc_lifecycle_tests.rs:493:10:
+called `Result::unwrap()` on an `Err` value: Transport(Status { code: Unavailable, message: "authority acknowledgement unavailable; resolve the exact permanent command identity", details: b"{\"code\":\"UNKNOWN_OUTCOME\",\"message\":\"authority acknowledgement unavailable; resolve the exact permanent command identity\"}", metadata: MetadataMap { headers: {"content-type": "application/grpc", "date": "Tue, 08 Sep 2026 10:05:49 GMT"} }, source: None })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    rpc::lifecycle_tests::pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong_resource_and_partition
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 78 filtered out; finished in 7.86s
+
+error: test failed, to rerun pass `-p kasumi-server --lib`

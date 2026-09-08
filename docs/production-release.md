@@ -392,3 +392,49 @@ a read-only quota getter or caller capacity claim cannot close this dependency.
   `docs/evidence/exact-voter-replacement-20260908` and
   `docs/evidence/restore-worker-drain-20260908`. These do not replace the failed
   frozen Linux workspace gate.
+
+- `9f870cd` and `cc7fbeb` provide explicit shared installed scratch disk admission
+  for encrypted spools and derived indexes. Core store tests passed 79; integrated
+  store tests passed 80, Raft 44, snapshot filters 15, backups ten and corrected
+  standalone/recovery/signer filters eight. Strict workspace and fixture-free
+  checks passed; combined `42b9fba` workspace check passed. Evidence is in
+  `docs/evidence/shared-scratch-disk-core-20260908` and
+  `docs/evidence/shared-scratch-disk-callers-20260908`, including failed and
+  zero-test attempts. Persistent disk/native reservations remain unfinished.
+- `b002771` hands off restore workspace after actual index drain and retains it
+  through target publication, resolving the default 512 MiB overlap without
+  raising budgets. Actual encrypted restore/reopen, eleven backups and the real
+  three-runtime TLS fixture pass, as do strict workspace and production checks.
+  Evidence is in `docs/evidence/restore-reservation-handoff-20260908`; fresh
+  Linux integration, owned blocking publication and 3 GiB gates remain open.
+
+- `f3c0185` adds durable Control recovery preparation/materialization and stop
+  orchestration with typed native API, SDK and CLI. Replicated journal, real
+  mTLS Control/issuer, snapshot, deadline and authorization cases pass along
+  with strict workspace and production checks. Bound evidence and retained
+  failures are in `docs/evidence/control-recovery-preparation-20260908`.
+  Initialize and later phases plus expired non-target dispatch remain open.
+  Combined `40e7154` workspace check passes.
+- The frozen functional runner now includes a separate workspace documentation
+  test gate. On `8e90ff2` macOS, eleven documentation tests pass; evidence is in
+  `docs/evidence/workspace-doctests-20260908`. Native Linux ARM64 full functional
+  validation of that exact source is in progress and is not a recorded pass.
+
+- `f401a09` publishes restore state in an owned blocking worker that retains the
+  original finite invocation, bootstrap lock, source/target stores and workspace
+  reservation through actual disk drain. Four restore cases, deadline queue,
+  real three-node TLS lifecycle and local recovery pass with strict/production
+  checks. Evidence: `docs/evidence/owned-restore-publication-20260908`.
+- `c1dc8b0` freezes explicit physical verifier enrollment during signing rotation.
+  Authority tests pass42 and native TLS passes, with strict/production checks.
+  Evidence: `docs/evidence/frozen-verifier-roster-20260908`. Current remote
+  acknowledgments, live Control registry binding and full issuer drain remain
+  unfinished. Combined `97a14cd` workspace check passes in130seconds.
+- Candidate packaging (`f084e03`, `531d86e`) retains compiled dependency identity,
+  exact source/binary/log provenance, normalized archives, SPDX Cargo inventory,
+  original notices, referenced author lists and hardened systemd units. Sixteen
+  Python tests pass, including tamper/relabeling rejection and deterministic
+  archive assembly; conservative metadata license provenance passes438packages.
+  These are development checks. Actual end-to-end candidate production assembly,
+  OS/OCI SBOMs, OCI images, reproducible compiler builds and release acceptance
+  remain open. Procedures are in `docs/release-artifacts.md`.

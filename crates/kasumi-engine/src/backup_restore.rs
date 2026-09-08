@@ -32,6 +32,19 @@ pub(super) struct PreparedState {
     pub engine: Arc<TenantEngine>,
     pub sha256: String,
     _materialization: Arc<crate::admission::Reservation>,
+    registration: Option<Arc<crate::backup_verify::VerificationWork>>,
+}
+
+impl PreparedState {
+    pub(super) fn publication_registration(
+        &self,
+    ) -> Option<Arc<crate::backup_verify::VerificationWork>> {
+        self.registration.clone()
+    }
+
+    pub(super) fn publication_workspace(&self) -> Arc<crate::admission::Reservation> {
+        self._materialization.clone()
+    }
 }
 
 impl VerifiedBackup {
@@ -57,7 +70,9 @@ impl VerifiedBackup {
             .checked_mul(3)
             .and_then(|v| v.checked_add(64 << 20))
             .ok_or_else(|| anyhow::anyhow!("restore materialization budget overflow"))?;
-        let materialization = Arc::new(admission.reserve(workspace, None)?);
+        // The completed verifier owns one operation and its bounded indexes.
+        // Its worker transfers that charge only after dropping those indexes.
+        let materialization = self._reservation.clone();
         let retained_materialization = materialization.clone();
         deadline
             .blocking(materialization, self._registration.clone(), move || {
@@ -71,9 +86,10 @@ impl VerifiedBackup {
                     incarnation,
                     self.checkpoint,
                     target_origin,
+                    || retained_materialization.handoff_workspace(&admission, workspace),
                 )?;
-                // Keep the old bounded index charge through its actual drop,
-                // independently of the newly materialized target's charge.
+                // This is still the original reservation identity and work slot.
+                // The prepared result owns it through target publication.
                 drop(self._reservation);
                 deadline.check()?;
                 let engine = Arc::new(engine);
@@ -83,6 +99,7 @@ impl VerifiedBackup {
                     engine,
                     sha256,
                     _materialization: retained_materialization,
+                    registration: self._registration,
                 })
             })
             .await
@@ -266,28 +283,6 @@ impl BackupReader for RestoreReader<'_> {
     }
 }
 
-pub(super) async fn load(
-    source: &RestoreSource,
-    backup_id: uuid::Uuid,
-    target: &Arc<TenantStore>,
-    context: &RequestContext,
-    audit: &SecurityAudit,
-    admission: &Arc<NodeAdmission>,
-    deadline: VerificationDeadline,
-) -> anyhow::Result<VerifiedBackup> {
-    load_authorized(
-        source,
-        backup_id,
-        target,
-        RestoreAuthorization::Data(context),
-        audit,
-        admission,
-        deadline,
-        None,
-        None,
-    )
-    .await
-}
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn load_authorized(
     source: &RestoreSource,

@@ -554,10 +554,20 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
     follower_config.endpoint = follower_endpoint;
     let current_credential = Arc::new(std::sync::RwLock::new(node_token.clone()));
     let source = current_credential.clone();
+    let credential_loads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let loads = credential_loads.clone();
     let mut pool = kasumi_client::KasumiAuthorityPool::new(
         BTreeMap::from([(1, follower_config), (2, absent), (3, config.clone())]),
         trust.clone(),
-        Arc::new(move || Ok(zeroize::Zeroizing::new(source.read().unwrap().clone()))),
+        Arc::new(move || {
+            let snapshot = source.read().unwrap().clone();
+            if loads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                // A renewal published while failover is in flight must not
+                // replace this request's already selected credential.
+                *source.write().unwrap() = "invalid-replacement".into();
+            }
+            Ok(zeroize::Zeroizing::new(snapshot))
+        }),
     )
     .unwrap();
     let discovered = pool
@@ -565,6 +575,20 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
         .await
         .unwrap();
     assert_eq!(&discovered, boot.identity());
+    assert_eq!(
+        credential_loads.load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+    assert!(
+        pool.discover_lease(&discovery, Duration::from_secs(2))
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        credential_loads.load(std::sync::atomic::Ordering::SeqCst),
+        2
+    );
+    *current_credential.write().unwrap() = node_token.clone();
     let original = boot.begin_acquisition().unwrap();
     let acquired = pool
         .acquire_lease(&original, Duration::from_secs(1))
@@ -902,6 +926,44 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
         domain_sha256: domain.digest().unwrap(),
         action,
     };
+    let mut verifier_set: BTreeSet<_> = settings
+        .bootstrap
+        .membership
+        .members
+        .values()
+        .map(|member| member.verifier.clone())
+        .collect();
+    verifier_set.extend(nodes.iter().map(|node| node.verifier.clone()));
+    for (index, verifier) in verifier_set.into_iter().enumerate() {
+        let current = client
+            .signing_maintenance(&operator, &global_request(AuthoritySigningAction::Observe))
+            .await
+            .unwrap();
+        let command = AuthorityMaintenanceCommand {
+            operation_id: uuid::Uuid::new_v4(),
+            expected_policy_epoch: current.policy_epoch,
+            expected_operational_revision: current.operational_revision,
+            not_after_ms: deadline,
+            action: AuthorityMaintenanceAction::EnrollSignerVerifier {
+                enrollment: kasumi_serving::SignerVerifierEnrollment {
+                    verifier,
+                    endpoint: format!("https://verifier-admin-{index}.test/"),
+                    certificate_pins: BTreeSet::from([format!("{:064x}", 1000 + index)]),
+                },
+            },
+        };
+        let registered = client
+            .signing_maintenance(
+                &operator,
+                &global_request(AuthoritySigningAction::Start { command }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            registered.status.unwrap().phase,
+            AuthorityMaintenancePhase::Completed
+        );
+    }
     let global = client
         .signing_maintenance(&operator, &global_request(AuthoritySigningAction::Observe))
         .await

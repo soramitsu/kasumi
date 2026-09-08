@@ -1816,6 +1816,7 @@ dependencies = [
  "kasumi-types",
  "libc",
  "openraft",
+ "redb",
  "ring",
  "serde",
  "serde_json",

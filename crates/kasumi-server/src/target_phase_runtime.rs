@@ -138,7 +138,7 @@ impl RuntimeTargetPhase {
             trust.manifest() == &authority.manifest,
             "installed live phase verifier differs"
         );
-        let path = authority.bearer_file.clone();
+        let path = authority.bearer_files[&partition].clone();
         let source = credential.clone();
         let mut issuer =
             KasumiAuthorityPool::new(connections, trust.clone(), Arc::new(move || source(&path)))?;

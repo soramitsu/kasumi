@@ -108,8 +108,17 @@ async fn native_pool_replays_uncertain_batches_and_never_moves_historical_pages(
         .strip_prefix("Bearer ")
         .unwrap()
         .to_owned();
-    let source: Arc<dyn kasumi_transport::credentials::CredentialSource> =
-        Arc::new(move || Ok(zeroize::Zeroizing::new(token.clone())));
+    let current_token = Arc::new(std::sync::RwLock::new(token.clone()));
+    let credential_loads = Arc::new(AtomicUsize::new(0));
+    let selected = current_token.clone();
+    let loads = credential_loads.clone();
+    let source: Arc<dyn kasumi_transport::credentials::CredentialSource> = Arc::new(move || {
+        let snapshot = selected.read().unwrap().clone();
+        if loads.fetch_add(1, Ordering::SeqCst) == 0 {
+            *selected.write().unwrap() = "invalid-replacement".into();
+        }
+        Ok(zeroize::Zeroizing::new(snapshot))
+    });
     let mut pool = KasumiClientPool::new(endpoints.clone(), source.clone()).unwrap();
     let mut body = batch();
     for id in ["two", "three"] {
@@ -127,6 +136,10 @@ async fn native_pool_replays_uncertain_batches_and_never_moves_historical_pages(
         1,
         "first member committed but lost its response"
     );
+    assert_eq!(credential_loads.load(Ordering::SeqCst), 1, "ambiguous mutation retries retain the original credential snapshot");
+    assert!(pool.mutate(&original, Duration::from_secs(4)).await.is_err());
+    assert_eq!(credential_loads.load(Ordering::SeqCst), 2, "the next operation reads the replacement once");
+    *current_token.write().unwrap() = token;
     let replay = pool
         .mutate(&original, Duration::from_secs(4))
         .await

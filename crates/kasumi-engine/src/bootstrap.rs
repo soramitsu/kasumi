@@ -17,6 +17,8 @@ use std::{
 #[path = "backup_restore.rs"]
 mod backup_restore;
 pub use backup_restore::RestoreSource;
+#[path = "bootstrap_publication.rs"]
+mod publication;
 #[path = "bootstrap_target.rs"]
 mod target;
 pub use target::{
@@ -96,6 +98,8 @@ pub async fn prepare_replicated_restore(
         );
     }
     let deadline = source.deadline()?;
+    let cancellation = kasumi_query::QueryCancellation::default();
+    let _cancel = crate::admission::CancelOnDrop(cancellation.clone());
     let _gate = deadline.run(BOOTSTRAP_GATE.lock()).await?;
     restore_access(&target, &security_audit, &context).await?;
     anyhow::ensure!(
@@ -114,18 +118,19 @@ pub async fn prepare_replicated_restore(
         "invalid restore replica identity"
     );
     let verified = deadline
-        .run(Box::pin(backup_restore::load(
+        .run(Box::pin(backup_restore::load_authorized(
             source,
             backup_id,
             &target,
-            &context,
+            backup_restore::RestoreAuthorization::Data(&context),
             &security_audit,
             &replica.admission,
             deadline,
+            None,
+            Some(cancellation.clone()),
         )))
         .await??;
     let source_revision = verified.state.metadata().revision;
-    let _restore_workspace = verified._reservation.clone();
     let original = verified.state.metadata();
     anyhow::ensure!(
         replica.incarnation.to_string() != original.incarnation,
@@ -149,8 +154,19 @@ pub async fn prepare_replicated_restore(
         .await?;
     deadline.check()?;
     restore_access(&target, &security_audit, &context).await?;
-    bind_deployment(&targets, &serde_json::to_vec(&("replicated", &bootstrap))?)?;
-    persist_new(&targets, &restored.bytes)?;
+    let (restored, _gate) = publication::Publication {
+        stores: targets.clone(),
+        audit: security_audit.clone(),
+        contexts: vec![context.clone()],
+        cancellation,
+        deadline,
+    }
+    .persist(
+        restored,
+        _gate,
+        serde_json::to_vec(&("replicated", &bootstrap))?,
+    )
+    .await?;
     let engine = restored.engine;
     engine.install_storage_access(&target)?;
     engine
@@ -432,6 +448,15 @@ fn validate_bootstrap_control(
 }
 
 fn persist_new(stores: &TenantStorageSet, bytes: &SnapshotImage) -> anyhow::Result<()> {
+    persist_new_checked(stores, bytes, || stores.check_access())
+}
+
+fn persist_new_checked(
+    stores: &TenantStorageSet,
+    bytes: &SnapshotImage,
+    mut check: impl FnMut() -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    check()?;
     let store = stores.application();
     anyhow::ensure!(
         store.get(NS, b"manifest")?.is_none()
@@ -445,9 +470,12 @@ fn persist_new(stores: &TenantStorageSet, bytes: &SnapshotImage) -> anyhow::Resu
     let mut reader = bytes.reader();
     let chunks = bytes.len().div_ceil(CHUNK as u64);
     for i in 0..chunks {
+        check()?;
         let mut chunk = vec![0; (bytes.len() - i * CHUNK as u64).min(CHUNK as u64) as usize];
         reader.read_exact(&mut chunk)?;
+        check()?;
         store.write_batch(&[WriteOp::put(NS, i.to_be_bytes(), chunk)])?;
+        check()?;
     }
     let manifest = Manifest {
         format: 2,
@@ -456,6 +484,7 @@ fn persist_new(stores: &TenantStorageSet, bytes: &SnapshotImage) -> anyhow::Resu
         digest: bytes.sha256().to_owned(),
     };
     let encoded = serde_json::to_vec(&manifest)?;
+    check()?;
     stores.write_batch(
         &[WriteOp::put(NS, b"manifest", encoded)],
         &[WriteOp::put(
@@ -464,7 +493,7 @@ fn persist_new(stores: &TenantStorageSet, bytes: &SnapshotImage) -> anyhow::Resu
             serde_json::to_vec(&manifest.digest)?,
         )],
     )?;
-    Ok(())
+    check()
 }
 
 /// Open a single-voter tenant. On reopen, its persisted bootstrap is authoritative;
@@ -700,6 +729,8 @@ pub async fn restore_local(
         "independent restore authority requires replicated storage; local downgrade is forbidden"
     );
     let deadline = source.deadline()?;
+    let cancellation = kasumi_query::QueryCancellation::default();
+    let _cancel = crate::admission::CancelOnDrop(cancellation.clone());
     let _gate = deadline.run(BOOTSTRAP_GATE.lock()).await?;
     let authorization = backup_restore::RestoreAuthorization::Local(&request);
     authorization.check_access(&target, &security_audit).await?;
@@ -722,7 +753,7 @@ pub async fn restore_local(
             &admission,
             deadline,
             None,
-            None,
+            Some(cancellation.clone()),
         )))
         .await??;
     anyhow::ensure!(
@@ -730,7 +761,6 @@ pub async fn restore_local(
         "verified local backup differs from exact checkpoint"
     );
     let source_revision = verified.state.metadata().revision;
-    let _restore_workspace = verified._reservation.clone();
     let original = verified.state.metadata();
     anyhow::ensure!(
         !incarnation.is_nil() && incarnation.to_string() != original.incarnation,
@@ -749,8 +779,18 @@ pub async fn restore_local(
     backup_restore::RestoreAuthorization::Local(&request)
         .check_access(&target, &security_audit)
         .await?;
-    bind_deployment(&targets, b"local-v1")?;
-    persist_new(&targets, &restored.bytes)?;
+    let (restored, _gate) = publication::Publication {
+        stores: targets.clone(),
+        audit: security_audit.clone(),
+        contexts: vec![
+            request.source_context.clone(),
+            request.target_context.clone(),
+        ],
+        cancellation,
+        deadline,
+    }
+    .persist(restored, _gate, b"local-v1".to_vec())
+    .await?;
     let database = start_prepared(
         targets,
         restored.engine,

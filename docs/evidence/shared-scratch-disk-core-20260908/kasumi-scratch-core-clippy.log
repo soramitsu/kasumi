@@ -1,0 +1,24 @@
+    Checking tokio v1.53.1
+    Checking serde v1.0.229
+    Checking serde_json v1.0.151
+    Checking serde_urlencoded v0.7.1
+    Checking kasumi-types v0.1.0 (/private/tmp/kasumi-production-custody-tables/crates/kasumi-types)
+    Checking tokio-util v0.7.19
+    Checking h2 v0.4.19
+    Checking hyper v1.11.1
+    Checking hyper-util v0.1.20
+    Checking tower v0.5.3
+    Checking tokio-rustls v0.26.5
+    Checking hyper-timeout v0.5.2
+    Checking tokio-stream v0.1.19
+    Checking hyper-rustls v0.27.9
+    Checking tonic v0.14.6
+    Checking tower-http v0.6.11
+    Checking kasumi-serving v0.1.0 (/private/tmp/kasumi-production-custody-tables/crates/kasumi-serving)
+    Checking kasumi-transport v0.1.0 (/private/tmp/kasumi-production-custody-tables/crates/kasumi-transport)
+    Checking reqwest v0.12.28
+    Checking yasna v0.6.0
+    Checking axum v0.8.9
+    Checking rcgen v0.14.10
+    Checking kasumi-store v0.1.0 (/private/tmp/kasumi-production-custody-tables/crates/kasumi-store)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 16.52s

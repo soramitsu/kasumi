@@ -1,0 +1,38 @@
+    Checking getrandom v0.2.17
+    Checking futures-task v0.3.34
+    Checking futures-util v0.3.34
+    Checking rand_core v0.6.4
+    Checking crypto-common v0.1.7
+    Checking serde_core v1.0.229
+    Checking ring v0.17.14
+    Checking futures-channel v0.3.34
+    Checking hyper v1.11.1
+    Checking digest v0.10.7
+    Checking rustls-webpki v0.103.15
+    Checking tower v0.5.3
+    Checking hyper-util v0.1.20
+    Checking serde v1.0.229
+    Checking rustls v0.23.43
+    Checking sha2 v0.10.9
+    Checking serde_json v1.0.151
+    Checking imbl v7.0.1
+    Checking cipher v0.4.4
+    Checking uuid v1.26.0
+    Checking tokio-rustls v0.26.5
+    Checking hyper-timeout v0.5.2
+    Checking universal-hash v0.5.1
+    Checking serde_urlencoded v0.7.1
+    Checking poly1305 v0.8.0
+    Checking tonic v0.14.6
+    Checking hyper-rustls v0.27.9
+    Checking kasumi-types v0.1.0 (/private/tmp/kasumi-production-custody-tables/crates/kasumi-types)
+    Checking chacha20 v0.9.1
+    Checking tower-http v0.6.11
+    Checking aead v0.5.2
+    Checking reqwest v0.12.28
+    Checking chacha20poly1305 v0.10.1
+    Checking kasumi-transport v0.1.0 (/private/tmp/kasumi-production-custody-tables/crates/kasumi-transport)
+    Checking hmac v0.12.1
+    Checking kasumi-serving v0.1.0 (/private/tmp/kasumi-production-custody-tables/crates/kasumi-serving)
+    Checking kasumi-store v0.1.0 (/private/tmp/kasumi-production-custody-tables/crates/kasumi-store)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 20.56s

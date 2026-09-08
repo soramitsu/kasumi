@@ -1,0 +1,110 @@
+   Compiling tokio v1.53.1
+   Compiling kasumi-client v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-client)
+   Compiling tokio-util v0.7.19
+   Compiling h2 v0.4.19
+   Compiling tower v0.5.3
+   Compiling tokio-rustls v0.26.5
+   Compiling hyper v1.11.1
+   Compiling hyper-util v0.1.20
+   Compiling tokio-stream v0.1.19
+   Compiling axum v0.8.9
+   Compiling hyper-timeout v0.5.2
+   Compiling kasumi-serving v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-serving)
+   Compiling tonic v0.14.6
+   Compiling kasumi-transport v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-transport)
+   Compiling hyper-rustls v0.27.9
+   Compiling tower-http v0.6.11
+   Compiling reqwest v0.12.28
+   Compiling kasumi-store v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-store)
+   Compiling openraft v0.9.25
+   Compiling kasumi-raft v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-engine)
+   Compiling tonic-prost v0.14.6
+   Compiling kasumi-authority v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-authority)
+   Compiling rmcp v3.2.0
+   Compiling kasumi-server v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-server)
+   Compiling kasumi-bench v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-bench)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 38s
+   Doc-tests kasumi_authority
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests kasumi_bench
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests kasumi_client
+
+running 6 tests
+test crates/kasumi-client/src/backup_proof.rs - backup_proof::VerifiedBackupCheckpoint (line 7) - compile fail ... ok
+test crates/kasumi-client/src/restore_lineage_proof.rs - restore_lineage_proof::VerifiedRestoreLineage (line 7) - compile fail ... ok
+test crates/kasumi-client/src/retirement_proof.rs - retirement_proof::VerifiedRetirementStop (line 15) - compile fail ... ok
+test crates/kasumi-client/src/retirement_proof.rs - retirement_proof::VerifiedRetirementReceipt (line 59) - compile fail ... ok
+test crates/kasumi-client/src/security_audit.rs - security_audit::VerifiedSecurityAuditArchive (line 13) - compile fail ... ok
+test crates/kasumi-client/src/target.rs - target::TargetAcknowledgement (line 17) - compile fail ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.64s
+
+   Doc-tests kasumi_clock
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests kasumi_engine
+
+running 4 tests
+test crates/kasumi-engine/src/restore_lineage_proof.rs - restore_lineage_proof::VerifiedRestoreLineage (line 7) - compile fail ... ok
+test crates/kasumi-engine/src/backup_proof.rs - backup_proof::VerifiedBackupCheckpoint (line 7) - compile fail ... ok
+test crates/kasumi-engine/src/retirement_proof.rs - retirement_proof::VerifiedRetirementReceipt (line 59) - compile fail ... ok
+test crates/kasumi-engine/src/retirement_proof.rs - retirement_proof::VerifiedRetirementStop (line 15) - compile fail ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.63s
+
+   Doc-tests kasumi_query
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests kasumi_raft
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests kasumi_server
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests kasumi_serving
+
+running 1 test
+test crates/kasumi-serving/src/target_stop.rs - target_stop::VerifiedTargetStop (line 7) - compile fail ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+   Doc-tests kasumi_store
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests kasumi_transport
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests kasumi_types
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

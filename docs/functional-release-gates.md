@@ -13,7 +13,8 @@ python3 scripts/release_gate.py \
 The runner archives the exact commit and extracts only regular files and
 directories into an exclusive source directory. Builds use a new target directory.
 It checks formatting, Python tests, vendored dependency patches and upstream
-tests, the complete workspace, strict Clippy, the production dependency feature
+tests, the complete workspace (all targets and a separate documentation-test
+gate), strict Clippy, the production dependency feature
 graph and production binaries. Production graphs containing Kasumi fixture
 features fail. The production gate must report all three executable targets.
 

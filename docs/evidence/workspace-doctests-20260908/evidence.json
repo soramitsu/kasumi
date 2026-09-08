@@ -1,0 +1,22 @@
+{
+  "source": "8e90ff2747b349394409954147437bb78214a020",
+  "toolchain": "1.97.1",
+  "platform": "macOS ARM64",
+  "command": [
+    "cargo",
+    "+1.97.1",
+    "test",
+    "--workspace",
+    "--all-features",
+    "--doc",
+    "--no-fail-fast",
+    "--locked",
+    "-j2",
+    "--",
+    "--test-threads=2"
+  ],
+  "exit_code": 0,
+  "tests_passed": 11,
+  "log_sha256": "7987f153e4dddba68ce12f1531d1ab8e645ecc669fed86cd71d7ffaaf5ab23a1",
+  "scope": "workspace documentation tests only; compile158 seconds; transient rustdoc executable hashes not captured"
+}

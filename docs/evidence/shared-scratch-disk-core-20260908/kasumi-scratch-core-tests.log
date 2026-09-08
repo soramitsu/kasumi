@@ -1,0 +1,69 @@
+   Compiling kasumi-types v0.1.0 (/private/tmp/kasumi-production-custody-tables/crates/kasumi-types)
+   Compiling kasumi-serving v0.1.0 (/private/tmp/kasumi-production-custody-tables/crates/kasumi-serving)
+   Compiling kasumi-store v0.1.0 (/private/tmp/kasumi-production-custody-tables/crates/kasumi-store)
+warning: unused import: `Write`
+   --> crates/kasumi-store/src/scratch_disk.rs:517:29
+    |
+517 |         use std::io::{Read, Write};
+    |                             ^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `kasumi-store` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 18.88s
+     Running unittests src/lib.rs (/tmp/kasumi-production-root-target/debug/deps/kasumi_store-407a5bdbfc470b9b)
+
+running 7 tests
+test scratch_disk::tests::concurrent_spools_cannot_each_spend_the_aggregate_budget ... FAILED
+test scratch_disk::tests::physical_directory_reopens_share_budget_and_cannot_change_it ... FAILED
+test scratch_disk::tests::pending_files_share_filesystem_promises_and_keep_recovery_reserve ... FAILED
+test scratch_disk::tests::pinned_directory_survives_path_substitution_without_using_replacement ... FAILED
+test scratch_disk::tests::truncation_and_rejected_growth_preserve_exact_file_charges ... FAILED
+test scratch_disk::tests::immutable_image_readers_retain_capacity_until_the_last_owner_drains ... FAILED
+test scratch_disk::tests::rejects_symlinks_and_overflowing_configuration ... ok
+
+failures:
+
+---- scratch_disk::tests::concurrent_spools_cannot_each_spend_the_aggregate_budget stdout ----
+
+thread 'scratch_disk::tests::concurrent_spools_cannot_each_spend_the_aggregate_budget' (20306863) panicked at crates/kasumi-store/src/scratch_disk.rs:394:10:
+called `Result::unwrap()` on an `Err` value: scratch directory must be private and owned
+
+---- scratch_disk::tests::physical_directory_reopens_share_budget_and_cannot_change_it stdout ----
+
+thread 'scratch_disk::tests::physical_directory_reopens_share_budget_and_cannot_change_it' (20306866) panicked at crates/kasumi-store/src/scratch_disk.rs:394:10:
+called `Result::unwrap()` on an `Err` value: scratch directory must be private and owned
+
+---- scratch_disk::tests::pending_files_share_filesystem_promises_and_keep_recovery_reserve stdout ----
+
+thread 'scratch_disk::tests::pending_files_share_filesystem_promises_and_keep_recovery_reserve' (20306865) panicked at crates/kasumi-store/src/scratch_disk.rs:394:10:
+called `Result::unwrap()` on an `Err` value: scratch directory must be private and owned
+
+---- scratch_disk::tests::pinned_directory_survives_path_substitution_without_using_replacement stdout ----
+
+thread 'scratch_disk::tests::pinned_directory_survives_path_substitution_without_using_replacement' (20306867) panicked at crates/kasumi-store/src/scratch_disk.rs:394:10:
+called `Result::unwrap()` on an `Err` value: scratch directory must be private and owned
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- scratch_disk::tests::truncation_and_rejected_growth_preserve_exact_file_charges stdout ----
+
+thread 'scratch_disk::tests::truncation_and_rejected_growth_preserve_exact_file_charges' (20306869) panicked at crates/kasumi-store/src/scratch_disk.rs:394:10:
+called `Result::unwrap()` on an `Err` value: scratch directory must be private and owned
+
+---- scratch_disk::tests::immutable_image_readers_retain_capacity_until_the_last_owner_drains stdout ----
+
+thread 'scratch_disk::tests::immutable_image_readers_retain_capacity_until_the_last_owner_drains' (20306864) panicked at crates/kasumi-store/src/scratch_disk.rs:394:10:
+called `Result::unwrap()` on an `Err` value: scratch directory must be private and owned
+
+
+failures:
+    scratch_disk::tests::concurrent_spools_cannot_each_spend_the_aggregate_budget
+    scratch_disk::tests::immutable_image_readers_retain_capacity_until_the_last_owner_drains
+    scratch_disk::tests::pending_files_share_filesystem_promises_and_keep_recovery_reserve
+    scratch_disk::tests::physical_directory_reopens_share_budget_and_cannot_change_it
+    scratch_disk::tests::pinned_directory_survives_path_substitution_without_using_replacement
+    scratch_disk::tests::truncation_and_rejected_growth_preserve_exact_file_charges
+
+test result: FAILED. 1 passed; 6 failed; 0 ignored; 0 measured; 72 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p kasumi-store --lib`

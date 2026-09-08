@@ -1,0 +1,16 @@
+{
+  "source": "97a14cdfa3a662fdcf5090ee1a4d6048689bd24b",
+  "command": [
+    "cargo",
+    "+1.97.1",
+    "check",
+    "--workspace",
+    "--all-features",
+    "--all-targets",
+    "-j2"
+  ],
+  "exit_code": 0,
+  "seconds": 130,
+  "log": "kasumi-combined-roster-recovery-publication-check.log",
+  "log_sha256": "c751db4bab9c15af2e073be930ac102e04810986923669fbd75398c0c83d496e"
+}

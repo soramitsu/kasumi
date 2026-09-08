@@ -1,0 +1,16 @@
+{
+  "source": "42b9fba4a042e40f0d3d2521470677642f1a18bf",
+  "command": [
+    "cargo",
+    "+1.97.1",
+    "check",
+    "--workspace",
+    "--all-features",
+    "--all-targets",
+    "-j2"
+  ],
+  "exit_code": 0,
+  "log": "kasumi-combined-scratch-signing-check.log",
+  "log_sha256": "57b83fdb258050582093bbddd63c82c4fb39d3bd4f0d456c0217116dd2cc5164",
+  "scope": "combined check only, not tests or release build"
+}

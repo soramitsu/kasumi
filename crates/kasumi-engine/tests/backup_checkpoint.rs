@@ -79,6 +79,238 @@ async fn captured_and_historical_backup_verification_fit_fixed_production_worksp
     fixture.close().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn restore_hands_off_verified_workspace_with_production_and_destination_reserves() {
+    let fixture = Fixture::with_admission(
+        Limits::default(),
+        kasumi_engine::admission::AdmissionConfig {
+            max_inflight_bytes: Some(512 << 20),
+            ..Default::default()
+        },
+        true,
+    )
+    .await;
+    fixture.write("retained").await;
+    let checkpoint = fixture
+        .db
+        .backup_checkpoint_named(context(), "approved", uuid::Uuid::new_v4())
+        .await
+        .unwrap()
+        .checkpoint()
+        .clone();
+    let admission = fixture.audit.admission().clone();
+    assert!(fixture.db.audit_maintenance_status().is_some());
+    assert_eq!(admission.snapshot().reserved_bytes, 192 << 20);
+    // Keep the real service/tenant maintenance pools plus the native destination
+    // charge installed throughout verification, materialization and publication.
+    let destination_workspace = admission.reserve(128 << 20, None).unwrap();
+    let previous_verification = admission.reserve(128 << 20, None).unwrap();
+    assert!(
+        admission.reserve((64 << 20) + 1, None).is_err(),
+        "the previous additive materialization strategy must not fit"
+    );
+    drop(previous_verification);
+    let node = NodeStore::open(
+        fixture.directory.path().join("restore-budget.redb"),
+        fixture.store.scratch_disk().clone(),
+    )
+    .unwrap();
+    let target = TenantStore::open_fixture(
+        node,
+        "checkpoint".into(),
+        Arc::new(LocalKeyProvider::new([0xD8; 32])),
+    )
+    .await
+    .unwrap();
+    let domains = kasumi_store::test_utils::with_custody(
+        target.clone(),
+        Arc::new(LocalKeyProvider::new([241; 32])),
+    )
+    .await
+    .unwrap();
+    let source = kasumi_engine::RestoreSource {
+        destination_alias: "approved".into(),
+        destination: fixture.destination.clone(),
+        keys: Arc::new(LocalKeyProvider::new([0xD8; 32])),
+        timeout_ms: 60_000,
+    };
+    let restored = kasumi_engine::restore_local(
+        &source,
+        domains.clone(),
+        common::local_restore_request(context(), &checkpoint, uuid::Uuid::new_v4()),
+        admission.clone(),
+        fixture.audit.clone(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        restored.engine().generation().unwrap().state.document_count,
+        1
+    );
+    assert_eq!(admission.snapshot().reserved_bytes, 320 << 20);
+    restored.shutdown().await.unwrap();
+    drop(restored);
+    drop(domains);
+    drop(target);
+    let node = NodeStore::open(
+        fixture.directory.path().join("restore-budget.redb"),
+        fixture.store.scratch_disk().clone(),
+    )
+    .unwrap();
+    let target = TenantStore::open_fixture(
+        node,
+        "checkpoint".into(),
+        Arc::new(LocalKeyProvider::new([0xD8; 32])),
+    )
+    .await
+    .unwrap();
+    let domains =
+        kasumi_store::test_utils::with_custody(target, Arc::new(LocalKeyProvider::new([241; 32])))
+            .await
+            .unwrap();
+    let reopened =
+        kasumi_engine::open_local(domains, policy(), Limits::default(), fixture.audit.clone())
+            .await
+            .unwrap();
+    assert_eq!(
+        reopened.engine().generation().unwrap().state.document_count,
+        1
+    );
+    assert_eq!(admission.snapshot().reserved_bytes, 320 << 20);
+    reopened.shutdown().await.unwrap();
+    drop(destination_workspace);
+    assert_eq!(admission.snapshot().reserved_bytes, 192 << 20);
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn cancelled_restore_publication_keeps_storage_and_workspace_until_write_drains() {
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    };
+    type Pause = (
+        tokio::sync::oneshot::Sender<()>,
+        std::sync::mpsc::Receiver<()>,
+    );
+    #[derive(Clone, Debug)]
+    struct PausedBackend {
+        inner: kasumi_store::test_utils::FaultBackend,
+        pause: Arc<Mutex<Option<Pause>>>,
+        blocked: Arc<AtomicBool>,
+    }
+    impl redb::StorageBackend for PausedBackend {
+        fn len(&self) -> std::io::Result<u64> {
+            self.inner.len()
+        }
+        fn read(&self, offset: u64, bytes: &mut [u8]) -> std::io::Result<()> {
+            self.inner.read(offset, bytes)
+        }
+        fn set_len(&self, length: u64) -> std::io::Result<()> {
+            self.inner.set_len(length)
+        }
+        fn sync_data(&self) -> std::io::Result<()> {
+            self.inner.sync_data()
+        }
+        fn write(&self, offset: u64, bytes: &[u8]) -> std::io::Result<()> {
+            let pause = self.pause.lock().unwrap().take();
+            if let Some((started, release)) = pause {
+                self.blocked.store(true, Ordering::SeqCst);
+                let _ = started.send(());
+                // A regression to synchronous runtime I/O must fail instead of
+                // hanging the test process indefinitely.
+                let result = release.recv_timeout(std::time::Duration::from_secs(5));
+                self.blocked.store(false, Ordering::SeqCst);
+                result.map_err(std::io::Error::other)?;
+            }
+            self.inner.write(offset, bytes)
+        }
+    }
+    let fixture = Fixture::with_admission(Limits::default(), Default::default(), true).await;
+    fixture.write("retained").await;
+    let checkpoint = fixture
+        .db
+        .backup_checkpoint_named(context(), "approved", uuid::Uuid::new_v4())
+        .await
+        .unwrap()
+        .checkpoint()
+        .clone();
+    let admission = fixture.audit.admission().clone();
+    assert_eq!(admission.snapshot().reserved_bytes, 192 << 20);
+    let backend = PausedBackend {
+        inner: kasumi_store::test_utils::FaultBackend::new(),
+        pause: Arc::new(Mutex::new(None)),
+        blocked: Arc::new(AtomicBool::new(false)),
+    };
+    let node = NodeStore::open_with_backend(backend.clone(), fixture.store.scratch_disk().clone())
+        .unwrap();
+    let target = TenantStore::open_fixture(
+        node,
+        "checkpoint".into(),
+        Arc::new(LocalKeyProvider::new([0xD8; 32])),
+    )
+    .await
+    .unwrap();
+    let weak = Arc::downgrade(&target);
+    let domains =
+        kasumi_store::test_utils::with_custody(target, Arc::new(LocalKeyProvider::new([241; 32])))
+            .await
+            .unwrap();
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    *backend.pause.lock().unwrap() = Some((started_tx, release_rx));
+    let source = kasumi_engine::RestoreSource {
+        destination_alias: "approved".into(),
+        destination: fixture.destination.clone(),
+        keys: Arc::new(LocalKeyProvider::new([0xD8; 32])),
+        timeout_ms: 30_000,
+    };
+    let audit = fixture.audit.clone();
+    let owned_admission = admission.clone();
+    let request = common::local_restore_request(context(), &checkpoint, uuid::Uuid::new_v4());
+    let task = tokio::spawn(async move {
+        kasumi_engine::restore_local(&source, domains, request, owned_admission, audit).await
+    });
+    started_rx.await.unwrap();
+    assert!(
+        backend.blocked.load(Ordering::SeqCst),
+        "publication blocked the async executor"
+    );
+    // This is a single-thread runtime; this timer can run only if the storage
+    // write belongs to a separate owned worker.
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    assert!(backend.blocked.load(Ordering::SeqCst));
+    task.abort();
+    assert!(matches!(task.await, Err(error) if error.is_cancelled()));
+    assert!(weak.upgrade().is_some());
+    assert!(admission.snapshot().reserved_bytes > 192 << 20);
+    release_tx.send(()).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while weak.upgrade().is_some() || admission.snapshot().reserved_bytes != 192 << 20 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    // Cancellation before the final manifest cannot publish a partial genesis.
+    let node = NodeStore::open_with_backend(backend, fixture.store.scratch_disk().clone()).unwrap();
+    let reopened = TenantStore::open_fixture(
+        node,
+        "checkpoint".into(),
+        Arc::new(LocalKeyProvider::new([0xD8; 32])),
+    )
+    .await
+    .unwrap();
+    assert!(
+        reopened
+            .get("engine.bootstrap", b"manifest")
+            .unwrap()
+            .is_none()
+    );
+    reopened.shutdown().await;
+    fixture.close().await;
+}
+
 fn policy() -> Policy {
     Policy {
         grants: vec![Grant {

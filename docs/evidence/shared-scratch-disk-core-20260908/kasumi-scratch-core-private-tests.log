@@ -1,0 +1,15 @@
+   Compiling kasumi-store v0.1.0 (/private/tmp/kasumi-production-custody-tables/crates/kasumi-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.44s
+     Running unittests src/lib.rs (/tmp/kasumi-production-root-target/debug/deps/kasumi_store-407a5bdbfc470b9b)
+
+running 7 tests
+test scratch_disk::tests::physical_directory_reopens_share_budget_and_cannot_change_it ... ok
+test scratch_disk::tests::rejects_symlinks_and_overflowing_configuration ... ok
+test scratch_disk::tests::pending_files_share_filesystem_promises_and_keep_recovery_reserve ... ok
+test scratch_disk::tests::pinned_directory_survives_path_substitution_without_using_replacement ... ok
+test scratch_disk::tests::concurrent_spools_cannot_each_spend_the_aggregate_budget ... ok
+test scratch_disk::tests::immutable_image_readers_retain_capacity_until_the_last_owner_drains ... ok
+test scratch_disk::tests::truncation_and_rejected_growth_preserve_exact_file_charges ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 72 filtered out; finished in 0.11s
+

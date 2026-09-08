@@ -28,13 +28,19 @@ impl Backend {
         Ok(head)
     }
     pub(super) fn validate_signing_transition(
+        &self,
         meta: &Meta,
         command: &AuthorityMaintenanceCommand,
     ) -> Result<()> {
         let head = &meta.signing;
         head.validate()?;
         match &command.action {
+            AuthorityMaintenanceAction::EnrollSignerVerifier { .. }
+            | AuthorityMaintenanceAction::AdmitControlVerifiers { .. } => {
+                return self.validate_roster_transition(meta, command);
+            }
             AuthorityMaintenanceAction::StageSignerGeneration { certificate } => {
+                self.freeze_signer_roster(meta)?;
                 certificate.verify(&head.initial.identity.domain)?;
                 ensure!(
                     head.staged.is_none()
@@ -61,15 +67,32 @@ impl Backend {
         Ok(())
     }
     pub(super) fn apply_signing_transition(
+        &self,
         meta: &mut Meta,
         command: &AuthorityMaintenanceCommand,
         revision: u64,
+        additions: &mut Vec<(String, Record)>,
     ) -> Result<()> {
-        Self::validate_signing_transition(meta, command)?;
+        self.validate_signing_transition(meta, command)?;
+        if matches!(
+            &command.action,
+            AuthorityMaintenanceAction::EnrollSignerVerifier { .. }
+                | AuthorityMaintenanceAction::AdmitControlVerifiers { .. }
+        ) {
+            return self.apply_roster_transition(meta, command, revision, additions);
+        }
+        let roster = self.freeze_signer_roster(meta)?;
+        if matches!(
+            command.action,
+            AuthorityMaintenanceAction::StageSignerGeneration { .. }
+        ) {
+            Self::retain_signer_roster(meta, command.operation_id, revision, &roster, additions)?;
+        }
         let head = &mut meta.signing;
         match &command.action {
             AuthorityMaintenanceAction::StageSignerGeneration { certificate } => {
                 head.staged = Some(AuthoritySignerStage {
+                    roster,
                     operation_id: command.operation_id,
                     revision,
                     certificate: certificate.clone(),
@@ -80,6 +103,7 @@ impl Backend {
             } => {
                 let staged = head.staged.take().context("global stage disappeared")?;
                 head.retirement = Some(AuthoritySignerRetirement {
+                    roster: staged.roster,
                     stage_operation_id: *stage_operation_id,
                     activation_operation_id: command.operation_id,
                     activation_revision: revision,

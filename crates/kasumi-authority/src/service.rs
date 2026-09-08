@@ -89,6 +89,9 @@ impl AuthorityResponseFence {
     pub fn check(&self) -> Result<()> {
         self.context.authorization.check_live()?;
         self.authority.check_active_signer(&self.signer)?;
+        if self.lease.is_some() || self.lifecycle_lease.is_some() {
+            self.authority.check_issuance_signer(&self.signer)?;
+        }
         self.authority.group.check_access().map_err(unavailable)?;
         self.authority
             .check_installed_configuration()
@@ -395,6 +398,21 @@ impl IndependentAuthority {
         }
         Ok(())
     }
+    fn check_issuance_signer(&self, signer: &AuthoritySigner) -> Result<()> {
+        self.check_active_signer(signer)?;
+        if self
+            .backend
+            .signing_head()
+            .map_err(unavailable)?
+            .staged
+            .is_some()
+        {
+            return Err(unavailable(
+                "signer rotation froze new old-generation lease admissions",
+            ));
+        }
+        Ok(())
+    }
     fn request_signer(&self) -> Result<Arc<AuthoritySigner>> {
         // Capture identity only. An admitted administrative effect can commit
         // while its old signer is sealed; signing and release then return an
@@ -511,7 +529,7 @@ impl IndependentAuthority {
             .and_then(|expiry| expiry.checked_sub(now))
             .filter(|value| *value > 0)
             .ok_or_else(|| Error::new(ErrorCode::Unauthorized, "lease credential expired"))?;
-        self.check_active_signer(&signer)?;
+        self.check_issuance_signer(&signer)?;
         let signed = signer
             .sign_lease(LeaseClaims {
                 request: request.clone(),

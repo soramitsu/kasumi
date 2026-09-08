@@ -233,7 +233,12 @@ impl Backend {
                     status.phase = AuthorityMaintenancePhase::Completed;
                     meta.operational.revision = position.log_id.index;
                 } else if command.action.is_signing_head_transition() {
-                    Self::apply_signing_transition(&mut meta, command, position.log_id.index)?;
+                    self.apply_signing_transition(
+                        &mut meta,
+                        command,
+                        position.log_id.index,
+                        &mut additions,
+                    )?;
                     status.phase = AuthorityMaintenancePhase::Completed;
                 } else if matches!(
                     command.action,
@@ -346,7 +351,9 @@ impl Backend {
                             .context("member revocation count exhausted")?;
                         status.phase = AuthorityMaintenancePhase::Draining;
                     }
-                    AuthorityMaintenanceAction::StageSignerGeneration { .. }
+                    AuthorityMaintenanceAction::EnrollSignerVerifier { .. }
+                    | AuthorityMaintenanceAction::AdmitControlVerifiers { .. }
+                    | AuthorityMaintenanceAction::StageSignerGeneration { .. }
                     | AuthorityMaintenanceAction::ActivateSignerGeneration { .. }
                     | AuthorityMaintenanceAction::SetCapacity { .. }
                     | AuthorityMaintenanceAction::AuthorizeSignerTrust { .. } => {
@@ -427,9 +434,12 @@ impl Backend {
         }
         let mut next = meta.operational.membership.clone();
         match &command.action {
-            AuthorityMaintenanceAction::StageSignerGeneration { .. }
+            AuthorityMaintenanceAction::EnrollSignerVerifier { .. }
+            | AuthorityMaintenanceAction::AdmitControlVerifiers { .. }
+            | AuthorityMaintenanceAction::StageSignerGeneration { .. }
             | AuthorityMaintenanceAction::ActivateSignerGeneration { .. } => {
-                return Self::validate_signing_transition(meta, command)
+                return self
+                    .validate_signing_transition(meta, command)
                     .map_err(|error| conflict(&error.to_string()));
             }
             AuthorityMaintenanceAction::AuthorizeSignerTrust {
@@ -471,6 +481,7 @@ impl Backend {
                 }
             }
             AuthorityMaintenanceAction::EnrollLearner { node_id, member } => {
+                Self::check_new_verifier_admission(meta)?;
                 if next.members.contains_key(node_id)
                     || self
                         .record(&revoked_key(*node_id))

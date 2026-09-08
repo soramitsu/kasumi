@@ -47,10 +47,16 @@ See [the pinned Rust implementation](https://raw.githubusercontent.com/rust-lang
 The unit expects `/usr/local/bin/kasumid`, `/etc/kasumi/node.json` and an
 operator-created credential files beneath `/etc/kasumi/credentials`. Keep these
 files owned by the service account and mode 0600. Configuration uses absolute
-`token_file`/`bearer_file` paths and one `credentials_file` JSON bundle for S3.
+`token_file` paths, an exhaustive `bearer_files` map keyed by authority partition,
+and one `credentials_file` JSON bundle for S3. Every authority partition needs
+its own token file because JWT resources name one exact partition. Missing,
+extra, duplicate or noncanonical partition keys are rejected; the old single
+`bearer_file` authority setting is unsupported.
 Publish renewed credentials using a new private file, sync it, atomically rename
-it over the installed path and sync the parent directory. Every request reads a
-fresh snapshot; missing or malformed replacements fail closed. Environment
+it over the installed path and sync the parent directory. Every finite pooled
+operation reads one fresh snapshot after anchoring its original deadline and
+retains it across endpoint retries. The next operation reads renewed credentials;
+missing or malformed replacements fail closed. Environment
 variables and constructor-time secret snapshots are not supported. Certificate private keys
 must be readable only by the service account and its trusted operator. The
 unit confines persistent writes to `/var/lib/kasumi`; choose backup/generation

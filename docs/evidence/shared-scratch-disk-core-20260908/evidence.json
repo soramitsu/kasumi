@@ -1,0 +1,61 @@
+{
+  "recorded_at": "2026-09-08T09:30:37.794026+00:00",
+  "checkpoint": "9f870cdfd242a71cd31f6d0cb15fd5d506e1762b",
+  "tree": "4bfe31c36dd9688d4f836f4cea9aa74c7213c266",
+  "platform": "macOS ARM64",
+  "toolchain": "Rust 1.97.1",
+  "lockfile_sha256": "a4a3883969dc9486548a1aea841ecf45c482c99e4ea1e0d47b56f6c52b2afa08",
+  "logs": {
+    "/tmp/kasumi-scratch-core-check.log": {
+      "sha256": "890e7f0c6f727b404ba41f69b998b78ecbaf4d5dd403075f68cb3f317adc5141",
+      "source": "868ac34",
+      "result": "fixture-free store lib check passed"
+    },
+    "/tmp/kasumi-scratch-core-tests.log": {
+      "sha256": "0523bbe5cf05bc2c5ebf879ef27ca71f22bd170dde793cf0f89982b8b307adad",
+      "source": "2b48cb9",
+      "result": "failed: six fixtures exposed nonprivate temporary directory, one passed"
+    },
+    "/tmp/kasumi-scratch-core-private-tests.log": {
+      "sha256": "da6984d46fdc3a36af42125d50abcf0de613141e066bc017cee3794069c38999",
+      "source": "519faff",
+      "result": "seven tests passed after creating private child directories"
+    },
+    "/tmp/kasumi-scratch-core-clippy.log": {
+      "sha256": "b7565cb35827efe6713a1d43a490b3e422e7358724406e0fb0eb875eddca0f70",
+      "source": "519faff",
+      "result": "strict store all-features all-targets passed"
+    },
+    "/tmp/kasumi-scratch-full-store-tests.log": {
+      "sha256": "4a914b6ee1768ed6bb84fcd31c5fe08c521fcfa82e3242751280e3e693b3e3a4",
+      "source": "9f870cd",
+      "result": "79 passed; one external-service test ignored"
+    },
+    "/tmp/kasumi-scratch-final-clippy.log": {
+      "sha256": "12b3ad6bf754747400a10382c1e3c3f83cd187492f79bbb232c24e10376e8198",
+      "source": "9f870cd",
+      "result": "strict store all-features all-targets passed"
+    },
+    "/tmp/kasumi-scratch-final-production-check.log": {
+      "sha256": "b309dcc848d22f429b32a82bc673891623ba0087c50750dc76d4e05a0fea6763",
+      "source": "9f870cd",
+      "result": "fixture-free store lib check passed"
+    }
+  },
+  "binaries": {
+    "/tmp/kasumi-production-root-target/debug/deps/kasumi_store-407a5bdbfc470b9b": {
+      "sha256": "be61fe97c306eee7f28f34b2d0a88d7bfeaef283b7004e8968f13dd5e794e773",
+      "source": "519faff"
+    },
+    "/tmp/kasumi-production-root-target/debug/deps/kasumi_store-41ed7df4e6a1a1f2": {
+      "sha256": "28e84b2ee6b5e69c5c662ee8da1e9d78d57da4fb5db84a432a428a20cf193e0d",
+      "source": "9f870cd"
+    }
+  },
+  "limitations": [
+    "Core constructor checkpoint; production owner/config propagation still required before workspace integration.",
+    "No persistent database/index/WAL capacity reservation, native prefix reservation, 3GiB/RSS or endurance acceptance.",
+    "Filesystem free-space admission cannot eliminate allocations by unrelated processes or device errors.",
+    "Earlier failed test executable overwritten before capture; no historical hash inferred."
+  ]
+}

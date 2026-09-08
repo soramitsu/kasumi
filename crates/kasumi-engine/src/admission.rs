@@ -445,6 +445,56 @@ impl Reservation {
         state.bytes += bytes;
         Ok(())
     }
+    /// Transfer the same operation slot to its next workspace after the previous
+    /// allocations have actually drained. Existing Arc owners continue to fence
+    /// the one charge; growth rechecks capacity and never changes it on failure.
+    pub(crate) fn handoff_workspace(&self, node: &Arc<NodeAdmission>, bytes: u64) -> Result<()> {
+        if !Arc::ptr_eq(node, &self.node) {
+            return Err(Error::new(
+                ErrorCode::Conflict,
+                "workspace handoff changed node governor",
+            ));
+        }
+        let mut state = self.node.state.lock().unwrap_or_else(|p| p.into_inner());
+        let previous = state
+            .charges
+            .get(&self.id)
+            .ok_or_else(|| Error::new(ErrorCode::Unavailable, "admission reservation absent"))?
+            .bytes;
+        let total = state
+            .bytes
+            .checked_sub(previous)
+            .and_then(|n| n.checked_add(bytes))
+            .ok_or_else(|| {
+                Error::new(ErrorCode::ResourceExhausted, "workspace handoff overflow")
+            })?;
+        if bytes > previous {
+            if !state.usable
+                || self.node.clock.now().saturating_sub(state.sampled_at)
+                    >= Duration::from_millis(self.node.config.max_sample_age_ms)
+            {
+                self.node.sample(&mut state);
+            }
+            if !state.usable
+                || state.pressured
+                || total > self.node.max_bytes
+                || state.resident.saturating_add(total) >= self.node.high
+            {
+                return Err(Error::new(
+                    ErrorCode::ResourceExhausted,
+                    "node handoff workspace budget exhausted",
+                ));
+            }
+        }
+        state
+            .charges
+            .get_mut(&self.id)
+            .expect("live reservation")
+            .bytes = bytes;
+        state.bytes = total;
+        Ok(())
+    }
+
     /// Completed computation may retain its response bytes while a nested
     /// strict-audit proposal occupies the operation slot.
     pub(crate) fn retain_workspace(&mut self) {
@@ -626,6 +676,36 @@ mod tests {
             clock,
         )
     }
+    #[test]
+    fn workspace_handoff_preserves_slot_owner_and_checks_only_replacement_growth() {
+        let (node, memory, _) = fixture();
+        let (other, _, _) = fixture();
+        let permanent = node.reserve(200, None).unwrap();
+        let token = QueryCancellation::default();
+        let work = Arc::new(node.reserve(250, Some(token.clone())).unwrap());
+        let retained = work.clone();
+        assert!(node.reserve(300, None).is_err());
+        work.handoff_workspace(&node, 300).unwrap();
+        assert_eq!(node.snapshot().reserved_bytes, 500);
+        assert_eq!(node.snapshot().inflight_operations, 2);
+        assert!(work.handoff_workspace(&node, 301).is_err());
+        assert!(work.handoff_workspace(&other, 1).is_err());
+        assert_eq!(node.snapshot().reserved_bytes, 500);
+        memory.rss.store(1000, Ordering::SeqCst);
+        node.refresh();
+        assert!(token.is_cancelled());
+        work.handoff_workspace(&node, 200).unwrap();
+        assert!(work.handoff_workspace(&node, 201).is_err());
+        assert_eq!(node.snapshot().reserved_bytes, 400);
+        drop(work);
+        assert_eq!(node.snapshot().reserved_bytes, 400);
+        drop(permanent);
+        assert_eq!(node.snapshot().reserved_bytes, 200);
+        drop(retained);
+        assert_eq!(node.snapshot().reserved_bytes, 0);
+        assert_eq!(node.snapshot().inflight_operations, 0);
+    }
+
     #[test]
     fn pressure_cancels_queries_but_never_changes_write_work_and_uses_hysteresis() {
         let (node, memory, _) = fixture();
