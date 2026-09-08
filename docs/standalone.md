@@ -75,6 +75,10 @@ Local recovery fences only the exclusively owned installation. It does not attes
 
 ## Protected service audit
 
+Protected health, readiness and Prometheus routes share the administrative TLS
+listener. See [node observations](observability.md) for their authorization,
+readiness conditions, available metrics and scraper configuration.
+
 The separate administrative listener exposes service authentication, key maintenance,
 backup, and recovery audit records only to a current Control administrator. Tenant
 administrator credentials do not grant access. The server checks the original

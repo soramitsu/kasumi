@@ -210,6 +210,8 @@ pub(crate) struct GenerationDescriptor {
 pub(crate) type ProviderFactory =
     Arc<dyn Fn() -> Result<(Arc<dyn KeyProvider>, Arc<dyn KeyProvider>)> + Send + Sync>;
 
+#[path = "administration_observability.rs"]
+mod observability;
 #[path = "original_serving_runtime.rs"]
 mod original_serving_runtime;
 
@@ -990,6 +992,7 @@ impl Administration {
                 )
                 .await?;
                 let store = stores.application().clone();
+                self.config.install_tenant_audit_archive(&store, None)?;
                 let (database, bootstrap, hash) = if let (Some(_bootstrap), Some(network)) =
                     (&source.bootstrap, &self.cluster)
                 {
@@ -1861,6 +1864,7 @@ impl Administration {
             .admission
             .reserve(kasumi_engine::recovery_workspace_bytes(&stores)?, None)?;
         let store = stores.application().clone();
+        self.config.install_tenant_audit_archive(&store, None)?;
         let descriptor: GenerationDescriptor = serde_json::from_slice(
             &store
                 .get("runtime.generation", b"descriptor")?

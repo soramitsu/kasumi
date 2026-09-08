@@ -83,6 +83,8 @@ pub struct TenantEngine {
     restoration_identity: String,
     access: std::sync::OnceLock<kasumi_store::StorageAccess>,
     pub(crate) snapshot_store: std::sync::OnceLock<Arc<kasumi_store::TenantStore>>,
+    pub(crate) audit_maintenance:
+        Mutex<Option<Arc<crate::audit_maintenance::NodeAuditMaintenance>>>,
 }
 
 impl kasumi_raft::StateMachineBackend for TenantEngine {
@@ -381,6 +383,7 @@ impl TenantEngine {
             restoration_identity,
             access: std::sync::OnceLock::new(),
             snapshot_store: std::sync::OnceLock::new(),
+            audit_maintenance: Mutex::new(None),
             current: ArcSwapOption::from_pointee(Generation {
                 state,
                 indexes,
@@ -410,6 +413,7 @@ impl TenantEngine {
         let engine = Self {
             access: std::sync::OnceLock::new(),
             snapshot_store: std::sync::OnceLock::new(),
+            audit_maintenance: Mutex::new(None),
             tenant: state.tenant.clone(),
             incarnation: state.incarnation.clone(),
             revision_base: state.revision_base,
@@ -528,6 +532,7 @@ impl TenantEngine {
         let verifier = Self {
             access: std::sync::OnceLock::new(),
             snapshot_store: std::sync::OnceLock::new(),
+            audit_maintenance: Mutex::new(None),
             tenant: state.tenant.clone(),
             incarnation: state.incarnation.clone(),
             revision_base: state.revision_base,
@@ -546,6 +551,10 @@ impl TenantEngine {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         self.current.store(None);
+        self.audit_maintenance
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
     }
 
     pub fn authorize(

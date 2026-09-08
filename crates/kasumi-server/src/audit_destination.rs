@@ -80,3 +80,95 @@ impl AuditDestinationConfig {
         })
     }
 }
+
+impl crate::runtime::RuntimeConfig {
+    /// Install before bootstrap publication or any Raft replay. The encrypted
+    /// placement binding rejects a missing/replaced external destination on
+    /// restart; this helper never falls back after an S3 publication failure.
+    /// Recovery may supply an exclusively owned cache with a durable publication
+    /// observer while retaining the same installed external destination.
+    pub(crate) fn install_tenant_audit_archive(
+        &self,
+        store: &Arc<kasumi_store::TenantStore>,
+        cache: Option<Arc<FilesystemAuditArchive>>,
+    ) -> Result<()> {
+        let cache = match cache {
+            Some(cache) => cache,
+            None => Arc::new(FilesystemAuditArchive::open(
+                store.durable_directory()?.join("tenant-audit-archives"),
+            )?),
+        };
+        let destination = match self.tenant_audit_archives.get(store.tenant()) {
+            Some(destination) => destination.open()?,
+            None => cache.clone() as Arc<dyn AuditArchiveDestination>,
+        };
+        store.install_tenant_audit_archive(cache, destination)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kasumi_store::{NodeStore, TenantStore, test_utils::LocalKeyProvider};
+
+    #[test]
+    fn archive_installation_map_is_an_explicit_first_release_field() {
+        let mut encoded = serde_json::to_value(crate::runtime::example_config()).unwrap();
+        serde_json::from_value::<crate::runtime::RuntimeConfig>(encoded.clone()).unwrap();
+        encoded
+            .as_object_mut()
+            .unwrap()
+            .remove("tenant_audit_archives");
+        assert!(serde_json::from_value::<crate::runtime::RuntimeConfig>(encoded).is_err());
+    }
+
+    #[tokio::test]
+    async fn restart_requires_the_exact_installed_external_archive_and_supplied_cache() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("node.redb");
+        let provider = Arc::new(LocalKeyProvider::new([73; 32]));
+        let node = NodeStore::open(&path).unwrap();
+        let store = TenantStore::open_fixture(node.clone(), "tenant".into(), provider.clone())
+            .await
+            .unwrap();
+        let cache =
+            Arc::new(FilesystemAuditArchive::open(directory.path().join("owned-cache")).unwrap());
+        let mut installed = crate::runtime::example_config();
+        installed.tenant_audit_archives.insert(
+            "tenant".into(),
+            AuditDestinationConfig::Filesystem {
+                directory: directory.path().join("external-archive"),
+            },
+        );
+        installed
+            .install_tenant_audit_archive(&store, Some(cache.clone()))
+            .unwrap();
+        assert_eq!(
+            store.tenant_audit_archive().unwrap().cache().identity(),
+            cache.identity()
+        );
+        store.shutdown().await;
+        drop(store);
+        drop(node);
+        let node = NodeStore::open(&path).unwrap();
+        let reopened = TenantStore::open_fixture(node, "tenant".into(), provider)
+            .await
+            .unwrap();
+        let empty = crate::runtime::example_config();
+        assert!(
+            empty
+                .install_tenant_audit_archive(&reopened, Some(cache.clone()))
+                .is_err()
+        );
+        assert!(
+            installed
+                .install_tenant_audit_archive(&reopened, None)
+                .is_err()
+        );
+        installed
+            .install_tenant_audit_archive(&reopened, Some(cache))
+            .unwrap();
+        assert!(reopened.tenant_audit_archive().is_ok());
+        reopened.shutdown().await;
+    }
+}

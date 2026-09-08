@@ -55,8 +55,60 @@ fn decode(bytes: &[u8]) -> anyhow::Result<(AuditArchiveReference, &[u8])> {
 }
 
 impl TenantEngine {
-    /// Captures only shared immutable roots; at most one segment is serialized.
+    /// Install the shared node reservation before opening or replaying Raft.
+    /// This does not start maintenance; Database construction starts the worker
+    /// only when its backend has this explicit installation.
+    pub fn install_audit_maintenance(
+        &self,
+        admission: &Arc<crate::admission::NodeAdmission>,
+    ) -> Result<()> {
+        let _apply = self.apply_lock.lock().map_err(|_| {
+            Error::new(ErrorCode::Unavailable, "tenant apply ownership unavailable")
+        })?;
+        if self.generation()?.state.revision != self.revision_base {
+            return Err(Error::new(
+                ErrorCode::Conflict,
+                "install audit maintenance before Raft replay",
+            ));
+        }
+        let pool = crate::audit_maintenance::NodeAuditMaintenance::install(admission)?;
+        let mut installed = self.audit_maintenance.lock().map_err(|_| {
+            Error::new(
+                ErrorCode::Unavailable,
+                "audit maintenance ownership unavailable",
+            )
+        })?;
+        if installed
+            .as_ref()
+            .is_some_and(|old| !Arc::ptr_eq(old, &pool))
+        {
+            return Err(Error::new(
+                ErrorCode::Conflict,
+                "audit maintenance node governor differs",
+            ));
+        }
+        *installed = Some(pool);
+        Ok(())
+    }
+
+    /// Fixture-only raw command producer. Production uses the owned worker and
+    /// its installed node reservation through preparation and proposal outcome.
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn prepare_audit_prune(&self) -> anyhow::Result<Option<Vec<u8>>> {
+        ensure!(
+            self.snapshot_store
+                .get()
+                .context("audit storage not installed")?
+                .storage_access()
+                .purpose()
+                .is_local_fixture(),
+            "raw audit pruning requires fixture storage"
+        );
+        self.prepare_audit_prune_inner()
+    }
+
+    /// Captures only shared immutable roots; at most one segment is serialized.
+    pub(crate) fn prepare_audit_prune_inner(&self) -> anyhow::Result<Option<Vec<u8>>> {
         let generation = self.generation()?;
         let state = &generation.state;
         let retention = &state.audit_retention;
@@ -116,6 +168,26 @@ impl TenantEngine {
         position: &kasumi_raft::AppliedEntryContext,
         bytes: &[u8],
     ) -> anyhow::Result<kasumi_raft::AppliedResponse> {
+        let maintenance = self
+            .audit_maintenance
+            .lock()
+            .map_err(|_| anyhow::anyhow!("audit maintenance ownership unavailable"))?
+            .clone();
+        ensure!(
+            maintenance.is_some()
+                || self
+                    .snapshot_store
+                    .get()
+                    .is_some_and(|store| store.storage_access().purpose().is_local_fixture()),
+            "audit apply workspace not installed"
+        );
+        // Committed materialization uses already reserved capacity even when
+        // ordinary request admission is exhausted or under RSS pressure.
+        let _workspace = maintenance
+            .as_ref()
+            .map(|pool| pool.applying.lock())
+            .transpose()
+            .map_err(|_| anyhow::anyhow!("audit apply workspace unavailable"))?;
         ensure!(
             position.retirement_seed.is_none(),
             "audit prune has retirement custody seed"

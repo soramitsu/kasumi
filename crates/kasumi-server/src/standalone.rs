@@ -189,6 +189,7 @@ pub(crate) async fn operator_control(
         StorageAccess::node_control(),
     )
     .await?;
+    config.install_tenant_audit_archive(stores.application(), None)?;
     kasumi_engine::open_local_with_incarnation(
         stores,
         config.control.initial_policy.clone(),
@@ -336,6 +337,7 @@ pub async fn recover_administrator(configuration: &Path, output: &Path) -> Resul
             access,
         )
         .await?;
+        config.install_tenant_audit_archive(stores.application(), None)?;
         let database = kasumi_engine::open_local_with_incarnation(
             stores,
             policy.clone(),
@@ -473,6 +475,7 @@ pub async fn rotate_wrapping_keys(configuration: &Path) -> Result<()> {
             access,
         )
         .await?;
+        config.install_tenant_audit_archive(stores.application(), None)?;
         stores.application().rewrap_keys().await?;
         stores.custody().store().rewrap_keys().await?;
         stores.application().shutdown().await;

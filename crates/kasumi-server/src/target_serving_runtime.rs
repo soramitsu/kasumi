@@ -248,6 +248,8 @@ impl TargetRecoveryRuntime {
         );
         g.lease = Some(lease);
         let stores = g.stores.as_ref().unwrap().clone();
+        self.config
+            .install_tenant_audit_archive(stores.application(), None)?;
         *stage = RecoveryStage::LocalReplay;
         let owner = kasumi_engine::open_serving_target(
             projection.clone(),

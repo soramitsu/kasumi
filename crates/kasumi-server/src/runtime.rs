@@ -216,6 +216,9 @@ fn default_prepared_limit() -> usize {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeConfig {
+    /// Installed external archive overrides by tenant, including __kasumi_control.
+    /// An empty map selects each store's private durable filesystem cache.
+    pub tenant_audit_archives: BTreeMap<String, crate::audit_destination::AuditDestinationConfig>,
     #[serde(deserialize_with = "kasumi_types::require_explicit_option")]
     pub target_recovery: Option<crate::target_runtime_config::TargetRecoveryConfig>,
     pub serving_authorities: BTreeMap<String, crate::serving_runtime::ServingAuthorityConfig>,
@@ -254,6 +257,14 @@ impl RuntimeConfig {
         ensure!(self.format == 1, "unsupported runtime configuration format");
         absolute(&self.database_path)?;
         self.admission.validate()?;
+        for (tenant, archive) in &self.tenant_audit_archives {
+            kasumi_types::validate_name(tenant)?;
+            ensure!(
+                tenant != SECURITY_TENANT && !tenant.starts_with("kasumi.custody/"),
+                "service security and custody use their own archive configuration"
+            );
+            archive.validate()?;
+        }
         if let Some(target) = &self.target_recovery {
             target.validate(self)?;
         }
@@ -846,6 +857,7 @@ impl ServingTasks {
 }
 
 pub struct NodeRuntime {
+    telemetry: Arc<crate::observability::Telemetry>,
     config: RuntimeConfig,
     registry: DatabaseRegistry,
     tenants: Vec<OpenedTenant>,
@@ -1009,6 +1021,7 @@ impl NodeRuntime {
         .await?;
         control.database.install_admission(admission.clone())?;
         let mut runtime = Self {
+            telemetry: crate::observability::Telemetry::new(),
             _standalone_lock: standalone_lock,
             config: config.clone(),
             registry: registry.clone(),
@@ -1170,7 +1183,7 @@ impl NodeRuntime {
                 NativeData::new(registry.clone(), auth.clone()).service(),
             )
             .into_axum_router();
-            let native_admin = NativeAdmin::new(registry.clone(), auth.clone()).with_management(administration);
+            let native_admin = NativeAdmin::new(registry.clone(), auth.clone()).with_management(administration.clone()).with_telemetry(runtime.telemetry.clone());
             #[cfg(test)]
             { runtime.audit_release_gate = native_admin.audit_release_gate(); }
             let mut admin = tonic::service::Routes::new(native_admin.service());
@@ -1178,7 +1191,7 @@ impl NodeRuntime {
                 admin = admin.add_service(crate::rpc::NativeLifecycleControl::new(runtime.control.database.clone(), signer, auth.clone())?.service());
             }
             if let Some(target)=&runtime.target_recovery {admin=admin.add_service(crate::rpc::NativeTargetRecovery::new(target.clone(),auth.clone()).service());}
-            let admin = admin.into_axum_router();
+            let admin = admin.into_axum_router().merge(crate::observability::router(auth.clone(), administration, runtime.telemetry.clone()));
             runtime.tls_reload = Some(crate::tls_reload::RuntimeTlsReload::new(
                 vec![
                     (crate::tls_reload::ListenerSource::OAuth(config.mcp.tls.clone()), mcp_tls.clone()),
@@ -1227,6 +1240,7 @@ impl NodeRuntime {
         audit: Arc<SecurityAudit>,
     ) -> Result<OpenedTenant> {
         let store = stores.application().clone();
+        config.install_tenant_audit_archive(&store, None)?;
         let database = if let Some(bootstrap) = &bootstrap {
             let replication = config
                 .replication
@@ -1382,6 +1396,8 @@ impl NodeRuntime {
             let cleanup = self.shutdown().await;
             return drain.and(cleanup);
         }
+        self.telemetry
+            .set_lifecycle(crate::observability::Lifecycle::Serving);
         for listener in self.data_listeners.drain(..) {
             tasks.listeners.spawn(tls::serve_tls(
                 listener.listener,
@@ -1405,6 +1421,8 @@ impl NodeRuntime {
                 result=tasks.maintenance.join_next(), if !tasks.maintenance.is_empty()=> match result { Some(Ok(Err(error)))=>Err(error),Some(Err(error))=>Err(error.into()),_=>Err(anyhow::anyhow!("required reconciliation stopped unexpectedly")) },
             }
         };
+        self.telemetry
+            .set_lifecycle(crate::observability::Lifecycle::Draining);
         let drain = tasks.shutdown().await;
         let cleanup = self.shutdown().await;
         result.and(drain).and(cleanup)
@@ -1588,6 +1606,10 @@ impl NodeRuntime {
     }
 
     pub async fn shutdown(&mut self) -> Result<()> {
+        if !self.closed {
+            self.telemetry
+                .set_lifecycle(crate::observability::Lifecycle::Draining);
+        }
         if let Some(target) = self.target_recovery.take() {
             target.shutdown().await?;
         }
@@ -1632,6 +1654,8 @@ impl NodeRuntime {
         }
         self.audit.shutdown().await;
         self.closed = true;
+        self.telemetry
+            .set_lifecycle(crate::observability::Lifecycle::Closed);
         failure.map_or(Ok(()), Err)
     }
 }
@@ -1772,6 +1796,7 @@ pub fn example_config() -> RuntimeConfig {
         strict_read_audit: false,
     };
     RuntimeConfig {
+        tenant_audit_archives: BTreeMap::new(),
         target_recovery: None,
         serving_authorities: BTreeMap::from([(
             "storage-fence".into(),
@@ -4349,3 +4374,7 @@ pub(crate) async fn open_retired_source(
 #[cfg(test)]
 #[path = "runtime_audit_tests.rs"]
 mod audit_tests;
+
+#[cfg(test)]
+#[path = "runtime_observability_tests.rs"]
+mod observability_tests;
