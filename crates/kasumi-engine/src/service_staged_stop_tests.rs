@@ -11,6 +11,11 @@ fn guarded_request(fixture: &CredentialFixture, id: &str, deadline: u64) -> Stop
     };
     StopStagedTransaction {
         original: BeginStagedTransaction {
+            scope: kasumi_types::StagedTransactionScope {
+                tenant: fixture.context.tenant.clone(),
+                principal: fixture.context.principal.clone(),
+                incarnation: current.state.incarnation.clone(),
+            },
             transaction_id: id.into(),
             manifest: StagedManifest::from_chunks(&[chunk]).unwrap(),
             ttl_ms: 60_000,
@@ -186,7 +191,11 @@ async fn accepted_stop_release_failure_is_unknown_and_reopen_recovers_exact_tomb
     audit.shutdown().await;
     drop(db);
     drop(audit);
-    let node = NodeStore::open(directory.path().join("node.redb"), kasumi_store::ScratchDisk::fixture()).unwrap();
+    let node = NodeStore::open(
+        directory.path().join("node.redb"),
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
     let provider = Arc::new(LocalKeyProvider::new([0x97; 32]));
     let audit = SecurityAudit::open(
         TenantStore::open_fixture(
@@ -195,7 +204,10 @@ async fn accepted_stop_release_failure_is_unknown_and_reopen_recovers_exact_tomb
             provider.clone(),
         )
         .await
-        .unwrap(), kasumi_types::AuditRetentionBudget::default(), crate::admission::NodeAdmission::new(Default::default()).unwrap())
+        .unwrap(),
+        kasumi_types::AuditRetentionBudget::default(),
+        crate::admission::NodeAdmission::new(Default::default()).unwrap(),
+    )
     .unwrap();
     let application = TenantStore::open_fixture(node, context.tenant.clone(), provider)
         .await

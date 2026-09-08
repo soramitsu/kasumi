@@ -48,6 +48,8 @@ pub enum ClientError {
     Transport(#[from] tonic::Status),
     #[error("invalid native JSON")]
     Json(#[from] serde_json::Error),
+    #[error("invalid native response: {0}")]
+    InvalidResponse(&'static str),
     #[error("invalid bearer authorization")]
     Authorization,
     #[error("native request exceeds its byte limit")]
@@ -220,6 +222,10 @@ impl KasumiClient {
         bearer: &str,
         request: &kasumi_types::StopStagedTransaction,
     ) -> Result<kasumi_types::StagedTransactionStatus, ClientError> {
+        let reference = request
+            .original
+            .reference()
+            .map_err(|error| ClientError::Connection(anyhow::anyhow!(error.message)))?;
         let response = self
             .inner
             .stop_staged_transaction(self.authorized(
@@ -230,7 +236,7 @@ impl KasumiClient {
             )?)
             .await?
             .into_inner();
-        Ok(serde_json::from_slice(&response.response_json)?)
+        staged_status::decode(&response.response_json, &reference)
     }
 
     pub async fn staged_transaction_status(
@@ -248,7 +254,7 @@ impl KasumiClient {
             )?)
             .await?
             .into_inner();
-        Ok(serde_json::from_slice(&response.response_json)?)
+        staged_status::decode(&response.response_json, request)
     }
 
     pub async fn open_snapshot_lease(
@@ -673,6 +679,8 @@ fn authorized<T>(bearer: &str, value: T) -> Result<Request<T>, ClientError> {
     );
     Ok(request)
 }
+
+mod staged_status;
 
 mod target;
 pub use target::{KasumiTargetClient, TargetAcknowledgement};

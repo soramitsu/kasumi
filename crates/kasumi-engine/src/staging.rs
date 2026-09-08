@@ -70,12 +70,109 @@ fn historical_limits() -> Limits {
     }
 }
 
+// Current credentials authorize access; caller-supplied scope only narrows it.
+fn authorize_scope(
+    state: &TenantState,
+    context: &RequestContext,
+    scope: &StagedTransactionScope,
+) -> Result<()> {
+    authorize_discovery_state(state, context, Action::Write)?;
+    scope.validate()?;
+    if scope.tenant != state.tenant
+        || scope.tenant != context.tenant
+        || scope.principal != context.principal
+    {
+        return Err(Error::new(
+            ErrorCode::Forbidden,
+            "staged original scope differs from verified principal or tenant",
+        ));
+    }
+    validate_scope_lineage(state, scope)
+}
+
+fn validate_scope_lineage(state: &TenantState, scope: &StagedTransactionScope) -> Result<()> {
+    scope.validate()?;
+    if scope.tenant != state.tenant
+        || (scope.incarnation != state.incarnation
+            && !state
+                .restore_lineage
+                .iter()
+                .any(|link| link.checkpoint.source_incarnation == scope.incarnation))
+    {
+        return Err(Error::new(
+            ErrorCode::Conflict,
+            "staged original incarnation is outside retained lineage",
+        ));
+    }
+    Ok(())
+}
+
+fn require_current_creation(state: &TenantState, scope: &StagedTransactionScope) -> Result<()> {
+    if scope.incarnation != state.incarnation {
+        return Err(Error::new(
+            ErrorCode::Conflict,
+            "cannot create an absent historical staged identity",
+        ));
+    }
+    Ok(())
+}
+
+fn require_upload_incarnation(state: &TenantState, stage: &StagedTransaction) -> Result<()> {
+    if stage.is_active() && stage.scope.incarnation != state.incarnation {
+        return Err(Error::new(
+            ErrorCode::Conflict,
+            "historical staged upload may only be observed, stopped or expired",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn authorize_begin(
+    state: &TenantState,
+    context: &RequestContext,
+    request: &BeginStagedTransaction,
+) -> Result<()> {
+    authorize_scope(state, context, &request.scope)?;
+    authorize_manifest(state, context, &request.manifest)?;
+    let key = identity(&context.principal, &request.transaction_id)?;
+    if let Some(stage) = state.staged_transactions.get(&key) {
+        if stage.scope != request.scope {
+            return Err(Error::new(
+                ErrorCode::Conflict,
+                "staged permanent identity belongs to a different original scope",
+            ));
+        }
+        require_upload_incarnation(state, stage)
+    } else {
+        require_current_creation(state, &request.scope)
+    }
+}
+
+pub(crate) fn authorize_upload(
+    state: &TenantState,
+    context: &RequestContext,
+    reference: &StagedTransactionRef,
+) -> Result<()> {
+    require_upload_incarnation(state, lookup(state, context, reference)?)
+}
+
 pub(crate) fn authorize_stop(
     state: &TenantState,
     context: &RequestContext,
     request: &StopStagedTransaction,
 ) -> Result<()> {
-    authorize_discovery_state(state, context, Action::Write)?;
+    authorize_scope(state, context, &request.original.scope)?;
+    let key = identity(&context.principal, &request.original.transaction_id)?;
+    if let Some(stage) = state.staged_transactions.get(&key) {
+        if stage.scope != request.original.scope {
+            return Err(Error::new(
+                ErrorCode::Conflict,
+                "staged permanent identity belongs to a different original scope",
+            ));
+        }
+    } else {
+        require_current_creation(state, &request.original.scope)?;
+    }
     validate_name(&request.original.transaction_id)?;
     if request.original.ttl_ms == 0 || request.original.ttl_ms > 86_400_000 {
         return Err(Error::new(
@@ -131,7 +228,7 @@ pub(crate) fn lookup<'a>(
     context: &RequestContext,
     reference: &StagedTransactionRef,
 ) -> Result<&'a StagedTransaction> {
-    authorize_discovery_state(state, context, Action::Write)?;
+    authorize_scope(state, context, &reference.scope)?;
     if !valid_digest(&reference.manifest_digest) {
         return Err(Error::new(
             ErrorCode::InvalidArgument,
@@ -144,7 +241,9 @@ pub(crate) fn lookup<'a>(
         .get(&key)
         .ok_or_else(|| Error::new(ErrorCode::NotFound, "staged transaction not found"))?;
     authorize_manifest(state, context, &transaction.manifest)?;
-    if transaction.manifest_digest != reference.manifest_digest {
+    if transaction.scope != reference.scope
+        || transaction.manifest_digest != reference.manifest_digest
+    {
         return Err(Error::new(
             ErrorCode::Conflict,
             "staged manifest identity mismatch",
@@ -244,6 +343,16 @@ pub(super) fn apply(
         revision,
         versions: BTreeMap::new(),
     };
+    match &command.operation {
+        Operation::BeginStaged(request) => authorize_begin(state, &command.context, request)?,
+        Operation::AppendStaged(request) => {
+            authorize_upload(state, &command.context, &request.transaction)?
+        }
+        Operation::FinalizeStaged(reference) => {
+            authorize_upload(state, &command.context, reference)?
+        }
+        _ => {}
+    }
     if let Operation::StopStaged(request) = &command.operation {
         authorize_stop(state, &command.context, request)?;
         validate_admission(
@@ -293,7 +402,7 @@ pub(super) fn apply(
             staged.staged_transactions.insert(
                 key.clone(),
                 StagedTransaction {
-                    principal: command.context.principal.clone(),
+                    scope: request.scope.clone(),
                     transaction_id: request.transaction_id.clone(),
                     manifest_digest,
                     manifest: request.manifest.clone(),
@@ -483,7 +592,7 @@ pub(super) fn apply(
                 state.staged_transactions.insert(
                     key,
                     StagedTransaction {
-                        principal: command.context.principal.clone(),
+                        scope: original.scope.clone(),
                         transaction_id: original.transaction_id.clone(),
                         manifest_digest: reference.manifest_digest,
                         manifest: original.manifest.clone(),
@@ -634,13 +743,15 @@ impl SnapshotChunks {
 pub(super) fn validate_snapshot_record(
     key: &str,
     stage: &StagedTransaction,
-    revision: u64,
+    state: &TenantState,
     chunks: &SnapshotChunks,
 ) -> Result<bool> {
     // Permanent terminal identities describe historic requests. Lower limits
     // apply to future/active work and cannot invalidate those durable outcomes.
     validate_manifest(&stage.manifest, &historical_limits())?;
-    if identity(&stage.principal, &stage.transaction_id)? != key
+    validate_scope_lineage(state, &stage.scope)?;
+    let revision = state.revision;
+    if identity(&stage.scope.principal, &stage.transaction_id)? != key
         || staged_digest(&stage.manifest)?.0 != stage.manifest_digest
         || stage.ttl_ms == 0
         || stage.ttl_ms > 86_400_000
@@ -703,7 +814,7 @@ pub(super) fn validate_restored(state: &TenantState) -> Result<()> {
         for (index, chunk) in &stage.chunks {
             chunks.add(*index, chunk, stage, &state.limits)?;
         }
-        if validate_snapshot_record(key, stage, state.revision, &chunks)? {
+        if validate_snapshot_record(key, stage, state, &chunks)? {
             active.insert(key.clone());
         }
     }

@@ -7,14 +7,31 @@ pinned TLS 1.3/mTLS connection. There is no reference-only abort API.
 
 ```rust
 StopStagedTransaction {
-    original: BeginStagedTransaction { transaction_id, manifest, ttl_ms },
+    original: BeginStagedTransaction {
+        scope: StagedTransactionScope { tenant, incarnation, principal },
+        transaction_id, manifest, ttl_ms,
+    },
     admission: Vec<ReadAssertion>,
 }
 ```
 
-The permanent identity binds the authenticated principal, transaction ID, exact
-original manifest and upload TTL. The admission assertions belong to this attempt
-and are never hashed into that identity. Reusing an ID with a changed manifest or
+The permanent identity binds the original tenant, incarnation, authenticated
+principal, transaction ID, exact manifest and upload TTL. Begin and every
+transaction reference require that original `scope`; Status echoes it, and the
+native SDK rejects status responses with a different scope, ID or manifest.
+These expected values never grant authority: the server checks them against the
+verified native principal, tenant and credential resource during admission,
+ordered execution and response release. There are no principal-free aliases.
+
+Persist the original Begin in trusted adapter-owned storage before dispatch.
+A replacement authenticated principal cannot resolve or stop that Begin, even
+with administrator grants; rejection leaves the original outcome unresolved.
+Do not reinterpret a rejection, missing status or another principal's transaction
+as evidence of cleanup. A newly issued credential for the same principal can
+recover the original scope without extending an already-running request.
+
+The admission assertions belong to this attempt and are never hashed into that
+identity. Reusing an ID with a changed manifest or
 TTL conflicts. The original manifest must satisfy the first-release hard limits;
 subsequently lowered limits cannot invalidate a retained terminal identity.
 
@@ -40,6 +57,16 @@ failed finalization and prior expiry. Each guarded resolution itself obtains a
 new ordered acknowledgement; its returned status still contains the original
 terminal receipt. A delayed begin, append or finalize cannot revive a stopped ID.
 Encrypted restart and snapshot validation retain these semantics.
+
+Backup and restore preserve each stored scope exactly, including its source
+incarnation. Current target credentials can observe an exact historical scope
+only when the authenticated restore lineage contains that source. Terminal
+outcomes remain available for exact replay. Restored `Uploading` records can be
+observed, stopped with fresh target admission, or expire; Begin, append and
+finalize cannot continue their old writes. A target-current scope cannot rebind
+the same permanent principal/transaction ID, and an absent historical identity
+cannot be created by Begin or Stop. New target work needs a new transaction ID.
+
 
 The same fresh assertion set is retained with an admission reservation through
 status readback and final native response encoding. A changed authority document,

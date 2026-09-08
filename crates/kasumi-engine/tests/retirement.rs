@@ -901,6 +901,18 @@ async fn invisible_staged_identity_after_checkpoint_is_not_lost_by_retirement() 
         .begin_staged_transaction(
             context(),
             BeginStagedTransaction {
+                scope: kasumi_types::StagedTransactionScope {
+                    tenant: context().tenant,
+                    principal: context().principal,
+                    incarnation: fixture
+                        .db
+                        .engine()
+                        .generation()
+                        .unwrap()
+                        .state
+                        .incarnation
+                        .clone(),
+                },
                 transaction_id: "invisible".into(),
                 manifest,
                 ttl_ms: 30_000,

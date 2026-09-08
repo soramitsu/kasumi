@@ -573,12 +573,22 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
         .collect();
     let manifest = StagedManifest::from_chunks(&chunks).unwrap();
     let reference = StagedTransactionRef {
+        scope: kasumi_types::StagedTransactionScope {
+            tenant: context().tenant,
+            principal: context().principal,
+            incarnation: db.engine().generation().unwrap().state.incarnation.clone(),
+        },
         transaction_id: "permanent-history-command".into(),
         manifest_digest: staged_digest(&manifest).unwrap().0,
     };
     db.begin_staged_transaction(
         context(),
         BeginStagedTransaction {
+            scope: kasumi_types::StagedTransactionScope {
+                tenant: context().tenant,
+                principal: context().principal,
+                incarnation: db.engine().generation().unwrap().state.incarnation.clone(),
+            },
             transaction_id: reference.transaction_id.clone(),
             manifest,
             ttl_ms: 60_000,
