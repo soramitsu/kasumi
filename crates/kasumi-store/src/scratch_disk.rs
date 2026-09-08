@@ -171,7 +171,7 @@ impl ScratchDisk {
         let directory = tempfile::tempdir().expect("fixture scratch directory");
         Self::open_inner(
             ScratchDiskConfig {
-                directory: directory.path().to_owned(),
+                directory: directory.path().join("scratch"),
                 max_bytes: 256 << 30,
                 min_free_bytes: 0,
             },
@@ -385,7 +385,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let disk = ScratchDisk::open_inner(
             ScratchDiskConfig {
-                directory: directory.path().to_owned(),
+                directory: directory.path().join("scratch"),
                 max_bytes,
                 min_free_bytes,
             },
@@ -514,7 +514,7 @@ mod tests {
 
     #[test]
     fn immutable_image_readers_retain_capacity_until_the_last_owner_drains() {
-        use std::io::{Read, Write};
+        use std::io::Read;
         let disk = disk(1 << 20, 0);
         let image = crate::SnapshotImage::capture(&disk, 128 << 10, |writer| {
             writer.write_all(&[37; 128 << 10])?;
