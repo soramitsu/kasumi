@@ -45,7 +45,7 @@ impl Serialize for CanonicalJsonValue<'_> {
                         .try_reserve_exact(values.len())
                         .map_err(|_| S::Error::custom("canonical object metadata exhausted"))?;
                     entries.extend(values.iter());
-                    entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+                    entries.sort_unstable_by_key(|(left, _)| *left);
                     for (key, value) in entries {
                         map.serialize_entry(key, &Self(value))?;
                     }

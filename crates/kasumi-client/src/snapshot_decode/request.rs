@@ -345,7 +345,7 @@ mod tests {
                     bodies.set(bodies.get() + 1);
                     let mut sorted: Vec<_> =
                         entries.iter().map(|(key, value)| (key, value)).collect();
-                    sorted.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+                    sorted.sort_unstable_by_key(|(left, _)| *left);
                     for (key, value) in sorted {
                         map.serialize_entry(key, value)?;
                     }
