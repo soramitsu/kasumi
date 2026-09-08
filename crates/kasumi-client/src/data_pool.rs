@@ -202,7 +202,11 @@ impl KasumiClientPool {
         self.request(None, true, timeout, |client, token| {
             let original = original.clone();
             let scope = expected_scope.clone();
-            Box::pin(async move { client.resolve_mutation(token, &scope, &original).await })
+            Box::pin(async move {
+                client
+                    .resolve_mutation(token, &scope, &original, timeout)
+                    .await
+            })
         })
         .await
         .map(|(_, reply)| reply)

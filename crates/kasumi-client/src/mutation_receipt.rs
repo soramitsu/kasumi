@@ -64,18 +64,41 @@ impl KasumiClient {
         bearer: &str,
         expected_scope: &MutationReceiptScope,
         original: &MutationBatch,
+        timeout: std::time::Duration,
     ) -> Result<Option<MutationReceipt>, ClientError> {
-        let response = self
-            .inner
-            .receipt(self.authorized(
-                bearer,
-                proto::ReceiptRequest {
-                    idempotency_key: original.idempotency_key.clone(),
-                },
-            )?)
-            .await?
-            .into_inner();
-        verify_mutation_receipt(expected_scope, original, response)
+        let now = tokio::time::Instant::now();
+        let end = now
+            .checked_add(timeout)
+            .filter(|end| *end > now)
+            .ok_or_else(|| {
+                tonic::Status::deadline_exceeded("receipt resolution deadline elapsed")
+            })?;
+        let end = self.deadline.map_or(end, |original| original.min(end));
+        let remaining = end.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(
+                tonic::Status::deadline_exceeded("receipt resolution deadline elapsed").into(),
+            );
+        }
+        let mut request = self.authorized(
+            bearer,
+            proto::ReceiptRequest {
+                idempotency_key: original.idempotency_key.clone(),
+            },
+        )?;
+        request.set_timeout(remaining);
+        let result = tokio::time::timeout_at(end, async {
+            let response = self.inner.receipt(request).await?.into_inner();
+            verify_mutation_receipt(expected_scope, original, response)
+        })
+        .await
+        .map_err(|_| tonic::Status::deadline_exceeded("receipt resolution deadline elapsed"))?;
+        if tokio::time::Instant::now() >= end {
+            return Err(
+                tonic::Status::deadline_exceeded("receipt resolution deadline elapsed").into(),
+            );
+        }
+        result
     }
 }
 
