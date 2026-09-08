@@ -54,9 +54,29 @@ pub struct StagedManifest {
     pub write_collections: BTreeSet<String>,
 }
 
+/// Expected original identity, never an authentication claim. The native server
+/// compares it with its verified principal and resource. Retain this exact scope
+/// with the original Begin across credential renewal and recovery.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct StagedTransactionScope {
+    pub tenant: String,
+    pub incarnation: String,
+    pub principal: String,
+}
+
+impl StagedTransactionScope {
+    pub fn validate(&self) -> Result<()> {
+        crate::validate_name(&self.tenant)?;
+        crate::validate_name(&self.incarnation)?;
+        crate::validate_name(&self.principal)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BeginStagedTransaction {
+    pub scope: StagedTransactionScope,
     pub transaction_id: String,
     pub manifest: StagedManifest,
     pub ttl_ms: u64,
@@ -73,17 +93,20 @@ pub struct StopStagedTransaction {
 
 impl BeginStagedTransaction {
     pub fn reference(&self) -> Result<StagedTransactionRef> {
+        self.scope.validate()?;
         crate::validate_name(&self.transaction_id)?;
         Ok(StagedTransactionRef {
+            scope: self.scope.clone(),
             transaction_id: self.transaction_id.clone(),
             manifest_digest: staged_digest(&self.manifest)?.0,
         })
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct StagedTransactionRef {
+    pub scope: StagedTransactionScope,
     pub transaction_id: String,
     pub manifest_digest: String,
 }
@@ -143,8 +166,9 @@ fn required_expiry<'de, D: serde::Deserializer<'de>>(
 
 /// Replicated internal staging state. Payloads never enter document indexes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StagedTransaction {
-    pub principal: String,
+    pub scope: StagedTransactionScope,
     pub transaction_id: String,
     pub manifest_digest: String,
     pub manifest: StagedManifest,
@@ -164,6 +188,7 @@ impl StagedTransaction {
     pub fn status(&self) -> StagedTransactionStatus {
         StagedTransactionStatus {
             transaction: StagedTransactionRef {
+                scope: self.scope.clone(),
                 transaction_id: self.transaction_id.clone(),
                 manifest_digest: self.manifest_digest.clone(),
             },

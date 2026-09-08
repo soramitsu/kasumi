@@ -36,8 +36,21 @@ pub struct ServingAuthorityConfig {
     pub endpoints: BTreeMap<u16, BTreeMap<u64, AuthorityEndpoint>>,
     pub tls: TlsFiles,
     pub server_ca: PathBuf,
-    pub bearer_file: String,
+    #[serde(deserialize_with = "deserialize_bearer_files")]
+    pub bearer_files: BTreeMap<u16, String>,
     pub principal: String,
+}
+fn deserialize_bearer_files<'de, D>(
+    deserializer: D,
+) -> std::result::Result<BTreeMap<u16, String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+    kasumi_types::deserialize_u64_map(deserializer)?
+        .into_iter()
+        .map(|(partition, path)| Ok((u16::try_from(partition).map_err(D::Error::custom)?, path)))
+        .collect()
 }
 impl ServingAuthorityConfig {
     pub(crate) fn validate(&self) -> Result<()> {
@@ -48,7 +61,18 @@ impl ServingAuthorityConfig {
             "authority server CA must be an installed absolute path"
         );
         kasumi_types::validate_name(&self.principal)?;
-        credential_path(&self.bearer_file)?;
+        ensure!(
+            self.bearer_files.keys().eq(self.manifest.partitions.keys()),
+            "authority credential files differ from installed partition map"
+        );
+        let mut credential_files = BTreeSet::new();
+        for path in self.bearer_files.values() {
+            credential_path(path)?;
+            ensure!(
+                credential_files.insert(std::path::Path::new(path)),
+                "authority partitions require separate credential files"
+            );
+        }
         ensure!(
             self.endpoints.keys().eq(self.manifest.partitions.keys()),
             "authority endpoints differ from installed partition map"
@@ -156,7 +180,7 @@ impl RuntimeLease {
                 ))
             })
             .collect::<Result<_>>()?;
-        let path = config.bearer_file.clone();
+        let path = config.bearer_files[&partition].clone();
         let mut client = KasumiAuthorityPool::new(
             connections,
             trust.clone(),
@@ -309,5 +333,70 @@ pub(crate) async fn acquire_tenant_access(
         }
         #[cfg(any(test, feature = "test-utils"))]
         TenantServingConfig::LocalFixture => Ok((StorageAccess::fixture(), None)),
+    }
+}
+
+#[cfg(test)]
+mod partition_credential_tests {
+    use super::*;
+    fn configured() -> ServingAuthorityConfig {
+        let mut config = crate::runtime::example_config()
+            .serving_authorities
+            .remove("storage-fence")
+            .unwrap();
+        let mut partition = config.manifest.partitions[&0].clone();
+        partition.group = "second-issuer".into();
+        config.manifest.partitions.insert(1, partition);
+        config.endpoints.insert(1, config.endpoints[&0].clone());
+        config
+            .bearer_files
+            .insert(1, "/etc/kasumi/credentials/authority-1-token".into());
+        config
+    }
+    #[test]
+    fn credential_files_cover_exact_installed_partitions_without_shared_or_implicit_source() {
+        let config = configured();
+        config.validate().unwrap();
+        let mut missing = config.clone();
+        missing.bearer_files.remove(&1);
+        assert!(missing.validate().is_err());
+        let mut extra = config.clone();
+        extra
+            .bearer_files
+            .insert(2, "/etc/kasumi/credentials/extra".into());
+        assert!(extra.validate().is_err());
+        let mut shared = config.clone();
+        shared
+            .bearer_files
+            .insert(1, config.bearer_files[&0].clone());
+        assert!(shared.validate().is_err());
+        let mut relative = config.clone();
+        relative
+            .bearer_files
+            .insert(1, "TOKEN_ENVIRONMENT_NAME".into());
+        assert!(relative.validate().is_err());
+        let mut old = serde_json::to_value(&config).unwrap();
+        old.as_object_mut().unwrap().remove("bearer_files");
+        old["bearer_file"] = serde_json::json!("/etc/kasumi/credentials/old");
+        assert!(serde_json::from_value::<ServingAuthorityConfig>(old).is_err());
+    }
+    #[test]
+    fn partition_file_decoder_rejects_aliases_duplicates_and_overflow() {
+        let config = configured();
+        let encoded = serde_json::to_string(&config).unwrap();
+        let valid = serde_json::to_string(&config.bearer_files).unwrap();
+        for invalid in [
+            r#"{"00":"/a","1":"/b"}"#,
+            r#"{"0":"/a","0":"/b"}"#,
+            r#"{"0":"/a","65536":"/b"}"#,
+            r#"{"+0":"/a","1":"/b"}"#,
+        ] {
+            let replaced = encoded.replace(
+                &format!("\"bearer_files\":{valid}"),
+                &format!("\"bearer_files\":{invalid}"),
+            );
+            assert_ne!(replaced, encoded);
+            assert!(serde_json::from_str::<ServingAuthorityConfig>(&replaced).is_err());
+        }
     }
 }

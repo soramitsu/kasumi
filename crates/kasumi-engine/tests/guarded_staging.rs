@@ -137,6 +137,11 @@ fn original(db: &Database, name: &str) -> (BeginStagedTransaction, StagedChunk) 
             .collect(),
     };
     let begin = BeginStagedTransaction {
+        scope: kasumi_types::StagedTransactionScope {
+            tenant: context().tenant,
+            principal: context().principal,
+            incarnation: db.engine().generation().unwrap().state.incarnation.clone(),
+        },
         transaction_id: name.into(),
         manifest: StagedManifest::from_chunks(std::slice::from_ref(&chunk)).unwrap(),
         ttl_ms: 60_000,
@@ -541,6 +546,11 @@ async fn retained_snapshot_quota_rejects_missing_stop_without_leaving_partial_id
         .unwrap();
     let (_, chunk) = original(&db, "bounded");
     let original = BeginStagedTransaction {
+        scope: kasumi_types::StagedTransactionScope {
+            tenant: context().tenant,
+            principal: context().principal,
+            incarnation: db.engine().generation().unwrap().state.incarnation.clone(),
+        },
         transaction_id: "snapshot-full".into(),
         ttl_ms: 60_000,
         manifest: StagedManifest::from_chunks(&vec![chunk; 512]).unwrap(),
@@ -642,5 +652,213 @@ async fn guarded_stop_orders_more_than_one_small_batch_of_authority_dependencies
             .outcome,
         StagedOutcome::Aborted { .. }
     ));
+    close(db, audit).await;
+}
+
+#[tokio::test]
+async fn encrypted_restore_preserves_original_stage_scope_without_reviving_historical_uploads() {
+    let directory = tempfile::tempdir().unwrap();
+    let (db, audit) = open(&directory.path().join("source.redb"), Limits::default()).await;
+    let (finished, finished_chunk) = original(&db, "finished-before-backup");
+    upload(&db, &finished, &finished_chunk).await;
+    let receipt = db
+        .finalize_staged_transaction(context(), finished.reference().unwrap())
+        .await
+        .unwrap();
+    let (mut live, chunk) = original(&db, "historical-upload");
+    live.ttl_ms = 86_400_000;
+    upload(&db, &live, &chunk).await;
+    let backups = Arc::new(
+        kasumi_store::FilesystemBackupDestination::new(directory.path().join("backups"), 8 << 20)
+            .unwrap(),
+    );
+    let checkpoint = db
+        .backup_checkpoint(context(), backups.as_ref(), uuid::Uuid::new_v4())
+        .await
+        .unwrap();
+    let source_incarnation = live.scope.incarnation.clone();
+    close(db.clone(), audit.clone()).await;
+    drop(db);
+    drop(audit);
+    let node = NodeStore::open(
+        directory.path().join("restored.redb"),
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
+    let audit = common::security_audit(node.clone()).await;
+    let stores = TenantStorageSet::open_fixture(
+        node,
+        context().tenant,
+        Arc::new(LocalKeyProvider::new([0x95; 32])),
+        Arc::new(LocalKeyProvider::new([0x96; 32])),
+    )
+    .await
+    .unwrap();
+    let db = kasumi_engine::restore_local(
+        &kasumi_engine::RestoreSource {
+            timeout_ms: 60_000,
+            destination_alias: "restored".into(),
+            destination: backups,
+            keys: Arc::new(LocalKeyProvider::new([0x95; 32])),
+        },
+        stores,
+        common::local_restore_request(context(), checkpoint.checkpoint(), uuid::Uuid::new_v4()),
+        audit.admission().clone(),
+        audit.clone(),
+    )
+    .await
+    .unwrap();
+    db.complete_restore(context()).await.unwrap();
+    db.administer(context(), Operation::Suspend(false))
+        .await
+        .unwrap();
+    let incarnation = db.engine().generation().unwrap().state.incarnation.clone();
+    assert_ne!(source_incarnation, incarnation);
+    let credential = |incarnation: &str| {
+        let observation = kasumi_clock::EpochClock::system()
+            .unwrap()
+            .observe()
+            .unwrap();
+        RequestContext {
+            authorization: RequestAuthorization::from_verified_credential(
+                observation.utc_ms() + 60_000,
+                &observation,
+                CredentialResource::Database {
+                    incarnation: uuid::Uuid::parse_str(incarnation).unwrap(),
+                },
+            )
+            .unwrap(),
+            ..context()
+        }
+    };
+    let current = credential(&incarnation);
+    let old = credential(&source_incarnation);
+    assert!(
+        db.staged_transaction_status(&old, &live.reference().unwrap())
+            .await
+            .is_err()
+    );
+    let observed = db
+        .staged_transaction_status(&current, &live.reference().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(observed.transaction, live.reference().unwrap());
+    assert_eq!(observed.received_chunks, vec![0]);
+    assert!(matches!(observed.outcome, StagedOutcome::Uploading));
+    assert_eq!(
+        db.begin_staged_transaction(current.clone(), live.clone())
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    assert_eq!(
+        db.append_staged_chunk(
+            current.clone(),
+            AppendStagedChunk {
+                transaction: live.reference().unwrap(),
+                index: 0,
+                chunk
+            }
+        )
+        .await
+        .unwrap_err()
+        .code,
+        ErrorCode::Conflict
+    );
+    assert_eq!(
+        db.finalize_staged_transaction(current.clone(), live.reference().unwrap())
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    let mut fabricated = live.clone();
+    fabricated.scope.incarnation = incarnation.clone();
+    assert_eq!(
+        db.begin_staged_transaction(current.clone(), fabricated.clone())
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    assert_eq!(
+        db.stop_staged_transaction(current.clone(), stop(&db, &fabricated))
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    assert_eq!(
+        db.staged_transaction_status(&current, &fabricated.reference().unwrap())
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    let mut absent_historical = live.clone();
+    absent_historical.transaction_id = "absent-historical".into();
+    assert_eq!(
+        db.begin_staged_transaction(current.clone(), absent_historical.clone())
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    assert_eq!(
+        db.stop_staged_transaction(current.clone(), stop(&db, &absent_historical))
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    assert_eq!(
+        db.staged_transaction_status(&current, &absent_historical.reference().unwrap())
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::NotFound
+    );
+    assert_eq!(
+        db.begin_staged_transaction(current.clone(), finished.clone())
+            .await
+            .unwrap(),
+        receipt
+    );
+    assert_eq!(
+        db.finalize_staged_transaction(current.clone(), finished.reference().unwrap())
+            .await
+            .unwrap(),
+        receipt
+    );
+    let renewed = credential(&incarnation);
+    let stopped = db
+        .stop_staged_transaction(renewed.clone(), stop(&db, &live))
+        .await
+        .unwrap();
+    assert_eq!(stopped.transaction, live.reference().unwrap());
+    assert!(matches!(stopped.outcome, StagedOutcome::Aborted { .. }));
+    assert_eq!(
+        db.staged_transaction_status(&renewed, &live.reference().unwrap())
+            .await
+            .unwrap()
+            .outcome,
+        stopped.outcome
+    );
+    assert!(
+        !db.engine().generation().unwrap().state.collections["docs"]
+            .documents
+            .contains_key("historical-upload")
+    );
+    let staged = db.engine().generation().unwrap();
+    assert_eq!(staged.state.staged_transactions.len(), 2);
+    assert!(
+        staged
+            .state
+            .staged_transactions
+            .values()
+            .all(|stage| stage.scope.incarnation == source_incarnation)
+    );
+    drop(staged);
     close(db, audit).await;
 }
