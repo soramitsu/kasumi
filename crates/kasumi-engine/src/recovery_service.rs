@@ -67,6 +67,7 @@ impl VerifiedRecoveryPhase {
         let limit = match &phase.input {
             RecoveryDispatch::Authority(command) => limit.min(command.not_after_ms),
             RecoveryDispatch::Target { request, .. } => limit.min(request.not_after_ms),
+            RecoveryDispatch::RetireSource(request) => limit.min(request.not_after_ms),
             _ => limit,
         };
         if head.pending_phase != Some(self.record.phase_id)
@@ -394,20 +395,8 @@ impl Database {
             }
         }
         let input = match operation.phase {
-            RecoveryPhase::Prepare | RecoveryPhase::StopTarget => {
-                let action = if operation.phase == RecoveryPhase::Prepare {
-                    AuthorityAction::PrepareTarget {
-                        source_incarnation: operation.request.source_incarnation,
-                        source_epoch: operation.request.source_authority_epoch,
-                        target: recovery::target(&operation.request),
-                    }
-                } else {
-                    AuthorityAction::StopTarget {
-                        source_incarnation: operation.request.source_incarnation,
-                        source_epoch: operation.request.source_authority_epoch,
-                        target: recovery::target(&operation.request),
-                    }
-                };
+            RecoveryPhase::Prepare | RecoveryPhase::StopTarget | RecoveryPhase::FenceSource => {
+                let action = recovery::issuer_action(operation, operation.phase)?;
                 RecoveryDispatch::Authority(Box::new(AuthorityCommand {
                     tenant: operation.request.tenant.clone(),
                     command_id: phase_id,
@@ -494,6 +483,9 @@ impl Database {
                 }
             }
 
+            RecoveryPhase::RetireSource => {
+                RecoveryDispatch::RetireSource(recovery::retirement_request(operation)?.clone())
+            }
             RecoveryPhase::Initialize | RecoveryPhase::Complete => {
                 let kind = if operation.phase == RecoveryPhase::Initialize {
                     LifecyclePhase::Initialize
