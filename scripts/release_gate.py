@@ -177,11 +177,33 @@ def functional_gates(jobs):
          + locked + encoded + ["--", "--test-threads=2"]),
         ("clippy", cargo + ["clippy", "--workspace", "--all-features", "--all-targets"]
          + locked + ["--", "-D", "warnings"]),
+        ("network-features", cargo + ["tree", "--locked", "-p", "kasumi-bench", "--no-default-features",
+         "--features", "network", "--edges", "normal,build", "--prefix", "none", "--format", "{p} {f}"]),
+        ("network-driver", cargo + ["build", "--release", "-p", "kasumi-bench", "--no-default-features",
+         "--features", "network", "--bin", "kasumi-bench-network"] + locked + encoded),
         ("production-features", cargo + ["tree", "--locked", "-p", "kasumi-server", "--no-default-features",
          "--edges", "normal,build", "--prefix", "none", "--format", "{p} {f}"]),
         ("production", cargo + ["build", "--release", "-p", "kasumi-server", "--bins", "--no-default-features"]
          + locked + encoded),
     ]
+
+
+def validate_production_artifacts(name, result):
+    """Check the actual compilation, independently of the earlier feature tree."""
+    required = {"production": {"kasumid", "kasumictl", "kasumi-authority"},
+                "network-driver": {"kasumi-bench-network"}}.get(name)
+    if required is None:
+        return
+    artifacts = list(result["executables"].values())
+    if ({artifact["target"] for artifact in artifacts} != required
+            or len(artifacts) != len(required) or any(artifact["test"] for artifact in artifacts)):
+        result["missing_production_executables"] = True
+        result["exit_code"] = 1
+    if not result["compiled_packages"] or any(
+            set(package["features"]) & {"test-utils", "embedded-fixture", "loopback-fixture"}
+            for package in result["compiled_packages"].values()):
+        result["fixture_feature_violation"] = True
+        result["exit_code"] = 1
 
 
 def main():
@@ -234,14 +256,10 @@ def main():
         for name, command in functional_gates(args.jobs):
             print("Running " + name + " (" + str(output / (name + ".log")) + ")", flush=True)
             result = run_gate(name, command, source, output, environment)
-            if name == "production-features" and re.search(r"kasumi-[^\n]*\btest-utils\b", (output / result["log"]).read_text()):
+            if name in ("production-features", "network-features") and re.search(r"kasumi-[^\n]*\btest-utils\b", (output / result["log"]).read_text()):
                 result["fixture_feature_violation"] = True
                 result["exit_code"] = 1
-            if name == "production":
-                actual = {artifact["target"] for artifact in result["executables"].values()}
-                if not {"kasumid", "kasumictl", "kasumi-authority"}.issubset(actual):
-                    result["missing_production_executables"] = True
-                    result["exit_code"] = 1
+            validate_production_artifacts(name, result)
             record["gates"].append(result)
             if inventory(source) != original:
                 raise RuntimeError("a gate changed frozen source inputs; results are invalid")

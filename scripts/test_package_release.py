@@ -45,7 +45,7 @@ class PackageReleaseTests(unittest.TestCase):
         return record
 
     def test_changed_binary_log_source_and_failed_gate_cannot_be_packaged(self):
-        for changed in ("binary", "log", "source", "failed", "missing-inventory", "missing-doc-gate",
+        for changed in ("binary", "log", "source", "failed", "missing-inventory", "missing-doc-gate", "missing-network-gate",
                         "weakened-clippy", "different-build", "missing-jobs"):
             with self.subTest(changed=changed), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
@@ -67,6 +67,8 @@ class PackageReleaseTests(unittest.TestCase):
                     record["gates"][-1]["command"].remove("--no-default-features")
                 elif changed == "missing-jobs":
                     del record["jobs"]
+                elif changed == "missing-network-gate":
+                    record["gates"] = [g for g in record["gates"] if g["name"] != "network-driver"]
                 else:
                     record["gates"] = [g for g in record["gates"] if g["name"] != "workspace-docs"]
                 write_json(root / "evidence.json", record)

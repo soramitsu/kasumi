@@ -14,6 +14,18 @@ import release_gate
 
 
 class ReleaseGateTests(unittest.TestCase):
+    def test_compiled_fixture_or_test_artifact_cannot_pass_production_driver(self):
+        for violation in ("test-utils", "embedded-fixture", "loopback-fixture", "test-artifact", "missing-inventory"):
+            with self.subTest(violation=violation):
+                result = {"exit_code": 0,
+                          "executables": {"release/kasumi-bench-network": {
+                              "target": "kasumi-bench-network", "test": violation == "test-artifact"}},
+                          "compiled_packages": {"dependency": {"features": [violation]}}}
+                if violation == "missing-inventory":
+                    result["compiled_packages"] = {}
+                release_gate.validate_production_artifacts("network-driver", result)
+                self.assertEqual(result["exit_code"], 1)
+
     def test_archive_refuses_escape_and_links_without_writing_outside_source(self):
         for name, link in [("../outside", False), ("inside/link", True)]:
             with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:

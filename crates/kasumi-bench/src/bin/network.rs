@@ -2,7 +2,7 @@
 //! file snapshot; secrets are never reported. Writes require --allow-writes.
 use anyhow::{Context, Result, ensure};
 use kasumi_bench::{Measurement, Samples};
-use kasumi_server::rpc::proto;
+use kasumi_client::proto;
 use kasumi_transport::{TlsIdentity, credentials::FileCredentialSource, grpc_channel};
 use kasumi_types::{Mutation, MutationBatch, Precondition, QueryRequest};
 use serde::{Deserialize, Serialize};

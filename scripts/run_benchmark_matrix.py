@@ -160,13 +160,14 @@ def main():
     identity = source_identity()
     executables = [ROOT / "target/release" / name for name in ("kasumi-bench", "kasumi-bench-loopback", "kasumi-bench-network", "kasumid")]
     if not options.skip_build:
-        subprocess.run(["cargo", "build", "--locked", "--release", "-p", "kasumi-server", "-p", "kasumi-bench", "--features", "kasumi-bench/loopback", "--bins"], cwd=ROOT, check=True)
+        subprocess.run(["cargo", "build", "--locked", "--release", "-p", "kasumi-server", "-p", "kasumi-bench", "--features", "kasumi-bench/embedded-fixture,kasumi-bench/loopback-fixture", "--bins"], cwd=ROOT, check=True)
     if source_identity() != identity:
         raise RuntimeError("source changed during build; freeze source and restart")
     binaries = {str(path.relative_to(ROOT)): digest(path) for path in executables}
     binary_stats={path:file_identity(path) for path in executables}
     manifest = {
         "format": 1, "status": "checking_host", "source_sha256": identity,
+        "scope": "Historical embedded/loopback fixture matrix; the server includes fixture capabilities and cannot satisfy production-binary acceptance.",
         "executable_sha256": binaries,
         "git_status": subprocess.check_output(["git","status","--porcelain"], cwd=ROOT,text=True).splitlines(),
         "host": {"uname": {key:getattr(os.uname(),key) for key in ("sysname","release","version","machine")}, "logical_cpus": os.cpu_count(), "rustc": subprocess.check_output(["rustc","--version"],text=True).strip()},

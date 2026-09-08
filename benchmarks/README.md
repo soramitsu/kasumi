@@ -21,7 +21,7 @@ JSON documents total, 1/100/1,000 tenant configurations, and 10,000 operations
 per measured workload:
 
 ```sh
-cargo build --release -p kasumi-bench
+cargo build --release -p kasumi-bench --features embedded-fixture
 ./target/release/kasumi-bench --output benchmarks/results/local-release.json
 ```
 
@@ -110,21 +110,23 @@ node memory admission headroom; fit is never inferred from document bytes alone.
 
 ## Actual authenticated TLS network measurements
 
-Build the production server plus both drivers and fetch the verified OpenBao
-fixture binary:
+The historical loopback fixture requires a server built with explicit fixture
+capabilities. Fetch the verified OpenBao fixture binary and build in a separate
+target directory:
 
 ```sh
 python3 scripts/fetch_openbao.py
-cargo build --release -p kasumi-server -p kasumi-bench \
-  --features kasumi-bench/loopback --bins
-./target/release/kasumi-bench-loopback --documents 100 --tenants 1,3 \
+CARGO_TARGET_DIR=target/fixture-bench cargo build --release -p kasumi-server -p kasumi-bench \
+  --features kasumi-bench/loopback-fixture --bins
+./target/fixture-bench/release/kasumi-bench-loopback --documents 100 --tenants 1,3 \
   --operations 32 --output-prefix benchmarks/results/network-smoke
 ```
 
 The loopback fixture creates an ephemeral CA and Ed25519 issuer, serves real
 TLS JWKS, starts actual OpenBao 2.6.2 with TLS and distinct wrapping keys, and
-launches a separate production `kasumid` process. All credentials reach only
-that child through its environment; no system trust or global environment is
+launches a separate `kasumid` process that accepts the test-only local serving
+capability. This fixture cannot certify production binaries. Bearer credentials
+are private files read afresh for subsequent requests; no system trust is
 changed. Native administration creates the collection and native mutations load
 the dataset. The client measures both native mTLS+OAuth and current MCP
 2026-07-28 with OAuth. Service authentication auditing and mutation auditing are
@@ -137,8 +139,19 @@ matrix; ensure RAM and audit budgets fit before doing so.
 The independent endpoint runner can also use operator-provided test services:
 
 ```sh
-./target/release/kasumi-bench-network network-config.json output.json
+CARGO_TARGET_DIR=target/production-bench cargo build --locked --release \
+  -p kasumi-bench --no-default-features --features network --bin kasumi-bench-network
+./target/production-bench/release/kasumi-bench-network network-config.json output.json
 ```
+
+The independent driver depends on the native client protocol and contains no
+server, engine, storage or fixture capabilities. The frozen release gate records
+its actual compiled dependency graph and executable hash, and rejects fixture
+features. Build the server separately using the production release commands.
+`embedded-fixture` and `loopback-fixture` must never be enabled for a production
+server build. The existing matrix script explicitly records its fixture scope;
+final production process and capacity acceptance use installed production
+services and the independent driver.
 
 An example config is [network.example.json](network.example.json). It accepts
 only HTTPS, requires native client certificates and a server certificate SHA256

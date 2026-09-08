@@ -9,8 +9,14 @@ description = "Reproducible document and network workloads for Kasumi."
 default-run = "kasumi-bench"
 
 [features]
-network = ["dep:kasumi-server", "dep:kasumi-transport", "dep:reqwest", "dep:tonic", "dep:zeroize"]
-loopback = ["network", "kasumi-server/test-utils", "dep:rcgen", "dep:jsonwebtoken", "dep:base64", "dep:axum", "dep:async-trait"]
+embedded-fixture = ["dep:kasumi-engine", "dep:kasumi-raft", "dep:kasumi-store", "kasumi-store/test-utils"]
+network = ["dep:kasumi-client", "dep:kasumi-transport", "dep:reqwest", "dep:tonic", "dep:zeroize"]
+loopback-fixture = ["network", "dep:kasumi-server", "kasumi-server/test-utils", "dep:rcgen", "dep:jsonwebtoken", "dep:base64", "dep:axum", "dep:async-trait"]
+
+[[bin]]
+name = "kasumi-bench"
+path = "src/main.rs"
+required-features = ["embedded-fixture"]
 
 [[bin]]
 name = "kasumi-bench-network"
@@ -20,7 +26,7 @@ required-features = ["network"]
 [[bin]]
 name = "kasumi-bench-loopback"
 path = "src/bin/loopback.rs"
-required-features = ["loopback"]
+required-features = ["loopback-fixture"]
 
 [dependencies]
 anyhow.workspace = true
@@ -32,9 +38,10 @@ sha2.workspace = true
 hex.workspace = true
 tempfile.workspace = true
 kasumi-types.workspace = true
-kasumi-engine.workspace = true
-kasumi-raft.workspace = true
-kasumi-store = { workspace = true, features = ["test-utils"] }
+kasumi-engine = { workspace = true, optional = true }
+kasumi-raft = { workspace = true, optional = true }
+kasumi-store = { workspace = true, optional = true }
+kasumi-client = { workspace = true, optional = true }
 libc = "0.2"
 kasumi-server = { path = "../kasumi-server", optional = true }
 kasumi-transport = { workspace = true, optional = true }
