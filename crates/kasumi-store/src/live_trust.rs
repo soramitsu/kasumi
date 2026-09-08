@@ -224,6 +224,7 @@ impl TenantStore {
         let persistence = self.trust_persistence(verifier, &domain)?;
         let key = domain.digest()?;
         let mut owners = self.live_trust.lock();
+        owners.retain(|_, owner| owner.strong_count() > 0);
         if let Some(owner) = owners.get(&key).and_then(Weak::upgrade) {
             ensure!(
                 owner.same_administrator(&administrator),

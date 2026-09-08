@@ -278,6 +278,17 @@ impl LiveSignerTrust {
         ensure!(!state.closed, "live signer trust closed");
         Ok(state.record.clone())
     }
+    /// Capture current local state for an authenticated acknowledgement. The
+    /// adapter must check this after encoding, along with current administrative
+    /// response authority; a permanent operation receipt alone is historical.
+    pub fn observe(self: &Arc<Self>) -> Result<LocalSignerTrustObservation> {
+        let observation = LocalSignerTrustObservation {
+            owner: self.clone(),
+            record: self.current()?,
+        };
+        observation.check()?;
+        Ok(observation)
+    }
     fn authorize(&self, context: &RequestContext) -> Result<()> {
         context.authorization.check_live()?;
         self.administrator.authorize(context)?;
@@ -483,6 +494,29 @@ impl LiveSignerTrust {
         };
         fence.check()?;
         Ok(fence)
+    }
+}
+
+pub struct LocalSignerTrustObservation {
+    owner: Arc<LiveSignerTrust>,
+    record: LocalSignerTrustRecord,
+}
+impl LocalSignerTrustObservation {
+    pub fn record(&self) -> &LocalSignerTrustRecord {
+        &self.record
+    }
+    pub fn check(&self) -> Result<()> {
+        self.owner.check_persistence()?;
+        let state = self
+            .owner
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("live trust poisoned"))?;
+        ensure!(
+            !state.closed && state.record.revision == self.record.revision,
+            "local signer trust changed before response release"
+        );
+        Ok(())
     }
 }
 

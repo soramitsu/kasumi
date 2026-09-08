@@ -58,3 +58,8 @@ or be permanently revoked before retirement can complete. The authority must
 also close retired issuer generations and finish its complete issuer drain.
 Replacement nodes must inherit the required current trust and permanent key
 bindings before gaining serving authority.
+
+An immutable operation receipt is not a current trust acknowledgement. Native
+adapters must capture `LocalSignerTrustObservation`, include its exact current
+record in the authenticated response, and check its revision fence after
+encoding alongside the current administrative response fence.

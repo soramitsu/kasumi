@@ -197,8 +197,10 @@ async fn exact_live_generation_rejects_historical_and_reused_key_forgery() {
     let old_fence = trust
         .verify_live("lease", &"original-attempt", &old)
         .unwrap();
+    let before_stage = trust.observe().unwrap();
     let mut notices = old_fence.notifications();
     let stage = f.stage(&trust);
+    assert!(before_stage.check().is_err());
     old_fence.check().unwrap();
     assert!(!notices.has_changed().unwrap());
     let mut signature_alias = f.signers[1].certificate().clone();
@@ -223,6 +225,9 @@ async fn exact_live_generation_rejects_historical_and_reused_key_forgery() {
     assert_eq!(trust.current().unwrap().active.identity.generation, 1);
     f.administrator.allowed.store(true, Ordering::SeqCst);
     let receipt = trust.administer(&f.context(), activation.clone()).unwrap();
+    let observed = trust.observe().unwrap();
+    assert_eq!(observed.record().revision, receipt.revision);
+    observed.check().unwrap();
     notices.changed().await.unwrap();
     assert_eq!(*notices.borrow_and_update(), 2);
     assert!(old_fence.check().is_err());
@@ -255,6 +260,7 @@ async fn exact_live_generation_rejects_historical_and_reused_key_forgery() {
         },
     );
     trust.administer(&f.context(), complete).unwrap();
+    assert!(observed.check().is_err());
     let reused = f
         .root
         .certify(3, hex::encode(f.keys[0].public_key_raw()))
