@@ -36,6 +36,9 @@ use maintenance_state::{OperationalState, PreparedMaintenance, RevokedMember};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Meta {
+    signer_rosters: u64,
+    signer_verifiers: u64,
+    signer_controls: u64,
     installation: AuthorityInstallation,
     signing: AuthoritySigningHead,
     operational: OperationalState,
@@ -69,6 +72,9 @@ pub(crate) struct TenantRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "record", deny_unknown_fields)]
 enum Record {
+    Verifier(SignerVerifierRegistration),
+    SignerRoster(signer_roster::FrozenSignerRoster),
+    ControlVerifier(signer_roster::ControlVerifierRecord),
     Maintenance(AuthorityMaintenanceStatus),
     RevokedMember(RevokedMember),
     Tenant(TenantRecord),
@@ -195,6 +201,9 @@ impl Backend {
             meta.signing.validate()?;
         } else {
             let meta = Meta {
+                signer_rosters: 0,
+                signer_verifiers: 0,
+                signer_controls: 0,
                 signing: AuthoritySigningHead::initial(
                     settings.bootstrap.initial_signer_certificate.clone(),
                 )?,
@@ -580,7 +589,10 @@ impl Backend {
                     Record::Preparation(_) => add_count(&mut meta.preparations, 1)?,
                     Record::Incarnation(_) => add_count(&mut meta.incarnations, 1)?,
                     Record::TargetStop(_) => add_count(&mut meta.target_stops, 1)?,
-                    Record::Lifecycle(_)
+                    Record::SignerRoster(_)
+                    | Record::Verifier(_)
+                    | Record::ControlVerifier(_)
+                    | Record::Lifecycle(_)
                     | Record::ControlEpoch(_)
                     | Record::Maintenance(_)
                     | Record::RevokedMember(_) => {
@@ -630,6 +642,7 @@ impl Backend {
         let request = &prepared.command;
         match &request.action {
             AuthorityAction::Enroll { incarnation, nodes } => {
+                Self::check_new_verifier_admission(meta)?;
                 if self
                     .record(&key_target_stop(&request.tenant, *incarnation))
                     .map_err(unavailable)?
@@ -679,6 +692,7 @@ impl Backend {
                 source_epoch,
                 target,
             } => {
+                Self::check_new_verifier_admission(meta)?;
                 let record = tenant
                     .as_ref()
                     .ok_or_else(|| conflict("source is not enrolled"))?;
@@ -726,6 +740,7 @@ impl Backend {
                 target,
                 ..
             } => {
+                self.check_target_verifier_admission(meta, &target.nodes)?;
                 self.validate_activation_control(&prepared.command, prepared.admitted_at_ms)
                     .map_err(|_| conflict("committed activation authority differs or expired"))?;
                 let record = tenant
@@ -932,6 +947,7 @@ impl StateMachineBackend for Backend {
             .map_err(|_| anyhow::anyhow!("authority state poisoned"))?;
         let snapshot = self.decode_snapshot(bytes)?;
         self.validate_lifecycle_history(&snapshot)?;
+        self.validate_roster_history(&snapshot)?;
         snapshot.records.publish(&self.store)
     }
     fn close_application(&self) {
@@ -966,7 +982,7 @@ impl Backend {
             );
             add_count(&mut state_bytes, u64::try_from(bytes.len())?)?;
             match record {
-                Record::Lifecycle(_) | Record::ControlEpoch(_) | Record::Maintenance(_) | Record::RevokedMember(_) => {}
+                Record::SignerRoster(_) | Record::Verifier(_) | Record::ControlVerifier(_) | Record::Lifecycle(_) | Record::ControlEpoch(_) | Record::Maintenance(_) | Record::RevokedMember(_) => {}
                 Record::Tenant(record) => {
                     add_count(&mut tenants, 1)?;
                     ensure!(
@@ -1199,9 +1215,13 @@ impl Backend {
         self.validate_lifecycle_snapshot(&snapshot)?;
         self.validate_maintenance_snapshot(&snapshot)?;
         self.validate_signing_snapshot(&snapshot)?;
+        self.validate_roster_snapshot(&snapshot)?;
         Ok(snapshot)
     }
 }
 
 #[path = "signing_state.rs"]
 mod signing_state;
+
+#[path = "signer_roster.rs"]
+mod signer_roster;

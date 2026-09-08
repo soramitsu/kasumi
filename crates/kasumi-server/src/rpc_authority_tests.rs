@@ -902,6 +902,44 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
         domain_sha256: domain.digest().unwrap(),
         action,
     };
+    let mut verifier_set: BTreeSet<_> = settings
+        .bootstrap
+        .membership
+        .members
+        .values()
+        .map(|member| member.verifier.clone())
+        .collect();
+    verifier_set.extend(nodes.iter().map(|node| node.verifier.clone()));
+    for (index, verifier) in verifier_set.into_iter().enumerate() {
+        let current = client
+            .signing_maintenance(&operator, &global_request(AuthoritySigningAction::Observe))
+            .await
+            .unwrap();
+        let command = AuthorityMaintenanceCommand {
+            operation_id: uuid::Uuid::new_v4(),
+            expected_policy_epoch: current.policy_epoch,
+            expected_operational_revision: current.operational_revision,
+            not_after_ms: deadline,
+            action: AuthorityMaintenanceAction::EnrollSignerVerifier {
+                enrollment: kasumi_serving::SignerVerifierEnrollment {
+                    verifier,
+                    endpoint: format!("https://verifier-admin-{index}.test/"),
+                    certificate_pins: BTreeSet::from([format!("{:064x}", 1000 + index)]),
+                },
+            },
+        };
+        let registered = client
+            .signing_maintenance(
+                &operator,
+                &global_request(AuthoritySigningAction::Start { command }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            registered.status.unwrap().phase,
+            AuthorityMaintenancePhase::Completed
+        );
+    }
     let global = client
         .signing_maintenance(&operator, &global_request(AuthoritySigningAction::Observe))
         .await

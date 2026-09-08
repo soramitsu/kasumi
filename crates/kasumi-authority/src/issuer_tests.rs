@@ -569,3 +569,5 @@ mod activation_gate_tests;
 
 #[path = "target_materialization_tests.rs"]
 mod target_materialization_tests;
+
+include!("signer_roster_tests.rs");
