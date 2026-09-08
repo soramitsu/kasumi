@@ -1,0 +1,12 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.26s
+     Running unittests src/lib.rs (/tmp/kasumi-production-streaming-target/debug/deps/kasumi_engine-4b4e80d3850c1c4e)
+
+running 5 tests
+test bootstrap::backup_restore::tests::expired_restore_worker_keeps_its_admission_charge_until_actual_completion ... ok
+test backup_verify::tests::expired_live_verification_worker_keeps_bytes_and_shutdown_registration_until_done ... ok
+test service::tests::long_backup_verification_and_encoded_read_recheck_original_credential ... ok
+test snapshot_codec::recovery_tests::application_backup_rejects_control_recovery_and_embedded_or_orphan_records ... ok
+test service::tests::serving_expiry_suppresses_long_backup_verification_and_post_publication_proof ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 67 filtered out; finished in 7.25s
+

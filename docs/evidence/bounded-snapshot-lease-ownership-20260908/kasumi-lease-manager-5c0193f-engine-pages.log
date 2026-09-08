@@ -1,0 +1,32 @@
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.38s
+     Running tests/fixture_epoch_clock.rs (/tmp/kasumi-production-streaming-target/debug/deps/fixture_epoch_clock-6487c6b3c76a87b2)
+
+running 2 tests
+test fixture_epoch_rejects_production_storage_before_bootstrap ... ok
+test one_epoch_ages_commands_and_leases_without_renewing_original_credentials ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.10s
+
+     Running tests/response_release.rs (/tmp/kasumi-production-streaming-target/debug/deps/response_release-89b51df1d36a8927)
+
+running 1 test
+test encoded_response_is_fenced_by_policy_changes_and_actual_key_denial ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.98s
+
+     Running tests/staged_transactions.rs (/tmp/kasumi-production-streaming-target/debug/deps/staged_transactions-68f976b9235352ff)
+
+running 9 tests
+test changed_limits_preserve_historic_outcomes_and_keep_active_snapshots_recoverable ... ok
+test complete_large_read_set_and_append_only_rules_reject_all_effects_atomically ... ok
+test killed_upload_recovers_encrypted_invisible_chunks_and_finishes_exactly_once ... ok
+test coherent_lease_pages_cover_large_dependencies_and_scans_with_live_writes ... ok
+test ordered_foreign_scope_rejection_cannot_expire_or_rebind_an_original_upload ... ok
+test large_transaction_stays_invisible_then_publishes_one_generation_and_permanent_receipt ... ok
+test staged_crash_worker ... ok
+test staged_identity_capacity_is_reserved_before_payload_and_expiry_never_reuses_identity ... ok
+test small_lease_budget_shares_large_roots_and_expires_on_retained_version_pressure ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.00s
+

@@ -528,3 +528,12 @@ a read-only quota getter or caller capacity claim cannot close this dependency.
   contract. Two regressions and strict benchmark checks pass; evidence is in
   `docs/evidence/live-benchmark-credentials-20260908`. This prepares external
   renewal for long runs; it does not close the matrix or endurance gates.
+
+- `c951fe9` integrates exclusive manager ownership of coherent document/ID roots,
+  shared archived payloads, retained-version accounting and bounded selected
+  page values. Committed publication expires over-budget leases synchronously;
+  response fences reject expired snapshots without changing committed writes.
+  All eleven frozen gates pass before and after the permanent-counter merge,
+  including actual native pages and encrypted history backup/restore. Evidence:
+  `docs/evidence/bounded-snapshot-lease-ownership-20260908`. Final integrated
+  release, 3 GiB and sustained resource-pressure gates remain open.

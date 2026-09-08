@@ -1,0 +1,82 @@
+    Checking kasumi-types v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-types)
+    Checking kasumi-serving v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-serving)
+    Checking kasumi-query v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-query)
+    Checking kasumi-store v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-store)
+    Checking kasumi-client v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-client)
+    Checking kasumi-raft v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-raft)
+    Checking kasumi-engine v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-engine)
+    Checking kasumi-authority v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-authority)
+error: this `if` statement can be collapsed
+   --> crates/kasumi-engine/src/service.rs:479:9
+    |
+479 | /         if let Some(lease) = &self.snapshot_lease {
+480 | |             if !lease.live()
+481 | |                 || lease.term != self.database.group.raft().metrics().borrow().current_term
+482 | |                 || lease.header.incarnation != generation.state.incarnation
+...   |
+491 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if
+    = note: `-D clippy::collapsible-if` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::collapsible_if)]`
+help: collapse nested if block
+    |
+479 ~         if let Some(lease) = &self.snapshot_lease
+480 ~             && (!lease.live()
+481 |                 || lease.term != self.database.group.raft().metrics().borrow().current_term
+482 |                 || lease.header.incarnation != generation.state.incarnation
+483 |                 || lease.header.policy_epoch != generation.state.policy_epoch
+484 ~                 || lease.header.schema_epoch != generation.state.schema_epoch)
+485 |             {
+...
+489 |                 ));
+490 ~             }
+    |
+
+error: this `if` statement can be collapsed
+   --> crates/kasumi-engine/src/lease_retention.rs:318:17
+    |
+318 | /                 if let Some(value) = documents.get(id) {
+319 | |                     if new
+320 | |                         .documents
+321 | |                         .get(id)
+...   |
+332 | |                 }
+    | |_________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+318 ~                 if let Some(value) = documents.get(id)
+319 ~                     && new
+320 |                         .documents
+...
+330 |                         )?;
+331 ~                     }
+    |
+
+error: this `if` statement can be collapsed
+   --> crates/kasumi-engine/src/lease_retention.rs:354:17
+    |
+354 | /                 if let Some(value) = archived.get(id) {
+355 | |                     if new
+356 | |                         .archived_documents
+357 | |                         .get(id)
+...   |
+368 | |                 }
+    | |_________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+354 ~                 if let Some(value) = archived.get(id)
+355 ~                     && new
+356 |                         .archived_documents
+...
+366 |                         )?;
+367 ~                     }
+    |
+
+error: could not compile `kasumi-engine` (lib) due to 3 previous errors
+warning: build failed, waiting for other jobs to finish...

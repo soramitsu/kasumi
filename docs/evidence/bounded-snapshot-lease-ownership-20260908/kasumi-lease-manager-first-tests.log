@@ -1,0 +1,19 @@
+   Compiling kasumi-types v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-types)
+   Compiling kasumi-serving v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-serving)
+   Compiling kasumi-query v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-query)
+   Compiling kasumi-store v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-store)
+   Compiling kasumi-raft v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-engine)
+error[E0282]: type annotations needed for `&_`
+  --> crates/kasumi-engine/src/lease_retention_tests.rs:73:15
+   |
+73 |         .map(|doc| crate::accounting::encoded_len(&doc.body).unwrap() as u64)
+   |               ^^^                                  -------- type must be known at this point
+   |
+help: consider giving this closure parameter an explicit type, where the type for type parameter `V` is specified
+   |
+73 |         .map(|doc: &V| crate::accounting::encoded_len(&doc.body).unwrap() as u64)
+   |                  ++++
+
+For more information about this error, try `rustc --explain E0282`.
+error: could not compile `kasumi-engine` (lib test) due to 1 previous error
