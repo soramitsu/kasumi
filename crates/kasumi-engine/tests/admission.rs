@@ -69,8 +69,12 @@ async fn pressure_rejects_new_proposals_and_queries_but_committed_raft_work_stil
     .unwrap();
     assert!(admission.snapshot().pressured);
     database.install_admission(admission.clone()).unwrap();
+    database.install_admission(admission).unwrap();
     assert_eq!(
-        database.install_admission(admission).unwrap_err().code,
+        database
+            .install_admission(NodeAdmission::new(AdmissionConfig::default()).unwrap())
+            .unwrap_err()
+            .code,
         ErrorCode::Conflict
     );
     let operation = Operation::CreateCollection(CollectionDefinition {
