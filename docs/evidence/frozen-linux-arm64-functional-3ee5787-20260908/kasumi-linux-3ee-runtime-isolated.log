@@ -1,0 +1,15 @@
+
+running 1 test
+
+thread 'runtime::lifecycle_tests::three_runtime_nodes_replicate_with_control_quorum_over_audited_pinned_mtls' (29032) panicked at crates/kasumi-server/src/runtime.rs:3883:14:
+called `Result::unwrap()` on an `Err` value: Error { code: ResourceExhausted, message: "node memory or work admission budget exhausted" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test runtime::lifecycle_tests::three_runtime_nodes_replicate_with_control_quorum_over_audited_pinned_mtls ... FAILED
+
+failures:
+
+failures:
+    runtime::lifecycle_tests::three_runtime_nodes_replicate_with_control_quorum_over_audited_pinned_mtls
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 78 filtered out; finished in 7.85s
+

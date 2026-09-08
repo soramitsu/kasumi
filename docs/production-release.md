@@ -363,3 +363,13 @@ a read-only quota getter or caller capacity claim cannot close this dependency.
   tests passed 14, backup tests ten, and affected strict Clippy/production checks
   passed. Evidence is in `docs/evidence/recovery-records-cold-workers-20260908`.
   The distributed recovery reducer and dispatch remain under implementation.
+
+- Frozen `3ee5787` native Linux ARM64 functional validation completed **failed**:
+  479 workspace tests passed, three failed and two were ignored. The failures
+  cover ambiguous voter replacement observation, resource-destructor timing and
+  overlapping restore reservations; the last also reproduces in isolation.
+  Formatting, Python/dependency checks, strict workspace Clippy and all three
+  fixture-free production binaries passed. Exact source, logs and executable
+  hashes are in `docs/evidence/frozen-linux-arm64-functional-3ee5787-20260908`.
+  Binaries are preserved separately in the dedicated VM. Subsequent fixes require
+  a fresh final-source run; this failed attempt is never substituted by a pass.
