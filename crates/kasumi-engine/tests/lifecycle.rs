@@ -328,6 +328,7 @@ impl Fixture {
                 .collect(),
             phase: LifecyclePhase::Materialize,
             phase_input_sha256: "ab".repeat(32),
+            resume_origin: None,
         }
     }
     fn change(&self, epoch: u64) -> BeginControlPolicyChange {
@@ -498,6 +499,177 @@ async fn replicated_control_intent_is_exact_original_expiry_bound_current_quorum
             .as_ref()
             .unwrap()
             .intents[&request.command_id],
+        signed.observation.intent
+    );
+    assert!(
+        db.observe_lifecycle_intent(f.context("owner"), request.command_id)
+            .await
+            .is_err()
+    );
+    drop(db);
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fresh_control_materialization_requires_exact_retained_original_after_expiry_and_reopen() {
+    let mut f = Fixture::new().await;
+    let db = f.leader().await;
+    let mut request = f.intent(db.engine().generation().unwrap().state.policy_epoch);
+    let input = TargetMaterializationInput {
+        destination_alias: "backup-source".into(),
+        backup_id: request.checkpoint.backup_id,
+        source_purpose_sha256: "78".repeat(32),
+        target_incarnation: request.target_incarnation,
+        voters: (1..=3)
+            .map(|id| {
+                (
+                    id,
+                    TargetPeer {
+                        endpoint: format!("target-{id}"),
+                        failure_domain: format!("zone-{id}"),
+                    },
+                )
+            })
+            .collect(),
+    };
+    request.phase_input_sha256 = input.digest().unwrap();
+    let original_context = f.context_for("owner", 2000);
+    db.lifecycle_control(
+        original_context,
+        LifecycleControlCommand::CommitIntent(Box::new(request.clone())),
+    )
+    .await
+    .unwrap();
+    let materialization = db
+        .engine()
+        .generation()
+        .unwrap()
+        .state
+        .lifecycle_control
+        .as_ref()
+        .unwrap()
+        .intents[&request.command_id]
+        .clone();
+    let origin = TargetOrigin {
+        authority_manifest_sha256: f.installation.partitions[&request.authority_partition]
+            .manifest_sha256
+            .clone(),
+        materialization,
+        input,
+    };
+    let mut resume = request.clone();
+    resume.command_id = Uuid::new_v4();
+    resume.phase = LifecyclePhase::ResumeMaterialize;
+    resume.phase_input_sha256 = origin.resume_digest().unwrap();
+    resume.resume_origin = Some(Box::new(origin.clone()));
+    resume.validate().unwrap();
+    for variant in 0..3 {
+        let mut substituted = resume.clone();
+        substituted.command_id = Uuid::new_v4();
+        let forged = substituted.resume_origin.as_mut().unwrap();
+        match variant {
+            0 => {
+                forged.materialization.request.command_id = Uuid::new_v4();
+                forged.materialization.request_sha256 =
+                    digest(&forged.materialization.request).unwrap();
+            }
+            1 => forged.materialization.accepted_at_ms += 1,
+            _ => forged.authority_manifest_sha256 = "91".repeat(32),
+        }
+        substituted.phase_input_sha256 = forged.resume_digest().unwrap();
+        substituted.validate().unwrap();
+        assert_eq!(
+            db.lifecycle_control(
+                f.context("owner"),
+                LifecycleControlCommand::CommitIntent(Box::new(substituted))
+            )
+            .await
+            .unwrap_err()
+            .code,
+            ErrorCode::Conflict
+        );
+    }
+    let mut nested = resume.clone();
+    nested
+        .resume_origin
+        .as_mut()
+        .unwrap()
+        .materialization
+        .request = resume.clone();
+    assert!(nested.validate().is_err());
+    let mut wrong_source = resume.clone();
+    wrong_source.source_incarnation = Uuid::new_v4();
+    assert!(wrong_source.validate().is_err());
+    tokio::time::sleep(Duration::from_millis(2100)).await;
+    assert!(
+        db.observe_lifecycle_intent(f.context("owner"), request.command_id)
+            .await
+            .is_err()
+    );
+    let receipt = db
+        .lifecycle_control(
+            f.context("owner"),
+            LifecycleControlCommand::CommitIntent(Box::new(resume.clone())),
+        )
+        .await
+        .unwrap();
+    let observed = db
+        .observe_lifecycle_intent(f.context("owner"), resume.command_id)
+        .await
+        .unwrap();
+    let signed = f.signer.sign_intent(&observed).await.unwrap();
+    assert_eq!(
+        signed.observation.intent.request.resume_origin.as_deref(),
+        Some(&origin)
+    );
+    assert!(
+        signed.observation.intent.original_credential_expires_at_ms
+            > origin.materialization.original_credential_expires_at_ms
+    );
+    assert_eq!(
+        db.engine()
+            .generation()
+            .unwrap()
+            .state
+            .lifecycle_control
+            .as_ref()
+            .unwrap()
+            .intents[&request.command_id],
+        origin.materialization
+    );
+    drop(observed);
+    let mut snapshot = Vec::new();
+    db.engine()
+        .capture_snapshot()
+        .unwrap()
+        .write(&mut snapshot)
+        .unwrap();
+    db.engine()
+        .validate_snapshot(&mut snapshot.as_slice())
+        .unwrap();
+    drop(db);
+    f.close().await;
+    f.open().await;
+    let db = f.leader().await;
+    assert_eq!(
+        db.lifecycle_control(
+            f.context("owner"),
+            LifecycleControlCommand::CommitIntent(Box::new(resume.clone()))
+        )
+        .await
+        .unwrap()
+        .revision,
+        receipt.revision
+    );
+    assert_eq!(
+        db.engine()
+            .generation()
+            .unwrap()
+            .state
+            .lifecycle_control
+            .as_ref()
+            .unwrap()
+            .intents[&resume.command_id],
         signed.observation.intent
     );
     assert!(

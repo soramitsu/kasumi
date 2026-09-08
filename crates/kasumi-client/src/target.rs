@@ -97,6 +97,16 @@ impl KasumiTargetClient {
             "target response identity differs"
         );
         match (&request.step, &response.outcome) {
+            (
+                TargetRuntimeStep::ResumeMaterialization(origin),
+                TargetRuntimeOutcome::Materialized(signed),
+            ) => {
+                ensure!(
+                    intent.request.resume_origin.as_ref() == Some(origin),
+                    "resumed materialization origin differs from committed input"
+                );
+                verify_target_materialization(origin, self.node_id, signed)?;
+            }
             (TargetRuntimeStep::Materialize(input), TargetRuntimeOutcome::Materialized(signed)) => {
                 let origin = TargetOrigin {
                     authority_manifest_sha256: self.authority.digest().into(),
@@ -220,6 +230,16 @@ fn validate_request_phase(
     step: &TargetRuntimeStep,
 ) -> anyhow::Result<()> {
     let (phase, hash) = match step {
+        TargetRuntimeStep::ResumeMaterialization(origin) => {
+            ensure!(
+                intent.request.resume_origin.as_ref() == Some(origin),
+                "resumption origin differs from Control admission"
+            );
+            (
+                LifecyclePhase::ResumeMaterialize,
+                Some(origin.resume_digest()?),
+            )
+        }
         TargetRuntimeStep::Materialize(i) => {
             i.validate(intent)?;
             (LifecyclePhase::Materialize, Some(i.digest()?))

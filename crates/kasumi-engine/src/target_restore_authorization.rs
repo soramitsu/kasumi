@@ -31,7 +31,21 @@ impl RestoreAuthorization<'_> {
                 restore_access(target, audit, &request.target_context).await
             }
             Self::Lifecycle(invocation) => {
-                if let Err(error) = invocation.check_target(target, LifecyclePhase::Materialize) {
+                let phase = invocation
+                    .gate()
+                    .current()?
+                    .commitment()
+                    .intent
+                    .request
+                    .phase;
+                anyhow::ensure!(
+                    matches!(
+                        phase,
+                        LifecyclePhase::Materialize | LifecyclePhase::ResumeMaterialize
+                    ),
+                    "current phase cannot read a source backup"
+                );
+                if let Err(error) = invocation.check_target(target, phase) {
                     return Err(restore_denial(audit, invocation.context(), error.code)
                         .await
                         .into());
