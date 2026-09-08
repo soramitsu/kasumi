@@ -229,5 +229,16 @@ gate above and usable installation artifacts.
   offline runtime materialization/replay. A required map selects filesystem or
   renewable-file-backed S3 destinations; encrypted placement binding rejects a
   removed or changed destination. Local stopped recovery supplies its observed
-  cache separately. Corrected configuration validation is running; the first
-  helper compile failure is preserved.
+  cache separately. Both configuration tests and strict server Clippy passed;
+  the first helper compile failure is preserved.
+
+- `d53aa94` combines the production audit bootstrap pool, exact shared governor
+  checks, and generation-certified authority envelopes. The merged source passed
+  all 37 Raft library tests and server all-target/all-feature compilation. The
+  streaming checkpoint passed 44 affected integration tests; its corrected
+  admission contract test passed another two. The canonical authority branch
+  passed authority, serving, live trust, initializer and focused TLS checks.
+  Coordinated online signer activation and complete verifier retirement drains
+  remain in progress. These are intermediate results, not final release gates.
+- Tenant archive placement, reserved capacity and current administration limits
+  are documented in [tenant audit retention](tenant-audit-retention.md).
