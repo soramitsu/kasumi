@@ -19,6 +19,9 @@ use std::{
 };
 use uuid::Uuid;
 use zeroize::Zeroizing;
+#[path = "audit_archive_owned.rs"]
+mod owned;
+pub use owned::AuditArchivePublicationObserver;
 
 const MAGIC: &[u8; 8] = b"KASUMIA1";
 const HEADER_LIMIT: usize = 64 << 10;
@@ -612,6 +615,8 @@ impl TenantStore {
 
 pub struct FilesystemAuditArchive {
     root: PathBuf,
+    observer: Option<Arc<dyn AuditArchivePublicationObserver>>,
+    publication: Arc<std::sync::Mutex<()>>,
 }
 impl FilesystemAuditArchive {
     pub fn open(root: impl AsRef<Path>) -> Result<Self> {
@@ -631,6 +636,8 @@ impl FilesystemAuditArchive {
         crate::private_files::sync_parent(root)?;
         Ok(Self {
             root: std::fs::canonicalize(root)?,
+            observer: None,
+            publication: Arc::new(std::sync::Mutex::new(())),
         })
     }
 
@@ -650,6 +657,9 @@ impl FilesystemAuditArchive {
                     == segment.reference.object.ciphertext_sha256,
             "invalid prepared audit segment"
         );
+        if let Some(observer) = &self.observer {
+            return self.publish_observed(segment, observer.as_ref());
+        }
         let path = self
             .root
             .join(format!("{}.audit", segment.reference.object.object_id));
@@ -709,6 +719,8 @@ impl AuditArchiveDestination for FilesystemAuditArchive {
         );
         let archive = Self {
             root: self.root.clone(),
+            observer: self.observer.clone(),
+            publication: self.publication.clone(),
         };
         let segment = PreparedAuditSegment {
             reference: segment.reference.clone(),
