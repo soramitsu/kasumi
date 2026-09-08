@@ -222,9 +222,7 @@ fn cancelled_embedded_denial_writer_is_drained_before_shutdown_and_reopen() {
 
 #[tokio::test]
 async fn standalone_restore_denials_are_audited_before_a_database_exists() {
-    use kasumi_engine::{
-        ReplicaPlacement, ReplicaRestoreConfig, prepare_replicated_restore,
-    };
+    use kasumi_engine::{ReplicaPlacement, ReplicaRestoreConfig, prepare_replicated_restore};
     use kasumi_raft::{Config, InProcessRouter};
     let dir = tempfile::tempdir().unwrap();
     let source_node = NodeStore::open(dir.path().join("source.redb")).unwrap();

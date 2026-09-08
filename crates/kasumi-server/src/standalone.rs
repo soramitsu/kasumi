@@ -115,7 +115,7 @@ pub struct InitializedInstallation {
     pub tenant_profile: PathBuf,
 }
 
-async fn operator_state(
+pub(crate) async fn operator_state(
     config: &RuntimeConfig,
 ) -> Result<(
     private_files::ExclusiveLock,
@@ -165,7 +165,7 @@ fn operator_event(
     }
 }
 
-async fn operator_control(
+pub(crate) async fn operator_control(
     config: &RuntimeConfig,
     node: Arc<NodeStore>,
     audit: Arc<kasumi_engine::SecurityAudit>,
@@ -195,7 +195,9 @@ async fn operator_control(
     .await
 }
 
-fn offline_context(database: &kasumi_engine::Database) -> Result<kasumi_types::RequestContext> {
+pub(crate) fn offline_context(
+    database: &kasumi_engine::Database,
+) -> Result<kasumi_types::RequestContext> {
     let generation = database.engine().generation()?;
     let principal = generation
         .state
@@ -215,12 +217,44 @@ fn offline_context(database: &kasumi_engine::Database) -> Result<kasumi_types::R
     })
 }
 
+type OperatorTenants = (
+    Vec<crate::runtime::TenantConfig>,
+    std::collections::BTreeMap<String, Arc<NodeStore>>,
+);
+
+/// Resolve operational generations without rewriting immutable installation settings.
+fn operator_tenants(
+    config: &RuntimeConfig,
+    store: &TenantStore,
+    node: &Arc<NodeStore>,
+) -> Result<OperatorTenants> {
+    let mut tenants = config.tenants.clone();
+    let mut nodes = std::collections::BTreeMap::new();
+    for tenant in &mut tenants {
+        let selected =
+            match crate::local_recovery::active_generation(config, store, &tenant.tenant)? {
+                Some(active) => {
+                    tenant.incarnation = Some(active.incarnation.to_string());
+                    NodeStore::open(active.directory.join("node.redb"))?
+                }
+                None => node.clone(),
+            };
+        nodes.insert(tenant.tenant.clone(), selected);
+    }
+    Ok((tenants, nodes))
+}
+
 /// Recovers credentials for the current policy's explicitly retained administrator.
 /// Policy validation requires such an administrator, even when every token is
 /// lost or expired. No policy bypass is installed in the running server.
 pub async fn recover_administrator(configuration: &Path, output: &Path) -> Result<Vec<PathBuf>> {
     let mut config = RuntimeConfig::load(configuration)?;
     let (_lock, node, audit, credentials) = operator_state(&config).await?;
+    if let Err(error) = crate::local_recovery::require_runtime_ready(audit.store()) {
+        audit.shutdown().await;
+        return Err(error);
+    }
+    let (effective_tenants, generation_nodes) = operator_tenants(&config, audit.store(), &node)?;
     private_files::create_directory(output)?;
     let operation_id = Uuid::new_v4().to_string();
     audit
@@ -259,7 +293,7 @@ pub async fn recover_administrator(configuration: &Path, output: &Path) -> Resul
                 )?,
             },
         ))
-        .chain(config.tenants.iter().map(|tenant| {
+        .chain(effective_tenants.iter().map(|tenant| {
             let TenantServingConfig::Standalone { installation_id } = tenant.serving else {
                 unreachable!("claim validated standalone")
             };
@@ -284,7 +318,10 @@ pub async fn recover_administrator(configuration: &Path, output: &Path) -> Resul
     {
         let source = Arc::new(crate::runtime::file_secret);
         let stores = kasumi_store::TenantStorageSet::open(
-            node.clone(),
+            generation_nodes
+                .get(tenant)
+                .cloned()
+                .unwrap_or_else(|| node.clone()),
             tenant.into(),
             application.provider(source.clone())?,
             custody.provider(source)?,
@@ -358,6 +395,11 @@ pub async fn recover_administrator(configuration: &Path, output: &Path) -> Resul
 pub async fn rotate_wrapping_keys(configuration: &Path) -> Result<()> {
     let config = RuntimeConfig::load(configuration)?;
     let (_lock, node, audit, _credentials) = operator_state(&config).await?;
+    if let Err(error) = crate::local_recovery::require_runtime_ready(audit.store()) {
+        audit.shutdown().await;
+        return Err(error);
+    }
+    let (effective_tenants, generation_nodes) = operator_tenants(&config, audit.store(), &node)?;
     let operation = Uuid::new_v4().to_string();
     audit
         .record(operator_event(
@@ -389,7 +431,7 @@ pub async fn rotate_wrapping_keys(configuration: &Path) -> Result<()> {
         &config.control.custody_keys,
         StorageAccess::node_control(),
     ))
-    .chain(config.tenants.iter().map(|tenant| {
+    .chain(effective_tenants.iter().map(|tenant| {
         let TenantServingConfig::Standalone { installation_id } = tenant.serving else {
             unreachable!("claim validated standalone")
         };
@@ -413,7 +455,10 @@ pub async fn rotate_wrapping_keys(configuration: &Path) -> Result<()> {
     })) {
         let source = Arc::new(crate::runtime::file_secret);
         let stores = kasumi_store::TenantStorageSet::open(
-            node.clone(),
+            generation_nodes
+                .get(tenant)
+                .cloned()
+                .unwrap_or_else(|| node.clone()),
             tenant.into(),
             application.provider(source.clone())?,
             custody.provider(source)?,
@@ -464,6 +509,10 @@ pub async fn rotate_signing_key(configuration: &Path) -> Result<u64> {
 pub async fn rotate_certificates(configuration: &Path) -> Result<serde_json::Value> {
     let config = RuntimeConfig::load(configuration)?;
     let (_lock, node, audit, _credentials) = operator_state(&config).await?;
+    if let Err(error) = crate::local_recovery::require_runtime_ready(audit.store()) {
+        audit.shutdown().await;
+        return Err(error);
+    }
     let operation = Uuid::new_v4().to_string();
     audit
         .record(operator_event(
@@ -661,6 +710,13 @@ pub async fn initialize(directory: &Path, tenant: &str) -> Result<InitializedIns
     config.serving_authorities.clear();
     config.replication = None;
     config.database_path = database_path.clone();
+    config.backup_destinations = std::collections::BTreeMap::from([(
+        "local".into(),
+        crate::administration::DestinationConfig::Filesystem {
+            directory: directory.join("backups"),
+            max_bytes: kasumi_store::MAX_BACKUP_BUNDLE_BYTES,
+        },
+    )]);
     config.auth = AuthConfig {
         issuer: format!("https://localhost/kasumi/{installation_id}"),
         audience: format!("https://localhost/kasumi/{installation_id}/api"),
