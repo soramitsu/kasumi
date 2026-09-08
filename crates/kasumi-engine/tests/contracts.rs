@@ -748,7 +748,7 @@ async fn database(
     let store = TenantStore::open_fixture(node, "tenant-a".into(), key.clone())
         .await
         .unwrap();
-    let db = kasumi_engine::open_local(
+    let db = kasumi_engine::test_utils::open_fixture(
         kasumi_store::test_utils::with_custody(
             store.clone(),
             Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
@@ -1095,7 +1095,7 @@ async fn strict_empty_discovery_is_audited_and_failed_audit_persistence_blocks_r
     )
     .await
     .unwrap();
-    let db = kasumi_engine::open_local(
+    let db = kasumi_engine::test_utils::open_fixture(
         kasumi_store::test_utils::with_custody(
             store,
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
@@ -1303,7 +1303,7 @@ async fn logical_backup_restores_suspended_with_new_incarnation_and_increasing_r
             checkpoint.checkpoint(),
             target_incarnation,
         ),
-        kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+        target_audit.admission().clone(),
         target_audit.clone(),
     )
     .await
@@ -1350,7 +1350,7 @@ async fn logical_backup_restores_suspended_with_new_incarnation_and_increasing_r
                 checkpoint.checkpoint(),
                 uuid::Uuid::new_v4()
             ),
-            kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+            target_audit.admission().clone(),
             target_audit.clone(),
         )
         .await
@@ -1411,7 +1411,7 @@ async fn durable_engine_worker() {
     )
     .await
     .unwrap();
-    let db = kasumi_engine::open_local(
+    let db = kasumi_engine::test_utils::open_fixture(
         kasumi_store::test_utils::with_custody(
             store,
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
@@ -1492,7 +1492,7 @@ async fn killed_process_recovers_acknowledged_documents_receipts_and_bootstrap_p
         }],
         strict_read_audit: true,
     };
-    let db = kasumi_engine::open_local(
+    let db = kasumi_engine::test_utils::open_fixture(
         kasumi_store::test_utils::with_custody(
             store,
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),

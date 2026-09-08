@@ -122,6 +122,17 @@ Missing, corrupt or unavailable historical dependencies therefore prevent a
 restored genesis from reopening; a previous verification does not substitute for
 current durable availability.
 
+Production standalone, ordinary replicated and target startup install the node's
+audit maintenance pool before Raft replay. The application and Control groups
+share two reserved 64 MiB lanes, separate from the service security ledger's
+64 MiB workspace. Database construction starts archival only after this explicit
+installation. Restore and target operations require the security ledger's exact
+node governor; an additional governor cannot create independent capacity. Reusing
+that same governor on a database is idempotent, and substituting another is a
+conflict. Deterministic fixtures select gated fixture bootstrap functions
+explicitly, including Control fixtures; reserved storage purposes do not disable
+production maintenance.
+
 Control bundles use the same framing but authorize only the exact `NodeControl`
 storage purpose and `__kasumi_control` domain. Their archive records use the
 current store's exact-purpose audit decoder and the stream/head committed in the

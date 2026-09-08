@@ -1,9 +1,7 @@
+use kasumi_engine::test_utils::{open_fixture, open_fixture_replicated};
 mod common;
 
-use kasumi_engine::{
-    Database, ReplicaPlacement, ReplicatedBootstrap, initialize_replicated, open_local,
-    open_replicated,
-};
+use kasumi_engine::{Database, ReplicaPlacement, ReplicatedBootstrap, initialize_replicated};
 use kasumi_raft::{Config, InProcessRouter};
 use kasumi_store::{NodeStore, TenantStore, test_utils::LocalKeyProvider};
 use kasumi_types::*;
@@ -128,7 +126,7 @@ async fn replicated_service_preserves_batches_receipts_and_cursor_fences_across_
     for id in 1..=3 {
         let (node_store, audit) = store(&root.path().join(format!("{id}.redb"))).await;
         audits.insert(id, audit.clone());
-        let db = open_replicated(
+        let db = open_fixture_replicated(
             id,
             kasumi_store::test_utils::with_custody(
                 node_store,
@@ -325,7 +323,7 @@ async fn replicated_service_preserves_batches_receipts_and_cursor_fences_across_
     for id in 1..=3 {
         let (node_store, audit) = store(&root.path().join(format!("{id}.redb"))).await;
         audits.insert(id, audit.clone());
-        let db = open_replicated(
+        let db = open_fixture_replicated(
             id,
             kasumi_store::test_utils::with_custody(
                 node_store,
@@ -379,7 +377,7 @@ async fn deployment_modes_and_live_store_ownership_cannot_be_overridden() {
     let root = tempfile::tempdir().unwrap();
     let (store, audit) = store(&root.path().join("local.redb")).await;
     let bootstrap = bootstrap();
-    let db = open_local(
+    let db = open_fixture(
         kasumi_store::test_utils::with_custody(
             store.clone(),
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
@@ -393,7 +391,7 @@ async fn deployment_modes_and_live_store_ownership_cannot_be_overridden() {
     .await
     .unwrap();
     assert!(
-        open_local(
+        open_fixture(
             kasumi_store::test_utils::with_custody(
                 store.clone(),
                 std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32]))
@@ -411,7 +409,7 @@ async fn deployment_modes_and_live_store_ownership_cannot_be_overridden() {
     audit.drain().await;
     assert!(db.collections(&context()).await.is_err());
     assert!(
-        open_replicated(
+        open_fixture_replicated(
             1,
             kasumi_store::test_utils::with_custody(
                 store.clone(),
@@ -427,7 +425,7 @@ async fn deployment_modes_and_live_store_ownership_cannot_be_overridden() {
         .await
         .is_err()
     );
-    let reopened = open_local(
+    let reopened = open_fixture(
         kasumi_store::test_utils::with_custody(
             store,
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
@@ -459,7 +457,7 @@ async fn replicated_restore_has_identical_genesis_and_requires_quorum_audit_befo
     let root = tempfile::tempdir().unwrap();
     let initial = bootstrap();
     let (source_store, source_audit) = store(&root.path().join("source.redb")).await;
-    let source = open_local(
+    let source = open_fixture(
         kasumi_store::test_utils::with_custody(
             source_store,
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
@@ -544,8 +542,7 @@ async fn replicated_restore_has_identical_genesis_and_requires_quorum_audit_befo
                 incarnation,
                 voters: initial.voters.clone(),
                 raft: Config::default(),
-                admission: kasumi_engine::admission::NodeAdmission::new(Default::default())
-                    .unwrap(),
+                admission: audit.admission().clone(),
             },
             router.clone(),
             audit,
@@ -620,7 +617,7 @@ async fn replicated_restore_has_identical_genesis_and_requires_quorum_audit_befo
     for id in 1..=3 {
         let (node_store, audit) = store(&root.path().join(format!("restored-{id}.redb"))).await;
         audits.insert(id, audit.clone());
-        let db = open_replicated(
+        let db = open_fixture_replicated(
             id,
             kasumi_store::test_utils::with_custody(
                 node_store,

@@ -33,7 +33,7 @@ async fn canceled_queued_schema_activation_finishes_once_and_checks_receipt_rele
         }],
         strict_read_audit: false,
     };
-    let db = crate::open_local(
+    let db = crate::test_utils::open_fixture(
         kasumi_store::test_utils::with_custody(
             store,
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),

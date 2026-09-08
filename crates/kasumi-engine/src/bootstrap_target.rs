@@ -105,6 +105,7 @@ pub async fn materialize_target_replica(
     replica: TargetMaterializationConfig,
     security_audit: Arc<SecurityAudit>,
 ) -> anyhow::Result<MaterializedTargetReplica> {
+    security_audit.require_admission(&replica.admission)?;
     operation.check()?;
     let target = targets.application().clone();
     operation

@@ -137,6 +137,7 @@ pub async fn open_target_replica(
     transport: Arc<dyn RaftTransport>,
     security_audit: Arc<SecurityAudit>,
 ) -> anyhow::Result<TargetReplica> {
+    security_audit.require_admission(&config.admission)?;
     operation.check()?;
     let invocation = operation.invocation().clone();
     let lease = invocation.gate().current()?;
@@ -289,6 +290,7 @@ pub async fn open_target_replica(
         // Do not cancel this future: if its caller disappears, ownership stays
         // here until open returns and the target owner closes any started group.
         let registration = owned.register_group()?;
+        engine.install_audit_maintenance(&config.admission)?;
         let group = RaftGroup::open(
             config.node_id,
             format!(

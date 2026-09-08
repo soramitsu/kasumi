@@ -36,7 +36,7 @@ async fn open(path: &std::path::Path, limits: Limits) -> (Arc<Database>, Arc<Sec
     )
     .await
     .unwrap();
-    let db = kasumi_engine::open_local(
+    let db = kasumi_engine::test_utils::open_fixture(
         kasumi_store::test_utils::with_custody(
             store,
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
@@ -675,7 +675,7 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
         .await
         .unwrap(),
         common::local_restore_request(context(), checkpoint.checkpoint(), uuid::Uuid::new_v4()),
-        kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+        restored_audit.admission().clone(),
         restored_audit.clone(),
     )
     .await
@@ -800,7 +800,7 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
                     },
                     uuid::Uuid::new_v4()
                 ),
-                kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+                audit.admission().clone(),
                 audit.clone(),
             )
             .await

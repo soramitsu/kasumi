@@ -87,6 +87,7 @@ pub async fn prepare_replicated_restore(
     transport: Arc<dyn RaftTransport>,
     security_audit: Arc<SecurityAudit>,
 ) -> anyhow::Result<PreparedReplicaRestore> {
+    security_audit.require_admission(&replica.admission)?;
     let target = targets.application().clone();
     if let Some(gate) = target.storage_access().serving_gate() {
         anyhow::ensure!(
@@ -154,6 +155,7 @@ pub async fn prepare_replicated_restore(
     engine
         .verify_bootstrap_dependencies_owned(replica.admission.clone())
         .await?;
+    engine.install_audit_maintenance(&replica.admission)?;
     let group = RaftGroup::open(
         replica.node_id,
         format!("{}/{}", target.tenant(), bootstrap.incarnation),
@@ -244,6 +246,27 @@ pub async fn open_replicated(
     config: Config,
     security_audit: Arc<SecurityAudit>,
 ) -> anyhow::Result<Arc<Database>> {
+    open_replicated_inner(
+        node_id,
+        stores,
+        bootstrap,
+        transport,
+        config,
+        security_audit,
+        true,
+    )
+    .await
+}
+
+async fn open_replicated_inner(
+    node_id: u64,
+    stores: Arc<TenantStorageSet>,
+    bootstrap: &ReplicatedBootstrap,
+    transport: Arc<dyn RaftTransport>,
+    config: Config,
+    security_audit: Arc<SecurityAudit>,
+    maintenance: bool,
+) -> anyhow::Result<Arc<Database>> {
     let store = stores.application().clone();
     anyhow::ensure!(
         store.storage_access().lifecycle_gate().is_none(),
@@ -281,6 +304,9 @@ pub async fn open_replicated(
     engine
         .verify_bootstrap_dependencies_owned(security_audit.admission().clone())
         .await?;
+    if maintenance {
+        engine.install_audit_maintenance(security_audit.admission())?;
+    }
     anyhow::ensure!(
         engine.generation()?.state.incarnation == bootstrap.incarnation,
         "replicated incarnation differs from bootstrap"
@@ -294,7 +320,17 @@ pub async fn open_replicated(
         config,
     )
     .await?;
-    Ok(Database::new(engine, group, store, security_audit))
+    Ok(if maintenance {
+        Database::new_with_admission(
+            engine,
+            group,
+            store,
+            security_audit.admission().clone(),
+            security_audit,
+        )
+    } else {
+        Database::new(engine, group, store, security_audit)
+    })
 }
 
 /// Explicit first creation, never a partition fallback. Only the designated
@@ -503,8 +539,14 @@ pub async fn open_fixture_with_epoch_clock(
     .await
 }
 
+#[cfg(any(test, feature = "test-utils"))]
+#[path = "bootstrap_fixtures.rs"]
+pub(crate) mod fixtures;
+
 enum LocalRuntime {
     Production(Option<Arc<crate::admission::NodeAdmission>>),
+    #[cfg(any(test, feature = "test-utils"))]
+    FixtureDefault,
     #[cfg(any(test, feature = "test-utils"))]
     Fixture {
         admission: Arc<crate::admission::NodeAdmission>,
@@ -578,11 +620,16 @@ async fn start_prepared(
         LocalRuntime::Production(Some(admission)) => admission.clone(),
         LocalRuntime::Production(None) => security_audit.admission().clone(),
         #[cfg(any(test, feature = "test-utils"))]
+        LocalRuntime::FixtureDefault => security_audit.admission().clone(),
+        #[cfg(any(test, feature = "test-utils"))]
         LocalRuntime::Fixture { admission, .. } => admission.clone(),
     };
     engine
-        .verify_bootstrap_dependencies_owned(admission)
+        .verify_bootstrap_dependencies_owned(admission.clone())
         .await?;
+    if matches!(runtime, LocalRuntime::Production(_)) {
+        engine.install_audit_maintenance(&admission)?;
+    }
     let incarnation = engine.generation()?.state.incarnation.clone();
     let group = RaftGroup::local(
         1,
@@ -592,10 +639,11 @@ async fn start_prepared(
     )
     .await?;
     Ok(match runtime {
-        LocalRuntime::Production(Some(admission)) => {
+        LocalRuntime::Production(_) => {
             Database::new_with_admission(engine, group, store, admission, security_audit)
         }
-        LocalRuntime::Production(None) => Database::new(engine, group, store, security_audit),
+        #[cfg(any(test, feature = "test-utils"))]
+        LocalRuntime::FixtureDefault => Database::new(engine, group, store, security_audit),
         #[cfg(any(test, feature = "test-utils"))]
         LocalRuntime::Fixture { admission, clock } => Database::new_fixture_with_epoch_clock(
             engine,
@@ -630,6 +678,7 @@ pub async fn restore_local(
     security_audit: Arc<SecurityAudit>,
 ) -> anyhow::Result<Arc<Database>> {
     request.checkpoint.validate()?;
+    security_audit.require_admission(&admission)?;
     let incarnation = request.target_incarnation;
     let backup_id = request.checkpoint.backup_id;
     request

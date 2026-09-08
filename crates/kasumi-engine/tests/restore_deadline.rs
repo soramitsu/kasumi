@@ -1,5 +1,6 @@
 mod common;
-use kasumi_engine::{RestoreSource, open_local};
+use kasumi_engine::RestoreSource;
+use kasumi_engine::test_utils::open_fixture;
 use kasumi_store::{BackupDestination, NodeStore, TenantStore, test_utils::LocalKeyProvider};
 use kasumi_types::*;
 use std::{
@@ -90,7 +91,7 @@ async fn restore_deadline_bounds_source_io_and_gate_queue_without_blocking_anoth
                     &common::unavailable_checkpoint("first", uuid::Uuid::new_v4()),
                     uuid::Uuid::new_v4(),
                 ),
-                kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+                audit.admission().clone(),
                 audit,
             )
             .await
@@ -117,7 +118,7 @@ async fn restore_deadline_bounds_source_io_and_gate_queue_without_blocking_anoth
             &common::unavailable_checkpoint("queued", uuid::Uuid::new_v4()),
             uuid::Uuid::new_v4(),
         ),
-        kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+        audit.admission().clone(),
         audit.clone(),
     )
     .await
@@ -132,7 +133,7 @@ async fn restore_deadline_bounds_source_io_and_gate_queue_without_blocking_anoth
     let other_open = tokio::spawn({
         let audit = audit.clone();
         async move {
-            open_local(
+            open_fixture(
                 kasumi_store::test_utils::with_custody(
                     other,
                     std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),

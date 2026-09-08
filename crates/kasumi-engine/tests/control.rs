@@ -1,6 +1,7 @@
 mod common;
 
-use kasumi_engine::{control::*, open_local};
+use kasumi_engine::control::*;
+use kasumi_engine::test_utils::open_fixture;
 use kasumi_store::{NodeStore, TenantStore, test_utils::LocalKeyProvider};
 use kasumi_types::*;
 use std::{collections::BTreeSet, sync::Arc};
@@ -89,7 +90,7 @@ async fn control_updates_require_operator_authority_cas_and_survive_reopen() {
         ],
         strict_read_audit: true,
     };
-    let db = open_local(
+    let db = open_fixture(
         kasumi_store::test_utils::with_custody(
             store.clone(),
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
@@ -167,7 +168,7 @@ async fn control_updates_require_operator_authority_cas_and_survive_reopen() {
     );
     db.raft_group().shutdown().await.unwrap();
     audit.drain().await;
-    let reopened = open_local(
+    let reopened = open_fixture(
         kasumi_store::test_utils::with_custody(
             store,
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),

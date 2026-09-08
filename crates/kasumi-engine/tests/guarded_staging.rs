@@ -27,7 +27,7 @@ async fn open(path: &Path, limits: Limits) -> (Arc<Database>, Arc<SecurityAudit>
     )
     .await
     .unwrap();
-    let db = kasumi_engine::open_local(
+    let db = kasumi_engine::test_utils::open_fixture(
         stores,
         Policy {
             grants: vec![Grant {
