@@ -83,6 +83,60 @@ def inventory(directory):
     return result
 
 
+def memory_observation(membership=Path("/proc/self/cgroup"), root=Path("/sys/fs/cgroup")):
+    """Retain raw visible cgroup counters, including child OOM events.
+
+    These reads are not atomic. Ancestor counters can include other workloads;
+    a cumulative peak is not a per-gate peak. Missing counters are explicit and
+    cannot be interpreted as zero pressure or absence of an OOM kill.
+    """
+    record = {"observed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+              "scope": "raw visible cgroup counters; non-atomic and possibly shared",
+              "membership": None, "cgroups": {}, "errors": []}
+    try:
+        with Path(membership).open() as source:
+            value = source.read(65537)
+        if len(value) > 65536:
+            raise ValueError("cgroup membership exceeds work limit")
+        record["membership"] = value
+        for line in value.splitlines():
+            fields = line.split(":", 2)
+            if len(fields) != 3 or ".." in Path(fields[2]).parts:
+                raise ValueError("invalid cgroup membership")
+            if not fields[1]:
+                controller = Path(root)
+                names = ("memory.current", "memory.peak", "memory.max", "memory.events",
+                         "memory.events.local", "memory.swap.current", "memory.swap.max")
+            elif "memory" in fields[1].split(","):
+                controller = Path(root) / "memory"
+                names = ("memory.usage_in_bytes", "memory.max_usage_in_bytes",
+                         "memory.limit_in_bytes", "memory.failcnt", "memory.oom_control")
+            else:
+                continue
+            directory = controller.joinpath(*[p for p in Path(fields[2]).parts if p not in ("/", ".")])
+            while directory.is_relative_to(controller):
+                counters = record["cgroups"].setdefault(str(directory), {})
+                for name in names:
+                    path = directory / name
+                    try:
+                        with path.open() as source:
+                            content = source.read(65537)
+                        if len(content) > 65536:
+                            raise ValueError("cgroup counter exceeds work limit")
+                        counters[name] = content
+                    except FileNotFoundError:
+                        continue
+                    except (OSError, ValueError) as error:
+                        record["errors"].append(str(path) + ": " + str(error))
+                if directory == controller:
+                    break
+                directory = directory.parent
+    except (OSError, ValueError) as error:
+        record["errors"].append(str(error))
+    record["available"] = any(record["cgroups"].values())
+    return record
+
+
 def run_gate(name, command, source, output, environment):
     """Hash actual Cargo-reported executable outputs when this gate closes."""
     started = time.monotonic()
@@ -90,6 +144,7 @@ def run_gate(name, command, source, output, environment):
     artifacts = {}
     compiled_packages = {}
     target = (Path(output) / "target").resolve()
+    memory_before = memory_observation()
     with log.open("wb") as stream:
         process = subprocess.Popen(command, cwd=source, env=environment,
                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -149,6 +204,11 @@ def run_gate(name, command, source, output, environment):
             process.stdout.close()
             stream.flush()
             os.fsync(stream.fileno())
+            # The container may disappear after this runner exits. Preserve
+            # each terminal observation before a later gate or teardown.
+            memory_after = memory_observation()
+            write_json(Path(output) / (name + "-resources.json"),
+                       {"before": memory_before, "after": memory_after})
     for relative, artifact in artifacts.items():
         path = target / relative
         artifact.update(sha256=sha256(path), bytes=path.stat().st_size)
@@ -157,6 +217,8 @@ def run_gate(name, command, source, output, environment):
         "duration_seconds": round(time.monotonic() - started, 3),
         "log": log.name, "log_sha256": sha256(log), "executables": artifacts,
         "compiled_packages": compiled_packages,
+        "resources": name + "-resources.json",
+        "resources_sha256": sha256(Path(output) / (name + "-resources.json")),
     }
 
 

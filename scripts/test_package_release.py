@@ -32,8 +32,11 @@ class PackageReleaseTests(unittest.TestCase):
         for name, command in functional_gates(2):
             log = root / (name + ".log")
             log.write_text("host: aarch64-unknown-linux-gnu\n" if name == "toolchain" else "fixture\n")
+            resources = root / (name + "-resources.json")
+            write_json(resources, {"before": {"available": False}, "after": {"available": False}})
             gate = {"name": name, "command": command, "exit_code": 0,
-                    "log": log.name, "log_sha256": sha256(log)}
+                    "log": log.name, "log_sha256": sha256(log),
+                    "resources": resources.name, "resources_sha256": sha256(resources)}
             if name == "production":
                 gate.update(executables=artifacts, compiled_packages={"fixture": {"features": []}})
             gates.append(gate)
@@ -46,7 +49,7 @@ class PackageReleaseTests(unittest.TestCase):
 
     def test_changed_binary_log_source_and_failed_gate_cannot_be_packaged(self):
         for changed in ("binary", "log", "source", "failed", "missing-inventory", "missing-doc-gate", "missing-network-gate",
-                        "weakened-clippy", "different-build", "missing-jobs"):
+                        "weakened-clippy", "different-build", "missing-jobs", "resources", "missing-resources"):
             with self.subTest(changed=changed), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 record = self.make_evidence(root)
@@ -55,6 +58,10 @@ class PackageReleaseTests(unittest.TestCase):
                     (root / "target/kasumid").write_bytes(b"different artifact")
                 elif changed == "log":
                     (root / "workspace.log").write_text("changed result")
+                elif changed == "resources":
+                    (root / "workspace-resources.json").write_text("hidden OOM event")
+                elif changed == "missing-resources":
+                    del record["gates"][0]["resources"]
                 elif changed == "source":
                     (root / "source/new-input.rs").write_text("injected")
                 elif changed == "failed":

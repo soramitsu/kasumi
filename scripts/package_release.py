@@ -73,6 +73,9 @@ def verify_evidence(directory):
         if gate["exit_code"] != 0 or gate.get("fixture_feature_violation") or gate.get("missing_production_executables"):
             raise ValueError("a functional gate failed")
         verify_file(directory, gate["log"], gate["log_sha256"])
+        if not gate.get("resources") or not gate.get("resources_sha256"):
+            raise ValueError("gate resource evidence is missing; rerun frozen gates")
+        verify_file(directory, gate["resources"], gate["resources_sha256"])
     source = directory / "source"
     source_files = verify_file(directory, "source-files.json", record["source_files_sha256"])
     if inventory(source) != json.loads(source_files.read_text()):
