@@ -236,3 +236,64 @@ fn outbound_borrowed_walk_and_nil_scope_fail_before_encoding_growth() {
     assert!(options.admit().is_err());
     assert_eq!(options.resources.usage(), ClientResourceUsage::default());
 }
+
+#[tokio::test]
+async fn parser_error_payload_drops_before_worker_admission_is_released() {
+    let options = options();
+    let call = options.admit().unwrap();
+    let prepared = prepare_read(
+        &ReadSnapshotRequest {
+            documents: vec![],
+            queries: vec![],
+        },
+        &call,
+    )
+    .unwrap();
+    let mut reply = response(&call);
+    // Unknown-field diagnostics from stock metadata Deserialize would otherwise
+    // retain this peer-controlled field name after the owned worker exits.
+    reply
+        .as_object_mut()
+        .unwrap()
+        .insert("x".repeat(16 << 10), json!(0));
+    let wire = transport::Wire {
+        bytes: Bytes::from(serde_json::to_vec(&reply).unwrap()),
+        call: call.clone(),
+    };
+    let worker = decode_wire::<SnapshotReadResponse>(wire, prepared);
+    drop(call);
+    let error = worker.await.unwrap().unwrap_err();
+    assert!(matches!(
+        error,
+        ClientError::SnapshotRejected {
+            code: tonic::Code::DataLoss,
+            reason: "snapshot JSON failed validation"
+        }
+    ));
+    assert_eq!(options.resources.usage(), ClientResourceUsage::default());
+}
+
+#[test]
+fn transport_error_retains_code_without_peer_message_details_or_metadata() {
+    let options = options();
+    let call = options.admit().unwrap();
+    let mut status = tonic::Status::with_details(
+        tonic::Code::Unavailable,
+        "peer text".repeat(4096),
+        Bytes::from(vec![42; 16 << 10]),
+    );
+    status
+        .metadata_mut()
+        .insert("peer-data", "x".repeat(16 << 10).parse().unwrap());
+    let error = normalize(ClientError::Transport(status));
+    assert_eq!(options.resources.usage().live_owners, 1);
+    drop(call);
+    assert!(matches!(
+        error,
+        ClientError::SnapshotRejected {
+            code: tonic::Code::Unavailable,
+            reason: "snapshot transport failed"
+        }
+    ));
+    assert_eq!(options.resources.usage(), ClientResourceUsage::default());
+}

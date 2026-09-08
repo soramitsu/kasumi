@@ -113,6 +113,7 @@ fn envelope(input: &mut impl Buf, maximum: usize) -> Result<Bytes, Status> {
 fn status(error: ClientError) -> Status {
     match error {
         ClientError::Transport(status) => status,
+        ClientError::SnapshotRejected { code, reason } => Status::new(code, reason),
         _ => Status::data_loss("invalid admitted snapshot response"),
     }
 }
@@ -279,7 +280,10 @@ fn admit_response(response: http::Response<Body>, call: Call) -> http::Response<
         Err(error) => {
             // Tonic may inspect initial grpc-status before polling its body.
             drop(response);
-            let mut rejected = http::Response::new(Body::new(ErrorBody(Some((error, call)))));
+            let mut rejected = http::Response::new(Body::new(ErrorBody {
+                error: Some(error),
+                _call: call,
+            }));
             rejected.headers_mut().insert(
                 http::header::CONTENT_TYPE,
                 http::HeaderValue::from_static("application/grpc"),
@@ -298,7 +302,10 @@ fn admit_response(response: http::Response<Body>, call: Call) -> http::Response<
     })
 }
 
-struct ErrorBody(Option<(Status, Call)>);
+struct ErrorBody {
+    error: Option<Status>,
+    _call: Call,
+}
 impl http_body::Body for ErrorBody {
     type Data = Bytes;
     type Error = Status;
@@ -306,7 +313,7 @@ impl http_body::Body for ErrorBody {
         mut self: Pin<&mut Self>,
         _: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Bytes>, Status>>> {
-        Poll::Ready(self.0.take().map(|(error, _owner)| Err(error)))
+        Poll::Ready(self.error.take().map(Err))
     }
 }
 pub(super) async fn receive(
@@ -315,35 +322,39 @@ pub(super) async fn receive(
     path: &'static str,
     call: Call,
 ) -> Result<Wire, ClientError> {
-    call.check()?;
-    request.set_timeout(
-        call.deadline
-            .saturating_duration_since(tokio::time::Instant::now()),
-    );
-    let mut client = tonic::client::Grpc::new(SnapshotService {
-        channel,
-        call: call.clone(),
-    })
-    .max_encoding_message_size(
-        call.limits
-            .max_request_bytes
-            .checked_add(16)
-            .ok_or_else(|| invalid("snapshot request overflow"))?,
-    )
-    .max_decoding_message_size(call.limits.max_wire_bytes);
-    client
-        .ready()
-        .await
-        .map_err(|_| Status::unavailable("snapshot channel unavailable"))?;
-    let result = client
-        .unary(
-            request,
-            http::uri::PathAndQuery::from_static(path),
-            SnapshotCodec { call: call.clone() },
+    let result = async {
+        call.check()?;
+        request.set_timeout(
+            call.deadline
+                .saturating_duration_since(tokio::time::Instant::now()),
+        );
+        let mut client = tonic::client::Grpc::new(SnapshotService {
+            channel,
+            call: call.clone(),
+        })
+        .max_encoding_message_size(
+            call.limits
+                .max_request_bytes
+                .checked_add(16)
+                .ok_or_else(|| invalid("snapshot request overflow"))?,
         )
-        .await?;
-    call.check()?;
-    Ok(result.into_inner())
+        .max_decoding_message_size(call.limits.max_wire_bytes);
+        client
+            .ready()
+            .await
+            .map_err(|_| Status::unavailable("snapshot channel unavailable"))?;
+        let result = client
+            .unary(
+                request,
+                http::uri::PathAndQuery::from_static(path),
+                SnapshotCodec { call: call.clone() },
+            )
+            .await?;
+        call.check()?;
+        Ok(result.into_inner())
+    }
+    .await;
+    result.map_err(super::normalize)
 }
 
 #[cfg(test)]

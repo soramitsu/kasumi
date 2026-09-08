@@ -52,6 +52,13 @@ pub enum ClientError {
     Connection(#[from] anyhow::Error),
     #[error("native transport failed: {0}")]
     Transport(#[from] tonic::Status),
+    /// Snapshot failures retain no peer-controlled strings or metadata after
+    /// their admission owner is released. The code remains usable for routing.
+    #[error("snapshot request failed ({code:?}): {reason}")]
+    SnapshotRejected {
+        code: tonic::Code,
+        reason: &'static str,
+    },
     #[error("invalid native JSON")]
     Json(#[from] serde_json::Error),
     #[error("invalid native response: {0}")]

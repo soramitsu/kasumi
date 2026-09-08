@@ -9,11 +9,11 @@ use kasumi_types::{
     OpenSnapshotLease, ReadSnapshotPage, ReadSnapshotRequest, ScanSnapshotPage, SnapshotLease,
     SnapshotReadResponse, SnapshotScanPage,
 };
-pub(crate) use resources::Call;
 pub use resources::{
     AdmittedSnapshot, ClientResourceUsage, ClientResources, SnapshotDecodeLimits,
     SnapshotReadOptions,
 };
+pub(crate) use resources::{Call, normalize};
 use resources::{exhausted, invalid};
 use semantic::Expected;
 use serde::Serialize;
@@ -65,8 +65,9 @@ fn encode(request: &impl Serialize, call: &Call) -> Result<Vec<u8>, ClientError>
         maximum: call.limits.max_request_bytes,
         call,
     };
-    serde_json::to_writer(&mut output, request)?;
+    let result = serde_json::to_writer(&mut output, request);
     call.check()?;
+    result.map_err(|_| exhausted())?;
     Ok(output.bytes)
 }
 
@@ -266,12 +267,14 @@ impl KasumiClient {
     ) -> Result<AdmittedSnapshot<T>, ClientError> {
         let mut waiter = call.waiter();
         call.check()?;
-        let request = self.authorized(
-            bearer,
-            proto::ReadSnapshotRequest {
-                request_json: prepared.request_json.clone(),
-            },
-        )?;
+        let request = self
+            .authorized(
+                bearer,
+                proto::ReadSnapshotRequest {
+                    request_json: prepared.request_json.clone(),
+                },
+            )
+            .map_err(normalize)?;
         let wire = tokio::time::timeout_at(
             call.deadline,
             transport::receive(
@@ -320,12 +323,15 @@ fn decode_wire<T: SnapshotOutput>(
     prepared: Arc<Prepared>,
 ) -> tokio::task::JoinHandle<Result<AdmittedSnapshot<T>, ClientError>> {
     tokio::task::spawn_blocking(move || {
-        tokens::admit(&wire.bytes, &wire.call)?;
-        let decoded = prepared.expected.decode(&wire.bytes, &wire.call)?;
-        wire.call.check()?;
-        let value = T::from_decoded(decoded)?;
-        wire.call.check()?;
-        Ok::<_, ClientError>(AdmittedSnapshot::new(value, &wire.call))
+        let result = (|| {
+            tokens::admit(&wire.bytes, &wire.call)?;
+            let decoded = prepared.expected.decode(&wire.bytes, &wire.call)?;
+            wire.call.check()?;
+            let value = T::from_decoded(decoded)?;
+            wire.call.check()?;
+            Ok::<_, ClientError>(AdmittedSnapshot::new(value, &wire.call))
+        })();
+        result.map_err(normalize)
     })
 }
 

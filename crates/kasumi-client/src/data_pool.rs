@@ -323,6 +323,7 @@ impl KasumiClientPool {
             Box::pin(async move { client.snapshot_prepared(token, prepared, call?).await })
         })
         .await
+        .map_err(snapshot_decode::normalize)
     }
     pub async fn query(
         &mut self,
@@ -399,7 +400,8 @@ impl KasumiClientPool {
         options: &SnapshotReadOptions,
     ) -> NativeResult<AdmittedSnapshot<SnapshotReadResponse>> {
         let call = options.admit()?;
-        self.require_installation(lease.installation)?;
+        self.require_installation(lease.installation)
+            .map_err(snapshot_decode::normalize)?;
         let prepared = snapshot_decode::prepare_points(&lease.lease, documents, &call)?;
         self.snapshot_request(Some(lease.member), true, prepared, call, options)
             .await
@@ -414,7 +416,8 @@ impl KasumiClientPool {
         options: &SnapshotReadOptions,
     ) -> NativeResult<AdmittedSnapshot<SnapshotScanPage>> {
         let call = options.admit()?;
-        self.require_installation(lease.installation)?;
+        self.require_installation(lease.installation)
+            .map_err(snapshot_decode::normalize)?;
         let prepared =
             snapshot_decode::prepare_scan(&lease.lease, collection, after_id, limit, &call)?;
         self.snapshot_request(Some(lease.member), true, prepared, call, options)
@@ -448,5 +451,47 @@ fn deadline() -> ClientError {
     tonic::Status::deadline_exceeded("installed native operation deadline elapsed; resolve uncertain writes with the original batch").into()
 }
 fn retryable(error: &ClientError) -> bool {
-    matches!(error, ClientError::Transport(status) if matches!(status.code(), tonic::Code::Unavailable | tonic::Code::DeadlineExceeded | tonic::Code::Unknown | tonic::Code::Cancelled))
+    let code = match error {
+        ClientError::Transport(status) => status.code(),
+        ClientError::SnapshotRejected { code, .. } => *code,
+        _ => return false,
+    };
+    matches!(
+        code,
+        tonic::Code::Unavailable
+            | tonic::Code::DeadlineExceeded
+            | tonic::Code::Unknown
+            | tonic::Code::Cancelled
+    )
+}
+
+#[cfg(test)]
+mod snapshot_error_tests {
+    use super::*;
+    #[test]
+    fn bounded_snapshot_errors_preserve_only_approved_retry_codes() {
+        for code in [
+            tonic::Code::Unavailable,
+            tonic::Code::DeadlineExceeded,
+            tonic::Code::Unknown,
+            tonic::Code::Cancelled,
+        ] {
+            assert!(retryable(&ClientError::SnapshotRejected {
+                code,
+                reason: "bounded error"
+            }));
+        }
+        for code in [
+            tonic::Code::Unauthenticated,
+            tonic::Code::PermissionDenied,
+            tonic::Code::DataLoss,
+            tonic::Code::ResourceExhausted,
+            tonic::Code::InvalidArgument,
+        ] {
+            assert!(!retryable(&ClientError::SnapshotRejected {
+                code,
+                reason: "bounded error"
+            }));
+        }
+    }
 }

@@ -98,9 +98,13 @@ async fn native_grpc_channel_uses_pinned_tls13_and_http2_with_no_plaintext_fallb
         )
         .await
         .unwrap_err();
-    assert!(
-        matches!(error, kasumi_client::ClientError::Transport(status) if status.code() == tonic::Code::Unauthenticated)
-    );
+    assert!(matches!(
+        error,
+        kasumi_client::ClientError::SnapshotRejected {
+            code: tonic::Code::Unauthenticated,
+            ..
+        }
+    ));
     drop(typed);
     client_config.server_certificate_pins.clear();
     assert!(

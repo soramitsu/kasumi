@@ -216,8 +216,35 @@ pub(super) fn invalid(message: &'static str) -> ClientError {
     ClientError::InvalidResponse(message)
 }
 pub(super) fn exhausted() -> ClientError {
-    tonic::Status::resource_exhausted("snapshot client resource budget exceeded").into()
+    ClientError::SnapshotRejected {
+        code: tonic::Code::ResourceExhausted,
+        reason: "snapshot client resource budget exceeded",
+    }
 }
 pub(super) fn deadline() -> ClientError {
-    tonic::Status::deadline_exceeded("snapshot operation deadline elapsed").into()
+    ClientError::SnapshotRejected {
+        code: tonic::Code::DeadlineExceeded,
+        reason: "snapshot operation deadline elapsed",
+    }
+}
+
+/// Drop peer-controlled parser/transport payloads while the receive/worker owner
+/// still exists. Returned failure values contain no newly owned diagnostic data.
+pub(crate) fn normalize(error: ClientError) -> ClientError {
+    let (code, reason) = match error {
+        ClientError::SnapshotRejected { code, reason } => (code, reason),
+        ClientError::Transport(status) => (status.code(), "snapshot transport failed"),
+        ClientError::Json(_) => (tonic::Code::DataLoss, "snapshot JSON failed validation"),
+        ClientError::Connection(_) => (tonic::Code::Unavailable, "snapshot connection failed"),
+        ClientError::InvalidResponse(reason) => (tonic::Code::DataLoss, reason),
+        ClientError::Authorization => (
+            tonic::Code::Unauthenticated,
+            "snapshot authorization invalid",
+        ),
+        ClientError::RequestTooLarge => (
+            tonic::Code::ResourceExhausted,
+            "snapshot request exceeds its byte limit",
+        ),
+    };
+    ClientError::SnapshotRejected { code, reason }
 }
