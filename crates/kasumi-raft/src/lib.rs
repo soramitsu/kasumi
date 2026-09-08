@@ -35,7 +35,7 @@ use lifetime::StorageDrain;
 pub use network::{
     InProcessRouter, RaftTransport, RpcPayloadTooLarge, RpcRequest, RpcResponse, dispatch_rpc,
 };
-pub use openraft::{BasicNode, Config, LogId, SnapshotPolicy};
+pub use openraft::{BasicNode, Config, LogId, SnapshotPolicy, StoredMembership};
 pub use snapshot_buffer::SnapshotBuffer;
 pub use snapshot_state::RetiredSnapshotState;
 use std::{
