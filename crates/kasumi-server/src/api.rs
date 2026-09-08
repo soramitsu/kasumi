@@ -675,6 +675,14 @@ mod tests {
         (status, bytes.to_vec())
     }
 
+    fn receipt_scope(fixture: &Fixture) -> kasumi_types::MutationReceiptScope {
+        kasumi_types::MutationReceiptScope {
+            tenant: "tenant-a".into(),
+            incarnation: fixture.incarnation.to_string(),
+            principal: "person".into(),
+        }
+    }
+
     fn decode_grpc<M: Message + Default>(frame: &[u8]) -> M {
         assert!(frame.len() >= 5);
         assert_eq!(frame[0], 0, "uncompressed protobuf response expected");
@@ -796,10 +804,13 @@ mod tests {
                 assert_eq!(status, StatusCode::OK);
                 let receipt: proto::ReceiptResponse = decode_grpc(&receipt);
                 assert_eq!(receipt.request_digest, request_digest);
-                let matched =
-                    kasumi_client::verify_mutation_receipt(&original_batch, receipt.clone())
-                        .unwrap()
-                        .unwrap();
+                let matched = kasumi_client::verify_mutation_receipt(
+                    &receipt_scope(&fixture),
+                    &original_batch,
+                    receipt.clone(),
+                )
+                .unwrap()
+                .unwrap();
                 assert_eq!(matched.outcome.unwrap(), expected);
                 let mut substituted = original_batch.clone();
                 let Mutation::Put { body, .. } = &mut substituted.operations[0] else {
@@ -807,7 +818,12 @@ mod tests {
                 };
                 *body = json!({"different":"same key and document ID"});
                 assert!(
-                    kasumi_client::verify_mutation_receipt(&substituted, receipt.clone()).is_err()
+                    kasumi_client::verify_mutation_receipt(
+                        &receipt_scope(&fixture),
+                        &substituted,
+                        receipt.clone()
+                    )
+                    .is_err()
                 );
                 let Some(proto::receipt_response::Outcome::Committed(receipt)) = receipt.outcome
                 else {
@@ -926,9 +942,13 @@ name: "docs".into(),
             .into_inner();
         let original: MutationBatch = serde_json::from_value(batch).unwrap();
         assert_eq!(receipt.request_digest, original.digest().unwrap());
-        let verified = kasumi_client::verify_mutation_receipt(&original, receipt.clone())
-            .unwrap()
-            .unwrap();
+        let verified = kasumi_client::verify_mutation_receipt(
+            &receipt_scope(&fixture),
+            &original,
+            receipt.clone(),
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(verified.outcome.unwrap_err(), error);
         match receipt.outcome.unwrap() {
             proto::receipt_response::Outcome::Rejected(receipt) => {

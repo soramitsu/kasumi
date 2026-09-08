@@ -1,22 +1,36 @@
 //! Resolve a retained mutation only against the exact original canonical input.
 use crate::{ClientError, KasumiClient, proto};
-use kasumi_types::{MutationBatch, MutationReceipt, WriteReceipt};
+use kasumi_types::{MutationBatch, MutationReceipt, MutationReceiptScope, WriteReceipt};
 
 /// Verify a response from an authenticated native connection against the
 /// original batch. This is input matching, not independent authentication.
 /// No retained record means unknown, and never authorizes a new mutation.
 pub fn verify_mutation_receipt(
+    expected_scope: &MutationReceiptScope,
     original: &MutationBatch,
     response: proto::ReceiptResponse,
 ) -> Result<Option<MutationReceipt>, ClientError> {
     let Some(outcome) = response.outcome else {
-        if !response.request_digest.is_empty() {
+        if !response.request_digest.is_empty() || response.scope.is_some() {
             return Err(ClientError::InvalidResponse(
-                "receipt digest has no outcome",
+                "receipt identity has no outcome",
             ));
         }
         return Ok(None);
     };
+    let scope = response
+        .scope
+        .ok_or(ClientError::InvalidResponse("receipt scope missing"))?;
+    let scope = MutationReceiptScope {
+        tenant: scope.tenant,
+        incarnation: scope.incarnation,
+        principal: scope.principal,
+    };
+    if scope != *expected_scope {
+        return Err(ClientError::InvalidResponse(
+            "receipt belongs to another original namespace",
+        ));
+    }
     let expected = original
         .digest()
         .map_err(|_| ClientError::InvalidResponse("original mutation cannot be encoded"))?;
@@ -36,6 +50,7 @@ pub fn verify_mutation_receipt(
         )),
     };
     Ok(Some(MutationReceipt {
+        scope,
         request_digest: expected,
         outcome,
     }))
@@ -47,6 +62,7 @@ impl KasumiClient {
     pub async fn resolve_mutation(
         &mut self,
         bearer: &str,
+        expected_scope: &MutationReceiptScope,
         original: &MutationBatch,
     ) -> Result<Option<MutationReceipt>, ClientError> {
         let response = self
@@ -59,7 +75,7 @@ impl KasumiClient {
             )?)
             .await?
             .into_inner();
-        verify_mutation_receipt(original, response)
+        verify_mutation_receipt(expected_scope, original, response)
     }
 }
 
@@ -69,6 +85,21 @@ mod tests {
     use kasumi_types::{Mutation, Precondition};
     use serde_json::json;
 
+    fn scope() -> MutationReceiptScope {
+        MutationReceiptScope {
+            tenant: "tenant-a".into(),
+            incarnation: "source-incarnation".into(),
+            principal: "writer".into(),
+        }
+    }
+    fn wire_scope() -> proto::MutationReceiptScope {
+        let scope = scope();
+        proto::MutationReceiptScope {
+            tenant: scope.tenant,
+            incarnation: scope.incarnation,
+            principal: scope.principal,
+        }
+    }
     fn original() -> MutationBatch {
         MutationBatch {
             idempotency_key: "original".into(),
@@ -86,6 +117,7 @@ mod tests {
     fn retained_outcome_requires_the_exact_body_read_set_preconditions_and_key() {
         let original = original();
         let response = proto::ReceiptResponse {
+            scope: Some(wire_scope()),
             request_digest: original.digest().unwrap(),
             outcome: Some(proto::receipt_response::Outcome::Committed(
                 proto::WriteReceipt {
@@ -95,7 +127,7 @@ mod tests {
             )),
         };
         assert_eq!(
-            verify_mutation_receipt(&original, response.clone())
+            verify_mutation_receipt(&scope(), &original, response.clone())
                 .unwrap()
                 .unwrap()
                 .outcome
@@ -129,17 +161,32 @@ mod tests {
             changed_precondition,
             changed_reads,
         ] {
-            assert!(verify_mutation_receipt(&substituted, response.clone()).is_err());
+            assert!(verify_mutation_receipt(&scope(), &substituted, response.clone()).is_err());
         }
+        for field in 0..3 {
+            let mut substituted_scope = scope();
+            match field {
+                0 => substituted_scope.tenant = "another-tenant".into(),
+                1 => substituted_scope.incarnation = "restored-target".into(),
+                _ => substituted_scope.principal = "another-principal".into(),
+            }
+            assert!(
+                verify_mutation_receipt(&substituted_scope, &original, response.clone()).is_err()
+            );
+        }
+        let mut missing_scope = response.clone();
+        missing_scope.scope = None;
+        assert!(verify_mutation_receipt(&scope(), &original, missing_scope).is_err());
         let mut missing_digest = response;
         missing_digest.request_digest.clear();
-        assert!(verify_mutation_receipt(&original, missing_digest).is_err());
+        assert!(verify_mutation_receipt(&scope(), &original, missing_digest).is_err());
     }
 
     #[test]
     fn rejected_and_absent_receipts_are_distinct_and_malformed_pairs_fail() {
         let original = original();
         let rejected = proto::ReceiptResponse {
+            scope: Some(wire_scope()),
             request_digest: original.digest().unwrap(),
             outcome: Some(proto::receipt_response::Outcome::Rejected(
                 proto::DatabaseError {
@@ -149,7 +196,7 @@ mod tests {
             )),
         };
         assert_eq!(
-            verify_mutation_receipt(&original, rejected)
+            verify_mutation_receipt(&scope(), &original, rejected)
                 .unwrap()
                 .unwrap()
                 .outcome
@@ -158,14 +205,16 @@ mod tests {
             kasumi_types::ErrorCode::Conflict
         );
         assert!(
-            verify_mutation_receipt(&original, proto::ReceiptResponse::default())
+            verify_mutation_receipt(&scope(), &original, proto::ReceiptResponse::default())
                 .unwrap()
                 .is_none()
         );
         assert!(
             verify_mutation_receipt(
+                &scope(),
                 &original,
                 proto::ReceiptResponse {
+                    scope: Some(wire_scope()),
                     request_digest: original.digest().unwrap(),
                     outcome: None,
                 }

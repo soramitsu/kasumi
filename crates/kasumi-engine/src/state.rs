@@ -1221,6 +1221,24 @@ impl TenantEngine {
             &state.restore_lineage,
         )
         .map_err(|_| Error::new(ErrorCode::Corruption, "invalid restore lineage"))?;
+        for (key, receipt) in &state.receipts {
+            let maximum_revision = if receipt.scope.incarnation == state.incarnation {
+                state.revision
+            } else {
+                state
+                    .restore_lineage
+                    .iter()
+                    .find(|link| link.checkpoint.source_incarnation == receipt.scope.incarnation)
+                    .map(|link| link.checkpoint.revision)
+                    .ok_or_else(|| {
+                        Error::new(
+                            ErrorCode::Corruption,
+                            "receipt original incarnation is absent from lineage",
+                        )
+                    })?
+            };
+            receipt.validate_identity(key, &state.tenant, maximum_revision)?;
+        }
         if let Some(origin) = &state.restored_from {
             origin.validate()?;
             if origin.tenant != state.tenant
@@ -1461,6 +1479,13 @@ fn apply_operation(
             state.receipts.insert(
                 receipt_key,
                 StoredReceipt {
+                    scope: MutationReceiptScope {
+                        tenant: state.tenant.clone(),
+                        incarnation: state.incarnation.clone(),
+                        principal: command.context.principal.clone(),
+                    },
+                    idempotency_key: batch.idempotency_key.clone(),
+                    recorded_revision: revision,
                     request_digest: digest,
                     expires_at_ms,
                     collections: batch

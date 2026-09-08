@@ -571,6 +571,11 @@ impl kasumi_data_server::KasumiData for NativeData {
             .as_ref()
             .map(|stored| stored.request_digest.clone())
             .unwrap_or_default();
+        let scope = stored.as_ref().map(|stored| MutationReceiptScope {
+            tenant: stored.scope.tenant.clone(),
+            incarnation: stored.scope.incarnation.clone(),
+            principal: stored.scope.principal.clone(),
+        });
         let outcome = stored.map(|stored| match stored.outcome {
             Ok(value) => receipt_response::Outcome::Committed(receipt(value)),
             Err(error) => receipt_response::Outcome::Rejected(DatabaseError {
@@ -585,6 +590,7 @@ impl kasumi_data_server::KasumiData for NativeData {
         let response = ReceiptResponse {
             outcome,
             request_digest,
+            scope,
         };
         let response = release_response(&self.auth, &context, fence, response, false)
             .await

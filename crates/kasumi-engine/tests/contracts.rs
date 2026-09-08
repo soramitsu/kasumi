@@ -1380,16 +1380,18 @@ async fn logical_backup_restores_suspended_with_new_incarnation_and_increasing_r
             .body["email"],
         "original"
     );
-    assert_eq!(
-        restored
-            .operation_receipt(&context("owner"), "original")
-            .await
-            .unwrap()
-            .unwrap()
-            .outcome
-            .unwrap(),
-        receipt
+    let retained = restored
+        .operation_receipt(&context("owner"), "original")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(retained.scope.incarnation, old_incarnation);
+    assert_ne!(
+        retained.scope.incarnation,
+        restored.engine().generation().unwrap().state.incarnation
     );
+    assert_eq!(retained.scope.principal, "owner");
+    assert_eq!(retained.outcome.unwrap(), receipt);
     let newer = restored
         .mutate(
             context("owner"),

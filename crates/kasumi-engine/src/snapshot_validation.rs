@@ -30,6 +30,7 @@ impl ValidatedApplicationSnapshot {
         };
         result.validate_header()?;
         result.validate_lineage(&mut check)?;
+        result.validate_receipts(&mut check)?;
         result.validate_documents(&mut check)?;
         result.validate_staging(&mut check)?;
         result.validate_change_feed(&mut check)?;
@@ -323,6 +324,27 @@ impl ValidatedApplicationSnapshot {
             "restore lineage current incarnation differs"
         );
         Ok(())
+    }
+    fn validate_receipts(
+        &self,
+        check: &mut impl FnMut() -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
+        self.index.visit(5, |record| {
+            check()?;
+            let Record::Receipt(key, receipt) = record else {
+                unreachable!()
+            };
+            let maximum_revision = if receipt.scope.incarnation == self.header.incarnation {
+                self.header.revision
+            } else {
+                self.lineage_source(&receipt.scope.incarnation)?
+                    .context("receipt original incarnation is absent from lineage")?
+                    .checkpoint
+                    .revision
+            };
+            receipt.validate_identity(&key, &self.header.tenant, maximum_revision)?;
+            Ok(())
+        })
     }
     fn validate_documents(
         &self,
@@ -1096,6 +1118,53 @@ mod tests {
             crate::retirement_closure::digest(&state, || Ok(())).unwrap(),
             crate::retirement_closure::digest_verified(&verified, || Ok(())).unwrap()
         );
+    }
+    #[test]
+    fn receipt_original_scope_and_position_are_checked_in_both_snapshot_paths() {
+        use sha2::{Digest, Sha256};
+        let mut original = state();
+        let key = hex::encode(Sha256::digest(
+            serde_json::to_vec(&("owner", "original")).unwrap(),
+        ));
+        original.receipts.insert(
+            key.clone(),
+            StoredReceipt {
+                scope: MutationReceiptScope {
+                    tenant: original.tenant.clone(),
+                    incarnation: original.incarnation.clone(),
+                    principal: "owner".into(),
+                },
+                idempotency_key: "original".into(),
+                recorded_revision: original.revision,
+                request_digest: "12".repeat(32),
+                expires_at_ms: 100_000,
+                collections: vec!["rows".into()],
+                outcome: Ok(WriteReceipt {
+                    revision: original.revision,
+                    versions: Default::default(),
+                }),
+            },
+        );
+        TenantEngine::verify_logical_snapshot(&image(&original), &original).unwrap();
+        indexed(&original).unwrap();
+        for case in 0..7 {
+            let mut candidate = original.clone();
+            let receipt = candidate.receipts.get_mut(&key).unwrap();
+            match case {
+                0 => receipt.scope.tenant = "another-tenant".into(),
+                1 => receipt.scope.principal = "another-owner".into(),
+                2 => receipt.scope.incarnation = "unretained-source".into(),
+                3 => receipt.idempotency_key = "another-key".into(),
+                4 => receipt.recorded_revision += 1,
+                5 => receipt.outcome.as_mut().unwrap().revision -= 1,
+                _ => receipt.request_digest.clear(),
+            }
+            assert!(
+                TenantEngine::verify_logical_snapshot(&image(&candidate), &candidate).is_err(),
+                "full case {case}"
+            );
+            assert!(indexed(&candidate).is_err(), "indexed case {case}");
+        }
     }
     #[test]
     fn authenticated_semantic_substitutions_fail_both_validation_paths() {

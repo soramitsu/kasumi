@@ -445,7 +445,16 @@ async fn run(
             )?)
             .await?
             .into_inner();
-        let verified = kasumi_client::verify_mutation_receipt(&batch, response)?;
+        let kasumi_types::CredentialResource::Database { incarnation } = binding.kasumi_resource
+        else {
+            anyhow::bail!("original credential must select a database");
+        };
+        let scope = kasumi_types::MutationReceiptScope {
+            tenant: binding.tenant.clone(),
+            incarnation: incarnation.to_string(),
+            principal: binding.sub.clone(),
+        };
+        let verified = kasumi_client::verify_mutation_receipt(&scope, &batch, response)?;
         let original_input_verified = verified.is_some();
         let outcome = match verified.map(|receipt| receipt.outcome) {
             Some(Ok(receipt)) => {

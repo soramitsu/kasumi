@@ -458,15 +458,56 @@ pub struct WriteReceipt {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct MutationReceipt {
+    pub scope: MutationReceiptScope,
     pub request_digest: String,
     pub outcome: Result<WriteReceipt>,
 }
+/// Retain this expected namespace with the original invocation across renewals.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MutationReceiptScope {
+    pub tenant: String,
+    pub incarnation: String,
+    pub principal: String,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StoredReceipt {
+    pub scope: MutationReceiptScope,
+    pub idempotency_key: String,
+    pub recorded_revision: u64,
     pub request_digest: String,
     pub expires_at_ms: u64,
     pub collections: Vec<String>,
     pub outcome: Result<WriteReceipt>,
+}
+impl StoredReceipt {
+    pub fn validate_identity(&self, key: &str, tenant: &str, maximum_revision: u64) -> Result<()> {
+        use sha2::{Digest, Sha256};
+        validate_name(&self.scope.tenant)?;
+        validate_name(&self.scope.incarnation)?;
+        validate_name(&self.scope.principal)?;
+        validate_name(&self.idempotency_key)?;
+        validate_sha256(&self.request_digest)?;
+        let identity = serde_json::to_vec(&(&self.scope.principal, &self.idempotency_key))
+            .map_err(|_| Error::new(ErrorCode::Corruption, "invalid receipt identity"))?;
+        if self.scope.tenant != tenant
+            || hex::encode(Sha256::digest(identity)) != key
+            || self.recorded_revision == 0
+            || self.recorded_revision > maximum_revision
+            || self.expires_at_ms == 0
+            || self
+                .outcome
+                .as_ref()
+                .is_ok_and(|r| r.revision != self.recorded_revision)
+        {
+            return Err(Error::new(
+                ErrorCode::Corruption,
+                "receipt original identity or position differs",
+            ));
+        }
+        Ok(())
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEvent {

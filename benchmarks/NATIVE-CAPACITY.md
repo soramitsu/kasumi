@@ -66,7 +66,8 @@ and exact generated batch, plus the original recorded credential binding;
 renewal of the token file is still supported. A retained outcome must include
 the server's original canonical batch digest, which the inspector compares with
 the complete original key, read set, operations and preconditions. A different
-body under the same key fails resolution. An absent receipt remains unknown
+body under the same key fails resolution. The returned original principal,
+tenant and incarnation must also match the journaled credential binding. An absent receipt remains unknown
 and never authorizes blind replay. The command does not automatically resume
 a partial load. A completed receipt observation
 is distinct from a complete verified corpus.

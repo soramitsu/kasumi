@@ -195,12 +195,14 @@ impl KasumiClientPool {
     /// a new write by this operation.
     pub async fn resolve_mutation(
         &mut self,
+        expected_scope: &MutationReceiptScope,
         original: &MutationBatch,
         timeout: Duration,
     ) -> NativeResult<Option<MutationReceipt>> {
         self.request(None, true, timeout, |client, token| {
             let original = original.clone();
-            Box::pin(async move { client.resolve_mutation(token, &original).await })
+            let scope = expected_scope.clone();
+            Box::pin(async move { client.resolve_mutation(token, &scope, &original).await })
         })
         .await
         .map(|(_, reply)| reply)

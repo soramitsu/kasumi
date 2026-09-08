@@ -1880,6 +1880,7 @@ impl Database {
         }
         self.access()?;
         Ok(receipt.map(|r| MutationReceipt {
+            scope: r.scope,
             request_digest: r.request_digest,
             outcome: r.outcome,
         }))
