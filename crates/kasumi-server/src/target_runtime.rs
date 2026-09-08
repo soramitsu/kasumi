@@ -634,6 +634,8 @@ impl TargetRecoveryRuntime {
             );
         }
         let stores = g.stores.as_ref().unwrap().clone();
+        self.config
+            .install_tenant_audit_archive(stores.application(), None)?;
         if let TargetRuntimeStep::Materialize(input) = step {
             self.placement(input)?;
             let source = template

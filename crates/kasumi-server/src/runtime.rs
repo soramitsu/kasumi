@@ -216,6 +216,9 @@ fn default_prepared_limit() -> usize {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeConfig {
+    /// Installed external archive overrides by tenant, including __kasumi_control.
+    /// An empty map selects each store's private durable filesystem cache.
+    pub tenant_audit_archives: BTreeMap<String, crate::audit_destination::AuditDestinationConfig>,
     #[serde(deserialize_with = "kasumi_types::require_explicit_option")]
     pub target_recovery: Option<crate::target_runtime_config::TargetRecoveryConfig>,
     pub serving_authorities: BTreeMap<String, crate::serving_runtime::ServingAuthorityConfig>,
@@ -254,6 +257,14 @@ impl RuntimeConfig {
         ensure!(self.format == 1, "unsupported runtime configuration format");
         absolute(&self.database_path)?;
         self.admission.validate()?;
+        for (tenant, archive) in &self.tenant_audit_archives {
+            kasumi_types::validate_name(tenant)?;
+            ensure!(
+                tenant != SECURITY_TENANT && !tenant.starts_with("kasumi.custody/"),
+                "service security and custody use their own archive configuration"
+            );
+            archive.validate()?;
+        }
         if let Some(target) = &self.target_recovery {
             target.validate(self)?;
         }
@@ -1229,6 +1240,7 @@ impl NodeRuntime {
         audit: Arc<SecurityAudit>,
     ) -> Result<OpenedTenant> {
         let store = stores.application().clone();
+        config.install_tenant_audit_archive(&store, None)?;
         let database = if let Some(bootstrap) = &bootstrap {
             let replication = config
                 .replication
@@ -1784,6 +1796,7 @@ pub fn example_config() -> RuntimeConfig {
         strict_read_audit: false,
     };
     RuntimeConfig {
+        tenant_audit_archives: BTreeMap::new(),
         target_recovery: None,
         serving_authorities: BTreeMap::from([(
             "storage-fence".into(),
