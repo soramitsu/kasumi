@@ -171,10 +171,10 @@ impl ServingGate {
             .state
             .lock()
             .map_err(|_| anyhow::anyhow!("serving gate poisoned"))?;
-        if !state.closed {
-            if let Ok(remaining) = state.lease.remaining() {
-                return Ok(remaining);
-            }
+        if !state.closed
+            && let Ok(remaining) = state.lease.remaining()
+        {
+            return Ok(remaining);
         }
         state.closed = true;
         self.closed.send_replace(true);

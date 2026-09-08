@@ -18,6 +18,7 @@ use tokio::time::Instant;
 
 type Reply<'a, T> = Pin<Box<dyn Future<Output = Result<T, ClientError>> + Send + 'a>>;
 
+#[derive(Clone)]
 pub struct KasumiAuthorityPool {
     endpoints: BTreeMap<u64, KasumiClientConfig>,
     clients: BTreeMap<u64, KasumiAuthorityClient>,
@@ -67,6 +68,13 @@ impl KasumiAuthorityPool {
         })
     }
 
+    /// Reuse installed transport routes with an independently selected current
+    /// credential source, for example separate node and administrative roles.
+    pub fn with_credential(mut self, credential: Arc<dyn CredentialSource>) -> Self {
+        self.credential = credential;
+        self
+    }
+
     async fn request<T, F>(&mut self, timeout: Duration, mut dispatch: F) -> Result<T, ClientError>
     where
         T: Send,
@@ -89,7 +97,9 @@ impl KasumiAuthorityPool {
                 let attempt_end = Instant::now()
                     + remaining.min((timeout / members.len() as u32).max(Duration::from_millis(1)));
                 let result = tokio::time::timeout_at(attempt_end, async {
-                    if !self.clients.contains_key(member) {
+                    if let std::collections::btree_map::Entry::Vacant(entry) =
+                        self.clients.entry(*member)
+                    {
                         let client = KasumiAuthorityClient::connect(
                             &self.endpoints[member],
                             self.trust.clone(),
@@ -100,7 +110,7 @@ impl KasumiAuthorityPool {
                                 "installed authority member connection failed",
                             ))
                         })?;
-                        self.clients.insert(*member, client);
+                        entry.insert(client);
                     }
                     let bearer =
                         token(self.credential.as_ref()).map_err(|_| ClientError::Authorization)?;

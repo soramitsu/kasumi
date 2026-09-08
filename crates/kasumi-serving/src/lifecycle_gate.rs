@@ -109,6 +109,32 @@ impl LifecycleGate {
         self.check_locked(&mut state)?;
         Ok(state.lease.clone())
     }
+    pub fn remaining(&self) -> Result<std::time::Duration> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("phase gate poisoned"))?;
+        self.check_locked(&mut state)?;
+        let expiry = self.context.authorization.expires_at_ms().unwrap().min(
+            state
+                .lease
+                .commitment()
+                .intent
+                .original_credential_expires_at_ms,
+        );
+        let remaining = state
+            .lease
+            .remaining()?
+            .min(std::time::Duration::from_millis(
+                expiry.saturating_sub(self.clock.now_ms()?),
+            ));
+        if remaining.is_zero() {
+            state.closed = true;
+            self.closed.send_replace(true);
+            anyhow::bail!("original target phase credential expired");
+        }
+        Ok(remaining)
+    }
     pub fn renew(&self, lease: VerifiedLifecycleLease) -> Result<()> {
         let mut state = self
             .state

@@ -185,7 +185,7 @@ impl TargetRecoveryRuntime {
         // Only the independent journal KMS provider is constructed at startup.
         let provider = installed
             .journal_transit
-            .provider_with_secret(credential(&installed.journal_transit.token_env)?)?;
+            .provider_with_source(credential.clone())?;
         let node = NodeStore::open(&installed.journal_path)?;
         let access = StorageAccess::target_journal(&installed.control_root, &installed.node)?;
         let store = TenantStore::open(
@@ -622,12 +622,10 @@ impl TargetRecoveryRuntime {
             op.check()?;
             let app = template
                 .application_transit
-                .provider_with_secret((self.credential)(
-                    &template.application_transit.token_env,
-                )?)?;
+                .provider_with_source(self.credential.clone())?;
             let custody = template
                 .custody_transit
-                .provider_with_secret((self.credential)(&template.custody_transit.token_env)?)?;
+                .provider_with_source(self.credential.clone())?;
             g.stores = Some(
                 op.run(TenantStorageSet::open(
                     g.node.as_ref().unwrap().clone(),
@@ -660,7 +658,7 @@ impl TargetRecoveryRuntime {
                     .clone(),
                 keys: source
                     .transit
-                    .provider_with_secret((self.credential)(&source.transit.token_env)?)?,
+                    .provider_with_source(self.credential.clone())?,
                 timeout_ms: self.installed.limits.operation_timeout_ms,
             };
             let materialized = kasumi_engine::materialize_target_replica(

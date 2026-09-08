@@ -2,7 +2,7 @@
 //! Requests select exact committed identifiers, never endpoints, keys or paths.
 use crate::{
     runtime::{
-        RuntimeConfig, TlsFiles, TransitSettings, environment_name, origin, parse_certificate_pin,
+        RuntimeConfig, TlsFiles, TransitSettings, credential_path, origin, parse_certificate_pin,
         read_bounded,
     },
     serving_runtime::AuthorityEndpoint,
@@ -58,7 +58,7 @@ pub struct TargetRecoveryConfig {
     pub control_ca: PathBuf,
     pub node: NodeIdentity,
     pub attestation_key: PathBuf,
-    pub issuer_admin_bearer_env: BTreeMap<Uuid, String>,
+    pub issuer_admin_bearer_file: BTreeMap<Uuid, String>,
     pub journal_path: PathBuf,
     pub journal_transit: TransitSettings,
     pub generation_root: PathBuf,
@@ -140,7 +140,7 @@ impl TargetRecoveryConfig {
                 "target authority does not install the exact Control root/node"
             );
             ensure!(
-                self.issuer_admin_bearer_env
+                self.issuer_admin_bearer_file
                     .contains_key(&authority.manifest.authority_id),
                 "target issuer admission credential missing"
             );
@@ -187,13 +187,13 @@ impl TargetRecoveryConfig {
             .map(|a| a.manifest.authority_id)
             .collect();
         ensure!(
-            self.issuer_admin_bearer_env
+            self.issuer_admin_bearer_file
                 .keys()
                 .all(|id| installed.contains(id)),
             "target credential names an uninstalled issuer"
         );
-        for name in self.issuer_admin_bearer_env.values() {
-            environment_name(name)?;
+        for name in self.issuer_admin_bearer_file.values() {
+            credential_path(name)?;
         }
         Ok(())
     }

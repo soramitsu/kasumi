@@ -363,7 +363,8 @@ struct S3Credentials {
 impl S3Credentials {
     fn load(source: &dyn kasumi_transport::credentials::CredentialSource) -> Result<Self> {
         let bytes = source.load()?;
-        let value: Self = serde_json::from_str(&bytes).context("invalid S3 credential bundle")?;
+        let value: Self = serde_json::from_str(&bytes)
+            .map_err(|_| anyhow::anyhow!("invalid S3 credential bundle"))?;
         ensure!(
             !value.access_key_id.is_empty()
                 && !value.secret_access_key.is_empty()

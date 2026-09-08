@@ -164,7 +164,7 @@ impl TargetRecoveryRuntime {
         *stage = RecoveryStage::Custody;
         let custody_provider = template
             .custody_transit
-            .provider_with_secret((self.credential)(&template.custody_transit.token_env)?)?;
+            .provider_with_source(self.credential.clone())?;
         g.custody_probe = Some(
             kasumi_store::CustodyStore::open(
                 g.node.as_ref().unwrap().clone(),
@@ -235,10 +235,10 @@ impl TargetRecoveryRuntime {
         let access = projection.storage_access(lease.gate().clone())?;
         let app = template
             .application_transit
-            .provider_with_secret((self.credential)(&template.application_transit.token_env)?)?;
+            .provider_with_source(self.credential.clone())?;
         let custody = template
             .custody_transit
-            .provider_with_secret((self.credential)(&template.custody_transit.token_env)?)?;
+            .provider_with_source(self.credential.clone())?;
         projection.check(lease.gate())?;
         g.stores = Some(
             TenantStorageSet::open(

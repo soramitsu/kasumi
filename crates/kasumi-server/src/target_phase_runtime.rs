@@ -5,7 +5,7 @@ use crate::{
     serving_runtime::{CredentialSource, RuntimeLease, ServingAuthorityConfig},
 };
 use anyhow::{Context, Result, ensure};
-use kasumi_client::{KasumiAuthorityClient, KasumiClientConfig, KasumiLifecycleClient};
+use kasumi_client::{KasumiAuthorityPool, KasumiClientConfig, KasumiLifecycleClient};
 use kasumi_engine::{
     TargetLifecycleInvocation, TargetOperation, TargetOperationScope, TargetRequestAdmission,
 };
@@ -27,11 +27,9 @@ pub(crate) struct RuntimeTargetPhase {
     control: AsyncMutex<KasumiLifecycleClient>,
     original: VerifiedControlIntent,
     control_bearer: Zeroizing<String>,
-    authority: AsyncMutex<KasumiAuthorityClient>,
+    authority: AsyncMutex<KasumiAuthorityPool>,
+    authority_admin: AsyncMutex<KasumiAuthorityPool>,
     boot: LifecycleBoot,
-    credential: CredentialSource,
-    bearer_env: String,
-    admin_bearer_env: String,
     renewal: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 impl Drop for RuntimeTargetPhase {
@@ -97,7 +95,7 @@ impl RuntimeTargetPhase {
                     == Some(&configured.control_root.public_key),
             "phase belongs to another installed issuer"
         );
-        let endpoint = &authority.endpoints[&partition];
+        let endpoints = &authority.endpoints[&partition];
         let tls = authority.tls.load()?;
         let node = NodeIdentity {
             node_id,
@@ -115,44 +113,61 @@ impl RuntimeTargetPhase {
                 && committed_node.certificate_sha256 == node.certificate_sha256,
             "actual target TLS identity differs from committed placement"
         );
-        let connection = KasumiClientConfig {
-            endpoint: endpoint.endpoint.clone(),
-            identity: tls,
-            trusted_ca_pem: read_bounded(&authority.server_ca, 1 << 20)?,
-            server_certificate_pins: endpoint
-                .certificate_pins
-                .iter()
-                .map(|p| parse_certificate_pin(p))
-                .collect::<Result<_>>()?,
-        };
-        let trust = AuthorityTrust::install(authority.manifest.clone())?;
-        let mut issuer = admission
-            .run(async {
-                Ok(tokio::time::timeout(
-                    Duration::from_secs(5),
-                    KasumiAuthorityClient::connect(&connection, trust.clone()),
-                )
-                .await??)
+        let connections = endpoints
+            .iter()
+            .map(|(id, endpoint)| {
+                Ok((
+                    *id,
+                    KasumiClientConfig {
+                        endpoint: endpoint.endpoint.clone(),
+                        identity: tls.clone(),
+                        trusted_ca_pem: read_bounded(&authority.server_ca, 1 << 20)?,
+                        server_certificate_pins: endpoint
+                            .certificate_pins
+                            .iter()
+                            .map(|p| parse_certificate_pin(p))
+                            .collect::<Result<_>>()?,
+                    },
+                ))
             })
-            .await?;
+            .collect::<Result<_>>()?;
+        let trust = AuthorityTrust::install(authority.manifest.clone())?;
+        let path = authority.bearer_file.clone();
+        let source = credential.clone();
+        let mut issuer =
+            KasumiAuthorityPool::new(connections, trust.clone(), Arc::new(move || source(&path)))?;
         let accepted = kasumi_serving::LifecycleAuthorityRequest::AcceptIntent(Box::new(
             original.signed().clone(),
         ));
         let admin_env = configured
-            .issuer_admin_bearer_env
+            .issuer_admin_bearer_file
             .get(&authority.manifest.authority_id)
             .context("installed issuer control-admission credential missing")?;
-        let bearer = credential(admin_env)?;
+        let path = admin_env.clone();
+        let source = credential.clone();
+        let mut issuer_admin = issuer
+            .clone()
+            .with_credential(Arc::new(move || source(&path)));
         admission
-            .run(async { Ok(issuer.execute_lifecycle(&bearer, &accepted).await?) })
+            .run(async {
+                Ok(issuer_admin
+                    .execute_lifecycle(&accepted, Duration::from_secs(5))
+                    .await?)
+            })
             .await?;
         let boot = LifecycleBoot::new(trust, node)?;
         // Anchored before credential acquisition and dispatch; retries construct
         // distinct attempts, never reset the deadline of an earlier response.
         let attempt = boot.begin(&original)?;
-        let bearer = credential(&authority.bearer_env)?;
         let lease = admission
-            .run(async { Ok(issuer.acquire_lifecycle(&bearer, &attempt).await?) })
+            .run(async {
+                Ok(issuer
+                    .acquire_lifecycle(
+                        &attempt,
+                        Duration::from_millis(authority.manifest.max_lease_ms.min(5000)),
+                    )
+                    .await?)
+            })
             .await?;
         let purpose = lease.signed().claims.application_purpose;
         let gate = LifecycleGate::new(original_context, lease)?;
@@ -182,23 +197,36 @@ impl RuntimeTargetPhase {
             control_bearer: original_bearer,
             authority: AsyncMutex::new(issuer),
             boot,
-            credential,
-            bearer_env: authority.bearer_env.clone(),
-            admin_bearer_env: admin_env.clone(),
+            authority_admin: AsyncMutex::new(issuer_admin),
             renewal: Mutex::new(None),
         });
         admission.run(runtime.check_current()).await?;
-        let interval = Duration::from_millis((authority.manifest.max_lease_ms / 3).max(10));
         let weak = Arc::downgrade(&runtime);
         let worker = tokio::spawn(async move {
+            let mut failed = false;
             loop {
-                tokio::time::sleep(interval).await;
+                let delay = {
+                    let Some(runtime) = weak.upgrade() else { break };
+                    let Ok(remaining) = runtime.scope.invocation().gate().remaining() else {
+                        break;
+                    };
+                    if failed {
+                        (remaining / 4).min(Duration::from_millis(100))
+                    } else {
+                        remaining / 3
+                    }
+                };
+                tokio::time::sleep(delay).await;
                 let Some(runtime) = weak.upgrade() else { break };
-                if !matches!(
-                    tokio::time::timeout(interval, runtime.renew()).await,
+                let Ok(remaining) = runtime.scope.invocation().gate().remaining() else {
+                    runtime.scope.close();
+                    break;
+                };
+                failed = !matches!(
+                    tokio::time::timeout(remaining, runtime.renew()).await,
                     Ok(Ok(()))
-                ) || runtime.scope.invocation().check().is_err()
-                {
+                );
+                if runtime.scope.invocation().check().is_err() {
                     runtime.scope.close();
                     break;
                 }
@@ -314,13 +342,12 @@ impl RuntimeTargetPhase {
         id: Uuid,
     ) -> Result<kasumi_serving::SignedAuthorityReceipt> {
         self.scope.invocation().check()?;
-        let bearer = (self.credential)(&self.admin_bearer_env)?;
-        let mut issuer = self.authority.lock().await;
+        let mut issuer = self.authority_admin.lock().await;
         let signed = issuer
             .receipt(
-                &bearer,
                 &self.original.observation().intent.request.tenant,
                 id,
+                Duration::from_secs(5),
             )
             .await?
             .context("issuer activation outcome not retained")?;
@@ -341,9 +368,10 @@ impl RuntimeTargetPhase {
         operation.check()?;
         let proof = operation
             .run(async {
-                let bearer = (self.credential)(&self.admin_bearer_env)?;
-                let mut issuer = self.authority.lock().await;
-                Ok(issuer.verify_target_stop(&bearer, reference).await?)
+                let mut issuer = self.authority_admin.lock().await;
+                Ok(issuer
+                    .verify_target_stop(reference, Duration::from_secs(5))
+                    .await?)
             })
             .await?;
         operation.check()?;
@@ -353,8 +381,16 @@ impl RuntimeTargetPhase {
         self.check_current().await?;
         let mut issuer = self.authority.lock().await;
         let attempt = self.boot.begin(&self.original)?;
-        let bearer = (self.credential)(&self.bearer_env)?;
-        let lease = issuer.acquire_lifecycle(&bearer, &attempt).await?;
+        let lease = issuer
+            .acquire_lifecycle(
+                &attempt,
+                self.scope
+                    .invocation()
+                    .gate()
+                    .remaining()?
+                    .min(Duration::from_secs(5)),
+            )
+            .await?;
         self.scope.invocation().gate().renew(lease)?;
         Ok(())
     }
