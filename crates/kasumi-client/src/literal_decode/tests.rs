@@ -142,6 +142,36 @@ fn numeric_lexeme_and_request_clone_work_are_admitted_before_construction() {
     assert!(prepare_query(&query_request(), None, &call).is_err());
 }
 #[test]
+fn numeric_request_lexemes_do_not_consume_literal_string_key_limits() {
+    let mut options = read_options();
+    options.limits.max_string_bytes = 1;
+    options.limits.max_number_bytes = 3;
+    let call = options.admit().unwrap();
+    let value = Value::Number("123".parse().unwrap());
+    assert_eq!(snapshot_decode::encode(&value, &call).unwrap(), b"123");
+    let value = Value::Number("1234".parse().unwrap());
+    assert!(snapshot_decode::encode(&value, &call).is_err());
+    assert!(snapshot_decode::encode(&Value::String("123".into()), &call).is_err());
+    assert!(snapshot_decode::encode(&json!({"$serde_json::private::Number":"1"}), &call).is_err());
+    assert!(
+        snapshot_decode::encode(&json!({"$serde_json::private::RawValue":"1"}), &call).is_err()
+    );
+    drop(call);
+    options.limits.max_string_bytes = 64;
+    options.limits.max_number_bytes = 1;
+    let call = options.admit().unwrap();
+    let literal = json!({"$serde_json::private::Number":"1234"});
+    assert_eq!(
+        snapshot_decode::encode(&literal, &call).unwrap(),
+        raw(&literal)
+    );
+    let literal = json!({"$serde_json::private::RawValue":"1234"});
+    assert_eq!(
+        snapshot_decode::encode(&literal, &call).unwrap(),
+        raw(&literal)
+    );
+}
+#[test]
 fn change_feed_schema_and_audit_construct_values_from_literal_spans() {
     let options = read_options();
     let call = options.admit().unwrap();
@@ -325,6 +355,115 @@ async fn canonical_intent_helpers_preserve_body_predicates_schema_and_exact_dige
     let mut expired = options.clone();
     expired.deadline = tokio::time::Instant::now();
     assert!(decode_query_json(&raw(&query), &expired).await.is_err());
+}
+fn feed_result(
+    value: &Value,
+    request: &ReadChangeFeed,
+    call: &Call,
+) -> Result<ChangeFeedPage, ClientError> {
+    let prepared = Prepared {
+        input: vec![],
+        kind: Kind::Feed(request.clone()),
+        path: "",
+        _owner: call.clone(),
+    };
+    decode(&raw(value), &prepared, call)
+}
+#[test]
+fn change_feed_retention_gap_binds_original_position_and_checked_range() {
+    let options = read_options();
+    let call = options.admit().unwrap();
+    let mut request = ReadChangeFeed {
+        collections: BTreeSet::from(["docs".into()]),
+        start: ChangeFeedStart::After {
+            cursor: ChangeFeedCursor {
+                tenant: "tenant".into(),
+                principal: "reader".into(),
+                incarnation: uuid::Uuid::new_v4().to_string(),
+                collections: BTreeSet::from(["docs".into()]),
+                after_sequence: 5,
+            },
+        },
+        limit: 10,
+    };
+    let valid = json!({"kind":"retention_gap","first_available_sequence":7,
+        "head_sequence":10,"requested_after_sequence":5});
+    assert!(feed_result(&valid, &request, &call).is_ok());
+    for (field, value) in [
+        ("requested_after_sequence", 0),
+        ("first_available_sequence", 6),
+        ("first_available_sequence", 0),
+        ("first_available_sequence", 12),
+        ("head_sequence", 4),
+        ("head_sequence", u64::MAX),
+    ] {
+        let mut invalid = valid.clone();
+        invalid[field] = json!(value);
+        assert!(feed_result(&invalid, &request, &call).is_err(), "{invalid}");
+    }
+    request.start = ChangeFeedStart::Now;
+    assert!(feed_result(&valid, &request, &call).is_err());
+    request.start = ChangeFeedStart::Beginning;
+    let mut beginning = valid;
+    beginning["requested_after_sequence"] = json!(0);
+    assert!(feed_result(&beginning, &request, &call).is_ok());
+}
+#[test]
+fn change_feed_events_bind_scope_and_commit_metadata_without_rejecting_filtered_gaps() {
+    let options = read_options();
+    let call = options.admit().unwrap();
+    let mut request = ReadChangeFeed {
+        collections: BTreeSet::from(["docs".into()]),
+        start: ChangeFeedStart::Beginning,
+        limit: 10,
+    };
+    let valid = json!({"kind":"events","revision":5,"first_available_sequence":1,
+    "head_sequence":7,"next":{"tenant":"tenant","principal":"reader",
+        "incarnation":uuid::Uuid::new_v4().to_string(),"collections":["docs"],"after_sequence":7},
+    "caught_up":true,"events":[
+        {"sequence":2,"revision":3,"ordinal":1,"commit_event_count":4,
+            "collection":"docs","id":"b","document":null},
+        {"sequence":4,"revision":3,"ordinal":3,"commit_event_count":4,
+            "collection":"docs","id":"d","document":null},
+        {"sequence":6,"revision":5,"ordinal":0,"commit_event_count":2,
+            "collection":"docs","id":"f","document":null}
+    ]});
+    assert!(feed_result(&valid, &request, &call).is_ok());
+    for (pointer, value) in [
+        ("/next/incarnation", json!(uuid::Uuid::nil().to_string())),
+        ("/next/incarnation", json!("invalid")),
+        ("/next/tenant", json!("")),
+        ("/next/principal", json!("")),
+        ("/next/collections", json!(["other"])),
+        ("/next/after_sequence", json!(8)),
+        ("/first_available_sequence", json!(2)),
+        ("/caught_up", json!(false)),
+        ("/events/0/id", json!("")),
+        ("/events/0/revision", json!(0)),
+        ("/events/0/ordinal", json!(2)),
+        ("/events/1/ordinal", json!(2)),
+        ("/events/1/commit_event_count", json!(5)),
+        ("/events/2/revision", json!(2)),
+        ("/events/2/commit_event_count", json!(3)),
+    ] {
+        let mut invalid = valid.clone();
+        *invalid.pointer_mut(pointer).unwrap() = value;
+        assert!(feed_result(&invalid, &request, &call).is_err(), "{invalid}");
+    }
+    request.start = ChangeFeedStart::After {
+        cursor: serde_json::from_value(valid["next"].clone()).unwrap(),
+    };
+    let mut resumed = valid.clone();
+    resumed["events"] = json!([]);
+    assert!(feed_result(&resumed, &request, &call).is_ok());
+    resumed["next"]["principal"] = json!("other");
+    assert!(feed_result(&resumed, &request, &call).is_err());
+    request.start = ChangeFeedStart::Now;
+    resumed["next"]["principal"] = json!("reader");
+    assert!(feed_result(&resumed, &request, &call).is_ok());
+    resumed["next"]["after_sequence"] = json!(6);
+    resumed["caught_up"] = json!(false);
+    assert!(feed_result(&resumed, &request, &call).is_err());
 }
 type Pause = (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>);
 static PAUSE: std::sync::Mutex<Option<Pause>> = std::sync::Mutex::new(None);

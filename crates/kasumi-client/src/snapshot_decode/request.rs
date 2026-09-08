@@ -125,10 +125,16 @@ impl<'a, 'b> Serializer for &'a mut Budget<'b> {
         self.node(value.len_utf8())
     }
     fn serialize_str(self, value: &str) -> Result<(), Bounds> {
-        if self.numeric && value.len() > self.call.limits.max_number_bytes {
-            return Err(Bounds);
+        if self.numeric {
+            // This is a Number's lexical payload, not a JSON string. Literal
+            // object keys use SerializeMap and never enter this trusted branch.
+            if value.len() > self.call.limits.max_number_bytes {
+                return Err(Bounds);
+            }
+            self.node(value.len())
+        } else {
+            self.string(value)
         }
-        self.string(value)
     }
     fn serialize_bytes(self, value: &[u8]) -> Result<(), Bounds> {
         if value.len() > self.call.limits.max_nodes.saturating_sub(self.nodes) {
@@ -263,7 +269,12 @@ macro_rules! structure {
                 key: &'static str,
                 value: &T,
             ) -> Result<(), Bounds> {
-                self.budget.string(key)?;
+                // serde_json's Number serializer uses one synthetic struct
+                // field. That field name is absent from JSON and must not use a
+                // caller's string limit. Real object keys are visited by Map.
+                if !self.budget.numeric {
+                    self.budget.string(key)?;
+                }
                 value.serialize(&mut *self.budget)
             }
             fn end(self) -> Result<(), Bounds> {

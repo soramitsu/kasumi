@@ -94,3 +94,10 @@ response/canonical-input/aggregate-budget/cancellation tests, strict client and
 workspace checks, actual migrated native query/TLS/audit fixtures, and a consumer
 workspace with stock serde_json and no root patches. Source formatting is not
 compiler or acceptance evidence.
+
+Source review successor to `b0ca8e8` binds change-feed retention gaps to the exact
+original requested position, validates retained/head ranges and nonnil cursor
+identity, and checks sequence/ordinal/commit relationships while allowing filtered
+sequence gaps. It also treats the trusted Number serializer's synthetic field and
+lexeme as numeric work; literal document marker keys still use string limits. The
+new regression cases remain unrun until the frozen small cohort executes.

@@ -181,43 +181,66 @@ pub(super) fn feed(
 ) -> Result<ChangeFeedPage, ClientError> {
     let mut object = Object::new(raw)?;
     let kind: &str = object.field("kind")?;
+    let first_available_sequence: u64 = object.field("first_available_sequence")?;
+    let head_sequence: u64 = object.field("head_sequence")?;
+    let next_sequence = head_sequence
+        .checked_add(1)
+        .ok_or_else(|| invalid("change feed sequence overflow"))?;
+    if first_available_sequence == 0 || first_available_sequence > next_sequence {
+        return Err(invalid("change feed retained range differs"));
+    }
+    let requested_after = match &request.start {
+        ChangeFeedStart::Beginning => 0,
+        ChangeFeedStart::Now => head_sequence,
+        ChangeFeedStart::After { cursor } => cursor.after_sequence,
+    };
+    if requested_after > head_sequence {
+        return Err(invalid("change feed request is beyond returned head"));
+    }
+    let has_gap = requested_after + 1 < first_available_sequence;
     let page = match kind {
-        "retention_gap" => ChangeFeedPage::RetentionGap {
-            first_available_sequence: object.field("first_available_sequence")?,
-            head_sequence: object.field("head_sequence")?,
-            requested_after_sequence: object.field("requested_after_sequence")?,
-        },
+        "retention_gap" => {
+            let requested_after_sequence = object.field("requested_after_sequence")?;
+            if !has_gap || requested_after_sequence != requested_after {
+                return Err(invalid("change feed gap differs from original request"));
+            }
+            ChangeFeedPage::RetentionGap {
+                first_available_sequence,
+                head_sequence,
+                requested_after_sequence,
+            }
+        }
         "events" => {
             let revision: u64 = object.field("revision")?;
-            let first_available_sequence = object.field("first_available_sequence")?;
-            let head_sequence = object.field("head_sequence")?;
             let next: ChangeFeedCursor = object.field("next")?;
             let caught_up: bool = object.field("caught_up")?;
             let rows = array(
                 object.raw("events")?,
                 request.limit.min(call.limits.max_rows),
             )?;
-            if next.collections != request.collections
+            if has_gap
+                || next.tenant.is_empty()
+                || next.principal.is_empty()
+                || uuid::Uuid::parse_str(&next.incarnation)
+                    .ok()
+                    .is_none_or(|id| id.is_nil() || id.to_string() != next.incarnation)
+                || next.collections != request.collections
+                || next.after_sequence < requested_after
                 || next.after_sequence > head_sequence
                 || caught_up != (next.after_sequence == head_sequence)
             {
                 return Err(invalid("change feed cursor/range differs"));
             }
-            let mut previous = match &request.start {
-                ChangeFeedStart::After { cursor } => {
-                    if cursor.tenant != next.tenant
-                        || cursor.principal != next.principal
-                        || cursor.incarnation != next.incarnation
-                        || cursor.collections != next.collections
-                        || next.after_sequence < cursor.after_sequence
-                    {
-                        return Err(invalid("change feed changed original cursor scope"));
-                    }
-                    cursor.after_sequence
-                }
-                ChangeFeedStart::Now => head_sequence,
-                ChangeFeedStart::Beginning => 0,
-            };
+            if let ChangeFeedStart::After { cursor } = &request.start
+                && (cursor.tenant != next.tenant
+                    || cursor.principal != next.principal
+                    || cursor.incarnation != next.incarnation
+                    || cursor.collections != next.collections)
+            {
+                return Err(invalid("change feed changed original cursor scope"));
+            }
+            let mut previous = requested_after;
+            let mut previous_commit: Option<(u64, u64, u64)> = None;
             let mut events = Vec::with_capacity(rows.len());
             for row in rows {
                 call.check()?;
@@ -231,13 +254,37 @@ pub(super) fn feed(
                 let raw = event.raw("document")?;
                 event.finish()?;
                 if sequence <= previous
+                    || sequence < first_available_sequence
                     || sequence > next.after_sequence
+                    || event_revision == 0
                     || event_revision > revision
                     || ordinal >= commit_event_count
+                    || id.is_empty()
                     || !request.collections.contains(&collection)
                 {
                     return Err(invalid("change feed event differs from admitted range"));
                 }
+                let ordinal_u64 =
+                    u64::try_from(ordinal).map_err(|_| invalid("change feed ordinal overflow"))?;
+                let count = u64::try_from(commit_event_count)
+                    .map_err(|_| invalid("change feed commit count overflow"))?;
+                let first = sequence
+                    .checked_sub(ordinal_u64)
+                    .filter(|first| *first != 0)
+                    .ok_or_else(|| invalid("change feed commit begins before sequence one"))?;
+                let end = first
+                    .checked_add(count - 1)
+                    .filter(|end| *end <= head_sequence)
+                    .ok_or_else(|| invalid("change feed commit exceeds returned head"))?;
+                if previous_commit.is_some_and(|(prior_revision, prior_first, prior_end)| {
+                    event_revision < prior_revision
+                        || (event_revision == prior_revision
+                            && (first != prior_first || end != prior_end))
+                        || (event_revision > prior_revision && first <= prior_end)
+                }) {
+                    return Err(invalid("change feed commit metadata changed within page"));
+                }
+                previous_commit = Some((event_revision, first, end));
                 let document = if raw.get() == "null" {
                     None
                 } else {
