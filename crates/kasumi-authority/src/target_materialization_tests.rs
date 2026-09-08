@@ -924,7 +924,9 @@ async fn exact_actual_completion_is_required_for_issuer_and_target_activation() 
         fence_digest: fence.digest().unwrap(),
         target: f.target.clone(),
         control: CommittedActivation {
-            completion: Box::new(signed.clone()),
+            completion: Box::new(kasumi_types::CommittedCompletion::Original(Box::new(
+                signed.clone(),
+            ))),
             reference: request_ref.reference(),
             intent_sha256: request_ref.digest().unwrap(),
         },
@@ -940,7 +942,11 @@ async fn exact_actual_completion_is_required_for_issuer_and_target_activation() 
     let mut invalid = command.clone();
     invalid.command_id = Uuid::new_v4();
     if let AuthorityAction::ActivateCommitted { control, .. } = &mut invalid.action {
-        control.completion.signature = "00".repeat(64);
+        let kasumi_types::CommittedCompletion::Original(signed) = control.completion.as_mut()
+        else {
+            unreachable!()
+        };
+        signed.signature = "00".repeat(64);
     }
     let denied = super::activation_gate_tests::exact_administrative(&f.issuer, invalid).await;
     assert!(matches!(denied.outcome, AuthorityOutcome::Rejected { .. }));

@@ -218,6 +218,40 @@ pub struct SignedTargetCompletion {
     pub observation: TargetCompletionObservation,
     pub signature: String,
 }
+/// An original signed completion or a fresh signed observation of that exact
+/// committed fact. The inspection branch never renews the original mutation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "proof",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum CommittedCompletion {
+    Original(Box<SignedTargetCompletion>),
+    Resolved(Box<SignedTargetInspection>),
+}
+impl CommittedCompletion {
+    pub fn fact(&self) -> &TargetCompletionFact {
+        match self {
+            Self::Original(signed) => &signed.observation.fact,
+            Self::Resolved(signed) => &signed.observation.completion,
+        }
+    }
+    pub fn validate(&self) -> Result<()> {
+        match self {
+            Self::Original(signed) => signed.observation.validate(),
+            Self::Resolved(signed) => {
+                signed.observation.validate()?;
+                require(
+                    signed.observation.input.original_phase.request.phase
+                        == LifecyclePhase::Complete,
+                    "completion resolution must name the exact original Complete phase",
+                )
+            }
+        }
+    }
+}
 fn require(value: bool, message: &str) -> Result<()> {
     if value { Ok(()) } else { Err(invalid(message)) }
 }

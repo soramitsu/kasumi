@@ -326,7 +326,7 @@ fn activate(
             .map_err(|_| error(ErrorCode::Conflict, "invalid target activation input"))?,
         position.log_id.leader_id.node_id,
     )?;
-    if &control.completion.observation.fact != completed
+    if control.completion.fact() != completed
         || signed.receipt.command.tenant != state.tenant
         || target.incarnation.to_string() != state.incarnation
         || target.checkpoint != origin.materialization.request.checkpoint

@@ -135,7 +135,7 @@ impl Database {
             .completion
             .as_ref()
             .ok_or_else(|| Error::new(ErrorCode::Conflict, "target completion missing"))?;
-        if completed != &control.completion.observation.fact {
+        if completed != control.completion.fact() {
             return Err(Error::new(
                 ErrorCode::Conflict,
                 "issuer completion differs from actual target",

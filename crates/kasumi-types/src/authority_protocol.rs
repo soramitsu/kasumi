@@ -303,21 +303,14 @@ pub struct SignedAuthorityReceipt {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CommittedActivation {
-    pub completion: Box<crate::SignedTargetCompletion>,
+    pub completion: Box<crate::CommittedCompletion>,
     pub reference: crate::LifecycleAuthorityReference,
     pub intent_sha256: String,
 }
 impl CommittedActivation {
     pub fn validate(&self) -> Result<()> {
-        self.completion.observation.validate()?;
-        validate_sha256(
-            &self
-                .completion
-                .observation
-                .fact
-                .origin
-                .authority_manifest_sha256,
-        )?;
+        self.completion.validate()?;
+        validate_sha256(&self.completion.fact().origin.authority_manifest_sha256)?;
         self.reference.validate()?;
         ensure!(
             matches!(

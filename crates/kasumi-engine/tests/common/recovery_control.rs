@@ -90,21 +90,29 @@ async fn snapshot(db: &Arc<Database>) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn recovery_journal_persists_before_dispatch_rejects_substitution_and_recovers_ambiguous_control_commit()
  {
-    exercise_completed_recovery(false, None).await;
+    exercise_completed_recovery(false, None, false).await;
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn recovery_planned_retirement_freezes_its_exact_request_only_after_target_completion() {
-    exercise_completed_recovery(true, None).await;
+    exercise_completed_recovery(true, None, false).await;
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn recovery_uncertain_activation_resolves_original_winner_and_confirms_every_voter_forward() {
-    exercise_completed_recovery(false, Some(true)).await;
+    exercise_completed_recovery(false, Some(true), false).await;
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn recovery_uncertain_activation_requires_permanent_stop_before_target_cleanup() {
-    exercise_completed_recovery(false, Some(false)).await;
+    exercise_completed_recovery(false, Some(false), false).await;
 }
-async fn exercise_completed_recovery(planned: bool, activation_outcome: Option<bool>) {
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn recovery_expired_completion_resolves_its_exact_positive_fact_before_activation() {
+    exercise_completed_recovery(false, Some(true), true).await;
+}
+async fn exercise_completed_recovery(
+    planned: bool,
+    activation_outcome: Option<bool>,
+    inspect_completion: bool,
+) {
     let mut f = if activation_outcome == Some(true) {
         Fixture::with_topology().await
     } else {
@@ -437,7 +445,13 @@ async fn exercise_completed_recovery(planned: bool, activation_outcome: Option<b
     )
     .await;
     snapshot(&db).await;
-    let complete_under = commit_next_control(&f, &db, id).await;
+    let complete_under = commit_next_control_for(
+        &f,
+        &db,
+        id,
+        if inspect_completion { 20_000 } else { 60_000 },
+    )
+    .await;
     assert_eq!(complete_under.request.phase, LifecyclePhase::Complete);
     // Prior Initialize startup replies cannot satisfy the new Complete phase.
     for node_id in 1..=3 {
@@ -511,7 +525,7 @@ async fn exercise_completed_recovery(planned: bool, activation_outcome: Option<b
         bootstrap_sha256: "bc".repeat(32),
     };
     let observation = TargetCompletionObservation {
-        fact: completed,
+        fact: completed.clone(),
         observer_node_id: node_id,
         observed_revision: request.checkpoint.revision + 3,
         observed_term: 8,
@@ -532,7 +546,11 @@ async fn exercise_completed_recovery(planned: bool, activation_outcome: Option<b
         node_id,
         outcome: TargetRuntimeOutcome::Completed(Box::new(signed)),
     }));
-    resolve_phase(&f, id, complete_phase, outcome).await;
+    if inspect_completion {
+        resolve_expired_completion(&f, &db, id, complete_phase, completed, &attestation).await;
+    } else {
+        resolve_phase(&f, id, complete_phase, outcome).await;
+    }
     let retirement_phase = if planned {
         let status = db.recovery_status(f.context("owner"), id).await.unwrap();
         assert_eq!(status.record().phase, RecoveryPhase::RetireSource);
@@ -890,13 +908,13 @@ async fn exercise_completed_recovery(planned: bool, activation_outcome: Option<b
                 },
                 intent: confirm_under.clone(),
                 issuer_receipt_sha256: original_receipt.digest().unwrap(),
-                completion_sha256: control.completion.observation.fact.digest().unwrap(),
+                completion_sha256: control.completion.fact().digest().unwrap(),
                 admitted_at_ms: confirm_under.accepted_at_ms + 1,
-                revision: control.completion.observation.fact.revision + 1,
+                revision: control.completion.fact().revision + 1,
             };
             let proof = |node_id| {
                 let observation = TargetActivationObservation {
-                    completion: control.completion.observation.fact.clone(),
+                    completion: control.completion.fact().clone(),
                     activation: fact.clone(),
                     observer_node_id: node_id,
                     observed_revision: fact.revision,
@@ -1588,29 +1606,100 @@ async fn commit_next_intent(f: &Fixture, db: &Arc<Database>, operation: Uuid) ->
 }
 async fn prepare_next(
     f: &Fixture,
-    db: &Arc<Database>,
+    _db: &Arc<Database>,
     operation: Uuid,
 ) -> (Uuid, RecoveryDispatch) {
-    let head = db
-        .recovery_status(f.context("owner"), operation)
-        .await
-        .unwrap();
+    let context = f.context("owner");
     let phase = Uuid::new_v4();
-    let input = db
-        .next_recovery_dispatch(&f.context("owner"), operation, phase)
-        .await
-        .unwrap()
-        .unwrap();
-    db.prepare_recovery_dispatch(
-        f.context("owner"),
-        operation,
-        phase,
-        head.record().next_phase_sequence,
-        head.record().pending_phase,
-        input.clone(),
-    )
+    let (sequence, pending, input) = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let current = f.leader().await;
+            let head = match current.recovery_status(context.clone(), operation).await {
+                Ok(head) => head,
+                Err(error)
+                    if matches!(
+                        error.code,
+                        ErrorCode::UnknownOutcome | ErrorCode::Unavailable
+                    ) =>
+                {
+                    continue;
+                }
+                Err(error) => panic!("recovery planning status rejected: {error:?}"),
+            };
+            match current
+                .next_recovery_dispatch(&context, operation, phase)
+                .await
+            {
+                Ok(Some(input)) => {
+                    return (
+                        head.record().next_phase_sequence,
+                        head.record().pending_phase,
+                        input,
+                    );
+                }
+                Err(error)
+                    if matches!(
+                        error.code,
+                        ErrorCode::UnknownOutcome | ErrorCode::Unavailable
+                    ) => {}
+                other => panic!("recovery planning dispatch rejected: {other:?}"),
+            }
+        }
+    })
     .await
-    .unwrap();
+    .expect("current recovery planning observation did not resolve");
+    // Preparing may commit before its response fence closes. Resolve this exact
+    // phase before retrying admission; never regenerate its input or deadline.
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let current = f.leader().await;
+            match current
+                .recovery_phase(context.clone(), operation, phase)
+                .await
+            {
+                Ok(retained) => {
+                    assert_eq!(retained.record().input, input);
+                    assert_eq!(retained.record().sequence, sequence);
+                    assert_eq!(
+                        retained.record().original_credential_expires_at_ms,
+                        context.authorization.expires_at_ms().unwrap()
+                    );
+                    return;
+                }
+                Err(error) if error.code == ErrorCode::NotFound => {}
+                Err(error)
+                    if matches!(
+                        error.code,
+                        ErrorCode::UnknownOutcome | ErrorCode::Unavailable
+                    ) =>
+                {
+                    continue;
+                }
+                Err(error) => panic!("exact recovery preparation unavailable: {error:?}"),
+            }
+            match current
+                .prepare_recovery_dispatch(
+                    context.clone(),
+                    operation,
+                    phase,
+                    sequence,
+                    pending,
+                    input.clone(),
+                )
+                .await
+            {
+                Ok(_) => return,
+                Err(error)
+                    if matches!(
+                        error.code,
+                        ErrorCode::UnknownOutcome | ErrorCode::Unavailable
+                    ) => {}
+                Err(error) => panic!("exact recovery preparation rejected: {error:?}"),
+            }
+        }
+    })
+    .await
+    .expect("exact recovery preparation did not resolve");
     (phase, input)
 }
 
@@ -1842,6 +1931,14 @@ async fn recovery_expired_target_requires_fresh_control_admission_and_fences_rev
 }
 
 async fn commit_next_control(f: &Fixture, db: &Arc<Database>, operation: Uuid) -> LifecycleIntent {
+    commit_next_control_for(f, db, operation, 60_000).await
+}
+async fn commit_next_control_for(
+    f: &Fixture,
+    db: &Arc<Database>,
+    operation: Uuid,
+    duration: u64,
+) -> LifecycleIntent {
     let (phase_id, input) = prepare_next(f, db, operation).await;
     let RecoveryDispatch::ControlIntent(command) = input else {
         panic!("Control phase required")
@@ -1850,7 +1947,7 @@ async fn commit_next_control(f: &Fixture, db: &Arc<Database>, operation: Uuid) -
         .recovery_phase(f.context("owner"), operation, phase_id)
         .await
         .unwrap();
-    let mut context = f.context("owner");
+    let mut context = f.context_for("owner", duration);
     context.authorization = context
         .authorization
         .with_expiry_limit(phase.dispatch_limit().await.unwrap())
@@ -1877,4 +1974,172 @@ async fn commit_next_control(f: &Fixture, db: &Arc<Database>, operation: Uuid) -
     )
     .await;
     intent
+}
+
+async fn resolve_expired_completion(
+    f: &Fixture,
+    db: &Arc<Database>,
+    operation: Uuid,
+    original_phase: Uuid,
+    fact: TargetCompletionFact,
+    keys: &BTreeMap<u64, Ed25519KeyPair>,
+) {
+    let original = db
+        .recovery_phase(f.context("owner"), operation, original_phase)
+        .await
+        .unwrap()
+        .record()
+        .clone();
+    let old_intent = fact.completion_intent.clone();
+    let now = f.context("owner").authorization.expires_at_ms().unwrap() - 60_000;
+    tokio::time::sleep(Duration::from_millis(
+        old_intent
+            .original_credential_expires_at_ms
+            .saturating_sub(now)
+            + 20,
+    ))
+    .await;
+    assert!(
+        db.recovery_phase(f.context("owner"), operation, original_phase)
+            .await
+            .unwrap()
+            .admit_dispatch()
+            .await
+            .is_err()
+    );
+    let inspection = commit_next_control(f, db, operation).await;
+    assert_eq!(inspection.request.phase, LifecyclePhase::InspectTarget);
+    assert_ne!(inspection.request.command_id, old_intent.request.command_id);
+    for node in 1..=3 {
+        let (id, dispatch) = prepare_next(f, db, operation).await;
+        let RecoveryDispatch::Target { node_id, request } = dispatch else {
+            panic!("fresh inspection startup required")
+        };
+        assert_eq!(node_id, node);
+        let TargetRuntimeStep::Start(TargetReplicaInput::Inspection(input)) = request.step else {
+            panic!("inspection-only startup required")
+        };
+        assert_eq!(input.original_phase, old_intent);
+        resolve_phase(
+            f,
+            operation,
+            id,
+            RecoveryDispatchOutcome::Target(Box::new(TargetRuntimeResponse {
+                command_id: request.command_id,
+                node_id,
+                outcome: TargetRuntimeOutcome::Started {
+                    origin_sha256: input.quorum.origin_sha256,
+                },
+            })),
+        )
+        .await;
+    }
+    let (unresolved, first) = prepare_next(f, db, operation).await;
+    let (inspection_phase, next) = prepare_next(f, db, operation).await;
+    let RecoveryDispatch::Target {
+        node_id: first_node,
+        request: first,
+    } = first
+    else {
+        panic!("inspection required")
+    };
+    let RecoveryDispatch::Target { node_id, request } = next else {
+        panic!("inspection peer retry required")
+    };
+    assert_eq!((first_node, node_id), (1, 2));
+    assert_eq!(
+        first, request,
+        "inspection retries preserve their exact finite request"
+    );
+    assert!(
+        db.recovery_phase(f.context("owner"), operation, unresolved)
+            .await
+            .unwrap()
+            .record()
+            .outcome
+            .is_none()
+    );
+    let TargetRuntimeStep::Inspect(input) = request.step else {
+        panic!("metadata inspection required")
+    };
+    let observed_revision = fact.revision;
+    let observation = TargetInspectionObservation {
+        input: *input,
+        inspection_intent: inspection,
+        completion: fact,
+        activation: None,
+        observer_node_id: node_id,
+        observed_revision,
+        observed_term: 8,
+    };
+    let sign = |observation: TargetInspectionObservation| SignedTargetInspection {
+        signature: hex::encode(
+            keys[&node_id]
+                .sign(
+                    &serde_json::to_vec(&("kasumi.inspected-target-observation.v1", &observation))
+                        .unwrap(),
+                )
+                .as_ref(),
+        ),
+        observation,
+    };
+    let response = |signed| {
+        RecoveryDispatchOutcome::Target(Box::new(TargetRuntimeResponse {
+            command_id: request.command_id,
+            node_id,
+            outcome: TargetRuntimeOutcome::Inspected(Box::new(signed)),
+        }))
+    };
+    let mut wrong = observation.clone();
+    wrong.input.original_phase.request.command_id = Uuid::new_v4();
+    assert!(
+        db.resolve_recovery_dispatch(
+            f.context("owner"),
+            operation,
+            inspection_phase,
+            response(sign(wrong))
+        )
+        .await
+        .is_err()
+    );
+    let mut late = observation.clone();
+    late.completion.admitted_at_ms = old_intent.original_credential_expires_at_ms;
+    assert!(
+        db.resolve_recovery_dispatch(
+            f.context("owner"),
+            operation,
+            inspection_phase,
+            response(sign(late))
+        )
+        .await
+        .is_err()
+    );
+    resolve_phase(f, operation, inspection_phase, response(sign(observation))).await;
+    let retained = db
+        .recovery_phase(f.context("owner"), operation, original_phase)
+        .await
+        .unwrap();
+    assert_eq!(retained.record().input, original.input);
+    assert_eq!(
+        retained.record().original_credential_expires_at_ms,
+        original.original_credential_expires_at_ms
+    );
+    assert_eq!(
+        retained.record().outcome,
+        Some(RecoveryDispatchOutcome::CompletionResolution { inspection_phase })
+    );
+    drop(retained);
+    let head = db
+        .recovery_status(f.context("owner"), operation)
+        .await
+        .unwrap();
+    assert_eq!(head.record().completion, Some(inspection_phase));
+    assert_eq!(head.record().completion_attempt, Some(original_phase));
+    assert_eq!(
+        head.record().completion_intent,
+        Some(old_intent.request.command_id)
+    );
+    assert_eq!(head.record().phase, RecoveryPhase::FenceSource);
+    drop(head);
+    snapshot(db).await;
 }

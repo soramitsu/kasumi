@@ -3,10 +3,10 @@
 //! StopActivation command; time passing alone never permits target deletion.
 use super::*;
 
-pub(crate) fn completion<'a>(
-    state: &'a TenantState,
+pub(crate) fn completion(
+    state: &TenantState,
     operation: &RecoveryRecord,
-) -> Result<&'a SignedTargetCompletion> {
+) -> Result<CommittedCompletion> {
     let retained = phase(
         state,
         operation,
@@ -16,7 +16,12 @@ pub(crate) fn completion<'a>(
     )?;
     match &retained.outcome {
         Some(RecoveryDispatchOutcome::Target(response)) => match &response.outcome {
-            TargetRuntimeOutcome::Completed(signed) => Ok(signed),
+            TargetRuntimeOutcome::Completed(signed) => {
+                Ok(CommittedCompletion::Original(signed.clone()))
+            }
+            TargetRuntimeOutcome::Inspected(signed) => {
+                Ok(CommittedCompletion::Resolved(signed.clone()))
+            }
             _ => Err(conflict("retained target completion differs")),
         },
         _ => Err(conflict("retained target completion absent")),
@@ -37,7 +42,7 @@ pub(crate) fn activation_input(
         return Err(conflict("source fence proof absent"));
     };
     Ok(ActivateTargetInput {
-        completion_sha256: completion(state, operation)?.observation.fact.digest()?,
+        completion_sha256: completion(state, operation)?.fact().digest()?,
         fence_id: signed.receipt.command.command_id,
         fence_digest: signed
             .receipt
@@ -84,7 +89,7 @@ pub(crate) fn action_for_intent(
         fence_digest: input.fence_digest,
         target: input.target,
         control: CommittedActivation {
-            completion: Box::new(completion(state, operation)?.clone()),
+            completion: Box::new(completion(state, operation)?),
             reference,
             intent_sha256,
         },
@@ -280,11 +285,7 @@ pub(crate) fn validate_original(
             if receipt.admitted_at_ms >= expected.not_after_ms
                 || receipt.admitted_at_ms >= current.original_credential_expires_at_ms
                 || receipt.admitted_at_ms < current.accepted_at_ms
-                || receipt.admitted_at_ms
-                    < completion(state, operation)?
-                        .observation
-                        .fact
-                        .admitted_at_ms
+                || receipt.admitted_at_ms < completion(state, operation)?.fact().admitted_at_ms
             {
                 return Err(conflict(
                     "activation effect exceeds its immutable original admission",
@@ -437,7 +438,7 @@ pub(crate) fn validate_local_proof(
         .map_err(|_| conflict("local activation signature differs"))?;
     let winner = winner(state, operation)?;
     if (exact_observer && signed.observation.observer_node_id != node)
-        || signed.observation.completion != completion(state, operation)?.observation.fact
+        || &signed.observation.completion != completion(state, operation)?.fact()
         || signed.observation.activation.issuer_receipt_sha256
             != winner
                 .digest()
