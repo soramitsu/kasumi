@@ -319,14 +319,15 @@ impl Client {
 }
 fn authenticated<T>(value: T, target: &Target) -> Result<tonic::Request<T>> {
     let authorization = target.authorization()?;
+    let mut authorization: tonic::metadata::MetadataValue<tonic::metadata::Ascii> = authorization
+        .as_str()
+        .parse()
+        .map_err(|_| anyhow::anyhow!("invalid bearer token header"))?;
+    authorization.set_sensitive(true);
     let mut request = tonic::Request::new(value);
-    request.metadata_mut().insert(
-        "authorization",
-        authorization
-            .as_str()
-            .parse()
-            .map_err(|_| anyhow::anyhow!("invalid bearer token header"))?,
-    );
+    request
+        .metadata_mut()
+        .insert("authorization", authorization);
     request.set_timeout(Duration::from_secs(30));
     Ok(request)
 }
@@ -341,9 +342,12 @@ async fn mcp(
     arguments: Value,
 ) -> Result<Value> {
     let authorization = target.authorization()?;
+    let mut authorization = reqwest::header::HeaderValue::from_str(authorization.as_str())
+        .map_err(|_| anyhow::anyhow!("invalid bearer token header"))?;
+    authorization.set_sensitive(true);
     let mut response = http
         .post(endpoint)
-        .header("authorization", authorization.as_str())
+        .header("authorization", authorization)
         .header("accept", "application/json, text/event-stream")
         .header("mcp-protocol-version", "2026-07-28")
         .header("mcp-method", "tools/call")
@@ -614,6 +618,8 @@ mod tests {
             "Bearer renewed-token"
         );
         assert_eq!(original.metadata().get("grpc-timeout").unwrap(), &timeout);
+        assert!(!format!("{original:?}").contains("first-token"));
+        assert!(!format!("{next:?}").contains("renewed-token"));
         publish(&path, b"bad\nheader");
         assert!(authenticated((), &target).is_err());
         std::fs::remove_file(path).unwrap();

@@ -209,11 +209,13 @@ fn request<T>(
     let started = Instant::now();
     let bearer = token(credentials)?;
     let authorization = Zeroizing::new(format!("Bearer {}", bearer.as_str()));
+    let mut authorization: tonic::metadata::MetadataValue<tonic::metadata::Ascii> =
+        authorization.parse().context("invalid bearer header")?;
+    authorization.set_sensitive(true);
     let mut request = tonic::Request::new(value);
-    request.metadata_mut().insert(
-        "authorization",
-        authorization.parse().context("invalid bearer header")?,
-    );
+    request
+        .metadata_mut()
+        .insert("authorization", authorization);
     let remaining = timeout
         .checked_sub(started.elapsed())
         .context("credential read consumed request deadline")?;
@@ -573,5 +575,25 @@ mod tests {
         assert!(validate_receipt(&corpus, 1, 1, &receipt).is_err());
         *receipt.versions.values_mut().next().unwrap() = 6;
         assert!(validate_receipt(&corpus, 0, 1, &receipt).is_err());
+    }
+
+    #[test]
+    fn request_debug_does_not_disclose_the_renewable_bearer() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("credential");
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+            .unwrap();
+        file.write_all(b"private-capacity-bearer").unwrap();
+        let credentials = FileCredentialSource::new(&path).unwrap();
+        let request = request((), &credentials, Duration::from_secs(1)).unwrap();
+        assert_eq!(
+            request.metadata()["authorization"],
+            "Bearer private-capacity-bearer"
+        );
+        assert!(!format!("{request:?}").contains("private-capacity-bearer"));
     }
 }

@@ -67,7 +67,7 @@ is distinct from a complete verified corpus.
 
 Work stays bounded by one batch (at most 256 documents and 4 MiB including
 framing) or one document (at most 1 MiB). Aggregate counts and byte totals use
-checked64-bit arithmetic. Per-batch durable client journaling affects elapsed
+checked 64-bit arithmetic. Per-batch durable client journaling affects elapsed
 load time, so these logs are integrity evidence rather than latency benchmarks.
 Snapshots, backup, compaction, lease pressure, node memory/disk measurements,
 crash injection and HA replacement require the separate acceptance runbooks.
