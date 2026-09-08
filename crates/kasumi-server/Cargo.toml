@@ -48,6 +48,7 @@ hyper-util = { version = "0.1", features = ["server-auto", "http1", "http2", "to
 base64 = "0.22"
 rcgen = { version = "0.14", features = ["x509-parser"] }
 time = "0.3"
+tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["fmt", "json", "registry", "std"] }
 
 [dev-dependencies]
 base64 = "0.22"

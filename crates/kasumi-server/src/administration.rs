@@ -210,6 +210,8 @@ pub(crate) struct GenerationDescriptor {
 pub(crate) type ProviderFactory =
     Arc<dyn Fn() -> Result<(Arc<dyn KeyProvider>, Arc<dyn KeyProvider>)> + Send + Sync>;
 
+#[path = "administration_observability.rs"]
+mod observability;
 #[path = "original_serving_runtime.rs"]
 mod original_serving_runtime;
 

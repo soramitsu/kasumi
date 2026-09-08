@@ -49,6 +49,7 @@ pub struct NativeAdmin {
     registry: DatabaseRegistry,
     auth: Arc<Authenticator>,
     management: Option<Arc<crate::administration::Administration>>,
+    telemetry: Arc<crate::observability::Telemetry>,
     #[cfg(test)]
     audit_release_gate: Arc<tokio::sync::Mutex<Option<AuditReleaseGate>>>,
 }
@@ -568,6 +569,7 @@ impl NativeAdmin {
             registry,
             auth,
             management: None,
+            telemetry: crate::observability::Telemetry::new(),
             #[cfg(test)]
             audit_release_gate: Arc::new(tokio::sync::Mutex::new(None)),
         }
@@ -577,6 +579,13 @@ impl NativeAdmin {
         management: Arc<crate::administration::Administration>,
     ) -> Self {
         self.management = Some(management);
+        self
+    }
+    pub(crate) fn with_telemetry(
+        mut self,
+        telemetry: Arc<crate::observability::Telemetry>,
+    ) -> Self {
+        self.telemetry = telemetry;
         self
     }
     pub fn service(self) -> kasumi_admin_server::KasumiAdminServer<Self> {
@@ -750,84 +759,92 @@ impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
         &self,
         request: Request<CreateBackupCheckpointRequest>,
     ) -> Result<Response<BackupCheckpointResponse>, Status> {
-        let context = verified(&self.auth, &request).await?;
-        let request: kasumi_types::CreateBackupCheckpoint =
-            decode_json(&request.into_inner().request_json).map_err(status)?;
-        let database = self.database(&context).await?;
-        let operation_fence = self
-            .auth
-            .audit_result(&context, database.response_fence(&context))
-            .await
-            .map_err(status)?;
-        let proof = Box::pin(database.backup_checkpoint_named(
-            context.clone(),
-            &request.destination,
-            request.session_id,
-        ))
-        .await
-        .map_err(|error| self.registry.status(&context, error))?;
-        let fence = self
-            .auth
-            .audit_result(
-                &context,
-                database.backup_checkpoint_response_fence(&context, &proof),
-            )
-            .await
-            .map_err(|error| status(mutation_release::<()>(Err(error)).unwrap_err()))?;
-        let response = BackupCheckpointResponse {
-            response_json: encode_json(proof.checkpoint()).map_err(status)?,
-        };
-        self.auth
-            .audit_result(&context, fence.check())
-            .await
-            .map_err(|error| status(mutation_release::<()>(Err(error)).unwrap_err()))?;
-        Ok(Response::new(
-            release_response(&self.auth, &context, operation_fence, response, true)
+        self.telemetry
+            .backup_request(0, async {
+                let context = verified(&self.auth, &request).await?;
+                let request: kasumi_types::CreateBackupCheckpoint =
+                    decode_json(&request.into_inner().request_json).map_err(status)?;
+                let database = self.database(&context).await?;
+                let operation_fence = self
+                    .auth
+                    .audit_result(&context, database.response_fence(&context))
+                    .await
+                    .map_err(status)?;
+                let proof = Box::pin(database.backup_checkpoint_named(
+                    context.clone(),
+                    &request.destination,
+                    request.session_id,
+                ))
                 .await
-                .map_err(status)?,
-        ))
+                .map_err(|error| self.registry.status(&context, error))?;
+                let fence = self
+                    .auth
+                    .audit_result(
+                        &context,
+                        database.backup_checkpoint_response_fence(&context, &proof),
+                    )
+                    .await
+                    .map_err(|error| status(mutation_release::<()>(Err(error)).unwrap_err()))?;
+                let response = BackupCheckpointResponse {
+                    response_json: encode_json(proof.checkpoint()).map_err(status)?,
+                };
+                self.auth
+                    .audit_result(&context, fence.check())
+                    .await
+                    .map_err(|error| status(mutation_release::<()>(Err(error)).unwrap_err()))?;
+                Ok(Response::new(
+                    release_response(&self.auth, &context, operation_fence, response, true)
+                        .await
+                        .map_err(status)?,
+                ))
+            })
+            .await
     }
 
     async fn verify_backup_checkpoint(
         &self,
         request: Request<VerifyBackupCheckpointRequest>,
     ) -> Result<Response<BackupCheckpointResponse>, Status> {
-        let context = verified(&self.auth, &request).await?;
-        let request: kasumi_types::VerifyBackupCheckpoint =
-            decode_json(&request.into_inner().request_json).map_err(status)?;
-        let database = self.database(&context).await?;
-        let operation_fence = self
-            .auth
-            .audit_result(&context, database.response_fence(&context))
-            .await
-            .map_err(status)?;
-        let proof = Box::pin(database.verify_backup_checkpoint_named(
-            context.clone(),
-            &request.destination,
-            request.backup_id,
-        ))
-        .await
-        .map_err(|error| self.registry.status(&context, error))?;
-        let fence = self
-            .auth
-            .audit_result(
-                &context,
-                database.backup_checkpoint_response_fence(&context, &proof),
-            )
-            .await
-            .map_err(status)?;
-        let response = BackupCheckpointResponse {
-            response_json: encode_json(proof.checkpoint()).map_err(status)?,
-        };
-        self.auth
-            .audit_result(&context, fence.check())
-            .await
-            .map_err(status)?;
-        Ok(Response::new(
-            release_response(&self.auth, &context, operation_fence, response, false)
+        self.telemetry
+            .backup_request(1, async {
+                let context = verified(&self.auth, &request).await?;
+                let request: kasumi_types::VerifyBackupCheckpoint =
+                    decode_json(&request.into_inner().request_json).map_err(status)?;
+                let database = self.database(&context).await?;
+                let operation_fence = self
+                    .auth
+                    .audit_result(&context, database.response_fence(&context))
+                    .await
+                    .map_err(status)?;
+                let proof = Box::pin(database.verify_backup_checkpoint_named(
+                    context.clone(),
+                    &request.destination,
+                    request.backup_id,
+                ))
                 .await
-                .map_err(status)?,
-        ))
+                .map_err(|error| self.registry.status(&context, error))?;
+                let fence = self
+                    .auth
+                    .audit_result(
+                        &context,
+                        database.backup_checkpoint_response_fence(&context, &proof),
+                    )
+                    .await
+                    .map_err(status)?;
+                let response = BackupCheckpointResponse {
+                    response_json: encode_json(proof.checkpoint()).map_err(status)?,
+                };
+                self.auth
+                    .audit_result(&context, fence.check())
+                    .await
+                    .map_err(status)?;
+                Ok(Response::new(
+                    release_response(&self.auth, &context, operation_fence, response, false)
+                        .await
+                        .map_err(status)?,
+                ))
+            })
+            .await
     }
 
     async fn read_schema(

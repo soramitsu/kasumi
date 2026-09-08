@@ -846,6 +846,7 @@ impl ServingTasks {
 }
 
 pub struct NodeRuntime {
+    telemetry: Arc<crate::observability::Telemetry>,
     config: RuntimeConfig,
     registry: DatabaseRegistry,
     tenants: Vec<OpenedTenant>,
@@ -1009,6 +1010,7 @@ impl NodeRuntime {
         .await?;
         control.database.install_admission(admission.clone())?;
         let mut runtime = Self {
+            telemetry: crate::observability::Telemetry::new(),
             _standalone_lock: standalone_lock,
             config: config.clone(),
             registry: registry.clone(),
@@ -1170,7 +1172,7 @@ impl NodeRuntime {
                 NativeData::new(registry.clone(), auth.clone()).service(),
             )
             .into_axum_router();
-            let native_admin = NativeAdmin::new(registry.clone(), auth.clone()).with_management(administration);
+            let native_admin = NativeAdmin::new(registry.clone(), auth.clone()).with_management(administration.clone()).with_telemetry(runtime.telemetry.clone());
             #[cfg(test)]
             { runtime.audit_release_gate = native_admin.audit_release_gate(); }
             let mut admin = tonic::service::Routes::new(native_admin.service());
@@ -1178,7 +1180,7 @@ impl NodeRuntime {
                 admin = admin.add_service(crate::rpc::NativeLifecycleControl::new(runtime.control.database.clone(), signer, auth.clone())?.service());
             }
             if let Some(target)=&runtime.target_recovery {admin=admin.add_service(crate::rpc::NativeTargetRecovery::new(target.clone(),auth.clone()).service());}
-            let admin = admin.into_axum_router();
+            let admin = admin.into_axum_router().merge(crate::observability::router(auth.clone(), administration, runtime.telemetry.clone()));
             runtime.tls_reload = Some(crate::tls_reload::RuntimeTlsReload::new(
                 vec![
                     (crate::tls_reload::ListenerSource::OAuth(config.mcp.tls.clone()), mcp_tls.clone()),
@@ -1382,6 +1384,8 @@ impl NodeRuntime {
             let cleanup = self.shutdown().await;
             return drain.and(cleanup);
         }
+        self.telemetry
+            .set_lifecycle(crate::observability::Lifecycle::Serving);
         for listener in self.data_listeners.drain(..) {
             tasks.listeners.spawn(tls::serve_tls(
                 listener.listener,
@@ -1405,6 +1409,8 @@ impl NodeRuntime {
                 result=tasks.maintenance.join_next(), if !tasks.maintenance.is_empty()=> match result { Some(Ok(Err(error)))=>Err(error),Some(Err(error))=>Err(error.into()),_=>Err(anyhow::anyhow!("required reconciliation stopped unexpectedly")) },
             }
         };
+        self.telemetry
+            .set_lifecycle(crate::observability::Lifecycle::Draining);
         let drain = tasks.shutdown().await;
         let cleanup = self.shutdown().await;
         result.and(drain).and(cleanup)
@@ -1588,6 +1594,10 @@ impl NodeRuntime {
     }
 
     pub async fn shutdown(&mut self) -> Result<()> {
+        if !self.closed {
+            self.telemetry
+                .set_lifecycle(crate::observability::Lifecycle::Draining);
+        }
         if let Some(target) = self.target_recovery.take() {
             target.shutdown().await?;
         }
@@ -1632,6 +1642,8 @@ impl NodeRuntime {
         }
         self.audit.shutdown().await;
         self.closed = true;
+        self.telemetry
+            .set_lifecycle(crate::observability::Lifecycle::Closed);
         failure.map_or(Ok(()), Err)
     }
 }
@@ -4349,3 +4361,7 @@ pub(crate) async fn open_retired_source(
 #[cfg(test)]
 #[path = "runtime_audit_tests.rs"]
 mod audit_tests;
+
+#[cfg(test)]
+#[path = "runtime_observability_tests.rs"]
+mod observability_tests;

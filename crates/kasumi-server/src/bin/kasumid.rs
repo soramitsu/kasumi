@@ -2,12 +2,39 @@ use anyhow::{Context, Result, bail};
 use kasumi_server::runtime::{NodeRuntime, RuntimeConfig, example_config};
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> std::process::ExitCode {
+    if kasumi_server::logging::initialize().is_err() {
+        eprintln!("{{\"level\":\"ERROR\",\"event\":\"logging_initialization_failed\"}}");
+        return std::process::ExitCode::FAILURE;
+    }
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
-    if kasumi_server::standalone_cli::command(&arguments).await? {
+    let daemon = arguments.first().is_some_and(|value| value == "serve");
+    if daemon {
+        kasumi_server::logging::daemon_starting();
+    }
+    match run(&arguments).await {
+        Ok(()) => {
+            if daemon {
+                kasumi_server::logging::daemon_stopped();
+            }
+            std::process::ExitCode::SUCCESS
+        }
+        Err(error) => {
+            if daemon {
+                kasumi_server::logging::daemon_failed();
+            } else {
+                // An invoked CLI command retains its human-readable operator error.
+                eprintln!("{error:#}");
+            }
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+async fn run(arguments: &[String]) -> Result<()> {
+    if kasumi_server::standalone_cli::command(arguments).await? {
         return Ok(());
     }
-    match arguments.as_slice() {
+    match arguments {
         [command] if command == "example-config" => {
             println!("{}", serde_json::to_string_pretty(&example_config())?);
             Ok(())
@@ -37,7 +64,7 @@ async fn main() -> Result<()> {
                         tokio::select! {
                             result=tokio::signal::ctrl_c()=>{ result?; break; },
                             _=terminate.recv()=>break,
-                            _=hangup.recv()=>{ if reload.reload().await.is_err() { eprintln!("TLS reload failed; inspect installed TLS files and protected audit"); } }
+                            _=hangup.recv()=>{ if reload.reload().await.is_err() { kasumi_server::logging::tls_reload_failed(); } }
                         }
                     }
                 }

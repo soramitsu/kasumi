@@ -273,10 +273,15 @@ pub(crate) fn active_generation(
 /// A partially executed offline recovery cannot accidentally resume source writes.
 pub(crate) fn require_runtime_ready(store: &TenantStore) -> Result<()> {
     ensure!(
-        store.get(INSTALLATION, b"pending")?.is_none(),
+        !runtime_pending(store)?,
         "standalone recovery is incomplete; resume or stop the recorded local operation before serving"
     );
     Ok(())
+}
+
+/// A point observation under the installed security store's live ownership.
+pub(crate) fn runtime_pending(store: &TenantStore) -> Result<bool> {
+    Ok(store.get(INSTALLATION, b"pending")?.is_some())
 }
 
 struct Operator {
