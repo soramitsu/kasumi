@@ -1,0 +1,16 @@
+{
+  "source_commit": "7770fba84a9ce7883b92533a29a4b57a3fd6eaa5",
+  "status": "prepared_never_started_superseded",
+  "reason": "Prepared input superseded before any gate by integrated per-gate resource provenance. Original source/output directories retained; only never-started Docker container removed after verifying Created state.",
+  "vm_source": "/opt/kasumi-acceptance/7770fba-git",
+  "vm_output": "/opt/kasumi-acceptance/7770fba-functional-arm64",
+  "bundle_sha256": "2134a8812be868eafa5ff586cc5103ca3cc2e2f9e3394d71f28be527d9a4a516",
+  "files": {
+    "kasumi-7770fba-execute.sh": "f85ae30ed3999572d8591d7054bf71c63a0b45eb233079c2967cba40d0d843b6",
+    "kasumi-7770fba-vm.json": "eb7a3e149ae211d52200df536b9bbfbc7a485bd352ce82d90b0d742bf49f3732",
+    "kasumi-7770fba-build-image.json": "189920d3f57ca251313ff72ece0c84eb5183293b117cf6dc80468ca6da60cfcc",
+    "kasumi-7770fba-vm-packages.txt": "0279bc229266265375ebdb690d7dbe53a304186639e62cec8fa8319bcf130314",
+    "kasumi-7770fba-container-created.json": "14f55aed554f0579f97912d4709676340bf9ab2e5662c68fcc9ca357e9dde0ae",
+    "kasumi-7770fba-never-started.json": "14f55aed554f0579f97912d4709676340bf9ab2e5662c68fcc9ca357e9dde0ae"
+  }
+}
