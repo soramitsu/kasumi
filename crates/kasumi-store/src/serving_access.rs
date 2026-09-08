@@ -15,6 +15,10 @@ pub enum StoragePurpose {
     },
     SecurityAudit,
     NodeControl,
+    TargetJournal {
+        control_root: kasumi_types::ControlSigningRoot,
+        node: kasumi_serving::NodeIdentity,
+    },
     IndependentAuthority {
         manifest_digest: String,
         authority_id: uuid::Uuid,
@@ -33,10 +37,44 @@ pub enum StoragePurpose {
 pub struct StorageAccess {
     purpose: StoragePurpose,
     gate: Option<Arc<ServingGate>>,
+    lifecycle: Option<Arc<kasumi_serving::LifecycleGate>>,
 }
 impl StorageAccess {
     pub fn serving(gate: Arc<ServingGate>) -> Result<Self> {
         gate.check()?;
+        ensure!(
+            !gate.is_prepared()? || !gate.requires_lifecycle()?,
+            "restore preparation requires an exact committed lifecycle gate"
+        );
+        Self::serving_inner(gate, None)
+    }
+    /// Same immutable catalog identity with an additional live exact phase.
+    /// A different phase requires draining and dropping every old store owner.
+    pub fn target_phase(
+        gate: Arc<ServingGate>,
+        lifecycle: Arc<kasumi_serving::LifecycleGate>,
+    ) -> Result<Self> {
+        let phase = lifecycle.current()?.commitment().intent.request.phase;
+        ensure!(
+            gate.is_prepared()?
+                || matches!(
+                    phase,
+                    kasumi_types::LifecyclePhase::Activate
+                        | kasumi_types::LifecyclePhase::InspectTarget
+                ),
+            "active target requires activation or metadata inspection capability"
+        );
+        ensure!(
+            phase != kasumi_types::LifecyclePhase::StopLocal,
+            "cleanup cannot open application storage"
+        );
+        lifecycle.check_target(&gate, phase)?;
+        Self::serving_inner(gate, Some(lifecycle))
+    }
+    fn serving_inner(
+        gate: Arc<ServingGate>,
+        lifecycle: Option<Arc<kasumi_serving::LifecycleGate>>,
+    ) -> Result<Self> {
         Ok(Self {
             purpose: StoragePurpose::Serving {
                 manifest_digest: gate.authority_digest().into(),
@@ -44,19 +82,39 @@ impl StorageAccess {
                 recovery_checkpoint: gate.recovery_checkpoint()?.map(Box::new),
             },
             gate: Some(gate),
+            lifecycle,
         })
     }
     pub fn security_audit() -> Self {
         Self {
             purpose: StoragePurpose::SecurityAudit,
             gate: None,
+            lifecycle: None,
         }
     }
     pub fn node_control() -> Self {
         Self {
             purpose: StoragePurpose::NodeControl,
             gate: None,
+            lifecycle: None,
         }
+    }
+    /// Installed metadata purpose, separately keyed from application/custody.
+    /// This can access only the exact reserved target journal namespace.
+    pub fn target_journal(
+        root: &kasumi_types::ControlSigningRoot,
+        node: &kasumi_serving::NodeIdentity,
+    ) -> Result<Self> {
+        root.validate()?;
+        node.validate()?;
+        Ok(Self {
+            purpose: StoragePurpose::TargetJournal {
+                control_root: root.clone(),
+                node: node.clone(),
+            },
+            gate: None,
+            lifecycle: None,
+        })
     }
     pub fn independent_authority(manifest: &AuthorityManifest, partition: u16) -> Result<Self> {
         manifest.validate()?;
@@ -71,6 +129,7 @@ impl StorageAccess {
                 partition,
             },
             gate: None,
+            lifecycle: None,
         })
     }
     pub(crate) fn custody(application_tenant: &str) -> Self {
@@ -79,6 +138,7 @@ impl StorageAccess {
                 application_tenant: application_tenant.into(),
             },
             gate: None,
+            lifecycle: None,
         }
     }
     #[cfg(any(test, feature = "test-utils"))]
@@ -86,6 +146,7 @@ impl StorageAccess {
         Self {
             purpose: StoragePurpose::LocalFixture,
             gate: None,
+            lifecycle: None,
         }
     }
     #[cfg(any(test, feature = "test-utils"))]
@@ -107,13 +168,36 @@ impl StorageAccess {
     pub fn serving_gate(&self) -> Option<&Arc<ServingGate>> {
         self.gate.as_ref()
     }
+    pub fn lifecycle_gate(&self) -> Option<&Arc<kasumi_serving::LifecycleGate>> {
+        self.lifecycle.as_ref()
+    }
     pub fn check(&self) -> Result<()> {
+        if let Some(lifecycle) = &self.lifecycle {
+            lifecycle.check()?;
+        }
         if let Some(gate) = &self.gate {
             gate.check()?;
         }
         Ok(())
     }
+    /// Read-only target inspection may replay existing consensus state, but it
+    /// cannot admit a fresh payload, membership or lifecycle proposal.
+    pub fn check_consensus_proposal(&self) -> Result<()> {
+        self.check()?;
+        if let Some(gate) = &self.lifecycle {
+            ensure!(
+                gate.current()?.commitment().intent.request.phase
+                    != kasumi_types::LifecyclePhase::InspectTarget,
+                "target inspection cannot admit consensus mutations"
+            );
+        }
+        Ok(())
+    }
     pub fn check_serving(&self) -> Result<()> {
+        ensure!(
+            self.lifecycle.is_none(),
+            "target phase cannot serve ordinary tenant traffic"
+        );
         if let Some(gate) = &self.gate {
             gate.check_serving()?;
         }
@@ -129,6 +213,13 @@ impl StorageAccess {
             }
             StoragePurpose::SecurityAudit => tenant == "__kasumi_security",
             StoragePurpose::NodeControl => tenant == "__kasumi_control",
+            StoragePurpose::TargetJournal { control_root, node } => {
+                tenant
+                    == format!(
+                        "kasumi.target.{}.{}",
+                        control_root.control_incarnation, node.node_id
+                    )
+            }
             StoragePurpose::IndependentAuthority {
                 authority_id,
                 partition,

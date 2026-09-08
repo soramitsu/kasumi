@@ -16,6 +16,9 @@ use uuid::Uuid;
 #[path = "lifecycle_state.rs"]
 pub(crate) mod lifecycle_state;
 
+#[path = "activation_state.rs"]
+mod activation;
+
 const NS: &str = "kasumi.independent-authority";
 const META: &[u8] = b"meta";
 const MAX_RECORD_BYTES: usize = 256 << 10;
@@ -480,6 +483,7 @@ impl Backend {
             principal: prepared.context.principal.clone(),
             term: position.log_id.leader_id.term,
             revision: position.log_id.index,
+            admitted_at_ms: prepared.admitted_at_ms,
             outcome,
         };
         // A successful fence retains its complete immutable accepted identity.
@@ -719,7 +723,15 @@ impl Backend {
                 fence_id,
                 fence_digest,
                 target,
+            }
+            | AuthorityAction::ActivateCommitted {
+                fence_id,
+                fence_digest,
+                target,
+                ..
             } => {
+                self.validate_activation_control(&prepared.command, prepared.admitted_at_ms)
+                    .map_err(|_| conflict("committed activation authority differs or expired"))?;
                 let record = tenant
                     .as_mut()
                     .ok_or_else(|| conflict("tenant is not enrolled"))?;
@@ -850,6 +862,7 @@ impl Backend {
                         principal: prepared.context.principal.clone(),
                         term: prepared.authority_term,
                         revision: accepted_revision,
+                        admitted_at_ms: prepared.admitted_at_ms,
                         outcome: AuthorityOutcome::ActivationStopped { original_digest },
                     },
                 };
@@ -1021,7 +1034,8 @@ impl Backend {
                                     nodes == &record.nodes && record.recovery_checkpoint.is_none(),
                                     "enrollment nodes differ"
                                 ),
-                                AuthorityAction::Activate { target, .. } => ensure!(
+                                AuthorityAction::Activate { target, .. }
+                                | AuthorityAction::ActivateCommitted { target, .. } => ensure!(
                                     target.nodes == record.nodes
                                         && record.recovery_checkpoint.as_ref()
                                             == Some(&target.checkpoint),
@@ -1150,7 +1164,8 @@ impl Backend {
                                 && accepted.authority_epoch == 1
                         }
                         (
-                            AuthorityAction::Activate { target, .. },
+                            AuthorityAction::Activate { target, .. }
+                            | AuthorityAction::ActivateCommitted { target, .. },
                             AuthorityOutcome::Activated {
                                 target: actual,
                                 authority_epoch,
@@ -1180,6 +1195,7 @@ impl Backend {
                 }
             }
         }
+        self.validate_activation_snapshot(&snapshot)?;
         ensure!(
             (
                 tenants,

@@ -1,0 +1,126 @@
+    Checking kasumi-engine v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-engine)
+error[E0599]: no method named `context` found for enum `std::option::Option<T>` in the current scope
+   --> crates/kasumi-engine/src/bootstrap_target_serving.rs:94:10
+    |
+ 90 |       let gate = stores
+    |  ________________-
+ 91 | |         .application()
+ 92 | |         .storage_access()
+ 93 | |         .serving_gate()
+ 94 | |         .context("fresh serving lease missing")?
+    | |_________-^^^^^^^
+    |
+   ::: /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anyhow-1.0.104/src/lib.rs:618:8
+    |
+618 |       fn context<C>(self, context: C) -> Result<T, Error>
+    |          ------- the method is available for `std::option::Option<&std::sync::Arc<ServingGate>>` here
+    |
+    = help: items from traits can only be used if the trait is in scope
+help: trait `Context` which provides `context` is implemented but not in scope; perhaps you want to import it
+    |
+  3 + use anyhow::Context;
+    |
+help: there is a method `with_context` with a similar name
+    |
+ 94 |         .with_context("fresh serving lease missing")?
+    |          +++++
+
+error[E0599]: no method named `context` found for enum `std::option::Option<T>` in the current scope
+   --> crates/kasumi-engine/src/bootstrap_target_serving.rs:121:47
+    |
+121 |                 load(material.application())?.context("published target bootstrap missing")?;
+    |                                               ^^^^^^^
+    |
+   ::: /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anyhow-1.0.104/src/lib.rs:618:8
+    |
+618 |     fn context<C>(self, context: C) -> Result<T, Error>
+    |        ------- the method is available for `std::option::Option<Vec<u8>>` here
+    |
+    = help: items from traits can only be used if the trait is in scope
+help: trait `Context` which provides `context` is implemented but not in scope; perhaps you want to import it
+    |
+  3 + use anyhow::Context;
+    |
+help: there is a method `with_context` with a similar name
+    |
+121 |                 load(material.application())?.with_context("published target bootstrap missing")?;
+    |                                               +++++
+
+error[E0599]: no method named `context` found for enum `std::option::Option<T>` in the current scope
+   --> crates/kasumi-engine/src/bootstrap_target_serving.rs:139:30
+    |
+136 |                           == expected
+    |  ____________________________-
+137 | |                             .completion
+138 | |                             .as_ref()
+139 | |                             .context("completion missing")?
+    | |_____________________________-^^^^^^^
+    |
+   ::: /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anyhow-1.0.104/src/lib.rs:618:8
+    |
+618 |       fn context<C>(self, context: C) -> Result<T, Error>
+    |          ------- the method is available for `std::option::Option<&kasumi_types::TargetCompletionFact>` here
+    |
+    = help: items from traits can only be used if the trait is in scope
+help: trait `Context` which provides `context` is implemented but not in scope; perhaps you want to import it
+    |
+  3 + use anyhow::Context;
+    |
+help: there is a method `with_context` with a similar name
+    |
+139 |                             .with_context("completion missing")?
+    |                              +++++
+
+error[E0599]: no method named `context` found for enum `std::option::Option<T>` in the current scope
+   --> crates/kasumi-engine/src/bootstrap_target_serving.rs:147:18
+    |
+143 |               let encoded = material
+    |  ___________________________-
+144 | |                 .custody()
+145 | |                 .store()
+146 | |                 .get_bounded("engine.deployment", b"mode", 256 << 10)?
+147 | |                 .context("target deployment absent")?;
+    | |_________________-^^^^^^^
+    |
+   ::: /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anyhow-1.0.104/src/lib.rs:618:8
+    |
+618 |       fn context<C>(self, context: C) -> Result<T, Error>
+    |          ------- the method is available for `std::option::Option<Vec<u8>>` here
+    |
+    = help: items from traits can only be used if the trait is in scope
+help: trait `Context` which provides `context` is implemented but not in scope; perhaps you want to import it
+    |
+  3 + use anyhow::Context;
+    |
+help: there is a method `with_context` with a similar name
+    |
+147 |                 .with_context("target deployment absent")?;
+    |                  +++++
+
+error[E0599]: no method named `context` found for enum `std::option::Option<T>` in the current scope
+   --> crates/kasumi-engine/src/bootstrap_target_serving.rs:27:14
+    |
+ 24 |           let gate = store
+    |  ____________________-
+ 25 | |             .storage_access()
+ 26 | |             .serving_gate()
+ 27 | |             .context("serving gate absent")?;
+    | |_____________-^^^^^^^
+    |
+   ::: /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anyhow-1.0.104/src/lib.rs:618:8
+    |
+618 |       fn context<C>(self, context: C) -> Result<T, Error>
+    |          ------- the method is available for `std::option::Option<&std::sync::Arc<ServingGate>>` here
+    |
+    = help: items from traits can only be used if the trait is in scope
+help: trait `Context` which provides `context` is implemented but not in scope; perhaps you want to import it
+    |
+  3 + use anyhow::Context;
+    |
+help: there is a method `with_context` with a similar name
+    |
+ 27 |             .with_context("serving gate absent")?;
+    |              +++++
+
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `kasumi-engine` (lib) due to 5 previous errors

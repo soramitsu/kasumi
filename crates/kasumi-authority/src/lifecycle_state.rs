@@ -53,6 +53,7 @@ pub(crate) struct LifecycleLeaseMaterial {
     pub commitment: ControlIntentCommitment,
     pub revision: u64,
     pub target_drain: Option<String>,
+    pub application_purpose: Option<LeasePurpose>,
 }
 impl Backend {
     pub fn lifecycle_receipt(
@@ -246,7 +247,7 @@ impl Backend {
             "target credential differs"
         );
         let stop = self.record(&key_target_stop(&i.tenant, i.target_incarnation))?;
-        let target_drain = if i.phase == LifecyclePhase::StopLocal {
+        let (target_drain, application_purpose) = if i.phase == LifecyclePhase::StopLocal {
             let Some(Record::TargetStop(stop)) = stop else {
                 anyhow::bail!("local cleanup requires permanent incarnation stop")
             };
@@ -266,7 +267,7 @@ impl Backend {
                     && same_nodes(&target.nodes, &i.target_nodes),
                 "local stop binding differs"
             );
-            Some(stop.digest()?)
+            (Some(stop.digest()?), None)
         } else {
             ensure!(stop.is_none(), "target incarnation permanently stopped");
             let tenant = self
@@ -287,17 +288,31 @@ impl Backend {
             // cannot re-materialize it under a newly issued grant.
             let source = tenant.incarnation == i.source_incarnation
                 && tenant.authority_epoch == i.source_authority_epoch;
-            let activated = i.phase == LifecyclePhase::Activate
-                && tenant.incarnation == i.target_incarnation
+            let activated = matches!(
+                i.phase,
+                LifecyclePhase::Activate | LifecyclePhase::InspectTarget
+            ) && tenant.incarnation == i.target_incarnation
                 && tenant.authority_epoch == i.source_authority_epoch + 1
                 && tenant.recovery_checkpoint.as_ref() == Some(&i.checkpoint);
             ensure!(source || activated, "current source epoch differs");
-            None
+            ensure!(
+                i.phase != LifecyclePhase::Activate || activated,
+                "activation needs the actual independently activated incarnation"
+            );
+            (
+                None,
+                Some(if activated {
+                    LeasePurpose::Serving
+                } else {
+                    LeasePurpose::RestorePreparation
+                }),
+            )
         };
         Ok(LifecycleLeaseMaterial {
             commitment,
             revision: self.meta()?.revision,
             target_drain,
+            application_purpose,
         })
     }
     pub(super) fn validate_lifecycle_snapshot(&self, snapshot: &Snapshot) -> Result<()> {

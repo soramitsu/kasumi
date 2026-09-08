@@ -1,0 +1,64 @@
+ M Cargo.lock
+ M crates/kasumi-authority/Cargo.toml
+ M crates/kasumi-authority/src/issuer_tests.rs
+ M crates/kasumi-authority/src/lifecycle_service.rs
+ M crates/kasumi-authority/src/lifecycle_state.rs
+ M crates/kasumi-authority/src/service.rs
+ M crates/kasumi-authority/src/state.rs
+ M crates/kasumi-authority/src/tests.rs
+ M crates/kasumi-client/proto/kasumi.proto
+ M crates/kasumi-client/src/lib.rs
+ M crates/kasumi-engine/src/accounting.rs
+ M crates/kasumi-engine/src/backup_restore.rs
+ M crates/kasumi-engine/src/backup_verify.rs
+ M crates/kasumi-engine/src/bootstrap.rs
+ M crates/kasumi-engine/src/lib.rs
+ M crates/kasumi-engine/src/service.rs
+ M crates/kasumi-engine/src/state.rs
+ M crates/kasumi-engine/tests/lifecycle.rs
+ M crates/kasumi-raft/src/lib.rs
+ M crates/kasumi-server/Cargo.toml
+ M crates/kasumi-server/src/api.rs
+ M crates/kasumi-server/src/lib.rs
+ M crates/kasumi-server/src/rpc.rs
+ M crates/kasumi-server/src/rpc_lifecycle_tests.rs
+ M crates/kasumi-server/src/runtime.rs
+ M crates/kasumi-server/src/serving_runtime.rs
+ M crates/kasumi-serving/src/gate.rs
+ M crates/kasumi-serving/src/lib.rs
+ M crates/kasumi-serving/src/lifecycle.rs
+ M crates/kasumi-serving/src/lifecycle_proof.rs
+ M crates/kasumi-serving/src/proof.rs
+ M crates/kasumi-serving/src/protocol.rs
+ M crates/kasumi-serving/src/target_stop.rs
+ M crates/kasumi-store/src/lib.rs
+ M crates/kasumi-store/src/serving_access.rs
+ M crates/kasumi-types/src/lib.rs
+ M crates/kasumi-types/src/lifecycle.rs
+?? crates/kasumi-authority/src/activation_gate_tests.rs
+?? crates/kasumi-authority/src/activation_state.rs
+?? crates/kasumi-authority/src/target_materialization_tests.rs
+?? crates/kasumi-client/src/target.rs
+?? crates/kasumi-engine/src/bootstrap_target.rs
+?? crates/kasumi-engine/src/bootstrap_target_quorum.rs
+?? crates/kasumi-engine/src/bootstrap_target_serving.rs
+?? crates/kasumi-engine/src/target_activation_service.rs
+?? crates/kasumi-engine/src/target_inspection_service.rs
+?? crates/kasumi-engine/src/target_invocation.rs
+?? crates/kasumi-engine/src/target_journal.rs
+?? crates/kasumi-engine/src/target_projection.rs
+?? crates/kasumi-engine/src/target_restore_authorization.rs
+?? crates/kasumi-engine/src/target_service.rs
+?? crates/kasumi-engine/src/target_signer.rs
+?? crates/kasumi-engine/src/target_state.rs
+?? crates/kasumi-raft/src/local_applied.rs
+?? crates/kasumi-server/src/rpc_target.rs
+?? crates/kasumi-server/src/target_phase_runtime.rs
+?? crates/kasumi-server/src/target_runtime.rs
+?? crates/kasumi-server/src/target_runtime_config.rs
+?? crates/kasumi-server/src/target_serving_runtime.rs
+?? crates/kasumi-serving/src/lifecycle_gate.rs
+?? crates/kasumi-serving/src/target.rs
+?? crates/kasumi-serving/src/target_runtime_protocol.rs
+?? crates/kasumi-types/src/canonical_keys.rs
+?? crates/kasumi-types/src/target.rs

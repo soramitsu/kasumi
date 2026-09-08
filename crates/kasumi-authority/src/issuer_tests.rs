@@ -47,6 +47,7 @@ impl ControlFixture {
                             node_id: n.node_id,
                             principal: n.principal.clone(),
                             certificate_sha256: n.certificate_sha256.clone(),
+                            attestation_public_key: format!("{:064x}", n.node_id + 100),
                         },
                     )
                 })
@@ -520,3 +521,9 @@ async fn accepted_on_current_leader(
     .await
     .expect("bounded setup recovery did not obtain current-quorum receipt")
 }
+
+#[path = "activation_gate_tests.rs"]
+mod activation_gate_tests;
+
+#[path = "target_materialization_tests.rs"]
+mod target_materialization_tests;

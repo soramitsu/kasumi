@@ -15,7 +15,10 @@ pub use kasumi_client::proto;
 use proto::*;
 #[path = "rpc_lifecycle.rs"]
 mod lifecycle;
+#[path = "rpc_target.rs"]
+mod target;
 pub use lifecycle::NativeLifecycleControl;
+pub use target::NativeTargetRecovery;
 #[path = "rpc_authority.rs"]
 mod authority;
 #[path = "rpc_retirement.rs"]

@@ -1,0 +1,9 @@
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 57.27s
+     Running unittests src/lib.rs (/tmp/kasumi-custody-substrate-target/debug/deps/kasumi_engine-8f6ce6a1e16fc14e)
+
+running 1 test
+test target_invocation::admission_tests::original_short_timeout_expires_during_acquisition_and_cannot_reanchor_after_suspend ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 38 filtered out; finished in 0.02s
+

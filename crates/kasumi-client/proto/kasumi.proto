@@ -144,3 +144,11 @@ message ControlJsonRequest { bytes request_json = 1; }
 message ControlJsonResponse { bytes response_json = 1; }
 message ControlIntentReference { string command_id = 1; }
 message ControlChangeReference { string command_id = 1; string authority_partition = 2; }
+
+// Fixed installed target templates and actual issuer/Control capabilities.
+// No endpoint, key, filesystem path or deserialized live proof is accepted.
+service KasumiTargetRecovery {
+  rpc Execute(TargetRuntimeRequest) returns (TargetRuntimeResponse);
+}
+message TargetRuntimeRequest { bytes request_json = 1; }
+message TargetRuntimeResponse { bytes response_json = 1; }

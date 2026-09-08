@@ -1,0 +1,70 @@
+   Compiling kasumi-types v0.1.0 (/private/tmp/kasumi-target-recovery/crates/kasumi-types)
+   Compiling kasumi-serving v0.1.0 (/private/tmp/kasumi-target-recovery/crates/kasumi-serving)
+   Compiling kasumi-store v0.1.0 (/private/tmp/kasumi-target-recovery/crates/kasumi-store)
+   Compiling kasumi-raft v0.1.0 (/private/tmp/kasumi-target-recovery/crates/kasumi-raft)
+   Compiling kasumi-query v0.1.0 (/private/tmp/kasumi-target-recovery/crates/kasumi-query)
+   Compiling kasumi-client v0.1.0 (/private/tmp/kasumi-target-recovery/crates/kasumi-client)
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-target-recovery/crates/kasumi-engine)
+   Compiling kasumi-authority v0.1.0 (/private/tmp/kasumi-target-recovery/crates/kasumi-authority)
+   Compiling kasumi-server v0.1.0 (/private/tmp/kasumi-target-recovery/crates/kasumi-server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 07s
+     Running unittests src/lib.rs (/tmp/kasumi-custody-substrate-target/debug/deps/kasumi_server-f79730001bc09eea)
+
+running 54 tests
+test administration::tests::generation_paths_cannot_inherit_tenant_traversal ... ok
+test administration::tests::closed_commands_reject_path_and_tenant_overrides ... ok
+test administration::tests::management_entry_future_bounds_stack_residency ... ok
+test api::tests::current_mcp_discovery_and_tool_catalog_work_without_initialize ... ok
+test api::tests::both_adapters_reject_wrong_identity_tenant_scope_and_admin_escalation ... ok
+test api::tests::embedded_native_and_mcp_denials_have_one_durable_record_per_request ... ok
+test api::tests::encoded_response_credential_expiry_is_audited_and_preserves_committed_receipt ... ok
+test api::tests::guarded_stop_secure_sdk_preserves_exact_identity_and_native_authority ... ok
+test api::tests::mcp_rejects_legacy_mismatched_metadata_bad_origins_and_unauthenticated_calls ... ok
+test api::tests::native_and_mcp_lost_committed_responses_resolve_without_reapplying ... ok
+test api::tests::long_schema_property_errors_match_native_mcp_and_durable_receipts ... ok
+test api::tests::native_and_mcp_share_exact_data_receipts_query_and_authorization ... ok
+test api::tests::native_history_archive_and_durable_feed_preserve_exact_rows_and_scope ... ok
+test api::tests::native_backup_proof_is_admin_only_configured_and_verified_through_secure_sdk ... ok
+test api::tests::native_schema_activation_is_atomic_scoped_permanent_and_private ... ok
+test api::tests::native_snapshot_preserves_exact_data_and_its_read_set_rejects_a_stale_commit ... ok
+test api::tests::native_resources_and_two_restore_hops_preserve_immutable_issuer_facts ... ok
+test api::tests::native_status_bounds_worst_case_header_escaping ... ok
+test api::tests::native_staging_and_coherent_lease_pages_share_exact_state_and_authority ... ok
+test api::tests::private_native_control_route_can_raise_a_full_audit_budget ... ok
+test api::tests::protected_resource_metadata_and_challenges_advertise_only_configured_issuer ... ok
+test api::tests::required_audit_failure_blocks_dispatch_and_preserves_authentication_denials ... ok
+test api::tests::required_service_audits_are_durable_and_exclude_unverified_identity_and_payloads ... ok
+test api::tests::reserved_control_and_security_tenants_are_never_data_routes ... ok
+test auth::tests::config_rejects_cleartext_credentials_and_symmetric_algorithms ... ok
+test auth::tests::credential_expiring_during_required_authentication_audit_is_never_released ... ok
+test auth::tests::identity_and_tenant_come_only_from_verified_access_token ... ok
+test auth::tests::missing_audit_sink_blocks_valid_tokens_and_cannot_be_reconfigured ... ok
+test auth::tests::rejects_wrong_audience_issuer_expiry_not_before_and_id_tokens ... ok
+test auth::tests::untrusted_signatures_and_unknown_keys_never_gain_access ... ok
+test auth::tests::verified_credential_expiry_survives_suspend_wall_rollback_and_injected_origin ... ok
+test mcp::response_tests::envelope_accounting_includes_large_request_ids_and_bounds_errors ... ok
+test api::tests::shared_adapter_release_audits_a_seal_after_response_encoding ... ok
+test mcp::response_tests::quoted_payload_stays_within_wire_limit_without_redundant_text_copy ... ok
+test runtime::lifecycle_tests::fenced_source_startup_keeps_control_handle_without_constructing_application_provider ... ok
+test rpc::authority_tests::actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_recovery ... ok
+test runtime::lifecycle_tests::initial_control_bootstrap_rejects_mismatched_policy_and_raft_traffic ... ok
+test runtime::lifecycle_tests::initial_tenant_bootstrap_rejects_mismatched_limits_and_raft_traffic ... ok
+test runtime::lifecycle_tests::retired_runtime_reopens_current_custody_without_constructing_application_provider ... ok
+test runtime::lifecycle_tests::local_runtime_opens_real_transit_tls_publishes_control_serves_and_reopens_durable_state ... ok
+test runtime::lifecycle_tests::startup_and_serving_drains_finish_live_tls_requests_before_reopening_node ... ok
+test runtime::lifecycle_tests::runtime_catches_up_spare_and_replaces_three_voters_through_admin_control ... ok
+test runtime::tests::admin_client_requires_https_server_pin_and_runtime_token_reference ... ok
+test runtime::tests::operator_example_is_valid_secret_free_and_rejects_inline_credentials ... ok
+test runtime::tests::private_key_file_permissions_are_checked_on_opened_file ... ok
+test runtime::tests::rejects_cleartext_credential_urls_ambient_variable_names_and_missing_administrators ... ok
+test runtime::tests::rejects_shared_wrapping_keys_reserved_tenants_and_ambiguous_listeners ... ok
+test runtime::tests::replication_is_explicit_three_voters_with_unique_pins_and_domains ... ok
+test runtime::tests::service_audit_survives_reopen_and_tenant_sealing_and_fails_closed_at_quota ... ok
+test runtime::tests::staged_topology_permits_supersets_but_rejects_changed_pins_and_removed_routes ... ok
+test tls::lifecycle_tests::accept_io_failure_drains_active_tls_request_before_releasing_node ... ok
+test tls::lifecycle_tests::reset_queued_before_listener_start_is_audited_and_next_tls_request_succeeds ... ok
+test tls::lifecycle_tests::socket_setup_failure_is_audited_and_does_not_stop_listener ... ok
+test runtime::lifecycle_tests::three_runtime_nodes_replicate_with_control_quorum_over_audited_pinned_mtls ... ok
+
+test result: ok. 54 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 54.83s
+

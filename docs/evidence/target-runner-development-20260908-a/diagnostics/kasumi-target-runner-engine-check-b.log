@@ -1,0 +1,75 @@
+    Checking kasumi-engine v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-engine)
+warning: associated function `for_target` is never used
+  --> crates/kasumi-engine/src/backup_verify.rs:21:19
+   |
+20 | impl VerificationWork {
+   | --------------------- associated function in this implementation
+21 |     pub(crate) fn for_target(
+   |                   ^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: methods `run` and `prepare` are never used
+  --> crates/kasumi-engine/src/target_invocation.rs:45:25
+   |
+13 | impl TargetLifecycleInvocation {
+   | ------------------------------ methods in this implementation
+...
+45 |     pub(crate) async fn run<T>(
+   |                         ^^^
+...
+73 |     pub(crate) fn prepare(
+   |                   ^^^^^^^
+
+warning: struct `PreparedTargetAuthorization` is never constructed
+   --> crates/kasumi-engine/src/target_invocation.rs:104:19
+    |
+104 | pub(crate) struct PreparedTargetAuthorization {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `verify` is never used
+   --> crates/kasumi-engine/src/target_invocation.rs:110:12
+    |
+109 | impl PreparedTargetAuthorization {
+    | -------------------------------- method in this implementation
+110 |     pub fn verify(
+    |            ^^^^^^
+
+warning: field `slot` is never read
+   --> crates/kasumi-engine/src/target_invocation.rs:158:5
+    |
+155 | pub struct TargetOperationScope {
+    |            -------------------- field in this struct
+...
+158 |     slot: Arc<tokio::sync::Semaphore>,
+    |     ^^^^
+
+warning: method `begin` is never used
+   --> crates/kasumi-engine/src/target_invocation.rs:179:19
+    |
+160 | impl TargetOperationScope {
+    | ------------------------- method in this implementation
+...
+179 |     pub(crate) fn begin(
+    |                   ^^^^^
+
+warning: variant `Lifecycle` is never constructed
+  --> crates/kasumi-engine/src/target_restore_authorization.rs:10:5
+   |
+ 6 | pub(crate) enum RestoreAuthorization<'a> {
+   |                 -------------------- variant in this enum
+...
+10 |     Lifecycle(&'a TargetLifecycleInvocation),
+   |     ^^^^^^^^^
+
+warning: method `context` is never used
+  --> crates/kasumi-engine/src/target_restore_authorization.rs:13:12
+   |
+12 | impl RestoreAuthorization<'_> {
+   | ----------------------------- method in this implementation
+13 |     pub fn context(&self) -> &RequestContext {
+   |            ^^^^^^^
+
+warning: `kasumi-engine` (lib) generated 8 warnings
+warning: `kasumi-engine` (lib test) generated 8 warnings (8 duplicates)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 21.88s

@@ -1,0 +1,24 @@
+   Compiling kasumi-authority v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-authority)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.89s
+     Running unittests src/lib.rs (/tmp/kasumi-custody-substrate-target/debug/deps/kasumi_authority-fad8fb0008c4fbcc)
+
+running 3 tests
+test service::tests::issuer_tests::activation_gate_tests::committed_activation_rejects_raw_bypass_preserves_exact_winner_and_encrypted_recovery ... ok
+test service::tests::issuer_tests::activation_gate_tests::stopped_control_epoch_and_queued_original_expiry_defeat_new_activation_effects ... FAILED
+test service::tests::issuer_tests::activation_gate_tests::target_storage_retains_original_phase_and_cannot_install_late_renewal_or_new_gate ... ok
+
+failures:
+
+---- service::tests::issuer_tests::activation_gate_tests::stopped_control_epoch_and_queued_original_expiry_defeat_new_activation_effects stdout ----
+
+thread 'service::tests::issuer_tests::activation_gate_tests::stopped_control_epoch_and_queued_original_expiry_defeat_new_activation_effects' (16633518) panicked at crates/kasumi-authority/src/activation_gate_tests.rs:198:18:
+called `Result::unwrap()` on an `Err` value: Error { code: UnknownOutcome, message: "authority acknowledgement unavailable; resolve the exact permanent command identity" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    service::tests::issuer_tests::activation_gate_tests::stopped_control_epoch_and_queued_original_expiry_defeat_new_activation_effects
+
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 16 filtered out; finished in 13.38s
+
+error: test failed, to rerun pass `-p kasumi-authority --lib`

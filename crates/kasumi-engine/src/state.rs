@@ -17,6 +17,8 @@ pub(crate) mod retirement;
 pub(crate) mod schema;
 #[path = "staging.rs"]
 pub(crate) mod staging;
+#[path = "target_state.rs"]
+pub(crate) mod target;
 
 pub struct Generation {
     pub state: TenantState,
@@ -69,6 +71,9 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
         position: &kasumi_raft::AppliedEntryContext,
         bytes: &[u8],
     ) -> anyhow::Result<kasumi_raft::AppliedResponse> {
+        if bytes.starts_with(target::PREFIX) {
+            return self.apply_target(position, bytes);
+        }
         let command: Command = serde_json::from_slice(bytes)?;
         anyhow::ensure!(
             !matches!(&command.operation, Operation::RetireSource(prepared) if prepared.observation.is_some())
@@ -138,13 +143,30 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
 
 impl TenantEngine {
     pub(crate) fn check_operation_access(&self, operation: &Operation) -> Result<()> {
+        let generation = self.generation()?;
+        if generation
+            .state
+            .target_lifecycle
+            .get(&generation.state.incarnation)
+            .is_some_and(|target| target.activation.is_none())
+        {
+            return Err(Error::new(
+                ErrorCode::Forbidden,
+                "native target activation must commit before tenant commands",
+            ));
+        }
+        drop(generation);
         if let Some(access) = self.access.get() {
             access
                 .check()
                 .map_err(|_| Error::new(ErrorCode::Sealed, "independent access grant expired"))?;
             if access.check_serving().is_err() {
                 let generation = self.generation()?;
-                if !generation.state.suspended
+                if generation
+                    .state
+                    .target_lifecycle
+                    .contains_key(&generation.state.incarnation)
+                    || !generation.state.suspended
                     || !matches!(operation, Operation::MaintenanceAudit(event) if event.action == "restore" && event.outcome == "completed")
                 {
                     return Err(Error::new(
@@ -265,6 +287,7 @@ impl TenantEngine {
             restored_from: None,
             restore_lineage: Vec::new(),
             lifecycle_control: None,
+            target_lifecycle: Default::default(),
             document_count: 0,
             logical_bytes: 0,
             policy,
@@ -337,6 +360,7 @@ impl TenantEngine {
         expected_tenant: &str,
         incarnation: String,
         checkpoint: FullBackupCheckpoint,
+        target_origin: Option<TargetOrigin>,
     ) -> Result<Vec<u8>> {
         let mut state: TenantState = serde_json::from_slice(bytes)
             .map_err(|_| Error::new(ErrorCode::Corruption, "invalid logical backup"))?;
@@ -361,6 +385,31 @@ impl TenantEngine {
         });
         state.restored_from = Some(checkpoint.clone());
         state.incarnation = incarnation;
+        if let Some(origin) = target_origin {
+            origin.validate()?;
+            if origin
+                .materialization
+                .request
+                .target_incarnation
+                .to_string()
+                != state.incarnation
+                || origin.materialization.request.checkpoint != checkpoint
+                || state.target_lifecycle.contains_key(&state.incarnation)
+            {
+                return Err(Error::new(
+                    ErrorCode::Conflict,
+                    "target genesis origin differs or incarnation reused",
+                ));
+            }
+            state.target_lifecycle.insert(
+                state.incarnation.clone(),
+                TargetExecutionState {
+                    origin,
+                    completion: None,
+                    activation: None,
+                },
+            );
+        }
         state.pending_restore = Some(PendingRestore {
             backup_id: checkpoint.backup_id.to_string(),
             source_revision: state.revision,
@@ -818,6 +867,49 @@ impl TenantEngine {
         validate_limits(&state.limits)?;
         validate_policy(&state.policy, &state.limits)?;
         lifecycle::validate(&state)?;
+        validate_target_history(&state)?;
+        for entry in state.target_lifecycle.values() {
+            if let Some(completed) = &entry.completion {
+                let expected = kasumi_serving::verify_target_materializations(
+                    &entry.origin,
+                    &completed.materialized,
+                )
+                .map_err(|_| {
+                    Error::new(
+                        ErrorCode::Corruption,
+                        "snapshot target materialization signatures differ",
+                    )
+                })?;
+                if expected != completed.bootstrap_sha256 {
+                    return Err(Error::new(
+                        ErrorCode::Corruption,
+                        "snapshot target bootstrap differs",
+                    ));
+                }
+            }
+        }
+        if let Ok(current) = self.generation() {
+            for (id, old) in &current.state.target_lifecycle {
+                let new = state.target_lifecycle.get(id).ok_or_else(|| {
+                    Error::new(ErrorCode::Corruption, "snapshot removed target history")
+                })?;
+                if new.origin != old.origin
+                    || old
+                        .completion
+                        .as_ref()
+                        .is_some_and(|fact| new.completion.as_ref() != Some(fact))
+                    || old
+                        .activation
+                        .as_ref()
+                        .is_some_and(|fact| new.activation.as_ref() != Some(fact))
+                {
+                    return Err(Error::new(
+                        ErrorCode::Corruption,
+                        "snapshot substituted immutable target history",
+                    ));
+                }
+            }
+        }
         if let Ok(current) = self.generation()
             && let Some(installed) = &current.state.lifecycle_control
             && state.lifecycle_control.as_ref().is_none_or(|incoming| {
@@ -1885,6 +1977,7 @@ mod restore_budget_tests {
                 manifest_ciphertext_sha256: "00".repeat(32),
                 key_lineage_digest: "00".repeat(32),
             },
+            None,
         );
         assert_eq!(outcome.unwrap_err().code, ErrorCode::QuotaExceeded);
         assert_eq!(engine.snapshot().unwrap(), bytes);

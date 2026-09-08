@@ -307,6 +307,7 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
                     LifecycleNode {
                         node_id: id,
                         principal: format!("target-{id}"),
+                        attestation_public_key: format!("{:064x}", id + 100),
                         certificate_sha256: if id == 1 {
                             hex::encode(config.identity.certificate_pin())
                         } else {
