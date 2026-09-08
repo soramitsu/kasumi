@@ -6,7 +6,9 @@ OpenRaft provide persistence and ordered writes. JSON Schema validation, atomic
 batches, CAS, idempotency receipts, typed queries, and English/Japanese search
 share one authorization layer across Rust, native gRPC, and MCP.
 
-**Status:** the original v1 baseline passed software acceptance gates.
+**Status:** the first production release is being implemented. The [active release ledger](docs/production-release.md) tracks the remaining implementation and acceptance gates. Kasumi is licensed under [Apache-2.0](LICENSE).
+
+The original v1 baseline passed software acceptance gates.
 Both macOS and Linux passed 188 workspace tests, strict lint/formatting and live
 service checks. The [measured results](benchmarks/RESULTS.md) cover all 15 required
 cases: 99,000 successful operations at 1, 100 and 1,000 tenants. They preserve
@@ -57,7 +59,7 @@ Read leases provide bounded coherent point and ID-ordered collection pages.
 | `kasumi-server` | OAuth, TLS/mTLS, native Protobuf, MCP and administrative runtime |
 | `kasumi-bench` | Reproducible latency, memory and recovery measurements across API layers |
 
-Rust 1.94 or newer is required. Linux is the production target; macOS supports
+Rust 1.97.1 is pinned by `rust-toolchain.toml`. Linux is the production target; macOS supports
 development and embedded validation. Keep a warm Cargo target directory:
 
 ```sh
