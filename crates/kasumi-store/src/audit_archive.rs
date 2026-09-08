@@ -792,6 +792,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn persisted_external_placement_never_falls_back_to_default_after_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let cache = Arc::new(
+            FilesystemAuditArchive::open(directory.path().join("tenant-audit-archives")).unwrap(),
+        );
+        let external = Arc::new(
+            FilesystemAuditArchive::open(directory.path().join("installed-external")).unwrap(),
+        );
+        let original = store(directory.path()).await;
+        original
+            .install_tenant_audit_archive(cache.clone(), external.clone())
+            .unwrap();
+        assert!(
+            original
+                .install_tenant_audit_archive(cache.clone(), cache.clone())
+                .is_err()
+        );
+        original.shutdown().await;
+        drop(original);
+
+        let reopened = store(directory.path()).await;
+        assert!(
+            reopened.tenant_audit_archive().is_err(),
+            "missing destination must prevent replay"
+        );
+        let placement = reopened
+            .install_tenant_audit_archive(cache, external.clone())
+            .unwrap();
+        assert_eq!(placement.destination_identity(), external.identity());
+        assert_eq!(
+            reopened
+                .tenant_audit_archive()
+                .unwrap()
+                .destination_identity(),
+            external.identity()
+        );
+        reopened.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn verified_archive_is_private_immutable_contiguous_and_reopenable() {
         let directory = tempfile::tempdir().unwrap();
         let store = store(directory.path()).await;
