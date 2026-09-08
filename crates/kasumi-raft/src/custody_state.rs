@@ -495,4 +495,65 @@ mod tests {
         receipt.outcome.unwrap();
         assert_eq!(rotated.audit[..byte_full.audit.len()], byte_full.audit[..]);
     }
+    #[test]
+    fn point_reducer_matches_full_history_through_replay_conflicts_and_budget_expansion() {
+        use crate::custody_tables::CustodyHead;
+        let mut state = state();
+        state.limits = CustodyLimits {
+            max_commands: 8,
+            max_audit_records: 12,
+            max_state_bytes: 8192,
+        };
+        let mut head = CustodyHead::from_state(&state).unwrap();
+        let mut originals = Vec::<CustodyRequest>::new();
+        for iteration in 0..240 {
+            let mut command = if iteration % 32 == 31 {
+                request(
+                    &state,
+                    &format!("expand-{iteration}"),
+                    CustodyAction::SetLimits(CustodyLimits {
+                        max_commands: state.limits.max_commands * 2,
+                        max_audit_records: state.limits.max_audit_records * 2,
+                        max_state_bytes: (state.limits.max_state_bytes * 2).min(1 << 20),
+                    }),
+                )
+            } else if iteration % 4 == 0 && !originals.is_empty() {
+                originals[iteration % originals.len()].clone()
+            } else {
+                request(
+                    &state,
+                    &format!("command-{iteration}"),
+                    CustodyAction::ReplaceAdministrators(BTreeSet::from([
+                        "owner".into(),
+                        format!("custodian-{iteration}"),
+                    ])),
+                )
+            };
+            if iteration % 13 == 0 {
+                command.expected_policy_epoch += 1;
+            }
+            let prior = state.commands.get(&command.command_id).cloned();
+            let revision = iteration as u64 + 2;
+            let logical = state.apply(&context("owner"), &command, 100, revision);
+            let points = head.apply(prior, &context("owner"), &command, 100, revision);
+            match (logical, points) {
+                (Ok((next, receipt)), Ok((next_head, point_receipt, audit))) => {
+                    assert_eq!(receipt, point_receipt);
+                    assert_eq!(next.audit.last(), Some(&audit));
+                    assert_eq!(CustodyHead::from_state(&next).unwrap(), next_head);
+                    if !audit.replay {
+                        originals.push(command);
+                    }
+                    head = next_head;
+                    state = next;
+                }
+                (Err(logical), Err(points)) => assert_eq!(logical.code, points.code),
+                (logical, points) => {
+                    panic!("different outcomes at {iteration}: {logical:?}, {points:?}")
+                }
+            }
+        }
+        assert!(state.commands.len() > 8);
+        assert!(state.audit.len() > 12);
+    }
 }

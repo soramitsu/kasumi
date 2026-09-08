@@ -119,7 +119,7 @@ impl CustodyRaftGroup {
     }
     pub fn view(&self) -> Result<CustodyView> {
         self.check_access()?;
-        let state = crate::control::custody_state(&self.custody)?;
+        let state = crate::control::custody_head(&self.custody)?.policy;
         self.check_access()?;
         Ok(CustodyView(state))
     }

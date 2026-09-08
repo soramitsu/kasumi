@@ -7,6 +7,7 @@ mod custody_command;
 mod custody_group;
 mod custody_machine;
 mod custody_state;
+mod custody_tables;
 mod domains;
 mod lifetime;
 mod network;
@@ -336,7 +337,9 @@ impl RaftGroup {
 
     pub fn custody_view(&self) -> Result<CustodyView> {
         self.check_access()?;
-        Ok(CustodyView(control::custody_state(self.store.custody())?))
+        Ok(CustodyView(
+            control::custody_head(self.store.custody())?.policy,
+        ))
     }
 
     pub async fn write_custody(&self, command: CustodyCommand) -> Result<Vec<u8>> {
