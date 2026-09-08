@@ -140,7 +140,7 @@ impl ServingFixture {
             )
             .await
             .unwrap();
-            let audit = SecurityAudit::open(audit_store, 100_000).unwrap();
+            let audit = SecurityAudit::open(audit_store, kasumi_types::AuditRetentionBudget::default()).unwrap();
             let stores = kasumi_store::TenantStorageSet::open(
                 node,
                 self.context.tenant.clone(),

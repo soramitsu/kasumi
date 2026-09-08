@@ -1960,6 +1960,59 @@ fn validate_metadata_budget(
     Ok(())
 }
 
+/// Appends a hot event with its permanent stream position and exact encoded budget.
+pub(crate) fn append_audit(state: &mut TenantState, event: AuditEvent) -> Result<()> {
+    let bytes = encoded_len(&event)?;
+    if bytes > MAX_AUDIT_EVENT_BYTES {
+        return Err(Error::new(
+            ErrorCode::QuotaExceeded,
+            "audit event exceeds record budget",
+        ));
+    }
+    let next = state
+        .audit_retention
+        .next_sequence
+        .checked_add(1)
+        .ok_or_else(|| Error::new(ErrorCode::Corruption, "audit sequence exhausted"))?;
+    let hot = state
+        .audit_retention
+        .hot_bytes
+        .checked_add(bytes as u64)
+        .ok_or_else(|| Error::new(ErrorCode::Corruption, "audit byte count overflow"))?;
+    state.audits.push_back(event);
+    state.audit_retention.next_sequence = next;
+    state.audit_retention.hot_bytes = hot;
+    Ok(())
+}
+fn validate_audits(state: &TenantState) -> Result<()> {
+    state.audit_retention.validate()?;
+    let hot = state.audits.iter().try_fold(0u64, |total, event| {
+        let bytes = encoded_len(event)?;
+        if bytes > MAX_AUDIT_EVENT_BYTES {
+            return Err(Error::new(
+                ErrorCode::Corruption,
+                "audit event exceeds record budget",
+            ));
+        }
+        total
+            .checked_add(bytes as u64)
+            .ok_or_else(|| Error::new(ErrorCode::Corruption, "audit byte count overflow"))
+    })?;
+    if state
+        .audit_retention
+        .next_sequence
+        .checked_sub(state.audit_retention.pruned_before)
+        != Some(state.audits.len() as u64)
+        || hot != state.audit_retention.hot_bytes
+    {
+        return Err(Error::new(
+            ErrorCode::Corruption,
+            "audit retention accounting differs",
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod restore_budget_tests {
     use super::*;
@@ -2050,57 +2103,4 @@ mod restore_budget_tests {
         assert_eq!(outcome.unwrap_err().code, ErrorCode::QuotaExceeded);
         assert_eq!(engine.snapshot().unwrap(), bytes);
     }
-}
-
-/// Appends a hot event with its permanent stream position and exact encoded budget.
-pub(crate) fn append_audit(state: &mut TenantState, event: AuditEvent) -> Result<()> {
-    let bytes = encoded_len(&event)?;
-    if bytes > MAX_AUDIT_EVENT_BYTES {
-        return Err(Error::new(
-            ErrorCode::QuotaExceeded,
-            "audit event exceeds record budget",
-        ));
-    }
-    let next = state
-        .audit_retention
-        .next_sequence
-        .checked_add(1)
-        .ok_or_else(|| Error::new(ErrorCode::Corruption, "audit sequence exhausted"))?;
-    let hot = state
-        .audit_retention
-        .hot_bytes
-        .checked_add(bytes as u64)
-        .ok_or_else(|| Error::new(ErrorCode::Corruption, "audit byte count overflow"))?;
-    state.audits.push_back(event);
-    state.audit_retention.next_sequence = next;
-    state.audit_retention.hot_bytes = hot;
-    Ok(())
-}
-fn validate_audits(state: &TenantState) -> Result<()> {
-    state.audit_retention.validate()?;
-    let hot = state.audits.iter().try_fold(0u64, |total, event| {
-        let bytes = encoded_len(event)?;
-        if bytes > MAX_AUDIT_EVENT_BYTES {
-            return Err(Error::new(
-                ErrorCode::Corruption,
-                "audit event exceeds record budget",
-            ));
-        }
-        total
-            .checked_add(bytes as u64)
-            .ok_or_else(|| Error::new(ErrorCode::Corruption, "audit byte count overflow"))
-    })?;
-    if state
-        .audit_retention
-        .next_sequence
-        .checked_sub(state.audit_retention.pruned_before)
-        != Some(state.audits.len() as u64)
-        || hot != state.audit_retention.hot_bytes
-    {
-        return Err(Error::new(
-            ErrorCode::Corruption,
-            "audit retention accounting differs",
-        ));
-    }
-    Ok(())
 }

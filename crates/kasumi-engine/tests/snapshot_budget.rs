@@ -213,7 +213,7 @@ fn replay_with_only_rejection_audit_headroom_keeps_the_original_receipt() {
     loop {
         let limit = TenantEngine::encode_snapshot_state(&after, 64 << 20)
             .unwrap()
-            .len() as u64
+            .len()
             + 19
             - 1;
         if after.limits.max_snapshot_bytes == limit {

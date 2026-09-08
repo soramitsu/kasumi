@@ -319,7 +319,7 @@ async fn benchmark(
     let security = bao.provision_key("security", false).await?;
     secrets.push(("KASUMI_BENCH_SECURITY".to_owned(), Zeroizing::new(security)));
     config.security_audit.keys = transit("security", "KASUMI_BENCH_SECURITY");
-    config.security_audit.max_records = 2_000_000;
+    config.security_audit.retention.clone() = 2_000_000;
     config.tenants.clear();
     let mut oauth = Vec::new();
     let mut targets = Vec::new();

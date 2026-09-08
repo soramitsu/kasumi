@@ -3,6 +3,10 @@ use crate::admission::{WorkFence, WorkRegistration};
 use anyhow::{Context, Result, ensure};
 use kasumi_query::QueryCancellation;
 use kasumi_store::{TenantStore, WriteOp};
+use kasumi_types::AuditRetentionBudget;
+#[path = "security_audit_retention.rs"]
+mod retention;
+pub use retention::{SecurityAuditPage, SecurityAuditStatus};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -94,7 +98,11 @@ struct AuditWriter {
     // clones held by blocking jobs after every outer Arc<SecurityAudit> drops.
     store: Arc<TenantStore>,
     sequence: Mutex<AuditSequence>,
-    max_records: u64,
+    budget: AuditRetentionBudget,
+    destination: Arc<dyn kasumi_store::AuditArchiveDestination>,
+    maintenance: tokio::sync::Mutex<()>,
+    wake: Arc<tokio::sync::Notify>,
+    _workspace: crate::admission::Reservation,
     work: Arc<WorkFence>,
 }
 
@@ -102,8 +110,10 @@ static LIVE_WRITERS: LazyLock<Mutex<HashMap<usize, Weak<AuditWriter>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 struct AuditSequence {
-    next: u64,
+    head: retention::Head,
     failed: bool,
+    failures: u64,
+    last_failure: Option<String>,
 }
 
 // Keep resource ownership before the registration: draining must not finish
@@ -119,14 +129,33 @@ impl AuditWork {
 }
 
 impl SecurityAudit {
-    /// Repeated opens of the same live store share its sequence and shutdown
-    /// fence. Changing its retention limit requires closing the existing writer.
-    pub fn open(store: Arc<TenantStore>, max_records: u64) -> Result<Arc<Self>> {
+    /// The default archive is beneath the durable data directory. Embedded
+    /// backends without a directory must install an explicit durable destination.
+    pub fn open(store: Arc<TenantStore>, budget: AuditRetentionBudget) -> Result<Arc<Self>> {
+        let root = store.durable_directory()?.join("audit-archives");
+        let destination = Arc::new(kasumi_store::FilesystemAuditArchive::open(root)?);
+        Self::open_with_archive(
+            store,
+            budget,
+            destination,
+            crate::admission::NodeAdmission::process_default(),
+        )
+    }
+
+    pub fn open_with_archive(
+        store: Arc<TenantStore>,
+        budget: AuditRetentionBudget,
+        destination: Arc<dyn kasumi_store::AuditArchiveDestination>,
+        admission: Arc<crate::admission::NodeAdmission>,
+    ) -> Result<Arc<Self>> {
+        budget.validate()?;
         ensure!(
-            max_records > 0 && store.tenant() == SECURITY_TENANT,
+            store.tenant() == SECURITY_TENANT,
             "invalid service audit store"
         );
         store.check_access()?;
+        let runtime = tokio::runtime::Handle::try_current()
+            .context("audit maintenance requires a running runtime")?;
         let mut writers = LIVE_WRITERS
             .lock()
             .map_err(|_| anyhow::anyhow!("service audit ownership unavailable"))?;
@@ -134,34 +163,31 @@ impl SecurityAudit {
         let identity = Arc::as_ptr(&store) as usize;
         if let Some(writer) = writers.get(&identity).and_then(Weak::upgrade) {
             ensure!(
-                writer.max_records == max_records,
-                "live service audit retention limit differs"
+                writer.budget == budget && writer.destination.identity() == destination.identity(),
+                "live service audit retention budget differs"
             );
             return Ok(Arc::new(Self { writer }));
         }
-        let next = store
-            .get("security.audit.meta", b"next")?
-            .map(|bytes| -> Result<u64> {
-                Ok(u64::from_be_bytes(bytes.try_into().map_err(|_| {
-                    anyhow::anyhow!("invalid service audit sequence")
-                })?))
-            })
-            .transpose()?
-            .unwrap_or(0);
-        ensure!(
-            next <= max_records,
-            "service audit retention quota exceeded"
-        );
+        let mut workspace = admission.reserve(AuditRetentionBudget::MAINTENANCE_BYTES, None)?;
+        workspace.retain_workspace();
+        let head = retention::Head::open(&store, &destination.identity())?;
         let writer = Arc::new(AuditWriter {
             store,
             sequence: Mutex::new(AuditSequence {
-                next,
+                head,
                 failed: false,
+                failures: 0,
+                last_failure: None,
             }),
-            max_records,
+            budget,
+            destination,
+            maintenance: tokio::sync::Mutex::new(()),
+            wake: Arc::new(tokio::sync::Notify::new()),
             work: Arc::new(WorkFence::default()),
+            _workspace: workspace,
         });
         writers.insert(identity, Arc::downgrade(&writer));
+        retention::start_worker(&runtime, Arc::downgrade(&writer));
         Ok(Arc::new(Self { writer }))
     }
 
@@ -270,38 +296,51 @@ impl SecurityAudit {
             !sequence.failed,
             "service audit persistence requires recovery"
         );
-        ensure!(
-            sequence.next < self.writer.max_records,
-            "service audit retention quota exhausted"
-        );
         let timestamp_ms =
             u64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis())?;
         let entry = StoredSecurityEvent {
             format: 1,
-            sequence: sequence.next,
+            sequence: sequence.head.position.next_sequence,
             timestamp_ms,
             event,
             transport,
         };
-        let updated = sequence
-            .next
+        let encoded = serde_json::to_vec(&entry)?;
+        ensure!(
+            encoded.len() <= kasumi_types::MAX_AUDIT_EVENT_BYTES,
+            "security audit event exceeds record limit"
+        );
+        let mut updated = sequence.head.clone();
+        updated.position.next_sequence = updated
+            .position
+            .next_sequence
             .checked_add(1)
             .context("service audit sequence overflow")?;
+        updated.position.hot_bytes = updated
+            .position
+            .hot_bytes
+            .checked_add(encoded.len() as u64 + 8)
+            .context("service audit byte count overflow")?;
+        ensure!(
+            updated.position.hot_bytes <= self.writer.budget.hot_bytes,
+            "service audit hot budget exhausted; archive maintenance is pending"
+        );
         if let Err(error) = self.writer.store.write_batch(&[
             WriteOp::put(
                 "security.audit",
-                sequence.next.to_be_bytes(),
-                serde_json::to_vec(&entry)?,
+                sequence.head.position.next_sequence.to_be_bytes(),
+                encoded,
             ),
-            WriteOp::put("security.audit.meta", b"next", updated.to_be_bytes()),
+            updated.write()?,
         ]) {
-            // An fsync may have committed before a key-lease release check
-            // returned an unknown outcome. Never reuse this sequence: queued
-            // writers must fail too until reopening reads its durable value.
+            // Unknown fsync outcomes fence every queued writer until reopen.
             sequence.failed = true;
             return Err(error);
         }
-        sequence.next = updated;
+        sequence.head = updated;
+        if sequence.head.position.hot_bytes >= self.writer.budget.starts_at() {
+            self.writer.wake.notify_one();
+        }
         Ok(())
     }
 
@@ -332,6 +371,15 @@ mod tests {
     use kasumi_store::{NodeStore, test_utils::LocalKeyProvider};
     use std::{future::Future, task::Poll};
 
+    fn audit_destination(store: &TenantStore) -> String {
+        use kasumi_store::AuditArchiveDestination;
+        kasumi_store::FilesystemAuditArchive::open(
+            store.durable_directory().unwrap().join("audit-archives"),
+        )
+        .unwrap()
+        .identity()
+    }
+
     fn event() -> SecurityEvent {
         SecurityEvent {
             kind: SecurityEventKind::AccessDenied,
@@ -361,7 +409,9 @@ mod tests {
                 TenantStore::open_fixture(node.clone(), SECURITY_TENANT.into(), provider.clone())
                     .await
                     .unwrap();
-            let audit = SecurityAudit::open(store.clone(), 10).unwrap();
+            let audit =
+                SecurityAudit::open(store.clone(), kasumi_types::AuditRetentionBudget::default())
+                    .unwrap();
             let (entered, started) = tokio::sync::oneshot::channel();
             let (release, paused) = std::sync::mpsc::sync_channel(1);
             let blocker = tokio::task::spawn_blocking(move || {
@@ -382,7 +432,9 @@ mod tests {
             // Reopening must find that clone's live inner writer and drain it.
             let writer = Arc::downgrade(&audit.writer);
             drop(audit);
-            let audit = SecurityAudit::open(store.clone(), 10).unwrap();
+            let audit =
+                SecurityAudit::open(store.clone(), kasumi_types::AuditRetentionBudget::default())
+                    .unwrap();
             assert!(Arc::ptr_eq(&writer.upgrade().unwrap(), &audit.writer));
 
             let mut shutdown = Box::pin(audit.shutdown());
@@ -423,8 +475,11 @@ mod tests {
             assert_eq!(record["event"]["kind"], "access_denied");
             assert_eq!(record["event"]["request_id"], "cancelled-denial");
             assert_eq!(
-                reopened.get("security.audit.meta", b"next").unwrap(),
-                Some(1u64.to_be_bytes().to_vec())
+                retention::Head::open(&reopened, &audit_destination(&reopened))
+                    .unwrap()
+                    .position
+                    .next_sequence,
+                1
             );
             reopened.shutdown().await;
         });
@@ -441,10 +496,23 @@ mod tests {
             TenantStore::open_fixture(node.clone(), SECURITY_TENANT.into(), provider.clone())
                 .await
                 .unwrap();
-        let first = SecurityAudit::open(store.clone(), 10).unwrap();
-        let second = SecurityAudit::open(store.clone(), 10).unwrap();
+        let first =
+            SecurityAudit::open(store.clone(), kasumi_types::AuditRetentionBudget::default())
+                .unwrap();
+        let second =
+            SecurityAudit::open(store.clone(), kasumi_types::AuditRetentionBudget::default())
+                .unwrap();
         assert!(Arc::ptr_eq(&first.writer, &second.writer));
-        assert!(SecurityAudit::open(store.clone(), 11).is_err());
+        assert!(
+            SecurityAudit::open(
+                store.clone(),
+                kasumi_types::AuditRetentionBudget {
+                    hot_bytes: 65 << 20,
+                    ..Default::default()
+                }
+            )
+            .is_err()
+        );
         let mut other = event();
         other.request_id = "concurrent-denial".into();
         let (one, two) = tokio::join!(first.record(event()), second.record(other));
@@ -455,7 +523,9 @@ mod tests {
         let retained = (*first).clone();
         drop(first);
         drop(second);
-        let third = SecurityAudit::open(store.clone(), 10).unwrap();
+        let third =
+            SecurityAudit::open(store.clone(), kasumi_types::AuditRetentionBudget::default())
+                .unwrap();
         assert!(Arc::ptr_eq(&retained.writer, &third.writer));
         let mut other = event();
         other.request_id = "third-denial".into();
@@ -491,8 +561,11 @@ mod tests {
             ])
         );
         assert_eq!(
-            reopened.get("security.audit.meta", b"next").unwrap(),
-            Some(3u64.to_be_bytes().to_vec())
+            retention::Head::open(&reopened, &audit_destination(&reopened))
+                .unwrap()
+                .position
+                .next_sequence,
+            3
         );
         reopened.shutdown().await;
     }
@@ -500,6 +573,11 @@ mod tests {
     #[tokio::test]
     async fn uncertain_audit_commit_fences_queued_writers_until_sequence_recovery() {
         use kasumi_store::test_utils::{FaultBackend, ManualClock};
+        let directory = tempfile::tempdir().unwrap();
+        let archive = Arc::new(
+            kasumi_store::FilesystemAuditArchive::open(directory.path().join("archive")).unwrap(),
+        );
+        let admission = crate::admission::NodeAdmission::process_default();
         let disk = FaultBackend::new();
         let clock = Arc::new(ManualClock::new());
         let provider = Arc::new(LocalKeyProvider::new([84; 32]));
@@ -511,14 +589,26 @@ mod tests {
         )
         .await
         .unwrap();
-        let audit = SecurityAudit::open(store.clone(), 10).unwrap();
+        let audit = SecurityAudit::open_with_archive(
+            store.clone(),
+            kasumi_types::AuditRetentionBudget::default(),
+            archive.clone(),
+            admission.clone(),
+        )
+        .unwrap();
         let queued = audit.begin().unwrap();
         disk.advance_clock_on_next_sync(clock.clone(), std::time::Duration::from_secs(60));
         let error = audit.record_sync(event()).unwrap_err();
         assert!(error.to_string().contains("outcome unknown"));
         // Even explicit key reauthorization cannot reuse the uncertain counter.
         store.refresh_lease().await.unwrap();
-        let duplicate = SecurityAudit::open(store.clone(), 10).unwrap();
+        let duplicate = SecurityAudit::open_with_archive(
+            store.clone(),
+            kasumi_types::AuditRetentionBudget::default(),
+            archive.clone(),
+            admission.clone(),
+        )
+        .unwrap();
         assert!(duplicate.record_sync(event()).is_err());
         assert!(queued.record(event(), None).is_err());
         assert!(audit.record_sync(event()).is_err());
@@ -532,7 +622,13 @@ mod tests {
         )
         .await
         .unwrap();
-        let reopened = SecurityAudit::open(recovered.clone(), 10).unwrap();
+        let reopened = SecurityAudit::open_with_archive(
+            recovered.clone(),
+            kasumi_types::AuditRetentionBudget::default(),
+            archive.clone(),
+            admission,
+        )
+        .unwrap();
         let mut subsequent = event();
         subsequent.request_id = "after-recovery".into();
         reopened.record(subsequent).await.unwrap();

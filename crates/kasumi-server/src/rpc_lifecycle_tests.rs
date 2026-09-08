@@ -44,7 +44,11 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
     )
     .await
     .unwrap();
-    let audit = kasumi_engine::SecurityAudit::open(audit_store.clone(), 10_000).unwrap();
+    let audit = kasumi_engine::SecurityAudit::open(
+        audit_store.clone(),
+        kasumi_types::AuditRetentionBudget::default(),
+    )
+    .unwrap();
     auth.install_audit(audit.clone()).unwrap();
     let incarnation = Uuid::new_v4();
     let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();

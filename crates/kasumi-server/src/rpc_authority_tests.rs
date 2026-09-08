@@ -72,7 +72,11 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
     )
     .await
     .unwrap();
-    let audit = kasumi_engine::SecurityAudit::open(audit_store.clone(), 10_000).unwrap();
+    let audit = kasumi_engine::SecurityAudit::open(
+        audit_store.clone(),
+        kasumi_types::AuditRetentionBudget::default(),
+    )
+    .unwrap();
     auth.install_audit(audit.clone()).unwrap();
     let signing = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
     let signer = Arc::new(AuthoritySigner::from_pkcs8(&signing.serialize_der()).unwrap());

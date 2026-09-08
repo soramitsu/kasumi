@@ -8,6 +8,45 @@ pub const MAX_AUDIT_EVENT_BYTES: usize = 64 << 10;
 /// Bounds a pruning batch even when individual events are very small.
 pub const MAX_AUDIT_SEGMENT_RECORDS: u64 = 8192;
 
+/// Hot history and immutable archives have separate expandable byte budgets.
+/// The maintenance workspace is reserved before ordinary request admission.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AuditRetentionBudget {
+    pub hot_bytes: u64,
+    pub archive_bytes: u64,
+}
+
+impl Default for AuditRetentionBudget {
+    fn default() -> Self {
+        Self {
+            hot_bytes: 64 << 20,
+            archive_bytes: 64 << 30,
+        }
+    }
+}
+
+impl AuditRetentionBudget {
+    pub const MAINTENANCE_BYTES: u64 = 64 << 20;
+    pub fn validate(&self) -> Result<()> {
+        if self.hot_bytes < (2 * MAX_AUDIT_EVENT_BYTES) as u64
+            || self.archive_bytes < MAX_AUDIT_SEGMENT_BYTES as u64
+        {
+            return Err(Error::new(
+                ErrorCode::InvalidArgument,
+                "audit budget cannot hold a bounded maintenance segment",
+            ));
+        }
+        Ok(())
+    }
+    pub fn starts_at(&self) -> u64 {
+        self.hot_bytes - self.hot_bytes / 4
+    }
+    pub fn drains_to(&self) -> u64 {
+        self.hot_bytes / 2
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct AuditArchiveLink {

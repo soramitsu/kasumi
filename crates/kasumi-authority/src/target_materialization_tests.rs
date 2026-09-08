@@ -17,7 +17,8 @@ async fn audit(node: Arc<NodeStore>) -> Arc<kasumi_engine::SecurityAudit> {
     )
     .await
     .unwrap();
-    kasumi_engine::SecurityAudit::open(store, 100_000).unwrap()
+    kasumi_engine::SecurityAudit::open(store, kasumi_types::AuditRetentionBudget::default())
+        .unwrap()
 }
 struct MaterialFixture {
     issuer: Fixture,
