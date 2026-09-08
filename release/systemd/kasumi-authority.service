@@ -1,0 +1,40 @@
+[Unit]
+Description=Kasumi independent serving authority
+Documentation=https://github.com/soramitsu/kasumi
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=exec
+User=kasumi-authority
+Group=kasumi-authority
+UMask=0077
+StateDirectory=kasumi-authority
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/kasumi-authority
+ExecStart=/usr/local/bin/kasumi-authority serve /var/lib/kasumi-authority/authority.json
+ExecReload=/bin/kill -HUP $MAINPID
+KillSignal=SIGTERM
+TimeoutStopSec=infinity
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadWritePaths=/var/lib/kasumi-authority
+
+[Install]
+WantedBy=multi-user.target

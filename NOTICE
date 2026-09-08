@@ -1,0 +1,11 @@
+Kasumi
+https://github.com/soramitsu/kasumi
+
+Kasumi is distributed under the Apache License, Version 2.0.
+The source retains third-party license and notice texts in vendor/ and
+release/licenses/. Binary distributions include THIRD-PARTY-NOTICES.txt,
+THIRD-PARTY-NOTICES.json and the referenced original texts in licenses/.
+
+The vendored bitmaps and lru sources contain Kasumi's documented memory-safety
+fixes. Their upstream notices and licenses remain in the vendored directories;
+patch provenance and review details are in vendor/README.md.

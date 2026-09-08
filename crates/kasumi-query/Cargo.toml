@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "Document query planning and indexed execution for Kasumi."
 
 [dependencies]
 kasumi-types.workspace = true

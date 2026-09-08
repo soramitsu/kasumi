@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "Reproducible document and network workloads for Kasumi."
 default-run = "kasumi-bench"
 
 [features]
