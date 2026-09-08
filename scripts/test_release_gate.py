@@ -14,6 +14,34 @@ import release_gate
 
 
 class ReleaseGateTests(unittest.TestCase):
+    def test_child_oom_counters_survive_failed_gate_without_claiming_private_peak(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            cgroups = root / "cgroups"
+            child = cgroups / "owned"
+            child.mkdir(parents=True)
+            membership = root / "membership"
+            membership.write_text("0::/owned\n")
+            events = child / "memory.events"
+            events.write_text("oom 0\noom_kill 0\n")
+            (child / "memory.peak").write_text("1234\n")
+            (cgroups / "memory.events").write_text("oom 9\noom_kill 3\n")
+            observe = release_gate.memory_observation
+            command = [sys.executable, "-c", "from pathlib import Path; import sys; Path(" + repr(str(events))
+                       + ").write_text('oom 1\\noom_kill 1\\n'); sys.exit(7)"]
+            with patch.object(release_gate, "memory_observation", lambda: observe(membership, cgroups)):
+                result = release_gate.run_gate("child-oom", command, root, root, os.environ.copy())
+            self.assertEqual(result["exit_code"], 7)
+            resources = root / result["resources"]
+            self.assertEqual(release_gate.sha256(resources), result["resources_sha256"])
+            report = json.loads(resources.read_text())
+            self.assertEqual(report["before"]["cgroups"][str(child)]["memory.events"], "oom 0\noom_kill 0\n")
+            self.assertEqual(report["after"]["cgroups"][str(child)]["memory.events"], "oom 1\noom_kill 1\n")
+            self.assertEqual(report["after"]["cgroups"][str(cgroups)]["memory.events"], "oom 9\noom_kill 3\n")
+            missing = observe(root / "missing", cgroups)
+            self.assertFalse(missing["available"])
+            self.assertTrue(missing["errors"])
+
     def test_compiled_fixture_or_test_artifact_cannot_pass_production_driver(self):
         for violation in ("test-utils", "embedded-fixture", "loopback-fixture", "test-artifact", "missing-inventory"):
             with self.subTest(violation=violation):

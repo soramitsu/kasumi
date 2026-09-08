@@ -74,6 +74,17 @@ and runs the full functional gate set with two Cargo jobs. Linux uses the pinned
 Rust image and Debian snapshot repositories from the validation Dockerfile.
 Actions are pinned to exact commits. Packaging runs twice and compares archive
 checksums; this verifies assembly reproducibility, not independent recompilation.
+The Linux job also runs preflight inside its actual two-CPU, 15 GiB container,
+records the created and terminal container states, and stops that owned container
+on failure or interruption. Host preflight alone cannot establish an inner
+container's effective memory. The terminal record includes Docker's container
+OOM status. Diagnosing an OOM kill of an individual compiler or test child also
+requires kernel or cgroup evidence; a false container OOM flag cannot rule it out.
+The gate runner retains hashed before/after observations of visible cgroup memory
+counters for every command, including failures. Missing counters are recorded as
+unavailable. Cumulative peaks and ancestor counters may cover other work and must
+not be presented as an isolated per-gate measurement. Packaging requires these
+records to remain unchanged alongside the logs.
 Both failed-run logs and successful candidate archives are uploaded as workflow
 artifacts. Hard runner loss can interrupt that upload, so keep the exclusive
 workspace until evidence is copied to operator storage. The workflow does not
