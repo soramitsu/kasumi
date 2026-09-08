@@ -6,6 +6,7 @@ pub mod authority_runtime;
 pub mod cluster;
 pub mod lifecycle_runtime;
 pub mod local_auth;
+pub mod local_recovery;
 pub mod mcp;
 pub mod rpc;
 pub mod runtime;

@@ -1,3 +1,5 @@
+#[allow(dead_code)]
+mod common;
 use kasumi_engine::{Database, SECURITY_TENANT, SecurityAudit, open_local};
 use kasumi_store::{
     FilesystemBackupDestination, NodeStore, TenantStore, test_utils::LocalKeyProvider,
@@ -220,9 +222,7 @@ fn cancelled_embedded_denial_writer_is_drained_before_shutdown_and_reopen() {
 
 #[tokio::test]
 async fn standalone_restore_denials_are_audited_before_a_database_exists() {
-    use kasumi_engine::{
-        ReplicaPlacement, ReplicaRestoreConfig, prepare_replicated_restore, restore_local,
-    };
+    use kasumi_engine::{ReplicaPlacement, ReplicaRestoreConfig, prepare_replicated_restore};
     use kasumi_raft::{Config, InProcessRouter};
     let dir = tempfile::tempdir().unwrap();
     let source_node = NodeStore::open(dir.path().join("source.redb")).unwrap();
@@ -235,10 +235,11 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
     .await;
     let destination =
         Arc::new(FilesystemBackupDestination::new(dir.path().join("backups"), 16 << 20).unwrap());
-    let backup = source
-        .backup(context("owner"), destination.as_ref())
+    let checkpoint = source
+        .backup_checkpoint(context("owner"), destination.as_ref())
         .await
         .unwrap();
+    let backup = checkpoint.backup_id();
     let target_path = dir.path().join("target.redb");
     let target_node = NodeStore::open(&target_path).unwrap();
     let target_store = TenantStore::open_fixture(
@@ -264,16 +265,20 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
     .unwrap();
     let audit =
         SecurityAudit::open(service_store, kasumi_types::AuditRetentionBudget::default()).unwrap();
-    let local = restore_local(
+    let local = kasumi_engine::restore_local(
         &kasumi_engine::RestoreSource {
             timeout_ms: 300_000,
             destination_alias: "backup".into(),
             destination: destination.clone(),
             keys: source_key.clone(),
         },
-        backup,
         target_domains.clone(),
-        context("visitor"),
+        common::local_restore_request(
+            context("visitor"),
+            checkpoint.checkpoint(),
+            uuid::Uuid::new_v4(),
+        ),
+        kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
         audit.clone(),
     )
     .await;
@@ -337,16 +342,20 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
             .is_none()
     );
     target_store.seal();
-    let sealed = restore_local(
+    let sealed = kasumi_engine::restore_local(
         &kasumi_engine::RestoreSource {
             timeout_ms: 300_000,
             destination_alias: "backup".into(),
             destination: destination.clone(),
             keys: source_key,
         },
-        backup,
         target_domains.clone(),
-        context("owner"),
+        common::local_restore_request(
+            context("owner"),
+            checkpoint.checkpoint(),
+            uuid::Uuid::new_v4(),
+        ),
+        kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
         audit.clone(),
     )
     .await;

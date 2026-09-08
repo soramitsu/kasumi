@@ -630,7 +630,7 @@ async fn encrypted_restart_and_full_restore_preserve_permanent_activation_receip
             .unwrap(),
     );
     let backup = db
-        .backup(context("owner"), destination.as_ref())
+        .backup_checkpoint(context("owner"), destination.as_ref())
         .await
         .unwrap();
     db.shutdown().await.unwrap();
@@ -677,14 +677,14 @@ async fn encrypted_restart_and_full_restore_preserve_permanent_activation_receip
     };
     let restored = kasumi_engine::restore_local(
         &source,
-        backup,
         kasumi_store::test_utils::with_custody(
             target,
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([242; 32])),
         )
         .await
         .unwrap(),
-        context("owner"),
+        common::local_restore_request(context("owner"), backup.checkpoint(), uuid::Uuid::new_v4()),
+        kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
         audit.clone(),
     )
     .await
@@ -693,6 +693,7 @@ async fn encrypted_restart_and_full_restore_preserve_permanent_activation_receip
         restored.engine().generation().unwrap().state.incarnation,
         install.expected_incarnation
     );
+    restored.complete_restore(context("owner")).await.unwrap();
     assert_eq!(
         restored
             .activate_schema(context("owner"), install)

@@ -125,21 +125,21 @@ async fn native_resources_and_two_restore_hops_preserve_immutable_issuer_facts()
             scopes: BTreeSet::from([Action::Admin, Action::Read, Action::Write]),
             request_id: format!("restore-{hop}"),
         };
-        let restored = kasumi_engine::restore_local_with_incarnation(
-            &kasumi_engine::RestoreSource {
+        let restored = kasumi_engine::restore_local(
+&kasumi_engine::RestoreSource {
                 timeout_ms: 300_000,
                 destination_alias: "lineage".into(),
                 destination: destination.clone(),
                 keys: current_key,
             },
-            checkpoint.backup_id(),
-            stores.clone(),
-            embedded.clone(),
-            target_incarnation,
-            fixture.audit.clone(),
-        )
+stores.clone(),
+kasumi_engine::LocalRestoreRequest { checkpoint: checkpoint.checkpoint().clone(), target_incarnation, source_context: embedded.clone(), target_context: embedded.clone(), source_purpose: kasumi_store::StoragePurpose::LocalFixture },
+kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+fixture.audit.clone(),
+)
         .await
         .unwrap();
+        restored.complete_restore(embedded.clone()).await.unwrap();
         restored
             .administer(embedded, Operation::Suspend(false))
             .await

@@ -620,7 +620,11 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
     );
     assert!(state.state.collections["docs"].documents.is_empty());
     drop(state);
-    let backup_id = db.backup(context(), backups.as_ref()).await.unwrap();
+    let checkpoint = db
+        .backup_checkpoint(context(), backups.as_ref())
+        .await
+        .unwrap();
+    let backup_id = checkpoint.backup_id();
     let encrypted = backups.get(backup_id, 8 << 20).await.unwrap();
     let full = kasumi_store::EncryptedBackup::from_bytes(&encrypted, 4 << 20)
         .unwrap()
@@ -655,14 +659,14 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
     };
     let restored = kasumi_engine::restore_local(
         &restore_source,
-        backup_id,
         kasumi_store::test_utils::with_custody(
             target,
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
         )
         .await
         .unwrap(),
-        context(),
+        common::local_restore_request(context(), checkpoint.checkpoint(), uuid::Uuid::new_v4()),
+        kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
         restored_audit.clone(),
     )
     .await
@@ -680,6 +684,7 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
         restored_archive.manifest, archive.manifest,
         "source provenance is immutable"
     );
+    restored.complete_restore(context()).await.unwrap();
     restored
         .administer(context(), Operation::Suspend(false))
         .await
@@ -769,15 +774,22 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
         assert!(
             kasumi_engine::restore_local(
                 &restore_source,
-                selected_id,
                 kasumi_store::test_utils::with_custody(
                     target.clone(),
                     std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32]))
                 )
                 .await
                 .unwrap(),
-                context(),
-                audit.clone()
+                common::local_restore_request(
+                    context(),
+                    &kasumi_types::FullBackupCheckpoint {
+                        backup_id: selected_id,
+                        ..checkpoint.checkpoint().clone()
+                    },
+                    uuid::Uuid::new_v4()
+                ),
+                kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+                audit.clone(),
             )
             .await
             .is_err()

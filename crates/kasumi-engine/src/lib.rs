@@ -33,12 +33,11 @@ mod service;
 mod snapshot_codec;
 mod state;
 pub use bootstrap::{
-    MaterializedTargetReplica, PreparedReplicaRestore, ReplicaPlacement, ReplicaRestoreConfig,
-    ReplicatedBootstrap, RestoreSource, TargetMaterializationConfig, TargetReplica,
-    TargetReplicaConfig, VerifiedTargetMaterialization, initialize_replicated,
+    LocalRestoreRequest, MaterializedTargetReplica, PreparedReplicaRestore, ReplicaPlacement,
+    ReplicaRestoreConfig, ReplicatedBootstrap, RestoreSource, TargetMaterializationConfig,
+    TargetReplica, TargetReplicaConfig, VerifiedTargetMaterialization, initialize_replicated,
     materialize_target_replica, open_local, open_local_with_incarnation, open_replicated,
     open_target_replica, prepare_replicated_restore, recovery_workspace_bytes, restore_local,
-    restore_local_with_incarnation, restore_local_with_incarnation_and_admission,
 };
 pub use security_audit::{
     SECURITY_TENANT, SecurityAudit, SecurityEvent, SecurityEventKind, SecurityOutcome,

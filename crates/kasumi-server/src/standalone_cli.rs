@@ -7,6 +7,32 @@ use uuid::Uuid;
 
 pub async fn command(arguments: &[String]) -> Result<bool> {
     match arguments {
+        [command, action, configuration, input] if command == "local-recovery" => {
+            let configuration = Path::new(configuration);
+            let status = match action.as_str() {
+                "start" => {
+                    let request: crate::local_recovery::LocalRecoveryStart =
+                        serde_json::from_slice(&crate::runtime::read_bounded(
+                            Path::new(input),
+                            2 << 20,
+                        )?)?;
+                    let operation = request.operation_id;
+                    crate::local_recovery::start(configuration, request).await?;
+                    crate::local_recovery::resume(configuration, operation).await?
+                }
+                "status" => {
+                    crate::local_recovery::status(configuration, Uuid::parse_str(input)?).await?
+                }
+                "resume" => {
+                    crate::local_recovery::resume(configuration, Uuid::parse_str(input)?).await?
+                }
+                "stop" => {
+                    crate::local_recovery::stop(configuration, Uuid::parse_str(input)?).await?
+                }
+                _ => anyhow::bail!("unknown local recovery operation"),
+            };
+            println!("{}", serde_json::to_string_pretty(&status)?);
+        }
         [command, configuration, output] if command == "recover-administrator" => {
             println!(
                 "{}",
