@@ -734,3 +734,7 @@ fn require_drain_witness(
     }
     Ok(())
 }
+
+#[path = "signer_administration.rs"]
+mod signer_administration;
+pub use signer_administration::{AuthorityAdministrativeFence, CommittedSignerDirective};

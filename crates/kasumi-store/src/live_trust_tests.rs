@@ -148,6 +148,7 @@ impl Fixture {
         SignerTrustCommand {
             operation_id: Uuid::new_v4(),
             expected_revision: trust.current().unwrap().revision,
+            not_after_ms: u64::MAX,
             action,
         }
     }

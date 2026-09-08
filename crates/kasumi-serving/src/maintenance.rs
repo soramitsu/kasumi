@@ -113,6 +113,13 @@ impl AuthorityMembership {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AuthorityMaintenanceAction {
+    /// Consensus records permission for one exact local verifier effect. A
+    /// completed directive is not proof that the verifier published that effect.
+    AuthorizeSignerTrust {
+        verifier: crate::TrustVerifierIdentity,
+        domain_sha256: String,
+        command: Box<crate::SignerTrustCommand>,
+    },
     EnrollLearner {
         node_id: u64,
         member: AuthorityMember,
@@ -130,6 +137,15 @@ pub enum AuthorityMaintenanceAction {
 impl AuthorityMaintenanceAction {
     pub fn validate(&self) -> Result<()> {
         match self {
+            Self::AuthorizeSignerTrust {
+                verifier,
+                domain_sha256,
+                command,
+            } => {
+                verifier.validate()?;
+                validate_sha256(domain_sha256)?;
+                command.digest()?;
+            }
             Self::EnrollLearner { node_id, member } => {
                 ensure!(*node_id > 0, "authority member ID cannot be zero");
                 member.validate()?;
@@ -164,6 +180,13 @@ impl AuthorityMaintenanceCommand {
             !self.operation_id.is_nil() && self.expected_policy_epoch > 0 && self.not_after_ms > 0,
             "invalid authority maintenance identity or admission deadline"
         );
+        if let AuthorityMaintenanceAction::AuthorizeSignerTrust { command, .. } = &self.action {
+            ensure!(
+                command.operation_id == self.operation_id
+                    && command.not_after_ms == self.not_after_ms,
+                "signer directive must preserve the original operation and deadline"
+            );
+        }
         self.action.validate()
     }
     pub fn digest(&self) -> Result<String> {

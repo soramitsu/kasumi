@@ -1049,3 +1049,5 @@ impl AuthorityMaintenanceTransport for TestMaintenanceTransport {
     }
 }
 include!("maintenance_tests.rs");
+
+include!("signer_directive_tests.rs");

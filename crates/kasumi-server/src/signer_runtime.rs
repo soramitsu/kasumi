@@ -14,6 +14,9 @@ use std::{
     sync::Arc,
 };
 const NS: &str = "live.signer.installation";
+#[path = "signer_runtime_authorization.rs"]
+mod authorization;
+use authorization::{CurrentSignerInvocation, ScopedSignerAdministrator};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -66,6 +69,7 @@ impl SignerVerifierConfig {
             "signer verifier must be explicitly initialized before runtime startup"
         );
         let store = self.store(credential, false).await?;
+        let administrator = Arc::new(ScopedSignerAdministrator::default());
         let result = (|| -> Result<BTreeMap<String, Arc<LiveSignerTrust>>> {
             let installed: VerifierInstallation = serde_json::from_slice(
                 &store
@@ -77,7 +81,6 @@ impl SignerVerifierConfig {
                 installed.identity == self.identity && installed.domains.keys().eq(domains.keys()),
                 "exact installed verifier domain set differs"
             );
-            let administrator: Arc<dyn LiveTrustAdministrator> = Arc::new(MaintenanceClosed);
             let mut owners = BTreeMap::new();
             for (digest, domain) in domains {
                 ensure!(digest == domain.digest()?, "noncanonical verifier domain");
@@ -99,25 +102,47 @@ impl SignerVerifierConfig {
                 return Err(error);
             }
         };
-        Ok(Arc::new(InstalledSignerVerifier { store, owners }))
-    }
-}
-// No historical signature or stale replica policy can authorize a transition.
-// The distributed maintenance coordinator must install its current authenticated
-// administrative boundary before exposing live trust changes.
-struct MaintenanceClosed;
-impl LiveTrustAdministrator for MaintenanceClosed {
-    fn authorize(&self, _: &kasumi_types::RequestContext) -> Result<()> {
-        anyhow::bail!(
-            "live signer maintenance requires the installed current administrative coordinator"
-        )
+        Ok(Arc::new(InstalledSignerVerifier {
+            store,
+            owners,
+            administrator,
+        }))
     }
 }
 pub(crate) struct InstalledSignerVerifier {
     store: Arc<TenantStore>,
     owners: BTreeMap<String, Arc<LiveSignerTrust>>,
+    administrator: Arc<ScopedSignerAdministrator>,
 }
 impl InstalledSignerVerifier {
+    pub(crate) async fn authorize(
+        &self,
+        request: &SignerVerifierRequest,
+        fence: Arc<kasumi_authority::AuthorityAdministrativeFence>,
+        domain: &SigningDomain,
+    ) -> Result<(Arc<LiveSignerTrust>, CurrentSignerInvocation)> {
+        request.validate()?;
+        ensure!(
+            *domain == fence.signing_domain()?,
+            "current administrative authority cannot address another signing domain"
+        );
+        ensure!(
+            request.verifier.node_id == fence.local_node_id(),
+            "signer request is not for this authority member"
+        );
+        ensure!(
+            request.domain_sha256 == domain.digest()?,
+            "signer request belongs to another authority domain"
+        );
+        let owner = self.owner(domain)?;
+        ensure!(
+            owner.current()?.verifier == request.verifier,
+            "signer request targets another physical verifier"
+        );
+        let scope = self.administrator.bind(fence).await?;
+        scope.check()?;
+        Ok((owner, scope))
+    }
     pub(crate) fn trust(&self, manifest: AuthorityManifest) -> Result<AuthorityTrust> {
         let mut live = BTreeMap::new();
         for partition in manifest.partitions.keys() {
@@ -243,7 +268,8 @@ impl InitializeSignerVerifier {
                     serde_json::from_slice::<VerifierInstallation>(&previous)? == installed,
                     "verifier installation already differs"
                 );
-                let administrator: Arc<dyn LiveTrustAdministrator> = Arc::new(MaintenanceClosed);
+                let administrator: Arc<dyn LiveTrustAdministrator> =
+                    Arc::new(ScopedSignerAdministrator::default());
                 for certificate in &self.initial_certificates {
                     let owner = store.open_live_signer_trust(
                         &self.verifier.identity,
@@ -257,7 +283,8 @@ impl InitializeSignerVerifier {
                     );
                 }
             } else {
-                let administrator: Arc<dyn LiveTrustAdministrator> = Arc::new(MaintenanceClosed);
+                let administrator: Arc<dyn LiveTrustAdministrator> =
+                    Arc::new(ScopedSignerAdministrator::default());
                 for certificate in &self.initial_certificates {
                     if store.has_live_signer_trust(
                         &self.verifier.identity,

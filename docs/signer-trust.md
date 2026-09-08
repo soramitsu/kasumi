@@ -5,8 +5,10 @@ generation acceptance. Authority lease, lifecycle lease, receipt, target stop,
 and Control epoch stop envelopes now carry the canonical generation-certified
 signature. Serving and lifecycle admission require a current encrypted local
 verifier owner. Online coordinated signer rotation remains an unfinished release
-gate: the production maintenance callback rejects transitions until the current
-authenticated distributed coordinator is installed.
+gate. The current authority leader exposes authenticated local verifier
+maintenance with an exact directive committed in authority consensus before local
+dispatch. The coordinator must still cover every data/Control verifier and all
+issuer generations before declaring a whole rotation complete.
 
 An installation signing root certifies operational Ed25519 keys for an exact
 authority, partition, manifest digest, generation and retirement interval. The
@@ -29,8 +31,8 @@ catalog. Initialization requires an absent record and generation one; opening
 existing trust always reads its current durable state. Opening the same live
 record shares the exact owner and administrator provider.
 
-Each mutation has a permanent operation UUID, expected revision and exact
-inputs. State, receipt and permanent key-use bindings commit atomically. A key
+Each mutation has a permanent operation UUID, expected revision, immutable
+`not_after_ms` admission deadline and exact inputs. State, receipt and permanent key-use bindings commit atomically. A key
 cannot be reused in another generation or signing domain, including a key from
 a stopped staging operation. Restaging the exact same unactivated certificate
 is allowed. The tables have bounded individual records and no lifetime record
@@ -130,3 +132,43 @@ independently encrypted source and receiver verifier state and checks both
 receiver admission and authority response-release fencing after activation.
 These tests do not certify the remaining distributed activation acknowledgement,
 revocation and retirement-drain coordinator.
+
+## Authenticated local maintenance protocol
+
+`KasumiAuthority.SignerMaintenance` and the Rust client `signer_maintenance`
+operate on the exact authority member verifier named by the request. The native
+listener requires actual mTLS and a verified finite JWT for the exact authority
+partition. The current consensus administrator policy authorizes every request.
+A request has a fresh observation UUID, immutable physical verifier identity,
+installed signing-domain digest and one action: `observe`, `receipt`, or
+`administer`. The latter carries the typed stage, stop-stage, activate or
+complete-retirement command.
+
+An `AuthorizeSignerTrust` authority maintenance record commits the original
+command, verifier, domain, principal and admission bound before any local effect.
+This is permission to dispatch that exact effect; completion of that consensus
+directive is not proof of local publication. The response separately contains
+the local permanent receipt and a current verifier observation. Receivers must
+check both against the original request. Root signatures and serialized replies
+cannot create the scoped current-quorum authorization used by the local adapter.
+
+Commands waiting for the local metadata slot retain their original deadline.
+First admission must fit the original verified credential. A later request can
+read an already committed receipt after that bound expires; it cannot rewrite
+the operation's deadline or perform an expired first effect. Failed or uncertain
+local publication is resolved by its original operation UUID. Closed metadata
+owners require reopening from durable state before further operation.
+
+Activation immediately seals the old operational signer and existing leases.
+The administrative channel remains available through its independent current
+mTLS/JWT/quorum fence, including after that signing key is sealed. It checks
+current policy and term again at response release, plus the local observation's
+revision after encoding. Local retirement requires the full installed elapsed
+drain; restart conservatively starts that interval again. No reply represents a
+global drain or claims activation of another verifier.
+
+The current adapter acts on the leader's own verifier. Completing production
+rotation still requires durable dispatch and acknowledgements for every other
+authority, data and Control verifier, permanent revocation for unavailable
+members, coordinated operational-key loading, and the complete issuer drain.
+The local API must not be used to declare that this remaining work has happened.
