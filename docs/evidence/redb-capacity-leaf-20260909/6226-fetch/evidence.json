@@ -1,0 +1,52 @@
+{
+  "scope": "macOS ARM64 target-specific locked dependency fetch only, no compilation or tests. No root dependency patch, Kasumi engine/store/server/Raft compilation, listener or provider. Shared host; full upstream just test, fuzzing, durable disk governor and production integration remain unrun.",
+  "source_before": {
+    "head": "6226cdaa5b1d18a425a695dbec50b1c4fb2a9760",
+    "tree": "153e94a4d114addc8b797b26de4ff6491424de54",
+    "status": "",
+    "lock_sha256": "f42fec1f6e7232b1cd5e9c564cfff56dfec7634f2548eab7eb2096a0d0c17c78",
+    "leaf_lock_sha256": "bcccfce715a96865a7c82c4f97d64140b825ec90ea676d35c26e5deb048c0ce5"
+  },
+  "tools": {
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo": "7672ead309d505577c018fff2cafb3433601f073e38cbe87359ac1f7b944bbf5",
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc": "210df6794001b73ec3d453878707fa1e0bdcb63c427024a6e6574bbe5615a4da",
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustdoc": "aa94960b6a477441f6d1a797394daf4cafcc889d837550c8fa462b102e3fa5da"
+  },
+  "runner_sha256": "1fccc2cf37a80809184643ecb5c7403a19a956cde73ae174e0e27d59c7d54be0",
+  "per_gate_timeout_seconds": 300,
+  "gates": [
+    {
+      "name": "locked-leaf-dependencies",
+      "command": [
+        "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+        "fetch",
+        "--manifest-path",
+        "vendor/redb-4.2.0/Cargo.toml",
+        "--locked",
+        "--target",
+        "aarch64-apple-darwin"
+      ],
+      "seconds": 0.2518309169681743,
+      "process_group_id": 60912,
+      "process_exit_code": 0,
+      "exit_code": 0,
+      "problem": null,
+      "cleanup": {
+        "signals": [],
+        "process_returncode": 0,
+        "process_group_drained": true
+      },
+      "required_test": null,
+      "required_test_passed": true,
+      "log_sha256": "b2b238384e9b07f2c45beb613878592bbc5a64c34afee4d8d31aa827f1320699",
+      "artifacts": []
+    }
+  ],
+  "source_after": {
+    "head": "6226cdaa5b1d18a425a695dbec50b1c4fb2a9760",
+    "tree": "153e94a4d114addc8b797b26de4ff6491424de54",
+    "status": "",
+    "lock_sha256": "f42fec1f6e7232b1cd5e9c564cfff56dfec7634f2548eab7eb2096a0d0c17c78",
+    "leaf_lock_sha256": "bcccfce715a96865a7c82c4f97d64140b825ec90ea676d35c26e5deb048c0ce5"
+  }
+}

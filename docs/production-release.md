@@ -126,6 +126,18 @@ gate above and usable installation artifacts.
 
 ## Current verified increments
 
+- Broader SDK literal decoding passed nine focused tests at `0523c64`, then
+  failed two stale diagnostic assertions in the snapshot cohort (11 passed).
+  The preceding `3027530` compile failure and both exact attempts are retained in
+  `docs/evidence/sdk-literal-small-20260909`. Canonical serialization still needs
+  charged sorting workspace before combination; no combined or native gate is
+  claimed. First-release APIs are replaced directly without compatibility aliases.
+- Experimental redb capacity admission at `ccf76d6` compiles, but its first
+  seven-test cohort has one pass and six fixture failures. Missing dependencies,
+  the preceding compile failure and all raw outcomes are retained in
+  `docs/evidence/redb-capacity-leaf-20260909`. The prototype is outside the
+  production dependency graph; persistent disk ownership and safe commit-time
+  capacity recovery remain open.
 - JSON correction `13fbbc1` passes exact vendored-input checks and all four
   complete upstream suites: default 239, number 245, raw 257 and combined 265
   tests passed, with one unchanged nightly-only UI ignore in each. Original
