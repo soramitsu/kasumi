@@ -13,7 +13,9 @@ use std::sync::Arc;
 pub(crate) const HEAD: &[u8] = b"custody_point_tables";
 const COMMANDS: &str = "raft.custody-commands";
 const AUDIT: &str = "raft.custody-audit";
-const HEAD_BYTES: usize = 256 << 10;
+// A policy can contain two independently bounded 1,024-member administrator
+// sets (current and immutable origin). Keep the existing control-record bound.
+const HEAD_BYTES: usize = 2 << 20;
 const RECORD_BYTES: usize = 64 << 10;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -108,6 +110,7 @@ impl CustodyHead {
             || !self.policy.audit.is_empty()
             || self.commands > self.audit
             || (self.audit == 0) != (self.commands == 0)
+            || (self.commands == 0) != (self.history_bytes == 0)
         {
             return Err(Error::new(
                 ErrorCode::Corruption,
