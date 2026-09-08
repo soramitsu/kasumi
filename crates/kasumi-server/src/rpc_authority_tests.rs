@@ -554,10 +554,20 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
     follower_config.endpoint = follower_endpoint;
     let current_credential = Arc::new(std::sync::RwLock::new(node_token.clone()));
     let source = current_credential.clone();
+    let credential_loads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let loads = credential_loads.clone();
     let mut pool = kasumi_client::KasumiAuthorityPool::new(
         BTreeMap::from([(1, follower_config), (2, absent), (3, config.clone())]),
         trust.clone(),
-        Arc::new(move || Ok(zeroize::Zeroizing::new(source.read().unwrap().clone()))),
+        Arc::new(move || {
+            let snapshot = source.read().unwrap().clone();
+            if loads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                // A renewal published while failover is in flight must not
+                // replace this request's already selected credential.
+                *source.write().unwrap() = "invalid-replacement".into();
+            }
+            Ok(zeroize::Zeroizing::new(snapshot))
+        }),
     )
     .unwrap();
     let discovered = pool
@@ -565,6 +575,20 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
         .await
         .unwrap();
     assert_eq!(&discovered, boot.identity());
+    assert_eq!(
+        credential_loads.load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+    assert!(
+        pool.discover_lease(&discovery, Duration::from_secs(2))
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        credential_loads.load(std::sync::atomic::Ordering::SeqCst),
+        2
+    );
+    *current_credential.write().unwrap() = node_token.clone();
     let original = boot.begin_acquisition().unwrap();
     let acquired = pool
         .acquire_lease(&original, Duration::from_secs(1))
