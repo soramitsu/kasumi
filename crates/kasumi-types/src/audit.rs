@@ -183,3 +183,21 @@ impl AuditRetentionState {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn limits_reject_removed_count_ceiling_and_missing_format_fields() {
+        let current = serde_json::to_value(crate::Limits::default()).unwrap();
+        serde_json::from_value::<crate::Limits>(current.clone()).unwrap();
+        let mut obsolete = current.clone();
+        obsolete["max_audit_records"] = 1.into();
+        assert!(serde_json::from_value::<crate::Limits>(obsolete).is_err());
+        let mut incomplete = current;
+        incomplete
+            .as_object_mut()
+            .unwrap()
+            .remove("max_snapshot_bytes");
+        assert!(serde_json::from_value::<crate::Limits>(incomplete).is_err());
+    }
+}

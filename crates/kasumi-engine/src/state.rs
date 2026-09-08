@@ -304,8 +304,8 @@ impl TenantEngine {
             retirement_count: state.retirements.len(),
             retirement_bytes: state.retirement_bytes,
             max_retirements: state.limits.max_retirements,
-            audit_count: state.audits.len(),
-            max_audit_records: state.limits.max_audit_records,
+            audit_hot_bytes: state.audit_retention.hot_bytes,
+            max_audit_hot_bytes: state.limits.audit_retention.hot_bytes,
             snapshot_bytes: generation.snapshot_bytes()?,
             max_snapshot_bytes: state.limits.max_snapshot_bytes,
             staged_outcome_headroom: state
@@ -642,28 +642,6 @@ impl TenantEngine {
             Ok(value) => value,
             Err(error) => (Err(error), false),
         };
-        // Check the final retained audit size before publishing any staged
-        // effects. This lets an authorized quota increase recover a full audit
-        // budget while never admitting an operation whose required record cannot fit.
-        let extra_event = usize::from(!matches!(
-            command.operation,
-            Operation::Audit(_) | Operation::MaintenanceAudit(_)
-        ));
-        if next.audits.len().saturating_add(extra_event) > next.limits.max_audit_records {
-            let mut rejected = previous.state.clone();
-            rejected.revision = revision;
-            self.current.store(Some(Arc::new(Generation {
-                state: rejected,
-                indexes: previous.indexes.clone(),
-                receipt_expiry: previous.receipt_expiry.clone(),
-                snapshot_accounting: previous.snapshot_accounting.clone(),
-                _read_reservations: vec![],
-            })));
-            return Ok(Err(Error::new(
-                ErrorCode::AuditUnavailable,
-                "audit retention budget exhausted",
-            )));
-        }
         // Audit events are part of the replicated result, never emitted as document-bearing logs.
         let action = match &command.operation {
             Operation::LifecycleControl(_) => "lifecycle_control",
@@ -868,8 +846,7 @@ impl TenantEngine {
                 changed_receipts,
                 &staged_changes(&previous.state, command)?,
             )?;
-            if rejected.audits.len() <= rejected.limits.max_audit_records
-                && rejected.audit_retention.hot_bytes <= rejected.limits.audit_retention.hot_bytes
+            if rejected.audit_retention.hot_bytes <= rejected.limits.audit_retention.hot_bytes
                 && accounting.fits(&rejected)?
                 && lifecycle::completion_fits(&rejected)?
             {
@@ -1155,7 +1132,6 @@ impl TenantEngine {
             || count > state.limits.max_documents
             || logical_bytes > state.limits.max_logical_bytes
             || state.receipts.len() > state.limits.max_receipts
-            || state.audits.len() > state.limits.max_audit_records
         {
             return Err(Error::new(
                 ErrorCode::Corruption,
@@ -1500,7 +1476,6 @@ fn apply_operation(
                 || state.logical_bytes > limits.max_logical_bytes
                 || state.receipts.len() > limits.max_receipts
                 || state.history_archives.len() > limits.history.max_archive_segments
-                || state.audits.len().saturating_add(1) > limits.max_audit_records
                 || state.audit_retention.hot_bytes > limits.audit_retention.hot_bytes
                 || state.audit_retention.archive_bytes > limits.audit_retention.archive_bytes
             {
@@ -1939,7 +1914,6 @@ fn validate_limits(limits: &Limits) -> Result<()> {
         || limits.max_result_bytes == 0
         || limits.max_result_bytes > (8 << 20)
         || limits.max_receipts == 0
-        || limits.max_audit_records == 0
         || limits.max_documents == 0
         || limits.max_logical_bytes == 0
         || limits.max_snapshot_bytes < 4096

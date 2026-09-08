@@ -310,9 +310,6 @@ pub(crate) fn completion_fits(state: &TenantState) -> Result<bool> {
         .changes
         .get(&id)
         .ok_or_else(|| conflict("pending control change absent"))?;
-    if state.audits.len().saturating_add(1) > state.limits.max_audit_records {
-        return Ok(false);
-    }
     let mut completed = state.clone();
     completed.policy = change.request.candidate.policy.clone();
     completed.policy_epoch = next_policy_epoch(state.policy_epoch)?;
@@ -359,8 +356,9 @@ pub(crate) fn completion_fits(state: &TenantState) -> Result<bool> {
             collection: None,
         },
     )?;
-    if encoded_len(completed.lifecycle_control.as_ref().expect("checked"))?
-        > control.installation.max_state_bytes
+    if completed.audit_retention.hot_bytes > completed.limits.audit_retention.hot_bytes
+        || encoded_len(completed.lifecycle_control.as_ref().expect("checked"))?
+            > control.installation.max_state_bytes
     {
         return Ok(false);
     }

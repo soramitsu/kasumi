@@ -298,19 +298,38 @@ fn query() -> QueryRequest {
 #[test]
 fn audit_budget_blocks_effects_and_can_be_increased_without_losing_records() {
     let limits = Limits {
-        max_audit_records: 1,
+        audit_retention: AuditRetentionBudget {
+            hot_bytes: 128 << 10,
+            ..AuditRetentionBudget::default()
+        },
         ..Limits::default()
     };
     let db = engine(false, limits);
     db.apply_command(1, command(Operation::CreateCollection(definition())))
         .unwrap()
         .unwrap();
+    let mut revision = 1;
+    loop {
+        revision += 1;
+        match db
+            .apply_command(revision, command(Operation::SetPolicy(policy(false))))
+            .unwrap()
+        {
+            Ok(_) => assert!(revision < 2000, "hot budget did not fill"),
+            Err(error) => {
+                assert_eq!(error.code, ErrorCode::AuditUnavailable);
+                break;
+            }
+        }
+    }
+    let retained = db.generation().unwrap().state.audits.len();
+    assert!(retained > 1);
     let write = command(Operation::Mutate(batch(
         "audit-cap",
         vec![put("a", "a", Precondition::Absent)],
     )));
     assert_eq!(
-        db.apply_command(2, write.clone())
+        db.apply_command(revision + 1, write.clone())
             .unwrap()
             .unwrap_err()
             .code,
@@ -319,15 +338,18 @@ fn audit_budget_blocks_effects_and_can_be_increased_without_losing_records() {
     assert_eq!(db.generation().unwrap().state.document_count, 0);
     assert!(db.generation().unwrap().state.receipts.is_empty());
     let limits = Limits {
-        max_audit_records: 4,
+        audit_retention: AuditRetentionBudget {
+            hot_bytes: 256 << 10,
+            ..AuditRetentionBudget::default()
+        },
         ..Limits::default()
     };
-    db.apply_command(3, command(Operation::SetLimits(limits)))
+    db.apply_command(revision + 2, command(Operation::SetLimits(limits)))
         .unwrap()
         .unwrap();
-    db.apply_command(4, write).unwrap().unwrap();
+    db.apply_command(revision + 3, write).unwrap().unwrap();
     assert_eq!(db.generation().unwrap().state.document_count, 1);
-    assert_eq!(db.generation().unwrap().state.audits.len(), 3);
+    assert_eq!(db.generation().unwrap().state.audits.len(), retained + 2);
     let snapshot = db.snapshot().unwrap();
     db.restore(&snapshot).unwrap();
     assert_eq!(

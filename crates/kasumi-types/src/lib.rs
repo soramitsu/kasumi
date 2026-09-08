@@ -185,6 +185,7 @@ pub fn default_snapshot_bytes() -> u64 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Limits {
     pub history: HistoryLimits,
     pub atomic: AtomicLimits,
@@ -198,11 +199,9 @@ pub struct Limits {
     pub max_retirements: usize,
     pub max_policy_grants: usize,
     pub max_logical_bytes: u64,
-    #[serde(default = "default_snapshot_bytes")]
     pub max_snapshot_bytes: u64,
     pub max_receipts: usize,
     pub audit_retention: AuditRetentionBudget,
-    pub max_audit_records: usize,
     pub max_query_candidates: usize,
     pub max_query_groups: usize,
     pub max_result_bytes: usize,
@@ -230,7 +229,6 @@ impl Default for Limits {
             max_snapshot_bytes: default_snapshot_bytes(),
             max_receipts: 100_000,
             audit_retention: AuditRetentionBudget::default(),
-            max_audit_records: 1_000_000,
             max_query_candidates: 100_000,
             max_query_groups: 10_000,
             max_result_bytes: 8 << 20,

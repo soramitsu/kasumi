@@ -570,7 +570,10 @@ async fn replicated_control_change_pins_all_partitions_freezes_issuance_and_reco
 async fn control_completion_audit_reservation_survives_denials_and_current_admin_status_recovery() {
     let mut f = Fixture::limits(
         Limits {
-            max_audit_records: 3,
+            audit_retention: AuditRetentionBudget {
+                hot_bytes: 128 << 10,
+                ..AuditRetentionBudget::default()
+            },
             ..Limits::default()
         },
         8 << 20,
@@ -586,8 +589,10 @@ async fn control_completion_audit_reservation_survives_denials_and_current_admin
     .await
     .unwrap();
     assert_eq!(db.engine().generation().unwrap().state.audits.len(), 2);
-    // Repeated denied attempts cannot consume the final reserved completion audit.
-    for _ in 0..3 {
+    // Fill the byte budget with denied attempts. Completion reserves the full
+    // worst-case record even when the original administrative request was short.
+    let mut retained = 2;
+    for attempt in 0..2000 {
         assert!(
             db.lifecycle_control(
                 f.context("owner"),
@@ -596,8 +601,28 @@ async fn control_completion_audit_reservation_survives_denials_and_current_admin
             .await
             .is_err()
         );
+        let count = db.engine().generation().unwrap().state.audits.len();
+        if count == retained {
+            break;
+        }
+        retained = count;
+        assert!(attempt < 1999, "completion byte budget did not fill");
     }
-    assert_eq!(db.engine().generation().unwrap().state.audits.len(), 2);
+    assert!(retained > 2);
+    for _ in 0..3 {
+        assert!(
+            db.lifecycle_control(
+                f.context("owner"),
+                LifecycleControlCommand::CommitIntent((f.intent(epoch)).into()),
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(
+            db.engine().generation().unwrap().state.audits.len(),
+            retained
+        );
+    }
     let pending = db
         .observe_lifecycle_change(f.context("owner"), change.command_id)
         .await
@@ -617,7 +642,10 @@ async fn control_completion_audit_reservation_survives_denials_and_current_admin
         .code,
         ErrorCode::UnknownOutcome
     );
-    assert_eq!(db.engine().generation().unwrap().state.audits.len(), 3);
+    assert_eq!(
+        db.engine().generation().unwrap().state.audits.len(),
+        retained + 1
+    );
     let request = ReadLifecycleStatus {
         command_id: change.command_id,
         expected_incarnation: f.installation.root.control_incarnation,
@@ -634,7 +662,10 @@ async fn control_completion_audit_reservation_survives_denials_and_current_admin
     assert!(
         matches!(status.command,Some(LifecycleCommandStatus::PolicyChange(ref c)) if c.completed_revision.is_some() && c.completion_stops.as_ref().unwrap().len()==2)
     );
-    assert_eq!(db.engine().generation().unwrap().state.audits.len(), 3);
+    assert_eq!(
+        db.engine().generation().unwrap().state.audits.len(),
+        retained + 1
+    );
     drop(pending);
     drop(db);
     f.close().await;

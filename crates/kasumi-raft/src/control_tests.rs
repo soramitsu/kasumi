@@ -68,8 +68,8 @@ pub(crate) fn seed() -> Result<(Command, RetirementLogSeed)> {
         retirement_count: 0,
         retirement_bytes: 0,
         max_retirements: 4096,
-        audit_count: 0,
-        max_audit_records: 1000,
+        audit_hot_bytes: 0,
+        max_audit_hot_bytes: 1 << 20,
         snapshot_bytes: 1024,
         max_snapshot_bytes: 1 << 20,
         staged_outcome_headroom: 0,
@@ -86,6 +86,21 @@ pub(crate) fn retirement_entry() -> Result<Entry<TypeConfig>> {
             seed,
         )?),
     })
+}
+
+#[test]
+fn retirement_reserves_full_width_audit_bytes_before_commitment() -> Result<()> {
+    let (command, seed) = seed()?;
+    let mut state = seed.source().clone();
+    state.audit_hot_bytes = state.max_audit_hot_bytes;
+    let full = RetirementLogSeed::prepare(&command, state.clone())?;
+    assert_eq!(
+        full.reserve_success_capacity().unwrap_err().code,
+        ErrorCode::AuditUnavailable
+    );
+    state.max_audit_hot_bytes += MAX_AUDIT_EVENT_BYTES as u64;
+    RetirementLogSeed::prepare(&command, state)?.reserve_success_capacity()?;
+    Ok(())
 }
 pub(crate) fn ordinary(index: u64) -> Entry<TypeConfig> {
     Entry {

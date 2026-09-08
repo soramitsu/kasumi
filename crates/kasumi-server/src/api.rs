@@ -1823,7 +1823,10 @@ name: "docs".into(),
             .await
             .unwrap();
         let limits = Limits {
-            max_audit_records: 1,
+            audit_retention: kasumi_types::AuditRetentionBudget {
+                hot_bytes: 128 << 10,
+                ..Default::default()
+            },
             ..Limits::default()
         };
         let control = kasumi_engine::open_local(
@@ -1843,7 +1846,20 @@ name: "docs".into(),
             .administer(context.clone(), Operation::SetPolicy(policy.clone()))
             .await
             .unwrap();
-        assert_eq!(control.engine().generation().unwrap().state.audits.len(), 1);
+        for attempt in 0..2000 {
+            match control
+                .administer(context.clone(), Operation::SetPolicy(policy.clone()))
+                .await
+            {
+                Ok(_) => assert!(attempt < 1999, "hot byte budget did not fill"),
+                Err(error) => {
+                    assert_eq!(error.code, ErrorCode::AuditUnavailable);
+                    break;
+                }
+            }
+        }
+        let retained = control.engine().generation().unwrap().state.audits.len();
+        assert!(retained > 1);
         let mut config = crate::runtime::example_config();
         config.control.initial_policy = policy;
         let manager = Administration::new(
@@ -1870,7 +1886,10 @@ name: "docs".into(),
         .unwrap();
         let token = fixture.resource_token("person", tenant, "kasumi:admin kasumi:read kasumi:write", Some(json!({"kind":"control","incarnation":control.engine().generation().unwrap().state.incarnation})));
         let limits = Limits {
-            max_audit_records: 10,
+            audit_retention: kasumi_types::AuditRetentionBudget {
+                hot_bytes: 256 << 10,
+                ..Default::default()
+            },
             ..Limits::default()
         };
         let payload = serde_json::to_vec(&limits).unwrap();
@@ -1918,10 +1937,14 @@ name: "docs".into(),
                 .unwrap()
                 .state
                 .limits
-                .max_audit_records,
-            10
+                .audit_retention
+                .hot_bytes,
+            256 << 10
         );
-        assert_eq!(control.engine().generation().unwrap().state.audits.len(), 2);
+        assert_eq!(
+            control.engine().generation().unwrap().state.audits.len(),
+            retained + 1
+        );
         assert_eq!(
             fixture.registry.database(&context).err().unwrap().code,
             ErrorCode::Forbidden

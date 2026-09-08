@@ -35,8 +35,8 @@ pub struct RetirementReplayState {
     pub retirement_count: usize,
     pub retirement_bytes: usize,
     pub max_retirements: usize,
-    pub audit_count: usize,
-    pub max_audit_records: usize,
+    pub audit_hot_bytes: u64,
+    pub max_audit_hot_bytes: u64,
     pub snapshot_bytes: usize,
     pub max_snapshot_bytes: u64,
     pub staged_outcome_headroom: usize,
@@ -115,7 +115,7 @@ impl RetirementLogSeed {
                 && self.source.administrators.len() <= 1024
                 && self.source.max_retirements <= 100_000
                 && self.source.retirement_count <= self.source.max_retirements
-                && self.source.audit_count <= self.source.max_audit_records
+                && self.source.audit_hot_bytes <= self.source.max_audit_hot_bytes
                 && self.source.snapshot_bytes as u64 <= self.source.max_snapshot_bytes,
             "retirement seed source binding differs"
         );
@@ -206,7 +206,6 @@ impl RetirementLogSeed {
             && !self.source.pending_restore
             && self.source.existing_identity.is_none()
             && self.source.retirement_count < self.source.max_retirements
-            && self.source.audit_count < self.source.max_audit_records
             && self.source.policy_epoch < u64::MAX
             && self.admitted_at_ms <= self.request.not_after_ms
             && self.request.checkpoint.revision <= self.source.previous_revision
@@ -275,6 +274,17 @@ impl RetirementLogSeed {
                 )
             })?
             .len();
+        if self
+            .source
+            .audit_hot_bytes
+            .checked_add(audit_bytes as u64)
+            .is_none_or(|bytes| bytes > self.source.max_audit_hot_bytes)
+        {
+            return Err(kasumi_types::Error::new(
+                kasumi_types::ErrorCode::AuditUnavailable,
+                "retirement completion audit capacity unavailable",
+            ));
+        }
         // The only other changes are a 64-byte identity map key, commas,
         // retired/suspended flags and decimal revision/policy/accounting scalars.
         // 1024 bytes covers their complete worst-case growth without needing

@@ -90,14 +90,7 @@ impl TenantEngine {
             next.revision = revision;
         }
         let mut outcome = outcome;
-        if next.audits.len() >= next.limits.max_audit_records {
-            next = previous.state.clone();
-            next.revision = revision;
-            outcome = Err(error(
-                ErrorCode::AuditUnavailable,
-                "target audit quota exhausted",
-            ));
-        } else {
+        {
             let event_id = format!("{}:{revision}", next.incarnation);
             super::append_audit(
                 &mut next,
@@ -123,7 +116,15 @@ impl TenantEngine {
             )?;
         }
         let mut accounting = SnapshotAccounting::rebuild(&next)?;
-        if !accounting.fits(&next)? || validate_target_history(&next).is_err() {
+        if next.audit_retention.hot_bytes > next.limits.audit_retention.hot_bytes {
+            next = previous.state.clone();
+            next.revision = revision;
+            accounting = previous.snapshot_accounting.clone();
+            outcome = Err(error(
+                ErrorCode::AuditUnavailable,
+                "target hot audit byte budget exhausted",
+            ));
+        } else if !accounting.fits(&next)? || validate_target_history(&next).is_err() {
             next = previous.state.clone();
             next.revision = revision;
             accounting = previous.snapshot_accounting.clone();

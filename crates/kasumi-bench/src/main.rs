@@ -178,7 +178,11 @@ fn limits(documents: usize, operations: usize) -> Limits {
         max_documents: documents as u64 + 1,
         max_logical_bytes: (documents as u64 + 1) * 2048,
         max_receipts: documents.div_ceil(256) + operations * 3 + 128,
-        max_audit_records: documents.div_ceil(256) + operations * 3 + 1024,
+        audit_retention: AuditRetentionBudget {
+            hot_bytes: ((documents.div_ceil(256) + operations * 3 + 1024) as u64 * 1024)
+                .max(AuditRetentionBudget::default().hot_bytes),
+            ..AuditRetentionBudget::default()
+        },
         ..Limits::default()
     }
 }
