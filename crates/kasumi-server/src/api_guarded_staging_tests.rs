@@ -10,6 +10,11 @@ async fn guarded_stop_secure_sdk_preserves_exact_identity_and_native_authority()
     let token = fixture.token("person", "tenant-a", "kasumi:read kasumi:write");
     let current = fixture.db.engine().generation().unwrap();
     let original = BeginStagedTransaction {
+        scope: kasumi_types::StagedTransactionScope {
+            tenant: "tenant-a".into(),
+            principal: "person".into(),
+            incarnation: fixture.incarnation.to_string(),
+        },
         transaction_id: "native-never-started".into(),
         ttl_ms: 60_000,
         manifest: StagedManifest::from_chunks(&[StagedChunk {
@@ -216,4 +221,253 @@ async fn guarded_stop_secure_sdk_preserves_exact_identity_and_native_authority()
     stop.send(true).unwrap();
     serving.await.unwrap().unwrap();
     fixture.close().await;
+}
+
+#[tokio::test]
+async fn native_staged_original_scope_cannot_be_reinterpreted_by_another_authorized_principal() {
+    use kasumi_types::{
+        AppendStagedChunk, BeginStagedTransaction, Mutation, Precondition, ReadAssertion,
+        StagedChunk, StagedManifest, StagedOutcome, StagedTransactionStatus, StopStagedTransaction,
+    };
+    let fixture = Fixture::new().await;
+    let mut policy = fixture
+        .db
+        .engine()
+        .generation()
+        .unwrap()
+        .state
+        .policy
+        .clone();
+    policy.grants.push(Grant {
+        principal: "replacement".into(),
+        collection: None,
+        actions: BTreeSet::from([Action::Read, Action::Write, Action::Admin]),
+    });
+    fixture
+        .db
+        .administer(
+            RequestContext {
+                authorization: kasumi_types::RequestAuthorization::service_identity(),
+                principal: "person".into(),
+                tenant: "tenant-a".into(),
+                request_id: "grant-second-writer".into(),
+                scopes: BTreeSet::from([Action::Read, Action::Write, Action::Admin]),
+            },
+            Operation::SetPolicy(policy),
+        )
+        .await
+        .unwrap();
+    let a = fixture.token("person", "tenant-a", "kasumi:read kasumi:write");
+    let b = fixture.token("replacement", "tenant-a", "kasumi:read kasumi:write");
+    let data = fixture.data();
+    let chunk = StagedChunk {
+        read_set: vec![],
+        operations: vec![Mutation::Put {
+            collection: "docs".into(),
+            id: "scope-result".into(),
+            expected: Precondition::Absent,
+            body: json!({"owner":"person"}),
+        }],
+    };
+    let original = BeginStagedTransaction {
+        scope: kasumi_types::StagedTransactionScope {
+            tenant: "tenant-a".into(),
+            principal: "person".into(),
+            incarnation: fixture.incarnation.to_string(),
+        },
+        transaction_id: "original-identity".into(),
+        manifest: StagedManifest::from_chunks(std::slice::from_ref(&chunk)).unwrap(),
+        ttl_ms: 60_000,
+    };
+    let reference = original.reference().unwrap();
+    data.begin_staged_transaction(native(
+        proto::BeginStagedTransactionRequest {
+            request_json: serde_json::to_vec(&original).unwrap(),
+        },
+        &a,
+    ))
+    .await
+    .unwrap();
+    let current = fixture.db.engine().generation().unwrap();
+    let stop = StopStagedTransaction {
+        original: original.clone(),
+        admission: vec![
+            ReadAssertion::Snapshot {
+                incarnation: current.state.incarnation.clone(),
+                policy_epoch: current.state.policy_epoch,
+                schema_epoch: current.state.schema_epoch,
+            },
+            ReadAssertion::Before {
+                not_after_ms: kasumi_clock::EpochClock::system()
+                    .unwrap()
+                    .now_ms()
+                    .unwrap()
+                    + 60_000,
+            },
+        ],
+    };
+    drop(current);
+    let foreign_stop = data
+        .stop_staged_transaction(native(
+            proto::StopStagedTransactionRequest {
+                request_json: serde_json::to_vec(&stop).unwrap(),
+            },
+            &b,
+        ))
+        .await;
+    // Every operation must retain A's original scope; B has independent write
+    // and administrator grants, so these are scope failures, not missing RBAC.
+    for field in 0..4 {
+        let mut changed = original.clone();
+        let bearer = if field == 0 { &b } else { &a };
+        match field {
+            0 => {}
+            1 => changed.scope.principal = "replacement".into(),
+            2 => changed.scope.tenant = "another-tenant".into(),
+            _ => changed.scope.incarnation = uuid::Uuid::new_v4().to_string(),
+        }
+        let reference = changed.reference().unwrap();
+        assert!(
+            data.begin_staged_transaction(native(
+                proto::BeginStagedTransactionRequest {
+                    request_json: serde_json::to_vec(&changed).unwrap(),
+                },
+                bearer
+            ))
+            .await
+            .is_err()
+        );
+        assert!(
+            data.append_staged_chunk(native(
+                proto::AppendStagedChunkRequest {
+                    request_json: serde_json::to_vec(&AppendStagedChunk {
+                        transaction: reference.clone(),
+                        index: 0,
+                        chunk: chunk.clone()
+                    })
+                    .unwrap(),
+                },
+                bearer
+            ))
+            .await
+            .is_err()
+        );
+        assert!(
+            data.finalize_staged_transaction(native(
+                proto::StagedTransactionReference {
+                    request_json: serde_json::to_vec(&reference).unwrap(),
+                },
+                bearer
+            ))
+            .await
+            .is_err()
+        );
+        assert!(
+            data.staged_transaction_status(native(
+                proto::StagedTransactionReference {
+                    request_json: serde_json::to_vec(&reference).unwrap(),
+                },
+                bearer
+            ))
+            .await
+            .is_err()
+        );
+        assert!(
+            data.stop_staged_transaction(native(
+                proto::StopStagedTransactionRequest {
+                    request_json: serde_json::to_vec(&StopStagedTransaction {
+                        original: changed,
+                        admission: stop.admission.clone()
+                    })
+                    .unwrap(),
+                },
+                bearer
+            ))
+            .await
+            .is_err()
+        );
+    }
+    let mut missing = serde_json::to_value(&original).unwrap();
+    missing.as_object_mut().unwrap().remove("scope");
+    assert_eq!(
+        data.begin_staged_transaction(native(
+            proto::BeginStagedTransactionRequest {
+                request_json: serde_json::to_vec(&missing).unwrap(),
+            },
+            &a
+        ))
+        .await
+        .unwrap_err()
+        .code(),
+        Code::InvalidArgument
+    );
+    assert_eq!(
+        fixture
+            .db
+            .engine()
+            .generation()
+            .unwrap()
+            .state
+            .staged_transactions
+            .len(),
+        1
+    );
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut header = Header::new(Algorithm::EdDSA);
+    header.kid = Some("test-key".into());
+    header.typ = Some("at+jwt".into());
+    let renewed = format!("Bearer {}", jsonwebtoken::encode(&header, &json!({
+        "sub":"person", "tenant":"tenant-a", "scope":"kasumi:read kasumi:write",
+        "iss":"https://issuer.example", "aud":"https://kasumi.example/mcp", "exp":now+600,
+        "jti":"renewed-original-principal", "kasumi_resource":{"kind":"database","incarnation":fixture.incarnation},
+    }), &fixture.key).unwrap());
+    assert_ne!(a, renewed);
+    let observed = data
+        .staged_transaction_status(native(
+            proto::StagedTransactionReference {
+                request_json: serde_json::to_vec(&reference).unwrap(),
+            },
+            &a,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    let observed: StagedTransactionStatus =
+        serde_json::from_slice(&observed.response_json).unwrap();
+    assert_eq!(observed.transaction, reference);
+    assert!(matches!(observed.outcome, StagedOutcome::Uploading));
+    data.append_staged_chunk(native(
+        proto::AppendStagedChunkRequest {
+            request_json: serde_json::to_vec(&AppendStagedChunk {
+                transaction: reference.clone(),
+                index: 0,
+                chunk,
+            })
+            .unwrap(),
+        },
+        &renewed,
+    ))
+    .await
+    .unwrap();
+    data.finalize_staged_transaction(native(
+        proto::StagedTransactionReference {
+            request_json: serde_json::to_vec(&reference).unwrap(),
+        },
+        &renewed,
+    ))
+    .await
+    .unwrap();
+    assert!(
+        fixture.db.engine().generation().unwrap().state.collections["docs"]
+            .documents
+            .contains_key("scope-result")
+    );
+    fixture.close().await;
+    assert!(
+        foreign_stop.is_err(),
+        "foreign authorized principal acknowledged a stop while the original writer still committed: {foreign_stop:?}"
+    );
 }

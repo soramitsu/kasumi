@@ -1184,13 +1184,13 @@ impl Database {
                 &context,
                 request,
             )?,
-            Operation::BeginStaged(request) => crate::state::staging::authorize_manifest(
+            Operation::BeginStaged(request) => crate::state::staging::authorize_begin(
                 &self.engine.generation()?.state,
                 &context,
-                &request.manifest,
+                request,
             )?,
             Operation::AppendStaged(request) => {
-                crate::state::staging::lookup(
+                crate::state::staging::authorize_upload(
                     &self.engine.generation()?.state,
                     &context,
                     &request.transaction,
@@ -1202,7 +1202,7 @@ impl Database {
                 request,
             )?,
             Operation::FinalizeStaged(reference) => {
-                crate::state::staging::lookup(
+                crate::state::staging::authorize_upload(
                     &self.engine.generation()?.state,
                     &context,
                     reference,
