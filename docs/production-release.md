@@ -627,3 +627,13 @@ a read-only quota getter or caller capacity claim cannot close this dependency.
   `docs/evidence/control-positive-completion-20260908`. Missing completion still
   remains unknown; negative resolution and actual three-target TLS acceptance
   are separate unfinished work.
+
+- Frozen Linux ARM64 `3a8d512` completed with 545 workspace passes, one failure
+  and two ignored tests. The three-node restored-runtime restart could not acquire
+  its still-owned database lock. All other gates, including strict lint and
+  fixture-free production builds, passed. Actual container exit1/PID0 and no-OOM
+  counters, raw logs, executable hashes and observed shared-host overlap are in
+  `docs/evidence/frozen-linux-arm64-3a8d512-terminal-20260908`. The workspace failure
+  blocks packaging; no release candidate was produced. A separately identified
+  audit-worker ownership gap is under validation, not an accepted explanation or
+  a substitute for the corrected runtime gate.

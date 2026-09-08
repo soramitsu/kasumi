@@ -1,0 +1,21 @@
+{
+  "captured_at_utc": "2026-09-08T14:21:07.491667+00:00",
+  "scope": "Shared macOS host; Linux ARM64 container functional checkpoint only. No quiet-host timing or performance claim.",
+  "demo_final_compile": {
+    "reported_session": 22369,
+    "reported_process_group": 86262,
+    "reported_exit_code": 0,
+    "reported_drain": "owner reports PG86262 drained; no further compilers planned",
+    "observation_basis": "owner terminal message in current task",
+    "root_observed_pids": "  PID  PPID  PGID STAT ELAPSED COMM\n"
+  },
+  "additional_observed_work": [
+    "Integration small fixture-free Core47/connector41 tests E and strict F: owner reports pass and drain; source unchanged.",
+    "Root agents alternating jobs1 workspace Cargo CHECK-only fixture adaptation attempts; individual source-bound failures retained.",
+    "Root client-only exact-receipt and capacity/network unit gates dc64a42 started while Linux workspace active; separate target."
+  ],
+  "limitations": [
+    "No cross-task timing inference. Individual outcomes require their own retained evidence.",
+    "Other host work may exist; this is observed overlap, not exhaustive host inventory."
+  ]
+}

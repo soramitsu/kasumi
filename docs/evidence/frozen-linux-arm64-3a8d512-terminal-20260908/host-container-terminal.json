@@ -1,0 +1,239 @@
+[
+    {
+        "Id": "1e568c64b3ea987e683860b93b6bdffe400f19f383a3c1da97b1a425348be183",
+        "Created": "2026-09-08T13:59:44.754440931Z",
+        "Path": "bash",
+        "Args": [
+            "/evidence/execute.sh"
+        ],
+        "State": {
+            "Status": "exited",
+            "Running": false,
+            "Paused": false,
+            "Restarting": false,
+            "OOMKilled": false,
+            "Dead": false,
+            "Pid": 0,
+            "ExitCode": 1,
+            "Error": "",
+            "StartedAt": "2026-09-08T14:02:25.936822184Z",
+            "FinishedAt": "2026-09-08T14:35:50.686200474Z"
+        },
+        "Image": "sha256:abf802c3daf7460f7498869910288b63bf5e138efc28e3c0704bf931b99e1ed4",
+        "ResolvConfPath": "/var/lib/docker/containers/1e568c64b3ea987e683860b93b6bdffe400f19f383a3c1da97b1a425348be183/resolv.conf",
+        "HostnamePath": "/var/lib/docker/containers/1e568c64b3ea987e683860b93b6bdffe400f19f383a3c1da97b1a425348be183/hostname",
+        "HostsPath": "/var/lib/docker/containers/1e568c64b3ea987e683860b93b6bdffe400f19f383a3c1da97b1a425348be183/hosts",
+        "LogPath": "/var/lib/docker/containers/1e568c64b3ea987e683860b93b6bdffe400f19f383a3c1da97b1a425348be183/1e568c64b3ea987e683860b93b6bdffe400f19f383a3c1da97b1a425348be183-json.log",
+        "Name": "/kasumi-functional-3a8d512",
+        "RestartCount": 0,
+        "Driver": "overlay2",
+        "Platform": "linux",
+        "MountLabel": "",
+        "ProcessLabel": "",
+        "AppArmorProfile": "docker-default",
+        "ExecIDs": null,
+        "HostConfig": {
+            "Binds": [
+                "/opt/kasumi-acceptance/cargo-registry:/usr/local/cargo/registry",
+                "/opt/kasumi-acceptance/3a8d512-git:/workspace:ro",
+                "/opt/kasumi-acceptance/3a8d512-functional-arm64:/evidence"
+            ],
+            "ContainerIDFile": "",
+            "LogConfig": {
+                "Type": "json-file",
+                "Config": {}
+            },
+            "NetworkMode": "bridge",
+            "PortBindings": {},
+            "RestartPolicy": {
+                "Name": "no",
+                "MaximumRetryCount": 0
+            },
+            "AutoRemove": false,
+            "VolumeDriver": "",
+            "VolumesFrom": null,
+            "ConsoleSize": [
+                0,
+                0
+            ],
+            "CapAdd": null,
+            "CapDrop": null,
+            "CgroupnsMode": "private",
+            "Dns": [],
+            "DnsOptions": [],
+            "DnsSearch": [],
+            "ExtraHosts": null,
+            "GroupAdd": null,
+            "IpcMode": "private",
+            "Cgroup": "",
+            "Links": null,
+            "OomScoreAdj": 0,
+            "PidMode": "",
+            "Privileged": false,
+            "PublishAllPorts": false,
+            "ReadonlyRootfs": false,
+            "SecurityOpt": null,
+            "UTSMode": "",
+            "UsernsMode": "",
+            "ShmSize": 67108864,
+            "Runtime": "runc",
+            "Isolation": "",
+            "CpuShares": 0,
+            "Memory": 16106127360,
+            "NanoCpus": 2000000000,
+            "CgroupParent": "",
+            "BlkioWeight": 0,
+            "BlkioWeightDevice": [],
+            "BlkioDeviceReadBps": [],
+            "BlkioDeviceWriteBps": [],
+            "BlkioDeviceReadIOps": [],
+            "BlkioDeviceWriteIOps": [],
+            "CpuPeriod": 0,
+            "CpuQuota": 0,
+            "CpuRealtimePeriod": 0,
+            "CpuRealtimeRuntime": 0,
+            "CpusetCpus": "",
+            "CpusetMems": "",
+            "Devices": [],
+            "DeviceCgroupRules": null,
+            "DeviceRequests": null,
+            "MemoryReservation": 0,
+            "MemorySwap": 16106127360,
+            "MemorySwappiness": null,
+            "OomKillDisable": null,
+            "PidsLimit": null,
+            "Ulimits": [],
+            "CpuCount": 0,
+            "CpuPercent": 0,
+            "IOMaximumIOps": 0,
+            "IOMaximumBandwidth": 0,
+            "MaskedPaths": [
+                "/proc/asound",
+                "/proc/acpi",
+                "/proc/kcore",
+                "/proc/keys",
+                "/proc/latency_stats",
+                "/proc/timer_list",
+                "/proc/timer_stats",
+                "/proc/sched_debug",
+                "/proc/scsi",
+                "/sys/firmware",
+                "/sys/devices/virtual/powercap"
+            ],
+            "ReadonlyPaths": [
+                "/proc/bus",
+                "/proc/fs",
+                "/proc/irq",
+                "/proc/sys",
+                "/proc/sysrq-trigger"
+            ]
+        },
+        "GraphDriver": {
+            "Data": {
+                "LowerDir": "/var/lib/docker/overlay2/eaa31b11fd68e87f3444fe2c92d2da72e87925d8f262eb657b62491af57471f9-init/diff:/var/lib/docker/overlay2/6dcef4ccee06cd92327c8b3912c5b97455bfd21de953e522dbf8a7105413979e/diff:/var/lib/docker/overlay2/4f02e294aea6232afa4c1514560d472a439be3539f47a058b3bc2ae4f12a90c2/diff:/var/lib/docker/overlay2/315e5e5da7c7bce65ace133b6d0b815c425a0c76f13e14eb21e5de51a764c8c8/diff:/var/lib/docker/overlay2/30715fe0df45e4a86072cb95e64885108a5880fba121ae491f21fab866ecee79/diff:/var/lib/docker/overlay2/8e984fea8af61306490060fde09c309cc51b16e1aab6213c712b144205109c4d/diff:/var/lib/docker/overlay2/31b3d29d22212062a9c3b9827de29dc05a788643ddf82859d0666388b3167abe/diff:/var/lib/docker/overlay2/c291b0ea2d75b30ad0618d81f309af28ae051d47bd351030d5fd78e6db696e37/diff:/var/lib/docker/overlay2/683b7bcf4cd2a77c90e5927910dec399ca4ea49b2b6dae03537270d22cda7adc/diff",
+                "MergedDir": "/var/lib/docker/overlay2/eaa31b11fd68e87f3444fe2c92d2da72e87925d8f262eb657b62491af57471f9/merged",
+                "UpperDir": "/var/lib/docker/overlay2/eaa31b11fd68e87f3444fe2c92d2da72e87925d8f262eb657b62491af57471f9/diff",
+                "WorkDir": "/var/lib/docker/overlay2/eaa31b11fd68e87f3444fe2c92d2da72e87925d8f262eb657b62491af57471f9/work"
+            },
+            "Name": "overlay2"
+        },
+        "Mounts": [
+            {
+                "Type": "bind",
+                "Source": "/opt/kasumi-acceptance/cargo-registry",
+                "Destination": "/usr/local/cargo/registry",
+                "Mode": "",
+                "RW": true,
+                "Propagation": "rprivate"
+            },
+            {
+                "Type": "bind",
+                "Source": "/opt/kasumi-acceptance/3a8d512-git",
+                "Destination": "/workspace",
+                "Mode": "ro",
+                "RW": false,
+                "Propagation": "rprivate"
+            },
+            {
+                "Type": "bind",
+                "Source": "/opt/kasumi-acceptance/3a8d512-functional-arm64",
+                "Destination": "/evidence",
+                "Mode": "",
+                "RW": true,
+                "Propagation": "rprivate"
+            }
+        ],
+        "Config": {
+            "Hostname": "1e568c64b3ea",
+            "Domainname": "",
+            "User": "",
+            "AttachStdin": false,
+            "AttachStdout": true,
+            "AttachStderr": true,
+            "Tty": false,
+            "OpenStdin": false,
+            "StdinOnce": false,
+            "Env": [
+                "GIT_CONFIG_COUNT=1",
+                "GIT_CONFIG_KEY_0=safe.directory",
+                "GIT_CONFIG_VALUE_0=/workspace",
+                "PYTHONDONTWRITEBYTECODE=1",
+                "RUST_TEST_THREADS=2",
+                "PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                "RUSTUP_HOME=/usr/local/rustup",
+                "CARGO_HOME=/usr/local/cargo",
+                "RUST_VERSION=1.97.1",
+                "CARGO_TARGET_DIR=/workspace/target/linux-validation"
+            ],
+            "Cmd": [
+                "bash",
+                "/evidence/execute.sh"
+            ],
+            "Image": "abf802c3daf7460f7498869910288b63bf5e138efc28e3c0704bf931b99e1ed4",
+            "Volumes": null,
+            "WorkingDir": "/workspace",
+            "Entrypoint": null,
+            "OnBuild": null,
+            "Labels": {
+                "org.opencontainers.image.source": "https://github.com/rust-lang/docker-rust"
+            }
+        },
+        "NetworkSettings": {
+            "Bridge": "",
+            "SandboxID": "c190702f6c0c9211a79e638cf0732999688dab23d15fd8b188c2f780d44d930a",
+            "SandboxKey": "/var/run/docker/netns/c190702f6c0c",
+            "Ports": {},
+            "HairpinMode": false,
+            "LinkLocalIPv6Address": "",
+            "LinkLocalIPv6PrefixLen": 0,
+            "SecondaryIPAddresses": null,
+            "SecondaryIPv6Addresses": null,
+            "EndpointID": "",
+            "Gateway": "",
+            "GlobalIPv6Address": "",
+            "GlobalIPv6PrefixLen": 0,
+            "IPAddress": "",
+            "IPPrefixLen": 0,
+            "IPv6Gateway": "",
+            "MacAddress": "",
+            "Networks": {
+                "bridge": {
+                    "IPAMConfig": null,
+                    "Links": null,
+                    "Aliases": null,
+                    "MacAddress": "",
+                    "NetworkID": "036519cc8717fc6de49c08d9996bad9b2af19649a8a88fad8f6817e11c0d3f26",
+                    "EndpointID": "",
+                    "Gateway": "",
+                    "IPAddress": "",
+                    "IPPrefixLen": 0,
+                    "IPv6Gateway": "",
+                    "GlobalIPv6Address": "",
+                    "GlobalIPv6PrefixLen": 0,
+                    "DriverOpts": null,
+                    "DNSNames": null
+                }
+            }
+        }
+    }
+]

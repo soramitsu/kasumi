@@ -1,0 +1,4 @@
+# Public copy: unrelated project names, paths and command arguments redacted.
+  PID  PPID  PGID STAT ELAPSED  %CPU    RSS COMMAND
+86262 72122 86262 Ss 02:57 0.0 116992 cargo [unrelated build arguments redacted]
+86294 86262 86262 R 02:56 196.0 3936400 rustc [unrelated build arguments redacted]

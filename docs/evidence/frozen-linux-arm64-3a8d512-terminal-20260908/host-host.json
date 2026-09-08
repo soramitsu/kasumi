@@ -1,0 +1,51 @@
+{
+  "cgroup_limits": {
+    "/sys/fs/cgroup/memory.max": 16106127360
+  },
+  "ci": {
+    "GITHUB_RUN_ATTEMPT": null,
+    "GITHUB_RUN_ID": null,
+    "GITHUB_SHA": null,
+    "RUNNER_ARCH": null,
+    "RUNNER_NAME": null
+  },
+  "cpu_count": 2,
+  "effective_memory_bytes": 16106127360,
+  "errors": [],
+  "free_disk_bytes": 113052786688,
+  "machine": "aarch64",
+  "memory_bytes": 16752267264,
+  "python": "3.11.2 (main, May 12 2026, 05:17:27) [GCC 12.2.0]",
+  "python_executable_sha256": "304aa87a76ebb13fd22d253ac157f14980ff2cdb23e6274f3b045571405e07dc",
+  "requested_target": "aarch64-unknown-linux-gnu",
+  "schema": 1,
+  "scope": "functional host preflight; capacity and endurance require separate resource admission",
+  "system": "Linux-6.12.95+deb13-cloud-arm64-aarch64-with-glibc2.36",
+  "tools": {
+    "cc": {
+      "executable": "/usr/bin/cc",
+      "exit_code": 0,
+      "stderr": "",
+      "stdout": "cc (Debian 12.2.0-14+deb12u1) 12.2.0\nCopyright (C) 2022 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n"
+    },
+    "cmake": {
+      "executable": "/usr/bin/cmake",
+      "exit_code": 0,
+      "stderr": "",
+      "stdout": "cmake version 3.25.1\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake).\n"
+    },
+    "git": {
+      "executable": "/usr/bin/git",
+      "exit_code": 0,
+      "stderr": "",
+      "stdout": "git version 2.39.5\n"
+    },
+    "rustup": {
+      "executable": "/usr/local/cargo/bin/rustup",
+      "exit_code": 0,
+      "stderr": "info: This is the version for the rustup toolchain manager, not the rustc compiler.\ninfo: the currently active `rustc` version is `rustc 1.97.1 (8bab26f4f 2026-07-14)`\n",
+      "stdout": "rustup 1.29.0 (28d1352db 2026-03-05)\n"
+    }
+  },
+  "translated": null
+}
