@@ -681,3 +681,11 @@ a read-only quota getter or caller capacity claim cannot close this dependency.
   blocks packaging; no release candidate was produced. A separately identified
   audit-worker ownership gap is under validation, not an accepted explanation or
   a substitute for the corrected runtime gate.
+
+- `a276db6` adds a private standalone diagnostic using existing, hash-verified
+  fixture-free binaries, protected TLS readiness, native/MCP corpus checks,
+  credential renewal, encrypted backup, restart and stopped local restore.
+  Integration `e6c80c8` passes all 36 combined Python tests. Evidence is in
+  `docs/evidence/small-native-runner-20260909`. These are pure runner checks;
+  the first actual Linux diagnostic is still unrun. A diagnostic of the failed
+  `3a8d512` checkpoint cannot change its workspace result or approve a candidate.
