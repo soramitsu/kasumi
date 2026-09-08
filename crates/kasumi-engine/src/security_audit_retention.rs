@@ -20,9 +20,6 @@ pub(super) struct Head {
     format: u32,
     destination: String,
     pub position: AuditRetentionState,
-    archived_bytes: u64,
-    segments: u64,
-    draining: bool,
 }
 impl Head {
     pub fn open(store: &TenantStore, destination: &str) -> Result<Self> {
@@ -38,7 +35,7 @@ impl Head {
             );
             head.position.validate()?;
             ensure!(
-                (head.segments == 0) == head.position.archive_head.is_none(),
+                (head.position.archive_segments == 0) == head.position.archive_head.is_none(),
                 "audit archive root count mismatch"
             );
             return Ok(head);
@@ -50,9 +47,6 @@ impl Head {
             format: 1,
             destination: destination.into(),
             position: AuditRetentionState::empty(Uuid::new_v4()),
-            archived_bytes: 0,
-            segments: 0,
-            draining: false,
         };
         store.write_batch(&[head.write()?])?;
         Ok(head)
@@ -97,9 +91,9 @@ impl SecurityAudit {
         Ok(SecurityAuditStatus {
             position: state.head.position.clone(),
             budget: self.writer.budget.clone(),
-            archived_bytes: state.head.archived_bytes,
-            archive_segments: state.head.segments,
-            draining: state.head.draining,
+            archived_bytes: state.head.position.archive_bytes,
+            archive_segments: state.head.position.archive_segments,
+            draining: state.head.position.draining,
             persistence_failed: state.failed,
             maintenance_failures: state.failures,
             last_failure: state.last_failure.clone(),
@@ -160,7 +154,8 @@ impl SecurityAudit {
         }
         let position = &state.head.position;
         if position.hot_bytes <= self.writer.budget.drains_to()
-            || (!state.head.draining && position.hot_bytes < self.writer.budget.starts_at())
+            || (!state.head.position.draining
+                && position.hot_bytes < self.writer.budget.starts_at())
         {
             return Ok(None);
         }
@@ -206,13 +201,14 @@ impl SecurityAudit {
         ensure!(
             state
                 .head
-                .archived_bytes
+                .position
+                .archive_bytes
                 .checked_add(segment.reference.ciphertext_bytes)
                 .is_some_and(|n| n <= self.writer.budget.archive_bytes),
             "archive disk budget exhausted"
         );
         let mut updated = state.head.clone();
-        updated.draining = true;
+        updated.position.draining = true;
         if let Err(error) = self.writer.store.write_batch(&[
             updated.write()?,
             WriteOp::put(META, b"pending", serde_json::to_vec(&segment.reference)?),
@@ -293,19 +289,22 @@ impl SecurityAudit {
                 .context("audit hot byte count mismatch")?;
             updated.position.pruned_before = pending.object.next_sequence;
             updated.position.archive_head = Some(pending.clone());
-            updated.archived_bytes = updated
-                .archived_bytes
+            updated.position.archive_bytes = updated
+                .position
+                .archive_bytes
                 .checked_add(pending.ciphertext_bytes)
                 .context("archive byte count overflow")?;
-            updated.segments = updated
-                .segments
+            updated.position.archive_segments = updated
+                .position
+                .archive_segments
                 .checked_add(1)
                 .context("archive index overflow")?;
-            updated.draining = updated.position.hot_bytes > worker.writer.budget.drains_to();
+            updated.position.draining =
+                updated.position.hot_bytes > worker.writer.budget.drains_to();
             operations.extend([
                 WriteOp::put(
                     ARCHIVES,
-                    state.head.segments.to_be_bytes(),
+                    state.head.position.archive_segments.to_be_bytes(),
                     serde_json::to_vec(&pending)?,
                 ),
                 updated.write()?,
@@ -336,12 +335,12 @@ impl SecurityAudit {
             .lock()
             .map_err(|_| anyhow::anyhow!("audit state unavailable"))?;
         ensure!(
-            first_index <= state.head.segments,
+            first_index <= state.head.position.archive_segments,
             "archive page position is beyond history"
         );
         let end = first_index
             .saturating_add(u64::from(limit))
-            .min(state.head.segments);
+            .min(state.head.position.archive_segments);
         let mut page = Vec::new();
         let mut bytes = 0usize;
         for index in first_index..end {
@@ -452,7 +451,7 @@ impl SecurityAudit {
             };
             if first_sequence < head.position.pruned_before {
                 // Locate the first segment with a logarithmic number of point reads.
-                let (mut low, mut high) = (0, head.segments);
+                let (mut low, mut high) = (0, head.position.archive_segments);
                 while low < high {
                     let middle = low + (high - low) / 2;
                     if audit.archive_reference(middle)?.object.next_sequence <= first_sequence {
