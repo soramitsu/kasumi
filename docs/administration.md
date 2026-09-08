@@ -36,7 +36,7 @@ Configure destination names in the server JSON, for example:
 }
 ```
 
-S3 destinations use `kind: "s3"`, an HTTPS `endpoint`, `region`, `bucket`, `prefix`, `max_bytes`, credential references `access_key_env` and `secret_key_env`, and nullable `session_token_env` and `ca_certificate`. The adapter requires TLS 1.3, signs requests with SigV4, and refuses redirects. Filesystem and S3 publication are create-only. Choose limits for the dataset; maintenance admission conservatively reserves four times the destination byte ceiling for serialization/encryption work, so the configured node inflight budget must accommodate it.
+S3 destinations use `kind: "s3"`, an HTTPS `endpoint`, `region`, `bucket`, `prefix`, `max_bytes`, one absolute `credentials_file` path and nullable `ca_certificate`. The private credential file contains one JSON object with `access_key_id`, `secret_access_key`, and nullable `session_token`; all fields are reloaded together for each signed request. The adapter requires TLS 1.3, signs requests with SigV4, and refuses redirects. Filesystem and S3 publication are create-only. Choose limits for the dataset; maintenance admission conservatively reserves four times the destination byte ceiling for serialization/encryption work, so the configured node inflight budget must accommodate it.
 
 ```json
 {"operation":"backup","destination":"nightly"}

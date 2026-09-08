@@ -30,6 +30,12 @@ pub use retirement_service::RetirementResponseFence;
 mod schema_service;
 #[path = "snapshot_leases.rs"]
 mod snapshot_leases;
+#[path = "target_activation_service.rs"]
+pub(crate) mod target_activation_service;
+#[path = "target_inspection_service.rs"]
+pub(crate) mod target_inspection_service;
+#[path = "target_service.rs"]
+pub(crate) mod target_service;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     sync::{
@@ -647,6 +653,19 @@ impl Database {
 
     fn access(&self) -> Result<()> {
         self.materialization_access()?;
+        let generation = self.engine.generation()?;
+        if generation
+            .state
+            .target_lifecycle
+            .get(&generation.state.incarnation)
+            .is_some_and(|target| target.activation.is_none())
+        {
+            return Err(Error::new(
+                ErrorCode::Forbidden,
+                "native target activation is incomplete",
+            ));
+        }
+        drop(generation);
         self.store.storage_access().check_serving().map_err(|_| {
             Error::new(
                 ErrorCode::Forbidden,

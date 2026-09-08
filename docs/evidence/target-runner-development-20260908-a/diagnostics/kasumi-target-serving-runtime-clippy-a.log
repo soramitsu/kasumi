@@ -1,0 +1,4 @@
+    Checking kasumi-engine v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-engine)
+    Checking kasumi-server v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-server)
+    Checking kasumi-client v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-client)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 38.46s

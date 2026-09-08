@@ -1,11 +1,14 @@
 [workspace]
 resolver = "2"
 members = ["crates/kasumi-clock", "crates/kasumi-types", "crates/kasumi-serving", "crates/kasumi-authority", "crates/kasumi-store", "crates/kasumi-query", "crates/kasumi-raft", "crates/kasumi-engine", "crates/kasumi-transport", "crates/kasumi-client", "crates/kasumi-server", "crates/kasumi-bench"]
+exclude = ["vendor/bitmaps-3.2.1", "vendor/lru-0.16.4"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.94"
+rust-version = "1.97.1"
+license = "Apache-2.0"
+repository = "https://github.com/soramitsu/kasumi"
 
 [workspace.dependencies]
 anyhow = "1"
@@ -33,3 +36,9 @@ kasumi-transport = { path = "crates/kasumi-transport" }
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# Minimal source-reviewed fixes; provenance and regression commands are in
+# vendor/README.md. Keep the upstream versions so scanners retain visibility.
+[patch.crates-io]
+bitmaps = { path = "vendor/bitmaps-3.2.1" }
+lru = { path = "vendor/lru-0.16.4" }

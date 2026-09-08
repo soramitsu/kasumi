@@ -1,5 +1,5 @@
 //! Administrative operations use the separate, pinned TLS 1.3/mTLS gRPC endpoint.
-//! Tokens come from a named environment variable, never command-line arguments.
+//! Tokens are loaded from a private installed file for every request.
 use anyhow::{Context, Result, bail, ensure};
 use kasumi_server::{
     api::MAX_REQUEST_BYTES,
@@ -63,7 +63,7 @@ async fn main() -> Result<()> {
                 "endpoint":"https://admin.kasumi.example:9445",
                 "identity":{"certificate":"/etc/kasumi/admin-client.pem","private_key":"/etc/kasumi/admin-client-key.pem"},
                 "server_ca":"/etc/kasumi/server-ca.pem","server_certificate_pins":["REPLACE_WITH_64_DIGIT_SERVER_CERTIFICATE_SHA256"],
-                "token_env":"KASUMI_ADMIN_ACCESS_TOKEN"
+                "token_file":"/etc/kasumi/credentials/admin-token"
             }))?
         );
         return Ok(());

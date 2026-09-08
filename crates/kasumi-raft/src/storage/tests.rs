@@ -88,12 +88,12 @@ impl StateMachineBackend for BytesBackend {
         *self.0.lock().unwrap() = bytes.to_vec();
         Ok(crate::AppliedResponse::application(bytes.to_vec()))
     }
-    fn snapshot(
-        &self,
-        writer: &mut dyn std::io::Write,
-    ) -> Result<Option<crate::RetiredSnapshotState>> {
-        writer.write_all(&self.0.lock().unwrap())?;
-        Ok(None)
+    fn capture_snapshot(&self) -> Result<crate::CapturedSnapshot> {
+        let data = self.0.lock().unwrap().clone();
+        Ok(crate::CapturedSnapshot::new(None, move |writer| {
+            writer.write_all(&data)?;
+            Ok(())
+        }))
     }
     fn validate_snapshot(
         &self,
@@ -141,10 +141,7 @@ async fn applied_metadata_does_not_block_runtime_while_snapshot_capture_holds_st
         ) -> Result<crate::AppliedResponse> {
             Ok(crate::AppliedResponse::application(bytes.to_vec()))
         }
-        fn snapshot(
-            &self,
-            writer: &mut dyn std::io::Write,
-        ) -> Result<Option<crate::RetiredSnapshotState>> {
+        fn capture_snapshot(&self) -> Result<crate::CapturedSnapshot> {
             self.entered
                 .lock()
                 .unwrap()
@@ -158,8 +155,10 @@ async fn applied_metadata_does_not_block_runtime_while_snapshot_capture_holds_st
                 .lock()
                 .unwrap()
                 .recv_timeout(std::time::Duration::from_secs(1));
-            writer.write_all(b"consistent-snapshot")?;
-            Ok(None)
+            Ok(crate::CapturedSnapshot::new(None, |writer| {
+                writer.write_all(b"consistent-snapshot")?;
+                Ok(())
+            }))
         }
         fn validate_snapshot(
             &self,
@@ -451,3 +450,80 @@ async fn eight_mib_command_uses_compact_log_record_and_replays_after_reopen() ->
 
 #[path = "snapshot_custody_tests.rs"]
 mod snapshot_custody_tests;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn snapshot_materialization_releases_applied_lock_and_keeps_captured_root() -> Result<()> {
+    struct PausedWriter {
+        bytes: Mutex<Vec<u8>>,
+        entered: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
+        release: Arc<Mutex<std::sync::mpsc::Receiver<()>>>,
+    }
+    impl StateMachineBackend for PausedWriter {
+        fn close_application(&self) {}
+        fn apply(
+            &self,
+            _: &crate::AppliedEntryContext,
+            bytes: &[u8],
+        ) -> Result<crate::AppliedResponse> {
+            *self.bytes.lock().unwrap() = bytes.to_vec();
+            Ok(crate::AppliedResponse::application(bytes.to_vec()))
+        }
+        fn capture_snapshot(&self) -> Result<crate::CapturedSnapshot> {
+            let bytes = self.bytes.lock().unwrap().clone();
+            let entered = self.entered.clone();
+            let release = self.release.clone();
+            Ok(crate::CapturedSnapshot::new(None, move |writer| {
+                if let Some(sender) = entered.lock().unwrap().take() {
+                    sender.send(()).unwrap();
+                    release
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(std::time::Duration::from_secs(10))?;
+                }
+                writer.write_all(&bytes)?;
+                Ok(())
+            }))
+        }
+        fn validate_snapshot(
+            &self,
+            _: &mut dyn Read,
+        ) -> Result<Option<crate::RetiredSnapshotState>> {
+            Ok(None)
+        }
+        fn restore(&self, _: &mut dyn Read) -> Result<()> {
+            Ok(())
+        }
+    }
+    let (entered, ready) = tokio::sync::oneshot::channel();
+    let (release, wait) = std::sync::mpsc::channel();
+    let backend = Arc::new(PausedWriter {
+        bytes: Mutex::new(b"captured-root".to_vec()),
+        entered: Arc::new(Mutex::new(Some(entered))),
+        release: Arc::new(Mutex::new(wait)),
+    });
+    let mut machine = StateMachine::open(
+        kasumi_store::test_utils::with_custody(
+            fault_store(FaultBackend::new()).await?,
+            Arc::new(LocalKeyProvider::new([241; 32])),
+        )
+        .await?,
+        backend.clone(),
+    )
+    .await?;
+    let mut capturing = machine.clone();
+    let task = tokio::spawn(async move {
+        let mut builder = capturing.get_snapshot_builder().await;
+        builder.build_snapshot().await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(10), ready).await??;
+    tokio::time::timeout(std::time::Duration::from_secs(1), machine.applied_state()).await??;
+    // A new generation can publish while the old snapshot is materializing.
+    *backend.bytes.lock().unwrap() = b"new-root".to_vec();
+    release.send(())?;
+    let snapshot = task.await??;
+    let envelope =
+        SnapshotEnvelope::decode(&mut snapshot.snapshot.into_image()?.reader(), 64 << 20)?;
+    assert_eq!(envelope.backend.read_bounded(1024)?, b"captured-root");
+    assert_eq!(*backend.bytes.lock().unwrap(), b"new-root");
+    Ok(())
+}

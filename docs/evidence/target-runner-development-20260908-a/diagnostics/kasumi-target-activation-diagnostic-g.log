@@ -1,0 +1,23 @@
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-engine)
+   Compiling kasumi-authority v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-authority)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 46.30s
+     Running unittests src/lib.rs (/tmp/kasumi-custody-substrate-target/debug/deps/kasumi_authority-507625201966ab62)
+
+running 1 test
+test service::tests::issuer_tests::activation_gate_tests::committed_activation_rejects_raw_bypass_preserves_exact_winner_and_encrypted_recovery ... FAILED
+
+failures:
+
+---- service::tests::issuer_tests::activation_gate_tests::committed_activation_rejects_raw_bypass_preserves_exact_winner_and_encrypted_recovery stdout ----
+
+thread 'service::tests::issuer_tests::activation_gate_tests::committed_activation_rejects_raw_bypass_preserves_exact_winner_and_encrypted_recovery' (16772350) panicked at crates/kasumi-authority/src/tests.rs:153:13:
+authority leader wait failed: deadline has elapsed; states: [Err(StorageError(IO { source: StorageIOError { subject: Store, verb: Write, source: std::io::error::Error: invalid type: string "1", expected u64 at line 1 column 14433, backtrace: None } })), Err(StorageError(IO { source: StorageIOError { subject: Store, verb: Write, source: std::io::error::Error: invalid type: string "1", expected u64 at line 1 column 14433, backtrace: None } })), Err(StorageError(IO { source: StorageIOError { subject: Store, verb: Write, source: std::io::error::Error: invalid type: string "1", expected u64 at line 1 column 14433, backtrace: None } }))]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    service::tests::issuer_tests::activation_gate_tests::committed_activation_rejects_raw_bypass_preserves_exact_winner_and_encrypted_recovery
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 20 filtered out; finished in 14.11s
+
+error: test failed, to rerun pass `-p kasumi-authority --lib`

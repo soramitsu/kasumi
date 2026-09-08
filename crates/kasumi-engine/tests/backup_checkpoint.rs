@@ -156,10 +156,7 @@ async fn checkpoint_binds_actual_generation_complete_graph_keys_and_encrypted_re
     assert_eq!(proof.source_incarnation(), incarnation);
     assert_eq!(proof.revision(), revision);
     assert!(proof.revision() >= second.revision);
-    assert_eq!(
-        proof.resident_sha256(),
-        hex::encode(Sha256::digest(&snapshot))
-    );
+    assert_eq!(proof.resident_sha256(), snapshot.sha256());
     let bytes = fixture
         .destination
         .get(proof.backup_id(), 8 << 20)

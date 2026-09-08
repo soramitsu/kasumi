@@ -71,7 +71,10 @@ fn apply_as(db: &TenantEngine, principal: &str, operation: Operation) -> Result<
             },
         )
         .unwrap();
-    assert_eq!(db.snapshot().unwrap().len(), db.snapshot_bytes().unwrap());
+    assert_eq!(
+        db.snapshot().unwrap().len(),
+        db.snapshot_bytes().unwrap() as u64
+    );
     result
 }
 fn apply(db: &TenantEngine, operation: Operation) -> Result<WriteReceipt> {
@@ -445,7 +448,7 @@ fn schema_shape_immutable_mode_snapshot_validation_and_retained_quota() {
     state.schema_activation_bytes += 1;
     assert_eq!(
         recovered
-            .restore(&kasumi_engine::TenantEngine::encode_snapshot_state(&state).unwrap())
+            .restore(&kasumi_engine::TenantEngine::encode_snapshot_state(&state, 64 << 20).unwrap())
             .unwrap_err()
             .code,
         ErrorCode::Corruption

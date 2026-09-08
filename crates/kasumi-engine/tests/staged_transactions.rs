@@ -105,7 +105,7 @@ fn apply(db: &TenantEngine, timestamp_ms: u64, operation: Operation) -> Result<W
         )
         .unwrap();
     assert_eq!(
-        db.snapshot_bytes().unwrap(),
+        db.snapshot_bytes().unwrap() as u64,
         db.snapshot().unwrap().len(),
         "canonical stage accounting after revision {revision}"
     );
@@ -460,7 +460,9 @@ fn changed_limits_preserve_historic_outcomes_and_keep_active_snapshots_recoverab
         .uploaded_payload_bytes += 1;
     assert!(
         recovered
-            .restore(&kasumi_engine::TenantEngine::encode_snapshot_state(&corrupt).unwrap())
+            .restore(
+                &kasumi_engine::TenantEngine::encode_snapshot_state(&corrupt, 64 << 20).unwrap()
+            )
             .is_err()
     );
     assert_eq!(recovered.snapshot().unwrap(), snapshot);

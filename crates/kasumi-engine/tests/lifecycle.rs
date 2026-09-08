@@ -230,6 +230,7 @@ impl Fixture {
                             node_id: id,
                             principal: format!("target-{id}"),
                             certificate_sha256: format!("{id:064x}"),
+                            attestation_public_key: format!("{:064x}", id + 100),
                         },
                     )
                 })
@@ -366,9 +367,7 @@ async fn replicated_control_intent_is_exact_original_expiry_bound_current_quorum
             .is_err()
     );
     let bytes = db.engine().snapshot().unwrap();
-    db.engine()
-        .validate_snapshot(&mut bytes.as_slice())
-        .unwrap();
+    db.engine().validate_snapshot(&mut bytes.reader()).unwrap();
     drop(proof);
     drop(db);
     f.close().await;
@@ -681,7 +680,8 @@ async fn control_rejects_unfinishable_byte_budget_and_substituted_authenticated_
     .await
     .unwrap();
     let original = db.engine().snapshot().unwrap();
-    let mut state: TenantState = serde_json::from_slice(&original).unwrap();
+    let mut state: TenantState =
+        kasumi_engine::TenantEngine::decode_snapshot_state(&original).unwrap();
     let retained = state
         .lifecycle_control
         .as_mut()
@@ -693,9 +693,9 @@ async fn control_rejects_unfinishable_byte_budget_and_substituted_authenticated_
     assert!(
         db.engine()
             .validate_snapshot(
-                &mut kasumi_engine::TenantEngine::encode_snapshot_state(&state)
+                &mut kasumi_engine::TenantEngine::encode_snapshot_state(&state, 64 << 20)
                     .unwrap()
-                    .as_slice()
+                    .reader()
             )
             .is_err()
     );

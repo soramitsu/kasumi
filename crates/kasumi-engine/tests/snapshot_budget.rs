@@ -70,8 +70,8 @@ fn apply(
         )
         .unwrap();
     let snapshot = db.snapshot().unwrap();
-    assert_eq!(db.snapshot_bytes().unwrap(), snapshot.len());
-    assert!(snapshot.len() as u64 <= db.generation().unwrap().state.limits.max_snapshot_bytes);
+    assert_eq!(db.snapshot_bytes().unwrap() as u64, snapshot.len());
+    assert!(snapshot.len() <= db.generation().unwrap().state.limits.max_snapshot_bytes);
     result
 }
 
@@ -211,7 +211,11 @@ fn replay_with_only_rejection_audit_headroom_keeps_the_original_receipt() {
     // A committed replay audit is exactly one byte larger than a rejection
     // audit. Account for changing the serialized quota's own decimal digits.
     loop {
-        let limit = TenantEngine::encode_snapshot_state(&after).unwrap().len() as u64 + 19 - 1;
+        let limit = TenantEngine::encode_snapshot_state(&after, 64 << 20)
+            .unwrap()
+            .len() as u64
+            + 19
+            - 1;
         if after.limits.max_snapshot_bytes == limit {
             break;
         }
@@ -219,7 +223,7 @@ fn replay_with_only_rejection_audit_headroom_keeps_the_original_receipt() {
     }
     before.limits.max_snapshot_bytes = after.limits.max_snapshot_bytes;
     let db = engine(16 << 10);
-    db.restore(&TenantEngine::encode_snapshot_state(&before).unwrap())
+    db.restore(&TenantEngine::encode_snapshot_state(&before, 64 << 20).unwrap())
         .unwrap();
     assert_eq!(
         apply(&db, 3, 3, batch("original", "id", 3000))
@@ -244,7 +248,7 @@ fn recovery_and_limit_changes_cannot_admit_state_above_snapshot_format_or_tenant
     let mut state = db.generation().unwrap().state.clone();
     state.limits.max_snapshot_bytes = 4096;
     assert!(
-        db.restore(&kasumi_engine::TenantEngine::encode_snapshot_state(&state).unwrap())
+        db.restore(&kasumi_engine::TenantEngine::encode_snapshot_state(&state, 64 << 20).unwrap())
             .is_err()
     );
     let outcome = apply(&db, 3, 3, Operation::SetLimits(state.limits));
@@ -264,7 +268,7 @@ fn recovery_and_limit_changes_cannot_admit_state_above_snapshot_format_or_tenant
     let mut state = db.generation().unwrap().state.clone();
     state.limits.max_document_bytes = 1024;
     assert!(
-        db.restore(&kasumi_engine::TenantEngine::encode_snapshot_state(&state).unwrap())
+        db.restore(&kasumi_engine::TenantEngine::encode_snapshot_state(&state, 64 << 20).unwrap())
             .is_err()
     );
     assert_eq!(

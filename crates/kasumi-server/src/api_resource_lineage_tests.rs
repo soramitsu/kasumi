@@ -145,7 +145,7 @@ async fn native_resources_and_two_restore_hops_preserve_immutable_issuer_facts()
             .await
             .unwrap();
         let snapshot = restored.engine().snapshot().unwrap();
-        let mut substituted: kasumi_types::TenantState = serde_json::from_slice(&snapshot).unwrap();
+        let mut substituted: kasumi_types::TenantState = kasumi_engine::TenantEngine::decode_snapshot_state(&snapshot).unwrap();
         substituted.restore_lineage[0].checkpoint.resident_sha256 =
             if substituted.restore_lineage[0].checkpoint.resident_sha256 == "0".repeat(64) {
                 "1".repeat(64)
@@ -166,7 +166,7 @@ async fn native_resources_and_two_restore_hops_preserve_immutable_issuer_facts()
         assert!(
             restored
                 .engine()
-                .restore(&serde_json::to_vec(&substituted).unwrap())
+                .restore(&kasumi_engine::TenantEngine::encode_snapshot_state(&substituted, 64 << 20).unwrap())
                 .is_err(),
             "shape-valid immutable history substitution must be rejected"
         );

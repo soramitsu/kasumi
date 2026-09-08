@@ -133,6 +133,66 @@ impl DatabaseRegistry {
         Ok(())
     }
 
+    /// Detach only the installed runner's exact generation. Old source recovery
+    /// remains explicitly closed until independent custody reopens its quorum.
+    pub(crate) fn detach_target_generation(
+        &self,
+        tenant: &str,
+        incarnation: &str,
+        database: &Arc<Database>,
+    ) -> Result<()> {
+        let mut databases = self
+            .databases
+            .write()
+            .map_err(|_| Error::new(ErrorCode::Unavailable, "tenant registry unavailable"))?;
+        let mut sources = self
+            .retirement_sources
+            .write()
+            .map_err(|_| Error::new(ErrorCode::Unavailable, "custody registry unavailable"))?;
+        if databases
+            .get(tenant)
+            .is_some_and(|current| Arc::ptr_eq(current, database))
+        {
+            databases.remove(tenant);
+        }
+        let key = (tenant.to_owned(), incarnation.to_owned());
+        if matches!(sources.get(&key), Some(kasumi_engine::InstalledRetirementSource::Serving(current)) if Arc::ptr_eq(current, database))
+        {
+            sources.insert(
+                key,
+                kasumi_engine::InstalledRetirementSource::RecoveringControl {
+                    tenant: tenant.into(),
+                    source_incarnation: incarnation.into(),
+                },
+            );
+        }
+        Ok(())
+    }
+
+    pub(crate) fn detach_target_custody(
+        &self,
+        tenant: &str,
+        incarnation: &str,
+        custody: &Arc<kasumi_engine::RetiredCustody>,
+    ) -> Result<()> {
+        let mut sources = self
+            .retirement_sources
+            .write()
+            .map_err(|_| Error::new(ErrorCode::Unavailable, "custody registry unavailable"))?;
+        let key = (tenant.to_owned(), incarnation.to_owned());
+        if matches!(sources.get(&key), Some(kasumi_engine::InstalledRetirementSource::RetiredCustody(current)) if Arc::ptr_eq(current, custody))
+        {
+            sources.insert(
+                key,
+                kasumi_engine::InstalledRetirementSource::RecoveringControl {
+                    tenant: tenant.into(),
+                    source_incarnation: incarnation.into(),
+                },
+            );
+        }
+        Ok(())
+    }
+
     pub fn remove(&self, tenant: &str) -> Result<Option<Arc<Database>>> {
         Ok(self
             .databases

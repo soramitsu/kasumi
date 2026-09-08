@@ -164,7 +164,7 @@ async fn change_feed_is_atomic_ordered_resumable_and_detects_retention_gaps() {
     assert_eq!(events[0].sequence, 3);
     assert!(caught_up);
     assert_eq!(
-        db.engine().snapshot_bytes().unwrap(),
+        db.engine().snapshot_bytes().unwrap() as u64,
         db.engine().snapshot().unwrap().len()
     );
     db.shutdown().await.unwrap();
@@ -271,7 +271,7 @@ async fn change_feed_is_atomic_ordered_resumable_and_detects_retention_gaps() {
         ErrorCode::Forbidden
     );
     assert_eq!(
-        db.engine().snapshot_bytes().unwrap(),
+        db.engine().snapshot_bytes().unwrap() as u64,
         db.engine().snapshot().unwrap().len()
     );
     db.shutdown().await.unwrap();
@@ -465,7 +465,7 @@ async fn archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_res
         .await
         .unwrap();
     assert_eq!(
-        db.engine().snapshot_bytes().unwrap(),
+        db.engine().snapshot_bytes().unwrap() as u64,
         db.engine().snapshot().unwrap().len()
     );
     assert!(

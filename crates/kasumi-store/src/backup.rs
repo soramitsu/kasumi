@@ -335,9 +335,7 @@ pub struct S3BackupConfig {
     pub region: String,
     pub bucket: String,
     pub prefix: String,
-    pub access_key_id: String,
-    pub secret_access_key: String,
-    pub session_token: Option<String>,
+    pub credential: Arc<dyn kasumi_transport::credentials::CredentialSource>,
     pub ca_pem: Option<Vec<u8>>,
     pub max_bytes: usize,
 }
@@ -347,17 +345,50 @@ pub struct S3BackupDestination {
     region: String,
     bucket: String,
     prefix: String,
-    access_key_id: String,
-    secret_access_key: Zeroizing<String>,
-    session_token: Option<Zeroizing<String>>,
+    credential: Arc<dyn kasumi_transport::credentials::CredentialSource>,
     max_bytes: usize,
     client: Client,
 }
 
+/// One atomic SigV4 bundle. Every request loads all fields from the same inode.
+/// Unknown fields are rejected and every owned secret is wiped on drop.
+#[derive(Deserialize, Zeroize)]
+#[serde(deny_unknown_fields)]
+#[zeroize(drop)]
+struct S3Credentials {
+    access_key_id: String,
+    secret_access_key: String,
+    session_token: Option<String>,
+}
+impl S3Credentials {
+    fn load(source: &dyn kasumi_transport::credentials::CredentialSource) -> Result<Self> {
+        let bytes = source.load()?;
+        let value: Self = serde_json::from_str(&bytes)
+            .map_err(|_| anyhow::anyhow!("invalid S3 credential bundle"))?;
+        ensure!(
+            !value.access_key_id.is_empty()
+                && !value.secret_access_key.is_empty()
+                && value
+                    .access_key_id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric())
+                && value
+                    .secret_access_key
+                    .bytes()
+                    .all(|b| b.is_ascii_graphic()),
+            "invalid S3 credential bundle"
+        );
+        if let Some(token) = &value.session_token {
+            ensure!(
+                !token.is_empty() && token.bytes().all(|b| b.is_ascii_graphic()),
+                "invalid S3 session token"
+            );
+        }
+        Ok(value)
+    }
+}
 impl S3BackupDestination {
-    pub fn new(mut config: S3BackupConfig) -> Result<Self> {
-        let secret_access_key = Zeroizing::new(std::mem::take(&mut config.secret_access_key));
-        let session_token = config.session_token.take().map(Zeroizing::new);
+    pub fn new(config: S3BackupConfig) -> Result<Self> {
         let endpoint = Url::parse(&config.endpoint)?;
         ensure!(
             endpoint.scheme() == "https"
@@ -375,17 +406,7 @@ impl S3BackupDestination {
                 && (config.prefix.is_empty() || config.prefix.split('/').all(valid_segment)),
             "invalid S3 region, bucket or prefix"
         );
-        ensure!(
-            config.max_bytes > 0
-                && !config.access_key_id.is_empty()
-                && !secret_access_key.is_empty(),
-            "invalid S3 credentials or byte limit"
-        );
-        // Validate before constructing any requests, rejecting header injection.
-        HeaderValue::from_str(&config.access_key_id)?;
-        if let Some(token) = &session_token {
-            HeaderValue::from_str(token)?;
-        }
+        ensure!(config.max_bytes > 0, "invalid S3 byte limit");
         let mut client = Client::builder()
             .no_proxy()
             .https_only(true)
@@ -400,9 +421,7 @@ impl S3BackupDestination {
             region: config.region,
             bucket: config.bucket,
             prefix: config.prefix,
-            access_key_id: config.access_key_id,
-            secret_access_key,
-            session_token,
+            credential: config.credential,
             max_bytes: config.max_bytes,
             client: client.build()?,
         })
@@ -437,6 +456,7 @@ impl S3BackupDestination {
         now: time::OffsetDateTime,
         mut canonical: std::collections::BTreeMap<&str, String>,
     ) -> Result<HeaderMap> {
+        let credentials = S3Credentials::load(self.credential.as_ref())?;
         let timestamp = now.format(time::macros::format_description!(
             "[year][month][day]T[hour][minute][second]Z"
         ))?;
@@ -455,7 +475,7 @@ impl S3BackupDestination {
         if method == "PUT" {
             canonical.insert("if-none-match", "*".into());
         }
-        if let Some(token) = &self.session_token {
+        if let Some(token) = &credentials.session_token {
             canonical.insert("x-amz-security-token", token.to_string());
         }
         let signed_names = canonical.keys().copied().collect::<Vec<_>>().join(";");
@@ -477,7 +497,7 @@ impl S3BackupDestination {
             "AWS4-HMAC-SHA256\n{timestamp}\n{scope}\n{}",
             hex::encode(Sha256::digest(canonical_request))
         );
-        let key = Zeroizing::new(format!("AWS4{}", self.secret_access_key.as_str()));
+        let key = Zeroizing::new(format!("AWS4{}", credentials.secret_access_key.as_str()));
         let date_key = Zeroizing::new(hmac(key.as_bytes(), date.as_bytes()));
         let region_key = Zeroizing::new(hmac(date_key.as_ref(), self.region.as_bytes()));
         let service_key = Zeroizing::new(hmac(region_key.as_ref(), b"s3"));
@@ -497,7 +517,7 @@ impl S3BackupDestination {
         }
         let mut authorization = HeaderValue::from_str(&format!(
             "AWS4-HMAC-SHA256 Credential={}/{scope}, SignedHeaders={signed_names}, Signature={signature}",
-            self.access_key_id
+            credentials.access_key_id
         ))?;
         authorization.set_sensitive(true);
         headers.insert(reqwest::header::AUTHORIZATION, authorization);
@@ -722,18 +742,76 @@ mod s3_tests {
         routing::any,
     };
 
+    fn test_credential(
+        session_token: Option<&str>,
+    ) -> Arc<dyn kasumi_transport::credentials::CredentialSource> {
+        let session_token = session_token.map(str::to_owned);
+        Arc::new(move || {
+            Ok(Zeroizing::new(
+                serde_json::json!({
+                    "access_key_id": "AKIAIOSFODNN7EXAMPLE",
+                    "secret_access_key": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+                    "session_token": session_token
+                })
+                .to_string(),
+            ))
+        })
+    }
     fn config(endpoint: &str, ca: Option<Vec<u8>>) -> S3BackupConfig {
         S3BackupConfig {
             endpoint: endpoint.into(),
             region: "us-east-1".into(),
             bucket: "examplebucket".into(),
             prefix: "backup/v1".into(),
-            access_key_id: "AKIAIOSFODNN7EXAMPLE".into(),
-            secret_access_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".into(),
-            session_token: None,
+            credential: test_credential(None),
             ca_pem: ca,
             max_bytes: 1 << 20,
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn s3_credentials_are_reloaded_as_one_atomic_bundle() {
+        use std::{io::Write, os::unix::fs::PermissionsExt};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s3.json");
+        let publish = |id: &str, secret: &str, token: &str| {
+            let mut file = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
+            file.as_file()
+                .set_permissions(std::fs::Permissions::from_mode(0o600))
+                .unwrap();
+            write!(file, "{}", serde_json::json!({"access_key_id":id,"secret_access_key":secret,"session_token":token})).unwrap();
+            file.persist(&path).unwrap();
+        };
+        publish("FIRST", "first-secret", "first-session");
+        let mut settings = config("https://s3.example", None);
+        settings.credential =
+            Arc::new(kasumi_transport::credentials::FileCredentialSource::new(&path).unwrap());
+        let destination = S3BackupDestination::new(settings).unwrap();
+        let url = destination.object_url(Uuid::new_v4()).unwrap();
+        let now = time::OffsetDateTime::now_utc();
+        let first = destination.signed_headers("GET", &url, b"", now).unwrap();
+        assert!(
+            first["authorization"]
+                .to_str()
+                .unwrap()
+                .contains("Credential=FIRST/")
+        );
+        assert_eq!(first["x-amz-security-token"], "first-session");
+        publish("SECOND", "second-secret", "second-session");
+        let second = destination.signed_headers("GET", &url, b"", now).unwrap();
+        assert!(
+            second["authorization"]
+                .to_str()
+                .unwrap()
+                .contains("Credential=SECOND/")
+        );
+        assert_eq!(second["x-amz-security-token"], "second-session");
+        assert_ne!(first["authorization"], second["authorization"]);
+        publish("THIRD", "third-secret", "bad\nheader");
+        assert!(destination.signed_headers("GET", &url, b"", now).is_err());
+        std::fs::remove_file(&path).unwrap();
+        assert!(destination.signed_headers("GET", &url, b"", now).is_err());
     }
 
     #[test]
@@ -831,7 +909,7 @@ mod s3_tests {
         .await;
         let make = || {
             let mut c = config(&fixture.endpoint, Some(fixture.ca_pem.clone()));
-            c.session_token = Some("temporary-session-token".into());
+            c.credential = test_credential(Some("temporary-session-token"));
             c
         };
         *state.signer.lock() = Some(S3BackupDestination::new(make()).unwrap());
@@ -862,7 +940,12 @@ mod s3_tests {
                 .is_err()
         );
         let mut wrong = make();
-        wrong.secret_access_key = "wrong-key".into();
+        let original = wrong.credential.clone();
+        wrong.credential = Arc::new(move || {
+            let mut bundle: serde_json::Value = serde_json::from_str(&original.load()?)?;
+            bundle["secret_access_key"] = serde_json::json!("wrong-key");
+            Ok(Zeroizing::new(bundle.to_string()))
+        });
         assert!(
             S3BackupDestination::new(wrong)
                 .unwrap()

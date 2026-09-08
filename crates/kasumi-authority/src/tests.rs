@@ -149,7 +149,15 @@ impl Fixture {
             }
         })
         .await
-        .unwrap()
+        .unwrap_or_else(|error| {
+            panic!(
+                "authority leader wait failed: {error}; states: {:?}",
+                self.services
+                    .iter()
+                    .map(|s| format!("{:?}", s.group.raft().metrics().borrow().running_state))
+                    .collect::<Vec<_>>()
+            )
+        })
     }
     fn context(&self, principal: &str) -> RequestContext {
         RequestContext {

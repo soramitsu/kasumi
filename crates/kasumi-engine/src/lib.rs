@@ -16,7 +16,16 @@ pub mod admission;
 mod backup_format;
 mod backup_proof;
 mod backup_verify;
+mod target_invocation;
+mod target_signer;
 pub use backup_proof::VerifiedBackupCheckpoint;
+pub use service::target_activation_service::VerifiedTargetActivation;
+pub use service::target_inspection_service::VerifiedTargetInspection;
+pub use service::target_service::VerifiedTargetCompletion;
+pub use target_invocation::{
+    TargetLifecycleInvocation, TargetOperation, TargetOperationScope, TargetRequestAdmission,
+};
+pub use target_signer::TargetSigner;
 mod bootstrap;
 pub mod control;
 pub mod security_audit;
@@ -24,9 +33,11 @@ mod service;
 mod snapshot_codec;
 mod state;
 pub use bootstrap::{
-    PreparedReplicaRestore, ReplicaPlacement, ReplicaRestoreConfig, ReplicatedBootstrap,
-    RestoreSource, initialize_replicated, open_local, open_local_with_incarnation, open_replicated,
-    prepare_replicated_restore, recovery_workspace_bytes, restore_local,
+    MaterializedTargetReplica, PreparedReplicaRestore, ReplicaPlacement, ReplicaRestoreConfig,
+    ReplicatedBootstrap, RestoreSource, TargetMaterializationConfig, TargetReplica,
+    TargetReplicaConfig, VerifiedTargetMaterialization, initialize_replicated,
+    materialize_target_replica, open_local, open_local_with_incarnation, open_replicated,
+    open_target_replica, prepare_replicated_restore, recovery_workspace_bytes, restore_local,
     restore_local_with_incarnation, restore_local_with_incarnation_and_admission,
 };
 pub use security_audit::{
@@ -58,3 +69,10 @@ impl EncodedResponseFence for RetirementResponseFence<'_> {
         RetirementResponseFence::check(self)
     }
 }
+
+mod target_journal;
+pub use target_journal::{
+    TargetJournal, TargetJournalInstallation, TargetJournalIntent, VerifiedTargetServingProjection,
+};
+
+pub use bootstrap::target_serving::{TargetServingReplica, open_serving_target};

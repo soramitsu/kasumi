@@ -329,8 +329,6 @@ checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
 [[package]]
 name = "bitmaps"
 version = "3.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1d084b0137aaa901caf9f1e8b21daa6aa24d41cd806e111335541eff9683bd6"
 
 [[package]]
 name = "bitpacking"
@@ -1763,6 +1761,7 @@ dependencies = [
  "anyhow",
  "hex",
  "kasumi-clock",
+ "kasumi-engine",
  "kasumi-raft",
  "kasumi-serving",
  "kasumi-store",
@@ -1820,9 +1819,11 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.20",
+ "tokio",
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
+ "url",
  "uuid",
 ]
 
@@ -1925,6 +1926,7 @@ dependencies = [
  "prost",
  "rcgen",
  "reqwest",
+ "ring",
  "rmcp",
  "rustls",
  "schemars",
@@ -1974,6 +1976,7 @@ dependencies = [
  "hyper-util",
  "kasumi-clock",
  "kasumi-serving",
+ "kasumi-transport",
  "kasumi-types",
  "libc",
  "parking_lot",
@@ -1999,14 +2002,17 @@ dependencies = [
  "anyhow",
  "http",
  "hyper-util",
+ "libc",
+ "rcgen",
  "rustls",
- "rustls-pemfile",
  "sha2",
+ "tempfile",
  "tokio",
  "tokio-rustls",
  "tonic",
  "tower",
  "url",
+ "zeroize",
 ]
 
 [[package]]
@@ -2167,8 +2173,6 @@ checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 [[package]]
 name = "lru"
 version = "0.16.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f66e8d5d03f609abc3a39e6f08e4164ebf1447a732906d39eb9b99b7919ef39"
 dependencies = [
  "hashbrown 0.16.1",
 ]
@@ -3337,15 +3341,6 @@ dependencies = [
  "rustls-webpki",
  "subtle",
  "zeroize",
-]
-
-[[package]]
-name = "rustls-pemfile"
-version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dce314e5fee3f39953d46bb63bb8a46d40c2f8fb7cc5a3b6cab2bde9721d6e50"
-dependencies = [
- "rustls-pki-types",
 ]
 
 [[package]]

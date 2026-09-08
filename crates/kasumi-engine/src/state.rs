@@ -17,6 +17,8 @@ pub(crate) mod retirement;
 pub(crate) mod schema;
 #[path = "staging.rs"]
 pub(crate) mod staging;
+#[path = "target_state.rs"]
+pub(crate) mod target;
 
 pub struct Generation {
     pub state: TenantState,
@@ -84,6 +86,9 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
         position: &kasumi_raft::AppliedEntryContext,
         bytes: &[u8],
     ) -> anyhow::Result<kasumi_raft::AppliedResponse> {
+        if bytes.starts_with(target::PREFIX) {
+            return self.apply_target(position, bytes);
+        }
         let command: Command = serde_json::from_slice(bytes)?;
         anyhow::ensure!(
             !matches!(&command.operation, Operation::RetireSource(prepared) if prepared.observation.is_some())
@@ -132,13 +137,13 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
             retirement,
         })
     }
-    fn snapshot(
-        &self,
-        writer: &mut dyn std::io::Write,
-    ) -> anyhow::Result<Option<kasumi_raft::RetiredSnapshotState>> {
+    fn capture_snapshot(&self) -> anyhow::Result<kasumi_raft::CapturedSnapshot> {
         let generation = self.generation()?;
-        Self::write_generation(&generation, writer)?;
-        Ok(custody_snapshot::retired(&generation.state)?)
+        let retirement = custody_snapshot::retired(&generation.state)?;
+        Ok(kasumi_raft::CapturedSnapshot::new(
+            retirement,
+            move |writer| Self::write_generation(&generation, writer).map_err(Into::into),
+        ))
     }
     fn validate_snapshot(
         &self,
@@ -160,13 +165,30 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
 
 impl TenantEngine {
     pub(crate) fn check_operation_access(&self, operation: &Operation) -> Result<()> {
+        let generation = self.generation()?;
+        if generation
+            .state
+            .target_lifecycle
+            .get(&generation.state.incarnation)
+            .is_some_and(|target| target.activation.is_none())
+        {
+            return Err(Error::new(
+                ErrorCode::Forbidden,
+                "native target activation must commit before tenant commands",
+            ));
+        }
+        drop(generation);
         if let Some(access) = self.access.get() {
             access
                 .check()
                 .map_err(|_| Error::new(ErrorCode::Sealed, "independent access grant expired"))?;
             if access.check_serving().is_err() {
                 let generation = self.generation()?;
-                if !generation.state.suspended
+                if generation
+                    .state
+                    .target_lifecycle
+                    .contains_key(&generation.state.incarnation)
+                    || !generation.state.suspended
                     || !matches!(operation, Operation::MaintenanceAudit(event) if event.action == "restore" && event.outcome == "completed")
                 {
                     return Err(Error::new(
@@ -287,6 +309,7 @@ impl TenantEngine {
             restored_from: None,
             restore_lineage: Vec::new(),
             lifecycle_control: None,
+            target_lifecycle: Default::default(),
             document_count: 0,
             logical_bytes: 0,
             policy,
@@ -302,6 +325,14 @@ impl TenantEngine {
             schema_activation_bytes: 0,
             retirements: imbl::OrdMap::new(),
             retirement_bytes: 0,
+            audit_retention: AuditRetentionState::empty(uuid::Uuid::from_bytes(
+                Sha256::digest(
+                    serde_json::to_vec(&("kasumi.audit-stream.v1", &tenant, &incarnation))
+                        .expect("identity serializes"),
+                )[..16]
+                    .try_into()
+                    .expect("digest width"),
+            )),
             audits: imbl::Vector::new(),
         };
         let indexes = Arc::new(QueryIndexes::build(&state.collections)?);
@@ -362,6 +393,7 @@ impl TenantEngine {
         expected_tenant: &str,
         incarnation: String,
         checkpoint: FullBackupCheckpoint,
+        target_origin: Option<TargetOrigin>,
     ) -> Result<kasumi_store::SnapshotImage> {
         let mut state = crate::snapshot_codec::read(&mut bytes.reader())
             .map_err(|_| Error::new(ErrorCode::Corruption, "invalid logical backup"))?;
@@ -386,6 +418,31 @@ impl TenantEngine {
         });
         state.restored_from = Some(checkpoint.clone());
         state.incarnation = incarnation;
+        if let Some(origin) = target_origin {
+            origin.validate()?;
+            if origin
+                .materialization
+                .request
+                .target_incarnation
+                .to_string()
+                != state.incarnation
+                || origin.materialization.request.checkpoint != checkpoint
+                || state.target_lifecycle.contains_key(&state.incarnation)
+            {
+                return Err(Error::new(
+                    ErrorCode::Conflict,
+                    "target genesis origin differs or incarnation reused",
+                ));
+            }
+            state.target_lifecycle.insert(
+                state.incarnation.clone(),
+                TargetExecutionState {
+                    origin,
+                    completion: None,
+                    activation: None,
+                },
+            );
+        }
         state.pending_restore = Some(PendingRestore {
             backup_id: checkpoint.backup_id.to_string(),
             source_revision: state.revision,
@@ -598,21 +655,25 @@ impl TenantEngine {
             command.operation,
             Operation::Audit(_) | Operation::MaintenanceAudit(_)
         ) {
-            next.audits.push_back(AuditEvent {
-                event_id: format!("{}:{revision}", next.incarnation),
-                principal: command.context.principal.clone(),
-                action: action.into(),
-                request_id: command.context.request_id.clone(),
-                timestamp_ms: command.timestamp_ms,
-                data_revision: Some(revision),
-                outcome: if outcome.is_ok() {
-                    "committed"
-                } else {
-                    "rejected"
-                }
-                .into(),
-                collection: None,
-            });
+            let event_id = format!("{}:{revision}", next.incarnation);
+            append_audit(
+                &mut next,
+                AuditEvent {
+                    event_id,
+                    principal: command.context.principal.clone(),
+                    action: action.into(),
+                    request_id: command.context.request_id.clone(),
+                    timestamp_ms: command.timestamp_ms,
+                    data_revision: Some(revision),
+                    outcome: if outcome.is_ok() {
+                        "committed"
+                    } else {
+                        "rejected"
+                    }
+                    .into(),
+                    collection: None,
+                },
+            )?;
         }
         let changed = if changed_documents {
             operation_changes(&previous.state, &command)?
@@ -752,7 +813,7 @@ impl TenantEngine {
                 .ok_or_else(|| Error::new(ErrorCode::Corruption, "required audit missing"))?
                 .clone();
             event.outcome = "rejected".into();
-            rejected.audits.push_back(event);
+            append_audit(&mut rejected, event)?;
             let accounting = previous.snapshot_accounting.updated(
                 &previous.state,
                 &rejected,
@@ -793,25 +854,20 @@ impl TenantEngine {
 
     /// Decode canonical records without publishing state. Callers must still
     /// validate logical invariants before installing this untrusted candidate.
-    pub fn decode_snapshot_state(mut bytes: &[u8]) -> Result<TenantState> {
-        crate::snapshot_codec::read(&mut bytes)
+    pub fn decode_snapshot_state(bytes: &kasumi_store::SnapshotImage) -> Result<TenantState> {
+        crate::snapshot_codec::read(&mut bytes.reader())
             .map_err(|e| Error::new(ErrorCode::Corruption, e.to_string()))
     }
-    pub fn encode_snapshot_state(state: &TenantState) -> Result<Vec<u8>> {
-        let mut bytes = Vec::new();
-        crate::snapshot_codec::write(state, &mut bytes)
-            .map_err(|e| Error::new(ErrorCode::Corruption, e.to_string()))?;
-        Ok(bytes)
-    }
-
-    pub fn snapshot(&self) -> Result<Vec<u8>> {
-        Self::encode_generation(self.generation()?.as_ref())
-    }
-
-    fn encode_generation(generation: &Generation) -> Result<Vec<u8>> {
-        let mut bytes = Vec::new();
-        Self::write_generation(generation, &mut bytes)?;
-        Ok(bytes)
+    /// Encode an unvalidated candidate in encrypted staging. Callers choose the
+    /// aggregate disk workspace bound; logical quotas are checked on restore.
+    pub fn encode_snapshot_state(
+        state: &TenantState,
+        max_bytes: u64,
+    ) -> Result<kasumi_store::SnapshotImage> {
+        kasumi_store::SnapshotImage::capture(max_bytes, |writer| {
+            crate::snapshot_codec::write(state, writer)
+        })
+        .map_err(|e| Error::new(ErrorCode::Corruption, e.to_string()))
     }
 
     pub(crate) fn write_generation(
@@ -828,11 +884,12 @@ impl TenantEngine {
             .map_err(|_| Error::new(ErrorCode::Corruption, "snapshot encoding failed"))
     }
 
-    pub(crate) fn snapshot_image(&self) -> anyhow::Result<kasumi_store::SnapshotImage> {
+    pub fn snapshot(&self) -> Result<kasumi_store::SnapshotImage> {
         let generation = self.generation()?;
         kasumi_store::SnapshotImage::capture(generation.state.limits.max_snapshot_bytes, |writer| {
             Ok(Self::write_generation(&generation, writer)?)
         })
+        .map_err(|e| Error::new(ErrorCode::Corruption, e.to_string()))
     }
 
     pub fn snapshot_bytes(&self) -> Result<usize> {
@@ -840,18 +897,14 @@ impl TenantEngine {
         generation.snapshot_accounting.bytes(&generation.state)
     }
 
-    pub fn restore(&self, bytes: &[u8]) -> Result<()> {
+    pub fn restore(&self, bytes: &kasumi_store::SnapshotImage) -> Result<()> {
         let _guard = self
             .apply_lock
             .lock()
             .map_err(|_| Error::new(ErrorCode::Unavailable, "tenant apply lock poisoned"))?;
-        let generation = self.prepare_snapshot(bytes)?;
+        let generation = self.prepare_snapshot_reader(&mut bytes.reader())?;
         self.current.store(Some(Arc::new(generation)));
         Ok(())
-    }
-
-    fn prepare_snapshot(&self, bytes: &[u8]) -> Result<Generation> {
-        self.prepare_snapshot_reader(&mut std::io::Cursor::new(bytes))
     }
 
     fn prepare_snapshot_reader(&self, reader: &mut dyn std::io::Read) -> Result<Generation> {
@@ -876,6 +929,49 @@ impl TenantEngine {
         validate_limits(&state.limits)?;
         validate_policy(&state.policy, &state.limits)?;
         lifecycle::validate(&state)?;
+        validate_target_history(&state)?;
+        for entry in state.target_lifecycle.values() {
+            if let Some(completed) = &entry.completion {
+                let expected = kasumi_serving::verify_target_materializations(
+                    &entry.origin,
+                    &completed.materialized,
+                )
+                .map_err(|_| {
+                    Error::new(
+                        ErrorCode::Corruption,
+                        "snapshot target materialization signatures differ",
+                    )
+                })?;
+                if expected != completed.bootstrap_sha256 {
+                    return Err(Error::new(
+                        ErrorCode::Corruption,
+                        "snapshot target bootstrap differs",
+                    ));
+                }
+            }
+        }
+        if let Ok(current) = self.generation() {
+            for (id, old) in &current.state.target_lifecycle {
+                let new = state.target_lifecycle.get(id).ok_or_else(|| {
+                    Error::new(ErrorCode::Corruption, "snapshot removed target history")
+                })?;
+                if new.origin != old.origin
+                    || old
+                        .completion
+                        .as_ref()
+                        .is_some_and(|fact| new.completion.as_ref() != Some(fact))
+                    || old
+                        .activation
+                        .as_ref()
+                        .is_some_and(|fact| new.activation.as_ref() != Some(fact))
+                {
+                    return Err(Error::new(
+                        ErrorCode::Corruption,
+                        "snapshot substituted immutable target history",
+                    ));
+                }
+            }
+        }
         if let Ok(current) = self.generation()
             && let Some(installed) = &current.state.lifecycle_control
             && state.lifecycle_control.as_ref().is_none_or(|incoming| {
@@ -1008,6 +1104,7 @@ impl TenantEngine {
                 "snapshot logical accounting mismatch",
             ));
         }
+        validate_audits(&state)?;
         let snapshot_accounting = SnapshotAccounting::rebuild(&state)?;
         staging::validate_restored(&state)?;
         schema::validate_restored(&state)?;
@@ -1404,7 +1501,7 @@ fn apply_operation(
                     "invalid read audit event",
                 ));
             }
-            state.audits.push_back(event.clone());
+            append_audit(state, event.clone())?;
             Ok((Ok(receipt()), false))
         }
         Operation::MaintenanceAudit(event) => {
@@ -1447,7 +1544,7 @@ fn apply_operation(
                 }
                 state.pending_restore = None;
             }
-            state.audits.push_back(event.clone());
+            append_audit(state, event.clone())?;
             Ok((Ok(receipt()), false))
         }
     }
@@ -1929,25 +2026,81 @@ mod restore_budget_tests {
             .unwrap()
             .unwrap();
         let mut source = engine.generation().unwrap().state.clone();
-        source.limits.max_snapshot_bytes =
-            TenantEngine::encode_snapshot_state(&source).unwrap().len() as u64 + 20;
-        let bytes = TenantEngine::encode_snapshot_state(&source).unwrap();
+        source.limits.max_snapshot_bytes = TenantEngine::encode_snapshot_state(&source, 64 << 20)
+            .unwrap()
+            .len() as u64
+            + 20;
+        let bytes = TenantEngine::encode_snapshot_state(&source, 64 << 20).unwrap();
         engine.restore(&bytes).unwrap(); // Source itself is a valid recoverable snapshot.
         let outcome = TenantEngine::restored_bootstrap(
-            &kasumi_store::SnapshotImage::from_bytes(&bytes).unwrap(),
+            &bytes,
             "tenant",
             uuid::Uuid::new_v4().to_string(),
             FullBackupCheckpoint {
                 tenant: source.tenant.clone(),
                 source_incarnation: source.incarnation.clone(),
                 revision: source.revision,
-                resident_sha256: hex::encode(Sha256::digest(&bytes)),
+                resident_sha256: bytes.sha256().to_owned(),
                 backup_id: uuid::Uuid::new_v4(),
                 manifest_ciphertext_sha256: "00".repeat(32),
                 key_lineage_digest: "00".repeat(32),
             },
+            None,
         );
         assert_eq!(outcome.unwrap_err().code, ErrorCode::QuotaExceeded);
         assert_eq!(engine.snapshot().unwrap(), bytes);
     }
+}
+
+/// Appends a hot event with its permanent stream position and exact encoded budget.
+pub(crate) fn append_audit(state: &mut TenantState, event: AuditEvent) -> Result<()> {
+    let bytes = encoded_len(&event)?;
+    if bytes > MAX_AUDIT_EVENT_BYTES {
+        return Err(Error::new(
+            ErrorCode::QuotaExceeded,
+            "audit event exceeds record budget",
+        ));
+    }
+    let next = state
+        .audit_retention
+        .next_sequence
+        .checked_add(1)
+        .ok_or_else(|| Error::new(ErrorCode::Corruption, "audit sequence exhausted"))?;
+    let hot = state
+        .audit_retention
+        .hot_bytes
+        .checked_add(bytes as u64)
+        .ok_or_else(|| Error::new(ErrorCode::Corruption, "audit byte count overflow"))?;
+    state.audits.push_back(event);
+    state.audit_retention.next_sequence = next;
+    state.audit_retention.hot_bytes = hot;
+    Ok(())
+}
+fn validate_audits(state: &TenantState) -> Result<()> {
+    state.audit_retention.validate()?;
+    let hot = state.audits.iter().try_fold(0u64, |total, event| {
+        let bytes = encoded_len(event)?;
+        if bytes > MAX_AUDIT_EVENT_BYTES {
+            return Err(Error::new(
+                ErrorCode::Corruption,
+                "audit event exceeds record budget",
+            ));
+        }
+        total
+            .checked_add(bytes as u64)
+            .ok_or_else(|| Error::new(ErrorCode::Corruption, "audit byte count overflow"))
+    })?;
+    if state
+        .audit_retention
+        .next_sequence
+        .checked_sub(state.audit_retention.pruned_before)
+        != Some(state.audits.len() as u64)
+        || hot != state.audit_retention.hot_bytes
+    {
+        return Err(Error::new(
+            ErrorCode::Corruption,
+            "audit retention accounting differs",
+        ));
+    }
+    Ok(())
 }

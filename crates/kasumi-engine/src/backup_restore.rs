@@ -6,6 +6,10 @@ use crate::{
     backup_format::*,
     backup_verify::{BackupReader, VerificationDeadline, VerifiedBackup},
 };
+#[path = "target_restore_authorization.rs"]
+mod authorization;
+pub(super) use authorization::RestoreAuthorization;
+
 /// Trusted operator binding for a complete backup and its copied history.
 /// The same alias must be configured on every restored replica. Historical
 /// archive keys must also remain accessible to the target tenant provider.
@@ -35,6 +39,7 @@ impl VerifiedBackup {
         deadline: VerificationDeadline,
         tenant: String,
         incarnation: String,
+        target_origin: Option<TargetOrigin>,
     ) -> anyhow::Result<PreparedState> {
         deadline
             .blocking(
@@ -46,6 +51,7 @@ impl VerifiedBackup {
                         &tenant,
                         incarnation,
                         self.checkpoint.clone(),
+                        target_origin,
                     )?;
                     deadline.check()?;
                     let engine = Arc::new(TenantEngine::from_bootstrap(&tenant, &bytes)?);
@@ -110,7 +116,9 @@ async fn object(
 struct RestoreReader<'a> {
     source: &'a RestoreSource,
     target: &'a TenantStore,
-    context: &'a RequestContext,
+    authorization: RestoreAuthorization<'a>,
+    work: Option<Arc<crate::backup_verify::VerificationWork>>,
+    token: Option<kasumi_query::QueryCancellation>,
     audit: &'a SecurityAudit,
     bound_checkpoint: Option<FullBackupCheckpoint>,
 }
@@ -119,25 +127,20 @@ impl BackupReader for RestoreReader<'_> {
         self.target.tenant()
     }
     fn work_registration(&self) -> Option<Arc<crate::backup_verify::VerificationWork>> {
-        None
+        self.work.clone()
     }
     fn cancellation(&self) -> Option<kasumi_query::QueryCancellation> {
-        None
+        self.token.clone()
     }
     async fn check_access(&self) -> anyhow::Result<()> {
-        restore_access(self.target, self.audit, self.context).await
+        self.authorization
+            .check_access(self.target, self.audit)
+            .await
     }
     async fn authorize_state<'a>(&'a self, state: &'a TenantState) -> anyhow::Result<()> {
-        if self.context.tenant != state.tenant
-            || !state.policy.allows(self.context, None, Action::Admin)
-        {
-            return Err(
-                restore_denial(self.audit, self.context, ErrorCode::Forbidden)
-                    .await
-                    .into(),
-            );
-        }
-        self.check_access().await
+        self.authorization
+            .authorize_state(self.target, self.audit, state)
+            .await
     }
     async fn object<'a>(
         &'a self,
@@ -179,26 +182,47 @@ pub(super) async fn load(
     admission: &Arc<NodeAdmission>,
     deadline: VerificationDeadline,
 ) -> anyhow::Result<VerifiedBackup> {
+    load_authorized(
+        source,
+        backup_id,
+        target,
+        RestoreAuthorization::Data(context),
+        audit,
+        admission,
+        deadline,
+        None,
+        None,
+    )
+    .await
+}
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn load_authorized(
+    source: &RestoreSource,
+    backup_id: uuid::Uuid,
+    target: &TenantStore,
+    authorization: RestoreAuthorization<'_>,
+    audit: &SecurityAudit,
+    admission: &Arc<NodeAdmission>,
+    deadline: VerificationDeadline,
+    work: Option<Arc<crate::backup_verify::VerificationWork>>,
+    token: Option<kasumi_query::QueryCancellation>,
+) -> anyhow::Result<VerifiedBackup> {
     validate_name(&source.destination_alias)?;
-    let bound_checkpoint = match target.storage_access().serving_gate() {
-        Some(gate) => {
-            let checkpoint = gate.recovery_checkpoint()?.ok_or_else(|| {
-                anyhow::anyhow!("serving authority has not authorized a restore checkpoint")
-            })?;
-            anyhow::ensure!(
-                checkpoint.backup_id == backup_id && checkpoint.tenant == target.tenant(),
-                "restore request differs from signed authority checkpoint"
-            );
-            Some(checkpoint)
-        }
-        None => None,
-    };
+    if let RestoreAuthorization::Lifecycle(invocation) = &authorization {
+        anyhow::ensure!(
+            work.as_ref().is_some_and(|w| w.binds(invocation)) && token.is_some(),
+            "target verification lacks original registered work"
+        );
+    }
+    let bound_checkpoint = authorization.bound_checkpoint(target, backup_id)?;
     let reader = RestoreReader {
         source,
         target,
-        context,
+        authorization,
         audit,
         bound_checkpoint,
+        work,
+        token,
     };
     let verified = Box::pin(crate::backup_verify::verify(
         &reader, backup_id, admission, deadline,
@@ -241,7 +265,7 @@ pub(super) async fn load(
             Ok((state, bytes))
         })
         .await?;
-    restore_access(target, audit, context).await?;
+    reader.check_access().await?;
     Ok(VerifiedBackup {
         state,
         bytes,

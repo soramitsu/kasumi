@@ -47,6 +47,7 @@ impl ControlFixture {
                             node_id: n.node_id,
                             principal: n.principal.clone(),
                             certificate_sha256: n.certificate_sha256.clone(),
+                            attestation_public_key: format!("{:064x}", n.node_id + 100),
                         },
                     )
                 })
@@ -474,16 +475,14 @@ async fn lifecycle_byte_exhaustion_preserves_reserved_epoch_stop_and_exact_snaps
         .backend
         .validate_snapshot(&mut snapshot.as_slice())
         .unwrap();
-    let mut modified: serde_json::Value = serde_json::from_slice(&snapshot).unwrap();
     let key = stop.reference().key().unwrap();
-    modified["records"][&key]["record"]["original_principal"] =
-        serde_json::json!("substituted-admin");
-    assert!(
-        service
-            .backend
-            .restore(&mut serde_json::to_vec(&modified).unwrap().as_slice())
-            .is_err()
-    );
+    let modified = crate::state::snapshot::rewrite_for_test(&snapshot, |value| {
+        if value["type"] == "Entry" && value["value"][0] == key {
+            value["value"][1]["record"]["original_principal"] =
+                serde_json::json!("substituted-admin");
+        }
+    });
+    assert!(service.backend.restore(&mut modified.as_slice()).is_err());
     let retained = service
         .read_lifecycle_receipt(f.context("operator"), stop.reference())
         .await
@@ -528,3 +527,9 @@ async fn accepted_on_current_leader(
     .await
     .expect("bounded setup recovery did not obtain current-quorum receipt")
 }
+
+#[path = "activation_gate_tests.rs"]
+mod activation_gate_tests;
+
+#[path = "target_materialization_tests.rs"]
+mod target_materialization_tests;

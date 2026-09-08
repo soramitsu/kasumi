@@ -6,7 +6,7 @@ use kasumi_serving::*;
 use kasumi_store::{TenantStore, WriteOp};
 use kasumi_types::{Error, ErrorCode, RequestContext};
 use serde::{Deserialize, Serialize};
-use std::io::Read;
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{Arc, Mutex},
@@ -16,10 +16,16 @@ use uuid::Uuid;
 #[path = "lifecycle_state.rs"]
 pub(crate) mod lifecycle_state;
 
+#[path = "activation_state.rs"]
+mod activation;
+
+#[path = "snapshot.rs"]
+pub(crate) mod snapshot;
+use snapshot::SnapshotRecords;
+
 const NS: &str = "kasumi.independent-authority";
 const META: &[u8] = b"meta";
 const MAX_RECORD_BYTES: usize = 256 << 10;
-pub const MAX_SNAPSHOT_BYTES: usize = 64 << 20;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -121,11 +127,9 @@ pub(crate) struct LeaseMaterial {
     pub activation_digest: String,
     pub recovery_checkpoint: Option<kasumi_types::FullBackupCheckpoint>,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Snapshot {
     meta: Meta,
-    records: BTreeMap<String, Record>,
+    records: SnapshotRecords,
 }
 
 /// Internal leader preparation. No native decoder accepts this type.
@@ -480,6 +484,7 @@ impl Backend {
             principal: prepared.context.principal.clone(),
             term: position.log_id.leader_id.term,
             revision: position.log_id.index,
+            admitted_at_ms: prepared.admitted_at_ms,
             outcome,
         };
         // A successful fence retains its complete immutable accepted identity.
@@ -719,7 +724,15 @@ impl Backend {
                 fence_id,
                 fence_digest,
                 target,
+            }
+            | AuthorityAction::ActivateCommitted {
+                fence_id,
+                fence_digest,
+                target,
+                ..
             } => {
+                self.validate_activation_control(&prepared.command, prepared.admitted_at_ms)
+                    .map_err(|_| conflict("committed activation authority differs or expired"))?;
                 let record = tenant
                     .as_mut()
                     .ok_or_else(|| conflict("tenant is not enrolled"))?;
@@ -850,6 +863,7 @@ impl Backend {
                         principal: prepared.context.principal.clone(),
                         term: prepared.authority_term,
                         revision: accepted_revision,
+                        admitted_at_ms: prepared.admitted_at_ms,
                         outcome: AuthorityOutcome::ActivationStopped { original_digest },
                     },
                 };
@@ -895,29 +909,16 @@ impl StateMachineBackend for Backend {
         };
         Ok(AppliedResponse::application(bytes))
     }
-    fn snapshot(&self, writer: &mut dyn std::io::Write) -> Result<Option<RetiredSnapshotState>> {
+    fn capture_snapshot(&self) -> Result<kasumi_raft::CapturedSnapshot> {
         let _lock = self
             .mutation
             .lock()
             .map_err(|_| anyhow::anyhow!("authority state poisoned"))?;
-        let mut records = BTreeMap::new();
-        self.store.visit(NS, MAX_RECORD_BYTES, |key, bytes| {
-            if key != META {
-                records.insert(
-                    String::from_utf8(key.to_vec())?,
-                    serde_json::from_slice(bytes)?,
-                );
-            }
-            Ok(())
-        })?;
-        serde_json::to_writer(
-            writer,
-            &Snapshot {
-                meta: self.meta()?,
-                records,
-            },
-        )?;
-        Ok(None)
+        let view = self.store.read_view()?;
+        let maximum = self.installation.max_state_bytes;
+        Ok(kasumi_raft::CapturedSnapshot::new(None, move |writer| {
+            snapshot::write(&view, maximum, writer)
+        }))
     }
     fn validate_snapshot(
         &self,
@@ -933,20 +934,7 @@ impl StateMachineBackend for Backend {
             .map_err(|_| anyhow::anyhow!("authority state poisoned"))?;
         let snapshot = self.decode_snapshot(bytes)?;
         self.validate_lifecycle_history(&snapshot)?;
-        let mut writes = Vec::new();
-        self.store.visit(NS, MAX_RECORD_BYTES, |key, _| {
-            writes.push(WriteOp::delete(NS, key));
-            Ok(())
-        })?;
-        writes.push(WriteOp::put(NS, META, serde_json::to_vec(&snapshot.meta)?));
-        for (key, value) in snapshot.records {
-            writes.push(WriteOp::put(
-                NS,
-                key.as_bytes(),
-                serde_json::to_vec(&value)?,
-            ));
-        }
-        self.store.write_batch(&writes)
+        snapshot.records.publish(&self.store)
     }
     fn close_application(&self) {
         self.store.seal();
@@ -954,7 +942,7 @@ impl StateMachineBackend for Backend {
 }
 impl Backend {
     fn decode_snapshot(&self, bytes: &mut dyn std::io::Read) -> Result<Snapshot> {
-        let snapshot: Snapshot = serde_json::from_reader(bytes.take(MAX_SNAPSHOT_BYTES as u64))?;
+        let snapshot = snapshot::read(bytes, self.installation.max_state_bytes)?;
         ensure!(
             snapshot.meta.installation == self.installation
                 && snapshot.meta.policy_epoch > 0
@@ -971,7 +959,7 @@ impl Backend {
             mut incarnations,
             mut target_stops,
         ) = (0, 0, 0, 0, 0, 0, 0);
-        for (key, record) in &snapshot.records {
+        snapshot.records.visit(|key, record| {
             let bytes = serde_json::to_vec(record)?;
             ensure!(
                 bytes.len() <= MAX_RECORD_BYTES,
@@ -983,7 +971,7 @@ impl Backend {
                 Record::Tenant(record) => {
                     tenants += 1;
                     ensure!(
-                        *key == key_tenant(&record.tenant)
+                        key == key_tenant(&record.tenant)
                             && self.installation.manifest.partition(&record.tenant)?
                                 == self.installation.partition
                             && !record.incarnation.is_nil()
@@ -1006,7 +994,7 @@ impl Backend {
                     }
                     match snapshot
                         .records
-                        .get(&key_incarnation(&record.tenant, record.incarnation))
+                        .get(&key_incarnation(&record.tenant, record.incarnation))?
                     {
                         Some(Record::Incarnation(accepted)) => {
                             ensure!(
@@ -1019,7 +1007,8 @@ impl Backend {
                                     nodes == &record.nodes && record.recovery_checkpoint.is_none(),
                                     "enrollment nodes differ"
                                 ),
-                                AuthorityAction::Activate { target, .. } => ensure!(
+                                AuthorityAction::Activate { target, .. }
+                                | AuthorityAction::ActivateCommitted { target, .. } => ensure!(
                                     target.nodes == record.nodes
                                         && record.recovery_checkpoint.as_ref()
                                             == Some(&target.checkpoint),
@@ -1040,10 +1029,10 @@ impl Backend {
                         );
                         match snapshot
                             .records
-                            .get(&key_receipt(&record.tenant, fence.command.command_id))
+                            .get(&key_receipt(&record.tenant, fence.command.command_id))?
                         {
                             Some(Record::Receipt(retained)) => {
-                                ensure!(retained == fence, "authority fence receipt substituted")
+                                ensure!(&retained == fence, "authority fence receipt substituted")
                             }
                             _ => anyhow::bail!("authority fence receipt missing"),
                         }
@@ -1052,7 +1041,7 @@ impl Backend {
                 Record::Receipt(receipt) => {
                     receipts += 1;
                     ensure!(
-                        *key == key_receipt(&receipt.command.tenant, receipt.command.command_id)
+                        key == key_receipt(&receipt.command.tenant, receipt.command.command_id)
                             && receipt.command_digest == receipt.command.digest()?
                             && receipt.authority_id == self.installation.manifest.authority_id
                             && receipt.manifest_digest == self.installation.manifest.digest()?
@@ -1065,7 +1054,7 @@ impl Backend {
                 Record::Preparation(prepared) => {
                     preparations += 1;
                     ensure!(
-                        *key == key_preparation(&prepared.tenant, prepared.target.incarnation)
+                        key == key_preparation(&prepared.tenant, prepared.target.incarnation)
                             && prepared.source_epoch > 0
                             && prepared.source_epoch < u64::MAX,
                         "preparation snapshot identity differs"
@@ -1080,9 +1069,9 @@ impl Backend {
                     match snapshot.records.get(&key_receipt(
                         &prepared.tenant,
                         prepared.receipt.command.command_id,
-                    )) {
+                    ))? {
                         Some(Record::Receipt(receipt)) => ensure!(
-                            receipt == &prepared.receipt,
+                            receipt == prepared.receipt,
                             "preparation snapshot receipt differs"
                         ),
                         _ => anyhow::bail!("preparation snapshot receipt absent"),
@@ -1114,22 +1103,22 @@ impl Backend {
                     ensure!(
                         epoch > 0
                             && epoch < u64::MAX
-                            && *key == key_target_stop(&stop.command.tenant, target.incarnation)
+                            && key == key_target_stop(&stop.command.tenant, target.incarnation)
                             && !snapshot.records.contains_key(&key_incarnation(
                                 &stop.command.tenant,
                                 target.incarnation
-                            )),
+                            ))?,
                         "target stop snapshot identity differs"
                     );
                     ensure!(
-                        matches!(snapshot.records.get(&key_receipt(&stop.command.tenant,stop.command.command_id)),Some(Record::Receipt(receipt)) if receipt==stop),
+                        matches!(snapshot.records.get(&key_receipt(&stop.command.tenant,stop.command.command_id))?,Some(Record::Receipt(receipt)) if &receipt==stop),
                         "target stop receipt absent or substituted"
                     );
                 }
                 Record::Incarnation(accepted) => {
                     incarnations += 1;
                     ensure!(
-                        *key == key_incarnation(&accepted.tenant, accepted.incarnation)
+                        key == key_incarnation(&accepted.tenant, accepted.incarnation)
                             && accepted.authority_epoch > 0,
                         "incarnation snapshot identity differs"
                     );
@@ -1148,7 +1137,8 @@ impl Backend {
                                 && accepted.authority_epoch == 1
                         }
                         (
-                            AuthorityAction::Activate { target, .. },
+                            AuthorityAction::Activate { target, .. }
+                            | AuthorityAction::ActivateCommitted { target, .. },
                             AuthorityOutcome::Activated {
                                 target: actual,
                                 authority_epoch,
@@ -1168,16 +1158,18 @@ impl Backend {
                     match snapshot.records.get(&key_receipt(
                         &accepted.tenant,
                         accepted.receipt.command.command_id,
-                    )) {
+                    ))? {
                         Some(Record::Receipt(receipt)) => ensure!(
-                            receipt == &accepted.receipt,
+                            receipt == accepted.receipt,
                             "incarnation receipt substituted"
                         ),
                         _ => anyhow::bail!("incarnation receipt absent"),
                     }
                 }
             }
-        }
+            Ok(())
+        })?;
+        self.validate_activation_snapshot(&snapshot)?;
         ensure!(
             (
                 tenants,

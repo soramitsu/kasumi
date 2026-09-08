@@ -60,13 +60,15 @@ impl StateMachineBackend for ClosedBackend {
     fn apply(&self, _: &AppliedEntryContext, _: &[u8]) -> Result<crate::AppliedResponse> {
         anyhow::bail!("metadata test cannot apply payload")
     }
-    fn snapshot(
-        &self,
-        writer: &mut dyn std::io::Write,
-    ) -> Result<Option<crate::RetiredSnapshotState>> {
+    fn capture_snapshot(&self) -> Result<crate::CapturedSnapshot> {
         let retirement = self.0.lock().unwrap().clone();
-        serde_json::to_writer(writer, &retirement)?;
-        Ok(retirement)
+        Ok(crate::CapturedSnapshot::new(
+            retirement.clone(),
+            move |writer| {
+                serde_json::to_writer(writer, &retirement)?;
+                Ok(())
+            },
+        ))
     }
     fn validate_snapshot(
         &self,

@@ -1,0 +1,63 @@
+    Checking kasumi-types v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-types)
+    Checking kasumi-serving v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-serving)
+    Checking kasumi-store v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-store)
+    Checking kasumi-query v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-query)
+    Checking kasumi-raft v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-raft)
+    Checking kasumi-engine v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-engine)
+error[E0432]: unresolved import `kasumi_engine`
+ --> crates/kasumi-engine/src/target_journal.rs:4:5
+  |
+4 | use kasumi_engine::TargetOperation;
+  |     ^^^^^^^^^^^^^ use of unresolved module or unlinked crate `kasumi_engine`
+  |
+help: there is a crate or module with a similar name
+  |
+4 - use kasumi_engine::TargetOperation;
+4 + use kasumi_serving::TargetOperation;
+  |
+
+error[E0433]: cannot find module or crate `kasumi_engine` in this scope
+  --> crates/kasumi-engine/src/target_journal.rs:79:20
+   |
+79 |     admission: Arc<kasumi_engine::admission::NodeAdmission>,
+   |                    ^^^^^^^^^^^^^ use of unresolved module or unlinked crate `kasumi_engine`
+   |
+help: there is a crate or module with a similar name
+   |
+79 -     admission: Arc<kasumi_engine::admission::NodeAdmission>,
+79 +     admission: Arc<kasumi_serving::admission::NodeAdmission>,
+   |
+help: consider importing this module
+   |
+ 3 + use crate::admission;
+   |
+help: if you import `admission`, refer to it directly
+   |
+79 -     admission: Arc<kasumi_engine::admission::NodeAdmission>,
+79 +     admission: Arc<admission::NodeAdmission>,
+   |
+
+error[E0433]: cannot find module or crate `kasumi_engine` in this scope
+  --> crates/kasumi-engine/src/target_journal.rs:87:24
+   |
+87 |         admission: Arc<kasumi_engine::admission::NodeAdmission>,
+   |                        ^^^^^^^^^^^^^ use of unresolved module or unlinked crate `kasumi_engine`
+   |
+help: there is a crate or module with a similar name
+   |
+87 -         admission: Arc<kasumi_engine::admission::NodeAdmission>,
+87 +         admission: Arc<kasumi_serving::admission::NodeAdmission>,
+   |
+help: consider importing this module
+   |
+ 3 + use crate::admission;
+   |
+help: if you import `admission`, refer to it directly
+   |
+87 -         admission: Arc<kasumi_engine::admission::NodeAdmission>,
+87 +         admission: Arc<admission::NodeAdmission>,
+   |
+
+Some errors have detailed explanations: E0432, E0433.
+For more information about an error, try `rustc --explain E0432`.
+error: could not compile `kasumi-engine` (lib) due to 3 previous errors

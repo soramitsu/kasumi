@@ -1,0 +1,111 @@
+warning: `package.edition` is unspecified, defaulting to `2015` while 2021 is compatible with `rust-version`
+   Compiling lru v0.16.4 (/Users/mtakemiya/dev/kasumi/vendor/lru-0.16.4)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.69s
+     Running unittests src/lib.rs (/tmp/kasumi-production-lru-target/debug/deps/lru-d4083e4ea7024209)
+
+running 53 tests
+test tests::test_clone ... ok
+test tests::iter_mut_stacked_borrows_violation ... ok
+test tests::test_contains ... ok
+test tests::test_get_mut_and_update ... ok
+test tests::test_get_mut_with_borrow ... ok
+test tests::test_clone_unbounded ... ok
+test tests::test_clear ... ok
+test tests::test_get_key_value_mut ... ok
+test tests::test_get_key_value ... ok
+test tests::test_get_with_borrow ... ok
+test tests::test_into_iter ... ok
+test tests::test_iter_backwards ... ok
+test tests::test_iter_clone ... ok
+test tests::test_iter_forwards ... ok
+test tests::test_iter_forwards_and_backwards ... ok
+test tests::test_peek ... ok
+test tests::test_peek_lru ... ok
+test tests::test_peek_mru ... ok
+test tests::test_peek_mut ... ok
+test tests::test_pop ... ok
+test tests::test_pop_entry ... ok
+test tests::test_pop_lru ... ok
+test tests::test_get_or_insert_mut_ref ... ok
+test tests::test_get_or_insert_ref ... ok
+test tests::pop_panicking_key_drop_preserves_list ... ok
+test tests::test_promote_and_demote ... ok
+test tests::test_pop_mru ... ok
+test tests::test_multiple_threads ... ok
+test tests::test_iter_multiple_threads ... ok
+test tests::test_put_and_get ... ok
+test tests::test_put_and_get_mut ... ok
+test tests::test_put_and_get_or_insert ... ok
+test tests::test_put_and_get_or_insert_mut ... ok
+test tests::test_put_and_get_or_insert_mut_with_key ... ok
+test tests::test_put_and_get_or_insert_with_key ... ok
+test tests::test_put_removes_oldest ... ok
+test tests::test_put_update ... ok
+test tests::test_resize_larger ... ok
+test tests::test_resize_smaller ... ok
+test tests::test_that_pop_actually_detaches_node ... ok
+test tests::test_try_get_or_insert ... ok
+test tests::test_try_get_or_insert_mut ... ok
+test tests::test_try_get_or_insert_mut_ref ... ok
+test tests::test_try_get_or_insert_mut_with_key ... ok
+test tests::test_send ... ok
+test tests::test_try_get_or_insert_ref ... ok
+test tests::test_try_get_or_insert_with_key ... ok
+test tests::test_no_memory_leaks_with_clear ... ok
+test tests::test_no_memory_leaks ... ok
+test tests::test_no_memory_leaks_with_pop ... ok
+test tests::test_no_memory_leaks_with_resize ... ok
+test tests::test_unbounded ... ok
+test tests::test_with_hasher ... ok
+
+test result: ok. 53 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+   Doc-tests lru
+
+running 43 tests
+test src/lib.rs - LruCache<K,V,S>::cap (line 1524) ... ok
+test src/lib.rs - LruCache<K,V,S>::clear (line 1574) ... ok
+test src/lib.rs - (line 29) ... ok
+test src/lib.rs - LruCache<K,V,S>::demote (line 1442) ... ok
+test src/lib.rs - LruCache<K,V,S>::get (line 432) ... ok
+test src/lib.rs - LruCache<K,V,S>::get_or_insert (line 586) ... ok
+test src/lib.rs - LruCache<K,V,S>::get_key_value_mut (line 541) ... ok
+test src/lib.rs - LruCache<K,V,S>::contains (line 1240) ... ok
+test src/lib.rs - LruCache<K,V,S>::get_mut (line 468) ... ok
+test src/lib.rs - LruCache<K,V,S>::get_key_value (line 504) ... ok
+test src/lib.rs - LruCache<K,V,S>::get_or_insert_mut (line 852) ... ok
+test src/lib.rs - LruCache<K,V,S>::get_or_insert_mut_ref (line 929) ... ok
+test src/lib.rs - LruCache<K,V,S>::get_or_insert_mut_with_key (line 882) ... ok
+test src/lib.rs - LruCache<K,V,S>::get_or_insert_ref (line 663) ... ok
+test src/lib.rs - LruCache<K,V,S>::get_or_insert_with_key (line 615) ... ok
+test src/lib.rs - LruCache<K,V,S>::is_empty (line 1507) ... ok
+test src/lib.rs - LruCache<K,V,S>::iter (line 1598) ... ok
+test src/lib.rs - LruCache<K,V,S>::iter_mut (line 1625) ... ok
+test src/lib.rs - LruCache<K,V,S>::len (line 1484) ... ok
+test src/lib.rs - LruCache<K,V,S>::peek (line 1124) ... ok
+test src/lib.rs - LruCache<K,V,S>::peek_lru (line 1179) ... ok
+test src/lib.rs - LruCache<K,V,S>::peek_mru (line 1210) ... ok
+test src/lib.rs - LruCache<K,V,S>::peek_mut (line 1151) ... ok
+test src/lib.rs - LruCache<K,V,S>::pop (line 1266) ... ok
+test src/lib.rs - LruCache<K,V,S>::pop_entry (line 1308) ... ok
+test src/lib.rs - LruCache<K,V,S>::pop_lru (line 1345) ... ok
+test src/lib.rs - LruCache<K,V,S>::pop_mru (line 1373) ... ok
+test src/lib.rs - LruCache<K,V,S>::promote (line 1401) ... ok
+test src/lib.rs - LruCache<K,V,S>::push (line 338) ... ok
+test src/lib.rs - LruCache<K,V,S>::put (line 316) ... ok
+test src/lib.rs - LruCache<K,V,S>::resize (line 1539) ... ok
+test src/lib.rs - LruCache<K,V,S>::try_get_or_insert (line 713) ... ok
+test src/lib.rs - _test_lifetimes (line 3147) - compile fail ... ok
+test src/lib.rs - _test_lifetimes (line 3152) - compile fail ... ok
+test src/lib.rs - LruCache<K,V,S>::try_get_or_insert_mut (line 979) ... ok
+test src/lib.rs - LruCache<K,V,S>::try_get_or_insert_mut_ref (line 1067) ... ok
+test src/lib.rs - LruCache<K,V,S>::try_get_or_insert_mut_with_key (line 1014) ... ok
+test src/lib.rs - LruCache<K,V,S>::try_get_or_insert_ref (line 800) ... ok
+test src/lib.rs - LruCache<K,V,S>::try_get_or_insert_with_key (line 747) ... ok
+test src/lib.rs - LruCache<K,V,S>::unbounded_with_hasher (line 274) ... ok
+test src/lib.rs - LruCache<K,V,S>::with_hasher (line 255) ... ok
+test src/lib.rs - LruCache<K,V>::new (line 226) ... ok
+test src/lib.rs - LruCache<K,V>::unbounded (line 239) ... ok
+
+test result: ok. 43 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 14.96s
+

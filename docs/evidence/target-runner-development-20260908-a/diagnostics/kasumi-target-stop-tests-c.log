@@ -1,0 +1,12 @@
+   Compiling kasumi-authority v0.1.0 (/private/tmp/kasumi-control-lifecycle/crates/kasumi-authority)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.56s
+     Running unittests src/lib.rs (/tmp/kasumi-custody-substrate-target/debug/deps/kasumi_authority-fad8fb0008c4fbcc)
+
+running 4 tests
+test service::tests::permanent_target_stop_defeats_missing_and_prepared_generations_then_reopens_after_full_drain ... ok
+test service::tests::target_stop_and_activation_ordering_preserves_committed_winner_and_current_admin_release ... ok
+test service::tests::target_stop_capacity_and_current_credential_quorum_fences_are_explicit ... ok
+test service::tests::target_stop_queued_past_original_credential_expiry_accepts_no_tombstone ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 19.04s
+

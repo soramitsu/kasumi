@@ -1,4 +1,10 @@
 //! Transport-independent, exact JSON contracts shared by every Kasumi interface.
+mod audit;
+pub use audit::*;
+mod canonical_keys;
+pub use canonical_keys::deserialize_u64_map;
+mod target;
+pub use target::*;
 mod lifecycle;
 pub use lifecycle::*;
 mod authorization;
@@ -462,6 +468,7 @@ pub struct TenantState {
     pub restore_lineage: Vec<RestoreLineageLink>,
     #[serde(deserialize_with = "require_explicit_option")]
     pub lifecycle_control: Option<LifecycleControlState>,
+    pub target_lifecycle: imbl::OrdMap<String, TargetExecutionState>,
     pub document_count: u64,
     pub logical_bytes: u64,
     pub policy: Policy,
@@ -482,6 +489,7 @@ pub struct TenantState {
     #[serde(serialize_with = "serialize_resident_map")]
     pub retirements: imbl::OrdMap<String, StoredRetirement>,
     pub retirement_bytes: usize,
+    pub audit_retention: AuditRetentionState,
     pub audits: imbl::Vector<AuditEvent>,
 }
 

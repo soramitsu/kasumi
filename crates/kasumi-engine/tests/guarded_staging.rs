@@ -555,7 +555,7 @@ async fn retained_snapshot_quota_rejects_missing_stop_without_leaving_partial_id
     assert!(generation.state.staged_transactions.is_empty());
     assert!(generation.state.active_staged_transactions.is_empty());
     assert_eq!(
-        db.engine().snapshot_bytes().unwrap(),
+        db.engine().snapshot_bytes().unwrap() as u64,
         db.engine().snapshot().unwrap().len()
     );
     drop(generation);

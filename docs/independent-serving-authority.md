@@ -45,3 +45,19 @@ The existing healthy native `ActivateRestore` also requires its current authenti
 ## Verification scope
 
 Focused tests cover actual encrypted three-voter authority state, current Admin/self-revocation recovery, concurrent activation and permanent stop, full drain after encrypted restart, permanent incarnation reuse denial, actual authority quorum loss, preparation/serving separation, real TLS/JWT/pin client binding, original-attempt delay and clock rollback/suspend, unobserved-expiry renewal, encrypted queued-effect rejection, late encoded read/committed acknowledgement fencing, backup publication uncertainty and fresh exact receipt recovery. Issuer/storage fixture signatures are explicit where tests isolate the engine; they are not claimed as deployed issuer availability. Final source-bound command logs and exact input hashes are recorded separately in `docs/evidence`.
+
+## Installed endpoint failover and renewal
+
+Each `ServingAuthorityConfig.endpoints` entry maps a partition to a bounded map
+of authority member IDs, HTTPS origins and member-specific certificate pins.
+`KasumiAuthorityPool` connects only to this installation and never follows a
+peer-provided URL. Unreachable members and retryable quorum/transport failures
+advance to another installed member under one overall deadline. Every acquisition
+reuses the same opaque `LeaseAttempt`, including its original clock anchor.
+Command retries first recover the original receipt and check the complete command.
+Invalid authorization or cryptographic proof stops that operation.
+
+Runtime renewals schedule from the verified remaining credential lifetime,
+including grants shorter than the configured maximum lease duration. Expiry
+permanently closes the old gate; a new lease cannot revive captured handles.
+The bearer file is reread for each request, including a failover attempt.

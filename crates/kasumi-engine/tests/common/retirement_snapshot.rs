@@ -96,7 +96,7 @@ async fn actual_retired_snapshot_only_replica_preserves_rotated_custody_after_en
         .await
         .unwrap();
     raft.snapshot().await.unwrap();
-    let snapshot = tokio::time::timeout(Duration::from_secs(10), async {
+    let mut snapshot = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             if let Some(snapshot) = raft.raft().get_snapshot().await.unwrap()
                 && snapshot.meta.last_log_id.unwrap().index >= raft.view().unwrap().revision()
@@ -108,10 +108,17 @@ async fn actual_retired_snapshot_only_replica_preserves_rotated_custody_after_en
     })
     .await
     .unwrap();
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+    assert!(snapshot.snapshot.len() <= 2 << 20);
+    let mut closed_bytes = Vec::new();
+    snapshot
+        .snapshot
+        .read_to_end(&mut closed_bytes)
+        .await
+        .unwrap();
+    snapshot.snapshot.rewind().await.unwrap();
     assert!(
-        !snapshot
-            .snapshot
-            .as_bytes()
+        !closed_bytes
             .windows(b"private-journal-entry".len())
             .any(|bytes| bytes == b"private-journal-entry")
     );

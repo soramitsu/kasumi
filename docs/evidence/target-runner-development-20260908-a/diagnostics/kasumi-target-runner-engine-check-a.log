@@ -1,0 +1,16 @@
+    Checking kasumi-types v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-types)
+    Checking kasumi-serving v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-serving)
+    Checking kasumi-store v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-store)
+    Checking kasumi-query v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-query)
+    Checking kasumi-raft v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-raft)
+    Checking kasumi-engine v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-engine)
+error[E0365]: `RestoreAuthorization` is private, and cannot be re-exported
+  --> crates/kasumi-engine/src/backup_restore.rs:11:16
+   |
+11 | pub(super) use authorization::RestoreAuthorization;
+   |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ re-export of private `RestoreAuthorization`
+   |
+   = note: consider declaring type or module `RestoreAuthorization` with `pub`
+
+For more information about this error, try `rustc --explain E0365`.
+error: could not compile `kasumi-engine` (lib) due to 1 previous error

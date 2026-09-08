@@ -47,6 +47,9 @@ pub struct VerifiedTargetStop {
     signed: SignedTargetStop,
 }
 impl VerifiedTargetStop {
+    pub fn signed(&self) -> &SignedTargetStop {
+        &self.signed
+    }
     pub fn observation(&self) -> &TargetStopObservation {
         &self.signed.observation
     }

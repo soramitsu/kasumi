@@ -909,3 +909,40 @@ async fn bounded_encrypted_reads_reject_payload_before_plaintext_allocation() {
     );
     store.shutdown().await;
 }
+
+#[tokio::test]
+async fn pinned_read_roots_and_streamed_namespace_publication_preserve_isolation() {
+    let (_directory, store, _, _) = fixture().await;
+    store
+        .write_batch(&[
+            WriteOp::put("authority", b"old", b"original"),
+            WriteOp::put("unrelated", b"key", b"must-stay"),
+        ])
+        .unwrap();
+    let pinned = store.read_view().unwrap();
+    let staged = EncryptedTable::new(64 << 20).unwrap();
+    staged.insert(b"new", b"replacement").unwrap();
+    assert!(staged.insert(b"new", b"substituted").is_err());
+    store.replace_namespace("authority", &staged).unwrap();
+    assert_eq!(
+        pinned.get("authority", b"old", 1024).unwrap().unwrap(),
+        b"original"
+    );
+    assert!(pinned.get("authority", b"new", 1024).unwrap().is_none());
+    assert!(store.get("authority", b"old").unwrap().is_none());
+    assert_eq!(
+        store.get("authority", b"new").unwrap().unwrap(),
+        b"replacement"
+    );
+    assert_eq!(
+        store.get("unrelated", b"key").unwrap().unwrap(),
+        b"must-stay"
+    );
+    assert!(store.replace_namespace("", &staged).is_err());
+    assert_eq!(
+        store.get("authority", b"new").unwrap().unwrap(),
+        b"replacement"
+    );
+    store.seal();
+    assert!(pinned.get("authority", b"old", 1024).is_err());
+}

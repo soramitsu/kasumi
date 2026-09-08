@@ -83,12 +83,39 @@ impl AppliedResponse {
     }
 }
 
+type SnapshotWriter = dyn Fn(&mut dyn std::io::Write) -> Result<()> + Send + Sync;
+/// Immutable logical roots captured at one applied position. Materialization
+/// occurs after releasing the applied-state lock and can overlap new commits.
+pub struct CapturedSnapshot {
+    pub retirement: Option<RetiredSnapshotState>,
+    writer: Box<SnapshotWriter>,
+}
+impl CapturedSnapshot {
+    pub fn new(
+        retirement: Option<RetiredSnapshotState>,
+        writer: impl Fn(&mut dyn std::io::Write) -> Result<()> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            retirement,
+            writer: Box::new(writer),
+        }
+    }
+    pub fn write(&self, writer: &mut dyn std::io::Write) -> Result<()> {
+        (self.writer)(writer)
+    }
+}
+
 /// Only the Raft adapter may call mutation methods after the group starts.
 /// `apply` must publish the complete command atomically; business errors belong in
 /// its returned bytes. `restore` must validate before atomically replacing state.
 pub trait StateMachineBackend: Send + Sync + 'static {
     fn apply(&self, position: &AppliedEntryContext, command: &[u8]) -> Result<AppliedResponse>;
-    fn snapshot(&self, writer: &mut dyn std::io::Write) -> Result<Option<RetiredSnapshotState>>;
+    fn capture_snapshot(&self) -> Result<CapturedSnapshot>;
+    fn snapshot(&self, writer: &mut dyn std::io::Write) -> Result<Option<RetiredSnapshotState>> {
+        let captured = self.capture_snapshot()?;
+        captured.write(writer)?;
+        Ok(captured.retirement)
+    }
     /// Validate the complete logical snapshot without modifying published state.
     /// Called before durable installation; malformed snapshots must never replace
     /// the last recoverable durable snapshot.
@@ -128,8 +155,8 @@ impl StateMachineBackend for OwnedBackend {
     fn apply(&self, position: &AppliedEntryContext, command: &[u8]) -> Result<AppliedResponse> {
         self.inner.apply(position, command)
     }
-    fn snapshot(&self, writer: &mut dyn std::io::Write) -> Result<Option<RetiredSnapshotState>> {
-        self.inner.snapshot(writer)
+    fn capture_snapshot(&self) -> Result<CapturedSnapshot> {
+        self.inner.capture_snapshot()
     }
     fn validate_snapshot(
         &self,
@@ -272,7 +299,7 @@ impl RaftGroup {
     }
 
     pub async fn initialize(&self, members: BTreeMap<u64, BasicNode>) -> Result<()> {
-        self.check_access()?;
+        self.check_proposal()?;
         ensure!(!members.is_empty(), "membership cannot be empty");
         self.raft
             .initialize(members)
@@ -284,7 +311,7 @@ impl RaftGroup {
     /// Success means quorum persistence followed by local atomic application.
     /// Timeout/cancellation does not imply rollback: retry with an application idempotency key.
     pub async fn write(&self, command: Vec<u8>) -> Result<Vec<u8>> {
-        self.check_access()?;
+        self.check_proposal()?;
         let response = self
             .raft
             .client_write(RaftCommand::application(command))
@@ -298,7 +325,7 @@ impl RaftGroup {
         command: Vec<u8>,
         seed: RetirementLogSeed,
     ) -> Result<Vec<u8>> {
-        self.check_access()?;
+        self.check_proposal()?;
         let response = self
             .raft
             .client_write(RaftCommand::retirement(command, seed)?)
@@ -313,7 +340,7 @@ impl RaftGroup {
     }
 
     pub async fn write_custody(&self, command: CustodyCommand) -> Result<Vec<u8>> {
-        self.check_access()?;
+        self.check_proposal()?;
         let response = self
             .raft
             .client_write(RaftCommand::custody(&command)?)
@@ -332,13 +359,13 @@ impl RaftGroup {
     }
 
     pub async fn add_learner(&self, id: u64, node: BasicNode) -> Result<()> {
-        self.check_access()?;
+        self.check_proposal()?;
         self.raft.add_learner(id, node, true).await?;
         Ok(())
     }
 
     pub async fn change_membership(&self, voters: BTreeSet<u64>) -> Result<()> {
-        self.check_access()?;
+        self.check_proposal()?;
         ensure!(!voters.is_empty(), "membership cannot be empty");
         self.raft.change_membership(voters, false).await?;
         Ok(())
@@ -350,6 +377,13 @@ impl RaftGroup {
         Ok(())
     }
 
+    fn check_proposal(&self) -> Result<()> {
+        self.check_access()?;
+        self.store
+            .application()
+            .storage_access()
+            .check_consensus_proposal()
+    }
     pub fn check_access(&self) -> Result<()> {
         ensure!(
             self.ownership.load(Ordering::Acquire),
@@ -377,3 +411,6 @@ impl RaftGroup {
         result.map_err(Into::into)
     }
 }
+
+mod local_applied;
+pub use local_applied::ConfirmedLocalApplication;

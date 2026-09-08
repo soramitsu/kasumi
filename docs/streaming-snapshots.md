@@ -10,7 +10,7 @@ Tenant images begin with `KASUMIT2`. Every record has an eight-byte big-endian
 payload length followed by canonical JSON. Records explicitly identify metadata,
 collections, documents, archive references, command receipts, staged metadata and
 chunks, change-feed headers and individual changes, history archives, schema and
-retirement records, audit events and Control history. Payloads cannot exceed
+retirement records, audit events, Control history and target lifecycle records. Payloads cannot exceed
 32 MiB. Records must follow the specified category/key order, with contiguous
 indices for sequence members. The terminal zero-length record carries checked
 64-bit record and byte counts and SHA-256 over the preceding image. The decoder
@@ -33,7 +33,10 @@ at most 64 KiB, and a final byte count, record count and digest. Snapshot transf
 uses encrypted scratch files and runs filesystem/crypto work on blocking workers.
 Each scratch file has an ephemeral random key and authenticated 64 KiB slots;
 plaintext scratch files and persisted scratch keys do not exist. Immutable image
-handles offer independent readers and constant-size clones. Durable staging
+handles offer independent readers and constant-size clones. The Rust engine's
+`snapshot`, candidate encoder, decoder and restore APIs use these encrypted
+images; encoding an unvalidated candidate requires an explicit disk byte budget.
+No public engine snapshot API constructs a tenant-sized byte vector. Durable staging
 writes bounded encrypted chunks and publishes their manifest together with the
 matching custody/applied position. Interrupted publication preserves the previous
 recoverable image or the complete new one. `RaftLimits` supplies the installed
@@ -45,7 +48,9 @@ ciphertext digests on every edge. Verification first checks that chain into an
 encrypted fixed-slot spool, then traverses it forward while checking chunk
 counts, lengths, hashes, origin, key dependencies and the final resident digest.
 Resident state is decoded into unpublished state from its encrypted spool.
-Genesis/bootstrap persistence and Raft restore also consume streaming readers.
+Genesis/bootstrap persistence, target materialization readback and Raft restore
+also consume streaming readers. Bootstrap manifest format 2 uses checked 64-bit
+byte and chunk counts and binds the same image digest in custody metadata.
 Every cold-history dependency is verified before a backup proof or restored
 bootstrap can be published. A single encrypted backup object is limited to
 32 MiB; that is not the size limit of an aggregate backup.
@@ -54,3 +59,18 @@ The source generation and decoded replacement state remain resident where needed
 for correctness. Streaming removes serialized copies proportional to tenant size;
 it does not make the database disk-resident or eliminate index rebuild memory.
 Capacity and endurance release gates must be run against final release binaries.
+
+Raft captures immutable backend roots and retirement evidence at the exact applied
+position, then releases its applied-state mutex before materializing the encrypted
+image. Authority snapshots use bounded typed metadata and keyed record frames
+(`KASUMIA2`) with the same strict length/count/digest/EOF rules. A pinned database
+read transaction supplies stable encrypted pages while committed writes continue.
+An encrypted temporary point table supplies canonical ordering and cross-record
+validation with an 8 MiB page cache. Restore replaces the verified namespace in a
+single durable transaction without collecting its records or deletion batch.
+
+Audit metadata retains its permanent stream UUID, next sequence, pruning watermark,
+hot byte count and archive root. Hot audit frames use absolute stream positions;
+restoration does not renumber history. The archive-before-prune subsystem must
+preserve the ciphertext dependencies named by those roots on every replica and
+in backup/replacement workflows before their pruning transitions become usable.

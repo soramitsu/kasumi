@@ -296,7 +296,7 @@ async fn benchmark(
         endpoint: bao.endpoint.clone(),
         mount: "transit".into(),
         key_name: key.into(),
-        token_env: env.into(),
+        token_file: path.join(env).to_string_lossy().into_owned(),
         namespace: None,
         ca_certificate: Some(bao.ca_path.clone()),
         derived: false,
@@ -374,7 +374,14 @@ async fn benchmark(
         .stdout(Stdio::null())
         .stderr(std::fs::File::create(&log)?);
     for (name, secret) in &secrets {
-        command.env(name, secret.as_str());
+        use std::{io::Write, os::unix::fs::OpenOptionsExt};
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path.join(name))?;
+        file.write_all(secret.as_bytes())?;
+        file.sync_all()?;
     }
     let mut process =
         Process(Some(command.spawn().context(

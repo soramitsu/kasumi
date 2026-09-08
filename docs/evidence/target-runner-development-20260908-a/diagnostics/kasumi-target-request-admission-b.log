@@ -1,0 +1,13 @@
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-engine)
+error[E0308]: `?` operator has incompatible types
+   --> crates/kasumi-engine/src/target_invocation.rs:166:14
+    |
+166 |             &kasumi_clock::EpochClock::system().map_err(unauthorized)?,
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `EpochClock`, found `Arc<EpochClock>`
+    |
+    = note: `?` operator cannot convert from `std::sync::Arc<EpochClock>` to `EpochClock`
+    = note: expected struct `EpochClock`
+               found struct `std::sync::Arc<EpochClock>`
+
+For more information about this error, try `rustc --explain E0308`.
+error: could not compile `kasumi-engine` (lib) due to 1 previous error

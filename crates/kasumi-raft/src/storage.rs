@@ -919,9 +919,14 @@ impl StateMachine {
     }
 }
 
+struct LogicalSnapshot {
+    meta: SnapshotMeta<u64, BasicNode>,
+    backend: crate::CapturedSnapshot,
+    retirement: Option<crate::snapshot_custody::SnapshotRetirement>,
+}
 pub struct SnapshotBuilder {
     machine: StateMachine,
-    captured: Result<Arc<SnapshotEnvelope>>,
+    captured: Result<Arc<LogicalSnapshot>>,
 }
 
 fn load_snapshot(store: &TenantStore, limit: u64) -> Result<Option<SnapshotEnvelope>> {
@@ -986,6 +991,13 @@ impl RaftSnapshotBuilder<TypeConfig> for SnapshotBuilder {
                 }
                 return as_snapshot(&current, limit);
             }
+            let captured = SnapshotEnvelope {
+                version: 1,
+                kind: SnapshotKind::Application,
+                meta: captured.meta.clone(),
+                backend: SnapshotImage::capture(limit, |writer| captured.backend.write(writer))?,
+                retirement: captured.retirement.clone(),
+            };
             let snapshot = as_snapshot(&captured, limit)?;
             let pending = stage_snapshot(&domains, &snapshot.snapshot.image()?, limit, &captured)?;
             let publication = applied
@@ -1104,7 +1116,7 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
 
     async fn get_snapshot_builder(&mut self) -> Self::SnapshotBuilder {
         let machine = self.clone();
-        let captured = tokio::task::spawn_blocking(move || -> Result<SnapshotEnvelope> {
+        let captured = tokio::task::spawn_blocking(move || -> Result<LogicalSnapshot> {
             machine.domains.check_access()?;
             let state = machine
                 .state
@@ -1115,21 +1127,15 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
                 last_membership: state.membership.clone(),
                 snapshot_id: uuid::Uuid::new_v4().to_string(),
             };
-            let mut retirement_state = None;
-            let backend = SnapshotImage::capture(machine.limits.max_snapshot_bytes, |writer| {
-                retirement_state = machine.backend.snapshot(writer)?;
-                Ok(())
-            })?;
+            let captured = machine.backend.capture_snapshot()?;
             let retirement = crate::snapshot_custody::capture(
                 machine.domains.custody(),
                 &meta,
-                retirement_state,
+                captured.retirement.clone(),
             )?;
-            Ok(SnapshotEnvelope {
-                version: 1,
-                kind: SnapshotKind::Application,
+            Ok(LogicalSnapshot {
                 meta,
-                backend,
+                backend: captured,
                 retirement,
             })
         })
@@ -1164,8 +1170,8 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
         let machine = self.clone();
         tokio::task::spawn_blocking(move || -> Result<()> {
             let _gate = gate;
-            // Parsing allocates the complete backend image. Do it off the
-            // runtime along with validation, persistence, and materialization.
+            // Parsing stages bounded records into encrypted scratch. Keep disk,
+            // crypto, validation and materialization off the async runtime.
             let snapshot = snapshot.into_image()?;
             let envelope = SnapshotEnvelope::decode(
                 &mut snapshot.reader(),

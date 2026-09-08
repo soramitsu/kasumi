@@ -1,0 +1,14 @@
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-engine)
+   Compiling kasumi-authority v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-authority)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 55.86s
+     Running unittests src/lib.rs (/tmp/kasumi-custody-substrate-target/debug/deps/kasumi_authority-507625201966ab62)
+
+running 5 tests
+test service::tests::issuer_tests::target_materialization_tests::actual_target_materialization_preserves_image_and_original_operation_fence ... ok
+test service::tests::issuer_tests::target_materialization_tests::dropping_target_on_non_runtime_thread_retains_shutdown_work_until_real_drain ... ok
+test service::tests::issuer_tests::target_materialization_tests::exact_actual_completion_is_required_for_issuer_and_target_activation ... ok
+test service::tests::issuer_tests::target_materialization_tests::expired_completion_with_missing_journal_recovers_only_exact_inspection_facts ... ok
+test service::tests::issuer_tests::target_materialization_tests::three_actual_materializations_initialize_and_commit_completion_with_restart_proof ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 41.68s
+

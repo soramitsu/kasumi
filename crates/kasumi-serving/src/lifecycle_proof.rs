@@ -36,6 +36,14 @@ impl AuthorityTrust {
         let c = &signed.claims;
         c.request.validate()?;
         let i = &c.commitment.intent;
+        let role_matches = match i.request.phase {
+            kasumi_types::LifecyclePhase::StopLocal => c.application_purpose.is_none(),
+            kasumi_types::LifecyclePhase::Activate => {
+                c.application_purpose == Some(LeasePurpose::Serving)
+            }
+            kasumi_types::LifecyclePhase::InspectTarget => c.application_purpose.is_some(),
+            _ => c.application_purpose == Some(LeasePurpose::RestorePreparation),
+        };
         i.request.validate()?;
         let root = ControlSigningRoot {
             control_incarnation: i.control_incarnation,
@@ -53,7 +61,8 @@ impl AuthorityTrust {
         };
         let partition = self.manifest().partition(&i.request.tenant)?;
         ensure!(
-            c.authority_id == self.manifest().authority_id
+            role_matches
+                && c.authority_id == self.manifest().authority_id
                 && c.partition == partition
                 && c.request.authority_manifest_sha256 == self.digest()
                 && c.request.reference == reference
@@ -197,6 +206,7 @@ impl LifecycleAttempt {
         let proof = VerifiedLifecycleLease {
             boot: self.boot.clone(),
             deadline,
+            start: self.start,
             signed,
         };
         proof.check()?;
@@ -207,12 +217,40 @@ impl LifecycleAttempt {
 pub struct VerifiedLifecycleLease {
     boot: LifecycleBoot,
     deadline: Duration,
+    start: Duration,
     signed: SignedLifecycleLease,
 }
 impl VerifiedLifecycleLease {
+    pub(crate) fn require_continuous_renewal(&self, next: &Self) -> Result<()> {
+        self.check()?;
+        next.check()?;
+        ensure!(
+            self.boot.boot_id == next.boot.boot_id
+                && self.boot.trust.digest() == next.boot.trust.digest()
+                && self.signed.claims.request.reference == next.signed.claims.request.reference
+                && self.signed.claims.request.intent_sha256
+                    == next.signed.claims.request.intent_sha256
+                && self.signed.claims.request.target_node == next.signed.claims.request.target_node
+                && self.commitment().intent == next.commitment().intent
+                && self.signed.claims.application_purpose == next.signed.claims.application_purpose
+                && self.commitment().partition_set_sha256 == next.commitment().partition_set_sha256
+                && next.start >= self.start
+                && next.deadline >= self.deadline,
+            "phase renewal changes original authority, boot or attempt order"
+        );
+        Ok(())
+    }
+    pub fn remaining(&self) -> Result<Duration> {
+        let now = self.boot.now()?;
+        ensure!(now < self.deadline, "phase grant expired");
+        Ok(self.deadline - now)
+    }
     pub fn check(&self) -> Result<()> {
         ensure!(self.boot.now()? < self.deadline, "phase grant expired");
         Ok(())
+    }
+    pub fn authority(&self) -> &AuthorityTrust {
+        &self.boot.trust
     }
     pub fn commitment(&self) -> &ControlIntentCommitment {
         &self.signed.claims.commitment

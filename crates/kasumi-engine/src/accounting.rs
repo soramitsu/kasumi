@@ -118,7 +118,16 @@ impl SnapshotAccounting {
             change(
                 &mut result.audits,
                 0,
-                record(&Record::Audit(i as u64, event.clone()))?,
+                record(&Record::Audit(
+                    state
+                        .audit_retention
+                        .pruned_before
+                        .checked_add(i as u64)
+                        .ok_or_else(|| {
+                            Error::new(ErrorCode::Corruption, "audit sequence overflow")
+                        })?,
+                    event.clone(),
+                ))?,
             )?;
         }
         for (key, value) in &state.staged_transactions {
@@ -214,17 +223,46 @@ impl SnapshotAccounting {
                 optional(next.staged_transactions.get(key), |s| stage(key, s))?,
             )?;
         }
-        if next.audits.len() < previous.audits.len() {
+        let before = &previous.audit_retention;
+        let after = &next.audit_retention;
+        if before.stream_id != after.stream_id
+            || after.pruned_before < before.pruned_before
+            || after.pruned_before > before.next_sequence
+            || after.next_sequence < before.next_sequence
+            || after.next_sequence.checked_sub(after.pruned_before)
+                != Some(next.audits.len() as u64)
+        {
             return Err(Error::new(
                 ErrorCode::Corruption,
-                "audit removal requires explicit accounting",
+                "audit accounting transition differs",
             ));
         }
-        for i in previous.audits.len()..next.audits.len() {
+        let removed = usize::try_from(after.pruned_before - before.pruned_before)
+            .map_err(|_| Error::new(ErrorCode::Corruption, "audit prefix exceeds address space"))?;
+        for (i, event) in previous.audits.iter().take(removed).enumerate() {
+            change(
+                &mut result.audits,
+                record(&Record::Audit(
+                    before.pruned_before.checked_add(i as u64).ok_or_else(|| {
+                        Error::new(ErrorCode::Corruption, "audit sequence overflow")
+                    })?,
+                    event.clone(),
+                ))?,
+                0,
+            )?;
+        }
+        let retained = usize::try_from(before.next_sequence - after.pruned_before)
+            .map_err(|_| Error::new(ErrorCode::Corruption, "audit prefix exceeds address space"))?;
+        for i in retained..next.audits.len() {
             change(
                 &mut result.audits,
                 0,
-                record(&Record::Audit(i as u64, next.audits[i].clone()))?,
+                record(&Record::Audit(
+                    after.pruned_before.checked_add(i as u64).ok_or_else(|| {
+                        Error::new(ErrorCode::Corruption, "audit sequence overflow")
+                    })?,
+                    next.audits[i].clone(),
+                ))?,
             )?;
         }
         if !previous
@@ -303,6 +341,13 @@ impl SnapshotAccounting {
                     record(&Record::ControlChange(*id, value.clone()))?,
                 )?;
             }
+        }
+        for (key, target) in &state.target_lifecycle {
+            change(
+                &mut total,
+                0,
+                record(&Record::Target(key.clone(), Box::new(target.clone())))?,
+            )?;
         }
         for size in [
             self.documents,

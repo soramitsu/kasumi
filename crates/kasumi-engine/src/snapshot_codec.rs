@@ -32,6 +32,7 @@ pub(crate) enum Record {
     Audit(u64, AuditEvent),
     Intent(uuid::Uuid, LifecycleIntent),
     ControlChange(uuid::Uuid, ControlPolicyChange),
+    Target(String, Box<TargetExecutionState>),
 }
 impl Record {
     fn order(&self) -> (u8, String, String) {
@@ -53,6 +54,7 @@ impl Record {
             Self::Audit(i, _) => (14, format!("{i:020}"), String::new()),
             Self::Intent(k, _) => (15, k.to_string(), String::new()),
             Self::ControlChange(k, _) => (16, k.to_string(), String::new()),
+            Self::Target(k, _) => (17, k.clone(), String::new()),
         }
     }
 }
@@ -84,6 +86,7 @@ pub(crate) fn metadata(state: &TenantState) -> TenantState {
                 intents: Default::default(),
                 changes: Default::default(),
             }),
+        target_lifecycle: Default::default(),
         document_count: state.document_count,
         logical_bytes: state.logical_bytes,
         policy: state.policy.clone(),
@@ -104,11 +107,13 @@ pub(crate) fn metadata(state: &TenantState) -> TenantState {
         schema_activation_bytes: state.schema_activation_bytes,
         retirements: Default::default(),
         retirement_bytes: state.retirement_bytes,
+        audit_retention: state.audit_retention.clone(),
         audits: Default::default(),
     }
 }
 fn empty_records(state: &TenantState) -> bool {
-    state.collections.is_empty()
+    state.target_lifecycle.is_empty()
+        && state.collections.is_empty()
         && state.receipts.is_empty()
         && state.staged_transactions.is_empty()
         && state.active_staged_transactions.is_empty()
@@ -230,7 +235,14 @@ pub(crate) fn write(state: &TenantState, writer: &mut dyn Write) -> anyhow::Resu
         ))?;
     }
     for (i, audit) in state.audits.iter().enumerate() {
-        emit(Record::Audit(i as u64, audit.clone()))?;
+        emit(Record::Audit(
+            state
+                .audit_retention
+                .pruned_before
+                .checked_add(i as u64)
+                .ok_or_else(|| anyhow::anyhow!("audit sequence overflow"))?,
+            audit.clone(),
+        ))?;
     }
     if let Some(control) = &state.lifecycle_control {
         for (id, intent) in &control.intents {
@@ -239,6 +251,9 @@ pub(crate) fn write(state: &TenantState, writer: &mut dyn Write) -> anyhow::Resu
         for (id, change) in &control.changes {
             emit(Record::ControlChange(*id, change.clone()))?;
         }
+    }
+    for (key, target) in &state.target_lifecycle {
+        emit(Record::Target(key.clone(), Box::new(target.clone())))?;
     }
     writer.write_all(&0u64.to_be_bytes())?;
     writer.write_all(&count.to_be_bytes())?;
@@ -272,7 +287,17 @@ pub(crate) fn read(reader: &mut dyn Read) -> anyhow::Result<TenantState> {
                 "snapshot terminal authentication differs"
             );
             anyhow::ensure!(reader.read(&mut [0])? == 0, "trailing snapshot data");
-            return state.ok_or_else(|| anyhow::anyhow!("snapshot metadata absent"));
+            let state = state.ok_or_else(|| anyhow::anyhow!("snapshot metadata absent"))?;
+            state.audit_retention.validate()?;
+            anyhow::ensure!(
+                state
+                    .audit_retention
+                    .next_sequence
+                    .checked_sub(state.audit_retention.pruned_before)
+                    == Some(state.audits.len() as u64),
+                "audit final sequence differs"
+            );
+            return Ok(state);
         }
         anyhow::ensure!(
             size <= MAX_RECORD as u64,
@@ -390,7 +415,14 @@ pub(crate) fn read(reader: &mut dyn Read) -> anyhow::Result<TenantState> {
                 state.retirements.insert(k, *retirement);
             }
             Record::Audit(i, event) => {
-                anyhow::ensure!(i == state.audits.len() as u64, "audit sequence differs");
+                anyhow::ensure!(
+                    Some(i)
+                        == state
+                            .audit_retention
+                            .pruned_before
+                            .checked_add(state.audits.len() as u64),
+                    "audit sequence differs"
+                );
                 state.audits.push_back(event);
             }
             Record::Intent(id, intent) => {
@@ -400,6 +432,9 @@ pub(crate) fn read(reader: &mut dyn Read) -> anyhow::Result<TenantState> {
                     .ok_or_else(|| anyhow::anyhow!("control installation missing"))?
                     .intents
                     .insert(id, intent);
+            }
+            Record::Target(key, target) => {
+                state.target_lifecycle.insert(key, *target);
             }
             Record::ControlChange(id, change) => {
                 state
@@ -503,5 +538,64 @@ mod tests {
                 .to_string()
                 .contains("unordered")
         );
+    }
+    #[test]
+    fn archived_audit_prefix_preserves_absolute_sequences_and_head() {
+        let mut state = state();
+        let stream_id = state.audit_retention.stream_id;
+        let head = AuditArchiveReference {
+            stream_id,
+            object: AuditArchiveLink {
+                object_id: uuid::Uuid::new_v4(),
+                first_sequence: 0,
+                next_sequence: 23,
+                ciphertext_sha256: "a".repeat(64),
+            },
+            previous: None,
+            record_count: 23,
+            plaintext_bytes: 100,
+            ciphertext_bytes: 300,
+            key: AuditArchiveKeyDependency {
+                provider: "file".into(),
+                key_ref: "audit-key".into(),
+                version: 1,
+                wrapped_key_sha256: "b".repeat(64),
+            },
+        };
+        state.audit_retention.next_sequence = 23;
+        state.audit_retention.pruned_before = 23;
+        state.audit_retention.archive_head = Some(head.clone());
+        crate::state::append_audit(
+            &mut state,
+            AuditEvent {
+                event_id: "after-archive".into(),
+                principal: "owner".into(),
+                action: "read".into(),
+                request_id: "req".into(),
+                timestamp_ms: 123,
+                data_revision: None,
+                outcome: "success".into(),
+                collection: None,
+            },
+        )
+        .unwrap();
+        let mut bytes = Vec::new();
+        write(&state, &mut bytes).unwrap();
+        assert_eq!(
+            crate::accounting::SnapshotAccounting::rebuild(&state)
+                .unwrap()
+                .bytes(&state)
+                .unwrap(),
+            bytes.len()
+        );
+        let restored = read(&mut bytes.as_slice()).unwrap();
+        assert_eq!(restored.audit_retention.next_sequence, 24);
+        assert_eq!(restored.audit_retention.pruned_before, 23);
+        assert_eq!(restored.audit_retention.archive_head, Some(head));
+        assert_eq!(restored.audits.len(), 1);
+        state.audit_retention.next_sequence = 25;
+        bytes.clear();
+        write(&state, &mut bytes).unwrap();
+        assert!(read(&mut bytes.as_slice()).is_err());
     }
 }

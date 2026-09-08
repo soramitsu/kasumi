@@ -51,16 +51,16 @@ impl StateMachineBackend for Backend {
         data.insert(index, command.to_vec());
         Ok(kasumi_raft::AppliedResponse::application(command.to_vec()))
     }
-    fn snapshot(
-        &self,
-        writer: &mut dyn std::io::Write,
-    ) -> Result<Option<kasumi_raft::RetiredSnapshotState>> {
+    fn capture_snapshot(&self) -> Result<kasumi_raft::CapturedSnapshot> {
         ensure!(
             !self.fail_snapshot.load(Ordering::Acquire),
             "injected snapshot capture failure"
         );
-        serde_json::to_writer(writer, &*self.data.lock().unwrap())?;
-        Ok(None)
+        let data = self.data.lock().unwrap().clone();
+        Ok(kasumi_raft::CapturedSnapshot::new(None, move |writer| {
+            serde_json::to_writer(writer, &data)?;
+            Ok(())
+        }))
     }
     fn validate_snapshot(
         &self,

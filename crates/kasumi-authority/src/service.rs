@@ -480,6 +480,11 @@ impl IndependentAuthority {
                 fence_id,
                 fence_digest,
                 ..
+            }
+            | AuthorityAction::ActivateCommitted {
+                fence_id,
+                fence_digest,
+                ..
             } => {
                 let record = self
                     .backend

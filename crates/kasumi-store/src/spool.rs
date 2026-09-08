@@ -59,6 +59,34 @@ impl EncryptedSpool {
         self.limit
     }
 
+    pub(crate) fn resize(&mut self, length: u64) -> io::Result<()> {
+        if length > self.limit {
+            return Err(io::Error::other("spool resize exceeds budget"));
+        }
+        self.append_digest = None;
+        let saved = self.position;
+        if length > self.length {
+            self.position = self.length;
+            let zeroes = [0; BLOCK];
+            while self.length < length {
+                let count = (length - self.length).min(BLOCK as u64) as usize;
+                self.write_all(&zeroes[..count])?;
+            }
+        } else if length < self.length {
+            self.flush_block()?;
+            self.cached_index = None;
+            self.length = length;
+            self.file
+                .set_len(Self::offset(length.div_ceil(BLOCK as u64))?)?;
+            if !length.is_multiple_of(BLOCK as u64) {
+                self.block(length / BLOCK as u64)?;
+                self.cached[(length % BLOCK as u64) as usize..].fill(0);
+                self.dirty = true;
+            }
+        }
+        self.position = saved.min(length);
+        Ok(())
+    }
     fn aad(&self, index: u64) -> [u8; 24] {
         let mut aad = [0; 24];
         aad[..16].copy_from_slice(&self.id);
@@ -179,6 +207,12 @@ pub struct SnapshotImage {
     length: u64,
     sha256: String,
 }
+impl PartialEq for SnapshotImage {
+    fn eq(&self, other: &Self) -> bool {
+        self.length == other.length && self.sha256 == other.sha256
+    }
+}
+impl Eq for SnapshotImage {}
 impl SnapshotImage {
     pub fn capture(
         limit: u64,
