@@ -1,0 +1,18 @@
+{
+  "observed_at": "2026-09-08T13:43:04.249318+00:00",
+  "scope": "raw visible cgroup counters; non-atomic and possibly shared",
+  "membership": "0::/\n",
+  "cgroups": {
+    "/sys/fs/cgroup": {
+      "memory.current": "26521600\n",
+      "memory.peak": "26521600\n",
+      "memory.max": "16106127360\n",
+      "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n",
+      "memory.events.local": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n",
+      "memory.swap.current": "0\n",
+      "memory.swap.max": "0\n"
+    }
+  },
+  "errors": [],
+  "available": true
+}

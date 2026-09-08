@@ -606,3 +606,10 @@ a read-only quota getter or caller capacity claim cannot close this dependency.
   is in `docs/evidence/native-capacity-driver-20260908`. This is not a real 3 GiB
   load, a compressibility measurement or a live production gate; the key-only
   receipt RPC limitation remains explicit.
+
+- `fbae79f` adds actual-container preflight and terminal-state retention to the
+  release workflow, plus hashed per-gate cgroup observations required by the
+  packager. Twenty Python checks and workflow YAML/bash syntax pass; an idle
+  native Linux container reports its actual15GiB/zero-swap ceilings. Failures and
+  scope are in `docs/evidence/release-cgroup-provenance-20260908`. The hosted
+  workflow and pressure/OOM injection are not claimed by this checkpoint.

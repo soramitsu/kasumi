@@ -1,0 +1,38 @@
+{
+  "source_commit": "fbae79fc6e9b494c40079684489216b3ea33c9b1",
+  "gates": {
+    "python": {
+      "passed": 20,
+      "seconds": 1.03,
+      "exit_code": 0
+    },
+    "workflow_syntax": {
+      "yaml_parser": "Ruby standard library",
+      "bash_run_blocks": 3,
+      "exit_code": 0
+    },
+    "linux_observer": {
+      "exit_code": 0,
+      "image": "sha256:abf802c3daf7460f7498869910288b63bf5e138efc28e3c0704bf931b99e1ed4",
+      "source_sha256": "7d8b1a1231b483b35bd843d945fd927ac774bff864feb363a3ec1b2efc5b92f6",
+      "actual_cgroup_memory_max_bytes": 16106127360,
+      "actual_swap_max_bytes": 0
+    }
+  },
+  "failed_attempts": [
+    "First20-test Python run had10 packaging fixture errors because the fixture omitted newly required per-gate resource hashes; complete log retained. Production contract was kept, fixture updated.",
+    "Initial YAML syntax attempt used unavailable Python PyYAML and failed before validation; tool output retained in conversation. Successful syntax checks use installed Ruby stdlib."
+  ],
+  "limitations": [
+    "No hosted workflow execution or final release candidate from this change.",
+    "Actual Linux command only observed an otherwise idle restricted container; no load, memory-pressure or OOM injection. Unit tests simulate counter changes.",
+    "Cgroup counters are raw non-atomic observations. Ancestor counters may be shared and cumulative peaks do not establish per-gate maxima. Missing counters are explicit."
+  ],
+  "files": {
+    "kasumi-release-cgroup-python-1.log": "2f7b2b2430ca633fe934df60888e3eccf31af990dcace09c614b13c2cdbce5fa",
+    "kasumi-release-cgroup-python-2.log": "386d308362f6a697b4b9af476347a6bfabdea7e016a4ecf33fbe16afd9645b1e",
+    "kasumi-release-container-workflow-syntax.log": "836569bfbc544aae9430a9eee2bf7d259b3a7607d3eb8a61fda16f78c5147051",
+    "kasumi-release-container-workflow-syntax-final.log": "836569bfbc544aae9430a9eee2bf7d259b3a7607d3eb8a61fda16f78c5147051",
+    "kasumi-release-cgroup-linux-observation.json": "03f6c97ec732b0f3a086c4d9ca51ea8763181c1dd86bb93a90ede790a5025b74"
+  }
+}
