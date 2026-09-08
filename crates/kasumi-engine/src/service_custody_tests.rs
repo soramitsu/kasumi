@@ -163,13 +163,13 @@ async fn custody_observations_preserve_mutation_capacity_and_exhaustion_can_expa
         expected_policy_epoch: 1,
         not_after_ms: u64::MAX,
         action: CustodyAction::SetLimits(CustodyLimits {
-            max_commands: 1,
-            max_audit_records: 1,
+
+
             max_state_bytes: 4096,
         }),
     };
     custody
-        .execute(fixture.context.clone(), bounded)
+        .execute(fixture.context.clone(), bounded.clone())
         .await
         .unwrap()
         .outcome
@@ -210,6 +210,15 @@ async fn custody_observations_preserve_mutation_capacity_and_exhaustion_can_expa
         assert_eq!(observation["custody_policy_epoch"], 2);
         assert_eq!(record["event"]["principal"], fixture.context.principal);
     }
+    let mut exhausted = false;
+    for _ in 0..64 {
+        match custody.execute(fixture.context.clone(), bounded.clone()).await {
+            Ok(receipt) => receipt.outcome.unwrap(),
+            Err(error) if error.code == ErrorCode::QuotaExceeded => { exhausted = true; break; }
+            Err(error) => panic!("unexpected custody fill outcome: {error:?}"),
+        }
+    }
+    assert!(exhausted, "bounded custody history did not exhaust its byte budget");
     let rotation = credential_custody_rotation(&reference, "after-full-budget", 2);
     assert_eq!(
         custody
@@ -225,8 +234,8 @@ async fn custody_observations_preserve_mutation_capacity_and_exhaustion_can_expa
         expected_policy_epoch: 2,
         not_after_ms: u64::MAX,
         action: CustodyAction::SetLimits(CustodyLimits {
-            max_commands: 4,
-            max_audit_records: 4,
+
+
             max_state_bytes: 16384,
         }),
     };

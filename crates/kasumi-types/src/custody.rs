@@ -9,30 +9,29 @@ use std::collections::BTreeSet;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct CustodyLimits {
-    pub max_commands: usize,
-    pub max_audit_records: usize,
-    pub max_state_bytes: usize,
+    /// Exact canonical policy/history accounting. Permanent records remain on
+    /// encrypted disk; this is an expandable durable budget, not resident RAM.
+    pub max_state_bytes: u64,
 }
 impl Default for CustodyLimits {
     fn default() -> Self {
         Self {
-            max_commands: 1024,
-            max_audit_records: 2048,
-            max_state_bytes: 1 << 20,
+            max_state_bytes: 64 << 20,
         }
     }
 }
 impl CustodyLimits {
     pub fn validate(&self) -> Result<()> {
-        if self.max_commands == 0
-            || self.max_commands > 4096
-            || self.max_audit_records == 0
-            || self.max_audit_records > 8192
-            || !(4096..=1 << 20).contains(&self.max_state_bytes)
+        if self.max_state_bytes < 4096
+            || self
+                .max_state_bytes
+                .checked_mul(16)
+                .and_then(|n| n.checked_add(64 << 20))
+                .is_none()
         {
             return Err(Error::new(
                 ErrorCode::InvalidArgument,
-                "invalid custody limits",
+                "invalid custody durable byte budget",
             ));
         }
         Ok(())

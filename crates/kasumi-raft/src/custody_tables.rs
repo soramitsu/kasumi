@@ -1,7 +1,7 @@
 //! Permanent custody identities use encrypted point records. The applied cursor,
 //! small policy head, new receipt and audit entry publish in one transaction.
-//! Snapshot transport still materializes the bounded logical capsule; this module
-//! removes history-sized reads, clones and writes from ordinary custody commands.
+//! Both ordinary commands and canonical snapshots use bounded point records;
+//! retained history does not require an aggregate plaintext allocation.
 use crate::custody_state::{CustodyAudit, CustodyState};
 use anyhow::{Context, Result, ensure};
 use kasumi_store::{TenantStore, WriteOp};
@@ -121,10 +121,7 @@ impl CustodyHead {
         let total = encoded_len(&self.policy)?
             .checked_add(self.history_bytes)
             .ok_or_else(quota_error)?;
-        if self.commands > self.policy.limits.max_commands as u64
-            || self.audit > self.policy.limits.max_audit_records as u64
-            || total > self.policy.limits.max_state_bytes as u64
-        {
+        if total > self.policy.limits.max_state_bytes {
             return Err(quota_error());
         }
         Ok(())

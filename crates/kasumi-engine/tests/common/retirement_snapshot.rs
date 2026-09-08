@@ -54,7 +54,7 @@ async fn actual_retired_snapshot_only_replica_preserves_rotated_custody_after_en
         1,
         group.clone(),
         router.clone(),
-        Config::default(),
+        kasumi_raft::CustodyRaftConfig::default(),
         kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
         source.audit.clone(),
     )
@@ -214,7 +214,7 @@ async fn actual_retired_snapshot_only_replica_preserves_rotated_custody_after_en
         group.clone(),
         custody.clone(),
         Arc::new(InProcessRouter::default()),
-        Config::default(),
+        kasumi_raft::CustodyRaftConfig::default(),
     )
     .await
     .unwrap();
