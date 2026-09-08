@@ -2930,7 +2930,7 @@ mod lifecycle_tests {
                     operator.clone(),
                 )
                 .await;
-                // The already serving restored tenant remains usable during onboarding.
+                // The already serving tenant remains usable during onboarding.
                 assert!(database.get(&context, "docs", "first").await.is_ok());
             } else if round == 2 {
                 let beta = RequestContext {
@@ -3074,91 +3074,34 @@ mod lifecycle_tests {
                     .execute(context.clone(), M::RewrapKeys)
                     .await
                     .unwrap();
-                let restored = uuid::Uuid::new_v4();
-                let source = database
-                    .engine()
-                    .generation()
-                    .unwrap()
-                    .state
-                    .incarnation
-                    .clone();
-                let retirement_request = kasumi_types::RetireSourceRequest {
-                    retirement_id: "runtime-restore".into(),
-                    expected_source_incarnation: source.clone(),
-                    target_incarnation: restored.to_string(),
-                    destination: "primary".into(),
-                    not_after_ms: u64::MAX,
-                    checkpoint: database
-                        .verify_backup_checkpoint_named(context.clone(), "primary", backup_id)
-                        .await
-                        .unwrap()
-                        .checkpoint()
-                        .clone(),
-                };
-                manager
+                database
+                    .verify_backup_checkpoint_named(context.clone(), "primary", backup_id)
+                    .await
+                    .unwrap();
+                let error = manager
                     .execute(
                         context.clone(),
                         M::PrepareRestore {
                             destination: "primary".into(),
                             backup_id,
-                            incarnation: restored,
+                            incarnation: uuid::Uuid::new_v4(),
                         },
                     )
                     .await
-                    .unwrap();
-                // A generation cannot be activated until the source is permanently fenced.
+                    .unwrap_err();
                 assert!(
-                    manager
-                        .execute(
-                            context.clone(),
-                            M::ActivateRestore {
-                                incarnation: restored,
-                                retirement: retirement_request.reference().unwrap()
-                            }
-                        )
-                        .await
-                        .is_err()
+                    error
+                        .to_string()
+                        .contains("stopped-installation local recovery coordinator")
                 );
-                let old_source_fence = manager
-                    .response_fence(&context, &M::Status { incarnation: None })
-                    .unwrap();
-                manager
-                    .execute(
-                        context.clone(),
-                        M::RetireSource {
-                            request: retirement_request.clone(),
-                        },
-                    )
-                    .await
-                    .unwrap();
-                assert!(
-                    database
-                        .administer(context.clone(), Operation::Suspend(false))
-                        .await
-                        .is_err()
-                );
-                let activation = M::ActivateRestore {
-                    incarnation: restored,
-                    retirement: retirement_request.reference().unwrap(),
-                };
-                manager.reconcile().await.unwrap();
-                let activation_fence = manager.response_fence(&context, &activation).unwrap();
-                let activated = manager.execute(context.clone(), activation).await.unwrap();
-                let _encoded = serde_json::to_vec(&activated).unwrap();
-                activation_fence.check_release().unwrap();
-                assert!(old_source_fence.check_release().is_err());
-                let active = registry.database(&context).unwrap();
-                assert!(active.engine().generation().unwrap().state.suspended);
-                active
+                database
                     .administer(context.clone(), Operation::Suspend(false))
                     .await
                     .unwrap();
                 assert_eq!(
-                    active.get(&context, "docs", "first").await.unwrap().body["exact"],
+                    database.get(&context, "docs", "first").await.unwrap().body["exact"],
                     serde_json::json!(9007199254740993u64)
                 );
-                incarnation = Some(restored.to_string());
-                assert!(database.get(&context, "docs", "first").await.is_err());
             }
             if round == 1 {
                 use crate::administration::ManagementCommand as M;

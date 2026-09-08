@@ -560,6 +560,10 @@ impl Administration {
                 let source = self.current(&context.tenant)?;
                 self.authorized(&source, &context, false).await?;
             }
+            ensure!(
+                self.config.mode == crate::runtime::DeploymentMode::Replicated || !matches!(&command, ManagementCommand::PrepareRestore { .. }),
+                kasumi_types::Error::new(kasumi_types::ErrorCode::InvalidArgument, "standalone restore requires the stopped-installation local recovery coordinator")
+            );
             // Management can perform several durable steps. Once execution is
             // admitted, credential expiry cannot assert those steps rolled back.
             admitted = true;
@@ -914,10 +918,6 @@ impl Administration {
                 backup_id,
                 incarnation,
             } => {
-                ensure!(
-                    self.config.mode == crate::runtime::DeploymentMode::Replicated,
-                    "standalone restore requires the stopped-installation local recovery coordinator"
-                );
                 ensure!(
                     !incarnation.is_nil()
                         && source.database.engine().generation()?.state.incarnation
