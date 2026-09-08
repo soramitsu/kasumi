@@ -252,6 +252,95 @@ pub(crate) fn lookup<'a>(
     Ok(transaction)
 }
 
+/// Canonical permanent header bytes and outstanding capacity owned by an active
+/// identity. Chunk payloads have their own budget and never enter these totals.
+pub(super) fn permanent_charge(key: &str, stage: &StagedTransaction) -> Result<(u64, u64)> {
+    let used = crate::accounting::staged_header(key, stage)?;
+    if !stage.is_active() {
+        return Ok((used, 0));
+    }
+    // These counters may grow while receiving chunks. Normalize to their maximum
+    // widths so every append transfers existing reservation rather than requiring
+    // fresh permanent capacity. The expiry and immutable identity stay unchanged.
+    let mut maximum = stage.clone();
+    maximum.chunks.clear();
+    maximum.stored_chunk_bytes = usize::MAX;
+    maximum.uploaded_payload_bytes = usize::MAX;
+    maximum.uploaded_operations = usize::MAX;
+    maximum.uploaded_read_assertions = usize::MAX;
+    let capacity = crate::accounting::staged_header(key, &maximum)?
+        .checked_add(STAGED_OUTCOME_HEADROOM as u64)
+        .ok_or_else(|| Error::new(ErrorCode::Corruption, "staged terminal capacity overflow"))?;
+    let reserve = capacity
+        .checked_sub(used)
+        .ok_or_else(|| Error::new(ErrorCode::Corruption, "staged terminal capacity mismatch"))?;
+    Ok((used, reserve))
+}
+
+/// Commit one permanent point record, both totals, and its active index together.
+/// A terminal transition must fit the capacity admitted by its own original Begin.
+pub(super) fn replace_record(
+    state: &mut TenantState,
+    key: String,
+    stage: StagedTransaction,
+) -> Result<()> {
+    let old = state.staged_transactions.get(&key);
+    let (old_used, old_reserved) = old
+        .map(|s| permanent_charge(&key, s))
+        .transpose()?
+        .unwrap_or((0, 0));
+    let (new_used, new_reserved) = permanent_charge(&key, &stage)?;
+    if old.is_some_and(StagedTransaction::is_active)
+        && !stage.is_active()
+        && old_used
+            .checked_add(old_reserved)
+            .is_none_or(|n| new_used > n)
+    {
+        return Err(Error::new(
+            ErrorCode::Corruption,
+            "staged outcome exceeded its original reservation",
+        ));
+    }
+    let used = state
+        .permanent_staged_bytes
+        .checked_sub(old_used)
+        .and_then(|n| n.checked_add(new_used))
+        .ok_or_else(|| {
+            Error::new(
+                ErrorCode::Corruption,
+                "permanent staged accounting mismatch",
+            )
+        })?;
+    let reserved = state
+        .reserved_staged_terminal_bytes
+        .checked_sub(old_reserved)
+        .and_then(|n| n.checked_add(new_reserved))
+        .ok_or_else(|| {
+            Error::new(
+                ErrorCode::Corruption,
+                "staged terminal reservation mismatch",
+            )
+        })?;
+    if used
+        .checked_add(reserved)
+        .is_none_or(|n| n > state.limits.atomic.max_permanent_staged_bytes)
+    {
+        return Err(Error::new(
+            ErrorCode::QuotaExceeded,
+            "permanent staged byte quota exhausted",
+        ));
+    }
+    if stage.is_active() {
+        state.active_staged_transactions.insert(key.clone());
+    } else {
+        state.active_staged_transactions.remove(&key);
+    }
+    state.staged_transactions.insert(key, stage);
+    state.permanent_staged_bytes = used;
+    state.reserved_staged_terminal_bytes = reserved;
+    Ok(())
+}
+
 fn clear_payload(transaction: &mut StagedTransaction) {
     transaction.chunks.clear();
     transaction.stored_chunk_bytes = 0;
@@ -265,7 +354,7 @@ fn terminal(transaction: &mut StagedTransaction, outcome: Result<WriteReceipt>) 
     transaction.outcome = StagedOutcome::Finished { outcome };
 }
 
-fn expire_active(state: &mut TenantState, now: u64, revision: u64) {
+fn expire_active(state: &mut TenantState, now: u64, revision: u64) -> Result<()> {
     let expired: Vec<_> = state
         .active_staged_transactions
         .iter()
@@ -278,26 +367,29 @@ fn expire_active(state: &mut TenantState, now: u64, revision: u64) {
         .cloned()
         .collect();
     for key in expired {
-        if let Some(transaction) = state.staged_transactions.get_mut(&key) {
-            clear_payload(transaction);
-            transaction.outcome = StagedOutcome::Expired {
-                receipt: WriteReceipt {
-                    revision,
-                    versions: BTreeMap::new(),
-                },
-            };
-        }
-        state.active_staged_transactions.remove(&key);
+        let mut transaction = state.staged_transactions[&key].clone();
+        clear_payload(&mut transaction);
+        transaction.outcome = StagedOutcome::Expired {
+            receipt: WriteReceipt {
+                revision,
+                versions: BTreeMap::new(),
+            },
+        };
+        replace_record(state, key, transaction)?;
     }
+    Ok(())
 }
 
 pub(super) fn validate_budget(state: &TenantState, limits: &Limits) -> Result<()> {
-    if state.staged_transactions.len() > limits.atomic.max_transaction_records
+    if state
+        .permanent_staged_bytes
+        .checked_add(state.reserved_staged_terminal_bytes)
+        .is_none_or(|n| n > limits.atomic.max_permanent_staged_bytes)
         || state.active_staged_transactions.len() > limits.atomic.max_active_transactions
     {
         return Err(Error::new(
             ErrorCode::QuotaExceeded,
-            "staged transaction record quota exceeded",
+            "permanent staged bytes or active transaction quota exceeded",
         ));
     }
     let mut reserved = 0usize;
@@ -364,7 +456,7 @@ pub(super) fn apply(
     }
     // Expiry affects only invisible payloads and preserves their permanent ID.
     // All replicas consume the same trusted admission timestamp.
-    expire_active(state, command.timestamp_ms, revision);
+    expire_active(state, command.timestamp_ms, revision)?;
     match &command.operation {
         Operation::BeginStaged(request) => {
             authorize_manifest(state, &command.context, &request.manifest)?;
@@ -392,15 +484,10 @@ pub(super) fn apply(
             validate_manifest(&request.manifest, &state.limits)?;
             // Reject exhausted permanent identity capacity before receiving any
             // chunk payload. Begin owns a bounded terminal-outcome reservation.
-            if state.staged_transactions.len() >= state.limits.atomic.max_transaction_records {
-                return Err(Error::new(
-                    ErrorCode::QuotaExceeded,
-                    "permanent staged identity quota exhausted",
-                ));
-            }
             let mut staged = state.clone();
-            staged.staged_transactions.insert(
-                key.clone(),
+            replace_record(
+                &mut staged,
+                key,
                 StagedTransaction {
                     scope: request.scope.clone(),
                     transaction_id: request.transaction_id.clone(),
@@ -422,8 +509,7 @@ pub(super) fn apply(
                     ttl_ms: request.ttl_ms,
                     outcome: StagedOutcome::Uploading,
                 },
-            );
-            staged.active_staged_transactions.insert(key);
+            )?;
             validate_budget(&staged, &staged.limits)?;
             *state = staged;
             Ok((Ok(receipt()), false))
@@ -492,17 +578,18 @@ pub(super) fn apply(
                 &command.context.principal,
                 &request.transaction.transaction_id,
             )?;
-            let stage = state
-                .staged_transactions
-                .get_mut(&key)
-                .expect("staged identity validated");
-            stage.stored_chunk_bytes += encoded_len(&request.index.to_string())? + 1 + bytes;
+            let mut stage = state.staged_transactions[&key].clone();
+            stage.stored_chunk_bytes = stage
+                .stored_chunk_bytes
+                .checked_add(encoded_len(&request.index.to_string())? + 1 + bytes)
+                .ok_or_else(|| Error::new(ErrorCode::QuotaExceeded, "staging byte overflow"))?;
             stage.uploaded_payload_bytes = uploaded;
             stage.uploaded_operations = operations;
             stage.uploaded_read_assertions = assertions;
             stage
                 .chunks
                 .insert(request.index, Arc::new(request.chunk.clone()));
+            replace_record(state, key, stage)?;
             Ok((Ok(receipt()), false))
         }
         Operation::FinalizeStaged(reference) => {
@@ -543,17 +630,13 @@ pub(super) fn apply(
                 )?;
                 Ok(receipt)
             });
-            if outcome.is_ok() {
-                *state = staged;
+            if outcome.is_err() {
+                staged = state.clone();
             }
-            terminal(
-                state
-                    .staged_transactions
-                    .get_mut(&key)
-                    .expect("staged identity validated"),
-                outcome.clone(),
-            );
-            state.active_staged_transactions.remove(&key);
+            let mut completed = stage;
+            terminal(&mut completed, outcome.clone());
+            replace_record(&mut staged, key, completed)?;
+            *state = staged;
             Ok((outcome.clone(), outcome.is_ok()))
         }
         Operation::StopStaged(request) => {
@@ -575,21 +658,13 @@ pub(super) fn apply(
                 if !stage.is_active() {
                     return Ok((Ok(receipt()), false));
                 }
-                let stage = state
-                    .staged_transactions
-                    .get_mut(&key)
-                    .expect("stage just checked");
-                clear_payload(stage);
+                let mut stage = stage.clone();
+                clear_payload(&mut stage);
                 stage.outcome = StagedOutcome::Aborted { receipt: receipt() };
-                state.active_staged_transactions.remove(&key);
+                replace_record(state, key, stage)?;
             } else {
-                if state.staged_transactions.len() >= state.limits.atomic.max_transaction_records {
-                    return Err(Error::new(
-                        ErrorCode::QuotaExceeded,
-                        "permanent staged identity quota exhausted",
-                    ));
-                }
-                state.staged_transactions.insert(
+                replace_record(
+                    state,
                     key,
                     StagedTransaction {
                         scope: original.scope.clone(),
@@ -605,7 +680,7 @@ pub(super) fn apply(
                         ttl_ms: original.ttl_ms,
                         outcome: StagedOutcome::Aborted { receipt: receipt() },
                     },
-                );
+                )?;
             }
             Ok((Ok(receipt()), false))
         }
@@ -809,7 +884,16 @@ pub(super) fn validate_snapshot_record(
 pub(super) fn validate_restored(state: &TenantState) -> Result<()> {
     validate_budget(state, &state.limits)?;
     let mut active = BTreeSet::new();
+    let mut used = 0u64;
+    let mut reserved = 0u64;
     for (key, stage) in &state.staged_transactions {
+        let charge = permanent_charge(key, stage)?;
+        used = used
+            .checked_add(charge.0)
+            .ok_or_else(|| Error::new(ErrorCode::Corruption, "permanent staged bytes overflow"))?;
+        reserved = reserved
+            .checked_add(charge.1)
+            .ok_or_else(|| Error::new(ErrorCode::Corruption, "staged terminal reserve overflow"))?;
         let mut chunks = SnapshotChunks::default();
         for (index, chunk) in &stage.chunks {
             chunks.add(*index, chunk, stage, &state.limits)?;
@@ -817,6 +901,12 @@ pub(super) fn validate_restored(state: &TenantState) -> Result<()> {
         if validate_snapshot_record(key, stage, state, &chunks)? {
             active.insert(key.clone());
         }
+    }
+    if used != state.permanent_staged_bytes || reserved != state.reserved_staged_terminal_bytes {
+        return Err(Error::new(
+            ErrorCode::Corruption,
+            "permanent staged counters mismatch",
+        ));
     }
     if active != state.active_staged_transactions {
         return Err(Error::new(
@@ -826,3 +916,7 @@ pub(super) fn validate_restored(state: &TenantState) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "staging_capacity_tests.rs"]
+mod capacity_tests;

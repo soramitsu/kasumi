@@ -233,11 +233,8 @@ impl ValidatedApplicationSnapshot {
                 "pending restore lacks authenticated origin"
             );
         }
-        let headroom = self
-            .index
-            .count(8)?
-            .checked_mul(STAGED_OUTCOME_HEADROOM as u64)
-            .and_then(|n| n.checked_add(20 - h.revision.to_string().len() as u64))
+        let headroom = crate::accounting::staged_headroom(h)?
+            .checked_add(20 - h.revision.to_string().len() as u64)
             .context("snapshot headroom overflow")?;
         ensure!(
             self.index
@@ -422,7 +419,9 @@ impl ValidatedApplicationSnapshot {
     ) -> anyhow::Result<()> {
         let h = &self.header;
         ensure!(
-            self.index.count(6)? <= h.limits.atomic.max_transaction_records as u64
+            h.permanent_staged_bytes
+                .checked_add(h.reserved_staged_terminal_bytes)
+                .is_some_and(|n| n <= h.limits.atomic.max_permanent_staged_bytes)
                 && self.index.count(8)? <= h.limits.atomic.max_active_transactions as u64,
             "staged transaction quota exceeded"
         );
@@ -440,6 +439,8 @@ impl ValidatedApplicationSnapshot {
         })?;
         let mut active = 0u64;
         let mut reserved = 0u64;
+        let mut permanent_bytes = 0u64;
+        let mut terminal_reserved = 0u64;
         self.index.visit(6, |record| {
             check()?;
             let Record::Stage(key, stage) = record else {
@@ -448,6 +449,13 @@ impl ValidatedApplicationSnapshot {
             let counts = get::<staging::SnapshotChunks>(&self.lineage, &("stage", &key))?
                 .unwrap_or_default();
             let uploading = staging::validate_snapshot_record(&key, &stage, h, &counts)?;
+            let charge = staging::permanent_charge(&key, &stage)?;
+            permanent_bytes = permanent_bytes
+                .checked_add(charge.0)
+                .context("permanent staged bytes overflow")?;
+            terminal_reserved = terminal_reserved
+                .checked_add(charge.1)
+                .context("staged terminal reserve overflow")?;
             ensure!(
                 uploading == self.index.get(8, &key, "")?.is_some(),
                 "staged active index differs"
@@ -465,7 +473,9 @@ impl ValidatedApplicationSnapshot {
         })?;
         ensure!(
             active == self.index.count(8)?
-                && reserved <= h.limits.atomic.max_reserved_staging_bytes as u64,
+                && reserved <= h.limits.atomic.max_reserved_staging_bytes as u64
+                && permanent_bytes == h.permanent_staged_bytes
+                && terminal_reserved == h.reserved_staged_terminal_bytes,
             "staged reservation or active count differs"
         );
         Ok(())
@@ -990,14 +1000,16 @@ mod tests {
             write_collections: ["rows".into()].into_iter().collect(),
         };
         let stage_key = staging::identity("owner", "upload").unwrap();
-        state.staged_transactions.insert(
-            stage_key.clone(),
+        let scope = StagedTransactionScope {
+            tenant: state.tenant.clone(),
+            incarnation: state.incarnation.clone(),
+            principal: "owner".into(),
+        };
+        staging::replace_record(
+            &mut state,
+            stage_key,
             StagedTransaction {
-                scope: StagedTransactionScope {
-                    tenant: state.tenant.clone(),
-                    incarnation: state.incarnation.clone(),
-                    principal: "owner".into(),
-                },
+                scope,
                 transaction_id: "upload".into(),
                 manifest_digest: staged_digest(&manifest).unwrap().0,
                 manifest,
@@ -1010,8 +1022,8 @@ mod tests {
                 ttl_ms: 60_000,
                 outcome: StagedOutcome::Uploading,
             },
-        );
-        state.active_staged_transactions.insert(stage_key);
+        )
+        .unwrap();
         state
     }
     fn image(state: &TenantState) -> SnapshotImage {
@@ -1087,7 +1099,7 @@ mod tests {
     }
     #[test]
     fn authenticated_semantic_substitutions_fail_both_validation_paths() {
-        for case in 0..16 {
+        for case in 0..18 {
             let mut candidate = state();
             match case {
                 0 => candidate.document_count += 1,
@@ -1119,6 +1131,8 @@ mod tests {
                 7 => candidate.schema_epoch = 0,
                 8 => candidate.retirement_bytes += 1,
                 9 => candidate.active_staged_transactions.clear(),
+                16 => candidate.permanent_staged_bytes += 1,
+                17 => candidate.reserved_staged_terminal_bytes += 1,
                 10 => {
                     candidate
                         .staged_transactions

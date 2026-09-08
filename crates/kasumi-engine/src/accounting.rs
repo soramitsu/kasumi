@@ -57,10 +57,29 @@ fn change(total: &mut usize, old: usize, new: usize) -> Result<()> {
         .ok_or_else(|| Error::new(ErrorCode::Corruption, "snapshot accounting mismatch"))?;
     Ok(())
 }
-fn stage(key: &str, value: &StagedTransaction) -> Result<usize> {
+pub(crate) fn staged_header(key: &str, value: &StagedTransaction) -> Result<u64> {
     let mut header = value.clone();
     header.chunks.clear();
-    let mut size = record(&Record::Stage(key.into(), header))?;
+    Ok(record(&Record::Stage(key.into(), header))? as u64)
+}
+/// While any stage owns future terminal capacity, reserve the maximum decimal
+/// widths of both aggregate counters as well as its record bytes. Moving bytes
+/// from reserved to used can never defeat a previously accepted snapshot budget.
+pub(crate) fn staged_headroom(state: &TenantState) -> Result<u64> {
+    let digits = if state.reserved_staged_terminal_bytes == 0 {
+        0
+    } else {
+        40 - state.permanent_staged_bytes.to_string().len() as u64
+            - state.reserved_staged_terminal_bytes.to_string().len() as u64
+    };
+    state
+        .reserved_staged_terminal_bytes
+        .checked_add(digits)
+        .ok_or_else(|| Error::new(ErrorCode::Corruption, "staged snapshot headroom overflow"))
+}
+fn stage(key: &str, value: &StagedTransaction) -> Result<usize> {
+    let mut size = usize::try_from(staged_header(key, value)?)
+        .map_err(|_| Error::new(ErrorCode::Corruption, "staged header size overflow"))?;
     for (i, chunk) in &value.chunks {
         change(
             &mut size,
@@ -440,12 +459,10 @@ impl SnapshotAccounting {
         Ok(total)
     }
     pub fn fits(&self, state: &TenantState) -> Result<bool> {
-        let headroom = (20 - state.revision.to_string().len()).saturating_add(
-            state
-                .active_staged_transactions
-                .len()
-                .saturating_mul(STAGED_OUTCOME_HEADROOM),
-        );
-        Ok((self.bytes(state)?.saturating_add(headroom) as u64) <= state.limits.max_snapshot_bytes)
+        let headroom = staged_headroom(state)?;
+        Ok((self.bytes(state)? as u64)
+            .checked_add(20 - state.revision.to_string().len() as u64)
+            .and_then(|n| n.checked_add(headroom))
+            .is_some_and(|n| n <= state.limits.max_snapshot_bytes))
     }
 }

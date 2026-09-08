@@ -46,7 +46,7 @@ transaction ID, manifest/digest identity, chunk digests, collection authorizatio
 scope and bounded outcome. Payload chunks are released. A terminal result uses
 one revision with an empty version map; the manifest retains the operation
 count. Every changed document has that revision. The tenant's explicit permanent
-transaction record quota fails closed and has no automatic eviction. A caller
+transaction byte budget fails closed and has no automatic eviction. A caller
 resolves uncertain finalize using this status API and identical transaction ID.
 There is no 24-hour identity reuse window for staged transactions.
 
@@ -99,14 +99,26 @@ capacity and must always advance or return a clear oversize-document error.
 `Limits.atomic` is required in serialized configuration and state. Its Rust
 construction defaults allow 100,000 mutations, 100,000 assertions, 64 MiB of
 encoded chunks, eight active uploads, 128 MiB of aggregate declared upload bytes,
-100,000 permanent identities, eight read leases and 256 MiB of retained lease
+128 MiB of permanent staged headers and reserved terminal capacity, eight read
+leases and 256 MiB of retained lease
 estimates per tenant. These are independent of document, audit, snapshot and
 node RSS limits. A chunk has at most 256 mutations, 512 assertions and 8 MiB;
 there are at most 512 chunks. Operators may lower limits; they cannot invalidate
 already accepted active payloads or completed transaction history.
 
-Begin reserves one permanent identity before accepting payload. It also reserves
-declared staging capacity and 8 KiB of snapshot outcome headroom. Upload TTL is
+`max_permanent_staged_bytes` is a required, configurable 64-bit byte budget;
+there is no lifetime transaction-count ceiling. Exact canonical headers include
+the original scope, identity, manifest and outcome, while uploaded chunks consume
+the separate staging budget. The protected capacity report exposes used bytes,
+outstanding terminal reservations and the installed byte budget. Lowering the
+budget cannot exclude retained outcomes or capacity already owned by active work.
+
+Begin reserves its header at maximum counter widths plus 8 KiB of terminal
+outcome headroom before accepting payload. Appends consume the same reservation
+as counters grow; success, failure, stop and expiry release unused space after
+persisting their exact outcome. Snapshot admission also reserves growth in the
+aggregate accounting counters. This byte policy does not move the resident
+permanent identity map into a durable point table. Upload TTL is
 required, from one millisecond to 24 hours. The serialized admission timestamp
 at begin fixes expiry; retries never extend it. Each ordered staged operation
 reclaims expired active payloads and persists their terminal identity. Expiry is
