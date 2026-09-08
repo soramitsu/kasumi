@@ -6,13 +6,19 @@ use std::ops::Bound;
 impl TargetRecoveryRuntime {
     pub(super) fn start_serving_reconciliation(self: &Arc<Self>) {
         let weak = Arc::downgrade(self);
+        let wake = self.serving_monitor.wake();
         let task = tokio::spawn(async move {
             let mut after = None::<String>;
             loop {
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                tokio::select! {
+                    _ = wake.notified() => {},
+                    _ = tokio::time::sleep(Duration::from_millis(100)) => {},
+                }
                 let Some(runtime) = weak.upgrade() else {
                     break;
                 };
+                #[cfg(test)]
+                runtime.serving_monitor.after_upgrade().await;
                 if runtime.closing.load(Ordering::Acquire) {
                     break;
                 }
@@ -49,10 +55,7 @@ impl TargetRecoveryRuntime {
                 }
             }
         });
-        *self
-            .serving_monitor
-            .lock()
-            .expect("new target monitor mutex") = Some(task);
+        self.serving_monitor.register(task);
     }
     async fn prune_inactive_serving(&self) {
         let candidates: Vec<_> = self

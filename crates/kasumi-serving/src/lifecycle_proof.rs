@@ -118,6 +118,9 @@ pub struct LifecycleBoot {
     last: Arc<Mutex<Option<Duration>>>,
 }
 impl LifecycleBoot {
+    pub fn authority(&self) -> &AuthorityTrust {
+        &self.trust
+    }
     pub fn new(trust: AuthorityTrust, node: NodeIdentity) -> Result<Self> {
         Self::with_clock(trust, node, Arc::new(SystemLeaseClock))
     }
