@@ -8,7 +8,9 @@ use crate::{
     serving_runtime::ServingAuthorityConfig,
 };
 use anyhow::{Context, Result, ensure};
-use kasumi_client::{KasumiAuthorityPool, KasumiClientConfig, KasumiTargetClient};
+use kasumi_client::{
+    KasumiAdminClient, KasumiAuthorityPool, KasumiClientConfig, KasumiTargetClient,
+};
 use kasumi_engine::{Database, LifecycleSigner, VerifiedRecoveryPhase, VerifiedRecoveryStatus};
 use kasumi_serving::{AuthorityTrust, ControlTrust};
 use kasumi_transport::credentials::{FileCredentialSource, token};
@@ -36,6 +38,8 @@ pub struct RecoveryRoute {
     pub targets: BTreeMap<u64, RecoveryMember>,
     #[serde(deserialize_with = "kasumi_types::require_explicit_option")]
     pub source: Option<AdminClientConfig>,
+    #[serde(deserialize_with = "kasumi_types::require_explicit_option")]
+    pub source_custody: Option<AdminClientConfig>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -103,16 +107,27 @@ impl RecoveryRuntimeConfig {
                     "recovery voter identity or failure domains differ"
                 );
             }
-            if let Some(source) = &route.source {
+            ensure!(
+                route.source.is_some() == route.source_custody.is_some(),
+                "planned recovery installs both application and custody sources"
+            );
+            if let (Some(source), Some(custody)) = (&route.source, &route.source_custody) {
                 source.validate()?;
+                custody.validate()?;
                 ensure!(
-                    route
-                        .targets
-                        .values()
-                        .all(|target| target.client.token_file != source.token_file)
-                        && source.token_file != route.issuer_admin_bearer_file,
-                    "planned source credentials must be independently installed"
+                    source.token_file != custody.token_file,
+                    "application retirement and custody verification require distinct credential sources"
                 );
+                for client in [source, custody] {
+                    ensure!(
+                        route
+                            .targets
+                            .values()
+                            .all(|target| target.client.token_file != client.token_file)
+                            && client.token_file != route.issuer_admin_bearer_file,
+                        "planned source credentials must be independently installed"
+                    );
+                }
             }
             ensure!(
                 digests.insert(route.digest(authority)?),
@@ -416,7 +431,123 @@ impl ControlRecoveryCoordinator {
                     acknowledgement.response().clone(),
                 )))
             }
+            RecoveryDispatch::RetireSource(request) => {
+                let source = route
+                    .source
+                    .as_ref()
+                    .context("planned application source is absent")?;
+                let custody = route
+                    .source_custody
+                    .as_ref()
+                    .context("planned custody source is absent")?;
+                let custody_config = connection(custody)?;
+                let custody_bearer = token(&FileCredentialSource::new(&custody.token_file)?)?;
+                let verified = dispatch_planned_retirement(
+                    || {
+                        Ok((
+                            connection(source)?,
+                            token(&FileCredentialSource::new(&source.token_file)?)?,
+                        ))
+                    },
+                    &custody_config,
+                    &custody_bearer,
+                    request,
+                    duration,
+                    async { prepared.admit_dispatch().await.map_err(Into::into) },
+                )
+                .await?;
+                prepared.release().await?;
+                Ok(RecoveryDispatchOutcome::SourceRetired(Box::new(
+                    verified.receipt().clone(),
+                )))
+            }
             _ => anyhow::bail!("recovery dispatch phase is not installed"),
+        }
+    }
+}
+// Exact custody verification is independent of application admission. A failed
+// custody read is never proof of absence: only an authenticated application
+// status with no original outcome permits the unchanged retirement dispatch.
+pub(crate) async fn dispatch_planned_retirement<S, F>(
+    source: S,
+    custody: &KasumiClientConfig,
+    custody_bearer: &str,
+    request: &RetireSourceRequest,
+    duration: Duration,
+    admit: F,
+) -> Result<kasumi_client::VerifiedRetirementReceipt>
+where
+    S: FnOnce() -> Result<(KasumiClientConfig, zeroize::Zeroizing<String>)>,
+    F: std::future::Future<Output = Result<()>>,
+{
+    let reference = request.reference()?;
+    let mut custody = KasumiAdminClient::connect(custody).await?;
+    let verify = |proof: kasumi_client::VerifiedRetirementReceipt| -> Result<_> {
+        ensure!(
+            proof.receipt().checkpoint == request.checkpoint
+                && proof.receipt().target_incarnation == request.target_incarnation
+                && proof.receipt().admitted_at_ms <= request.not_after_ms,
+            "source custody verification returned a different original retirement"
+        );
+        Ok(proof)
+    };
+    if let Ok(Ok(proof)) = tokio::time::timeout(
+        duration,
+        custody.verify_retirement_receipt(custody_bearer, &reference),
+    )
+    .await
+    {
+        return verify(proof);
+    }
+    let (config, bearer) = source()?;
+    let mut application = KasumiAdminClient::connect(&config).await?;
+    let observed =
+        tokio::time::timeout(duration, application.retirement_status(&bearer, &reference)).await?;
+    match observed {
+        Ok(None) => {
+            admit.await?;
+            // An ambiguous acknowledgement is resolved only through the exact
+            // independently authorized custody proof below, never a new ID.
+            let mutation =
+                tokio::time::timeout(duration, application.retire_source(&bearer, request)).await;
+            let proof = tokio::time::timeout(
+                duration,
+                custody.verify_retirement_receipt(custody_bearer, &reference),
+            )
+            .await;
+            match proof {
+                Ok(Ok(proof)) => verify(proof),
+                failure => {
+                    mutation??;
+                    verify(failure??)
+                }
+            }
+        }
+        Ok(Some(status)) => {
+            ensure!(
+                status.outcome.is_ok(),
+                "original source retirement was permanently rejected"
+            );
+            verify(
+                tokio::time::timeout(
+                    duration,
+                    custody.verify_retirement_receipt(custody_bearer, &reference),
+                )
+                .await??,
+            )
+        }
+        Err(original) => {
+            // Retirement can commit between the first custody observation and
+            // the application read. Recover that race with custody authority.
+            match tokio::time::timeout(
+                duration,
+                custody.verify_retirement_receipt(custody_bearer, &reference),
+            )
+            .await
+            {
+                Ok(Ok(proof)) => verify(proof),
+                _ => Err(original.into()),
+            }
         }
     }
 }

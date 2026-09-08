@@ -1,0 +1,24 @@
+{
+  "source": "0c168ed69e5ee443233cbe2ff9e5adc7b11f08a2",
+  "tree": "dcec1f90255a7a08a9b99ff3e74a2d51ae7a5ca9",
+  "lockfile_sha256": "9f29f1383152d5ddf05b5b07955ca8b2766e1e06e2cd03ce77040d14f9371559",
+  "platform": "macOS ARM64",
+  "toolchain": "1.97.1",
+  "engine_log": {
+    "path": "/tmp/kasumi-permanent-byte-budgets-engine.log",
+    "sha256": "da680ac4d4c1a60b8f6988da851fd60e98acf32b53fb9ee0dc1f3dc2084a7b19"
+  },
+  "results": {
+    "retirement": "10 passed in19.25seconds",
+    "schema": "13 passed in32.01seconds, includes generated100001-record restore then live engine admission"
+  },
+  "executables": {
+    "/tmp/kasumi-production-root-target/debug/deps/retirement-59874a58f1b71cc1": "9e57c972193997815cc704686a97de54181ae4bb42f36acfcfb12e9e07c3046d",
+    "/tmp/kasumi-production-root-target/debug/deps/schema_activation-efa85994d6329a92": "6ef3195cf20328c5192eda96e04cdf8059df3d48f5af9827856aeeefc7ab0e52"
+  },
+  "limitations": [
+    "Not100001 live network commands",
+    "Raft reservation regression and strict validation not yet run",
+    "Permanent point-addressed storage and native import reservation remain open"
+  ]
+}

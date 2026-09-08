@@ -656,17 +656,6 @@ impl kasumi_store::BackupDestination for CountedDestination {
 #[tokio::test]
 async fn permanent_retirement_quota_fails_before_backup_io_and_exact_failure_replays() {
     let fixture = Fixture::new().await;
-    fixture
-        .db
-        .administer(
-            context(),
-            Operation::SetLimits(Limits {
-                max_retirements: 1,
-                ..Limits::default()
-            }),
-        )
-        .await
-        .unwrap();
     let counted = Arc::new(CountedDestination {
         inner: fixture.destination.clone(),
         reads: Default::default(),
@@ -688,6 +677,24 @@ async fn permanent_retirement_quota_fails_before_backup_io_and_exact_failure_rep
         ErrorCode::Conflict
     );
     assert!(counted.reads.swap(0, std::sync::atomic::Ordering::SeqCst) > 0);
+    let used = fixture
+        .db
+        .engine()
+        .generation()
+        .unwrap()
+        .state
+        .retirement_bytes;
+    fixture
+        .db
+        .administer(
+            context(),
+            Operation::SetLimits(Limits {
+                max_retirement_bytes: used,
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
     assert_eq!(
         fixture
             .db
@@ -712,13 +719,58 @@ async fn permanent_retirement_quota_fails_before_backup_io_and_exact_failure_rep
     assert_eq!(
         fixture
             .db
-            .retire_source(context(), request)
+            .retire_source(context(), request.clone())
             .await
             .unwrap_err()
             .code,
         ErrorCode::QuotaExceeded
     );
     assert_eq!(counted.reads.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert!(!fixture.db.engine().generation().unwrap().state.retired);
+    assert_eq!(
+        fixture
+            .db
+            .engine()
+            .generation()
+            .unwrap()
+            .state
+            .retirement_bytes,
+        used
+    );
+    fixture
+        .db
+        .administer(
+            context(),
+            Operation::SetLimits(Limits {
+                max_retirement_bytes: 3 << 30,
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+    // The new identity is now admitted, while its already expired action still
+    // records a permanent failure instead of fencing the source.
+    assert_eq!(
+        fixture
+            .db
+            .retire_source(context(), request)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    assert!(counted.reads.load(std::sync::atomic::Ordering::SeqCst) > 0);
+    assert_eq!(
+        fixture
+            .db
+            .engine()
+            .generation()
+            .unwrap()
+            .state
+            .retirements
+            .len(),
+        2
+    );
     fixture.close().await;
 }
 

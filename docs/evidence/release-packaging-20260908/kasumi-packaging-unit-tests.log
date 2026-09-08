@@ -1,0 +1,27 @@
+test_architecture_cannot_be_relabeled (test_package_release.PackageReleaseTests.test_architecture_cannot_be_relabeled) ... ok
+test_archive_is_identical_across_paths_mtimes_and_creation_order (test_package_release.PackageReleaseTests.test_archive_is_identical_across_paths_mtimes_and_creation_order) ... ok
+test_cached_notice_must_match_locked_archive_and_cannot_follow_symlink (test_package_release.PackageReleaseTests.test_cached_notice_must_match_locked_archive_and_cannot_follow_symlink) ... ERROR
+test_changed_binary_log_source_and_failed_gate_cannot_be_packaged (test_package_release.PackageReleaseTests.test_changed_binary_log_source_and_failed_gate_cannot_be_packaged) ... ok
+test_archive_refuses_escape_and_links_without_writing_outside_source (test_release_gate.ReleaseGateTests.test_archive_refuses_escape_and_links_without_writing_outside_source) ... ok
+test_artifact_outside_owned_target_is_rejected (test_release_gate.ReleaseGateTests.test_artifact_outside_owned_target_is_rejected) ... ok
+test_build_inventory_includes_fresh_non_executable_dependencies (test_release_gate.ReleaseGateTests.test_build_inventory_includes_fresh_non_executable_dependencies) ... ok
+test_content_and_new_inputs_change_inventory_without_relying_on_mtime (test_release_gate.ReleaseGateTests.test_content_and_new_inputs_change_inventory_without_relying_on_mtime) ... ok
+test_failed_gate_retains_log_and_exact_executable_hash (test_release_gate.ReleaseGateTests.test_failed_gate_retains_log_and_exact_executable_hash) ... ok
+
+======================================================================
+ERROR: test_cached_notice_must_match_locked_archive_and_cannot_follow_symlink (test_package_release.PackageReleaseTests.test_cached_notice_must_match_locked_archive_and_cannot_follow_symlink)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/tmp/kasumi-production-packaging/scripts/test_package_release.py", line 108, in test_cached_notice_must_match_locked_archive_and_cannot_follow_symlink
+    package.verify_registry_notices(dependency, files, digest)
+  File "/private/tmp/kasumi-production-packaging/scripts/package_release.py", line 164, in verify_registry_notices
+    expected = [(p, str(p.relative_to(root))) for p, _, url in files if url is None]
+                        ^^^^^^^^^^^^^^^^^^^
+  File "/Users/mtakemiya/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/pathlib.py", line 682, in relative_to
+    raise ValueError(f"{str(self)!r} is not in the subpath of {str(other)!r}")
+ValueError: '/var/folders/dt/80zwnvxn61l7nc0ttr4tgtf80000gn/T/tmpvor9qu1y/registry/src/index/example-1.0.0/LICENSE' is not in the subpath of '/private/var/folders/dt/80zwnvxn61l7nc0ttr4tgtf80000gn/T/tmpvor9qu1y/registry/src/index/example-1.0.0'
+
+----------------------------------------------------------------------
+Ran 9 tests in 0.367s
+
+FAILED (errors=1)

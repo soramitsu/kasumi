@@ -1,0 +1,9 @@
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.04s
+     Running tests/retirement.rs (/tmp/kasumi-production-streaming-target/debug/deps/retirement-59874a58f1b71cc1)
+
+running 1 test
+test invisible_staged_identity_after_checkpoint_is_not_lost_by_retirement ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 1.86s
+

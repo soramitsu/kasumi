@@ -1,0 +1,24 @@
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.76s
+     Running tests/lifecycle.rs (/tmp/kasumi-production-runtime-target/debug/deps/lifecycle-c70bbb2e0c4a0ca5)
+
+running 3 tests
+test control_administration::current_control_administration_pins_actual_membership_and_pending_policy_across_restart ... ok
+test control_administration::current_control_administration_retains_exact_resource_revocation_and_original_lifetime ... ok
+test control_administration::current_control_administration_cannot_release_through_a_cached_leader_after_quorum_loss ... FAILED
+
+failures:
+
+---- control_administration::current_control_administration_cannot_release_through_a_cached_leader_after_quorum_loss stdout ----
+
+thread 'control_administration::current_control_administration_cannot_release_through_a_cached_leader_after_quorum_loss' (20731301) panicked at crates/kasumi-engine/tests/common/control_administration.rs:232:5:
+new quorum authority cannot replace the original observed term
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    control_administration::current_control_administration_cannot_release_through_a_cached_leader_after_quorum_loss
+
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 7 filtered out; finished in 7.91s
+
+error: test failed, to rerun pass `-p kasumi-engine --test lifecycle`

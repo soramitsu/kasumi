@@ -7,6 +7,10 @@ use uuid::Uuid;
 mod quorum;
 pub(crate) use quorum::{completion_route_retry, quorum_input, started_for};
 
+#[path = "recovery_source.rs"]
+mod source;
+pub(crate) use source::{issuer_action, retirement_request};
+
 pub(crate) const PREFIX: &[u8] = b"KASUMI_RECOVERY_V1\0";
 pub(crate) const MAX_COMMAND_BYTES: usize = (2 << 20) + 64 * 1024;
 
@@ -578,22 +582,10 @@ fn validate_input(
     }
     match (operation.phase, input) {
         (
-            RecoveryPhase::Prepare | RecoveryPhase::StopTarget,
+            RecoveryPhase::Prepare | RecoveryPhase::StopTarget | RecoveryPhase::FenceSource,
             RecoveryDispatch::Authority(command),
         ) => {
-            let action = if operation.phase == RecoveryPhase::Prepare {
-                AuthorityAction::PrepareTarget {
-                    source_incarnation: operation.request.source_incarnation,
-                    source_epoch: operation.request.source_authority_epoch,
-                    target: target(&operation.request),
-                }
-            } else {
-                AuthorityAction::StopTarget {
-                    source_incarnation: operation.request.source_incarnation,
-                    source_epoch: operation.request.source_authority_epoch,
-                    target: target(&operation.request),
-                }
-            };
+            let action = issuer_action(operation, operation.phase)?;
             command
                 .validate()
                 .map_err(|_| conflict("invalid recovery issuer command"))?;
@@ -752,6 +744,21 @@ fn validate_input(
                 }
             }
         }
+        (RecoveryPhase::RetireSource, RecoveryDispatch::RetireSource(request)) => {
+            if request != retirement_request(operation)?
+                || request.not_after_ms <= authorization.admitted_at_ms
+                || request.not_after_ms > authorization.expires_at_ms
+                || request.not_after_ms
+                    > authorization
+                        .admitted_at_ms
+                        .checked_add(operation.request.phase_timeout_ms)
+                        .ok_or_else(|| conflict("retirement phase deadline overflow"))?
+            {
+                return Err(conflict(
+                    "planned retirement input or original phase deadline differs",
+                ));
+            }
+        }
         _ => return Err(conflict("coordinator phase dispatch is not installed")),
     }
     Ok(())
@@ -831,6 +838,16 @@ fn validate_outcome(
                 ) if source_incarnation == actual_source
                     && source_epoch == actual_epoch
                     && target == actual => {}
+                (
+                    AuthorityAction::Fence {
+                        incarnation,
+                        authority_epoch,
+                    },
+                    AuthorityOutcome::Fenced {
+                        incarnation: actual,
+                        authority_epoch: epoch,
+                    },
+                ) if incarnation == actual && authority_epoch == epoch => {}
                 _ => return Err(conflict("issuer returned another recovery outcome")),
             }
         }
@@ -931,6 +948,9 @@ fn validate_outcome(
                 _ => return Err(conflict("target acknowledgement operation differs")),
             }
         }
+        (RecoveryDispatch::RetireSource(_), RecoveryDispatchOutcome::SourceRetired(receipt)) => {
+            source::validate_retirement(operation, receipt)?;
+        }
         _ => {
             return Err(conflict(
                 "recovery outcome kind differs from durable dispatch",
@@ -960,6 +980,17 @@ fn advance(
             operation.target_stop = Some(prepared.phase_id);
             operation.current_intent = None;
             operation.phase = RecoveryPhase::Cleanup;
+        }
+        (RecoveryDispatch::Authority(_), RecoveryDispatchOutcome::Authority(_))
+            if prepared.phase == RecoveryPhase::FenceSource =>
+        {
+            operation.source_fence = Some(prepared.phase_id);
+            operation.current_intent = None;
+            operation.phase = RecoveryPhase::Activate;
+        }
+        (RecoveryDispatch::RetireSource(_), RecoveryDispatchOutcome::SourceRetired(_)) => {
+            operation.retirement = Some(prepared.phase_id);
+            operation.phase = RecoveryPhase::FenceSource;
         }
         (RecoveryDispatch::ControlIntent(request), RecoveryDispatchOutcome::ControlIntent(_)) => {
             operation.current_intent = Some(prepared.phase_id);
@@ -1231,6 +1262,42 @@ pub(crate) fn validate(state: &TenantState) -> Result<()> {
         if operation.issuer_preparation.is_some_and(|id| !matches!(phase(state, operation, id).ok().and_then(|p|p.outcome.as_ref()),Some(RecoveryDispatchOutcome::Authority(s)) if matches!(s.receipt.outcome,AuthorityOutcome::TargetPrepared{..}))) {
             return Err(conflict("recovery preparation reference differs"));
         }
+        if let Some(id) = operation.retirement {
+            let record = phase(state, operation, id)?;
+            let Some(RecoveryDispatchOutcome::SourceRetired(receipt)) = &record.outcome else {
+                return Err(conflict("source retirement progress reference differs"));
+            };
+            source::validate_retirement(operation, receipt)?;
+        }
+        if let Some(id) = operation.source_fence
+            && !matches!(phase(state, operation, id)?.outcome.as_ref(), Some(RecoveryDispatchOutcome::Authority(s)) if matches!(s.receipt.outcome, AuthorityOutcome::Fenced{incarnation,authority_epoch} if incarnation == operation.request.source_incarnation && authority_epoch == operation.request.source_authority_epoch))
+        {
+            return Err(conflict("source fence progress reference differs"));
+        }
+        if matches!(
+            operation.phase,
+            RecoveryPhase::Activate
+                | RecoveryPhase::Confirm
+                | RecoveryPhase::Publish
+                | RecoveryPhase::Finished
+        ) && operation.source_fence.is_none()
+        {
+            return Err(conflict("activation progress lacks exact source fence"));
+        }
+        if matches!(
+            operation.request.source_mode,
+            RecoverySourceMode::Planned { .. }
+        ) && matches!(
+            operation.phase,
+            RecoveryPhase::FenceSource
+                | RecoveryPhase::Activate
+                | RecoveryPhase::Confirm
+                | RecoveryPhase::Publish
+                | RecoveryPhase::Finished
+        ) && operation.retirement.is_none()
+        {
+            return Err(conflict("planned source fence lacks verified retirement"));
+        }
         if operation.target_stop.is_some() {
             stop_reference(state, operation)?;
         }
@@ -1280,21 +1347,7 @@ fn validate_frozen_input(
 ) -> Result<()> {
     match &retained.input {
         RecoveryDispatch::Authority(command) => {
-            let expected = if retained.phase == RecoveryPhase::Prepare {
-                AuthorityAction::PrepareTarget {
-                    source_incarnation: operation.request.source_incarnation,
-                    source_epoch: operation.request.source_authority_epoch,
-                    target: target(&operation.request),
-                }
-            } else if retained.phase == RecoveryPhase::StopTarget {
-                AuthorityAction::StopTarget {
-                    source_incarnation: operation.request.source_incarnation,
-                    source_epoch: operation.request.source_authority_epoch,
-                    target: target(&operation.request),
-                }
-            } else {
-                return Err(conflict("retained issuer dispatch phase differs"));
-            };
+            let expected = issuer_action(operation, retained.phase)?;
             command
                 .validate()
                 .map_err(|_| conflict("retained issuer command invalid"))?;
@@ -1306,6 +1359,15 @@ fn validate_frozen_input(
                 || command.not_after_ms <= retained.admitted_at_ms
             {
                 return Err(conflict("retained issuer phase input changed"));
+            }
+        }
+        RecoveryDispatch::RetireSource(request) => {
+            if retained.phase != RecoveryPhase::RetireSource
+                || request != retirement_request(operation)?
+                || request.not_after_ms <= retained.admitted_at_ms
+                || request.not_after_ms > dispatch_limit(operation, retained)?
+            {
+                return Err(conflict("retained planned retirement input differs"));
             }
         }
         RecoveryDispatch::ControlIntent(request) => {

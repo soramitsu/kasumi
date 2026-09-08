@@ -1,0 +1,9 @@
+{
+  "kasumi-runtime-partition-credentials-clippy.log": "0c4d10d11aa323d6fcd7350b85f473eb1839771f0e28b2ce944ade5e2fdfb345",
+  "kasumi-runtime-partition-credentials-format.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "kasumi-runtime-partition-credentials-authority-tls.log": "e7c959b0340c40f223a7a7ac9c7dac499b8412802f78d2b7e0b181edc4d3450f",
+  "kasumi-runtime-partition-credentials-evidence.json": "d5db08fd714755ba3327918a8aaad97062d2f543891d80cd943dc34fcd188df8",
+  "kasumi-runtime-partition-credentials-production.log": "ce5b1c9a6d98556c29b7c4492c65e769b4f41caebd636ea8a7b9581a61737a0c",
+  "kasumi-runtime-partition-credentials-data-tls.log": "716cfd7594438469c62b12aad397fa36e4d90e8dc44b9bf8633cd34e0e535504",
+  "kasumi-runtime-partition-credentials-unit.log": "6db77647f9b4b8a6287f24a8760fe66bfe98268daf85f08255f4b777821ecb28"
+}

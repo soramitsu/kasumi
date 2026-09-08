@@ -1101,5 +1101,7 @@ async fn control_rejects_unfinishable_byte_budget_and_substituted_authenticated_
     f.close().await;
 }
 
+#[path = "common/control_administration.rs"]
+mod control_administration;
 #[path = "common/recovery_control.rs"]
 mod recovery_control;

@@ -129,13 +129,6 @@ pub(super) fn apply(
             ));
         }
     }
-    if state.schema_activations.len() >= state.limits.max_schema_activations {
-        return Err(Error::new(
-            ErrorCode::QuotaExceeded,
-            "permanent schema activation quota exhausted",
-        ));
-    }
-
     let mut next = state.clone();
     let outcome = validate_admission(&next, context, &request.read_set, evaluated_at_ms)
         .and_then(|()| activate(&mut next, request))
@@ -144,29 +137,38 @@ pub(super) fn apply(
             versions: BTreeMap::new(),
         });
     let changed = outcome.is_ok();
-    if changed {
-        *state = next;
+    if !changed {
+        next = state.clone();
     }
-    store(
-        state,
-        key,
-        StoredSchemaActivation {
-            principal: context.principal.clone(),
-            activation_id: request.activation_id.clone(),
-            request_digest: reference.request_digest,
-            collections,
-            read_collections: request
-                .read_set
-                .iter()
-                .filter_map(|a| match a {
-                    ReadAssertion::Document { collection, .. }
-                    | ReadAssertion::Collection { collection, .. } => Some(collection.clone()),
-                    _ => None,
-                })
-                .collect(),
-            outcome: outcome.clone(),
-        },
-    )?;
+    let record = StoredSchemaActivation {
+        principal: context.principal.clone(),
+        activation_id: request.activation_id.clone(),
+        request_digest: reference.request_digest,
+        collections,
+        read_collections: request
+            .read_set
+            .iter()
+            .filter_map(|a| match a {
+                ReadAssertion::Document { collection, .. }
+                | ReadAssertion::Collection { collection, .. } => Some(collection.clone()),
+                _ => None,
+            })
+            .collect(),
+        outcome: outcome.clone(),
+    };
+    // Reserve replacement by any bounded deterministic resource rejection.
+    // Publish definitions only after their permanent result fits as well.
+    let required = entry_bytes(&key, &record)?
+        .checked_add(PERMANENT_OUTCOME_HEADROOM)
+        .and_then(|n| n.checked_add(state.schema_activation_bytes));
+    if required.is_none_or(|n| n > state.limits.max_schema_activation_bytes) {
+        return Err(Error::new(
+            ErrorCode::QuotaExceeded,
+            "permanent schema activation byte budget exhausted",
+        ));
+    }
+    store(&mut next, key, record)?;
+    *state = next;
     Ok((outcome, changed))
 }
 
@@ -268,9 +270,9 @@ pub(super) fn prepare_collection(
     Ok(collection)
 }
 
-fn entry_bytes(key: &str, record: &StoredSchemaActivation) -> Result<usize> {
-    let value_bytes = encoded_len(record)?;
-    encoded_len(&key)?
+fn entry_bytes(key: &str, record: &StoredSchemaActivation) -> Result<u64> {
+    let value_bytes = encoded_len(record)? as u64;
+    (encoded_len(&key)? as u64)
         .checked_add(1)
         .and_then(|n| n.checked_add(value_bytes))
         .ok_or_else(|| {
@@ -293,7 +295,7 @@ pub(super) fn store(
         .transpose()?
         .unwrap_or(0);
     let new = entry_bytes(&key, &record)?;
-    state.schema_activation_bytes = state
+    let bytes = state
         .schema_activation_bytes
         .checked_sub(old)
         .and_then(|n| n.checked_add(new))
@@ -303,6 +305,13 @@ pub(super) fn store(
                 "schema activation accounting mismatch",
             )
         })?;
+    if bytes > state.limits.max_schema_activation_bytes {
+        return Err(Error::new(
+            ErrorCode::QuotaExceeded,
+            "permanent schema activation byte budget exhausted",
+        ));
+    }
+    state.schema_activation_bytes = bytes;
     state.schema_activations.insert(key, record);
     Ok(())
 }
@@ -335,8 +344,8 @@ fn valid_digest(value: &str) -> bool {
 }
 
 pub(super) fn validate_restored(state: &TenantState) -> Result<()> {
-    let mut bytes = 0usize;
-    if state.schema_activations.len() > state.limits.max_schema_activations {
+    let mut bytes = 0u64;
+    if state.schema_activation_bytes > state.limits.max_schema_activation_bytes {
         return Err(Error::new(
             ErrorCode::Corruption,
             "schema activation record quota exceeded",
@@ -360,7 +369,7 @@ pub(super) fn validate_snapshot_record(
     key: &str,
     record: &StoredSchemaActivation,
     revision: u64,
-) -> Result<usize> {
+) -> Result<u64> {
     if identity(&record.principal, &record.activation_id)? != *key
         || !valid_digest(&record.request_digest)
         || record.collections.is_empty()

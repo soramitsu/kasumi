@@ -1,0 +1,13 @@
+   Compiling kasumi-serving v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-serving)
+   Compiling kasumi-store v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-store)
+   Compiling kasumi-raft v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 37.25s
+     Running tests/lifecycle.rs (/tmp/kasumi-production-standalone-target/debug/deps/lifecycle-c70bbb2e0c4a0ca5)
+
+running 2 tests
+test recovery_control::recovery_expired_target_requires_fresh_control_admission_and_fences_revoked_observations ... ok
+test recovery_control::recovery_journal_persists_before_dispatch_rejects_substitution_and_recovers_ambiguous_control_commit ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 22.71s
+

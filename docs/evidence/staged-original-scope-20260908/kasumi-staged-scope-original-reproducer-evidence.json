@@ -1,0 +1,28 @@
+{
+  "base": "97a14cdfa3a662fdcf5090ee1a4d6048689bd24b",
+  "base_tree": "f008880022bc739e6196e5b8dcfbbc723884ea7f",
+  "source_modification": "exact test-only binary patch listed below; other sources unchanged",
+  "files": {
+    "/tmp/kasumi-staged-scope-original-reproducer.log": "9eb0b82958733fe800c3fdf5b46d6edcfddcd98796c8e635aa841650e804acd1",
+    "/tmp/kasumi-staged-scope-original-reproducer.patch": "5cf2d3b60e1d90e7b1fb19492eb260437e5fe3966f05aaa80402488f2ff850b3",
+    "/tmp/kasumi-staged-scope-original-reproducer.sha256": "fc72e1579295f5a8f752335136b5a3ca53e88b4cee75aca4e3fa0686e96e3ce5"
+  },
+  "executable_sha256_record": "7257420cb7a51969d0140dad9427105ac4a4b21ca71ae9c4e6a2ebfd12bb5d6e  /tmp/kasumi-production-streaming-target/debug/deps/kasumi_server-3ef3c426e5743964\n9eb0b82958733fe800c3fdf5b46d6edcfddcd98796c8e635aa841650e804acd1  /tmp/kasumi-staged-scope-original-reproducer.log\n",
+  "command": [
+    "cargo",
+    "+1.97.1",
+    "test",
+    "-j2",
+    "-p",
+    "kasumi-server",
+    "--all-features",
+    "--lib",
+    "native_staged_original_scope_cannot",
+    "--",
+    "--nocapture"
+  ],
+  "target_directory": "/tmp/kasumi-production-streaming-target",
+  "outcome": "Expected regression reproduced: B acknowledged an absent Aborted tombstone while A retained Uploading and then committed. Test intentionally failed its final assertion.",
+  "exit": 101,
+  "lockfile_sha256": "9f29f1383152d5ddf05b5b07955ca8b2766e1e06e2cd03ce77040d14f9371559"
+}

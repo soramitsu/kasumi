@@ -1,0 +1,31 @@
+    Checking kasumi-serving v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-serving)
+    Checking kasumi-store v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-store)
+    Checking kasumi-client v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-client)
+    Checking kasumi-raft v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-raft)
+    Checking kasumi-engine v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-engine)
+    Checking kasumi-authority v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-authority)
+error: this `if` statement can be collapsed
+    --> crates/kasumi-engine/src/recovery_state.rs:1272:9
+     |
+1272 | / ...   if let Some(id) = operation.source_fence {
+1273 | | ...       if !matches!(phase(state, operation, id)?.outcome.as_ref(), Some(RecoveryDispatchOutcome::Authority(s)) if matches!(s....
+1274 | | ...       {
+1275 | | ...           return Err(conflict("source fence progress reference differs"));
+1276 | | ...       }
+1277 | | ...   }
+     | |_______^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if
+     = note: `-D clippy::collapsible-if` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::collapsible_if)]`
+help: collapse nested if block
+     |
+1272 ~         if let Some(id) = operation.source_fence
+1273 ~             && !matches!(phase(state, operation, id)?.outcome.as_ref(), Some(RecoveryDispatchOutcome::Authority(s)) if matches!(s.receipt.outcome, AuthorityOutcome::Fenced{incarnation,authority_epoch} if incarnation == operation.request.source_incarnation && authority_epoch == operation.request.source_authority_epoch))
+1274 |             {
+1275 |                 return Err(conflict("source fence progress reference differs"));
+1276 ~             }
+     |
+
+error: could not compile `kasumi-engine` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
