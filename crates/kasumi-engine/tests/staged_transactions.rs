@@ -451,7 +451,7 @@ fn changed_limits_preserve_historic_outcomes_and_keep_active_snapshots_recoverab
     let recovered = engine(Limits::default());
     recovered.restore(&snapshot).unwrap();
     assert_eq!(recovered.generation().unwrap().state.document_count, 0);
-    let mut corrupt: TenantState = serde_json::from_slice(&snapshot).unwrap();
+    let mut corrupt: TenantState = TenantEngine::decode_snapshot_state(&snapshot).unwrap();
     let key = corrupt.active_staged_transactions.first().unwrap().clone();
     corrupt
         .staged_transactions
@@ -460,7 +460,7 @@ fn changed_limits_preserve_historic_outcomes_and_keep_active_snapshots_recoverab
         .uploaded_payload_bytes += 1;
     assert!(
         recovered
-            .restore(&serde_json::to_vec(&corrupt).unwrap())
+            .restore(&kasumi_engine::TenantEngine::encode_snapshot_state(&corrupt).unwrap())
             .is_err()
     );
     assert_eq!(recovered.snapshot().unwrap(), snapshot);
@@ -845,6 +845,85 @@ async fn coherent_lease_pages_cover_large_dependencies_and_scans_with_live_write
     db.close_snapshot_lease(&context(), &next.lease_id)
         .await
         .unwrap();
+    db.shutdown().await.unwrap();
+    audit.shutdown().await;
+}
+
+#[tokio::test]
+async fn small_lease_budget_shares_large_roots_and_expires_on_retained_version_pressure() {
+    let directory = tempfile::tempdir().unwrap();
+    let (db, audit) = open(&directory.path().join("lease-delta.redb")).await;
+    db.administer(
+        context(),
+        Operation::CreateCollection(definition("docs", CollectionWriteMode::Mutable)),
+    )
+    .await
+    .unwrap();
+    db.mutate(
+        context(),
+        MutationBatch {
+            idempotency_key: "large-root".into(),
+            read_set: vec![],
+            operations: vec![Mutation::Put {
+                collection: "docs".into(),
+                id: "large".into(),
+                expected: Precondition::Absent,
+                body: json!({"n":1,"body":"a".repeat(256 << 10)}),
+            }],
+        },
+    )
+    .await
+    .unwrap();
+    let mut limits = db.engine().generation().unwrap().state.limits.clone();
+    limits.atomic.max_snapshot_lease_bytes = 32 << 10;
+    db.administer(context(), Operation::SetLimits(limits))
+        .await
+        .unwrap();
+    let lease = db
+        .open_snapshot_lease(&context(), OpenSnapshotLease { ttl_ms: 60_000 })
+        .await
+        .unwrap();
+    let point = ReadSnapshotPage {
+        lease_id: lease.lease_id.clone(),
+        documents: vec![DocumentKey {
+            collection: "docs".into(),
+            id: "large".into(),
+        }],
+    };
+    assert!(
+        db.read_snapshot_page(&context(), point.clone())
+            .await
+            .is_ok()
+    );
+    db.mutate(
+        context(),
+        MutationBatch {
+            idempotency_key: "replace-root".into(),
+            read_set: vec![],
+            operations: vec![Mutation::Put {
+                collection: "docs".into(),
+                id: "large".into(),
+                expected: Precondition::Any,
+                body: json!({"n":1,"body":"b".repeat(256 << 10)}),
+            }],
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        db.read_snapshot_page(&context(), point)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::CursorExpired
+    );
+    assert_eq!(
+        db.engine().generation().unwrap().state.collections["docs"].documents["large"].body["body"]
+            .as_str()
+            .unwrap()
+            .as_bytes()[0],
+        b'b'
+    );
     db.shutdown().await.unwrap();
     audit.shutdown().await;
 }

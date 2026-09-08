@@ -1,12 +1,12 @@
 use anyhow::{Context, Result, ensure};
 use kasumi_raft::{
-    AppliedEntryContext, AppliedResponse, BackendSnapshot, RetiredSnapshotState,
-    StateMachineBackend,
+    AppliedEntryContext, AppliedResponse, RetiredSnapshotState, StateMachineBackend,
 };
 use kasumi_serving::*;
 use kasumi_store::{TenantStore, WriteOp};
 use kasumi_types::{Error, ErrorCode, RequestContext};
 use serde::{Deserialize, Serialize};
+use std::io::Read;
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{Arc, Mutex},
@@ -895,7 +895,7 @@ impl StateMachineBackend for Backend {
         };
         Ok(AppliedResponse::application(bytes))
     }
-    fn snapshot(&self) -> Result<BackendSnapshot> {
+    fn snapshot(&self, writer: &mut dyn std::io::Write) -> Result<Option<RetiredSnapshotState>> {
         let _lock = self
             .mutation
             .lock()
@@ -910,21 +910,23 @@ impl StateMachineBackend for Backend {
             }
             Ok(())
         })?;
-        let bytes = serde_json::to_vec(&Snapshot {
-            meta: self.meta()?,
-            records,
-        })?;
-        ensure!(
-            bytes.len() <= MAX_SNAPSHOT_BYTES,
-            "authority snapshot limit exceeded"
-        );
-        Ok(BackendSnapshot::application(bytes))
+        serde_json::to_writer(
+            writer,
+            &Snapshot {
+                meta: self.meta()?,
+                records,
+            },
+        )?;
+        Ok(None)
     }
-    fn validate_snapshot(&self, bytes: &[u8]) -> Result<Option<RetiredSnapshotState>> {
+    fn validate_snapshot(
+        &self,
+        bytes: &mut dyn std::io::Read,
+    ) -> Result<Option<RetiredSnapshotState>> {
         self.decode_snapshot(bytes)?;
         Ok(None)
     }
-    fn restore(&self, bytes: &[u8]) -> Result<()> {
+    fn restore(&self, bytes: &mut dyn std::io::Read) -> Result<()> {
         let _lock = self
             .mutation
             .lock()
@@ -951,12 +953,8 @@ impl StateMachineBackend for Backend {
     }
 }
 impl Backend {
-    fn decode_snapshot(&self, bytes: &[u8]) -> Result<Snapshot> {
-        ensure!(
-            bytes.len() <= MAX_SNAPSHOT_BYTES,
-            "authority snapshot byte limit exceeded"
-        );
-        let snapshot: Snapshot = serde_json::from_slice(bytes)?;
+    fn decode_snapshot(&self, bytes: &mut dyn std::io::Read) -> Result<Snapshot> {
+        let snapshot: Snapshot = serde_json::from_reader(bytes.take(MAX_SNAPSHOT_BYTES as u64))?;
         ensure!(
             snapshot.meta.installation == self.installation
                 && snapshot.meta.policy_epoch > 0

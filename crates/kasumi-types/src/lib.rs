@@ -167,9 +167,8 @@ impl Policy {
     }
 }
 
-/// Leave room for Raft/backup framing below their 2 GiB format limits.
-pub const MAX_TENANT_SNAPSHOT_BYTES: usize = (2 << 30) - (16 << 20);
-pub fn default_snapshot_bytes() -> usize {
+/// Default resource quota; the streaming format has no aggregate size ceiling.
+pub fn default_snapshot_bytes() -> u64 {
     3 << 29
 }
 
@@ -188,7 +187,7 @@ pub struct Limits {
     pub max_policy_grants: usize,
     pub max_logical_bytes: u64,
     #[serde(default = "default_snapshot_bytes")]
-    pub max_snapshot_bytes: usize,
+    pub max_snapshot_bytes: u64,
     pub max_receipts: usize,
     pub max_audit_records: usize,
     pub max_query_candidates: usize,
@@ -266,9 +265,9 @@ pub struct CollectionState {
     pub data_epoch: u64,
     #[serde(serialize_with = "serialize_resident_map")]
     // Leaf copy-on-write clones Arc handles, never unrelated JSON bodies.
-    pub documents: imbl::HashMap<String, std::sync::Arc<Document>>,
+    pub documents: imbl::OrdMap<String, std::sync::Arc<Document>>,
     #[serde(serialize_with = "serialize_resident_map")]
-    pub archived_documents: imbl::HashMap<String, ArchivedDocument>,
+    pub archived_documents: imbl::OrdMap<String, ArchivedDocument>,
     pub archived_document_bytes: usize,
 }
 
@@ -469,19 +468,19 @@ pub struct TenantState {
     pub limits: Limits,
     pub collections: BTreeMap<String, CollectionState>,
     #[serde(serialize_with = "serialize_resident_map")]
-    pub receipts: imbl::HashMap<String, StoredReceipt>,
+    pub receipts: imbl::OrdMap<String, StoredReceipt>,
     #[serde(serialize_with = "serialize_resident_map")]
-    pub staged_transactions: imbl::HashMap<String, StagedTransaction>,
+    pub staged_transactions: imbl::OrdMap<String, StagedTransaction>,
     pub active_staged_transactions: BTreeSet<String>,
     pub change_feed: ChangeFeedState,
     #[serde(serialize_with = "serialize_resident_map")]
-    pub history_archives: imbl::HashMap<String, RetainedHistoryArchive>,
+    pub history_archives: imbl::OrdMap<String, RetainedHistoryArchive>,
     pub history_archive_bytes: usize,
     #[serde(serialize_with = "serialize_resident_map")]
-    pub schema_activations: imbl::HashMap<String, StoredSchemaActivation>,
+    pub schema_activations: imbl::OrdMap<String, StoredSchemaActivation>,
     pub schema_activation_bytes: usize,
     #[serde(serialize_with = "serialize_resident_map")]
-    pub retirements: imbl::HashMap<String, StoredRetirement>,
+    pub retirements: imbl::OrdMap<String, StoredRetirement>,
     pub retirement_bytes: usize,
     pub audits: imbl::Vector<AuditEvent>,
 }
@@ -496,11 +495,10 @@ pub struct PendingRestore {
 /// Hash randomization must not change snapshot identity across replicas. Sort
 /// borrowed map entries while serializing, without cloning document bodies.
 fn serialize_resident_map<V: Serialize + Clone, S: serde::Serializer>(
-    map: &imbl::HashMap<String, V>,
+    map: &imbl::OrdMap<String, V>,
     serializer: S,
 ) -> std::result::Result<S::Ok, S::Error> {
-    let ordered: BTreeMap<_, _> = map.iter().collect();
-    ordered.serialize(serializer)
+    map.serialize(serializer)
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]

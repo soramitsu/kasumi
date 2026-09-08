@@ -1,4 +1,6 @@
-//! Persisted bootstrap and logical restore, separate from node-bound Raft snapshots.
+use kasumi_store::{EncryptedSpool, SnapshotImage};
+use std::io::{Read, Write};
+// Persisted bootstrap and logical restore, separate from node-bound Raft snapshots.
 use crate::{Database, SecurityAudit, TenantEngine};
 use kasumi_raft::{BasicNode, Config, RaftGroup, RaftTransport};
 use kasumi_store::{
@@ -18,7 +20,6 @@ pub use backup_restore::RestoreSource;
 
 const NS: &str = "engine.bootstrap";
 const CHUNK: usize = 4 << 20;
-const MAX_BOOTSTRAP: usize = 2 << 30;
 // Only bootstraps are serialized here, never data operations. A node owns its
 // redb file exclusively; startup must register each returned tenant once.
 static BOOTSTRAP_GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -251,7 +252,7 @@ pub async fn open_replicated(
                 bootstrap.initial_policy.clone(),
                 bootstrap.initial_limits.clone(),
             )?;
-            let bytes = engine.snapshot()?;
+            let bytes = engine.snapshot_image()?;
             persist_new(&stores, &bytes)?;
             bytes
         }
@@ -315,43 +316,47 @@ pub async fn initialize_replicated(
 #[serde(deny_unknown_fields)]
 struct Manifest {
     format: u32,
-    bytes: usize,
-    chunks: usize,
+    bytes: u64,
+    chunks: u64,
     digest: String,
 }
 
-fn load(store: &TenantStore) -> anyhow::Result<Option<Vec<u8>>> {
+fn load(store: &TenantStore) -> anyhow::Result<Option<SnapshotImage>> {
     let Some(bytes) = store.get(NS, b"manifest")? else {
         return Ok(None);
     };
     let manifest: Manifest = serde_json::from_slice(&bytes)?;
     anyhow::ensure!(
-        manifest.format == 1
-            && manifest.bytes <= MAX_BOOTSTRAP
-            && manifest.chunks == manifest.bytes.div_ceil(CHUNK),
+        manifest.format == 2
+            && manifest.bytes > 0
+            && manifest.chunks == manifest.bytes.div_ceil(CHUNK as u64),
         "invalid bootstrap manifest"
     );
-    let mut snapshot = Vec::with_capacity(manifest.bytes);
+    let mut spool = EncryptedSpool::new(manifest.bytes)?;
     for i in 0..manifest.chunks {
         let bytes = store
-            .get(NS, &(i as u64).to_be_bytes())?
+            .get(NS, &i.to_be_bytes())?
             .ok_or_else(|| anyhow::anyhow!("incomplete bootstrap"))?;
         anyhow::ensure!(
-            bytes.len() == (manifest.bytes - snapshot.len()).min(CHUNK),
+            bytes.len() == (manifest.bytes - spool.len()).min(CHUNK as u64) as usize,
             "invalid bootstrap chunk length"
         );
-        snapshot.extend(bytes);
+        spool.write_all(&bytes)?;
     }
+    let snapshot = SnapshotImage::freeze(spool)?;
     anyhow::ensure!(
-        hex::encode(Sha256::digest(&snapshot)) == manifest.digest,
+        snapshot.sha256() == manifest.digest,
         "bootstrap digest mismatch"
     );
     Ok(Some(snapshot))
 }
 
-fn validate_bootstrap_control(stores: &TenantStorageSet, bytes: &[u8]) -> anyhow::Result<()> {
+fn validate_bootstrap_control(
+    stores: &TenantStorageSet,
+    bytes: &SnapshotImage,
+) -> anyhow::Result<()> {
     stores.check_access()?;
-    let expected = serde_json::to_vec(&hex::encode(Sha256::digest(bytes)))?;
+    let expected = serde_json::to_vec(bytes.sha256())?;
     anyhow::ensure!(
         stores
             .custody()
@@ -364,9 +369,8 @@ fn validate_bootstrap_control(stores: &TenantStorageSet, bytes: &[u8]) -> anyhow
     Ok(())
 }
 
-fn persist_new(stores: &TenantStorageSet, bytes: &[u8]) -> anyhow::Result<()> {
+fn persist_new(stores: &TenantStorageSet, bytes: &SnapshotImage) -> anyhow::Result<()> {
     let store = stores.application();
-    anyhow::ensure!(bytes.len() <= MAX_BOOTSTRAP, "bootstrap exceeds size limit");
     anyhow::ensure!(
         store.get(NS, b"manifest")?.is_none()
             && stores
@@ -376,16 +380,19 @@ fn persist_new(stores: &TenantStorageSet, bytes: &[u8]) -> anyhow::Result<()> {
                 .is_none(),
         "target tenant already initialized; restore never overwrites it"
     );
-    for (i, chunk) in bytes.chunks(CHUNK).enumerate() {
-        store.write_batch(&[WriteOp::put(NS, (i as u64).to_be_bytes(), chunk)])?;
+    let mut reader = bytes.reader();
+    let chunks = bytes.len().div_ceil(CHUNK as u64);
+    for i in 0..chunks {
+        let mut chunk = vec![0; (bytes.len() - i * CHUNK as u64).min(CHUNK as u64) as usize];
+        reader.read_exact(&mut chunk)?;
+        store.write_batch(&[WriteOp::put(NS, i.to_be_bytes(), chunk)])?;
     }
     let manifest = Manifest {
-        format: 1,
+        format: 2,
         bytes: bytes.len(),
-        chunks: bytes.len().div_ceil(CHUNK),
-        digest: hex::encode(Sha256::digest(bytes)),
+        chunks,
+        digest: bytes.sha256().to_owned(),
     };
-    // Only this durable manifest makes the bootstrap eligible to start Raft.
     let encoded = serde_json::to_vec(&manifest)?;
     stores.write_batch(
         &[WriteOp::put(NS, b"manifest", encoded)],
@@ -454,13 +461,13 @@ async fn open_local_inner(
                 initial_policy,
                 initial_limits,
             )?;
-            let bytes = engine.snapshot()?;
+            let bytes = engine.snapshot_image()?;
             persist_new(&stores, &bytes)?;
             bytes
         }
     };
     if let Some(expected) = incarnation {
-        let state: TenantState = serde_json::from_slice(&bytes)?;
+        let state = crate::snapshot_codec::read(&mut bytes.reader())?;
         anyhow::ensure!(
             state.incarnation == expected.to_string(),
             "local incarnation differs from installed identity"
@@ -471,7 +478,7 @@ async fn open_local_inner(
 
 async fn start(
     stores: Arc<TenantStorageSet>,
-    bytes: &[u8],
+    bytes: &SnapshotImage,
     security_audit: Arc<SecurityAudit>,
 ) -> anyhow::Result<Arc<Database>> {
     start_with_optional_admission(stores, bytes, None, security_audit).await
@@ -479,7 +486,7 @@ async fn start(
 
 async fn start_with_optional_admission(
     stores: Arc<TenantStorageSet>,
-    bytes: &[u8],
+    bytes: &SnapshotImage,
     admission: Option<Arc<crate::admission::NodeAdmission>>,
     security_audit: Arc<SecurityAudit>,
 ) -> anyhow::Result<Arc<Database>> {
@@ -690,11 +697,14 @@ pub fn recovery_workspace_bytes(stores: &TenantStorageSet) -> anyhow::Result<u64
         .ok_or_else(|| anyhow::anyhow!("bootstrap manifest absent"))?;
     let manifest: Manifest = serde_json::from_slice(&bytes)?;
     anyhow::ensure!(
-        manifest.bytes <= MAX_BOOTSTRAP,
-        "bootstrap byte budget exceeded"
+        manifest.format == 2
+            && manifest.bytes > 0
+            && manifest.chunks == manifest.bytes.div_ceil(CHUNK as u64),
+        "invalid bootstrap resource manifest"
     );
     let snapshot = kasumi_raft::recovery_snapshot_bytes(stores)?;
-    Ok((manifest.bytes as u64)
+    Ok(manifest
+        .bytes
         .saturating_add(snapshot)
         .saturating_mul(4)
         .saturating_add(4 << 20))

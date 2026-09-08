@@ -12,7 +12,7 @@ fn context() -> RequestContext {
         request_id: "request".into(),
     }
 }
-fn engine(limit: usize) -> TenantEngine {
+fn engine(limit: u64) -> TenantEngine {
     TenantEngine::new(
         "tenant".into(),
         "incarnation".into(),
@@ -71,7 +71,7 @@ fn apply(
         .unwrap();
     let snapshot = db.snapshot().unwrap();
     assert_eq!(db.snapshot_bytes().unwrap(), snapshot.len());
-    assert!(snapshot.len() <= db.generation().unwrap().state.limits.max_snapshot_bytes);
+    assert!(snapshot.len() as u64 <= db.generation().unwrap().state.limits.max_snapshot_bytes);
     result
 }
 
@@ -211,7 +211,7 @@ fn replay_with_only_rejection_audit_headroom_keeps_the_original_receipt() {
     // A committed replay audit is exactly one byte larger than a rejection
     // audit. Account for changing the serialized quota's own decimal digits.
     loop {
-        let limit = serde_json::to_vec(&after).unwrap().len() + 19 - 1;
+        let limit = TenantEngine::encode_snapshot_state(&after).unwrap().len() as u64 + 19 - 1;
         if after.limits.max_snapshot_bytes == limit {
             break;
         }
@@ -219,7 +219,8 @@ fn replay_with_only_rejection_audit_headroom_keeps_the_original_receipt() {
     }
     before.limits.max_snapshot_bytes = after.limits.max_snapshot_bytes;
     let db = engine(16 << 10);
-    db.restore(&serde_json::to_vec(&before).unwrap()).unwrap();
+    db.restore(&TenantEngine::encode_snapshot_state(&before).unwrap())
+        .unwrap();
     assert_eq!(
         apply(&db, 3, 3, batch("original", "id", 3000))
             .unwrap_err()
@@ -242,7 +243,10 @@ fn recovery_and_limit_changes_cannot_admit_state_above_snapshot_format_or_tenant
     apply(&db, 2, 2, batch("large", "id", 5000)).unwrap();
     let mut state = db.generation().unwrap().state.clone();
     state.limits.max_snapshot_bytes = 4096;
-    assert!(db.restore(&serde_json::to_vec(&state).unwrap()).is_err());
+    assert!(
+        db.restore(&kasumi_engine::TenantEngine::encode_snapshot_state(&state).unwrap())
+            .is_err()
+    );
     let outcome = apply(&db, 3, 3, Operation::SetLimits(state.limits));
     assert_eq!(outcome.unwrap_err().code, ErrorCode::QuotaExceeded);
     assert_eq!(
@@ -250,7 +254,7 @@ fn recovery_and_limit_changes_cannot_admit_state_above_snapshot_format_or_tenant
         16 << 10
     );
     let mut invalid = db.generation().unwrap().state.limits.clone();
-    invalid.max_snapshot_bytes = MAX_TENANT_SNAPSHOT_BYTES + 1;
+    invalid.max_snapshot_bytes = 0;
     assert_eq!(
         apply(&db, 4, 4, Operation::SetLimits(invalid))
             .unwrap_err()
@@ -259,7 +263,10 @@ fn recovery_and_limit_changes_cannot_admit_state_above_snapshot_format_or_tenant
     );
     let mut state = db.generation().unwrap().state.clone();
     state.limits.max_document_bytes = 1024;
-    assert!(db.restore(&serde_json::to_vec(&state).unwrap()).is_err());
+    assert!(
+        db.restore(&kasumi_engine::TenantEngine::encode_snapshot_state(&state).unwrap())
+            .is_err()
+    );
     assert_eq!(
         apply(&db, 5, 5, Operation::SetLimits(state.limits))
             .unwrap_err()

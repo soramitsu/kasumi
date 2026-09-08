@@ -244,12 +244,17 @@ async fn actual_stopped_retirement_snapshot_has_no_retired_custody_marker() {
         resolution,
         kasumi_engine::VerifiedRetirementResolution::Stopped(_)
     ));
-    let captured = StateMachineBackend::snapshot(source.db.engine().as_ref()).unwrap();
-    assert!(captured.retirement.is_none());
+    let mut captured = Vec::new();
+    let retirement =
+        StateMachineBackend::snapshot(source.db.engine().as_ref(), &mut captured).unwrap();
+    assert!(retirement.is_none());
     assert!(
-        StateMachineBackend::validate_snapshot(source.db.engine().as_ref(), &captured.data)
-            .unwrap()
-            .is_none()
+        StateMachineBackend::validate_snapshot(
+            source.db.engine().as_ref(),
+            &mut captured.as_slice()
+        )
+        .unwrap()
+        .is_none()
     );
     source.close().await;
 }

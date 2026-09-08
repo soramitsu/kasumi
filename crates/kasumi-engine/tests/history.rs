@@ -630,7 +630,7 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
     let full: serde_json::Value = serde_json::from_slice(&full.snapshot).unwrap();
     assert_eq!(full["kind"], "full_database");
     assert!(
-        full["chunks"].as_array().unwrap().len() >= 2,
+        full["chunk_count"].as_u64().unwrap() >= 2,
         "exercise real multiple-chunk resident export"
     );
     db.shutdown().await.unwrap();

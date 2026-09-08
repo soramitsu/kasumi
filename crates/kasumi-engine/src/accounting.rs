@@ -1,18 +1,22 @@
-//! Exact canonical JSON length, updated from changed resident entries. Braces
-//! live in the fixed frame; these counters contain map/array contents only.
+//! Exact canonical semantic-record sizes. Only changed document/receipt/stage
+//! records are remeasured during ordinary writes; metadata stays bounded.
+use crate::snapshot_codec::{Record, metadata};
 use kasumi_types::*;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Default)]
 pub(crate) struct SnapshotAccounting {
-    collection_headers: usize,
     documents: usize,
+    archived: usize,
     receipts: usize,
     audits: usize,
     staged: usize,
+    feed: usize,
+    archives: usize,
+    activations: usize,
+    retirements: usize,
 }
-
 pub(crate) fn encoded_len(value: &impl Serialize) -> Result<usize> {
     struct Counter(usize);
     impl std::io::Write for Counter {
@@ -32,15 +36,16 @@ pub(crate) fn encoded_len(value: &impl Serialize) -> Result<usize> {
         .map_err(|_| Error::new(ErrorCode::InvalidArgument, "JSON encoding failed"))?;
     Ok(counter.0)
 }
-fn commas(count: usize) -> usize {
-    count.saturating_sub(1)
-}
-fn entry(key: &str, value: &impl Serialize) -> Result<usize> {
-    let value_bytes = encoded_len(value)?;
-    encoded_len(&key)?
-        .checked_add(1)
-        .and_then(|n| n.checked_add(value_bytes))
-        .ok_or_else(|| Error::new(ErrorCode::Corruption, "snapshot accounting overflow"))
+fn record(record: &Record) -> Result<usize> {
+    let size = encoded_len(record)?;
+    if size > (32 << 20) {
+        return Err(Error::new(
+            ErrorCode::QuotaExceeded,
+            "snapshot record exceeds byte limit",
+        ));
+    }
+    size.checked_add(8)
+        .ok_or_else(|| Error::new(ErrorCode::Corruption, "snapshot record overflow"))
 }
 fn change(total: &mut usize, old: usize, new: usize) -> Result<()> {
     *total = total
@@ -49,97 +54,108 @@ fn change(total: &mut usize, old: usize, new: usize) -> Result<()> {
         .ok_or_else(|| Error::new(ErrorCode::Corruption, "snapshot accounting mismatch"))?;
     Ok(())
 }
-fn header(key: &str, collection: &CollectionState) -> Result<usize> {
-    #[derive(Serialize)]
-    struct EmptyCollection<'a> {
-        definition: &'a CollectionDefinition,
-        data_epoch: u64,
-        documents: BTreeMap<(), ()>,
-        archived_documents: BTreeMap<(), ()>,
-        archived_document_bytes: usize,
+fn stage(key: &str, value: &StagedTransaction) -> Result<usize> {
+    let mut header = value.clone();
+    header.chunks.clear();
+    let mut size = record(&Record::Stage(key.into(), header))?;
+    for (i, chunk) in &value.chunks {
+        change(
+            &mut size,
+            0,
+            record(&Record::StageChunk(key.into(), *i, chunk.clone()))?,
+        )?;
     }
-    entry(
-        key,
-        &EmptyCollection {
-            definition: &collection.definition,
-            data_epoch: collection.data_epoch,
-            documents: BTreeMap::new(),
-            archived_documents: BTreeMap::new(),
-            archived_document_bytes: collection.archived_document_bytes,
-        },
-    )?
-    .checked_add(collection.archived_document_bytes)
-    .and_then(|bytes| bytes.checked_add(commas(collection.archived_documents.len())))
-    .ok_or_else(|| {
-        Error::new(
-            ErrorCode::Corruption,
-            "archive reference accounting overflow",
-        )
-    })
+    Ok(size)
+}
+fn feed(key: u64, value: &std::sync::Arc<ChangeCommit>) -> Result<usize> {
+    let mut header = value.as_ref().clone();
+    header.records.clear();
+    let mut size = record(&Record::Change(key, std::sync::Arc::new(header)))?;
+    for (i, value) in value.records.iter().enumerate() {
+        change(
+            &mut size,
+            0,
+            record(&Record::ChangeItem(key, i as u64, value.clone()))?,
+        )?;
+    }
+    Ok(size)
 }
 
-fn staged_entry(key: &str, stage: &StagedTransaction) -> Result<usize> {
-    #[derive(Serialize)]
-    struct Header<'a> {
-        principal: &'a str,
-        transaction_id: &'a str,
-        manifest_digest: &'a str,
-        manifest: &'a StagedManifest,
-        chunks: BTreeMap<(), ()>,
-        stored_chunk_bytes: usize,
-        uploaded_payload_bytes: usize,
-        uploaded_operations: usize,
-        uploaded_read_assertions: usize,
-        expires_at_ms: Option<u64>,
-        ttl_ms: u64,
-        outcome: &'a StagedOutcome,
-    }
-    let header = Header {
-        principal: &stage.principal,
-        transaction_id: &stage.transaction_id,
-        manifest_digest: &stage.manifest_digest,
-        manifest: &stage.manifest,
-        chunks: BTreeMap::new(),
-        stored_chunk_bytes: stage.stored_chunk_bytes,
-        uploaded_payload_bytes: stage.uploaded_payload_bytes,
-        uploaded_operations: stage.uploaded_operations,
-        uploaded_read_assertions: stage.uploaded_read_assertions,
-        expires_at_ms: stage.expires_at_ms,
-        ttl_ms: stage.ttl_ms,
-        outcome: &stage.outcome,
-    };
-    entry(key, &header)?
-        .checked_add(stage.stored_chunk_bytes)
-        .and_then(|bytes| bytes.checked_add(commas(stage.chunks.len())))
-        .ok_or_else(|| Error::new(ErrorCode::Corruption, "staged accounting overflow"))
+fn optional<T>(value: Option<&T>, size: impl FnOnce(&T) -> Result<usize>) -> Result<usize> {
+    value.map(size).transpose().map(|size| size.unwrap_or(0))
 }
-
 impl SnapshotAccounting {
     pub fn rebuild(state: &TenantState) -> Result<Self> {
-        let mut result = Self {
-            collection_headers: commas(state.collections.len()),
-            ..Self::default()
-        };
-        for (key, collection) in &state.collections {
-            change(&mut result.collection_headers, 0, header(key, collection)?)?;
-            change(&mut result.documents, 0, commas(collection.documents.len()))?;
-            for (id, document) in &collection.documents {
-                change(&mut result.documents, 0, entry(id, document)?)?;
+        let mut result = Self::default();
+        for (name, collection) in &state.collections {
+            for document in collection.documents.values() {
+                change(
+                    &mut result.documents,
+                    0,
+                    record(&Record::Document(name.clone(), document.clone()))?,
+                )?;
+            }
+            for (id, reference) in &collection.archived_documents {
+                change(
+                    &mut result.archived,
+                    0,
+                    record(&Record::Archived(
+                        name.clone(),
+                        id.clone(),
+                        reference.clone(),
+                    ))?,
+                )?;
             }
         }
-        result.receipts = commas(state.receipts.len());
-        for (key, receipt) in &state.receipts {
-            change(&mut result.receipts, 0, entry(key, receipt)?)?;
+        for (key, value) in &state.receipts {
+            change(
+                &mut result.receipts,
+                0,
+                record(&Record::Receipt(key.clone(), value.clone()))?,
+            )?;
         }
-        result.audits = commas(state.audits.len());
-        for audit in &state.audits {
-            change(&mut result.audits, 0, encoded_len(audit)?)?;
+        for (i, event) in state.audits.iter().enumerate() {
+            change(
+                &mut result.audits,
+                0,
+                record(&Record::Audit(i as u64, event.clone()))?,
+            )?;
         }
-        result.staged = commas(state.staged_transactions.len());
-        for (key, stage) in &state.staged_transactions {
-            change(&mut result.staged, 0, staged_entry(key, stage)?)?;
+        for (key, value) in &state.staged_transactions {
+            change(&mut result.staged, 0, stage(key, value)?)?;
         }
+        for (i, commit) in &state.change_feed.commits {
+            change(&mut result.feed, 0, feed(*i, commit)?)?;
+        }
+        result.other(state)?;
         Ok(result)
+    }
+    fn other(&mut self, state: &TenantState) -> Result<()> {
+        self.archives = 0;
+        self.activations = 0;
+        self.retirements = 0;
+        for (key, value) in &state.history_archives {
+            change(
+                &mut self.archives,
+                0,
+                record(&Record::Archive(key.clone(), value.clone()))?,
+            )?;
+        }
+        for (key, value) in &state.schema_activations {
+            change(
+                &mut self.activations,
+                0,
+                record(&Record::Activation(key.clone(), value.clone()))?,
+            )?;
+        }
+        for (key, value) in &state.retirements {
+            change(
+                &mut self.retirements,
+                0,
+                record(&Record::Retirement(key.clone(), Box::new(value.clone())))?,
+            )?;
+        }
+        Ok(())
     }
     pub fn updated(
         &self,
@@ -150,58 +166,6 @@ impl SnapshotAccounting {
         changed_stages: &BTreeSet<String>,
     ) -> Result<Self> {
         let mut result = self.clone();
-        change(
-            &mut result.staged,
-            commas(previous.staged_transactions.len()),
-            commas(next.staged_transactions.len()),
-        )?;
-        for key in changed_stages {
-            let old = previous
-                .staged_transactions
-                .get(key)
-                .map(|stage| staged_entry(key, stage))
-                .transpose()?
-                .unwrap_or(0);
-            let new = next
-                .staged_transactions
-                .get(key)
-                .map(|stage| staged_entry(key, stage))
-                .transpose()?
-                .unwrap_or(0);
-            change(&mut result.staged, old, new)?;
-        }
-        change(
-            &mut result.collection_headers,
-            commas(previous.collections.len()),
-            commas(next.collections.len()),
-        )?;
-        // Definitions have their own bounded metadata quota. Pointer equality is
-        // unavailable for this small BTreeMap; compare only serialized definitions
-        // when their operation changed the policy/schema epoch or collection count.
-        let metadata_changed = previous.policy_epoch != next.policy_epoch
-            || previous.collections.len() != next.collections.len();
-        if metadata_changed {
-            let names: BTreeSet<_> = previous
-                .collections
-                .keys()
-                .chain(next.collections.keys())
-                .collect();
-            for name in names {
-                let old = previous
-                    .collections
-                    .get(name)
-                    .map(|c| header(name, c))
-                    .transpose()?
-                    .unwrap_or(0);
-                let new = next
-                    .collections
-                    .get(name)
-                    .map(|c| header(name, c))
-                    .transpose()?
-                    .unwrap_or(0);
-                change(&mut result.collection_headers, old, new)?;
-            }
-        }
         for (name, ids) in changed_documents {
             let old = previous
                 .collections
@@ -211,53 +175,43 @@ impl SnapshotAccounting {
                 .collections
                 .get(name)
                 .ok_or_else(|| Error::new(ErrorCode::Corruption, "next collection missing"))?;
-            if !metadata_changed {
-                change(
-                    &mut result.collection_headers,
-                    header(name, old)?,
-                    header(name, new)?,
-                )?;
-            }
-            change(
-                &mut result.documents,
-                commas(old.documents.len()),
-                commas(new.documents.len()),
-            )?;
             for id in ids {
                 change(
                     &mut result.documents,
-                    old.documents
-                        .get(id)
-                        .map(|d| entry(id, d))
-                        .transpose()?
-                        .unwrap_or(0),
-                    new.documents
-                        .get(id)
-                        .map(|d| entry(id, d))
-                        .transpose()?
-                        .unwrap_or(0),
+                    optional(old.documents.get(id), |d| {
+                        record(&Record::Document(name.clone(), d.clone()))
+                    })?,
+                    optional(new.documents.get(id), |d| {
+                        record(&Record::Document(name.clone(), d.clone()))
+                    })?,
+                )?;
+                change(
+                    &mut result.archived,
+                    optional(old.archived_documents.get(id), |d| {
+                        record(&Record::Archived(name.clone(), id.clone(), d.clone()))
+                    })?,
+                    optional(new.archived_documents.get(id), |d| {
+                        record(&Record::Archived(name.clone(), id.clone(), d.clone()))
+                    })?,
                 )?;
             }
         }
-        change(
-            &mut result.receipts,
-            commas(previous.receipts.len()),
-            commas(next.receipts.len()),
-        )?;
         for key in changed_receipts {
             change(
                 &mut result.receipts,
-                previous
-                    .receipts
-                    .get(key)
-                    .map(|r| entry(key, r))
-                    .transpose()?
-                    .unwrap_or(0),
-                next.receipts
-                    .get(key)
-                    .map(|r| entry(key, r))
-                    .transpose()?
-                    .unwrap_or(0),
+                optional(previous.receipts.get(key), |r| {
+                    record(&Record::Receipt(key.clone(), r.clone()))
+                })?,
+                optional(next.receipts.get(key), |r| {
+                    record(&Record::Receipt(key.clone(), r.clone()))
+                })?,
+            )?;
+        }
+        for key in changed_stages {
+            change(
+                &mut result.staged,
+                optional(previous.staged_transactions.get(key), |s| stage(key, s))?,
+                optional(next.staged_transactions.get(key), |s| stage(key, s))?,
             )?;
         }
         if next.audits.len() < previous.audits.len() {
@@ -266,120 +220,112 @@ impl SnapshotAccounting {
                 "audit removal requires explicit accounting",
             ));
         }
-        change(
-            &mut result.audits,
-            commas(previous.audits.len()),
-            commas(next.audits.len()),
-        )?;
-        for index in previous.audits.len()..next.audits.len() {
-            change(&mut result.audits, 0, encoded_len(&next.audits[index])?)?;
+        for i in previous.audits.len()..next.audits.len() {
+            change(
+                &mut result.audits,
+                0,
+                record(&Record::Audit(i as u64, next.audits[i].clone()))?,
+            )?;
+        }
+        if !previous
+            .change_feed
+            .commits
+            .ptr_eq(&next.change_feed.commits)
+        {
+            let first = next.change_feed.commits.get_min().map(|(i, _)| *i);
+            for (i, commit) in previous
+                .change_feed
+                .commits
+                .iter()
+                .take_while(|(i, _)| first.is_none_or(|first| **i < first))
+            {
+                change(&mut result.feed, feed(*i, commit)?, 0)?;
+            }
+            let last = previous.change_feed.commits.get_max().map(|(i, _)| *i);
+            for (i, commit) in next
+                .change_feed
+                .commits
+                .iter()
+                .rev()
+                .take_while(|(i, _)| last.is_none_or(|last| **i > last))
+            {
+                change(&mut result.feed, 0, feed(*i, commit)?)?;
+            }
+        }
+        if !previous.history_archives.ptr_eq(&next.history_archives)
+            || !previous.schema_activations.ptr_eq(&next.schema_activations)
+            || !previous.retirements.ptr_eq(&next.retirements)
+        {
+            result.other(next)?;
         }
         Ok(result)
     }
     pub fn bytes(&self, state: &TenantState) -> Result<usize> {
-        #[derive(Serialize)]
-        struct FeedFrame {
-            next_sequence: u64,
-            commits: BTreeMap<(), ()>,
-            event_count: usize,
-            encoded_commit_bytes: usize,
+        // Eight-byte format prefix plus the 56-byte terminal record.
+        let mut total = 64usize;
+        change(
+            &mut total,
+            0,
+            record(&Record::Header(Box::new(metadata(state))))?,
+        )?;
+        for (i, link) in state.restore_lineage.iter().enumerate() {
+            change(
+                &mut total,
+                0,
+                record(&Record::Lineage(i as u64, link.clone()))?,
+            )?;
         }
-        #[derive(Serialize)]
-        struct Frame<'a> {
-            tenant: &'a str,
-            incarnation: &'a str,
-            revision: u64,
-            revision_base: u64,
-            policy_epoch: u64,
-            schema_epoch: u64,
-            suspended: bool,
-            retired: bool,
-            pending_restore: &'a Option<PendingRestore>,
-            restored_from: &'a Option<FullBackupCheckpoint>,
-            restore_lineage: &'a Vec<RestoreLineageLink>,
-            lifecycle_control: &'a Option<LifecycleControlState>,
-            document_count: u64,
-            logical_bytes: u64,
-            policy: &'a Policy,
-            limits: &'a Limits,
-            collections: BTreeMap<(), ()>,
-            receipts: BTreeMap<(), ()>,
-            staged_transactions: BTreeMap<(), ()>,
-            active_staged_transactions: &'a BTreeSet<String>,
-            change_feed: FeedFrame,
-            history_archives: BTreeMap<(), ()>,
-            history_archive_bytes: usize,
-            schema_activations: BTreeMap<(), ()>,
-            schema_activation_bytes: usize,
-            retirements: BTreeMap<(), ()>,
-            retirement_bytes: usize,
-            audits: Vec<()>,
+        for (name, collection) in &state.collections {
+            let header = CollectionState {
+                definition: collection.definition.clone(),
+                data_epoch: collection.data_epoch,
+                documents: Default::default(),
+                archived_documents: Default::default(),
+                archived_document_bytes: collection.archived_document_bytes,
+            };
+            change(
+                &mut total,
+                0,
+                record(&Record::Collection(name.clone(), header))?,
+            )?;
         }
-        let frame = Frame {
-            tenant: &state.tenant,
-            incarnation: &state.incarnation,
-            revision: state.revision,
-            revision_base: state.revision_base,
-            policy_epoch: state.policy_epoch,
-            schema_epoch: state.schema_epoch,
-            suspended: state.suspended,
-            retired: state.retired,
-            pending_restore: &state.pending_restore,
-            restored_from: &state.restored_from,
-            restore_lineage: &state.restore_lineage,
-            lifecycle_control: &state.lifecycle_control,
-            document_count: state.document_count,
-            logical_bytes: state.logical_bytes,
-            policy: &state.policy,
-            limits: &state.limits,
-            collections: BTreeMap::new(),
-            receipts: BTreeMap::new(),
-            staged_transactions: BTreeMap::new(),
-            active_staged_transactions: &state.active_staged_transactions,
-            change_feed: FeedFrame {
-                next_sequence: state.change_feed.next_sequence,
-                commits: BTreeMap::new(),
-                event_count: state.change_feed.event_count,
-                encoded_commit_bytes: state.change_feed.encoded_commit_bytes,
-            },
-            history_archives: BTreeMap::new(),
-            history_archive_bytes: state.history_archive_bytes,
-            schema_activations: BTreeMap::new(),
-            schema_activation_bytes: state.schema_activation_bytes,
-            retirements: BTreeMap::new(),
-            retirement_bytes: state.retirement_bytes,
-            audits: Vec::new(),
-        };
-        [
-            self.collection_headers,
+        for key in &state.active_staged_transactions {
+            change(&mut total, 0, record(&Record::ActiveStage(key.clone()))?)?;
+        }
+        if let Some(control) = &state.lifecycle_control {
+            for (id, intent) in &control.intents {
+                change(&mut total, 0, record(&Record::Intent(*id, intent.clone()))?)?;
+            }
+            for (id, value) in &control.changes {
+                change(
+                    &mut total,
+                    0,
+                    record(&Record::ControlChange(*id, value.clone()))?,
+                )?;
+            }
+        }
+        for size in [
             self.documents,
+            self.archived,
             self.receipts,
             self.audits,
             self.staged,
-            state.change_feed.encoded_commit_bytes,
-            commas(state.change_feed.commits.len()),
-            state.history_archive_bytes,
-            state.schema_activation_bytes,
-            state.retirement_bytes,
-            commas(state.retirements.len()),
-            commas(state.schema_activations.len()),
-            commas(state.history_archives.len()),
-        ]
-        .into_iter()
-        .try_fold(encoded_len(&frame)?, |n, v| {
-            n.checked_add(v)
-                .ok_or_else(|| Error::new(ErrorCode::Corruption, "snapshot accounting overflow"))
-        })
+            self.feed,
+            self.archives,
+            self.activations,
+            self.retirements,
+        ] {
+            change(&mut total, 0, size)?;
+        }
+        Ok(total)
     }
     pub fn fits(&self, state: &TenantState) -> Result<bool> {
-        // Even a rejected command advances its revision. Reserve all remaining
-        // decimal digits so a full tenant never violates its budget on rejection.
         let headroom = (20 - state.revision.to_string().len()).saturating_add(
             state
                 .active_staged_transactions
                 .len()
                 .saturating_mul(STAGED_OUTCOME_HEADROOM),
         );
-        Ok(self.bytes(state)?.saturating_add(headroom) <= state.limits.max_snapshot_bytes)
+        Ok((self.bytes(state)?.saturating_add(headroom) as u64) <= state.limits.max_snapshot_bytes)
     }
 }

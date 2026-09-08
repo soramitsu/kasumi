@@ -471,7 +471,7 @@ async fn exhausted_seed_completion_budget_cannot_promote_a_committed_candidate()
     let (stores, _, _, mut log) = fixture(disk).await?;
     let (command, prior) = seed()?;
     let mut source = prior.source().clone();
-    source.max_snapshot_bytes = source.snapshot_bytes + 100;
+    source.max_snapshot_bytes = source.snapshot_bytes as u64 + 100;
     let seed = RetirementLogSeed::prepare(&command, source)?;
     assert_eq!(
         seed.reserve_success_capacity().unwrap_err().code,

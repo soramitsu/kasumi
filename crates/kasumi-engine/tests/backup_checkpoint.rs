@@ -294,7 +294,15 @@ async fn missing_corrupt_resident_or_cold_dependency_and_history_subset_never_yi
         .await
         .unwrap();
     let value: serde_json::Value = serde_json::from_slice(&contents.snapshot).unwrap();
-    let resident = value["chunks"][0]["object_id"].as_str().unwrap();
+    let page_id = uuid::Uuid::parse_str(value["last_page"]["object_id"].as_str().unwrap()).unwrap();
+    let encrypted_page = fixture.destination.get(page_id, 8 << 20).await.unwrap();
+    let page = fixture
+        .store
+        .decrypt_backup_object(&encrypted_page, page_id, 4 << 20)
+        .await
+        .unwrap();
+    let page: serde_json::Value = serde_json::from_slice(&page.snapshot).unwrap();
+    let resident = page["chunks"][0]["object_id"].as_str().unwrap();
     for object in [resident, archive.manifest.chunks[0].object_id.as_str()] {
         let path = fixture
             .directory

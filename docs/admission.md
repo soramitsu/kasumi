@@ -61,16 +61,16 @@ concurrent tenant groups, and the embedding application's own allocations.
 
 `Limits.max_snapshot_bytes` separately bounds the exact canonical serialized
 tenant state, including document envelopes, collection/schema metadata, receipts,
-audit records, policy and limits. Its default is 1.5 GiB; its ceiling is 2 GiB
-minus 16 MiB for format framing. A small revision-width reserve lets rejected
+audit records, policy and limits. Its default is 1.5 GiB; the quota is a checked
+64-bit resource setting without a fixed aggregate format ceiling. A small revision-width reserve lets rejected
 commands advance without exceeding that quota. Cached counters update only
 changed entries and rebuild during recovery; snapshot output is checked against
 the exact count. Oversized effects are rejected before index materialization.
 A rejected receipt and audit are retained when they fit; exhausted required audit
 storage returns `AUDIT_UNAVAILABLE` with no document effects.
 
-The backup plaintext cap is 2 GiB, and backup destinations must also allow bundle
-framing and the authenticated key manifest. Restore adds incarnation/pending
+Aggregate backups use bounded chunks and paged manifests. Each encrypted object
+has a 32 MiB plaintext cap; destinations also allow authenticated bundle framing. Restore adds incarnation/pending
 metadata and a completion audit. Keep headroom for these records: if the new
 identity metadata cannot fit the tenant quota, preparation fails before publishing
 a bootstrap. Increase the source quota before making that backup. If completion

@@ -43,9 +43,11 @@ UUID with `id()` before restoring into a new suspended database incarnation.
 no-clobber persistence, and parent-directory fsync. `S3BackupDestination` uses
 TLS 1.3, SigV4 signed payloads and session credentials, signed If-None-Match for
 create-only publication, bounded GET bodies, and no redirects. Callers must gate
-result release again after awaiting either destination. Backup payloads currently
-materialize in memory and have a 2 GiB cap (`MAX_BACKUP_SNAPSHOT_BYTES`); individual
-store records have a 32 MiB cap and transaction batches a 64 MiB cap.
+result release again after awaiting either destination. Individual backup objects have a 32 MiB plaintext cap (`MAX_BACKUP_OBJECT_BYTES`);
+aggregate backups use paged manifests and bounded chunks without a 2 GiB format
+ceiling. `EncryptedSpool` and `SnapshotImage` provide encrypted scratch storage
+and immutable streaming readers. Store records have a 32 MiB cap and transaction
+batches a 64 MiB cap. See [streaming snapshots](../../docs/streaming-snapshots.md).
 
 ## Verification
 

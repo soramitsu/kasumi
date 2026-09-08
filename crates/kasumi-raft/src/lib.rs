@@ -12,6 +12,7 @@ mod lifetime;
 mod network;
 mod quorum;
 mod snapshot_buffer;
+mod snapshot_codec;
 mod snapshot_custody;
 mod snapshot_state;
 mod storage;
@@ -31,7 +32,7 @@ pub use network::{
 };
 pub use openraft::{BasicNode, Config, LogId, SnapshotPolicy};
 pub use snapshot_buffer::SnapshotBuffer;
-pub use snapshot_state::{BackendSnapshot, RetiredSnapshotState};
+pub use snapshot_state::RetiredSnapshotState;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     sync::{
@@ -50,7 +51,7 @@ pub struct RaftLimits {
 impl Default for RaftLimits {
     fn default() -> Self {
         Self {
-            max_snapshot_bytes: 2 * 1024 * 1024 * 1024,
+            max_snapshot_bytes: 64 << 30,
         }
     }
 }
@@ -87,12 +88,15 @@ impl AppliedResponse {
 /// its returned bytes. `restore` must validate before atomically replacing state.
 pub trait StateMachineBackend: Send + Sync + 'static {
     fn apply(&self, position: &AppliedEntryContext, command: &[u8]) -> Result<AppliedResponse>;
-    fn snapshot(&self) -> Result<BackendSnapshot>;
+    fn snapshot(&self, writer: &mut dyn std::io::Write) -> Result<Option<RetiredSnapshotState>>;
     /// Validate the complete logical snapshot without modifying published state.
     /// Called before durable installation; malformed snapshots must never replace
     /// the last recoverable durable snapshot.
-    fn validate_snapshot(&self, bytes: &[u8]) -> Result<Option<RetiredSnapshotState>>;
-    fn restore(&self, bytes: &[u8]) -> Result<()>;
+    fn validate_snapshot(
+        &self,
+        bytes: &mut dyn std::io::Read,
+    ) -> Result<Option<RetiredSnapshotState>>;
+    fn restore(&self, bytes: &mut dyn std::io::Read) -> Result<()>;
     /// Irreversibly evict resident application material before publishing an
     /// installed closed custody snapshot. This cannot grant data access.
     fn close_application(&self);
@@ -124,13 +128,16 @@ impl StateMachineBackend for OwnedBackend {
     fn apply(&self, position: &AppliedEntryContext, command: &[u8]) -> Result<AppliedResponse> {
         self.inner.apply(position, command)
     }
-    fn snapshot(&self) -> Result<BackendSnapshot> {
-        self.inner.snapshot()
+    fn snapshot(&self, writer: &mut dyn std::io::Write) -> Result<Option<RetiredSnapshotState>> {
+        self.inner.snapshot(writer)
     }
-    fn validate_snapshot(&self, bytes: &[u8]) -> Result<Option<RetiredSnapshotState>> {
+    fn validate_snapshot(
+        &self,
+        bytes: &mut dyn std::io::Read,
+    ) -> Result<Option<RetiredSnapshotState>> {
         self.inner.validate_snapshot(bytes)
     }
-    fn restore(&self, bytes: &[u8]) -> Result<()> {
+    fn restore(&self, bytes: &mut dyn std::io::Read) -> Result<()> {
         self.inner.restore(bytes)
     }
 }

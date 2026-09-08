@@ -21,6 +21,7 @@ mod bootstrap;
 pub mod control;
 pub mod security_audit;
 mod service;
+mod snapshot_codec;
 mod state;
 pub use bootstrap::{
     PreparedReplicaRestore, ReplicaPlacement, ReplicaRestoreConfig, ReplicatedBootstrap,

@@ -49,9 +49,11 @@ input, **not** a current administrative proof, a fresh quorum acknowledgement or
 serving lease. See [the custody substrate contract](../../docs/custody-control.md)
 for the remaining runtime and unavailable-source recovery boundaries.
 
-The default per-group snapshot transfer limit is 2 GiB, including the envelope.
-The engine must account for snapshot construction/validation/transfer memory in
-its admission budgets; the adapter's byte cap is not a total resident-memory cap.
+The installed per-group snapshot transfer budget defaults to 64 GiB, including
+the envelope, and is configurable with `RaftLimits`. Checked 64-bit streaming
+framing has no 2 GiB format ceiling. Transfer and staging use encrypted scratch
+files and bounded records. The adapter's byte budget is not a resident-memory cap.
+See [streaming snapshots](../../docs/streaming-snapshots.md).
 
 ## Transport boundary
 

@@ -534,7 +534,7 @@ async fn retained_snapshot_quota_rejects_missing_stop_without_leaving_partial_id
     let directory = tempfile::tempdir().unwrap();
     let (db, audit) = open(&directory.path().join("node.redb"), Limits::default()).await;
     let mut limits = db.engine().generation().unwrap().state.limits.clone();
-    limits.max_snapshot_bytes = db.engine().snapshot_bytes().unwrap() + 8192;
+    limits.max_snapshot_bytes = db.engine().snapshot_bytes().unwrap() as u64 + 8192;
     db.administer(context(), Operation::SetLimits(limits))
         .await
         .unwrap();

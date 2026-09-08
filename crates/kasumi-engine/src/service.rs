@@ -715,7 +715,13 @@ impl Database {
                 db.snapshot_leases
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
-                    .retain(|_, lease| lease.retain(now, pressured));
+                    .retain(|_, lease| {
+                        lease.retain(now, pressured)
+                            && db
+                                .engine
+                                .generation()
+                                .is_ok_and(|generation| lease.refresh(&generation))
+                    });
                 if db.engine.generation().is_err() {
                     break;
                 }

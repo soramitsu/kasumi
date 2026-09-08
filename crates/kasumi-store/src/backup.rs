@@ -26,9 +26,9 @@ use kasumi_clock::{LeaseClock, SystemLeaseClock};
 
 const FORMAT: u32 = 1;
 pub(crate) const HEADER_LIMIT: usize = 2 * 1024 * 1024;
-pub const MAX_BACKUP_SNAPSHOT_BYTES: usize = 2 * 1024 * 1024 * 1024;
+pub const MAX_BACKUP_OBJECT_BYTES: usize = 32 * 1024 * 1024;
 /// Header + digest + nonce/tag + fixed framing above a maximum snapshot.
-pub const MAX_BACKUP_BUNDLE_BYTES: usize = MAX_BACKUP_SNAPSHOT_BYTES + HEADER_LIMIT + 84;
+pub const MAX_BACKUP_BUNDLE_BYTES: usize = MAX_BACKUP_OBJECT_BYTES + HEADER_LIMIT + 84;
 const MAGIC: &[u8; 8] = b"KASUMIB1";
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -67,8 +67,8 @@ impl TenantStore {
         let _access = AccessGuard(self);
         self.check_access()?;
         ensure!(
-            snapshot.len() <= MAX_BACKUP_SNAPSHOT_BYTES,
-            "logical backup exceeds 2 GiB"
+            snapshot.len() <= MAX_BACKUP_OBJECT_BYTES,
+            "backup object exceeds record budget"
         );
         let state = self.state.read();
         self.require_access(&state)?;
@@ -137,7 +137,7 @@ impl EncryptedBackup {
         ensure!(manifest.format == FORMAT, "unsupported backup format");
         manifest.catalog.validate(&manifest.tenant)?;
         ensure!(
-            manifest.plaintext_bytes <= max_snapshot_bytes.min(MAX_BACKUP_SNAPSHOT_BYTES) as u64,
+            manifest.plaintext_bytes <= max_snapshot_bytes.min(MAX_BACKUP_OBJECT_BYTES) as u64,
             "backup exceeds snapshot byte limit"
         );
         let ciphertext = &bytes[12 + header_len..];

@@ -10,8 +10,10 @@ mod archive_objects;
 mod backup;
 mod keys;
 mod serving_access;
+mod spool;
 mod storage_domains;
 pub use serving_access::{StorageAccess, StoragePurpose};
+pub use spool::{EncryptedSpool, SnapshotImage, SnapshotReader};
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_utils;
 
@@ -19,7 +21,7 @@ pub use backup::{
     BackupContents, BackupDestination, EncryptedBackup, FilesystemBackupDestination,
     S3BackupConfig, S3BackupDestination,
 };
-pub use backup::{MAX_BACKUP_BUNDLE_BYTES, MAX_BACKUP_SNAPSHOT_BYTES};
+pub use backup::{MAX_BACKUP_BUNDLE_BYTES, MAX_BACKUP_OBJECT_BYTES};
 use kasumi_clock::{LeaseClock, SystemLeaseClock};
 pub use keys::{
     GeneratedKey, KeyProvider, SecretKey, TransitConfig, TransitKeyProvider, WrappedKey,

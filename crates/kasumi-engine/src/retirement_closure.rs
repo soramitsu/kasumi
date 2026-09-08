@@ -105,7 +105,7 @@ fn record(
 fn map<V: Serialize + Clone>(
     digest: &mut Sha256,
     name: &str,
-    values: &imbl::HashMap<String, V>,
+    values: &imbl::OrdMap<String, V>,
     check: &mut dyn FnMut() -> Result<()>,
 ) -> Result<()> {
     record(digest, &(name, values.len()), check)?;

@@ -3,7 +3,7 @@
 use super::*;
 use crate::control::tests::{fixture, group, id, ordinary, retirement_entry};
 use crate::control::{self, AppliedCursor, AppliedEntryContext, ControlLog, RetainedSeed, SEEDS};
-use crate::{BackendSnapshot, RetiredSnapshotState, StateMachineBackend};
+use crate::{RetiredSnapshotState, StateMachineBackend};
 use openraft::storage::RaftLogStorageExt;
 
 async fn accepted_snapshot() -> Result<SnapshotEnvelope> {
@@ -60,20 +60,26 @@ impl StateMachineBackend for ClosedBackend {
     fn apply(&self, _: &AppliedEntryContext, _: &[u8]) -> Result<crate::AppliedResponse> {
         anyhow::bail!("metadata test cannot apply payload")
     }
-    fn snapshot(&self) -> Result<BackendSnapshot> {
+    fn snapshot(
+        &self,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<Option<crate::RetiredSnapshotState>> {
         let retirement = self.0.lock().unwrap().clone();
-        Ok(BackendSnapshot {
-            data: serde_json::to_vec(&retirement)?,
-            retirement,
-        })
+        serde_json::to_writer(writer, &retirement)?;
+        Ok(retirement)
     }
-    fn validate_snapshot(&self, bytes: &[u8]) -> Result<Option<RetiredSnapshotState>> {
-        if bytes == b"not-retired" {
+    fn validate_snapshot(
+        &self,
+        bytes: &mut dyn std::io::Read,
+    ) -> Result<Option<RetiredSnapshotState>> {
+        let mut captured = Vec::new();
+        bytes.read_to_end(&mut captured)?;
+        if captured == b"not-retired" {
             return Ok(None);
         }
-        Ok(Some(serde_json::from_slice(bytes)?))
+        Ok(Some(serde_json::from_slice(&captured)?))
     }
-    fn restore(&self, bytes: &[u8]) -> Result<()> {
+    fn restore(&self, bytes: &mut dyn std::io::Read) -> Result<()> {
         *self.0.lock().unwrap() = self.validate_snapshot(bytes)?;
         Ok(())
     }
@@ -89,24 +95,26 @@ async fn same_position_reencoding_preserves_custody_and_reuses_verified_current_
     machine
         .install_snapshot(&original.meta, as_snapshot(&original, 1 << 20)?.snapshot)
         .await?;
-    let state: RetiredSnapshotState = serde_json::from_slice(&original.backend)?;
+    let state: RetiredSnapshotState = serde_json::from_reader(original.backend.reader())?;
     let mut reencoded = original.clone();
     reencoded.meta.snapshot_id = uuid::Uuid::new_v4().to_string();
-    reencoded.backend = serde_json::to_vec_pretty(&state)?;
-    assert_ne!(original.backend, reencoded.backend);
+    reencoded.backend =
+        kasumi_store::SnapshotImage::from_bytes(&serde_json::to_vec_pretty(&state)?)?;
+    assert_ne!(original.backend.sha256(), reencoded.backend.sha256());
     machine
         .install_snapshot(&reencoded.meta, as_snapshot(&reencoded, 1 << 20)?.snapshot)
         .await?;
     let persisted = load_snapshot(domains.application(), 1 << 20)?.unwrap();
-    assert_eq!(persisted.backend, reencoded.backend);
+    assert_eq!(persisted.backend.sha256(), reencoded.backend.sha256());
     validate_snapshot_coverage(&domains, &persisted, 1 << 20)?;
     // The backend captures compact JSON, while the current image uses pretty
     // JSON. Their exact image hashes differ but their closed state is identical.
     let mut builder = machine.get_snapshot_builder().await;
     let recaptured = builder.build_snapshot().await?;
     assert_eq!(recaptured.meta, reencoded.meta);
-    let recaptured: SnapshotEnvelope = postcard::from_bytes(recaptured.snapshot.as_bytes())?;
-    assert_eq!(recaptured.backend, reencoded.backend);
+    let recaptured =
+        SnapshotEnvelope::decode(&mut recaptured.snapshot.into_image()?.reader(), 64 << 20)?;
+    assert_eq!(recaptured.backend.sha256(), reencoded.backend.sha256());
     assert!(
         ControlLog::open(domains.custody().clone(), 1, group())?
             .retirement_seed(1)?
@@ -127,13 +135,13 @@ async fn same_position_cannot_substitute_matching_backend_and_custody_policy() -
             .await?;
         let mut changed = original.clone();
         changed.meta.snapshot_id = uuid::Uuid::new_v4().to_string();
-        let mut state: RetiredSnapshotState = serde_json::from_slice(&original.backend)?;
+        let mut state: RetiredSnapshotState = serde_json::from_reader(original.backend.reader())?;
         if change_epoch {
             state.policy_epoch += 1;
         } else {
             state.administrators.insert("substituted".into());
         }
-        changed.backend = serde_json::to_vec(&state)?;
+        changed.backend = kasumi_store::SnapshotImage::from_bytes(&serde_json::to_vec(&state)?)?;
         let mut capsule = serde_json::to_value(changed.retirement.take().unwrap())?;
         capsule["state"] = serde_json::to_value(&state)?;
         changed.retirement = Some(serde_json::from_value(capsule)?);
@@ -230,15 +238,17 @@ async fn snapshot_rejects_missing_substituted_stale_and_payload_custody_before_p
         let mut changed = original.clone();
         match case {
             0 => changed.retirement = None,
-            1 => changed.backend = b"not-retired".to_vec(),
+            1 => changed.backend = kasumi_store::SnapshotImage::from_bytes(b"not-retired")?,
             2 | 3 => {
-                let mut state: RetiredSnapshotState = serde_json::from_slice(&changed.backend)?;
+                let mut state: RetiredSnapshotState =
+                    serde_json::from_reader(changed.backend.reader())?;
                 if case == 2 {
                     state.policy_epoch += 1;
                 } else {
                     state.administrators.insert("substituted".into());
                 }
-                changed.backend = serde_json::to_vec(&state)?;
+                changed.backend =
+                    kasumi_store::SnapshotImage::from_bytes(&serde_json::to_vec(&state)?)?;
             }
             4 => {
                 let mut portable = serde_json::to_value(changed.retirement.take().unwrap())?;
@@ -285,7 +295,7 @@ async fn accepted_snapshot_supersedes_uncommitted_candidate_and_survives_late_tr
         .install_snapshot(&accepted.meta, as_snapshot(&accepted, 1 << 20)?.snapshot)
         .await?;
     let view = ControlLog::open(domains.custody().clone(), 1, group())?;
-    let expected: RetiredSnapshotState = serde_json::from_slice(&accepted.backend)?;
+    let expected: RetiredSnapshotState = serde_json::from_reader(accepted.backend.reader())?;
     assert_eq!(
         view.retirement_seed(1)?.unwrap().seed().request(),
         &expected.request
@@ -335,7 +345,7 @@ async fn nonretired_snapshot_discards_stale_candidate_coverage_without_retiremen
 async fn retired_snapshot_power_loss_never_tears_image_seed_boundary_or_applied_cursor()
 -> Result<()> {
     let value = accepted_snapshot().await?;
-    let bytes = postcard::to_allocvec(&value)?;
+    let bytes = value.encode(64 << 20)?.read_bounded(64 << 20)?;
     let seed = FaultBackend::new();
     let (initial, _, _, _) = fixture(seed.clone()).await?;
     let baseline = seed.crash();
@@ -392,7 +402,12 @@ async fn retired_snapshot_power_loss_never_tears_image_seed_boundary_or_applied_
 async fn equal_index_different_term_log_and_snapshot_coverage_is_rejected() -> Result<()> {
     let value = accepted_snapshot().await?;
     let (domains, _, _, _) = fixture(FaultBackend::new()).await?;
-    persist_snapshot(&domains, &postcard::to_allocvec(&value)?, 1 << 20, &value)?;
+    persist_snapshot(
+        &domains,
+        &value.encode(64 << 20)?.read_bounded(64 << 20)?,
+        1 << 20,
+        &value,
+    )?;
     let wrong = LogId::new(openraft::CommittedLeaderId::new(4, 1), 1);
     domains.custody().store().write_batch(&[WriteOp::put(
         META,
@@ -439,7 +454,12 @@ async fn published_retirement_projection_substitution_fails_closed_after_reopen(
     let mut machine =
         StateMachine::open(domains.clone(), Arc::new(ClosedBackend::default())).await?;
     let mut older_capture = machine.get_snapshot_builder().await;
-    persist_snapshot(&domains, &postcard::to_allocvec(&value)?, 1 << 20, &value)?;
+    persist_snapshot(
+        &domains,
+        &value.encode(64 << 20)?.read_bounded(64 << 20)?,
+        1 << 20,
+        &value,
+    )?;
     let mut projection: serde_json::Value = serde_json::from_slice(
         &domains
             .custody()

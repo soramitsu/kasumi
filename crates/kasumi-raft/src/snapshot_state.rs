@@ -6,19 +6,6 @@ use kasumi_types::{RetireSourceRequest, RetirementReceipt, validate_name};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
-pub struct BackendSnapshot {
-    pub data: Vec<u8>,
-    pub retirement: Option<RetiredSnapshotState>,
-}
-impl BackendSnapshot {
-    pub fn application(data: Vec<u8>) -> Self {
-        Self {
-            data,
-            retirement: None,
-        }
-    }
-}
-
 /// Closed metadata derived from the same validated generation as the image.
 /// The Raft adapter additionally binds this to the committed retirement seed and
 /// its actual applied position. A raw instance cannot create a verified proof.
