@@ -763,7 +763,7 @@ struct OpenedCustody {
 }
 struct BoundListener {
     listener: TcpListener,
-    tls: Arc<rustls::ServerConfig>,
+    tls: kasumi_transport::ReloadableServerConfig,
     router: axum::Router,
 }
 
@@ -836,10 +836,17 @@ pub struct NodeRuntime {
     closed: bool,
     administration: Option<Arc<crate::administration::Administration>>,
     target_recovery: Option<Arc<crate::target_runtime::TargetRecoveryRuntime>>,
+    tls_reload: Option<crate::tls_reload::RuntimeTlsReload>,
     _standalone_lock: Option<kasumi_store::private_files::ExclusiveLock>,
 }
 
 impl NodeRuntime {
+    pub fn tls_reload_handle(&self) -> Result<crate::tls_reload::RuntimeTlsReload> {
+        self.tls_reload
+            .clone()
+            .context("listener TLS reload is not initialized")
+    }
+
     pub async fn open(config: RuntimeConfig) -> Result<Self> {
         Self::open_using(config, file_secret).await
     }
@@ -876,9 +883,11 @@ impl NodeRuntime {
         // durable bootstrap can be created. No listener serves until `serve`.
         let mcp_identity = config.mcp.tls.load()?;
         let local_certificate_pin = mcp_identity.certificate_pin();
-        let mcp_tls = kasumi_transport::server_config(&mcp_identity, ClientAuthentication::OAuth)?;
-        let native_tls = config.native.load()?;
-        let admin_tls = config.admin.load()?;
+        let mcp_tls = kasumi_transport::ReloadableServerConfig::new(
+            kasumi_transport::server_config(&mcp_identity, ClientAuthentication::OAuth)?,
+        );
+        let native_tls = kasumi_transport::ReloadableServerConfig::new(config.native.load()?);
+        let admin_tls = kasumi_transport::ReloadableServerConfig::new(config.admin.load()?);
         let control_provider = config.control.keys.provider(credential.clone())?;
         let control_custody_provider = config.control.custody_keys.provider(credential.clone())?;
         let security_provider = config.security_audit.keys.provider(credential.clone())?;
@@ -912,7 +921,7 @@ impl NodeRuntime {
             )?;
             let listener = BoundListener {
                 listener: TcpListener::bind(replication.listener.listen).await?,
-                tls: network.server_tls(),
+                tls: network.server_tls().into(),
                 router: network.router(),
             };
             (Some(network), Some(listener))
@@ -981,6 +990,7 @@ impl NodeRuntime {
             closed: false,
             administration: None,
             target_recovery: None,
+            tls_reload: None,
         };
         let result = async {
             let mut managed = vec![crate::administration::ManagedTenant {
@@ -1116,6 +1126,15 @@ impl NodeRuntime {
             }
             if let Some(target)=&runtime.target_recovery {admin=admin.add_service(crate::rpc::NativeTargetRecovery::new(target.clone(),auth.clone()).service());}
             let admin = admin.into_axum_router();
+            runtime.tls_reload = Some(crate::tls_reload::RuntimeTlsReload::new(
+                vec![
+                    (crate::tls_reload::ListenerSource::OAuth(config.mcp.tls.clone()), mcp_tls.clone()),
+                    (crate::tls_reload::ListenerSource::Mutual(config.native.clone()), native_tls.clone()),
+                    (crate::tls_reload::ListenerSource::Mutual(config.admin.clone()), admin_tls.clone()),
+                ],
+                if config.replication.is_none() { Some((runtime.control.database.clone(), configured_control_context(&config.control)?)) } else { None },
+                runtime.audit.clone(),
+            ));
             runtime.data_listeners = vec![
                 BoundListener {
                     listener: mcp_socket,

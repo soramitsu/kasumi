@@ -12,11 +12,20 @@ async fn main() -> Result<()> {
             let runtime = AuthorityRuntime::open(AuthorityRuntimeConfig::load(path)?)
                 .await
                 .context("opening independent authority")?;
+            let reload = runtime.tls_reload_handle();
             let (stop, shutdown) = tokio::sync::watch::channel(false);
             let signal = tokio::spawn(async move {
                 let mut term =
                     tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-                tokio::select! { result = tokio::signal::ctrl_c() => result?, _ = term.recv() => {} }
+                let mut hangup =
+                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
+                loop {
+                    tokio::select! {
+                        result=tokio::signal::ctrl_c()=>{ result?; break; },
+                        _=term.recv()=>break,
+                        _=hangup.recv()=>{ if reload.reload().await.is_err() { eprintln!("TLS reload failed; inspect installed TLS files and protected audit"); } }
+                    }
+                }
                 stop.send_replace(true);
                 Ok::<_, std::io::Error>(())
             });

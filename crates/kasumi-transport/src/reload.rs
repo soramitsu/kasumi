@@ -10,6 +10,7 @@ use std::sync::{Arc, RwLock};
 #[derive(Clone)]
 pub struct ReloadableServerConfig {
     current: Arc<RwLock<(u64, Arc<ServerConfig>)>>,
+    changed: tokio::sync::watch::Sender<u64>,
 }
 impl From<Arc<ServerConfig>> for ReloadableServerConfig {
     fn from(config: Arc<ServerConfig>) -> Self {
@@ -20,7 +21,18 @@ impl ReloadableServerConfig {
     pub fn new(config: Arc<ServerConfig>) -> Self {
         Self {
             current: Arc::new(RwLock::new((1, config))),
+            changed: tokio::sync::watch::channel(1).0,
         }
+    }
+    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.changed.subscribe()
+    }
+    pub fn snapshot_generation(&self) -> Result<(u64, Arc<ServerConfig>)> {
+        Ok(self
+            .current
+            .read()
+            .map_err(|_| anyhow::anyhow!("TLS configuration lock poisoned"))?
+            .clone())
     }
     pub fn snapshot(&self) -> Result<Arc<ServerConfig>> {
         Ok(self
@@ -47,6 +59,7 @@ impl ReloadableServerConfig {
             .checked_add(1)
             .context("TLS generation overflow")?;
         *current = (generation, config);
+        self.changed.send_replace(generation);
         Ok(generation)
     }
     /// A malformed certificate, mismatched key, or invalid CA cannot replace

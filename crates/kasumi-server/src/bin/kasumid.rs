@@ -24,13 +24,22 @@ async fn main() -> Result<()> {
             let runtime = NodeRuntime::open(config)
                 .await
                 .context("opening encrypted node runtime")?;
+            let reload = runtime.tls_reload_handle()?;
             let (stop, shutdown) = tokio::sync::watch::channel(false);
             let signal = tokio::spawn(async move {
                 #[cfg(unix)]
                 {
                     let mut terminate =
                         tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-                    tokio::select! { result=tokio::signal::ctrl_c()=>result?, _=terminate.recv()=>{} }
+                    let mut hangup =
+                        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
+                    loop {
+                        tokio::select! {
+                            result=tokio::signal::ctrl_c()=>{ result?; break; },
+                            _=terminate.recv()=>break,
+                            _=hangup.recv()=>{ if reload.reload().await.is_err() { eprintln!("TLS reload failed; inspect installed TLS files and protected audit"); } }
+                        }
+                    }
                 }
                 #[cfg(not(unix))]
                 tokio::signal::ctrl_c().await?;

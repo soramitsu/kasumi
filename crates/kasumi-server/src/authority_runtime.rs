@@ -99,14 +99,19 @@ pub struct AuthorityRuntime {
     network: Arc<ClusterNetwork>,
     native: TcpListener,
     cluster: TcpListener,
-    native_tls: Arc<rustls::ServerConfig>,
+    native_tls: kasumi_transport::ReloadableServerConfig,
+    tls_reload: crate::tls_reload::RuntimeTlsReload,
     auth: Arc<Authenticator>,
 }
 impl AuthorityRuntime {
+    pub fn tls_reload_handle(&self) -> crate::tls_reload::RuntimeTlsReload {
+        self.tls_reload.clone()
+    }
+
     pub async fn open(config: AuthorityRuntimeConfig) -> Result<Self> {
         config.validate()?;
         let auth = Authenticator::new(config.auth.clone())?;
-        let native_tls = config.native.load()?;
+        let native_tls = kasumi_transport::ReloadableServerConfig::new(config.native.load()?);
         let identity = config.replication.listener.tls.load()?;
         let ca = read_bounded(&config.replication.listener.client_ca, 1 << 20)?;
         let peers = config
@@ -193,7 +198,16 @@ impl AuthorityRuntime {
             authority.shutdown().await?;
             return Err(error);
         }
+        let tls_reload = crate::tls_reload::RuntimeTlsReload::new(
+            vec![(
+                crate::tls_reload::ListenerSource::Mutual(config.native.clone()),
+                native_tls.clone(),
+            )],
+            None,
+            audit.clone(),
+        );
         Ok(Self {
+            tls_reload,
             config,
             authority,
             stores,

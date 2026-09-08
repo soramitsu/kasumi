@@ -173,7 +173,9 @@ async fn serve_tls_source(
                     Err(error) => { outcome = Err(error.into()); break; },
                 };
                 let Ok(permit) = connections.clone().try_acquire_owned() else { drop(socket); continue; };
-                let acceptor = TlsAcceptor::from(config.snapshot()?);
+                let mut generation_change = config.subscribe();
+                let (generation, current) = config.snapshot_generation()?;
+                let acceptor = TlsAcceptor::from(current);
                 let configure_socket = configure_socket.clone();
                 let router = router.clone();
                 let limits = limits.clone();
@@ -197,7 +199,7 @@ async fn serve_tls_source(
                             return;
                         },
                     };
-                    if *shutdown.borrow() { return; }
+                    if *shutdown.borrow() || *generation_change.borrow() != generation { return; }
                     let peer = AuthenticatedTlsPeer { certificate_pin: stream.get_ref().1.peer_certificates().and_then(|certificates| certificates.first()).map(certificate_digest) };
                     if audit_handshake(audit.as_ref(), address, peer.certificate_pin, TlsHandshakeOutcome::Accepted, limits.handshake_timeout).await.is_err() {
                         return;
@@ -210,6 +212,10 @@ async fn serve_tls_source(
                     tokio::pin!(connection);
                     tokio::select! {
                         _ = &mut connection => {},
+                        _ = generation_change.changed() => {
+                            connection.as_mut().graceful_shutdown();
+                            let _ = tokio::time::timeout(limits.drain_timeout, connection).await;
+                        },
                         _ = shutdown.changed() => {
                             connection.as_mut().graceful_shutdown();
                             let _ = tokio::time::timeout(limits.drain_timeout, connection).await;
