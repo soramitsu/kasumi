@@ -1,0 +1,27 @@
+    Checking kasumi-types v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-types)
+   Compiling kasumi-client v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-client)
+    Checking kasumi-serving v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-serving)
+    Checking kasumi-query v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-query)
+    Checking kasumi-store v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-store)
+error[E0308]: mismatched types
+  --> crates/kasumi-client/src/authority.rs:33:9
+   |
+31 |       ) -> Result<kasumi_serving::ControlSignerObservation, ClientError> {
+   |            ------------------------------------------------------------- expected `ClientError` because of return type
+32 |           request.digest()?;
+33 | /         anyhow::ensure!(
+34 | |             request.directive.node.certificate_sha256 == self.certificate_sha256,
+35 | |             "current Control observation must use its actual installed client identity"
+36 | |         );
+   | |_________^ expected `ClientError`, found `Error`
+   |
+   = note: this error originates in the macro `$crate::__anyhow` which comes from the expansion of the macro `anyhow::ensure` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: call `Into::into` on this expression to convert `anyhow::Error` into `ClientError`
+   |
+36 |         ).into();
+   |          +++++++
+
+    Checking kasumi-raft v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-raft)
+For more information about this error, try `rustc --explain E0308`.
+error: could not compile `kasumi-client` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...

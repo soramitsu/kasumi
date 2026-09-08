@@ -1,0 +1,137 @@
+{
+  "source": "82a9e3c60c38be54f21c406f55a18f85d7c90f04",
+  "base": "2a61b0ce03b578a95c62fb7bd2ad238d5faf43f2",
+  "worktree_clean": true,
+  "host": "macOS-26.6.2-arm64-arm-64bit",
+  "machine": "arm64",
+  "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-apple-darwin\nrelease: 1.97.1\nLLVM version: 22.1.6",
+  "lockfile": {
+    "path": "/tmp/kasumi-production-runtime/Cargo.lock",
+    "size": 119491,
+    "sha256": "3f693a1bd3dd6614d3ce8e54b2fd960055361c72e5d535b8aa86e1c47e60eb0a"
+  },
+  "build_inputs": [
+    {
+      "path": "/tmp/kasumi-production-runtime/Cargo.toml",
+      "size": 1695,
+      "sha256": "9e7e3e40fa2bd2758c0e1c9c205c80323ded1ce3c9803c7a452c6aa30800c230"
+    },
+    {
+      "path": "/tmp/kasumi-production-runtime/rust-toolchain.toml",
+      "size": 86,
+      "sha256": "8e390d6a0838315f972690f46ef8bae8b7ecc9ee6c1ed70140ef852869c2482e"
+    }
+  ],
+  "checks": {
+    "authority_library": {
+      "result": "passed",
+      "command": "CARGO_TARGET_DIR=/tmp/kasumi-production-runtime-target RUST_TEST_THREADS=2 cargo +1.97.1 test -p kasumi-authority --lib --all-features --locked -j2",
+      "log": {
+        "path": "/tmp/kasumi-runtime-remote-control-authority-final.log",
+        "size": 5601,
+        "sha256": "6de54974c7261db6804073e44885fa50b91d39bb5db7cbeaf587630f4999ebdb"
+      }
+    },
+    "real_private_admin_tls": {
+      "result": "passed",
+      "command": "CARGO_TARGET_DIR=/tmp/kasumi-production-runtime-target RUST_TEST_THREADS=2 cargo +1.97.1 test -p kasumi-server --lib --all-features --locked -j2 pinned_native_control_signs_actual_quorum_commitments",
+      "log": {
+        "path": "/tmp/kasumi-runtime-remote-control-native-final.log",
+        "size": 817,
+        "sha256": "0ee7b0424cb153898f5e24e1f97cd373dd110162884961bb652ff06201f82abc"
+      }
+    },
+    "strict_workspace_clippy": {
+      "result": "passed",
+      "command": "CARGO_TARGET_DIR=/tmp/kasumi-production-runtime-target cargo +1.97.1 clippy --workspace --all-targets --all-features --locked -j2 -- -D warnings",
+      "log": {
+        "path": "/tmp/kasumi-runtime-remote-control-clippy-final.log",
+        "size": 647,
+        "sha256": "2bad4641ac8d053218d20f1b29fddaf727b00ae2ca38eabfc5781ca74e7d8c4c"
+      }
+    },
+    "production_server_check": {
+      "result": "passed",
+      "command": "CARGO_TARGET_DIR=/tmp/kasumi-production-runtime-target cargo +1.97.1 check -p kasumi-server --bins --no-default-features --locked -j2",
+      "log": {
+        "path": "/tmp/kasumi-runtime-remote-control-production.log",
+        "size": 747,
+        "sha256": "ff0bab98c605759e243147486bb2070c549aaf8c30ecaf0237edbc21bd6f40e9"
+      }
+    },
+    "format_and_diff": {
+      "result": "passed",
+      "command": "cargo +1.97.1 fmt --all -- --check && git diff --check",
+      "log": {
+        "path": "/tmp/kasumi-runtime-remote-control-format.log",
+        "size": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    }
+  },
+  "executables": {
+    "authority_library": {
+      "path": "/tmp/kasumi-production-runtime-target/debug/deps/kasumi_authority-481ba410417b8d16",
+      "size": 175594064,
+      "sha256": "e45539274a69db1479439bf98e4ae90b6bc9ed6ca71e36fa336a694ee728729c"
+    },
+    "real_private_admin_tls": {
+      "path": "/tmp/kasumi-production-runtime-target/debug/deps/kasumi_server-446a69ab7274093d",
+      "size": 289313392,
+      "sha256": "a526d4a682b3170e901604077f1502d852dba042a1db412bdaf42dbd9bc61d11"
+    }
+  },
+  "limitations": [
+    "This is a bounded macOS ARM64 checkpoint, not final workspace/platform/capacity/endurance release acceptance.",
+    "Remote Control publication requires the actual current Control leader quorum; followers remain an explicit subsequent protocol unit.",
+    "Local publication receipts are not durable global coverage acknowledgments. Remote revocation, complete roster coverage and full issuer drain remain open; global retirement cannot complete.",
+    "Remote StopStage and CompleteRetirement are rejected. The preexisting issuer-local AuthorizeSignerTrust stage/abort path must still be bound to the global winner/abort in the next rotation slice.",
+    "The native test debug linker retains the macOS __eh_frame size warning; its complete raw output is preserved.",
+    "Initial/intermediate uncommitted test artifacts below are not credited as final-source acceptance. Their hashes were captured before reuse."
+  ],
+  "initial_failures": [
+    {
+      "log": {
+        "path": "/tmp/kasumi-runtime-remote-control-check.log",
+        "size": 1712,
+        "sha256": "af02aa88946446f717310da5b97fa891716e29c92d662838d4a3ea8813a20f1b"
+      },
+      "disposition": "Initial SDK ensure returned anyhow::Error rather than ClientError. The branch now returns its typed InvalidResponse."
+    },
+    {
+      "log": {
+        "path": "/tmp/kasumi-runtime-remote-control-clippy.log",
+        "size": 2160,
+        "sha256": "e9ae85fe97073282ad1a56767cfe50c59f4d890a313a47aedbbc02d8e58f8f86"
+      },
+      "disposition": "The new current Control observation made the authorization enum large. Boxed observation preserves the same original clock and current gates while bounding enum size."
+    }
+  ],
+  "intermediate_logs": [
+    {
+      "path": "/tmp/kasumi-runtime-remote-control-check-2.log",
+      "size": 935,
+      "sha256": "ddb7e069bd93ce7718474d6ce745584351dcea05183e6993d795ef945172d48f"
+    },
+    {
+      "path": "/tmp/kasumi-runtime-remote-control-authority-test.log",
+      "size": 1124,
+      "sha256": "333f0807c465325bb5ecb2ee0ed10d8236b7a5cf5e5a12d1f423406208af6c4e"
+    },
+    {
+      "path": "/tmp/kasumi-runtime-remote-control-native-test.log",
+      "size": 1583,
+      "sha256": "f5942648f61e3619f6ce801c468eb57837c636f97379b3a503141d31a484781c"
+    },
+    {
+      "path": "/tmp/kasumi-runtime-remote-control-authority-first.sha256",
+      "size": 269,
+      "sha256": "cc0becc497a584621de1d6292dcfe098b61901294d3201acd65e5a38bc542b86"
+    },
+    {
+      "path": "/tmp/kasumi-runtime-remote-control-native-first.sha256",
+      "size": 263,
+      "sha256": "1114759b2241b65b456f7ab8ddead5af5a2092d75bdeb0f8a20305dbd6629f8b"
+    }
+  ]
+}

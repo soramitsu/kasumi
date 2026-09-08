@@ -1,0 +1,11 @@
+{
+  "operation": "Stopped exclusively owned acceptance VM, expanded its disk from120GiB to200GiB using limactl2.2.0, restarted and observed126474780672freefilesystembytes.",
+  "retained": "Both failed functional workspaces, images and historical binaries remain intact. CPU2 and RAM8GiB remain unchanged.",
+  "limitations": "Provisioning only; no release or capacity gate passed by adding disk.",
+  "files": {
+    "kasumi-linux-reference-before-expansion.json": "be336c50638d9a9e4248116bf45ab79c48347a345d8a04db7eb6cd57a987d6f6",
+    "kasumi-linux-reference-after-expansion.json": "d0a080b5664b71a6c344d3afa8a16c2d9b80f109529c0f01e0f8307cdcd20209",
+    "kasumi-linux-reference-expanded-filesystem.txt": "56233d2f72505a8a4b28e276568bcdcb6cdc767b63bff8ced7d80a65511ff13e",
+    "kasumi-linux-reference-expansion.log": "b98e53954f6e568fc4acbce60d840208a8fdc006745c6111d73dcb48398c1b8b"
+  }
+}

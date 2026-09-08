@@ -16,6 +16,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 #[path = "history_state.rs"]
 pub(crate) mod history;
+#[path = "lease_retention.rs"]
+pub(crate) mod lease_retention;
 #[path = "lifecycle_state.rs"]
 pub(crate) mod lifecycle;
 #[path = "recovery_state.rs"]
@@ -80,6 +82,7 @@ type ReceiptExpiry = imbl::OrdMap<u64, imbl::Vector<String>>;
 /// Only ordered consensus application may publish generations.
 pub struct TenantEngine {
     current: ArcSwapOption<Generation>,
+    pub(crate) leases: lease_retention::LeaseManager,
     apply_lock: Mutex<()>,
     tenant: String,
     incarnation: String,
@@ -183,12 +186,16 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
             .lock()
             .map_err(|_| anyhow::anyhow!("tenant apply lock poisoned"))?;
         let generation = snapshot_bundle::read(self, bytes)?;
-        self.current.store(Some(Arc::new(generation)));
+        self.leases.replace(&self.current, Arc::new(generation));
         Ok(())
     }
 }
 
 impl TenantEngine {
+    fn publish_generation(&self, next: Option<Arc<Generation>>) {
+        self.leases.publish(&self.current, next);
+    }
+
     pub(crate) fn check_operation_access(&self, operation: &Operation) -> Result<()> {
         let generation = self.generation()?;
         if generation
@@ -392,6 +399,7 @@ impl TenantEngine {
             access: std::sync::OnceLock::new(),
             snapshot_store: std::sync::OnceLock::new(),
             audit_maintenance: Mutex::new(None),
+            leases: lease_retention::LeaseManager::default(),
             current: ArcSwapOption::from_pointee(Generation {
                 state,
                 indexes,
@@ -426,6 +434,7 @@ impl TenantEngine {
             access: std::sync::OnceLock::new(),
             snapshot_store: std::sync::OnceLock::new(),
             audit_maintenance: Mutex::new(None),
+            leases: lease_retention::LeaseManager::default(),
             tenant: state.tenant.clone(),
             incarnation: state.incarnation.clone(),
             revision_base: state.revision_base,
@@ -434,7 +443,7 @@ impl TenantEngine {
             current: ArcSwapOption::empty(),
         };
         let generation = engine.prepare_state(state)?;
-        engine.current.store(Some(Arc::new(generation)));
+        engine.publish_generation(Some(Arc::new(generation)));
         Ok(engine)
     }
 
@@ -584,6 +593,7 @@ impl TenantEngine {
             access: std::sync::OnceLock::new(),
             snapshot_store: std::sync::OnceLock::new(),
             audit_maintenance: Mutex::new(None),
+            leases: lease_retention::LeaseManager::default(),
             tenant: state.tenant.clone(),
             incarnation: state.incarnation.clone(),
             revision_base: state.revision_base,
@@ -601,7 +611,7 @@ impl TenantEngine {
             .apply_lock
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.current.store(None);
+        self.publish_generation(None);
         self.audit_maintenance
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -751,7 +761,7 @@ impl TenantEngine {
         if next.audit_retention.hot_bytes > next.limits.audit_retention.hot_bytes {
             let mut rejected = previous.state.clone();
             rejected.revision = revision;
-            self.current.store(Some(Arc::new(Generation {
+            self.publish_generation(Some(Arc::new(Generation {
                 state: rejected,
                 indexes: previous.indexes.clone(),
                 receipt_expiry: previous.receipt_expiry.clone(),
@@ -810,7 +820,7 @@ impl TenantEngine {
         } else {
             previous.indexes.clone()
         };
-        self.current.store(Some(Arc::new(Generation {
+        self.publish_generation(Some(Arc::new(Generation {
             state: next,
             indexes,
             receipt_expiry,
@@ -913,7 +923,7 @@ impl TenantEngine {
                 && accounting.fits(&rejected)?
                 && lifecycle::completion_fits(&rejected)?
             {
-                self.current.store(Some(Arc::new(Generation {
+                self.publish_generation(Some(Arc::new(Generation {
                     state: rejected,
                     indexes: previous.indexes.clone(),
                     receipt_expiry,
@@ -927,7 +937,7 @@ impl TenantEngine {
         // takes effect. The revision-only cursor fits its pre-reserved headroom.
         let mut rejected = previous.state.clone();
         rejected.revision = revision;
-        self.current.store(Some(Arc::new(Generation {
+        self.publish_generation(Some(Arc::new(Generation {
             state: rejected,
             indexes: previous.indexes.clone(),
             receipt_expiry: previous.receipt_expiry.clone(),
@@ -989,7 +999,7 @@ impl TenantEngine {
             snapshot_bundle::verify_local(&generation, store)
                 .map_err(|error| Error::new(ErrorCode::Corruption, error.to_string()))?;
         }
-        self.current.store(Some(Arc::new(generation)));
+        self.leases.replace(&self.current, Arc::new(generation));
         Ok(())
     }
 

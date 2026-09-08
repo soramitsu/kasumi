@@ -1,0 +1,14 @@
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.14s
+     Running tests/history.rs (/tmp/kasumi-production-streaming-target/debug/deps/history-a85e510e86b0d181)
+
+running 5 tests
+test change_feed_is_atomic_ordered_resumable_and_detects_retention_gaps ... ok
+test archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_restart ... ok
+test scoped_feed_advances_through_filtered_commit_tail_and_emits_only_real_deletions ... ok
+test shutdown_cancels_pending_archive_upload_and_keeps_source_rows_on_restart ... ok
+test chunked_full_backup_restores_cold_history_and_permanent_identity_without_source_objects has been running for over 60 seconds
+test chunked_full_backup_restores_cold_history_and_permanent_identity_without_source_objects ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 133.24s
+

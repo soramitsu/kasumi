@@ -1,0 +1,18 @@
+   Compiling kasumi-types v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-types)
+   Compiling kasumi-serving v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-serving)
+   Compiling kasumi-query v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-query)
+   Compiling kasumi-store v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-store)
+   Compiling kasumi-raft v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 11s
+     Running unittests src/lib.rs (/tmp/kasumi-production-streaming-target/debug/deps/kasumi_engine-4b4e80d3850c1c4e)
+
+running 5 tests
+test state::lease_retention::tests::metadata_allocation_is_charged_before_opening_and_snapshot_replace_invalidates_handles ... ok
+test state::lease_retention::tests::primary_id_paths_stay_charged_after_temporary_insert_and_delete ... ok
+test state::lease_retention::tests::archive_leaf_clones_share_unchanged_large_values_and_manifest_payloads ... ok
+test state::lease_retention::tests::publication_enforces_aggregate_retention_before_another_page_or_monitor_tick ... ok
+test state::lease_retention::tests::publication_expires_full_roots_while_two_inflight_selections_keep_only_bounded_pages ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 67 filtered out; finished in 0.30s
+

@@ -44,3 +44,10 @@ Keep the compiler check in `validate_linux.sh`; a build argument never waives th
 Rust 1.97.1 requirement. Record the exact recipe, selected manifest and built image
 identity in acceptance evidence. Translated x86 execution is not native
 performance or endurance acceptance.
+
+The reference VM now provisions 200 GiB of disk. The earlier 120 GiB instance
+retained two complete failed functional workspaces and no longer had the 64 GiB
+free admission required for another frozen run. Its owned disk was expanded
+after both smoke daemons stopped; old source, binaries and logs were retained.
+`docs/evidence/linux-reference-expansion-20260908` records the before/after
+configuration and filesystem. This changes no historical run's environment.
