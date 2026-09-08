@@ -410,12 +410,87 @@ pub struct KasumiAdminClient {
     inner: proto::kasumi_admin_client::KasumiAdminClient<Channel>,
 }
 impl KasumiAdminClient {
+    pub async fn backup_session_status(
+        &mut self,
+        bearer: &str,
+        request: &kasumi_types::BackupSessionRequest,
+    ) -> Result<kasumi_types::BackupSessionStatus, ClientError> {
+        let mut wire = authorized(
+            bearer,
+            proto::BackupSessionJsonRequest {
+                request_json: encode(request)?,
+            },
+        )?;
+        wire.set_timeout(std::time::Duration::from_secs(300));
+        let response = self.inner.backup_session_status(wire).await?.into_inner();
+        let status: kasumi_types::BackupSessionStatus =
+            serde_json::from_slice(&response.response_json)?;
+        if status.intent.session_id != request.session_id {
+            return Err(ClientError::Json(
+                <serde_json::Error as serde::de::Error>::custom(
+                    "backup session identity differs from original request",
+                ),
+            ));
+        }
+        Ok(status)
+    }
+    pub async fn abort_backup_session(
+        &mut self,
+        bearer: &str,
+        request: &kasumi_types::AbortBackupSession,
+    ) -> Result<kasumi_types::BackupSessionStatus, ClientError> {
+        let mut wire = authorized(
+            bearer,
+            proto::BackupSessionJsonRequest {
+                request_json: encode(request)?,
+            },
+        )?;
+        wire.set_timeout(std::time::Duration::from_secs(300));
+        let response = self.inner.abort_backup_session(wire).await?.into_inner();
+        let status: kasumi_types::BackupSessionStatus =
+            serde_json::from_slice(&response.response_json)?;
+        if status.intent.session_id != request.session_id {
+            return Err(ClientError::Json(
+                <serde_json::Error as serde::de::Error>::custom(
+                    "backup session identity differs from original request",
+                ),
+            ));
+        }
+        Ok(status)
+    }
+    pub async fn cleanup_backup_session(
+        &mut self,
+        bearer: &str,
+        request: &kasumi_types::CleanupBackupSession,
+    ) -> Result<kasumi_types::BackupCleanupResult, ClientError> {
+        let mut wire = authorized(
+            bearer,
+            proto::BackupSessionJsonRequest {
+                request_json: encode(request)?,
+            },
+        )?;
+        wire.set_timeout(std::time::Duration::from_secs(300));
+        let response = self.inner.cleanup_backup_session(wire).await?.into_inner();
+        let result: kasumi_types::BackupCleanupResult =
+            serde_json::from_slice(&response.response_json)?;
+        if result.session_id != request.session_id
+            || result.deleted_objects > request.max_objects as u64
+        {
+            return Err(ClientError::Json(
+                <serde_json::Error as serde::de::Error>::custom(
+                    "backup cleanup result differs from original request",
+                ),
+            ));
+        }
+        Ok(result)
+    }
     /// Returns a proof only from this authenticated, pinned-mTLS administrative channel.
     pub async fn create_backup_checkpoint(
         &mut self,
         bearer: &str,
         request: &kasumi_types::CreateBackupCheckpoint,
     ) -> Result<VerifiedBackupCheckpoint, ClientError> {
+        let expected_id = request.session_id;
         let mut request = authorized(
             bearer,
             proto::CreateBackupCheckpointRequest {
@@ -433,6 +508,13 @@ impl KasumiAdminClient {
         checkpoint.validate().map_err(|error| {
             ClientError::Json(<serde_json::Error as serde::de::Error>::custom(error))
         })?;
+        if checkpoint.backup_id != expected_id {
+            return Err(ClientError::Json(
+                <serde_json::Error as serde::de::Error>::custom(
+                    "backup checkpoint identity differs from original request",
+                ),
+            ));
+        }
         Ok(VerifiedBackupCheckpoint::verified(checkpoint))
     }
 
@@ -442,6 +524,7 @@ impl KasumiAdminClient {
         bearer: &str,
         request: &kasumi_types::VerifyBackupCheckpoint,
     ) -> Result<VerifiedBackupCheckpoint, ClientError> {
+        let expected_id = request.backup_id;
         let mut request = authorized(
             bearer,
             proto::VerifyBackupCheckpointRequest {
@@ -459,6 +542,13 @@ impl KasumiAdminClient {
         checkpoint.validate().map_err(|error| {
             ClientError::Json(<serde_json::Error as serde::de::Error>::custom(error))
         })?;
+        if checkpoint.backup_id != expected_id {
+            return Err(ClientError::Json(
+                <serde_json::Error as serde::de::Error>::custom(
+                    "backup checkpoint identity differs from original request",
+                ),
+            ));
+        }
         Ok(VerifiedBackupCheckpoint::verified(checkpoint))
     }
 

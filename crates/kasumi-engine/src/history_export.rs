@@ -5,7 +5,6 @@ use super::*;
 pub(super) struct PublishedObject {
     pub id: uuid::Uuid,
     pub ciphertext_sha256: String,
-    pub key_catalog_sha256: String,
 }
 
 impl Database {
@@ -295,6 +294,28 @@ impl Database {
         destination: &dyn BackupDestination,
         cancellation: &QueryCancellation,
     ) -> Result<PublishedObject> {
+        self.publish_history_object_named(
+            context,
+            policy_epoch,
+            revision,
+            uuid::Uuid::new_v4(),
+            plaintext,
+            destination,
+            cancellation,
+        )
+        .await
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn publish_history_object_named(
+        &self,
+        context: &RequestContext,
+        policy_epoch: u64,
+        revision: u64,
+        id: uuid::Uuid,
+        plaintext: Vec<u8>,
+        destination: &dyn BackupDestination,
+        cancellation: &QueryCancellation,
+    ) -> Result<PublishedObject> {
         cancellation.check()?;
         self.engine
             .authorize_release(context, None, Action::Admin, policy_epoch)?;
@@ -302,7 +323,7 @@ impl Database {
         let max_plaintext_bytes = plaintext.len();
         let encrypted = self
             .store
-            .encrypt_backup(revision, &plaintext)
+            .encrypt_backup_with_id(id, revision, &plaintext)
             .map_err(|_| Error::new(ErrorCode::Unavailable, "history encryption failed"))?;
         drop(plaintext);
         let id = encrypted.id();
@@ -340,7 +361,6 @@ impl Database {
         Ok(PublishedObject {
             id,
             ciphertext_sha256: verified.ciphertext_sha256,
-            key_catalog_sha256: verified.key_catalog_sha256,
         })
     }
 }

@@ -96,6 +96,7 @@ async fn backup(root: &Path) -> (PathBuf, LocalRecoveryStart, ClientProfile) {
         .create_backup_checkpoint(
             &profile.bearer().unwrap(),
             &CreateBackupCheckpoint {
+                session_id: uuid::Uuid::new_v4(),
                 destination: "local".into(),
             },
         )

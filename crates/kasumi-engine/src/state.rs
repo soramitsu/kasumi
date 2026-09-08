@@ -1519,6 +1519,8 @@ fn apply_operation(
                         | "membership"
                         | "retirement_status"
                         | "retirement_receipt"
+                        | "backup_abort"
+                        | "backup_cleanup"
                 )
                 || !matches!(
                     event.outcome.as_str(),

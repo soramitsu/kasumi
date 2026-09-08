@@ -630,7 +630,7 @@ async fn encrypted_restart_and_full_restore_preserve_permanent_activation_receip
             .unwrap(),
     );
     let backup = db
-        .backup_checkpoint(context("owner"), destination.as_ref())
+        .backup_checkpoint(context("owner"), destination.as_ref(), uuid::Uuid::new_v4())
         .await
         .unwrap();
     db.shutdown().await.unwrap();

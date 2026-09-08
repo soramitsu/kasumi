@@ -36,13 +36,13 @@ Configure destination names in the server JSON, for example:
 }
 ```
 
-S3 destinations use `kind: "s3"`, an HTTPS `endpoint`, `region`, `bucket`, `prefix`, `max_bytes`, one absolute `credentials_file` path and nullable `ca_certificate`. The private credential file contains one JSON object with `access_key_id`, `secret_access_key`, and nullable `session_token`; all fields are reloaded together for each signed request. The adapter requires TLS 1.3, signs requests with SigV4, and refuses redirects. Filesystem and S3 publication are create-only. Choose limits for the dataset; maintenance admission conservatively reserves four times the destination byte ceiling for serialization/encryption work, so the configured node inflight budget must accommodate it.
+S3 destinations use `kind: "s3"`, an HTTPS `endpoint`, `region`, `bucket`, `prefix`, `max_bytes`, one absolute `credentials_file` path and nullable `ca_certificate`. The private credential file contains one JSON object with `access_key_id`, `secret_access_key`, and nullable `session_token`; all fields are reloaded together for each signed request. The adapter requires TLS 1.3, signs requests with SigV4, and refuses redirects. Filesystem and S3 publication are create-only. The destination byte limit bounds individual encrypted objects. Publication uses bounded chunk workspaces; complete verification currently reserves proportional workspace for decoded state and indexes, so node admission must accommodate that remaining capacity limitation.
 
 ```json
-{"operation":"backup","destination":"nightly"}
+{"operation":"backup","destination":"nightly","session_id":"5daa40b0-d0a4-4ad3-bec1-83ed5880e75a"}
 ```
 
-Run backup on the current tenant leader. The returned UUID identifies an encrypted, authenticated logical backup containing documents, schemas/index definitions, receipts, integrity metadata and wrapped-key dependencies. Backup and restore audit events are durable. Requests cannot choose filesystem paths or S3 URLs.
+Persist a newly chosen session UUID before sending the request and reuse it for ambiguous retries. See [durable backup sessions](backup-sessions.md) for status, abort, and cleanup. Run backup on the current tenant leader. The returned UUID identifies an encrypted, authenticated logical backup containing documents, schemas/index definitions, receipts, integrity metadata and wrapped-key dependencies. Backup and restore audit events are durable. Requests cannot choose filesystem paths or S3 URLs.
 
 ```json
 {"operation":"rotate_data_key"}

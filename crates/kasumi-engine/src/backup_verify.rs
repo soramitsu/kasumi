@@ -8,7 +8,6 @@ use crate::{
 use kasumi_types::*;
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeSet,
     future::Future,
     io::{Read, Seek, SeekFrom, Write},
     sync::Arc,
@@ -64,6 +63,7 @@ impl VerificationWork {
 
 pub(crate) trait BackupReader: Sync {
     fn tenant(&self) -> &str;
+    fn session_key_catalog(&self) -> &str;
     fn work_registration(&self) -> Option<Arc<VerificationWork>>;
     fn cancellation(&self) -> Option<kasumi_query::QueryCancellation>;
     fn check_access(&self) -> impl Future<Output = anyhow::Result<()>> + Send;
@@ -157,21 +157,43 @@ pub(crate) struct VerifiedBackup {
     pub state: TenantState,
     pub bytes: kasumi_store::SnapshotImage,
     pub checkpoint: FullBackupCheckpoint,
+    pub source_purpose: kasumi_store::StoragePurpose,
     pub _reservation: Arc<Reservation>,
     pub _registration: Option<Arc<VerificationWork>>,
 }
 
-pub(crate) fn key_lineage_digest(catalogs: &BTreeSet<String>) -> Result<String> {
-    if catalogs.is_empty() {
-        return Err(Error::new(
-            ErrorCode::Corruption,
-            "backup key dependencies missing",
-        ));
+/// Checked, constant-space commitment to catalogs in canonical graph traversal
+/// order. Repeated catalogs remain records; no tenant-sized de-duplication set.
+struct KeyLineage {
+    hash: Sha256,
+    count: u64,
+}
+impl KeyLineage {
+    fn new() -> Self {
+        let mut hash = Sha256::new();
+        hash.update(b"kasumi.full-backup-key-catalog-stream.v1\0");
+        Self { hash, count: 0 }
     }
-    for digest in catalogs {
+    fn add(&mut self, digest: &str) -> Result<()> {
         validate_sha256(digest)?;
+        self.count = self.count.checked_add(1).ok_or_else(|| {
+            Error::new(
+                ErrorCode::ResourceExhausted,
+                "backup key record count overflow",
+            )
+        })?;
+        self.hash.update([1]);
+        self.hash.update(
+            hex::decode(digest)
+                .map_err(|_| Error::new(ErrorCode::Corruption, "invalid key catalog digest"))?,
+        );
+        Ok(())
     }
-    Ok(staged_digest(&("kasumi.full-backup-key-catalogs.v1", catalogs))?.0)
+    fn finish(mut self) -> String {
+        self.hash.update([0]);
+        self.hash.update(self.count.to_be_bytes());
+        hex::encode(self.hash.finalize())
+    }
 }
 
 pub(crate) async fn verify(
@@ -190,9 +212,13 @@ pub(crate) async fn verify(
         .object(backup_id, MANIFEST_BYTES, None, false)
         .await?;
     let manifest_ciphertext_sha256 = envelope.ciphertext_sha256.clone();
-    let mut key_catalogs = BTreeSet::from([envelope.key_catalog_sha256.clone()]);
+    let source_purpose = envelope.source_purpose.clone();
+    let mut key_catalogs = KeyLineage::new();
+    key_catalogs.add(reader.session_key_catalog())?;
+    key_catalogs.add(&envelope.key_catalog_sha256)?;
     let manifest: FullBackupManifest = serde_json::from_slice(&envelope.snapshot)?;
     manifest.validate()?;
+    source_purpose.validate_application_identity(&manifest.tenant, &manifest.source_incarnation)?;
     anyhow::ensure!(
         manifest.tenant == reader.tenant() && manifest.revision == envelope.revision,
         "full backup manifest identity differs"
@@ -241,7 +267,7 @@ pub(crate) async fn verify(
                 && (expected + 1 == manifest.page_count || page.chunks.len() == PAGE_CHUNKS),
             "backup page order differs"
         );
-        key_catalogs.insert(contents.key_catalog_sha256.clone());
+        key_catalogs.add(&contents.key_catalog_sha256)?;
         pages.write_all(&(contents.snapshot.len() as u64).to_be_bytes())?;
         pages.write_all(&contents.snapshot)?;
         pages.write_all(&vec![0; PAGE_BYTES - contents.snapshot.len()])?;
@@ -288,7 +314,7 @@ pub(crate) async fn verify(
                         || chunk.plaintext_bytes == CHUNK_BYTES),
                 "backup chunk order or size differs"
             );
-            key_catalogs.insert(contents.key_catalog_sha256.clone());
+            key_catalogs.add(&contents.key_catalog_sha256)?;
             digest.update(&contents.snapshot);
             spool.write_all(&contents.snapshot)?;
         }
@@ -334,7 +360,11 @@ pub(crate) async fn verify(
                 true,
             )
             .await?;
-        key_catalogs.insert(contents.key_catalog_sha256.clone());
+        key_catalogs.add(&contents.key_catalog_sha256)?;
+        contents
+            .source_purpose
+            .validate_application_identity(&state.tenant, &archive.manifest.source_incarnation)?;
+        let history_purpose = contents.source_purpose.clone();
         let stored: HistoryArchiveManifest = serde_json::from_slice(&contents.snapshot)?;
         anyhow::ensure!(
             stored == archive.manifest,
@@ -350,11 +380,12 @@ pub(crate) async fn verify(
                 )
                 .await?;
             anyhow::ensure!(
-                contents.snapshot.len() == chunk.plaintext_bytes
+                contents.source_purpose == history_purpose
+                    && contents.snapshot.len() == chunk.plaintext_bytes
                     && hex::encode(Sha256::digest(&contents.snapshot)) == chunk.plaintext_sha256,
                 "full backup history chunk plaintext differs"
             );
-            key_catalogs.insert(contents.key_catalog_sha256.clone());
+            key_catalogs.add(&contents.key_catalog_sha256)?;
             let body: HistoryArchiveChunk = serde_json::from_slice(&contents.snapshot)?;
             anyhow::ensure!(
                 body.archive_id == archive.manifest.archive_id
@@ -402,10 +433,11 @@ pub(crate) async fn verify(
         resident_sha256: manifest.resident_sha256,
         backup_id,
         manifest_ciphertext_sha256,
-        key_lineage_digest: key_lineage_digest(&key_catalogs)?,
+        key_lineage_digest: key_catalogs.finish(),
     };
     checkpoint.validate()?;
     Ok(VerifiedBackup {
+        source_purpose,
         state,
         bytes,
         checkpoint,

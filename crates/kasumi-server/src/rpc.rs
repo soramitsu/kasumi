@@ -21,6 +21,8 @@ pub use lifecycle::NativeLifecycleControl;
 pub use target::NativeTargetRecovery;
 #[path = "rpc_authority.rs"]
 mod authority;
+#[path = "rpc_backup_sessions.rs"]
+mod backup_sessions;
 #[path = "rpc_credentials.rs"]
 mod credentials;
 #[path = "rpc_retirement.rs"]
@@ -682,6 +684,27 @@ impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
         self.verify_retirement_receipt_rpc(request).await
     }
 
+    async fn backup_session_status(
+        &self,
+        request: Request<BackupSessionJsonRequest>,
+    ) -> Result<Response<BackupSessionJsonResponse>, Status> {
+        self.backup_session_rpc(request, backup_sessions::SessionOperation::Status)
+            .await
+    }
+    async fn abort_backup_session(
+        &self,
+        request: Request<BackupSessionJsonRequest>,
+    ) -> Result<Response<BackupSessionJsonResponse>, Status> {
+        self.backup_session_rpc(request, backup_sessions::SessionOperation::Abort)
+            .await
+    }
+    async fn cleanup_backup_session(
+        &self,
+        request: Request<BackupSessionJsonRequest>,
+    ) -> Result<Response<BackupSessionJsonResponse>, Status> {
+        self.backup_session_rpc(request, backup_sessions::SessionOperation::Cleanup)
+            .await
+    }
     async fn create_backup_checkpoint(
         &self,
         request: Request<CreateBackupCheckpointRequest>,
@@ -695,10 +718,13 @@ impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
             .audit_result(&context, database.response_fence(&context))
             .await
             .map_err(status)?;
-        let proof =
-            Box::pin(database.backup_checkpoint_named(context.clone(), &request.destination))
-                .await
-                .map_err(|error| self.registry.status(&context, error))?;
+        let proof = Box::pin(database.backup_checkpoint_named(
+            context.clone(),
+            &request.destination,
+            request.session_id,
+        ))
+        .await
+        .map_err(|error| self.registry.status(&context, error))?;
         let fence = self
             .auth
             .audit_result(

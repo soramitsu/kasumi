@@ -41,8 +41,42 @@ replica can encrypt an outcome under the authenticated original catalog after
 fresh authorization of its wrapping dependencies. Reserved control/audit/custody
 purposes cannot be used as application backup sessions.
 
-Implementation checkpoint: the destination primitives and authenticated session
-records are complete. Full-backup engine orchestration, native status/abort/cleanup
-commands, completed-outcome restore enforcement, and paginated wrapping-key
-retention reporting are the next integration step; the existing backup creation
-entry points have not yet switched to this managed namespace.
+The engine and native SDK require `CreateBackupCheckpoint { destination,
+session_id }`. Persist the chosen UUID before invoking creation. Repeating creation
+for a completed session verifies and returns its original checkpoint, even after
+later writes. A pending session with a published root resolves its complete graph
+before completion. A pending session without a root may be explicitly aborted.
+Uncertain storage reads never count as an absent root or grant cleanup authority.
+
+Native `BackupSessionStatus`, `AbortBackupSession`, and `CleanupBackupSession`
+operations use database administrator authorization and final response fences.
+Cleanup additionally carries a live credential/policy/cancellation guard into each
+filesystem worker and retains its admission charge and shutdown registration until
+the worker exits. Stopping the API waiter therefore cannot leave untracked deletion
+work. Every deletion checks that stricter request guard.
+
+Only complete graph verification constructs a checkpoint. Key lineage is a
+constant-space SHA-256 commitment with domain `kasumi.full-backup-key-catalog-stream.v1`,
+checked 64-bit record count, and explicit final marker/count. It records the
+permanent intent catalog, root catalog, manifest pages in authenticated backward
+chain order, resident chunks in forward order, and cold-history manifests/chunks
+in their canonical traversal order. Repeated catalogs remain records. The outcome
+must use the exact intent catalog; it adds no uncommitted key dependency.
+
+Restore requires the permanently completed session and compares the verified graph
+with that exact checkpoint. Local recovery also compares the authenticated original
+source purpose with the explicit local recovery request, including backups with no
+cold history. Copied cold-history objects retain their original purpose and catalog,
+and restored metadata persists the containing backup session namespace so reads and
+subsequent backups continue to find the copied objects after restart.
+
+Live session access requires the current immutable application installation and
+incarnation, allowing the authenticated original HA writer node and epoch to differ
+from the verifier. A historical completed session requires an exact retained
+restore-lineage checkpoint. Historical cleanup of an older aborted session requires
+a future explicit source-authorization operation; it is not granted by the current
+live API.
+
+Remaining release work: paginated wrapping-key retention reporting/CLI, transitive
+audit archive dependencies, live S3 acceptance, and the final release capacity and
+endurance gates. These are not certified by the focused session tests.

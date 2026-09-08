@@ -19,6 +19,7 @@ async fn native_backup_proof_is_admin_only_configured_and_verified_through_secur
     let read_only = fixture.token("person", "tenant-a", "kasumi:read");
     let wire = || proto::CreateBackupCheckpointRequest {
         request_json: serde_json::to_vec(&kasumi_types::CreateBackupCheckpoint {
+            session_id: uuid::Uuid::new_v4(),
             destination: "approved".into(),
         })
         .unwrap(),
@@ -144,6 +145,7 @@ async fn native_backup_proof_is_admin_only_configured_and_verified_through_secur
         .create_backup_checkpoint(
             bearer,
             &kasumi_types::CreateBackupCheckpoint {
+                session_id: uuid::Uuid::new_v4(),
                 destination: "approved".into(),
             },
         )
@@ -169,6 +171,51 @@ async fn native_backup_proof_is_admin_only_configured_and_verified_through_secur
     assert!(
         client
             .verify_backup_checkpoint(read_only.strip_prefix("Bearer ").unwrap(), &request)
+            .await
+            .is_err()
+    );
+    let session_request = kasumi_types::BackupSessionRequest {
+        destination: "approved".into(),
+        session_id: proof.backup_id(),
+    };
+    let session_status = client
+        .backup_session_status(bearer, &session_request)
+        .await
+        .unwrap();
+    assert!(
+        matches!(session_status.outcome, Some(kasumi_types::BackupSessionOutcome::Complete { checkpoint, .. }) if checkpoint == *proof.checkpoint())
+    );
+    assert!(
+        client
+            .backup_session_status(read_only.strip_prefix("Bearer ").unwrap(), &session_request)
+            .await
+            .is_err()
+    );
+    let terminal = client
+        .abort_backup_session(
+            bearer,
+            &kasumi_types::AbortBackupSession {
+                destination: "approved".into(),
+                session_id: proof.backup_id(),
+                reason: "confirm durable outcome".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        terminal.outcome,
+        Some(kasumi_types::BackupSessionOutcome::Complete { .. })
+    ));
+    assert!(
+        client
+            .cleanup_backup_session(
+                bearer,
+                &kasumi_types::CleanupBackupSession {
+                    destination: "approved".into(),
+                    session_id: proof.backup_id(),
+                    max_objects: 256,
+                }
+            )
             .await
             .is_err()
     );

@@ -83,7 +83,7 @@ async fn retired_runtime_reopens_current_custody_without_constructing_applicatio
     db.install_archive_destination("approved".into(), destination.clone())
         .unwrap();
     let checkpoint = db
-        .backup_checkpoint(context.clone(), destination.as_ref())
+        .backup_checkpoint(context.clone(), destination.as_ref(), uuid::Uuid::new_v4())
         .await
         .unwrap();
     let request = kasumi_types::RetireSourceRequest {

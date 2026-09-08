@@ -16,8 +16,13 @@ struct LiveBackupReader<'a> {
     policy_epoch: u64,
     cancellation: QueryCancellation,
     registration: Arc<VerificationWork>,
+    source_purpose: &'a kasumi_store::StoragePurpose,
+    session_key_catalog: &'a str,
 }
 impl BackupReader for LiveBackupReader<'_> {
+    fn session_key_catalog(&self) -> &str {
+        self.session_key_catalog
+    }
     fn tenant(&self) -> &str {
         &self.context.tenant
     }
@@ -46,7 +51,7 @@ impl BackupReader for LiveBackupReader<'_> {
         id: uuid::Uuid,
         max_plaintext: usize,
         expected_ciphertext: Option<&'a str>,
-        _: bool,
+        history: bool,
     ) -> anyhow::Result<kasumi_store::BackupContents> {
         self.check_access().await?;
         let max_encrypted = max_plaintext.saturating_add(OBJECT_OVERHEAD);
@@ -65,6 +70,13 @@ impl BackupReader for LiveBackupReader<'_> {
             result = self.database.store.decrypt_backup_object(&encrypted, id, max_plaintext) => result.map_err(|_| Error::new(ErrorCode::Corruption, "backup authenticated object verification failed"))?,
             _ = cancelled(&self.cancellation) => return Err(cancelled_error().into()),
         };
+        if !history && &contents.source_purpose != self.source_purpose {
+            return Err(Error::new(
+                ErrorCode::Corruption,
+                "backup object source purpose differs from session",
+            )
+            .into());
+        }
         self.check_access().await?;
         Ok(contents)
     }
@@ -91,36 +103,89 @@ impl Database {
         &self,
         context: RequestContext,
         destination: &dyn BackupDestination,
+        session_id: uuid::Uuid,
     ) -> Result<VerifiedBackupCheckpoint> {
         let mut publication_admitted = false;
-        let result =
-            tokio::time::timeout(Duration::from_millis(BACKUP_OPERATION_TIMEOUT_MS), async {
-                let fence = self.response_fence(&context)?;
-                self.engine.authorize(&context, None, Action::Admin)?;
-                publication_admitted = true;
-                let expected = self
-                    .publish_full_backup(context.clone(), destination)
-                    .await?;
-                let proof = self
-                    .verify_backup_checkpoint_inner(&context, destination, expected.backup_id)
-                    .await?;
-                if proof.checkpoint() != &expected {
-                    return Err(Error::new(
-                        ErrorCode::Corruption,
-                        "published backup checkpoint differs from complete readback",
-                    ));
-                }
-                fence.check()?;
-                Ok(proof)
+        let result = self
+            .session_work(async {
+                tokio::time::timeout(Duration::from_millis(BACKUP_OPERATION_TIMEOUT_MS), async {
+                    let fence = self.response_fence(&context)?;
+                    self.engine.authorize(&context, None, Action::Admin)?;
+                    if session_id.is_nil() {
+                        return Err(Error::new(
+                            ErrorCode::InvalidArgument,
+                            "nil backup session identity",
+                        ));
+                    }
+                    if let Some(session) = self
+                        .backup_session(&context, destination, session_id)
+                        .await?
+                    {
+                        match session.outcome() {
+                            Some(BackupSessionOutcome::Complete { .. }) => {
+                                return self
+                                    .verify_backup_checkpoint_inner(
+                                        &context,
+                                        destination,
+                                        session_id,
+                                    )
+                                    .await;
+                            }
+                            Some(BackupSessionOutcome::Aborted { .. }) => {
+                                return Err(Error::new(
+                                    ErrorCode::Conflict,
+                                    "backup session was permanently aborted",
+                                ));
+                            }
+                            None => {
+                                publication_admitted = true;
+                                let proof = self
+                                    .verify_pending_backup_checkpoint(
+                                        &context,
+                                        destination,
+                                        &session,
+                                    )
+                                    .await?;
+                                self.finish_backup_session(
+                                    &context,
+                                    destination,
+                                    &session,
+                                    proof.checkpoint(),
+                                )
+                                .await?;
+                                fence.check()?;
+                                return Ok(proof);
+                            }
+                        }
+                    }
+                    publication_admitted = true;
+                    let (expected, session) = self
+                        .publish_full_backup(context.clone(), destination, session_id)
+                        .await?;
+                    let proof = self
+                        .verify_pending_backup_checkpoint(&context, destination, &session)
+                        .await?;
+                    if !expected.matches(proof.checkpoint()) {
+                        return Err(Error::new(
+                            ErrorCode::Corruption,
+                            "published backup checkpoint differs from complete readback",
+                        ));
+                    }
+                    self.finish_backup_session(&context, destination, &session, proof.checkpoint())
+                        .await?;
+                    fence.check()?;
+                    Ok(proof)
+                })
+                .await
+                .map_err(|_| {
+                    Error::new(
+                        ErrorCode::UnknownOutcome,
+                        "backup publication deadline expired; immutable artifacts may exist",
+                    )
+                })
+                .and_then(|result| result)
             })
-            .await
-            .map_err(|_| {
-                Error::new(
-                    ErrorCode::UnknownOutcome,
-                    "backup publication deadline expired; immutable artifacts may exist",
-                )
-            })
-            .and_then(|result| result);
+            .await;
         let result = self.audit_result(&context, result).await;
         if publication_admitted {
             result.map_err(|_| Error::new(ErrorCode::UnknownOutcome,
@@ -134,11 +199,12 @@ impl Database {
         &self,
         context: RequestContext,
         destination: &str,
+        session_id: uuid::Uuid,
     ) -> Result<VerifiedBackupCheckpoint> {
         let result = async {
             self.engine.authorize(&context, None, Action::Admin)?;
             let destination = self.archive_destination(destination)?;
-            self.backup_checkpoint(context.clone(), destination.as_ref())
+            self.backup_checkpoint(context.clone(), destination.as_ref(), session_id)
                 .await
         }
         .await;
@@ -179,11 +245,31 @@ impl Database {
         destination: &dyn BackupDestination,
         backup_id: uuid::Uuid,
     ) -> Result<VerifiedBackupCheckpoint> {
-        self.with_verified_backup(context, destination, backup_id, |verified, _, _| {
+        self.with_verified_backup(context, destination, backup_id, None, |verified, _, _| {
             Ok(VerifiedBackupCheckpoint::verified(
                 verified.checkpoint.clone(),
             ))
         })
+        .await
+    }
+
+    pub(super) async fn verify_pending_backup_checkpoint(
+        &self,
+        context: &RequestContext,
+        destination: &dyn BackupDestination,
+        session: &kasumi_store::VerifiedBackupSession,
+    ) -> Result<VerifiedBackupCheckpoint> {
+        self.with_verified_backup(
+            context,
+            destination,
+            session.intent().session_id,
+            Some(session),
+            |verified, _, _| {
+                Ok(VerifiedBackupCheckpoint::verified(
+                    verified.checkpoint.clone(),
+                ))
+            },
+        )
         .await
     }
 
@@ -198,6 +284,7 @@ impl Database {
             context,
             destination,
             expected.backup_id,
+            None,
             move |verified, deadline, cancellation| {
                 if verified.checkpoint != expected {
                     return Err(Error::new(
@@ -227,6 +314,7 @@ impl Database {
         context: &RequestContext,
         destination: &dyn BackupDestination,
         backup_id: uuid::Uuid,
+        pending: Option<&kasumi_store::VerifiedBackupSession>,
         finish: F,
     ) -> Result<T>
     where
@@ -267,9 +355,42 @@ impl Database {
         let epoch = state.state.policy_epoch;
         let current_revision = state.state.revision;
         drop(state);
+        let session = tokio::select! {
+            result = deadline.run(self.backup_session(context, destination, backup_id)) => result.map_err(|error| verification_error(error, deadline))??,
+            _ = cancelled(&cancellation) => return Err(cancelled_error()),
+        }.ok_or_else(|| Error::new(ErrorCode::NotFound, "backup session not found"))?;
+        if let Some(expected) = pending
+            && (expected.intent() != session.intent()
+                || expected.intent_ciphertext_sha256() != session.intent_ciphertext_sha256())
+        {
+            return Err(Error::new(
+                ErrorCode::Conflict,
+                "backup session intent changed",
+            ));
+        }
+        let completed = match session.outcome() {
+            Some(BackupSessionOutcome::Complete { checkpoint, .. }) => Some(checkpoint.clone()),
+            Some(BackupSessionOutcome::Aborted { .. }) => {
+                return Err(Error::new(
+                    ErrorCode::Conflict,
+                    "backup session was permanently aborted",
+                ));
+            }
+            None if pending.is_some() => None,
+            None => {
+                return Err(Error::new(
+                    ErrorCode::UnknownOutcome,
+                    "backup session has no permanent completion; resolve its creation first",
+                ));
+            }
+        };
+        let objects = kasumi_store::BackupSessionObjects::new(destination, backup_id)
+            .map_err(|error| verification_error(error, deadline))?;
         let reader = LiveBackupReader {
             database: self,
-            destination,
+            destination: &objects,
+            source_purpose: session.source_purpose(),
+            session_key_catalog: session.key_catalog_sha256(),
             context,
             policy_epoch: epoch,
             cancellation: cancellation.clone(),
@@ -279,6 +400,18 @@ impl Database {
             result = deadline.run(Box::pin(crate::backup_verify::verify(&reader, backup_id, self.admission(), deadline))) => result.map_err(|error| verification_error(error, deadline))?.map_err(|error| verification_error(error, deadline))?,
             _ = cancelled(&cancellation) => return Err(cancelled_error()),
         };
+        if completed
+            .as_ref()
+            .is_some_and(|expected| expected != &verified.checkpoint)
+            || verified.checkpoint.tenant != session.intent().tenant
+            || verified.checkpoint.source_incarnation != session.intent().source_incarnation
+            || verified.checkpoint.revision != session.intent().revision
+        {
+            return Err(Error::new(
+                ErrorCode::Corruption,
+                "backup graph differs from permanent session identity or outcome",
+            ));
+        }
         // Decoded resident state can be large; its destructor and reservation
         // also belong to the actual blocking worker, not a canceled caller.
         let worker_cancellation = cancellation.clone();

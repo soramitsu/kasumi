@@ -36,6 +36,7 @@ impl FullBackupCheckpoint {
 #[serde(deny_unknown_fields)]
 pub struct CreateBackupCheckpoint {
     pub destination: String,
+    pub session_id: uuid::Uuid,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -130,4 +131,40 @@ impl BackupSessionOutcome {
         }
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackupSessionRequest {
+    pub destination: String,
+    pub session_id: uuid::Uuid,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AbortBackupSession {
+    pub destination: String,
+    pub session_id: uuid::Uuid,
+    pub reason: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CleanupBackupSession {
+    pub destination: String,
+    pub session_id: uuid::Uuid,
+    pub max_objects: usize,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackupSessionStatus {
+    pub intent: BackupSessionIntent,
+    #[serde(deserialize_with = "crate::require_explicit_option")]
+    pub outcome: Option<BackupSessionOutcome>,
+    pub source_purpose_sha256: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackupCleanupResult {
+    pub session_id: uuid::Uuid,
+    pub deleted_objects: u64,
+    pub more_objects_observed: bool,
 }

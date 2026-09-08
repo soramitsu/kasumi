@@ -137,7 +137,11 @@ async fn checkpoint_binds_actual_generation_complete_graph_keys_and_encrypted_re
         .unwrap();
     let first_proof = fixture
         .db
-        .backup_checkpoint(context(), fixture.destination.as_ref())
+        .backup_checkpoint(
+            context(),
+            fixture.destination.as_ref(),
+            uuid::Uuid::new_v4(),
+        )
         .await
         .unwrap();
     fixture.store.rotate_data_key().await.unwrap();
@@ -149,7 +153,7 @@ async fn checkpoint_binds_actual_generation_complete_graph_keys_and_encrypted_re
     drop(state);
     let proof = fixture
         .db
-        .backup_checkpoint_named(context(), "approved")
+        .backup_checkpoint_named(context(), "approved", uuid::Uuid::new_v4())
         .await
         .unwrap();
     assert_eq!(proof.tenant(), "checkpoint");
@@ -159,8 +163,13 @@ async fn checkpoint_binds_actual_generation_complete_graph_keys_and_encrypted_re
     assert_eq!(proof.resident_sha256(), snapshot.sha256());
     let bytes = fixture
         .destination
-        .get(proof.backup_id(), 8 << 20)
+        .session_get(
+            proof.backup_id(),
+            kasumi_store::BackupSessionSlot::Object(proof.backup_id()),
+            8 << 20,
+        )
         .await
+        .unwrap()
         .unwrap();
     assert_eq!(
         proof.manifest_ciphertext_sha256(),
@@ -264,7 +273,11 @@ async fn missing_corrupt_resident_or_cold_dependency_and_history_subset_never_yi
         .clone();
     let proof = fixture
         .db
-        .backup_checkpoint(context(), fixture.destination.as_ref())
+        .backup_checkpoint(
+            context(),
+            fixture.destination.as_ref(),
+            uuid::Uuid::new_v4(),
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -278,13 +291,18 @@ async fn missing_corrupt_resident_or_cold_dependency_and_history_subset_never_yi
             .await
             .unwrap_err()
             .code,
-        ErrorCode::Corruption
+        ErrorCode::NotFound
     );
     let manifest = fixture
         .destination
-        .get(proof.backup_id(), 8 << 20)
+        .session_get(
+            proof.backup_id(),
+            kasumi_store::BackupSessionSlot::Object(proof.backup_id()),
+            8 << 20,
+        )
         .await
         .unwrap();
+    let manifest = manifest.unwrap();
     let contents = fixture
         .store
         .decrypt_backup_object(&manifest, proof.backup_id(), 4 << 20)
@@ -292,7 +310,16 @@ async fn missing_corrupt_resident_or_cold_dependency_and_history_subset_never_yi
         .unwrap();
     let value: serde_json::Value = serde_json::from_slice(&contents.snapshot).unwrap();
     let page_id = uuid::Uuid::parse_str(value["last_page"]["object_id"].as_str().unwrap()).unwrap();
-    let encrypted_page = fixture.destination.get(page_id, 8 << 20).await.unwrap();
+    let encrypted_page = fixture
+        .destination
+        .session_get(
+            proof.backup_id(),
+            kasumi_store::BackupSessionSlot::Object(page_id),
+            8 << 20,
+        )
+        .await
+        .unwrap()
+        .unwrap();
     let page = fixture
         .store
         .decrypt_backup_object(&encrypted_page, page_id, 4 << 20)
@@ -304,7 +331,9 @@ async fn missing_corrupt_resident_or_cold_dependency_and_history_subset_never_yi
         let path = fixture
             .directory
             .path()
-            .join("backups")
+            .join("backups/sessions")
+            .join(proof.backup_id().to_string())
+            .join("objects")
             .join(format!("{object}.kasumi"));
         let bytes = std::fs::read(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
@@ -358,6 +387,39 @@ struct PausedRead {
 }
 #[async_trait::async_trait]
 impl BackupDestination for PausedRead {
+    async fn session_put(
+        &self,
+        session: uuid::Uuid,
+        slot: kasumi_store::BackupSessionSlot,
+        bytes: Vec<u8>,
+    ) -> anyhow::Result<()> {
+        kasumi_store::BackupDestination::session_put(
+            self.destination.as_ref(),
+            session,
+            slot,
+            bytes,
+        )
+        .await
+    }
+    async fn session_get(
+        &self,
+        session: uuid::Uuid,
+        slot: kasumi_store::BackupSessionSlot,
+        limit: usize,
+    ) -> anyhow::Result<Option<Vec<u8>>> {
+        if matches!(slot, kasumi_store::BackupSessionSlot::Object(_)) {
+            self.entered.notify_one();
+            self.release.notified().await;
+        }
+        kasumi_store::BackupDestination::session_get(
+            self.destination.as_ref(),
+            session,
+            slot,
+            limit,
+        )
+        .await
+    }
+
     async fn put(&self, id: uuid::Uuid, bytes: Vec<u8>) -> anyhow::Result<()> {
         self.destination.put(id, bytes).await
     }
@@ -372,7 +434,11 @@ async fn verification_requires_current_global_admin_and_rechecks_policy_during_r
     let fixture = Fixture::new().await;
     let proof = fixture
         .db
-        .backup_checkpoint(context(), fixture.destination.as_ref())
+        .backup_checkpoint(
+            context(),
+            fixture.destination.as_ref(),
+            uuid::Uuid::new_v4(),
+        )
         .await
         .unwrap();
     let mut read_only = context();
@@ -436,7 +502,11 @@ async fn shutdown_cancels_pending_checkpoint_read_and_releases_database_work() {
     let fixture = Fixture::new().await;
     let proof = fixture
         .db
-        .backup_checkpoint(context(), fixture.destination.as_ref())
+        .backup_checkpoint(
+            context(),
+            fixture.destination.as_ref(),
+            uuid::Uuid::new_v4(),
+        )
         .await
         .unwrap();
     let paused = Arc::new(PausedRead {
@@ -461,4 +531,333 @@ async fn shutdown_cancels_pending_checkpoint_read_and_releases_database_work() {
         .unwrap();
     assert!(task.await.unwrap().is_err());
     fixture.audit.shutdown().await;
+}
+
+struct SessionFault {
+    inner: Arc<FilesystemBackupDestination>,
+    fail_objects: bool,
+    fail_outcome: bool,
+    lose_outcome_ack: bool,
+}
+#[async_trait::async_trait]
+impl BackupDestination for SessionFault {
+    async fn put(&self, id: uuid::Uuid, bytes: Vec<u8>) -> anyhow::Result<()> {
+        self.inner.put(id, bytes).await
+    }
+    async fn get(&self, id: uuid::Uuid, limit: usize) -> anyhow::Result<Vec<u8>> {
+        self.inner.get(id, limit).await
+    }
+    async fn session_get(
+        &self,
+        session: uuid::Uuid,
+        slot: kasumi_store::BackupSessionSlot,
+        limit: usize,
+    ) -> anyhow::Result<Option<Vec<u8>>> {
+        self.inner.session_get(session, slot, limit).await
+    }
+    async fn session_put(
+        &self,
+        session: uuid::Uuid,
+        slot: kasumi_store::BackupSessionSlot,
+        bytes: Vec<u8>,
+    ) -> anyhow::Result<()> {
+        if (self.fail_objects && matches!(slot, kasumi_store::BackupSessionSlot::Object(_)))
+            || (self.fail_outcome && matches!(slot, kasumi_store::BackupSessionSlot::Outcome))
+        {
+            anyhow::bail!("injected publication failure");
+        }
+        self.inner.session_put(session, slot, bytes).await?;
+        if self.lose_outcome_ack && matches!(slot, kasumi_store::BackupSessionSlot::Outcome) {
+            anyhow::bail!("completion committed but acknowledgement lost");
+        }
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn durable_session_resolves_lost_ack_and_never_reclaims_completed_graph() {
+    let fixture = Fixture::new().await;
+    fixture.write("before-backup").await;
+    let session = uuid::Uuid::new_v4();
+    let fault = SessionFault {
+        inner: fixture.destination.clone(),
+        fail_objects: false,
+        fail_outcome: false,
+        lose_outcome_ack: true,
+    };
+    let proof = fixture
+        .db
+        .backup_checkpoint(context(), &fault, session)
+        .await
+        .unwrap();
+    fixture.write("after-backup").await;
+    let retry = fixture
+        .db
+        .backup_checkpoint_named(context(), "approved", session)
+        .await
+        .unwrap();
+    assert_eq!(proof.checkpoint(), retry.checkpoint());
+    let status = fixture
+        .db
+        .abort_backup_session(
+            context(),
+            AbortBackupSession {
+                destination: "approved".into(),
+                session_id: session,
+                reason: "operator reconciliation".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(status.outcome, Some(BackupSessionOutcome::Complete { checkpoint, .. }) if checkpoint == *proof.checkpoint())
+    );
+    let error = fixture
+        .db
+        .cleanup_backup_session(
+            context(),
+            CleanupBackupSession {
+                destination: "approved".into(),
+                session_id: session,
+                max_objects: 1,
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::Conflict);
+    fixture
+        .db
+        .verify_backup_checkpoint_named(context(), "approved", session)
+        .await
+        .unwrap();
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn aborted_session_cleanup_is_bounded_and_catches_late_uploads() {
+    let fixture = Fixture::new().await;
+    let session = uuid::Uuid::new_v4();
+    let fault = SessionFault {
+        inner: fixture.destination.clone(),
+        fail_objects: true,
+        fail_outcome: false,
+        lose_outcome_ack: false,
+    };
+    let error = fixture
+        .db
+        .backup_checkpoint(context(), &fault, session)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::UnknownOutcome);
+    let status = fixture
+        .db
+        .abort_backup_session(
+            context(),
+            AbortBackupSession {
+                destination: "approved".into(),
+                session_id: session,
+                reason: "failed upload".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        status.outcome,
+        Some(BackupSessionOutcome::Aborted { .. })
+    ));
+    for _ in 0..3 {
+        fixture
+            .destination
+            .session_put(
+                session,
+                kasumi_store::BackupSessionSlot::Object(uuid::Uuid::new_v4()),
+                vec![12; 100],
+            )
+            .await
+            .unwrap();
+    }
+    let request = CleanupBackupSession {
+        destination: "approved".into(),
+        session_id: session,
+        max_objects: 2,
+    };
+    let first = fixture
+        .db
+        .cleanup_backup_session(context(), request.clone())
+        .await
+        .unwrap();
+    assert_eq!(first.deleted_objects, 2);
+    assert!(first.more_objects_observed);
+    assert_eq!(
+        fixture
+            .db
+            .cleanup_backup_session(context(), request.clone())
+            .await
+            .unwrap()
+            .deleted_objects,
+        1
+    );
+    fixture
+        .destination
+        .session_put(
+            session,
+            kasumi_store::BackupSessionSlot::Object(uuid::Uuid::new_v4()),
+            vec![13; 100],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        fixture
+            .db
+            .cleanup_backup_session(context(), request.clone())
+            .await
+            .unwrap()
+            .deleted_objects,
+        1
+    );
+    assert_eq!(
+        fixture
+            .db
+            .cleanup_backup_session(context(), request)
+            .await
+            .unwrap()
+            .deleted_objects,
+        0
+    );
+    let status = fixture
+        .db
+        .backup_session_status(
+            context(),
+            BackupSessionRequest {
+                destination: "approved".into(),
+                session_id: session,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        status.outcome,
+        Some(BackupSessionOutcome::Aborted { .. })
+    ));
+    assert_eq!(
+        fixture
+            .db
+            .backup_checkpoint_named(context(), "approved", session)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn abort_resolves_published_root_before_considering_cleanup() {
+    let fixture = Fixture::new().await;
+    let session = uuid::Uuid::new_v4();
+    let fault = SessionFault {
+        inner: fixture.destination.clone(),
+        fail_objects: false,
+        fail_outcome: true,
+        lose_outcome_ack: false,
+    };
+    assert_eq!(
+        fixture
+            .db
+            .backup_checkpoint(context(), &fault, session)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::UnknownOutcome
+    );
+    assert_eq!(
+        fixture
+            .db
+            .verify_backup_checkpoint_named(context(), "approved", session)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::UnknownOutcome
+    );
+    let status = fixture
+        .db
+        .abort_backup_session(
+            context(),
+            AbortBackupSession {
+                destination: "approved".into(),
+                session_id: session,
+                reason: "resolve interrupted completion".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        status.outcome,
+        Some(BackupSessionOutcome::Complete { .. })
+    ));
+    fixture
+        .db
+        .verify_backup_checkpoint_named(context(), "approved", session)
+        .await
+        .unwrap();
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn local_restore_binds_exact_source_purpose_even_without_cold_archives() {
+    let fixture = Fixture::new().await;
+    let proof = fixture
+        .db
+        .backup_checkpoint_named(context(), "approved", uuid::Uuid::new_v4())
+        .await
+        .unwrap();
+    let node = NodeStore::open(fixture.directory.path().join("restore.redb")).unwrap();
+    let target = TenantStore::open_fixture(
+        node,
+        "checkpoint".into(),
+        Arc::new(LocalKeyProvider::new([0xD8; 32])),
+    )
+    .await
+    .unwrap();
+    let domains =
+        kasumi_store::test_utils::with_custody(target, Arc::new(LocalKeyProvider::new([241; 32])))
+            .await
+            .unwrap();
+    let source = kasumi_engine::RestoreSource {
+        destination_alias: "approved".into(),
+        destination: fixture.destination.clone(),
+        keys: Arc::new(LocalKeyProvider::new([0xD8; 32])),
+        timeout_ms: 60_000,
+    };
+    let request =
+        common::local_restore_request(context(), proof.checkpoint(), uuid::Uuid::new_v4());
+    let mut wrong =
+        common::local_restore_request(context(), proof.checkpoint(), request.target_incarnation);
+    wrong.source_purpose = kasumi_store::StoragePurpose::Standalone {
+        installation_id: uuid::Uuid::new_v4(),
+        tenant: "checkpoint".into(),
+        incarnation: uuid::Uuid::parse_str(proof.source_incarnation()).unwrap(),
+    };
+    let error = kasumi_engine::restore_local(
+        &source,
+        domains.clone(),
+        wrong,
+        kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+        fixture.audit.clone(),
+    )
+    .await
+    .err()
+    .unwrap();
+    assert!(format!("{error:#}").contains("local backup source purpose differs"));
+    let restored = kasumi_engine::restore_local(
+        &source,
+        domains,
+        request,
+        kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+        fixture.audit.clone(),
+    )
+    .await
+    .unwrap();
+    restored.shutdown().await.unwrap();
+    fixture.close().await;
 }

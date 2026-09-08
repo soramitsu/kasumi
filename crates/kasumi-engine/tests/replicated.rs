@@ -509,7 +509,10 @@ async fn replicated_restore_has_identical_genesis_and_requires_quorum_audit_befo
         )
         .await
         .unwrap();
-    let backup_id = source.backup(context(), backups.as_ref()).await.unwrap();
+    let backup_id = source
+        .backup(context(), backups.as_ref(), uuid::Uuid::new_v4())
+        .await
+        .unwrap();
     std::fs::remove_dir_all(cold_path).unwrap();
     let incarnation = uuid::Uuid::new_v4();
     let group = format!("tenant-a/{incarnation}");

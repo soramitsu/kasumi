@@ -133,6 +133,7 @@ fn bounded(bytes: usize) -> Result<()> {
 pub enum ManagementCommand {
     Backup {
         destination: String,
+        session_id: Uuid,
     },
     RotateDataKey,
     RewrapKeys,
@@ -768,7 +769,7 @@ impl Administration {
         let source = self.current(&context.tenant)?;
         self.authorized(&source, context, false).await?;
         let _maintenance = match &command {
-            ManagementCommand::Backup { destination }
+            ManagementCommand::Backup { destination, .. }
             | ManagementCommand::PrepareRestore { destination, .. } => {
                 let limit = self
                     .config
@@ -836,12 +837,15 @@ impl Administration {
                     "routing":"select the operator-configured endpoint for the reported node ID"}),
                 )
             }
-            ManagementCommand::Backup { destination } => {
+            ManagementCommand::Backup {
+                destination,
+                session_id,
+            } => {
                 self.event(context, SecurityEventKind::Backup, SecurityOutcome::Started)
                     .await?;
                 let result = source
                     .database
-                    .backup(context.clone(), self.destination(&destination)?)
+                    .backup(context.clone(), self.destination(&destination)?, session_id)
                     .await;
                 self.event(
                     context,

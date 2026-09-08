@@ -469,7 +469,7 @@ async fn archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_res
         db.engine().snapshot().unwrap().len()
     );
     assert!(
-        !db.backup(context(), destination.as_ref())
+        !db.backup(context(), destination.as_ref(), uuid::Uuid::new_v4())
             .await
             .unwrap()
             .is_nil()
@@ -621,11 +621,19 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
     assert!(state.state.collections["docs"].documents.is_empty());
     drop(state);
     let checkpoint = db
-        .backup_checkpoint(context(), backups.as_ref())
+        .backup_checkpoint(context(), backups.as_ref(), uuid::Uuid::new_v4())
         .await
         .unwrap();
     let backup_id = checkpoint.backup_id();
-    let encrypted = backups.get(backup_id, 8 << 20).await.unwrap();
+    let encrypted = backups
+        .session_get(
+            backup_id,
+            kasumi_store::BackupSessionSlot::Object(backup_id),
+            8 << 20,
+        )
+        .await
+        .unwrap()
+        .unwrap();
     let full = kasumi_store::EncryptedBackup::from_bytes(&encrypted, 4 << 20)
         .unwrap()
         .decrypt_fixture("history", Arc::new(LocalKeyProvider::new([0xD3; 32])))
@@ -740,8 +748,11 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
 
     // Subsets, unavailable historical keys and corrupt/missing dependencies
     // cannot install either bootstrap or Raft identity.
-    let dependency_path =
-        backup_path.join(format!("{}.kasumi", archive.manifest.chunks[1].object_id));
+    let dependency_path = backup_path
+        .join("sessions")
+        .join(backup_id.to_string())
+        .join("objects")
+        .join(format!("{}.kasumi", archive.manifest.chunks[1].object_id));
     let valid_dependency = std::fs::read(&dependency_path).unwrap();
     for (suffix, selected_id) in [
         (
@@ -918,6 +929,24 @@ async fn scoped_feed_advances_through_filtered_commit_tail_and_emits_only_real_d
 
 #[async_trait::async_trait]
 impl BackupDestination for PendingDestination {
+    async fn session_get(
+        &self,
+        _session: uuid::Uuid,
+        _slot: kasumi_store::BackupSessionSlot,
+        _limit: usize,
+    ) -> anyhow::Result<Option<Vec<u8>>> {
+        Ok(None)
+    }
+    async fn session_put(
+        &self,
+        _session: uuid::Uuid,
+        _slot: kasumi_store::BackupSessionSlot,
+        _bytes: Vec<u8>,
+    ) -> anyhow::Result<()> {
+        self.entered.notify_one();
+        std::future::pending().await
+    }
+
     async fn put(&self, _id: uuid::Uuid, _bytes: Vec<u8>) -> anyhow::Result<()> {
         self.entered.notify_one();
         std::future::pending().await
@@ -993,7 +1022,10 @@ async fn shutdown_cancels_pending_archive_upload_and_keeps_source_rows_on_restar
     let backup = tokio::spawn({
         let db = db.clone();
         let pending = pending.clone();
-        async move { db.backup(context(), pending.as_ref()).await }
+        async move {
+            db.backup(context(), pending.as_ref(), uuid::Uuid::new_v4())
+                .await
+        }
     });
     tokio::time::timeout(
         std::time::Duration::from_secs(5),

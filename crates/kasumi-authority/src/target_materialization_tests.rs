@@ -104,7 +104,7 @@ impl MaterialFixture {
             FilesystemBackupDestination::new(issuer._dir.path().join("backups"), 16 << 20).unwrap(),
         );
         let checkpoint = source_db
-            .backup_checkpoint(context, destination.as_ref())
+            .backup_checkpoint(context, destination.as_ref(), uuid::Uuid::new_v4())
             .await
             .unwrap();
         let target = RecoveryTarget {
