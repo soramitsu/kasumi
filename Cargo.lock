@@ -1748,6 +1748,7 @@ dependencies = [
  "base64 0.22.1",
  "hex",
  "jsonwebtoken",
+ "kasumi-client",
  "kasumi-engine",
  "kasumi-raft",
  "kasumi-server",
