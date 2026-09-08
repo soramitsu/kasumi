@@ -233,6 +233,13 @@ def functional_gates(jobs):
         ("dependency-patches", [sys.executable, "scripts/check_dependency_patches.py"]),
         ("bitmaps", cargo + ["test", "--manifest-path", "vendor/bitmaps-3.2.1/Cargo.toml"] + locked + encoded),
         ("lru", cargo + ["test", "--manifest-path", "vendor/lru-0.16.4/Cargo.toml"] + locked + encoded),
+        ("serde-json-default", cargo + ["test", "--manifest-path", "vendor/serde_json-1.0.151/Cargo.toml"] + locked + encoded),
+        ("serde-json-number", cargo + ["test", "--manifest-path", "vendor/serde_json-1.0.151/Cargo.toml",
+         "--features", "arbitrary_precision"] + locked + encoded),
+        ("serde-json-raw", cargo + ["test", "--manifest-path", "vendor/serde_json-1.0.151/Cargo.toml",
+         "--features", "raw_value"] + locked + encoded),
+        ("serde-json-combined", cargo + ["test", "--manifest-path", "vendor/serde_json-1.0.151/Cargo.toml",
+         "--features", "arbitrary_precision,raw_value,float_roundtrip,preserve_order"] + locked + encoded),
         ("workspace", cargo + ["test", "--workspace", "--all-features", "--all-targets", "--no-fail-fast"]
          + locked + encoded + ["--", "--test-threads=2"]),
         ("workspace-docs", cargo + ["test", "--workspace", "--all-features", "--doc", "--no-fail-fast"]

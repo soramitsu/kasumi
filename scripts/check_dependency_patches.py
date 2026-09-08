@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail closed if Cargo stops using either exact reviewed dependency patch."""
+"""Fail closed if Cargo stops using any exact reviewed dependency patch."""
 
 import hashlib
 import json

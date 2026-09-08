@@ -1,0 +1,163 @@
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
+
+const NUMBER: &str = "$serde_json::private::Number";
+const RAW: &str = "$serde_json::private::RawValue";
+
+fn object(key: &str, value: Value) -> Value {
+    let mut map = Map::new();
+    map.insert(key.to_owned(), value);
+    Value::Object(map)
+}
+
+#[test]
+fn every_string_marker_is_literal_including_escapes_and_invalid_inner_json() {
+    for key in [NUMBER, RAW] {
+        for value in [
+            Value::String("7".to_owned()),
+            Value::String("{\"nested\":[1,2]}".to_owned()),
+            Value::String("not JSON".to_owned()),
+            Value::Null,
+            object("ordinary", Value::Bool(true)),
+        ] {
+            let expected = object(key, value);
+            let text = serde_json::to_string(&expected).unwrap();
+            for input in [text.clone(), text.replace('$', "\\u0024")] {
+                let decoded: Value = serde_json::from_str(&input).unwrap();
+                assert_eq!(decoded, expected);
+                assert_eq!(
+                    serde_json::from_value::<Value>(decoded.clone()).unwrap(),
+                    expected
+                );
+                assert_eq!(Value::deserialize(&decoded).unwrap(), expected);
+            }
+        }
+    }
+}
+
+#[test]
+fn marker_order_never_changes_object_meaning() {
+    for key in [NUMBER, RAW] {
+        let first = format!(r#"{{"{key}":"7","ordinary":true}}"#);
+        let last = format!(r#"{{"ordinary":true,"{key}":"7"}}"#);
+        let expected = match object(key, Value::String("7".to_owned())) {
+            Value::Object(mut map) => {
+                map.insert("ordinary".to_owned(), Value::Bool(true));
+                Value::Object(map)
+            }
+            _ => unreachable!(),
+        };
+        for input in [first, last] {
+            assert_eq!(serde_json::from_str::<Value>(&input).unwrap(), expected);
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "op", rename_all = "snake_case")]
+enum Tagged {
+    Put { body: Value },
+}
+
+#[test]
+fn tagged_content_preserves_the_string_and_byte_key_distinction() {
+    for key in [NUMBER, RAW] {
+        let expected = Tagged::Put {
+            body: Value::Array(vec![object(key, Value::String("7".to_owned()))]),
+        };
+        let text = serde_json::to_string(&expected).unwrap();
+        assert_eq!(serde_json::from_str::<Tagged>(&text).unwrap(), expected);
+        let value = serde_json::to_value(&expected).unwrap();
+        assert_eq!(
+            serde_json::from_value::<Tagged>(value.clone()).unwrap(),
+            expected
+        );
+        assert_eq!(Tagged::deserialize(&value).unwrap(), expected);
+    }
+}
+
+#[test]
+fn a_literal_string_does_not_start_another_json_parser() {
+    // Far deeper than the stock parser limit, but ordinary string data.
+    let inner = format!("{}0{}", "[".repeat(256), "]".repeat(256));
+    let expected = object(RAW, Value::String(inner));
+    let bytes = serde_json::to_vec(&expected).unwrap();
+    assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(), expected);
+}
+
+#[cfg(feature = "arbitrary_precision")]
+#[test]
+fn genuine_numbers_survive_direct_owned_borrowed_and_tagged_paths() {
+    for text in [
+        "18446744073709551616000000000000001",
+        "90071992547409931234567890.123456789",
+    ] {
+        let number: serde_json::Number = text.parse().unwrap();
+        let expected = Value::Number(number.clone());
+        assert_eq!(serde_json::from_str::<Value>(text).unwrap(), expected);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Number>(text).unwrap(),
+            number
+        );
+        assert_eq!(
+            serde_json::from_value::<Value>(expected.clone()).unwrap(),
+            expected
+        );
+        assert_eq!(Value::deserialize(&expected).unwrap(), expected);
+        let tagged = Tagged::Put { body: expected };
+        let encoded = serde_json::to_vec(&tagged).unwrap();
+        assert_eq!(serde_json::from_slice::<Tagged>(&encoded).unwrap(), tagged);
+        let value = serde_json::to_value(&tagged).unwrap();
+        assert_eq!(
+            serde_json::from_value::<Tagged>(value.clone()).unwrap(),
+            tagged
+        );
+        assert_eq!(Tagged::deserialize(&value).unwrap(), tagged);
+    }
+}
+
+#[cfg(feature = "arbitrary_precision")]
+#[test]
+fn typed_number_rejects_a_literal_marker_object_even_in_untagged_buffering() {
+    #[derive(Debug, Deserialize, PartialEq)]
+    #[serde(untagged)]
+    enum Either {
+        Number(serde_json::Number),
+        Literal(Value),
+    }
+    let expected = object(NUMBER, Value::String("7".to_owned()));
+    let bytes = serde_json::to_vec(&expected).unwrap();
+    assert!(serde_json::from_slice::<serde_json::Number>(&bytes).is_err());
+    assert!(serde_json::from_value::<serde_json::Number>(expected.clone()).is_err());
+    assert!(serde_json::Number::deserialize(&expected).is_err());
+    assert_eq!(
+        serde_json::from_slice::<Either>(&bytes).unwrap(),
+        Either::Literal(expected)
+    );
+    let number = "18446744073709551616000000000000001";
+    assert_eq!(
+        serde_json::from_str::<Either>(number).unwrap(),
+        Either::Number(number.parse().unwrap())
+    );
+}
+
+#[cfg(feature = "raw_value")]
+#[test]
+fn real_raw_capture_round_trips_without_interpreting_literal_marker_keys() {
+    use serde_json::value::RawValue;
+    for key in [NUMBER, RAW] {
+        let expected = object(key, Value::String("not JSON".to_owned()));
+        let bytes = serde_json::to_vec(&expected).unwrap();
+        let borrowed: &RawValue = serde_json::from_slice(&bytes).unwrap();
+        let owned: Box<RawValue> = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(borrowed.get().as_bytes(), bytes);
+        assert_eq!(owned.get(), borrowed.get());
+        assert_eq!(serde_json::to_value(borrowed).unwrap(), expected);
+        assert_eq!(serde_json::to_value(&owned).unwrap(), expected);
+        assert_eq!(serde_json::to_vec(&owned).unwrap(), bytes);
+        let from_value: Box<RawValue> = serde_json::from_value(expected.clone()).unwrap();
+        let from_borrowed = Box::<RawValue>::deserialize(&expected).unwrap();
+        assert_eq!(from_value.get().as_bytes(), bytes);
+        assert_eq!(from_borrowed.get().as_bytes(), bytes);
+    }
+}

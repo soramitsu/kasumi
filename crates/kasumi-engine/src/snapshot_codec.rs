@@ -881,3 +881,7 @@ mod tests {
 #[cfg(test)]
 #[path = "snapshot_recovery_tests.rs"]
 mod recovery_tests;
+
+#[cfg(test)]
+#[path = "snapshot_literal_tests.rs"]
+mod literal_tests;

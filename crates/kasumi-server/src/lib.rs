@@ -8,6 +8,8 @@ pub mod authority_client;
 pub mod authority_runtime;
 mod backup_cli;
 pub mod cluster;
+#[cfg(test)]
+mod json_literal_tests;
 pub mod lifecycle_runtime;
 pub mod local_auth;
 pub mod local_recovery;
