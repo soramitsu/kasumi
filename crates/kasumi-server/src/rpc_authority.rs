@@ -56,6 +56,64 @@ impl NativeAuthority {
 }
 #[tonic::async_trait]
 impl kasumi_authority_server::KasumiAuthority for NativeAuthority {
+    async fn signing_maintenance(
+        &self,
+        request: Request<AuthorityJsonRequest>,
+    ) -> Result<Response<AuthorityJsonResponse>, Status> {
+        let context = verified(&self.auth, &request).await?;
+        request
+            .extensions()
+            .get::<crate::tls::AuthenticatedTlsPeer>()
+            .and_then(|peer| peer.certificate_pin())
+            .ok_or_else(|| {
+                Status::unauthenticated("actual mutually authenticated TLS peer required")
+            })?;
+        let body: kasumi_serving::AuthoritySigningRequest =
+            decode_json(&request.into_inner().request_json).map_err(status)?;
+        let mutation = matches!(
+            body.action,
+            kasumi_serving::AuthoritySigningAction::Start { .. }
+        );
+        let (reply, fence) = self
+            .auth
+            .audit_result(
+                &context,
+                self.authority
+                    .signing_maintenance(context.clone(), body)
+                    .await,
+            )
+            .await
+            .map_err(status)?;
+        let response = AuthorityJsonResponse {
+            response_json: encode_json(&reply).map_err(|error| {
+                if mutation {
+                    Status::unknown(format!(
+                        "global signer outcome retained; encoding failed: {error}"
+                    ))
+                } else {
+                    status(error)
+                }
+            })?,
+        };
+        let outcome = self
+            .auth
+            .audit_result(&context, fence.release().await)
+            .await;
+        let outcome = match outcome {
+            Ok(()) => fence.release().await,
+            Err(error) => Err(error),
+        };
+        outcome.map_err(|error| {
+            if mutation {
+                Status::unknown(format!(
+                    "global signer outcome retained; recover original identity: {error}"
+                ))
+            } else {
+                status(error)
+            }
+        })?;
+        Ok(Response::new(response))
+    }
     async fn signer_maintenance(
         &self,
         request: Request<AuthorityJsonRequest>,

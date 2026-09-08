@@ -209,3 +209,40 @@ rotation still requires durable dispatch and acknowledgements for every other
 authority, data and Control verifier, permanent revocation for unavailable
 members, coordinated operational-key loading, and the complete issuer drain.
 The local API must not be used to declare that this remaining work has happened.
+
+## Replicated issuer signing head
+
+Authority bootstrap configuration requires `initial_signer_certificate`, the
+exact generation-one operational certificate. It is part of the immutable
+bootstrap binding, separately from the installation root and the replaceable
+`operational_signer_file`. An existing authority store rejects a different
+bootstrap certificate. Encrypted snapshots retain the current global signing
+head and permanent stage/activation receipts; restore verifies their causal
+positions and rejects a head that omits or rolls back retained transitions.
+
+Use the native authority client's `signing_maintenance` with an independently
+installed `domain_sha256`, fresh `observation_id` and typed `observe`, `receipt`
+or `start` action. Replies supply the current `policy_epoch` and
+`operational_revision` for a new exact command. `start` accepts
+`StageSignerGeneration` and `ActivateSignerGeneration` commands. The former
+retains the successor certificate; the latter names that exact stage operation
+and certificate digest. The original command UUID, expected revisions and finite
+`not_after_ms` remain unchanged across retries. This endpoint uses current
+mTLS/JWT policy and quorum authorization, so operators can resolve an activation
+that has sealed the loaded operational key.
+
+Global activation changes the replicated accepted issuer certificate. Every
+lease admission and captured authority response checks that certificate after
+its current quorum barrier, in addition to the exact local verifier and original
+request authority. A member whose local signer still uses the prior generation
+can continue authenticated administrative recovery while its old lease issuance
+and responses fail. Restart preserves this fence. Explicit local trust activation
+and key reload then install the selected key on each issuer member.
+
+Global retirement remains pending after activation. A local retirement receipt
+cannot clear it, and a new global stage is rejected while retirement is pending.
+The coordinator still needs the complete enrolled receiver/issuer roster,
+current authenticated acknowledgments or permanent revocations, and the full
+issuer drain before global retirement can complete. Global stage abort and
+retirement completion are not exposed yet. These prerequisites are required
+before the release can claim complete distributed signer rotation.

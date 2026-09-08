@@ -87,6 +87,13 @@ impl AuthorityRuntimeConfig {
     }
     pub fn validate(&self) -> Result<()> {
         self.installation.validate()?;
+        kasumi_serving::SigningCertificateVerification::verify(
+            &self.bootstrap.initial_signer_certificate,
+            &self
+                .installation
+                .manifest
+                .signing_domain(self.installation.partition)?,
+        )?;
         self.node_settings()?.validate(self.replication.node_id)?;
         ensure!(
             self.installed_verifiers.len() == self.replication.peers.len()

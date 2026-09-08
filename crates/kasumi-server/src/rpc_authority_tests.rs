@@ -199,6 +199,7 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
     let router = Arc::new(kasumi_raft::InProcessRouter::default());
     let settings = kasumi_authority::AuthorityNodeSettings {
         bootstrap: kasumi_authority::AuthorityBootstrap {
+            initial_signer_certificate: certificate.clone(),
             administrators: BTreeSet::from(["operator".into()]),
             capacity: kasumi_serving::AuthorityCapacity {
                 max_tenants: 10,
@@ -873,6 +874,38 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
             .is_err()
     );
     source_response.check().unwrap();
+    let global_request = |action| AuthoritySigningRequest {
+        observation_id: uuid::Uuid::new_v4(),
+        domain_sha256: domain.digest().unwrap(),
+        action,
+    };
+    let global = client
+        .signing_maintenance(&operator, &global_request(AuthoritySigningAction::Observe))
+        .await
+        .unwrap();
+    let global_stage = AuthorityMaintenanceCommand {
+        operation_id: uuid::Uuid::new_v4(),
+        expected_policy_epoch: global.policy_epoch,
+        expected_operational_revision: global.operational_revision,
+        not_after_ms: deadline,
+        action: AuthorityMaintenanceAction::StageSignerGeneration {
+            certificate: next_certificate.clone(),
+        },
+    };
+    let staged_global = client
+        .signing_maintenance(
+            &operator,
+            &global_request(AuthoritySigningAction::Start {
+                command: global_stage.clone(),
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(staged_global.current.active.identity.generation, 1);
+    assert_eq!(
+        staged_global.status.unwrap().phase,
+        AuthorityMaintenancePhase::Completed
+    );
     let mut different = stage.clone();
     different.not_after_ms -= 1;
     assert!(
@@ -904,6 +937,39 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
             .await
             .is_err(),
         "still-running retired issuer cannot mint a fresh live lease"
+    );
+    let global = client
+        .signing_maintenance(&operator, &global_request(AuthoritySigningAction::Observe))
+        .await
+        .unwrap();
+    let global_activation = global_request(AuthoritySigningAction::Start {
+        command: AuthorityMaintenanceCommand {
+            operation_id: uuid::Uuid::new_v4(),
+            expected_policy_epoch: global.policy_epoch,
+            expected_operational_revision: global.operational_revision,
+            not_after_ms: deadline,
+            action: AuthorityMaintenanceAction::ActivateSignerGeneration {
+                stage_operation_id: global_stage.operation_id,
+                certificate_sha256: next_certificate.digest().unwrap(),
+            },
+        },
+    });
+    let global_activated = client
+        .signing_maintenance(&operator, &global_activation)
+        .await
+        .unwrap();
+    assert_eq!(global_activated.current.active.identity.generation, 2);
+    assert_eq!(local_owner.current().unwrap().active.identity.generation, 1);
+    assert!(
+        source_response.check().is_err(),
+        "consensus seals the unchanged local issuer generation"
+    );
+    assert_eq!(
+        client
+            .signing_maintenance(&operator, &global_activation)
+            .await
+            .unwrap(),
+        global_activated
     );
     let activated = client
         .signer_maintenance(
@@ -945,6 +1011,16 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
         .unwrap();
     assert!(retired.current.retirement.is_none());
     assert_eq!(retired.current.revision, 3);
+    assert!(
+        client
+            .signing_maintenance(&operator, &global_request(AuthoritySigningAction::Observe))
+            .await
+            .unwrap()
+            .current
+            .retirement
+            .is_some(),
+        "a local retirement receipt cannot complete global retirement"
+    );
     let historical = client
         .signer_maintenance(
             &operator,

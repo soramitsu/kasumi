@@ -37,6 +37,7 @@ use maintenance_state::{OperationalState, PreparedMaintenance, RevokedMember};
 #[serde(deny_unknown_fields)]
 struct Meta {
     installation: AuthorityInstallation,
+    signing: AuthoritySigningHead,
     operational: OperationalState,
     maintenance_receipts: u64,
     member_revocations: u64,
@@ -133,6 +134,7 @@ pub(crate) enum PreparedOperation {
 pub(crate) struct Backend {
     store: Arc<TenantStore>,
     installation: AuthorityInstallation,
+    initial_signer_certificate: SigningCertificate,
     resource_budget_bytes: u64,
     mutation: Mutex<()>,
 }
@@ -186,11 +188,16 @@ impl Backend {
         if let Some(bytes) = store.get_bounded(NS, META, MAX_RECORD_BYTES)? {
             let meta: Meta = serde_json::from_slice(&bytes)?;
             ensure!(
-                meta.installation == installation,
-                "authority installation differs from durable genesis"
+                meta.installation == installation
+                    && meta.signing.initial == settings.bootstrap.initial_signer_certificate,
+                "authority installation or initial signer differs from durable genesis"
             );
+            meta.signing.validate()?;
         } else {
             let meta = Meta {
+                signing: AuthoritySigningHead::initial(
+                    settings.bootstrap.initial_signer_certificate.clone(),
+                )?,
                 administrators: settings.bootstrap.administrators.clone(),
                 operational: OperationalState {
                     revision: 0,
@@ -219,6 +226,7 @@ impl Backend {
         Ok(Arc::new(Self {
             store,
             installation,
+            initial_signer_certificate: settings.bootstrap.initial_signer_certificate.clone(),
             resource_budget_bytes: settings.resource_budget_bytes,
             mutation: Mutex::new(()),
         }))
@@ -1189,6 +1197,10 @@ impl Backend {
         );
         self.validate_lifecycle_snapshot(&snapshot)?;
         self.validate_maintenance_snapshot(&snapshot)?;
+        self.validate_signing_snapshot(&snapshot)?;
         Ok(snapshot)
     }
 }
+
+#[path = "signing_state.rs"]
+mod signing_state;
