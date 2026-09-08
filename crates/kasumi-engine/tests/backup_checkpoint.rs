@@ -185,6 +185,7 @@ async fn restore_hands_off_verified_workspace_with_production_and_destination_re
 
 #[tokio::test]
 async fn cancelled_restore_publication_keeps_storage_and_workspace_until_write_drains() {
+    use redb::StorageBackend;
     use std::sync::{
         Mutex,
         atomic::{AtomicBool, Ordering},
@@ -281,7 +282,7 @@ async fn cancelled_restore_publication_keeps_storage_and_workspace_until_write_d
     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     assert!(backend.blocked.load(Ordering::SeqCst));
     task.abort();
-    assert!(task.await.unwrap_err().is_cancelled());
+    assert!(matches!(task.await, Err(error) if error.is_cancelled()));
     assert!(weak.upgrade().is_some());
     assert!(admission.snapshot().reserved_bytes > 192 << 20);
     release_tx.send(()).unwrap();
