@@ -120,7 +120,8 @@ pub(crate) fn create(config: &RuntimeConfig, output: &Path) -> Result<()> {
         bytes.len() <= MAX_MANIFEST,
         "operator backup manifest work budget exceeded"
     );
-    // The manifest publishes only after every private copied dependency is durable.
+    validate_files(output, &manifest)?;
+    // Publish after durable readback, key inventory, signer and CA-pair validation.
     private_files::create(&output.join("manifest.json"), &bytes)?;
     verify(output)?;
     Ok(())
@@ -145,6 +146,15 @@ pub fn verify(directory: &Path) -> Result<Verification> {
     private_files::check_directory(directory)?;
     let bytes = private_files::read(&directory.join("manifest.json"), MAX_MANIFEST)?;
     let manifest: Manifest = serde_json::from_slice(&bytes)?;
+    let (keys, generations) = validate_files(directory, &manifest)?;
+    Ok(Verification {
+        manifest_sha256: hex::encode(Sha256::digest(bytes.as_slice())),
+        files: manifest.files.len(),
+        wrapping_keyrings: keys,
+        retained_wrapping_generations: generations,
+    })
+}
+fn validate_files(directory: &Path, manifest: &Manifest) -> Result<(usize, u64)> {
     ensure!(
         manifest.format == 1
             && manifest.installation_database.is_absolute()
@@ -191,12 +201,26 @@ pub fn verify(directory: &Path) -> Result<Verification> {
             );
         }
     }
-    Ok(Verification {
-        manifest_sha256: hex::encode(Sha256::digest(bytes.as_slice())),
-        files: manifest.files.len(),
-        wrapping_keyrings: keys,
-        retained_wrapping_generations: generations,
-    })
+    let required = |role: &str| -> Result<PathBuf> {
+        let mut matches = manifest.files.iter().filter(|entry| entry.role == role);
+        let found = matches
+            .next()
+            .context("required operator backup role is missing")?;
+        ensure!(
+            matches.next().is_none(),
+            "operator role occurs more than once"
+        );
+        Ok(directory.join(&found.file))
+    };
+    for role in ["security", "control", "control-custody"] {
+        required(role)?;
+    }
+    crate::local_auth::trusted_keys(&required("jwt-signers")?)?;
+    let ca = private_files::read(&required("certificate-authority-public")?, MAX_FILE)?;
+    let key = private_files::read(&required("certificate-authority-private")?, MAX_FILE)?;
+    let identity = kasumi_transport::TlsIdentity::from_pem(&ca, &key)?;
+    kasumi_transport::server_config(&identity, kasumi_transport::ClientAuthentication::OAuth)?;
+    Ok((keys, generations))
 }
 
 #[cfg(test)]
