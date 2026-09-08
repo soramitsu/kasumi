@@ -167,7 +167,7 @@ async fn explicit_local_bootstrap_reads_the_complete_committed_generation() {
         }],
         strict_read_audit: false,
     };
-    let database = kasumi_engine::open_local(
+    let database = kasumi_engine::test_utils::open_fixture(
         kasumi_store::test_utils::with_custody(
             store.clone(),
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),

@@ -514,7 +514,7 @@ async fn open(
     )
     .await
     .unwrap();
-    let db = kasumi_engine::open_local(
+    let db = kasumi_engine::test_utils::open_fixture(
         kasumi_store::test_utils::with_custody(
             store,
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),

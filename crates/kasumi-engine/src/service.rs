@@ -654,12 +654,21 @@ impl Database {
     /// Install one node-wide governor before the first admitted operation. Every
     /// tenant and the control group on a server must share the same instance.
     pub fn install_admission(&self, admission: Arc<NodeAdmission>) -> Result<()> {
-        self.admission.set(admission).map_err(|_| {
-            Error::new(
+        match self.admission.set(admission) {
+            Ok(()) => Ok(()),
+            Err(admission)
+                if self
+                    .admission
+                    .get()
+                    .is_some_and(|current| Arc::ptr_eq(current, &admission)) =>
+            {
+                Ok(())
+            }
+            Err(_) => Err(Error::new(
                 ErrorCode::Conflict,
                 "admission already configured or in use",
-            )
-        })
+            )),
+        }
     }
 
     fn admission(&self) -> &Arc<NodeAdmission> {
@@ -2191,7 +2200,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let db = crate::open_local(
+        let db = crate::test_utils::open_fixture(
             kasumi_store::test_utils::with_custody(
                 store,
                 std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),

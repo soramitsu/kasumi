@@ -206,7 +206,7 @@ async fn accepted_stop_release_failure_is_unknown_and_reopen_recovers_exact_tomb
     )
     .await
     .unwrap();
-    let db = crate::open_local(
+    let db = crate::test_utils::open_fixture(
         stores,
         Policy {
             grants: vec![Grant {

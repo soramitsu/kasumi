@@ -51,7 +51,7 @@ impl Fixture {
         )
         .await
         .unwrap();
-        let db = kasumi_engine::open_local(
+        let db = kasumi_engine::test_utils::open_fixture(
             kasumi_store::test_utils::with_custody(
                 store.clone(),
                 std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
@@ -223,7 +223,7 @@ async fn checkpoint_binds_actual_generation_complete_graph_keys_and_encrypted_re
     )
     .await
     .unwrap();
-    let db = kasumi_engine::open_local(
+    let db = kasumi_engine::test_utils::open_fixture(
         kasumi_store::test_utils::with_custody(
             store,
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
@@ -846,7 +846,7 @@ async fn local_restore_binds_exact_source_purpose_even_without_cold_archives() {
         &source,
         domains.clone(),
         wrong,
-        kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+        fixture.audit.admission().clone(),
         fixture.audit.clone(),
     )
     .await
@@ -857,7 +857,7 @@ async fn local_restore_binds_exact_source_purpose_even_without_cold_archives() {
         &source,
         domains,
         request,
-        kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+        fixture.audit.admission().clone(),
         fixture.audit.clone(),
     )
     .await
@@ -986,7 +986,7 @@ async fn archived_audit_backup_is_self_contained_and_source_unavailable_restore_
             &source,
             domains.clone(),
             common::local_restore_request(context(), proof.checkpoint(), target_incarnation),
-            kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+            target_audit.admission().clone(),
             target_audit.clone()
         )
         .await
@@ -1003,7 +1003,7 @@ async fn archived_audit_backup_is_self_contained_and_source_unavailable_restore_
             &source,
             domains.clone(),
             common::local_restore_request(context(), proof.checkpoint(), target_incarnation),
-            kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+            target_audit.admission().clone(),
             target_audit.clone(),
         )
         .await
@@ -1038,7 +1038,7 @@ async fn archived_audit_backup_is_self_contained_and_source_unavailable_restore_
             &source,
             wrong_domains,
             common::local_restore_request(context(), proof.checkpoint(), uuid::Uuid::new_v4()),
-            kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+            wrong_audit.admission().clone(),
             wrong_audit.clone(),
         )
         .await
@@ -1051,7 +1051,7 @@ async fn archived_audit_backup_is_self_contained_and_source_unavailable_restore_
         &source,
         domains,
         common::local_restore_request(context(), proof.checkpoint(), target_incarnation),
-        kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+        target_audit.admission().clone(),
         target_audit.clone(),
     )
     .await

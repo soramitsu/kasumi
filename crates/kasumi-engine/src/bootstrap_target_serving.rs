@@ -89,6 +89,7 @@ pub async fn open_serving_target(
     transport: Arc<dyn RaftTransport>,
     audit: Arc<SecurityAudit>,
 ) -> anyhow::Result<TargetServingReplica> {
+    audit.require_admission(&config.admission)?;
     let gate = stores
         .application()
         .storage_access()
@@ -171,6 +172,7 @@ pub async fn open_serving_target(
         })
         .await??;
         projection.check(&gate)?;
+        engine.install_audit_maintenance(&config.admission)?;
         let group = RaftGroup::open(
             config.node_id,
             format!("{}/{}", projection.tenant(), bootstrap.incarnation),

@@ -1,6 +1,9 @@
 //! Explicit fixture-only codecs for arithmetic and corruption tests. These are
 //! not portable snapshots, storage capabilities, or production restore APIs.
 use crate::TenantEngine;
+pub use crate::bootstrap::fixtures::{
+    open_fixture, open_fixture_replicated, open_fixture_with_incarnation,
+};
 use kasumi_store::SnapshotImage;
 use kasumi_types::{Error, ErrorCode, Result, TenantState};
 

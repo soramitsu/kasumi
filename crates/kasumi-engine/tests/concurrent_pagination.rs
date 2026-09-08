@@ -1,6 +1,6 @@
 mod common;
 
-use kasumi_engine::open_local;
+use kasumi_engine::test_utils::open_fixture;
 use kasumi_store::{NodeStore, TenantStore, test_utils::LocalKeyProvider};
 use kasumi_types::*;
 use serde_json::json;
@@ -66,7 +66,7 @@ async fn snapshot_pages_overlap_atomic_writers_and_current_policy_revocation() {
     )
     .await
     .unwrap();
-    let database = open_local(
+    let database = open_fixture(
         kasumi_store::test_utils::with_custody(
             store,
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),

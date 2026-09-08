@@ -1,6 +1,7 @@
 #[allow(dead_code)]
 mod common;
-use kasumi_engine::{Database, SECURITY_TENANT, SecurityAudit, open_local};
+use kasumi_engine::test_utils::open_fixture;
+use kasumi_engine::{Database, SECURITY_TENANT, SecurityAudit};
 use kasumi_store::{
     FilesystemBackupDestination, NodeStore, TenantStore, test_utils::LocalKeyProvider,
 };
@@ -36,7 +37,7 @@ async fn fixture(
         kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
     )
     .unwrap();
-    let db = open_local(
+    let db = open_fixture(
         kasumi_store::test_utils::with_custody(
             store.clone(),
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
@@ -286,7 +287,7 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
             checkpoint.checkpoint(),
             uuid::Uuid::new_v4(),
         ),
-        kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+        audit.admission().clone(),
         audit.clone(),
     )
     .await;
@@ -309,7 +310,7 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
             })
             .collect(),
         raft: Config::default(),
-        admission: kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+        admission: audit.admission().clone(),
     };
     let replicated = prepare_replicated_restore(
         &kasumi_engine::RestoreSource {
@@ -363,7 +364,7 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
             checkpoint.checkpoint(),
             uuid::Uuid::new_v4(),
         ),
-        kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+        audit.admission().clone(),
         audit.clone(),
     )
     .await;

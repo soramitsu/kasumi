@@ -163,8 +163,10 @@ impl SecurityAudit {
         let identity = Arc::as_ptr(&store) as usize;
         if let Some(writer) = writers.get(&identity).and_then(Weak::upgrade) {
             ensure!(
-                writer.budget == budget && writer.destination.identity() == destination.identity(),
-                "live service audit retention budget differs"
+                writer.budget == budget
+                    && writer.destination.identity() == destination.identity()
+                    && Arc::ptr_eq(&writer.admission, &admission),
+                "live service audit retention configuration or node governor differs"
             );
             return Ok(Arc::new(Self { writer }));
         }
@@ -192,8 +194,21 @@ impl SecurityAudit {
         Ok(Arc::new(Self { writer }))
     }
 
-    pub(crate) fn admission(&self) -> &Arc<crate::admission::NodeAdmission> {
+    /// The installed node governor, shared by all application and Control
+    /// bootstrap/restore work using this security ledger.
+    pub fn admission(&self) -> &Arc<crate::admission::NodeAdmission> {
         &self.writer.admission
+    }
+
+    pub(crate) fn require_admission(
+        &self,
+        admission: &Arc<crate::admission::NodeAdmission>,
+    ) -> Result<()> {
+        ensure!(
+            Arc::ptr_eq(self.admission(), admission),
+            "service audit and database node governors differ"
+        );
+        Ok(())
     }
 
     /// The caller owns the separately keyed store's configuration and lifecycle.

@@ -1,8 +1,8 @@
 use kasumi_engine::test_utils::SnapshotFixture;
+use kasumi_engine::test_utils::open_fixture_replicated;
 mod common;
 use kasumi_engine::{
     Database, LifecycleSigner, ReplicaPlacement, ReplicatedBootstrap, initialize_replicated,
-    open_replicated,
 };
 use kasumi_raft::{Config, InProcessRouter, StateMachineBackend};
 use kasumi_serving::{ControlTrust, control_stop_for, digest};
@@ -130,7 +130,7 @@ impl Fixture {
             )
             .await
             .unwrap();
-            let db = open_replicated(
+            let db = open_fixture_replicated(
                 id,
                 stores,
                 &self.bootstrap,
@@ -301,6 +301,19 @@ impl Fixture {
         }
         self.audits.clear();
     }
+
+    fn diagnostics(&self) -> String {
+        self.nodes
+            .iter()
+            .map(|(id, database)| {
+                format!(
+                    "node {id}: {:?}",
+                    database.raft_group().raft().metrics().borrow().clone()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 }
 fn policy(principal: &str) -> Policy {
     Policy {
@@ -327,11 +340,11 @@ async fn replicated_control_intent_is_exact_original_expiry_bound_current_quorum
             LifecycleControlCommand::CommitIntent((request.clone()).into()),
         )
         .await
-        .unwrap();
+        .unwrap_or_else(|error| panic!("{error:?}\n{}", f.diagnostics()));
     let proof = db
         .observe_lifecycle_intent(original, request.command_id)
         .await
-        .unwrap();
+        .unwrap_or_else(|error| panic!("{error:?}\n{}", f.diagnostics()));
     let signed = f.signer.sign_intent(&proof).await.unwrap();
     let trust = ControlTrust::install(f.installation.root.clone()).unwrap();
     trust.verify_intent(&signed).unwrap();

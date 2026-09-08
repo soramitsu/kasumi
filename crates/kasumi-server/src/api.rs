@@ -445,7 +445,7 @@ mod tests {
                 ],
                 strict_read_audit: false,
             };
-            let db = kasumi_engine::open_local(
+            let db = kasumi_engine::test_utils::open_fixture(
                 kasumi_store::test_utils::with_custody(
                     store.clone(),
                     Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
@@ -1829,7 +1829,7 @@ name: "docs".into(),
             },
             ..Limits::default()
         };
-        let control = kasumi_engine::open_local(
+        let control = kasumi_engine::test_utils::open_fixture(
             kasumi_store::test_utils::with_custody(
                 store.clone(),
                 std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),

@@ -51,7 +51,7 @@ async fn reopen_custody(
         group.clone(),
         router.clone(),
         kasumi_raft::Config::default(),
-        kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+        audit.admission().clone(),
         audit,
     )
     .await
@@ -83,7 +83,7 @@ impl Fixture {
         )
         .await
         .unwrap();
-        let db = kasumi_engine::open_local(
+        let db = kasumi_engine::test_utils::open_fixture(
             kasumi_store::test_utils::with_custody(
                 store.clone(),
                 std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
@@ -844,7 +844,7 @@ async fn durable_retirement_stop_defeats_inflight_backup_verification_and_surviv
     )
     .await
     .unwrap();
-    let db = kasumi_engine::open_local(
+    let db = kasumi_engine::test_utils::open_fixture(
         kasumi_store::test_utils::with_custody(
             store,
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),

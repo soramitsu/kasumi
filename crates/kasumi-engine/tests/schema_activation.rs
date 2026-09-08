@@ -556,7 +556,7 @@ async fn open(path: &std::path::Path) -> (Arc<Database>, Arc<SecurityAudit>) {
     )
     .await
     .unwrap();
-    let db = kasumi_engine::open_local(
+    let db = kasumi_engine::test_utils::open_fixture(
         kasumi_store::test_utils::with_custody(
             store,
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([242; 32])),
@@ -688,7 +688,7 @@ async fn encrypted_restart_and_full_restore_preserve_permanent_activation_receip
         .await
         .unwrap(),
         common::local_restore_request(context("owner"), backup.checkpoint(), uuid::Uuid::new_v4()),
-        kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+        audit.admission().clone(),
         audit.clone(),
     )
     .await

@@ -145,7 +145,7 @@ async fn native_resources_and_two_restore_hops_preserve_immutable_issuer_facts()
                 target_context: embedded.clone(),
                 source_purpose: kasumi_store::StoragePurpose::LocalFixture,
             },
-            kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+            fixture.audit.admission().clone(),
             fixture.audit.clone(),
         )
         .await
@@ -202,7 +202,7 @@ async fn native_resources_and_two_restore_hops_preserve_immutable_issuer_facts()
         )
         .await
         .unwrap();
-        let restored = kasumi_engine::open_local_with_incarnation(
+        let restored = kasumi_engine::test_utils::open_fixture_with_incarnation(
             reopened_stores,
             kasumi_types::Policy {
                 grants: vec![],
