@@ -63,3 +63,10 @@ An immutable operation receipt is not a current trust acknowledgement. Native
 adapters must capture `LocalSignerTrustObservation`, include its exact current
 record in the authenticated response, and check its revision fence after
 encoding alongside the current administrative response fence.
+
+The canonical `SigningDomain`, `SigningGeneration`, `SigningCertificate`, and
+`GenerationSignature` wire records live in `kasumi-types`, allowing typed Control
+and authority envelopes to share them without a dependency cycle. Crypto remains
+in `kasumi-serving`; import `SigningCertificateVerification` for certificate
+verification and its authenticated digest. Decoding these records alone grants
+no live trust, and this placement adds no alternate or legacy decoder.

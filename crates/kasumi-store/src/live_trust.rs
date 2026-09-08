@@ -3,7 +3,7 @@ use super::*;
 use kasumi_serving::{
     LiveSignerTrust, LiveTrustAdministrator, LiveTrustPersistence, LocalSignerTrustRecord,
     MAX_SIGNER_TRUST_RECORD_BYTES, SignerKeyUse, SignerTrustReceipt, SigningCertificate,
-    SigningDomain, TrustVerifierIdentity,
+    SigningCertificateVerification, SigningDomain, TrustVerifierIdentity,
 };
 
 const NS: &str = "live.signer.trust";

@@ -27,8 +27,10 @@ mod custody;
 pub use custody::*;
 mod schema;
 pub use schema::*;
+mod signing;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+pub use signing::*;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub type Result<T> = std::result::Result<T, Error>;
