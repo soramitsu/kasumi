@@ -126,6 +126,14 @@ gate above and usable installation artifacts.
 
 ## Current verified increments
 
+- Bounded SDK checkpoint `fb172be` passes 13 snapshot decoder/ownership tests,
+  the bearer-metadata redaction regression, strict client lint and a no-default
+  client library check. Initial `2b9061d` passed the tests but failed three lint
+  checks; that failure and the narrow successor are retained in
+  `docs/evidence/sdk-snapshot-small-20260909`. Native endpoints, MCP, combined
+  workspace and production builds did not run. The SDK is combined with the
+  corrected shutdown fixture in validation branch `f93414e`, not accepted into
+  the release implementation. The JSON dependency correction remains separate.
 - Frozen shutdown/receipt checkpoint `711b32d` passed one verifier-worker and
   five security-audit tests, then failed its new tenant-audit shutdown fixture
   because that tenant had no administrator. The other tenant maintenance test

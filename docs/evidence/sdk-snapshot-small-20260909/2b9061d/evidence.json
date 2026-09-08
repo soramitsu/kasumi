@@ -1,0 +1,159 @@
+{
+  "scope": "macOS ARM64 bounded native SDK pure tests and client-only compiler checks; no engine/store/server/Raft dependency, listener, provider or native process test. Shared host; no quiet-host performance, capacity or final release acceptance.",
+  "source_before": {
+    "head": "2b9061d68e0a398b0f685cba2b86931357a3099c",
+    "tree": "92d642629908524938a3c92e26916dae61abe841",
+    "status": "",
+    "lock_sha256": "69a87af31c474246239eeea8e96f98d860c9850e2ee589d78e3bfbb25f558d63"
+  },
+  "tools": {
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo": "7672ead309d505577c018fff2cafb3433601f073e38cbe87359ac1f7b944bbf5",
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc": "210df6794001b73ec3d453878707fa1e0bdcb63c427024a6e6574bbe5615a4da",
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustdoc": "aa94960b6a477441f6d1a797394daf4cafcc889d837550c8fa462b102e3fa5da"
+  },
+  "runner_sha256": "bef2f56f41ac01f8266371d3ecd6bbb85bef3b07ed0eaa6377dcd12095e537bd",
+  "per_gate_timeout_seconds": 300,
+  "gates": [
+    {
+      "name": "snapshot-pure",
+      "command": [
+        "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+        "test",
+        "--locked",
+        "-j1",
+        "-p",
+        "kasumi-client",
+        "--lib",
+        "--all-features",
+        "snapshot_",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "seconds": 39.113865667022765,
+      "process_group_id": 28288,
+      "process_exit_code": 0,
+      "exit_code": 0,
+      "problem": null,
+      "cleanup": {
+        "signals": [],
+        "process_returncode": 0,
+        "process_group_drained": true
+      },
+      "required_test": [
+        "snapshot_decode::tests::shared_response_retains_exact_original_reservation",
+        "snapshot_decode::tests::exact_points_scope_order_and_revision_are_checked_before_values",
+        "snapshot_decode::tests::cancelled_and_panicking_decoder_keeps_charge_until_actual_worker_exit",
+        "snapshot_decode::tests::literal_marker_keys_and_nested_payloads_round_trip_as_ordinary_documents",
+        "snapshot_decode::tests::outbound_borrowed_walk_and_nil_scope_fail_before_encoding_growth",
+        "snapshot_decode::tests::parser_error_payload_drops_before_worker_admission_is_released",
+        "snapshot_decode::tests::transport_error_retains_code_without_peer_message_details_or_metadata",
+        "snapshot_decode::tests::query_rows_cannot_advance_beyond_their_collection_epoch",
+        "snapshot_decode::tokens::tests::scans_ignored_duplicate_and_shallow_tokens_before_serde",
+        "snapshot_decode::transport::tests::framing_rejects_declared_size_compression_and_second_message_before_forwarding",
+        "snapshot_decode::transport::tests::bounded_envelope_rejects_duplicate_and_noncanonical_fields",
+        "snapshot_decode::transport::tests::oversized_initial_status_headers_are_removed_before_tonic_can_decode_them",
+        "data_pool::snapshot_error_tests::bounded_snapshot_errors_preserve_only_approved_retry_codes"
+      ],
+      "required_test_passed": true,
+      "log_sha256": "139f93d2b58593560f6765517ec24e989dd12bc4bdc93cd1eed151719d56a45b",
+      "artifacts": [
+        {
+          "path": "/tmp/kasumi-production-root-target/debug/deps/kasumi_client-00d5b6f7a5cfc855",
+          "sha256": "200cc23f0cb873277f117193eb93061a1b210d2163f02944d6ee287659c57c12",
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 2,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": []
+        }
+      ]
+    },
+    {
+      "name": "authorization-sensitive",
+      "command": [
+        "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+        "test",
+        "--locked",
+        "-j1",
+        "-p",
+        "kasumi-client",
+        "--lib",
+        "--all-features",
+        "authorization_tests::bearer_wire_value_is_unchanged_while_debug_is_redacted",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "seconds": 0.43765400000847876,
+      "process_group_id": 28444,
+      "process_exit_code": 0,
+      "exit_code": 0,
+      "problem": null,
+      "cleanup": {
+        "signals": [],
+        "process_returncode": 0,
+        "process_group_drained": true
+      },
+      "required_test": [
+        "authorization_tests::bearer_wire_value_is_unchanged_while_debug_is_redacted"
+      ],
+      "required_test_passed": true,
+      "log_sha256": "7025a56a1a7ef15213506a5e2dd147d3b2a5d34eb039084bf3fd7b9f12630182",
+      "artifacts": [
+        {
+          "path": "/tmp/kasumi-production-root-target/debug/deps/kasumi_client-00d5b6f7a5cfc855",
+          "sha256": "200cc23f0cb873277f117193eb93061a1b210d2163f02944d6ee287659c57c12",
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 2,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": []
+        }
+      ]
+    },
+    {
+      "name": "client-strict",
+      "command": [
+        "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+        "clippy",
+        "--locked",
+        "-j1",
+        "-p",
+        "kasumi-client",
+        "--all-targets",
+        "--all-features",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "seconds": 23.791527541005053,
+      "process_group_id": 28450,
+      "process_exit_code": 101,
+      "exit_code": 101,
+      "problem": null,
+      "cleanup": {
+        "signals": [],
+        "process_returncode": 101,
+        "process_group_drained": true
+      },
+      "required_test": null,
+      "required_test_passed": true,
+      "log_sha256": "7ff33909d935d3b99a4c2e40a41cd646b6dffd2f158cb7710dc85cd16513c9d2",
+      "artifacts": []
+    }
+  ],
+  "source_after": {
+    "head": "2b9061d68e0a398b0f685cba2b86931357a3099c",
+    "tree": "92d642629908524938a3c92e26916dae61abe841",
+    "status": "",
+    "lock_sha256": "69a87af31c474246239eeea8e96f98d860c9850e2ee589d78e3bfbb25f558d63"
+  }
+}
