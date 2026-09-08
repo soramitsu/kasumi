@@ -1,0 +1,26 @@
+{
+  "source": "c53aeb49deee6083d729b7e3b02098fa49ababab",
+  "tree": "c6f76ad96f4bc5ad2193f4cdd5c97ecee0c14baf",
+  "lockfile_sha256": "3f693a1bd3dd6614d3ce8e54b2fd960055361c72e5d535b8aa86e1c47e60eb0a",
+  "platform": "macOS ARM64",
+  "toolchain": "1.97.1",
+  "results": {
+    "credential_tests": "2 passed in0.04seconds; compilation101seconds",
+    "strict_benchmark_all_targets_all_features": "passed in41.10seconds",
+    "format": "passed"
+  },
+  "executable": {
+    "path": "/tmp/kasumi-production-root-target/debug/deps/kasumi_bench_network-053cd4eb2a9889b3",
+    "sha256": "924093949ec6a900b1d57978bdab4bfeabac0543775f642c8c5fb669b57df722"
+  },
+  "files": {
+    "kasumi-benchmark-credentials-tests.log": "d6a897de70ffe97ff5925ffeaa7f7b9ff66e63fa8c498e4f55f9cd2e93ff1374",
+    "kasumi-benchmark-credentials-clippy.log": "2819785a1cdc4e2807a590fc790e9c702915e65e61efbc95ea11d2c7bb223fcd",
+    "kasumi-benchmark-credentials-format.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "limitations": [
+    "Tests exercise fresh atomic credential file snapshots and request metadata; no new live TLS run is claimed.",
+    "The fixture producer and network example were updated to the same mandatory token_file contract; old token_env is rejected.",
+    "No million-document matrix, concurrency or24-hour soak result is established."
+  ]
+}

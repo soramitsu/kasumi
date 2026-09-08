@@ -1,0 +1,59 @@
+   Compiling kasumi-types v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-types)
+   Compiling kasumi-query v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-query)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.44s
+     Running unittests src/lib.rs (/tmp/kasumi-production-streaming-target/debug/deps/kasumi_query-fb7630edae74bb9f)
+
+running 32 tests
+test cancellation::tests::cancellation_during_sort_stops_comparisons ... ok
+test cancellation::tests::sort_matches_reference_with_duplicates ... ok
+test tests::average_is_half_even_at_requested_scale_including_negative_ties ... ok
+test tests::aggregate_validation_and_empty_collection_are_data_independent ... ok
+test tests::candidate_group_and_response_budgets_fail_closed ... ok
+test tests::cooperative_cancellation_stops_text_postings_and_term_expansion ... ok
+test tests::decimal_sort_range_and_sum_preserve_more_than_f64_precision ... ok
+test tests::declared_indexes_and_explicit_scan_admission_are_enforced ... ok
+test tests::engine_owns_pagination_and_query_does_not_truncate_snapshot ... ok
+test tests::cooperative_cancellation_discards_partial_index_scan_sort_and_projection_results ... ok
+test tests::english_terms_stem_but_prefix_uses_surface_tokens_and_phrase_has_positions ... ok
+test tests::groups_distinguish_absent_and_null_and_skip_empty_numeric_inputs ... ok
+test tests::fuzzy_distance_and_expansion_limits_are_enforced ... ok
+test tests::incremental_text_updates_reuse_index_and_preserve_every_old_snapshot ... ok
+test tests::incremental_unique_indexes_allow_atomic_swaps_and_reject_conflicts ... ok
+test tests::indexed_boolean_filters_match_independent_reference_evaluator ... ok
+test tests::invalid_queries_fail_without_hits_and_json_recursion_is_bounded ... ok
+test tests::japanese_lindera_terms_phrases_and_fuzzy_typos ... ok
+test tests::json_pointer_escapes_and_invalid_pointers ... ok
+test tests::missing_null_empty_array_and_projection_remain_distinct ... ok
+test tests::oversized_text_is_rejected_during_document_validation ... ok
+test tests::schema_202012_local_refs_and_exact_numeric_constraints ... ok
+test tests::schemas_never_resolve_remote_or_file_resources_or_rebase_fragments ... ok
+test tests::shared_document_representation_preserves_snapshot_bytes_and_historical_values ... ok
+test tests::text_generation_is_immutable_and_reader_is_ready_when_published ... ok
+test tests::text_planned_postings_are_bounded_even_when_intersection_has_no_hits ... ok
+test tests::text_writer_rejects_stale_branches_without_damaging_published_reader ... ok
+test tests::unicode_nfkc_and_case_normalization_and_ranked_results ... ok
+test tests::unique_indexes_are_compound_exact_and_sparse_only_for_missing ... ok
+test tests::unrelated_document_fields_reuse_text_reader_and_definition_change_rebuilds ... ok
+test tests::validator_cache_does_not_retain_tenant_plaintext_after_generation_drop ... ok
+test tests::incremental_postings_match_rebuild_and_share_unchanged_roots ... ok
+
+test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.29s
+
+     Running unittests src/lib.rs (/tmp/kasumi-production-streaming-target/debug/deps/kasumi_types-50316adcc80ca9db)
+
+running 12 tests
+test authorization::tests::credential_clone_cannot_renew_expiry_and_serialization_cannot_mint_live_authority ... ok
+test audit::tests::limits_reject_removed_count_ceiling_and_missing_format_fields ... ok
+test authorization::tests::invalid_credentials_and_a_regressing_elapsed_clock_fail_closed ... ok
+test authorization::tests::narrowing_keeps_original_anchor_revocation_and_parent_deadline ... ok
+test canonical_keys::tests::tagged_json_keys_are_canonical_and_duplicates_cannot_change_identity ... ok
+test lifecycle::wire_tests::lifecycle_status_requires_explicit_nullable_outcome ... ok
+test target::journal_limit_tests::target_metadata_capacity_has_no_lifetime_count_or_aggregate_format_ceiling ... ok
+test tests::denial_audit_marker_is_request_local_and_never_wire_controlled ... ok
+test tests::error_messages_bound_utf8_and_recovered_receipt_allocations ... ok
+test tests::exact_number_wire_round_trip ... ok
+test tests::remote_mutation_fields_are_closed ... ok
+test restore_lineage::tests::closed_lineage_rejects_substitution_discontinuity_and_resource_overflow ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+

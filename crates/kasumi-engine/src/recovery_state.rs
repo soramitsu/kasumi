@@ -313,7 +313,7 @@ impl TenantEngine {
         } else {
             previous.indexes.clone()
         };
-        self.current.store(Some(Arc::new(Generation {
+        self.publish_generation(Some(Arc::new(Generation {
             state: next,
             indexes,
             receipt_expiry: previous.receipt_expiry.clone(),

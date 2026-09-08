@@ -15,6 +15,41 @@ pub struct KasumiAuthorityClient {
     deadline: Option<tokio::time::Instant>,
 }
 impl KasumiAuthorityClient {
+    pub async fn observe_control_signer(
+        &mut self,
+        bearer: &str,
+        request: &kasumi_serving::ControlSignerRequest,
+    ) -> Result<crate::CurrentControlSignerObservation, ClientError> {
+        let anchor = kasumi_clock::EpochClock::system()?.observe()?;
+        let reply = self.observe_control_signer_wire(bearer, request).await?;
+        crate::CurrentControlSignerObservation::from_current_response(reply, anchor)
+    }
+    pub(crate) async fn observe_control_signer_wire(
+        &mut self,
+        bearer: &str,
+        request: &kasumi_serving::ControlSignerRequest,
+    ) -> Result<kasumi_serving::ControlSignerObservation, ClientError> {
+        request.digest()?;
+        if request.directive.node.certificate_sha256 != self.certificate_sha256 {
+            return Err(ClientError::InvalidResponse(
+                "current Control observation must use its actual installed client identity",
+            ));
+        }
+        let response = self
+            .inner
+            .observe_control_signer(self.authorized(
+                bearer,
+                proto::AuthorityJsonRequest {
+                    request_json: encode(request)?,
+                },
+            )?)
+            .await?
+            .into_inner();
+        let response: kasumi_serving::ControlSignerObservation =
+            serde_json::from_slice(&response.response_json)?;
+        response.validate_for(request, self.trust.manifest())?;
+        Ok(response)
+    }
     /// Current authenticated global signer maintenance. Preserve the exact
     /// operation and request when resolving an uncertain activation.
     pub async fn signing_maintenance(

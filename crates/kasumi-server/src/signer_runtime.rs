@@ -15,7 +15,7 @@ use std::{
 };
 const NS: &str = "live.signer.installation";
 #[path = "signer_runtime_authorization.rs"]
-mod authorization;
+pub(crate) mod authorization;
 use authorization::{CurrentSignerInvocation, ScopedSignerAdministrator};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -117,6 +117,42 @@ pub(crate) struct InstalledSignerVerifier {
     administrator: Arc<ScopedSignerAdministrator>,
 }
 impl InstalledSignerVerifier {
+    pub(crate) async fn authorize_control(
+        &self,
+        request: &ControlSignerRequest,
+        fence: Arc<kasumi_engine::ControlAdministrativeFence>,
+        issuer: kasumi_client::CurrentControlSignerObservation,
+        domain: &SigningDomain,
+    ) -> Result<(Arc<LiveSignerTrust>, CurrentSignerInvocation)> {
+        request.digest()?;
+        issuer.check()?;
+        let observation = issuer.observation();
+        ensure!(
+            observation.request_sha256 == request.digest()?
+                && observation.observation_id == request.observation_id
+                && observation.admission.root == fence.installation().root
+                && observation.admission.partition == *fence.partition()
+                && observation
+                    .admission
+                    .nodes
+                    .iter()
+                    .map(|node| node.node_id)
+                    .collect::<std::collections::BTreeSet<_>>()
+                    == fence.members().collect()
+                && request.directive.node.node_id == fence.local_node_id()
+                && observation.head.active.identity.domain == *domain
+                && request.directive.domain_sha256 == domain.digest()?,
+            "current physical Control registry, quorum or issuer differs"
+        );
+        let owner = self.owner(domain)?;
+        ensure!(
+            owner.current()?.verifier == request.directive.node.verifier,
+            "remote signer request addresses another physical verifier owner"
+        );
+        let scope = self.administrator.bind_control(fence, issuer).await?;
+        scope.check()?;
+        Ok((owner, scope))
+    }
     pub(crate) async fn authorize(
         &self,
         request: &SignerVerifierRequest,

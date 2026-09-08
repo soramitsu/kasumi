@@ -1,0 +1,10 @@
+{"timestamp":"2026-09-08T11:59:14.248048Z","level":"INFO","fields":{"message":"opening installed daemon configuration","event":"daemon_starting"},"target":"kasumi_server::logging"}
+{"timestamp":"2026-09-08T11:59:14.348194Z","level":"INFO","fields":{"message":"node serving state changed","event":"node_lifecycle","state":"Serving"},"target":"kasumi_server::observability"}
+{"timestamp":"2026-09-08T12:01:46.717135Z","level":"INFO","fields":{"message":"node serving state changed","event":"node_lifecycle","state":"Draining"},"target":"kasumi_server::observability"}
+{"timestamp":"2026-09-08T12:01:46.866554Z","level":"INFO","fields":{"message":"node serving state changed","event":"node_lifecycle","state":"Closed"},"target":"kasumi_server::observability"}
+{"timestamp":"2026-09-08T12:01:46.912262Z","level":"INFO","fields":{"message":"daemon owners drained","event":"daemon_stopped"},"target":"kasumi_server::logging"}
+{"timestamp":"2026-09-08T12:01:47.635109Z","level":"INFO","fields":{"message":"opening installed daemon configuration","event":"daemon_starting"},"target":"kasumi_server::logging"}
+{"timestamp":"2026-09-08T12:01:47.798789Z","level":"INFO","fields":{"message":"node serving state changed","event":"node_lifecycle","state":"Serving"},"target":"kasumi_server::observability"}
+{"timestamp":"2026-09-08T12:03:48.888890Z","level":"INFO","fields":{"message":"node serving state changed","event":"node_lifecycle","state":"Draining"},"target":"kasumi_server::observability"}
+{"timestamp":"2026-09-08T12:03:49.177171Z","level":"INFO","fields":{"message":"node serving state changed","event":"node_lifecycle","state":"Closed"},"target":"kasumi_server::observability"}
+{"timestamp":"2026-09-08T12:03:49.193943Z","level":"INFO","fields":{"message":"daemon owners drained","event":"daemon_stopped"},"target":"kasumi_server::logging"}

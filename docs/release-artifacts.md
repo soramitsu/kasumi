@@ -56,12 +56,18 @@ actual second-build comparison.
 
 `.github/workflows/release-candidate.yml` is manually dispatched against reviewed
 source on dedicated ephemeral self-hosted runners. Provision `kasumi-acceptance`
-runners for Linux X64, Linux ARM64 and macOS ARM64 with at least 8 GiB RAM and
+runners for Linux X64, Linux ARM64 and macOS ARM64 with at least 16 GiB RAM and
 64 GiB free workspace disk, Python 3.11+, Git and the native platform build tools.
 Linux needs Docker; macOS needs rustup, Xcode command-line tools and CMake.
 The labels identify operator-provisioned hosts; adding this workflow does not
 provision them or establish a passing run. Keep production identities and data
 off these acceptance hosts.
+
+Preflight checks at least 15 GiB of effective memory after kernel reservations
+and visible Linux cgroup ceilings. The previous 7 GiB container limit killed a
+debug test linker in the frozen `d403c55` run. Larger source tests therefore
+require the updated 16 GiB reference allocation; this is a build-host requirement,
+not a minimum memory claim for every deployed database workload.
 
 The workflow freezes the checked-out commit, records host/image/package identity,
 and runs the full functional gate set with two Cargo jobs. Linux uses the pinned
@@ -103,8 +109,13 @@ installed authority group. No installation identity or fixture state is baked in
 
 Record the BuildKit version/image, OCI digest, base package inventory and a full
 image SBOM, then exercise offline initialization, restart and shutdown with the
-exported image before accepting it. The recipe is present; those actual OCI
-build/runtime and platform SBOM gates have not yet passed.
+exported image before accepting it. An initial ARM64 recipe smoke built and ran
+a Docker image using historical `8e90ff2` production binaries, including offline
+initialization, authenticated access, backup verification and restart. That
+source's workspace gate failed. The smoke does not approve those binaries or
+replace an actual final candidate, OCI-layout export and platform SBOM gate.
+Its failures and exact environment are retained in
+`docs/evidence/linux-image-systemd-smoke-20260908`.
 
 ## systemd installation
 
@@ -135,6 +146,12 @@ and private `/var/lib/kasumi-authority/authority.json`. HA data members may use
 the data unit after installing the exact HA configuration at its configured path.
 If an installation uses external archive/key paths, explicitly configure the
 unit's required read/write directories to match those installed resources.
+
+The exact data unit passed an initial native Debian ARM64 smoke with historical
+`8e90ff2` binaries: dedicated-user startup, authenticated requests, TLS reload,
+restart and drained shutdown. Both units passed `systemd-analyze verify`; the
+authority unit still requires actual HA runtime validation. Repeat these checks
+with the final accepted artifacts.
 
 These are candidate artifacts. Complete cross-platform functional validation,
 external-service/recovery/capacity/retention/performance gates and the actual

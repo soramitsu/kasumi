@@ -214,7 +214,7 @@ pub struct PublishHistoryArchive {
     pub expected_policy_epoch: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct RetainedHistoryArchive {
     /// Current operator binding, distinct from immutable source provenance.

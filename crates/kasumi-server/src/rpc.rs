@@ -26,6 +26,8 @@ pub use target::NativeTargetRecovery;
 mod authority;
 #[path = "rpc_backup_sessions.rs"]
 mod backup_sessions;
+#[path = "rpc_control_signer.rs"]
+mod control_signer;
 #[path = "rpc_security_audit.rs"]
 mod security_audit;
 #[cfg(test)]
@@ -45,6 +47,10 @@ mod lifecycle_tests;
 #[path = "rpc_recovery_tests.rs"]
 mod recovery_tests;
 
+#[cfg(test)]
+#[path = "rpc_control_signer_tests.rs"]
+mod control_signer_tests;
+
 #[derive(Clone)]
 pub struct NativeData {
     registry: DatabaseRegistry,
@@ -56,6 +62,7 @@ pub struct NativeAdmin {
     auth: Arc<Authenticator>,
     management: Option<Arc<crate::administration::Administration>>,
     telemetry: Arc<crate::observability::Telemetry>,
+    control_signer: Option<Arc<crate::control_signer_runtime::ControlSignerRuntime>>,
     #[cfg(test)]
     audit_release_gate: Arc<tokio::sync::Mutex<Option<AuditReleaseGate>>>,
 }
@@ -408,7 +415,7 @@ impl kasumi_data_server::KasumiData for NativeData {
         let context = verified(&self.auth, &request).await?;
         let input = decode_json(&request.into_inner().request_json).map_err(status)?;
         let database = routed(&self.registry, &self.auth, &context).await?;
-        let fence = self
+        let mut fence = self
             .auth
             .audit_result(&context, database.response_fence(&context))
             .await
@@ -417,6 +424,10 @@ impl kasumi_data_server::KasumiData for NativeData {
             .open_snapshot_lease(&context, input)
             .await
             .map_err(|error| self.registry.status(&context, error))?;
+        self.auth
+            .audit_result(&context, fence.bind_snapshot_lease(&result.lease_id).await)
+            .await
+            .map_err(status)?;
         let response = SnapshotLeaseResponse {
             response_json: encode_json(&result).map_err(status)?,
         };
@@ -431,11 +442,16 @@ impl kasumi_data_server::KasumiData for NativeData {
         request: Request<ReadSnapshotPageRequest>,
     ) -> Result<Response<ReadSnapshotResponse>, Status> {
         let context = verified(&self.auth, &request).await?;
-        let input = decode_json(&request.into_inner().request_json).map_err(status)?;
+        let input: kasumi_types::ReadSnapshotPage =
+            decode_json(&request.into_inner().request_json).map_err(status)?;
         let database = routed(&self.registry, &self.auth, &context).await?;
-        let fence = self
+        let mut fence = self
             .auth
             .audit_result(&context, database.response_fence(&context))
+            .await
+            .map_err(status)?;
+        self.auth
+            .audit_result(&context, fence.bind_snapshot_lease(&input.lease_id).await)
             .await
             .map_err(status)?;
         let result = database
@@ -456,11 +472,16 @@ impl kasumi_data_server::KasumiData for NativeData {
         request: Request<ScanSnapshotPageRequest>,
     ) -> Result<Response<SnapshotScanPageResponse>, Status> {
         let context = verified(&self.auth, &request).await?;
-        let input = decode_json(&request.into_inner().request_json).map_err(status)?;
+        let input: kasumi_types::ScanSnapshotPage =
+            decode_json(&request.into_inner().request_json).map_err(status)?;
         let database = routed(&self.registry, &self.auth, &context).await?;
-        let fence = self
+        let mut fence = self
             .auth
             .audit_result(&context, database.response_fence(&context))
+            .await
+            .map_err(status)?;
+        self.auth
+            .audit_result(&context, fence.bind_snapshot_lease(&input.lease_id).await)
             .await
             .map_err(status)?;
         let result = database
@@ -576,6 +597,7 @@ impl NativeAdmin {
             auth,
             management: None,
             telemetry: crate::observability::Telemetry::new(),
+            control_signer: None,
             #[cfg(test)]
             audit_release_gate: Arc::new(tokio::sync::Mutex::new(None)),
         }
@@ -585,6 +607,13 @@ impl NativeAdmin {
         management: Arc<crate::administration::Administration>,
     ) -> Self {
         self.management = Some(management);
+        self
+    }
+    pub(crate) fn with_control_signer(
+        mut self,
+        runtime: Arc<crate::control_signer_runtime::ControlSignerRuntime>,
+    ) -> Self {
+        self.control_signer = Some(runtime);
         self
     }
     pub(crate) fn with_telemetry(
@@ -645,6 +674,12 @@ impl NativeAdmin {
 
 #[tonic::async_trait]
 impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
+    async fn control_signer_maintenance(
+        &self,
+        request: Request<AuthorityJsonRequest>,
+    ) -> Result<Response<AuthorityJsonResponse>, Status> {
+        self.control_signer_maintenance_impl(request).await
+    }
     async fn security_audit_status(
         &self,
         request: Request<SecurityAuditJsonRequest>,

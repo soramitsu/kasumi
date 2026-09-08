@@ -1,0 +1,63 @@
+    Checking kasumi-types v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-types)
+    Checking kasumi-serving v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-serving)
+    Checking kasumi-query v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-query)
+    Checking kasumi-store v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-store)
+    Checking kasumi-client v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-client)
+    Checking kasumi-raft v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-raft)
+    Checking kasumi-engine v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-engine)
+    Checking kasumi-authority v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-authority)
+error[E0277]: `?` couldn't convert the error to `kasumi_types::Error`
+  --> crates/kasumi-engine/src/recovery_activation.rs:56:60
+   |
+53 | ) -> Result<AuthorityAction> {
+   |      ----------------------- expected `kasumi_types::Error` because of this
+...
+56 |     if current.request.phase_input_sha256 != input.digest()? {
+   |                                                    --------^ the trait `From<anyhow::Error>` is not implemented for `kasumi_types::Error`
+   |                                                    |
+   |                                                    this can't be annotated with `?` because it has type `Result<_, anyhow::Error>`
+   |
+   = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+error[E0277]: `?` couldn't convert the error to `kasumi_types::Error`
+   --> crates/kasumi-engine/src/recovery_activation.rs:363:90
+    |
+361 | ) -> Result<()> {
+    |      ---------- expected `kasumi_types::Error` because of this
+362 |     origin(state, operation)?.accepts_phase(current, LifecyclePhase::Activate)?;
+363 |     if current.request.phase_input_sha256 != activation_input(state, operation)?.digest()? {
+    |                                                                                  --------^ the trait `From<anyhow::Error>` is not implemented for `kasumi_types::Error`
+    |                                                                                  |
+    |                                                                                  this can't be annotated with `?` because it has type `Result<_, anyhow::Error>`
+    |
+    = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+error[E0277]: `?` couldn't convert the error to `kasumi_types::Error`
+   --> crates/kasumi-engine/src/recovery_activation.rs:443:60
+    |
+427 | ) -> Result<()> {
+    |      ---------- expected `kasumi_types::Error` because of this
+...
+443 |             != activation_input(state, operation)?.digest()?
+    |                                                    --------^ the trait `From<anyhow::Error>` is not implemented for `kasumi_types::Error`
+    |                                                    |
+    |                                                    this can't be annotated with `?` because it has type `Result<_, anyhow::Error>`
+    |
+    = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+error[E0277]: `?` couldn't convert the error to `kasumi_types::Error`
+   --> crates/kasumi-engine/src/recovery_state.rs:574:69
+    |
+562 | ) -> Result<CommitLifecycleIntent> {
+    |      ----------------------------- expected `kasumi_types::Error` because of this
+...
+574 |             activation::activation_input(state, operation)?.digest()?,
+    |                                                             --------^ the trait `From<anyhow::Error>` is not implemented for `kasumi_types::Error`
+    |                                                             |
+    |                                                             this can't be annotated with `?` because it has type `Result<_, anyhow::Error>`
+    |
+    = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+For more information about this error, try `rustc --explain E0277`.
+error: could not compile `kasumi-engine` (lib) due to 4 previous errors
+warning: build failed, waiting for other jobs to finish...

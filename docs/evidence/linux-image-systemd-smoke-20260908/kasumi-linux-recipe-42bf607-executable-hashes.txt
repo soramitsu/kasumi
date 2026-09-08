@@ -1,0 +1,5 @@
+0b9b653db471c6ece3d936a5ce0ee58d7dcfe9b85b276c15fb0ae95932f186e2  /usr/local/bin/kasumid
+2b98361c98912a79a359de6561b8289b9b6dd1ebbbb0b4f096acebc872fcbb5c  /usr/local/bin/kasumictl
+cec645ceea16c6dccb9534d427c9a2a4b9a69f4297bc1d2f8cd69eb81a77149d  /usr/local/bin/kasumi-authority
+ab6530494f5d069a6b4bc8f9efa29d40866b3ecc6ba5ff49b377b9cf047c652b  /usr/bin/systemd-analyze
+3e694f3c2284934648b4d5ee2b3336ad83f0e70191df1f0b63fac3a1d5026dde  /usr/bin/docker

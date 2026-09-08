@@ -1,0 +1,22 @@
+{
+  "position": {
+    "stream_id": "9b6652c9-4ec5-4128-a7e9-e40d1c3dbfc8",
+    "next_sequence": 3,
+    "pruned_before": 0,
+    "hot_bytes": 842,
+    "archive_bytes": 0,
+    "archive_segments": 0,
+    "draining": false,
+    "archive_head": null
+  },
+  "budget": {
+    "hot_bytes": 67108864,
+    "archive_bytes": 68719476736
+  },
+  "archived_bytes": 0,
+  "archive_segments": 0,
+  "draining": false,
+  "persistence_failed": false,
+  "maintenance_failures": 0,
+  "last_failure": null
+}

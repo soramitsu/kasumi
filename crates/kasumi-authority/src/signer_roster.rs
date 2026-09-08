@@ -17,17 +17,17 @@ fn roster_key(operation_id: Uuid) -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ControlVerifierRecord {
-    admission: ControlVerifierAdmission,
+    pub(super) admission: ControlVerifierAdmission,
     operation_id: Uuid,
-    revision: u64,
+    pub(super) revision: u64,
 }
-fn verifier_key(identity: &TrustVerifierIdentity) -> String {
+pub(super) fn verifier_key(identity: &TrustVerifierIdentity) -> String {
     format!(
         "signer-verifier/{}/{:020}",
         identity.installation_id, identity.node_id
     )
 }
-fn control_key(incarnation: Uuid) -> String {
+pub(super) fn control_key(incarnation: Uuid) -> String {
     format!("signer-control/{incarnation}")
 }
 fn frozen(meta: &Meta) -> bool {
