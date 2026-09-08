@@ -21,6 +21,11 @@ values in the installed client profile. Relative input paths resolve beneath
 the configuration directory. The TLS key and bearer file must be owner-only;
 bearer files are read afresh for every request. Run the installed renewal watcher
 separately. The same configured file path may receive atomic token replacements.
+The first JWT's issuer, audience, principal, tenant, database incarnation,
+credential family, token use and scope are recorded in the private journal and
+must remain identical on every request. Renewal may change expiry, issuance
+identity and signer. The client checks claim continuity; the native server
+authenticates each JWT. Switching a credential binding requires a separate run.
 
 The example describes 98,304 documents of exactly 32,768 canonical JSON bytes,
 totalling 3,221,225,472 bytes (3 GiB). Payload characters are drawn uniformly from
@@ -57,7 +62,8 @@ target/production-bench/release/kasumi-bench-capacity capacity.json resolve \
 ```
 
 Inspection requires the byte-identical original connection/corpus configuration
-and exact generated batch; renewal of the token file is still supported. An
+and exact generated batch, plus the original recorded credential binding;
+renewal of the token file is still supported. An
 absent receipt remains unknown and never authorizes blind replay. The current
 receipt RPC returns a principal/key outcome without the stored request digest;
 the inspector labels that limit explicitly and cannot certify a body if a key

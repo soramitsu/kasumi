@@ -2,6 +2,7 @@
 //! production service. Original commands are journaled before dispatch; failures
 //! stop the run without automatic mutation retry or a fabricated success.
 use anyhow::{Context, Result, ensure};
+use base64::Engine as _;
 use kasumi_client::proto;
 use kasumi_transport::{
     TlsIdentity,
@@ -50,6 +51,77 @@ struct Corpus {
     documents: u64,
     document_bytes: usize,
     batch_documents: usize,
+}
+
+/// Continuity checks on public JWT claims. This is not local authentication:
+/// the native service verifies the signature and its current authorization on
+/// every invocation. Token expiry, issuance identity and signer may renew;
+/// changing the receipt namespace or privilege scope requires a separate run.
+#[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
+struct CredentialBinding {
+    iss: String,
+    aud: Audience,
+    sub: String,
+    tenant: String,
+    kasumi_resource: kasumi_types::CredentialResource,
+    scope: String,
+    token_use: Option<String>,
+    kasumi_family: Option<Uuid>,
+}
+
+#[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(untagged)]
+enum Audience {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl CredentialBinding {
+    fn from_token(bearer: &str) -> Result<Self> {
+        let parts = bearer.split('.').collect::<Vec<_>>();
+        ensure!(
+            parts.len() == 3 && parts.iter().all(|part| !part.is_empty()),
+            "credential is not a signed JWT"
+        );
+        let claims = Zeroizing::new(
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(parts[1])
+                .context("invalid JWT claim encoding")?,
+        );
+        let binding: Self =
+            serde_json::from_slice(&claims).context("invalid JWT binding claims")?;
+        kasumi_types::validate_name(&binding.sub)?;
+        kasumi_types::validate_name(&binding.tenant)?;
+        binding.kasumi_resource.validate()?;
+        ensure!(
+            matches!(
+                binding.kasumi_resource,
+                kasumi_types::CredentialResource::Database { .. }
+            ),
+            "capacity credential must select a database incarnation"
+        );
+        let audiences = match &binding.aud {
+            Audience::One(value) => std::slice::from_ref(value),
+            Audience::Many(values) => values.as_slice(),
+        };
+        ensure!(
+            !binding.iss.is_empty()
+                && binding.iss.len() <= 2048
+                && !audiences.is_empty()
+                && audiences.len() <= 16
+                && audiences
+                    .iter()
+                    .all(|value| !value.is_empty() && value.len() <= 2048)
+                && binding.scope.len() <= 4096
+                && binding
+                    .token_use
+                    .as_deref()
+                    .is_none_or(|value| value == "access")
+                && binding.kasumi_family.is_none_or(|family| !family.is_nil()),
+            "invalid credential binding"
+        );
+        Ok(binding)
+    }
 }
 
 impl Corpus {
@@ -172,6 +244,22 @@ fn digest(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
+fn validate_original_header(
+    header: &Value,
+    config_sha256: &str,
+    binding: &CredentialBinding,
+) -> Result<()> {
+    ensure!(
+        header["event"] == "started"
+            && header["format"] == 1
+            && header["mode"] == "load"
+            && header["configuration_sha256"] == config_sha256
+            && header["credential_binding_claims"] == serde_json::to_value(binding)?,
+        "unsupported original journal or different connection, corpus or credential binding"
+    );
+    Ok(())
+}
+
 fn validate_receipt(
     corpus: &Corpus,
     first: u64,
@@ -202,12 +290,17 @@ fn resolve(root: &Path, path: &Path) -> PathBuf {
 fn request<T>(
     value: T,
     credentials: &FileCredentialSource,
+    binding: &CredentialBinding,
     timeout: Duration,
 ) -> Result<tonic::Request<T>> {
     // Anchor the deadline before reading a renewable file. Reading a new token
     // can affect the next invocation only; no retry extends this one.
     let started = Instant::now();
     let bearer = token(credentials)?;
+    ensure!(
+        CredentialBinding::from_token(&bearer)? == *binding,
+        "renewed credential changed the original resource, principal or scope"
+    );
     let authorization = Zeroizing::new(format!("Bearer {}", bearer.as_str()));
     let mut authorization: tonic::metadata::MetadataValue<tonic::metadata::Ascii> =
         authorization.parse().context("invalid bearer header")?;
@@ -234,6 +327,7 @@ impl Journal {
         config_sha256: &str,
         mode: &str,
         total: u64,
+        binding: &CredentialBinding,
     ) -> Result<Self> {
         ensure!(
             directory.is_absolute(),
@@ -260,6 +354,8 @@ impl Journal {
         std::io::copy(&mut executable, &mut hash)?;
         journal.event(json!({"event":"started","format":1,"mode":mode,"configuration_sha256":config_sha256,
             "corpus":config.corpus,"expected_canonical_bytes":total,"endpoint":config.endpoint,
+            "credential_binding_claims":binding,
+            "credential_binding_scope":"Client enforces continuity of these decoded claims; the native server authenticates the JWT on every invocation.",
             "executable_sha256":hex::encode(hash.finalize()),"os":std::env::consts::OS,
             "architecture":std::env::consts::ARCH,"generator":"SHA256 counter; uniform 92-character printable ASCII payload; exact canonical JSON lengths",
             "scope":"Installed native service load and individual point-read integrity; not a coherent concurrent snapshot, node capacity certificate, latency benchmark or compressibility measurement. No automatic retries."}))?;
@@ -288,6 +384,7 @@ async fn run(
     config: &Configuration,
     root: &Path,
     config_sha256: &str,
+    binding: &CredentialBinding,
     mode: &str,
     original: Option<&str>,
     journal: &mut Journal,
@@ -328,12 +425,7 @@ async fn run(
             "original journal header exceeds limit or is incomplete"
         );
         let header: Value = serde_json::from_slice(&first_event)?;
-        ensure!(
-            header["event"] == "started"
-                && header["mode"] == "load"
-                && header["configuration_sha256"] == config_sha256,
-            "original connection and corpus configuration differ"
-        );
+        validate_original_header(&header, config_sha256, binding)?;
         let bytes = bounded(&original.join("last-original-batch.json"), MAX_BATCH_BYTES)?;
         let batch: MutationBatch = serde_json::from_slice(&bytes)?;
         let first: u64 = batch
@@ -353,6 +445,7 @@ async fn run(
                     idempotency_key: batch.idempotency_key.clone(),
                 },
                 &credentials,
+                binding,
                 timeout,
             )?)
             .await?
@@ -392,6 +485,7 @@ async fn run(
                 .mutate(request(
                     proto::MutateRequest { batch_json: bytes },
                     &credentials,
+                    binding,
                     timeout,
                 )?)
                 .await?
@@ -415,6 +509,7 @@ async fn run(
                     id: id.clone(),
                 },
                 &credentials,
+                binding,
                 timeout,
             )?)
             .await?
@@ -484,12 +579,23 @@ async fn main() -> Result<()> {
     );
     kasumi_types::validate_sha256(&config.server_certificate_sha256)?;
     let config_sha256 = digest(&bytes);
-    let mut journal = Journal::create(Path::new(output), &config, &config_sha256, mode, total)?;
+    let root = path.parent().context("configuration parent missing")?;
+    let credentials = FileCredentialSource::new(resolve(root, &config.token_file))?;
+    let binding = CredentialBinding::from_token(&token(&credentials)?)?;
+    let mut journal = Journal::create(
+        Path::new(output),
+        &config,
+        &config_sha256,
+        mode,
+        total,
+        &binding,
+    )?;
     let original = (mode == "resolve").then(|| flags[0].as_str());
     let result = run(
         &config,
-        path.parent().context("configuration parent missing")?,
+        root,
         &config_sha256,
+        &binding,
         mode,
         original,
         &mut journal,
@@ -578,22 +684,75 @@ mod tests {
     }
 
     #[test]
-    fn request_debug_does_not_disclose_the_renewable_bearer() {
+    fn renewal_cannot_change_the_original_receipt_namespace_or_disclose_tokens() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("credential");
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&path)
-            .unwrap();
-        file.write_all(b"private-capacity-bearer").unwrap();
+        // Synthetic claims exercise client continuity only; server JWT
+        // authentication is deliberately not simulated by this unit test.
+        let original = json!({"iss":"https://issuer.example","aud":"kasumi","sub":"operator",
+            "tenant":"default","kasumi_resource":kasumi_types::CredentialResource::Database{incarnation:Uuid::from_u128(1)},
+            "scope":"kasumi:read kasumi:write","token_use":"access","kasumi_family":Uuid::from_u128(2),
+            "exp":100,"iat":1,"nbf":1,"jti":Uuid::from_u128(3)});
+        let publish = |claims: &Value| {
+            let bearer = format!(
+                "e30.{}.c2lnbmF0dXJl",
+                base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .encode(serde_json::to_vec(claims).unwrap())
+            );
+            let mut file = tempfile::NamedTempFile::new_in(directory.path()).unwrap();
+            file.write_all(bearer.as_bytes()).unwrap();
+            file.as_file().sync_all().unwrap();
+            file.persist(&path).unwrap();
+            bearer
+        };
+        let original_bearer = publish(&original);
         let credentials = FileCredentialSource::new(&path).unwrap();
-        let request = request((), &credentials, Duration::from_secs(1)).unwrap();
+        let binding = CredentialBinding::from_token(&original_bearer).unwrap();
+        let first = request((), &credentials, &binding, Duration::from_secs(1)).unwrap();
+        let timeout = first.metadata().get("grpc-timeout").unwrap().clone();
+        let mut renewed = original.clone();
+        renewed["exp"] = json!(200);
+        renewed["iat"] = json!(50);
+        renewed["nbf"] = json!(50);
+        renewed["jti"] = json!(Uuid::from_u128(4));
+        let renewed_bearer = publish(&renewed);
+        let next = request((), &credentials, &binding, Duration::from_secs(1)).unwrap();
         assert_eq!(
-            request.metadata()["authorization"],
-            "Bearer private-capacity-bearer"
+            next.metadata().get("authorization").unwrap(),
+            format!("Bearer {renewed_bearer}").as_str()
         );
-        assert!(!format!("{request:?}").contains("private-capacity-bearer"));
+        assert!(!format!("{first:?}").contains(&original_bearer));
+        assert!(!format!("{next:?}").contains(&renewed_bearer));
+        assert_eq!(first.metadata().get("grpc-timeout").unwrap(), &timeout);
+        let header = json!({"event":"started","format":1,"mode":"load","configuration_sha256":"config",
+            "credential_binding_claims":binding});
+        validate_original_header(&header, "config", &binding).unwrap();
+        for (field, changed) in [
+            ("iss", json!("https://other-issuer.example")),
+            ("aud", json!("other-audience")),
+            ("sub", json!("another-operator")),
+            ("tenant", json!("another-tenant")),
+            (
+                "kasumi_resource",
+                json!(kasumi_types::CredentialResource::Database {
+                    incarnation: Uuid::from_u128(5)
+                }),
+            ),
+            ("kasumi_family", json!(Uuid::from_u128(6))),
+            ("scope", json!("kasumi:read")),
+        ] {
+            let mut substituted = renewed.clone();
+            substituted[field] = changed;
+            let bearer = publish(&substituted);
+            assert!(
+                request((), &credentials, &binding, Duration::from_secs(1)).is_err(),
+                "{field}"
+            );
+            let substituted_binding = CredentialBinding::from_token(&bearer).unwrap();
+            assert!(
+                validate_original_header(&header, "config", &substituted_binding).is_err(),
+                "{field}"
+            );
+        }
     }
 }
