@@ -1,0 +1,39 @@
+   Compiling tracing-core v0.1.36
+   Compiling bitmaps v3.2.1 (/workspace/vendor/bitmaps-3.2.1)
+   Compiling tracing v0.1.44
+   Compiling imbl-sized-chunks v0.1.3
+   Compiling h2 v0.4.19
+   Compiling tower v0.5.3
+   Compiling axum-core v0.5.6
+   Compiling hyper v1.11.1
+   Compiling imbl v7.0.1
+   Compiling hyper-util v0.1.20
+   Compiling kasumi-clock v0.1.0 (/workspace/crates/kasumi-clock)
+   Compiling kasumi-types v0.1.0 (/workspace/crates/kasumi-types)
+   Compiling axum v0.8.9
+   Compiling hyper-timeout v0.5.2
+   Compiling tonic v0.14.6
+   Compiling kasumi-serving v0.1.0 (/workspace/crates/kasumi-serving)
+   Compiling kasumi-transport v0.1.0 (/workspace/crates/kasumi-transport)
+   Compiling hyper-rustls v0.27.9
+   Compiling tower-http v0.6.11
+   Compiling lru v0.16.4 (/workspace/vendor/lru-0.16.4)
+   Compiling reqwest v0.12.28
+   Compiling tracing-futures v0.2.5
+   Compiling tantivy v0.26.1
+   Compiling kasumi-store v0.1.0 (/workspace/crates/kasumi-store)
+   Compiling openraft v0.9.25
+   Compiling kasumi-client v0.1.0 (/workspace/crates/kasumi-client)
+   Compiling kasumi-raft v0.1.0 (/workspace/crates/kasumi-raft)
+   Compiling lindera-tantivy v5.0.1
+   Compiling tonic-prost v0.14.6
+   Compiling kasumi-query v0.1.0 (/workspace/crates/kasumi-query)
+   Compiling sharded-slab v0.1.7
+   Compiling tracing-serde v0.2.0
+   Compiling thread_local v1.1.10
+   Compiling rmcp v3.2.0
+   Compiling tracing-subscriber v0.3.23
+   Compiling kasumi-engine v0.1.0 (/workspace/crates/kasumi-engine)
+   Compiling kasumi-authority v0.1.0 (/workspace/crates/kasumi-authority)
+   Compiling kasumi-server v0.1.0 (/workspace/crates/kasumi-server)
+    Finished `release` profile [optimized] target(s) in 25m 56s
