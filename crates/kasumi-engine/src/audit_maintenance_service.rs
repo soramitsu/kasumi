@@ -171,7 +171,11 @@ mod tests {
                     "tenant".into(),
                     incarnation.clone(),
                     Policy {
-                        grants: vec![],
+                        grants: vec![Grant {
+                            principal: "owner".into(),
+                            collection: None,
+                            actions: BTreeSet::from([Action::Read, Action::Admin]),
+                        }],
                         strict_read_audit: false,
                     },
                     Limits::default(),

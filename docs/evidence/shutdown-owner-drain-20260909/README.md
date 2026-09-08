@@ -55,3 +55,14 @@ A separate read-only peer review found no actionable production cancellation
 defect in the registration, retained handle, or phase-registration ordering.
 Its request for bounded deterministic-test watchdogs was incorporated. This
 review is not a substitute for compilation or functional evidence.
+
+The first combined functional run at frozen `711b32d` passed the verifier
+registration group and engine security-audit group, then failed the new tenant
+worker fixture before its shutdown assertions: its empty initial policy was
+rejected with `InvalidArgument: tenant needs an administrator`. The raw failed
+run remains preserved at `/tmp/kasumi-receipt-worker-711b32d`. The fixture now
+installs an explicit tenant-wide `owner` grant with Read and Admin, matching the
+valid policy used by the adjacent archival fixture. No production policy rule,
+shutdown assertion, deadline, or resource limit changed. The other four new
+shutdown fixtures do not construct a tenant policy. This correction has only
+direct formatting and diff checks; its functional rerun is still required.
