@@ -98,6 +98,7 @@ async fn explicit_encrypted_verifier_initialization_never_bootstraps_runtime_tru
         authority_epoch: 1,
         node: NodeIdentity {
             node_id: 1,
+            verifier: f.input.verifier.identity.clone(),
             principal: "data-1".into(),
             certificate_sha256: "ab".repeat(32),
         },

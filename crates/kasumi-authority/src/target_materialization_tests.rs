@@ -214,7 +214,7 @@ impl MaterialFixture {
         Arc<kasumi_engine::SecurityAudit>,
     ) {
         let issuer = self.issuer.leader().await;
-        let trust = self.issuer.trust.clone();
+        let trust = self.issuer.trust_for(id);
         let node_identity = nodes().into_iter().find(|n| n.node_id == id).unwrap();
         let node_context = AuthenticatedNode::from_verified_transport(
             self.issuer.context(&node_identity.principal),
@@ -1044,7 +1044,7 @@ async fn exact_actual_completion_is_required_for_issuer_and_target_activation() 
         .find(|node| node.node_id == projected_node_id)
         .unwrap();
     let boot = ServingBoot::with_test_clock(
-        trust,
+        f.issuer.trust_for(projected_node_id),
         ServingIdentity {
             tenant: "city".into(),
             incarnation: f.target.incarnation,

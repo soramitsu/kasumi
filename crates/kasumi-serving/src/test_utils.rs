@@ -7,6 +7,14 @@ use std::{collections::BTreeMap, sync::Arc};
 use uuid::Uuid;
 
 pub struct FixtureSigningRoot(Ed25519KeyPair);
+/// Deterministic fixture-only physical identity; production installations use
+/// independently generated durable identities and cannot select this provider.
+pub fn fixture_verifier(node_id: u64) -> TrustVerifierIdentity {
+    TrustVerifierIdentity {
+        installation_id: Uuid::from_u128(u128::from(node_id)),
+        node_id,
+    }
+}
 impl FixtureSigningRoot {
     pub fn from_pkcs8(bytes: &[u8]) -> Result<Self> {
         Ok(Self(
@@ -47,10 +55,31 @@ impl FixtureSigningRoot {
             ),
             identity,
         };
-        let verifier = TrustVerifierIdentity {
-            installation_id: Uuid::new_v4(),
-            node_id: 1,
-        };
+        FixtureAuthority::open(
+            manifest,
+            certificate,
+            operational.as_ref().to_vec(),
+            fixture_verifier(1),
+        )
+    }
+}
+impl FixtureAuthority {
+    pub fn for_verifier(&self, verifier: TrustVerifierIdentity) -> Result<Self> {
+        Self::open(
+            self.trust.manifest().clone(),
+            self.signer.certificate().clone(),
+            self.operational.clone(),
+            verifier,
+        )
+    }
+    fn open(
+        manifest: AuthorityManifest,
+        certificate: SigningCertificate,
+        operational: Vec<u8>,
+        verifier: TrustVerifierIdentity,
+    ) -> Result<Self> {
+        let domain = certificate.identity.domain.clone();
+        let partition = domain.partition;
         let persistence = Arc::new(ImmutableFixture(LocalSignerTrustRecord::initial(
             verifier.clone(),
             certificate.clone(),
@@ -68,10 +97,11 @@ impl FixtureSigningRoot {
         )?));
         let trust = AuthorityTrust::install(manifest)?
             .with_live_verifiers(BTreeMap::from([(partition, live.clone())]))?;
-        Ok(FixtureAuthority {
+        Ok(Self {
             signer,
             trust,
             verifier: live,
+            operational,
         })
     }
 }
@@ -79,6 +109,7 @@ pub struct FixtureAuthority {
     pub signer: Arc<AuthoritySigner>,
     pub trust: AuthorityTrust,
     pub verifier: Arc<LiveSignerTrust>,
+    operational: Vec<u8>,
 }
 struct NoMaintenance;
 impl LiveTrustAdministrator for NoMaintenance {

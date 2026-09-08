@@ -36,7 +36,8 @@ impl TargetSigner {
             .get(&self.node.node_id)
             .ok_or_else(|| anyhow::anyhow!("target signer is not installed"))?;
         anyhow::ensure!(
-            installed.principal == self.node.principal
+            installed.verifier == self.node.verifier
+                && installed.principal == self.node.principal
                 && installed.certificate_sha256 == self.node.certificate_sha256
                 && installed.attestation_public_key == hex::encode(self.key.public_key().as_ref()),
             "target signing key differs from exact committed installation"

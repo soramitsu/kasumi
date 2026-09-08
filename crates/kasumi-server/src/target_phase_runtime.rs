@@ -100,6 +100,7 @@ impl RuntimeTargetPhase {
         let tls = authority.tls.load()?;
         let node = NodeIdentity {
             node_id,
+            verifier: trust.verifier_identity()?,
             principal: authority.principal.clone(),
             certificate_sha256: hex::encode(tls.certificate_pin()),
         };
@@ -110,6 +111,7 @@ impl RuntimeTargetPhase {
             .context("target node not approved")?;
         ensure!(
             configured.node == node
+                && committed_node.verifier == node.verifier
                 && committed_node.principal == node.principal
                 && committed_node.certificate_sha256 == node.certificate_sha256,
             "actual target TLS identity differs from committed placement"

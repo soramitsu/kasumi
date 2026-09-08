@@ -55,7 +55,7 @@ impl Fixture {
         let service = IndependentAuthority::open_with_clock(
             stores.clone(),
             self.installation.clone(),
-            self.services[0].signer.clone(),
+            self.signing.for_verifier(kasumi_serving::test_utils::fixture_verifier(id)).unwrap().signer,
             id,
             settings,
             self.router.clone(),
@@ -493,7 +493,7 @@ async fn maintenance_store_cannot_reopen_as_another_member_identity() {
     let result = IndependentAuthority::open_with_clock(
         fixture.stores[0].clone(),
         fixture.installation.clone(),
-        fixture.services[0].signer.clone(),
+        fixture.signing.for_verifier(kasumi_serving::test_utils::fixture_verifier(4)).unwrap().signer,
         4,
         fixture.settings.clone(),
         fixture.router.clone(),
@@ -672,4 +672,19 @@ async fn maintenance_removing_the_leader_resumes_the_same_committed_operation() 
         drop(lock);
     }
     tokio::time::timeout(Duration::from_secs(15), fixture.close()).await.expect("authority owners did not drain");
+}
+
+#[tokio::test]
+async fn authority_signer_cannot_substitute_another_physical_verifier_with_the_same_node_id() {
+    let fixture = Fixture::new().await;
+    let mut verifier = fixture.settings.installed_members[&1].verifier.clone();
+    verifier.installation_id = Uuid::new_v4();
+    let substituted = fixture.signing.for_verifier(verifier).unwrap();
+    let result = IndependentAuthority::open_with_clock(
+        fixture.stores[0].clone(), fixture.installation.clone(), substituted.signer,
+        1, fixture.settings.clone(), fixture.router.clone(), Config::default(), fixture.epoch.clone(),
+    ).await;
+    assert!(result.err().unwrap().to_string().contains("physical verifier"));
+    fixture.services[0].signer.check().unwrap();
+    fixture.close().await;
 }

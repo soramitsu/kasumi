@@ -40,6 +40,7 @@ fn fixture() -> (Arc<AuthoritySigner>, ServingBoot, Arc<Clock>) {
         authority_epoch: 1,
         node: NodeIdentity {
             node_id: 1,
+            verifier: crate::test_utils::fixture_verifier(1),
             principal: "node-1".into(),
             certificate_sha256: "a".repeat(64),
         },
@@ -209,4 +210,27 @@ fn remaining_lease_time_uses_verified_shorter_credential_deadline() {
         gate.renew(fresh.verify(signed(&signer, &boot, &fresh)).unwrap())
             .is_err()
     );
+}
+
+#[test]
+fn physical_verifier_substitution_cannot_reopen_a_serving_or_lifecycle_boot() {
+    let (_, boot, clock) = fixture();
+    let original = boot.identity.clone();
+    let mut substituted = original.clone();
+    substituted.node.verifier.installation_id = Uuid::new_v4();
+    assert!(
+        ServingBoot::with_test_clock(boot.trust.clone(), substituted.clone(), clock.clone())
+            .is_err()
+    );
+    assert!(
+        LifecycleBoot::with_clock(boot.trust.clone(), substituted.node, clock.clone()).is_err()
+    );
+    let mut wrong_node = original.clone();
+    wrong_node.node.verifier.node_id += 1;
+    assert!(wrong_node.validate().is_err());
+    let mut legacy = serde_json::to_value(&original.node).unwrap();
+    legacy.as_object_mut().unwrap().remove("verifier");
+    assert!(serde_json::from_value::<NodeIdentity>(legacy).is_err());
+    ServingBoot::with_test_clock(boot.trust.clone(), original.clone(), clock.clone()).unwrap();
+    LifecycleBoot::with_clock(boot.trust.clone(), original.node, clock).unwrap();
 }
