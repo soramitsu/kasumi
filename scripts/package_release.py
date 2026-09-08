@@ -28,6 +28,7 @@ TARGETS = {"aarch64-unknown-linux-gnu": ("elf", 183),
            "aarch64-apple-darwin": ("macho", 0x100000C)}
 BINARIES = {"kasumid", "kasumictl", "kasumi-authority"}
 NOTICE_NAME = re.compile(r"^(licen[cs]e|copying|copyright|notice)([-_.]|$)", re.I)
+ATTRIBUTION_NAME = re.compile(r"^(authors|contributors)([-_.]|$)", re.I)
 
 
 def owned_file(root, relative):
@@ -148,6 +149,12 @@ def license_files(package, source, supplements):
             files["supplement/" + item["path"]] = (path, item["path"], item["source_url"])
     if not files:
         raise ValueError("missing upstream license text: " + package["name"] + " " + package["version"])
+    # Notices may identify copyright holders through a separate author list.
+    # Retain such lists, but never treat an author list alone as a license grant.
+    for path in sorted(package_root.rglob("*")):
+        if path.is_file() and ATTRIBUTION_NAME.match(path.name):
+            relative = path.relative_to(package_root).as_posix()
+            files[relative] = (owned_file(package_root, relative), relative, None)
     return list(files.values())
 
 
