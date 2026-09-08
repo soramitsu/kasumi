@@ -32,9 +32,16 @@ pub(super) struct PreparedState {
     pub engine: Arc<TenantEngine>,
     pub sha256: String,
     _materialization: Arc<crate::admission::Reservation>,
+    registration: Option<Arc<crate::backup_verify::VerificationWork>>,
 }
 
 impl PreparedState {
+    pub(super) fn publication_registration(
+        &self,
+    ) -> Option<Arc<crate::backup_verify::VerificationWork>> {
+        self.registration.clone()
+    }
+
     pub(super) fn publication_workspace(&self) -> Arc<crate::admission::Reservation> {
         self._materialization.clone()
     }
@@ -92,6 +99,7 @@ impl VerifiedBackup {
                     engine,
                     sha256,
                     _materialization: retained_materialization,
+                    registration: self._registration,
                 })
             })
             .await
@@ -275,28 +283,6 @@ impl BackupReader for RestoreReader<'_> {
     }
 }
 
-pub(super) async fn load(
-    source: &RestoreSource,
-    backup_id: uuid::Uuid,
-    target: &Arc<TenantStore>,
-    context: &RequestContext,
-    audit: &SecurityAudit,
-    admission: &Arc<NodeAdmission>,
-    deadline: VerificationDeadline,
-) -> anyhow::Result<VerifiedBackup> {
-    load_authorized(
-        source,
-        backup_id,
-        target,
-        RestoreAuthorization::Data(context),
-        audit,
-        admission,
-        deadline,
-        None,
-        None,
-    )
-    .await
-}
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn load_authorized(
     source: &RestoreSource,
