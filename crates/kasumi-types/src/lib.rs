@@ -3,6 +3,8 @@ mod security_audit;
 pub use security_audit::*;
 mod audit;
 pub use audit::*;
+mod canonical_json;
+pub use canonical_json::CanonicalJsonValue;
 mod canonical_keys;
 pub use canonical_keys::deserialize_u64_map;
 mod target;
@@ -251,6 +253,7 @@ impl Default for Limits {
 pub struct Document {
     pub id: String,
     pub version: u64,
+    #[serde(serialize_with = "canonical_json::serialize")]
     pub body: Value,
 }
 
@@ -259,6 +262,7 @@ pub struct CollectionDefinition {
     pub name: String,
     pub write_mode: CollectionWriteMode,
     pub retention_class: CollectionRetentionClass,
+    #[serde(serialize_with = "canonical_json::serialize")]
     pub schema: Value,
     #[serde(default)]
     pub indexes: Vec<IndexDefinition>,
@@ -331,6 +335,7 @@ pub enum Mutation {
     Put {
         collection: String,
         id: String,
+        #[serde(serialize_with = "canonical_json::serialize")]
         body: Value,
         #[serde(default)]
         expected: Precondition,
