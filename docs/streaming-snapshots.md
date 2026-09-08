@@ -74,3 +74,38 @@ hot byte count and archive root. Hot audit frames use absolute stream positions;
 restoration does not renumber history. The archive-before-prune subsystem must
 preserve the ciphertext dependencies named by those roots on every replica and
 in backup/replacement workflows before their pruning transitions become usable.
+
+Application Raft backends use the canonical `KASUMID1` dependency bundle inside
+`KASUMIS2`. A bounded canonical source-purpose header precedes 64 KiB frames of
+`KASUMIT2`, an explicit logical-stream terminator, and the audit ciphertext chain
+in reverse sequence order. Each archive record is at most 8 MiB. The final record
+binds checked logical/archive byte and record totals and the complete bundle
+digest; missing dependencies, extra records and logical-only transport are
+rejected. The aggregate Raft disk quota must cover the logical image, retained
+audit ciphertext and framing.
+
+Capture retains only immutable generation and storage handles. Materialization
+reads one local archive at a time and verifies its original source purpose,
+restore lineage, wrapping-key dependency and AEAD. The receiver applies the same
+checks and durably publishes each exact ciphertext to its own installed private
+archive cache before accepting the bundle. Failed verification can leave verified
+immutable orphans, but cannot publish an archive head or pruning watermark. Cache
+paths and external destination settings remain local installation bindings. A
+replacement can produce the same archive-complete snapshot without the original
+source. This does not yet establish final bounded-memory verification or the
+3 GiB capacity gate; validation and restore still rebuild unpublished logical
+state, and full-backup audit dependency integration remains a separate gate.
+
+The low-level public engine `snapshot()` currently still returns a logical
+candidate, not a portable archive-complete image. Its matching `restore()` refuses
+to publish pruned state without an installed store and a fully verified local
+archive chain. Replacing these public methods with complete bundle APIs and
+privatizing candidate codecs is a mandatory first-release follow-up; accepting
+both formats as a compatibility fallback is not permitted.
+
+Control bundles use the same framing but authorize only the exact `NodeControl`
+storage purpose and `__kasumi_control` domain. Their archive records use the
+current store's exact-purpose audit decoder and the stream/head committed in the
+Control state. They cannot invoke application historical-key verification or
+cross-incarnation restore lineage. The application backup verifier continues to
+reject all reserved storage purposes.

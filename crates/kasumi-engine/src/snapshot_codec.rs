@@ -564,6 +564,8 @@ mod tests {
         };
         state.audit_retention.next_sequence = 23;
         state.audit_retention.pruned_before = 23;
+        state.audit_retention.archive_bytes = head.ciphertext_bytes;
+        state.audit_retention.archive_segments = 1;
         state.audit_retention.archive_head = Some(head.clone());
         crate::state::append_audit(
             &mut state,
