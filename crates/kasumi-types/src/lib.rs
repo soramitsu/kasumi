@@ -489,16 +489,14 @@ impl StoredReceipt {
         genesis_revision: u64,
         maximum_revision: u64,
     ) -> Result<()> {
-        use sha2::{Digest, Sha256};
         validate_name(&self.scope.tenant)?;
         validate_name(&self.scope.incarnation)?;
         validate_name(&self.scope.principal)?;
         validate_name(&self.idempotency_key)?;
         validate_sha256(&self.request_digest)?;
-        let identity = serde_json::to_vec(&(&self.scope.principal, &self.idempotency_key))
-            .map_err(|_| Error::new(ErrorCode::Corruption, "invalid receipt identity"))?;
+        let (identity, _) = staged_digest(&(&self.scope.principal, &self.idempotency_key))?;
         if self.scope.tenant != tenant
-            || hex::encode(Sha256::digest(identity)) != key
+            || identity != key
             || self.recorded_revision <= genesis_revision
             || self.recorded_revision > maximum_revision
             || self.expires_at_ms == 0
