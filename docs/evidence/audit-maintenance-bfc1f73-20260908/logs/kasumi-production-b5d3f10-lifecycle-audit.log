@@ -1,0 +1,23 @@
+    Blocking waiting for file lock on build directory
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-production-archive-worker-validation/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4m 00s
+     Running tests/lifecycle.rs (/tmp/kasumi-production-root-target/debug/deps/lifecycle-9602cd53223f9d39)
+
+running 1 test
+test control_completion_audit_reservation_survives_denials_and_current_admin_status_recovery ... FAILED
+
+failures:
+
+---- control_completion_audit_reservation_survives_denials_and_current_admin_status_recovery stdout ----
+
+thread 'control_completion_audit_reservation_survives_denials_and_current_admin_status_recovery' (19483070) panicked at crates/kasumi-engine/tests/lifecycle.rs:622:14:
+called `Result::unwrap()` on an `Err` value: Error { code: InvalidArgument, message: "invalid read audit event" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    control_completion_audit_reservation_survives_denials_and_current_admin_status_recovery
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 2.87s
+
+error: test failed, to rerun pass `-p kasumi-engine --test lifecycle`

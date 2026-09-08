@@ -199,3 +199,35 @@ gate above and usable installation artifacts.
   and build feature graph excludes fixtures. Source, executable and log hashes
   are in `docs/evidence/linux-amd64-f8e9618-20260908`. Translation is explicitly
   not native performance or endurance evidence.
+
+- Frozen `8df1234` completed 43 test groups with 413 passed, one failed and two
+  ignored; its authority process aborted after another 17 passed tests with a
+  target recovery stack overflow. The server failure rejected newly created
+  target archive-cache entries during physical cleanup. Both failures are
+  retained in `docs/evidence/integration-8df1234-20260908`. `e80475a` pins the
+  recovery future before composing monitors; its branch regression passed on the
+  default stack. Exact local archive ownership cleanup remains in progress.
+- Corrected `bfc1f73` passes all 12 audit-focused engine tests and the Control
+  completion capacity test. `b5d3f10` passes strict workspace Clippy, native full
+  audit-budget expansion, retirement byte-headroom and closed-configuration
+  checks. `1dd752b` also passes the mutation rollback/expansion check. Failures
+  and corrected results are retained in
+  `docs/evidence/audit-maintenance-bfc1f73-20260908`; production startup wiring
+  is still separate from these explicit worker tests.
+- `c0f3a9` integrates protected health/readiness/Prometheus and structured daemon
+  diagnostics. The branch passed actual TLS authorization, expiry/revocation,
+  policy and storage release fences, bounded projections, strict server lint and
+  production checks. Authority/coordinator observations, missing measurements,
+  follower semantics and readiness limits remain explicit in `observability.md`.
+- `189e164` replaces public logical snapshot/overwrite APIs with an async admitted
+  complete snapshot and staged-only verification. Raft or an exclusive stopped
+  coordinator owns publication. Startup now verifies bootstrap archive chains;
+  the branch passed missing-cache reopen, nine snapshot and nine backup tests,
+  strict affected lint and production checks. Final bounded verification remains
+  open because historical verification still materializes logical state.
+- `4831c4c` installs explicit tenant archive destinations before normal, target and
+  offline runtime materialization/replay. A required map selects filesystem or
+  renewable-file-backed S3 destinations; encrypted placement binding rejects a
+  removed or changed destination. Local stopped recovery supplies its observed
+  cache separately. Corrected configuration validation is running; the first
+  helper compile failure is preserved.
