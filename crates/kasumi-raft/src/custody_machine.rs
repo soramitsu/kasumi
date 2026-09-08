@@ -58,6 +58,7 @@ pub(crate) fn capture(custody: &CustodyStore) -> Result<SnapshotEnvelope> {
 }
 
 pub(crate) fn publish(custody: &CustodyStore, snapshot: &SnapshotEnvelope) -> Result<()> {
+    crate::custody_snapshot_storage::check_format(custody)?;
     ensure!(
         snapshot.kind == SnapshotKind::Custody
             && snapshot.version == 1
@@ -643,6 +644,122 @@ mod tests {
                     complete.commands.get("rotate").cloned()
                 );
             }
+        }
+        Ok(())
+    }
+    #[tokio::test]
+    async fn closed_snapshot_rejects_prior_format_without_rewriting_permanent_storage() -> Result<()>
+    {
+        let (domains, _, _, mut log) = fixture(FaultBackend::new()).await?;
+        log.blocking_append([membership(), retirement_entry()?])
+            .await?;
+        log.save_committed(Some(id(1))).await?;
+        assert!(crate::ControlLog::open(domains.custody().clone(), 1, group())?.recover_retired()?);
+        let original: AppliedCursor = load(domains.custody().store(), META, b"applied")?.unwrap();
+        domains.custody().store().write_batch(&[WriteOp::put(
+            CLOSED_SNAPSHOT,
+            b"current",
+            b"KASUMIS2",
+        )])?;
+        let error = publish(domains.custody(), &capture(domains.custody())?).unwrap_err();
+        assert!(
+            error.to_string().contains("unsupported closed snapshot"),
+            "{error}"
+        );
+        assert!(load_snapshot(domains.custody()).is_err());
+        assert_eq!(
+            load::<AppliedCursor>(domains.custody().store(), META, b"applied")?,
+            Some(original)
+        );
+        assert_eq!(
+            domains.custody().store().get(CLOSED_SNAPSHOT, b"current")?,
+            Some(b"KASUMIS2".to_vec())
+        );
+        Ok(())
+    }
+    #[tokio::test]
+    async fn canonical_custody_stream_authenticates_counts_digest_and_record_order() -> Result<()> {
+        use sha2::{Digest, Sha256};
+        let (domains, _, _, mut log) = fixture(FaultBackend::new()).await?;
+        log.blocking_append([membership(), retirement_entry()?])
+            .await?;
+        log.save_committed(Some(id(1))).await?;
+        assert!(crate::ControlLog::open(domains.custody().clone(), 1, group())?.recover_retired()?);
+        let command = rotation(
+            &control::custody_head(domains.custody())?
+                .policy
+                .origin
+                .request,
+        );
+        log.blocking_append([Entry {
+            log_id: id(2),
+            payload: EntryPayload::Normal(crate::RaftCommand::custody(&command)?),
+        }])
+        .await?;
+        log.save_committed(Some(id(2))).await?;
+        let (_, membership) = applied(domains.custody())?;
+        control::apply_custody(
+            domains.custody(),
+            &AppliedEntryContext {
+                log_id: id(2),
+                previous: Some(id(1)),
+                membership,
+                retirement_seed: None,
+                command_sha256: crate::command::sha256(&command.encoded()?),
+            },
+            &command,
+        )?;
+        let snapshot = capture(domains.custody())?;
+        let bytes = snapshot
+            .encode(MAX_CLOSED_SNAPSHOT_BYTES)?
+            .read_bounded(MAX_CLOSED_SNAPSHOT_BYTES as usize)?;
+        let decoded = SnapshotEnvelope::decode(&mut bytes.as_slice(), MAX_CLOSED_SNAPSHOT_BYTES)?;
+        assert_eq!(
+            decoded.retirement.as_ref().unwrap().history_sha256,
+            snapshot.retirement.as_ref().unwrap().history_sha256
+        );
+        assert!(
+            decoded
+                .retirement
+                .as_ref()
+                .unwrap()
+                .verified_records()
+                .is_ok()
+        );
+        let footer = bytes.len() - 65;
+        let metadata_size = u64::from_be_bytes(bytes[9..17].try_into()?) as usize;
+        let command_start = 17 + metadata_size;
+        let command_size =
+            u64::from_be_bytes(bytes[command_start + 1..command_start + 9].try_into()?) as usize;
+        assert_eq!(bytes[command_start], 2);
+        for case in 0..6 {
+            let mut bad = bytes.clone();
+            match case {
+                0 => bad[..8].copy_from_slice(b"KASUMIS2"),
+                1 => bad[footer + 17..footer + 25].copy_from_slice(&0u64.to_be_bytes()),
+                2 => bad[footer + 33] ^= 1,
+                3 => bad.push(0),
+                4 => {
+                    // Remove a whole command and recalculate the outer digest.
+                    // The semantic head must still reject the missing identity.
+                    bad.drain(command_start..command_start + 9 + command_size);
+                    let footer = bad.len() - 65;
+                    bad[footer + 17..footer + 25].copy_from_slice(&0u64.to_be_bytes());
+                    let digest = Sha256::digest(&bad[..footer]);
+                    bad[footer + 33..].copy_from_slice(&digest);
+                }
+                5 => {
+                    // A re-authenticated custody record cannot change its type.
+                    bad[command_start] = 3;
+                    let digest = Sha256::digest(&bad[..footer]);
+                    bad[footer + 33..].copy_from_slice(&digest);
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                SnapshotEnvelope::decode(&mut bad.as_slice(), MAX_CLOSED_SNAPSHOT_BYTES).is_err(),
+                "accepted corruption {case}"
+            );
         }
         Ok(())
     }

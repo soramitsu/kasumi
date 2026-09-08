@@ -16,6 +16,22 @@ struct Manifest {
     chunks: u64,
     sha256: String,
 }
+pub(crate) fn check_format(custody: &CustodyStore) -> Result<()> {
+    let view = custody.store().read_view()?;
+    if let Some(bytes) = view.get(META, MANIFEST, 4096)? {
+        let manifest: Manifest = serde_json::from_slice(&bytes)?;
+        ensure!(
+            manifest.version == 1,
+            "unsupported closed snapshot storage format"
+        );
+    } else {
+        view.visit(CLOSED_SNAPSHOT, 1, |_, _| {
+            anyhow::bail!("unsupported closed snapshot storage format")
+        })
+        .context("unsupported closed snapshot storage without a chunk manifest")?;
+    }
+    Ok(())
+}
 pub(crate) fn stage(image: &SnapshotImage, limit: u64) -> Result<(EncryptedTable, WriteOp)> {
     ensure!(
         image.len() <= limit,
@@ -53,10 +69,7 @@ pub(crate) fn load_image(custody: &CustodyStore, limit: u64) -> Result<Option<Sn
     let store = custody.store();
     let view = store.read_view()?;
     let Some(bytes) = view.get(META, MANIFEST, 4096)? else {
-        ensure!(
-            view.get(CLOSED_SNAPSHOT, b"current", 1)?.is_none(),
-            "unsupported closed snapshot storage format"
-        );
+        check_format(custody)?;
         return Ok(None);
     };
     let manifest: Manifest = serde_json::from_slice(&bytes)?;
