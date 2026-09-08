@@ -13,6 +13,7 @@ pub mod runtime;
 pub mod serving_runtime;
 pub mod standalone;
 pub mod standalone_cli;
+pub mod standalone_key_backup;
 pub mod tls;
 pub mod tls_reload;
 

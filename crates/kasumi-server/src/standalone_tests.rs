@@ -204,6 +204,88 @@ async fn initialized_standalone_serves_native_mcp_and_durable_credential_lifecyc
     ])
     .await
     .unwrap();
+    // Simulate a committed renewal whose reply was lost before publishing the
+    // token file. The CLI must resolve the original issuance, including restart.
+    let renewal_journal = tenant.bearer_file.with_extension("renewal.json");
+    let lost_reply = kasumi_types::RenewCredential {
+        family_id: tenant.family_id,
+        renewal_id: Uuid::new_v4(),
+    };
+    private_files::create(&renewal_journal, &serde_json::to_vec(&lost_reply).unwrap()).unwrap();
+    let original_issuance = admin.renew_credential(&bearer, &lost_reply).await.unwrap();
+    let renewal_command = vec![
+        "credential".into(),
+        "renew".into(),
+        installation.tenant_profile.to_string_lossy().into_owned(),
+    ];
+    crate::standalone_cli::command(&renewal_command)
+        .await
+        .unwrap();
+    assert_eq!(tenant.bearer().unwrap().as_str(), original_issuance.token);
+    assert!(!renewal_journal.exists());
+    // A running watcher publishes one atomic renewal, then its cancelled task
+    // drops exclusive ownership so a restarted invocation can proceed.
+    let prior_token = tenant.bearer().unwrap();
+    let watcher_arguments = vec![
+        "credential".into(),
+        "watch".into(),
+        installation.tenant_profile.to_string_lossy().into_owned(),
+    ];
+    let watcher =
+        tokio::spawn(async move { crate::standalone_cli::command(&watcher_arguments).await });
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while tenant.bearer().unwrap().as_str() == prior_token.as_str() || renewal_journal.exists()
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    watcher.abort();
+    assert!(watcher.await.unwrap_err().is_cancelled());
+    let watcher_lock =
+        private_files::ExclusiveLock::acquire(&tenant.bearer_file.with_extension("watch.lock"))
+            .unwrap();
+    drop(watcher_lock);
+    // Repeated connection failures preserve the same exact pending identity.
+    let unavailable = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut offline_profile = tenant.clone();
+    offline_profile.admin_endpoint = format!(
+        "https://localhost:{}",
+        unavailable.local_addr().unwrap().port()
+    );
+    drop(unavailable);
+    private_files::replace(
+        &installation.tenant_profile,
+        &serde_json::to_vec(&offline_profile).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        crate::standalone_cli::command(&renewal_command)
+            .await
+            .is_err()
+    );
+    let pending = private_files::read(&renewal_journal, 4096).unwrap();
+    assert!(
+        crate::standalone_cli::command(&renewal_command)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        private_files::read(&renewal_journal, 4096)
+            .unwrap()
+            .as_slice(),
+        pending.as_slice()
+    );
+    private_files::replace(
+        &installation.tenant_profile,
+        &serde_json::to_vec(&tenant).unwrap(),
+    )
+    .unwrap();
+    crate::standalone_cli::command(&renewal_command)
+        .await
+        .unwrap();
+    assert!(!renewal_journal.exists());
     assert!(data.mutate(&restricted.token, &mutation).await.is_err());
     assert!(
         admin

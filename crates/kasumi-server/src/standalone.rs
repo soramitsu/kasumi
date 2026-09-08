@@ -57,6 +57,16 @@ pub(crate) fn claim(config: &RuntimeConfig) -> Result<Option<private_files::Excl
     Ok(Some(lock))
 }
 
+pub(crate) fn installation_root(config: &RuntimeConfig) -> Result<&Path> {
+    let root = config
+        .database_path
+        .parent()
+        .and_then(Path::parent)
+        .context("standalone installation root is missing")?;
+    private_files::check_directory(root)?;
+    Ok(root)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ClientProfile {
@@ -263,9 +273,7 @@ pub async fn recover_administrator(configuration: &Path, output: &Path) -> Resul
             kasumi_engine::SecurityOutcome::Started,
         ))
         .await?;
-    let root = configuration
-        .parent()
-        .context("configuration has no parent")?;
+    let root = installation_root(&config)?;
     let source_profile = ClientProfile::load(&root.join("profiles/control.json"))?;
     let mut recovered = Vec::new();
     let mut recovered_control_principal = None;
@@ -520,9 +528,7 @@ pub async fn rotate_certificates(configuration: &Path) -> Result<serde_json::Val
             kasumi_engine::SecurityOutcome::Started,
         ))
         .await?;
-    let root = configuration
-        .parent()
-        .context("configuration has no parent")?;
+    let root = installation_root(&config)?;
     let ca_key = private_files::read(&root.join("operator/ca-key.pem"), 1 << 20)?;
     let ca_key = rcgen::KeyPair::from_pem(std::str::from_utf8(&ca_key)?)?;
     let ca_pem = std::fs::read_to_string(root.join("tls/ca.pem"))?;
@@ -608,24 +614,17 @@ pub async fn backup_operator_keys(configuration: &Path, output: &Path) -> Result
             kasumi_engine::SecurityOutcome::Started,
         ))
         .await?;
-    private_files::create_directory(output)?;
-    let operator = configuration
-        .parent()
-        .context("configuration has no parent")?
-        .join("operator");
-    for entry in std::fs::read_dir(operator)? {
-        let entry = entry?;
-        if entry
-            .path()
-            .extension()
-            .is_some_and(|extension| extension == "lock")
-        {
-            continue;
-        }
-        let bytes = private_files::read(&entry.path(), 1 << 20)?;
-        private_files::create(&output.join(entry.file_name()), &bytes)?;
+    let result = crate::standalone_key_backup::create(&config, output);
+    if let Err(error) = result {
+        let _ = audit
+            .record(operator_event(
+                &operation,
+                kasumi_engine::SecurityOutcome::Failed,
+            ))
+            .await;
+        audit.shutdown().await;
+        return Err(error);
     }
-    private_files::create(&output.join("KEYS-ONLY.txt"), b"Kasumi operator key backup. Contains unencrypted wrapping/signing/CA secrets. Store offline on a trusted encrypted host. This is not a data backup. Restore these keys separately from verified database backups.\n")?;
     audit
         .record(operator_event(
             &operation,
