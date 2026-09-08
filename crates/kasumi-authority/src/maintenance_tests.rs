@@ -610,3 +610,60 @@ async fn maintenance_resource_acknowledgement_survives_lost_reply_before_admissi
     );
     fixture.close().await;
 }
+
+#[tokio::test]
+async fn maintenance_removing_the_leader_resumes_the_same_committed_operation() {
+    let mut fixture = Fixture::new().await;
+    fixture.add_fourth().await;
+    let enroll = fixture
+        .maintenance_command(AuthorityMaintenanceAction::EnrollLearner {
+            node_id: 4,
+            member: fixture.settings.installed_members[&4].clone(),
+        })
+        .await;
+    fixture
+        .maintenance(AuthorityMaintenanceRequest::Start { command: enroll })
+        .await
+        .unwrap();
+    let former = fixture.leader().await;
+    let voters = BTreeSet::from([1, 2, 3, 4])
+        .difference(&BTreeSet::from([former.local_node_id]))
+        .copied()
+        .collect();
+    let command = fixture
+        .maintenance_command(AuthorityMaintenanceAction::ReplaceVoters { voters })
+        .await;
+    match former
+        .maintenance(
+            fixture.context("operator"),
+            AuthorityMaintenanceRequest::Start {
+                command: command.clone(),
+            },
+        )
+        .await
+    {
+        Ok(_) => {}
+        Err(error) => assert!(matches!(
+            error.code,
+            ErrorCode::UnknownOutcome | ErrorCode::Unavailable
+        )),
+    }
+    let successor = fixture.leader().await;
+    assert_ne!(successor.local_node_id, former.local_node_id);
+    let completed = fixture
+        .maintenance(AuthorityMaintenanceRequest::Resume {
+            operation_id: command.operation_id,
+        })
+        .await
+        .unwrap();
+    assert_eq!(completed.command, command);
+    assert_eq!(completed.phase, AuthorityMaintenancePhase::Completed);
+    assert_eq!(
+        fixture
+            .maintenance(AuthorityMaintenanceRequest::Start { command })
+            .await
+            .unwrap(),
+        completed
+    );
+    tokio::time::timeout(Duration::from_secs(15), fixture.close()).await.expect("authority owners did not drain");
+}

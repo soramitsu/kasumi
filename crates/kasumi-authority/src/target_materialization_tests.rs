@@ -9,7 +9,10 @@ use kasumi_engine::{
 };
 use kasumi_store::{FilesystemBackupDestination, StorageAccess, TenantStorageSet, TenantStore};
 
-async fn audit(node: Arc<NodeStore>) -> Arc<kasumi_engine::SecurityAudit> {
+async fn audit(
+    node: Arc<NodeStore>,
+    admission: Arc<kasumi_engine::admission::NodeAdmission>,
+) -> Arc<kasumi_engine::SecurityAudit> {
     let store = TenantStore::open_fixture(
         node,
         kasumi_engine::SECURITY_TENANT.into(),
@@ -17,8 +20,21 @@ async fn audit(node: Arc<NodeStore>) -> Arc<kasumi_engine::SecurityAudit> {
     )
     .await
     .unwrap();
-    kasumi_engine::SecurityAudit::open(store, kasumi_types::AuditRetentionBudget::default())
-        .unwrap()
+    let archive = Arc::new(
+        kasumi_store::FilesystemAuditArchive::open(
+            store.durable_directory().unwrap().join("audit-archives"),
+        )
+        .unwrap(),
+    );
+    // These stores model distinct processes. Their reserved archival work must
+    // use their own node admission rather than a shared test-process budget.
+    kasumi_engine::SecurityAudit::open_with_archive(
+        store,
+        kasumi_types::AuditRetentionBudget::default(),
+        archive,
+        admission,
+    )
+    .unwrap()
 }
 struct MaterialFixture {
     issuer: Fixture,
@@ -28,14 +44,16 @@ struct MaterialFixture {
     input: TargetMaterializationInput,
     intent: SignedControlIntent,
     signers: BTreeMap<u64, TargetSigner>,
-    admission: Arc<kasumi_engine::admission::NodeAdmission>,
+    admissions: BTreeMap<u64, Arc<kasumi_engine::admission::NodeAdmission>>,
 }
 impl MaterialFixture {
     async fn new() -> Self {
         let control = ControlFixture::new();
         let issuer = control.issuer().await;
         let node = NodeStore::open(issuer._dir.path().join("source.redb")).unwrap();
-        let security = audit(node.clone()).await;
+        let source_admission =
+            kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap();
+        let security = audit(node.clone(), source_admission.clone()).await;
         let sourcekey = Arc::new(LocalKeyProvider::new([51; 32]));
         let app = TenantStore::open_fixture(node, "city".into(), sourcekey.clone())
             .await
@@ -66,6 +84,7 @@ impl MaterialFixture {
         )
         .await
         .unwrap();
+        source_db.install_admission(source_admission).unwrap();
         source_db
             .administer(
                 context.clone(),
@@ -182,7 +201,14 @@ impl MaterialFixture {
             input,
             intent,
             signers,
-            admission: kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+            admissions: (1..=3)
+                .map(|id| {
+                    (
+                        id,
+                        kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+                    )
+                })
+                .collect(),
         }
     }
     async fn phase(
@@ -261,7 +287,7 @@ impl MaterialFixture {
         // materialization still explicitly obtains its registered operation.
         let node =
             NodeStore::open(self.issuer._dir.path().join(format!("target-{id}.redb"))).unwrap();
-        let security = audit(node.clone()).await;
+        let security = audit(node.clone(), self.admissions[&id].clone()).await;
         let stores = TenantStorageSet::open(
             node,
             "city".into(),
@@ -291,7 +317,7 @@ impl MaterialFixture {
                     )
                 })
                 .collect(),
-            admission: self.admission.clone(),
+            admission: self.admissions[&id].clone(),
         }
     }
     async fn close(self) {
@@ -532,7 +558,7 @@ impl MaterialFixture {
                         election_timeout_max: 400,
                         ..Config::default()
                     },
-                    admission: self.admission.clone(),
+                    admission: self.admissions[&id].clone(),
                 },
                 router.clone(),
                 audit.clone(),
@@ -815,7 +841,7 @@ async fn exact_actual_completion_is_required_for_issuer_and_target_activation() 
         journal_store.clone(),
         journal_installation.clone(),
         journal_limits.clone(),
-        f.admission.clone(),
+        f.admissions[&projected_node_id].clone(),
     )
     .unwrap();
     assert!(
@@ -918,7 +944,7 @@ async fn exact_actual_completion_is_required_for_issuer_and_target_activation() 
         journal_store.clone(),
         journal_installation.clone(),
         journal_limits.clone(),
-        f.admission.clone(),
+        f.admissions[&projected_node_id].clone(),
     )
     .unwrap();
     let projection = journal
@@ -955,7 +981,7 @@ async fn exact_actual_completion_is_required_for_issuer_and_target_activation() 
             journal_store.clone(),
             journal_installation.clone(),
             journal_limits.clone(),
-            f.admission.clone()
+            f.admissions[&projected_node_id].clone()
         )
         .is_err()
     );
@@ -970,7 +996,7 @@ async fn exact_actual_completion_is_required_for_issuer_and_target_activation() 
         journal_store.clone(),
         journal_installation.clone(),
         journal_limits.clone(),
-        f.admission.clone(),
+        f.admissions[&projected_node_id].clone(),
     )
     .unwrap();
     let projection = journal
@@ -1011,7 +1037,7 @@ async fn exact_actual_completion_is_required_for_issuer_and_target_activation() 
         journal_store.clone(),
         journal_installation,
         journal_limits,
-        f.admission.clone(),
+        f.admissions[&projected_node_id].clone(),
     )
     .unwrap();
     let projection = Arc::new(
@@ -1057,7 +1083,7 @@ async fn exact_actual_completion_is_required_for_issuer_and_target_activation() 
             .join(format!("target-{projected_node_id}.redb")),
     )
     .unwrap();
-    let security = audit(node.clone()).await;
+    let security = audit(node.clone(), f.admissions[&projected_node_id].clone()).await;
     let stores = TenantStorageSet::open(
         node,
         "city".into(),
@@ -1073,7 +1099,7 @@ async fn exact_actual_completion_is_required_for_issuer_and_target_activation() 
         TargetReplicaConfig {
             node_id: projected_node_id,
             raft: Config::default(),
-            admission: f.admission.clone(),
+            admission: f.admissions[&projected_node_id].clone(),
         },
         router.clone(),
         security.clone(),
@@ -1364,14 +1390,14 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
         store.clone(),
         installation.clone(),
         limits.clone(),
-        f.admission.clone(),
+        f.admissions[&1].clone(),
     )
     .unwrap();
     let again = TargetJournal::open(
         store.clone(),
         installation.clone(),
         limits.clone(),
-        f.admission.clone(),
+        f.admissions[&1].clone(),
     )
     .unwrap();
     assert!(Arc::ptr_eq(&journal, &again));
@@ -1472,8 +1498,13 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
     let store = TenantStore::open(node, tenant, provider, access)
         .await
         .unwrap();
-    let reopened =
-        TargetJournal::open(store.clone(), installation, limits, f.admission.clone()).unwrap();
+    let reopened = TargetJournal::open(
+        store.clone(),
+        installation,
+        limits,
+        f.admissions[&1].clone(),
+    )
+    .unwrap();
     reopened.stop(&stop_op, &proof).unwrap();
     assert_eq!(
         store
