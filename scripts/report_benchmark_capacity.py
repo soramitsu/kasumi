@@ -127,6 +127,10 @@ def report(directory):
             overhead.append({"deployment": mode, "tenant_count": tenants, "stage": stage, "additional_tenant_rss_bytes": delta, "additional_resident_voter_rss_bytes": None if mode == "raw" else delta / footprint["replicas_per_tenant"], "method": "Difference from independent one-tenant process / additional tenants. This includes all associated runtime, policy, KMS, audit and index overhead; allocator/OS noise can produce negative estimates. It is not an isolated Raft allocation measurement."})
     return {
         "format": 1, "matrix_status": manifest.get("status"), "source_sha256": manifest.get("source_sha256"),
+        "scope": "Historical embedded/loopback fixture measurements; cannot certify production binaries or final release capacity.",
+        "input_matrix_scope": manifest.get("scope"),
+        "matrix_sha256": digest(directory / "matrix.json"),
+        "production_release_acceptance": False,
         "passed_quietness_screening": manifest.get("passed_quietness_screening", False),
         "host_load_violation_counts": manifest.get("host_load_violation_counts", {}),
         "configured_documents": documents, "configured_tenants": counts,
@@ -146,7 +150,9 @@ def report(directory):
 
 
 def markdown(value):
-    lines = ["# Measured capacity", "", f"Matrix outcome: `{value['matrix_status']}`. Quietness screening passed: `{value['passed_quietness_screening']}`.", "", "Footprints are shared between API layers and must not be added together. Missing values mean not measured.", "", "| Deployment | Tenants | Empty groups MiB | Empty indexes MiB | Loaded MiB | After work MiB | Shutdown s | Recovery s |", "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"]
+    lines = ["# Historical fixture capacity measurements", "", value["scope"], "",
+             "Input matrix scope: " + (value["input_matrix_scope"] or "not recorded"), "",
+             f"Matrix outcome: `{value['matrix_status']}`. Quietness screening passed: `{value['passed_quietness_screening']}`.", "", "Footprints are shared between API layers and must not be added together. Missing values mean not measured.", "", "| Deployment | Tenants | Empty groups MiB | Empty indexes MiB | Loaded MiB | After work MiB | Shutdown s | Recovery s |", "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"]
     for row in value["footprints"]:
         def mib(key):
             number = row[key]
