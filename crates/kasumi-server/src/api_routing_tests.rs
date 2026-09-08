@@ -136,9 +136,21 @@ async fn native_pool_replays_uncertain_batches_and_never_moves_historical_pages(
         1,
         "first member committed but lost its response"
     );
-    assert_eq!(credential_loads.load(Ordering::SeqCst), 1, "ambiguous mutation retries retain the original credential snapshot");
-    assert!(pool.mutate(&original, Duration::from_secs(4)).await.is_err());
-    assert_eq!(credential_loads.load(Ordering::SeqCst), 2, "the next operation reads the replacement once");
+    assert_eq!(
+        credential_loads.load(Ordering::SeqCst),
+        1,
+        "ambiguous mutation retries retain the original credential snapshot"
+    );
+    assert!(
+        pool.mutate(&original, Duration::from_secs(4))
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        credential_loads.load(Ordering::SeqCst),
+        2,
+        "the next operation reads the replacement once"
+    );
     *current_token.write().unwrap() = token;
     let replay = pool
         .mutate(&original, Duration::from_secs(4))
@@ -180,10 +192,23 @@ async fn native_pool_replays_uncertain_batches_and_never_moves_historical_pages(
     let page = pool.query(&query, Duration::from_secs(4)).await.unwrap();
     assert_eq!(page.member(), 2);
     assert!(page.response().cursor.is_some());
+    let snapshot_resources = kasumi_client::ClientResources::new(16 << 20, 8).unwrap();
+    let snapshot_options = |duration| kasumi_client::SnapshotReadOptions {
+        resources: snapshot_resources.clone(),
+        limits: kasumi_client::SnapshotDecodeLimits {
+            max_request_bytes: 64 << 10,
+            max_wire_bytes: 64 << 10,
+            max_json_bytes: 64 << 10,
+            max_decoded_bytes: 2 << 20,
+            ..Default::default()
+        },
+        deadline: tokio::time::Instant::now() + duration,
+        expected_incarnation: fixture.incarnation,
+    };
     let lease = pool
         .open_snapshot_lease(
             &kasumi_types::OpenSnapshotLease { ttl_ms: 5000 },
-            Duration::from_secs(4),
+            &snapshot_options(Duration::from_secs(4)),
         )
         .await
         .unwrap();
@@ -203,9 +228,15 @@ async fn native_pool_replays_uncertain_batches_and_never_moves_historical_pages(
             .is_err()
     );
     assert!(
-        pool.scan_snapshot_page(&lease, "docs", None, 1, Duration::from_millis(150))
-            .await
-            .is_err()
+        pool.scan_snapshot_page(
+            &lease,
+            "docs",
+            None,
+            1,
+            &snapshot_options(Duration::from_millis(150))
+        )
+        .await
+        .is_err()
     );
     assert_eq!(
         first_requests.load(Ordering::SeqCst),

@@ -18,11 +18,15 @@ kasumi-clock.workspace = true
 hex.workspace = true
 kasumi-transport.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
 thiserror.workspace = true
 tonic = { version = "0.14", default-features = false, features = ["router", "transport", "codegen", "tls-ring"] }
 tonic-prost = "0.14"
 prost = "0.14"
+bytes = "1"
+http = "1"
+http-body = "1"
+tower-service = "0.3"
 
 [build-dependencies]
 tonic-prost-build = "0.14"

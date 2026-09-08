@@ -1773,7 +1773,10 @@ name = "kasumi-client"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytes",
  "hex",
+ "http",
+ "http-body",
  "kasumi-clock",
  "kasumi-serving",
  "kasumi-transport",
@@ -1788,6 +1791,7 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
+ "tower-service",
  "url",
  "uuid",
 ]

@@ -5,14 +5,16 @@
 //! pin historical reads to their originating member.
 
 use kasumi_transport::{CertificatePin, TlsIdentity};
-use kasumi_types::{
-    MutationBatch, QueryRequest, QueryResponse, QueryRow, ReadSnapshotRequest,
-    SnapshotReadResponse, WriteReceipt,
-};
+use kasumi_types::{MutationBatch, QueryRequest, QueryResponse, QueryRow, WriteReceipt};
 use serde::Serialize;
 use std::collections::BTreeSet;
 use tonic::{Request, transport::Channel};
 
+mod snapshot_decode;
+pub use snapshot_decode::{
+    AdmittedSnapshot, ClientResourceUsage, ClientResources, SnapshotDecodeLimits,
+    SnapshotReadOptions,
+};
 mod credentials;
 mod security_audit;
 pub use security_audit::VerifiedSecurityAuditArchive;
@@ -74,6 +76,7 @@ pub struct KasumiClientConfig {
 pub struct KasumiClient {
     inner: proto::kasumi_data_client::KasumiDataClient<Channel>,
     deadline: Option<tokio::time::Instant>,
+    snapshot_channel: Channel,
 }
 
 impl KasumiClient {
@@ -152,6 +155,7 @@ impl KasumiClient {
         .await?;
         Ok(Self {
             deadline: None,
+            snapshot_channel: channel.clone(),
             inner: proto::kasumi_data_client::KasumiDataClient::new(channel)
                 .max_encoding_message_size((8 << 20) + (64 << 10))
                 .max_decoding_message_size(16 << 20),
@@ -261,60 +265,6 @@ impl KasumiClient {
         staged_status::decode(&response.response_json, request)
     }
 
-    pub async fn open_snapshot_lease(
-        &mut self,
-        bearer: &str,
-        request: &kasumi_types::OpenSnapshotLease,
-    ) -> Result<kasumi_types::SnapshotLease, ClientError> {
-        let response = self
-            .inner
-            .open_snapshot_lease(self.authorized(
-                bearer,
-                proto::OpenSnapshotLeaseRequest {
-                    request_json: encode(request)?,
-                },
-            )?)
-            .await?
-            .into_inner();
-        Ok(serde_json::from_slice(&response.response_json)?)
-    }
-
-    pub async fn read_snapshot_page(
-        &mut self,
-        bearer: &str,
-        request: &kasumi_types::ReadSnapshotPage,
-    ) -> Result<kasumi_types::SnapshotReadResponse, ClientError> {
-        let response = self
-            .inner
-            .read_snapshot_page(self.authorized(
-                bearer,
-                proto::ReadSnapshotPageRequest {
-                    request_json: encode(request)?,
-                },
-            )?)
-            .await?
-            .into_inner();
-        Ok(serde_json::from_slice(&response.response_json)?)
-    }
-
-    pub async fn scan_snapshot_page(
-        &mut self,
-        bearer: &str,
-        request: &kasumi_types::ScanSnapshotPage,
-    ) -> Result<kasumi_types::SnapshotScanPage, ClientError> {
-        let response = self
-            .inner
-            .scan_snapshot_page(self.authorized(
-                bearer,
-                proto::ScanSnapshotPageRequest {
-                    request_json: encode(request)?,
-                },
-            )?)
-            .await?
-            .into_inner();
-        Ok(serde_json::from_slice(&response.response_json)?)
-    }
-
     pub async fn close_snapshot_lease(
         &mut self,
         bearer: &str,
@@ -330,24 +280,6 @@ impl KasumiClient {
             .await?;
         Ok(())
     }
-    pub async fn read_snapshot(
-        &mut self,
-        bearer: &str,
-        request: &ReadSnapshotRequest,
-    ) -> Result<SnapshotReadResponse, ClientError> {
-        let response = self
-            .inner
-            .read_snapshot(self.authorized(
-                bearer,
-                proto::ReadSnapshotRequest {
-                    request_json: encode(request)?,
-                },
-            )?)
-            .await?
-            .into_inner();
-        Ok(serde_json::from_slice(&response.response_json)?)
-    }
-
     /// Bounded ordinary query/pagination for discovery. A returned page is not
     /// a complete conditional-transaction dependency set; use coherent snapshot
     /// reads and their assertions when a write depends on query completeness.
