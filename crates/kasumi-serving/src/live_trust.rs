@@ -1,5 +1,8 @@
 //! Exact local live trust. Historical signatures cannot enter this mutation path.
-use crate::{GenerationSignature, HistoricalSigningTrust, SigningCertificate, SigningDomain};
+use crate::{
+    GenerationSignature, HistoricalSigningTrust, SigningCertificate,
+    SigningCertificateVerification, SigningDomain,
+};
 use anyhow::{Context, Result, ensure};
 use kasumi_clock::LeaseClock;
 use kasumi_types::RequestContext;
