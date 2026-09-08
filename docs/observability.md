@@ -127,3 +127,14 @@ rounded encrypted spool extents and staging tables retained by active images or
 workers. Filesystem pending bytes include promises by other scratch owners on
 the same filesystem in this process. Persistent database/WAL/index and archive
 capacity is outside this temporary-workspace governor.
+
+Each available tenant's protected capacity observation includes exact retained
+`schema_activation_bytes` and `retirement_bytes` and their configurable byte
+budgets. Prometheus exposes the same fields as
+`kasumi_local_group_schema_activation_bytes`,
+`kasumi_local_group_schema_activation_budget_bytes`,
+`kasumi_local_group_retirement_bytes`, and
+`kasumi_local_group_retirement_budget_bytes`, labeled by tenant. These are
+permanent key/value accounting charges, not physical storage size or free RAM.
+New identities also need bounded error-outcome admission headroom; increasing a
+permanent budget does not waive snapshot, node memory, disk or audit admission.
