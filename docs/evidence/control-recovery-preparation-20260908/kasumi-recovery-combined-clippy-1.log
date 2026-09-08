@@ -1,0 +1,22 @@
+    Checking kasumi-types v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-types)
+   Compiling kasumi-client v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-client)
+    Checking kasumi-serving v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-serving)
+    Checking kasumi-query v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-query)
+    Checking kasumi-store v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-store)
+    Checking kasumi-raft v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-raft)
+    Checking kasumi-engine v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-engine)
+    Checking kasumi-authority v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-authority)
+    Checking kasumi-server v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-server)
+    Checking kasumi-bench v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-bench)
+error[E0062]: field `source_purpose_sha256` specified more than once
+  --> crates/kasumi-engine/src/snapshot_recovery_tests.rs:85:13
+   |
+82 |             source_purpose_sha256: "78".repeat(32),
+   |             -------------------------------------- first use of `source_purpose_sha256`
+...
+85 |             source_purpose_sha256: "78".repeat(32),
+   |             ^^^^^^^^^^^^^^^^^^^^^ used more than once
+
+For more information about this error, try `rustc --explain E0062`.
+error: could not compile `kasumi-engine` (lib test) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...

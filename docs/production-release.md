@@ -407,3 +407,15 @@ a read-only quota getter or caller capacity claim cannot close this dependency.
   three-runtime TLS fixture pass, as do strict workspace and production checks.
   Evidence is in `docs/evidence/restore-reservation-handoff-20260908`; fresh
   Linux integration, owned blocking publication and 3 GiB gates remain open.
+
+- `f3c0185` adds durable Control recovery preparation/materialization and stop
+  orchestration with typed native API, SDK and CLI. Replicated journal, real
+  mTLS Control/issuer, snapshot, deadline and authorization cases pass along
+  with strict workspace and production checks. Bound evidence and retained
+  failures are in `docs/evidence/control-recovery-preparation-20260908`.
+  Initialize and later phases plus expired non-target dispatch remain open.
+  Combined `40e7154` workspace check passes.
+- The frozen functional runner now includes a separate workspace documentation
+  test gate. On `8e90ff2` macOS, eleven documentation tests pass; evidence is in
+  `docs/evidence/workspace-doctests-20260908`. Native Linux ARM64 full functional
+  validation of that exact source is in progress and is not a recorded pass.

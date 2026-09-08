@@ -1,0 +1,11 @@
+   Compiling kasumi-types v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-types)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.39s
+     Running unittests src/lib.rs (/tmp/kasumi-production-standalone-target/debug/deps/kasumi_types-bcc7d464aa0c58d2)
+
+running 3 tests
+test authorization::tests::invalid_credentials_and_a_regressing_elapsed_clock_fail_closed ... ok
+test authorization::tests::credential_clone_cannot_renew_expiry_and_serialization_cannot_mint_live_authority ... ok
+test authorization::tests::narrowing_keeps_original_anchor_revocation_and_parent_deadline ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
