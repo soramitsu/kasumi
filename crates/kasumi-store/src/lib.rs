@@ -139,7 +139,10 @@ impl NodeStore {
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
         durable_directory(parent).context("creating database directory")?;
-        let db = Database::create(path).context("opening durable database")?;
+        let file = private_files::open_database(path).context("opening private database file")?;
+        let db = Database::builder()
+            .create_file(file)
+            .context("opening durable database")?;
         let node = Self::from_database(db, Some(std::fs::canonicalize(path)?))?;
         // redb synchronizes file contents; a new directory entry needs its own
         // persistence before any acknowledged first write can be crash durable.
