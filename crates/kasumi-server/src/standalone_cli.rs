@@ -6,6 +6,9 @@ use std::path::Path;
 use uuid::Uuid;
 
 pub async fn command(arguments: &[String]) -> Result<bool> {
+    if crate::backup_cli::command(arguments).await? {
+        return Ok(true);
+    }
     if crate::audit_cli::command(arguments).await? {
         return Ok(true);
     }

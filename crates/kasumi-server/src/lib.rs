@@ -6,6 +6,7 @@ pub mod audit_destination;
 pub mod auth;
 pub mod authority_client;
 pub mod authority_runtime;
+mod backup_cli;
 pub mod cluster;
 pub mod lifecycle_runtime;
 pub mod local_auth;
