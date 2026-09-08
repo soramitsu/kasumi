@@ -6,6 +6,10 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+test-utils = ["kasumi-store/test-utils"]
+
 [dependencies]
 kasumi-clock.workspace = true
 kasumi-serving.workspace = true

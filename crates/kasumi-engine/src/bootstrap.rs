@@ -433,7 +433,15 @@ pub async fn open_local(
     initial_limits: Limits,
     security_audit: Arc<SecurityAudit>,
 ) -> anyhow::Result<Arc<Database>> {
-    open_local_inner(stores, initial_policy, initial_limits, security_audit, None).await
+    open_local_inner(
+        stores,
+        initial_policy,
+        initial_limits,
+        security_audit,
+        None,
+        LocalRuntime::Production(None),
+    )
+    .await
 }
 
 /// Explicit genesis identity for local control storage and local test fixtures.
@@ -453,15 +461,58 @@ pub async fn open_local_with_incarnation(
         initial_limits,
         security_audit,
         Some(incarnation),
+        LocalRuntime::Production(None),
     )
     .await
 }
+
+/// Open only an explicit encrypted application fixture using one paired clock.
+/// The supplied epoch also creates the test's original finite credentials; this
+/// does not replace their observations or alter any production time source.
+#[cfg(any(test, feature = "test-utils"))]
+pub async fn open_fixture_with_epoch_clock(
+    stores: Arc<TenantStorageSet>,
+    initial_policy: Policy,
+    initial_limits: Limits,
+    security_audit: Arc<SecurityAudit>,
+    admission: Arc<crate::admission::NodeAdmission>,
+    clock: Arc<kasumi_clock::EpochClock>,
+) -> anyhow::Result<Arc<Database>> {
+    anyhow::ensure!(
+        matches!(
+            stores.application().storage_access().purpose(),
+            kasumi_store::StoragePurpose::LocalFixture
+        ),
+        "fixture clock cannot open production storage"
+    );
+    clock.now_ms()?;
+    open_local_inner(
+        stores,
+        initial_policy,
+        initial_limits,
+        security_audit,
+        None,
+        LocalRuntime::Fixture { admission, clock },
+    )
+    .await
+}
+
+enum LocalRuntime {
+    Production(Option<Arc<crate::admission::NodeAdmission>>),
+    #[cfg(any(test, feature = "test-utils"))]
+    Fixture {
+        admission: Arc<crate::admission::NodeAdmission>,
+        clock: Arc<kasumi_clock::EpochClock>,
+    },
+}
+
 async fn open_local_inner(
     stores: Arc<TenantStorageSet>,
     initial_policy: Policy,
     initial_limits: Limits,
     security_audit: Arc<SecurityAudit>,
     incarnation: Option<uuid::Uuid>,
+    runtime: LocalRuntime,
 ) -> anyhow::Result<Arc<Database>> {
     let store = stores.application().clone();
     anyhow::ensure!(
@@ -492,21 +543,13 @@ async fn open_local_inner(
             "local incarnation differs from installed identity"
         );
     }
-    start(stores, &bytes, security_audit).await
+    start(stores, &bytes, runtime, security_audit).await
 }
 
 async fn start(
     stores: Arc<TenantStorageSet>,
     bytes: &SnapshotImage,
-    security_audit: Arc<SecurityAudit>,
-) -> anyhow::Result<Arc<Database>> {
-    start_with_optional_admission(stores, bytes, None, security_audit).await
-}
-
-async fn start_with_optional_admission(
-    stores: Arc<TenantStorageSet>,
-    bytes: &SnapshotImage,
-    admission: Option<Arc<crate::admission::NodeAdmission>>,
+    runtime: LocalRuntime,
     security_audit: Arc<SecurityAudit>,
 ) -> anyhow::Result<Arc<Database>> {
     validate_bootstrap_control(&stores, bytes)?;
@@ -514,13 +557,13 @@ async fn start_with_optional_admission(
         stores.application().tenant(),
         bytes,
     )?);
-    start_prepared(stores, engine, admission, security_audit).await
+    start_prepared(stores, engine, runtime, security_audit).await
 }
 
 async fn start_prepared(
     stores: Arc<TenantStorageSet>,
     engine: Arc<TenantEngine>,
-    admission: Option<Arc<crate::admission::NodeAdmission>>,
+    runtime: LocalRuntime,
     security_audit: Arc<SecurityAudit>,
 ) -> anyhow::Result<Arc<Database>> {
     let store = stores.application().clone();
@@ -533,11 +576,20 @@ async fn start_prepared(
         engine.clone(),
     )
     .await?;
-    Ok(match admission {
-        Some(admission) => {
+    Ok(match runtime {
+        LocalRuntime::Production(Some(admission)) => {
             Database::new_with_admission(engine, group, store, admission, security_audit)
         }
-        None => Database::new(engine, group, store, security_audit),
+        LocalRuntime::Production(None) => Database::new(engine, group, store, security_audit),
+        #[cfg(any(test, feature = "test-utils"))]
+        LocalRuntime::Fixture { admission, clock } => Database::new_fixture_with_epoch_clock(
+            engine,
+            group,
+            store,
+            admission,
+            security_audit,
+            clock,
+        )?,
     })
 }
 
@@ -633,8 +685,13 @@ pub async fn restore_local(
         .await?;
     bind_deployment(&targets, b"local-v1")?;
     persist_new(&targets, &restored.bytes)?;
-    let database =
-        start_prepared(targets, restored.engine, Some(admission), security_audit).await?;
+    let database = start_prepared(
+        targets,
+        restored.engine,
+        LocalRuntime::Production(Some(admission)),
+        security_audit,
+    )
+    .await?;
     database.install_archive_destination(
         source.destination_alias.clone(),
         source.destination.clone(),
