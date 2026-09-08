@@ -9,7 +9,7 @@ async fn queued_staged_finalize_checks_fresh_time_and_canceled_callers_keep_dura
     )
     .await
     .unwrap();
-    let audit = SecurityAudit::open(audit_store, 100_000).unwrap();
+    let audit = SecurityAudit::open(audit_store, kasumi_types::AuditRetentionBudget::default()).unwrap();
     let context = RequestContext {
         authorization: kasumi_types::RequestAuthorization::service_identity(),
         tenant: "stage-time".into(),

@@ -9,7 +9,7 @@ async fn canceled_queued_schema_activation_finishes_once_and_checks_receipt_rele
     )
     .await
     .unwrap();
-    let audit = SecurityAudit::open(audit_store, 100_000).unwrap();
+    let audit = SecurityAudit::open(audit_store, kasumi_types::AuditRetentionBudget::default()).unwrap();
     let store = TenantStore::open_fixture(
         node,
         "schema-cancel".into(),

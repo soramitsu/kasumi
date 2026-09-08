@@ -284,7 +284,10 @@ impl Databases {
                 Arc::new(LocalKeyProvider::new([0xA7; 32])),
             )
             .await?;
-            audits.push(SecurityAudit::open(service_store, 1_000_000)?);
+            audits.push(SecurityAudit::open(
+                service_store,
+                kasumi_types::AuditRetentionBudget::default(),
+            )?);
         }
         let provider = Arc::new(LocalKeyProvider::new([0x42; 32]));
         let router = Arc::new(InProcessRouter::default());

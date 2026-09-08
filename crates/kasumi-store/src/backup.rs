@@ -388,6 +388,12 @@ impl S3Credentials {
     }
 }
 impl S3BackupDestination {
+    pub(crate) fn namespace_identity(&self) -> String {
+        format!(
+            "s3:{}:{}:{}:{}",
+            self.endpoint, self.region, self.bucket, self.prefix
+        )
+    }
     pub fn new(config: S3BackupConfig) -> Result<Self> {
         let endpoint = Url::parse(&config.endpoint)?;
         ensure!(

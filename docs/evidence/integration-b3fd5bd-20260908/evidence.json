@@ -1,0 +1,41 @@
+{
+  "kind": "development integration diagnostic; not final release acceptance",
+  "source": "b3fd5bd856ff5793c0672ae59831f370cbc66e51",
+  "lock_sha256": "5313faa908c084ad6771b62e0a8cec2b34de08ecf700666c588b6ee678e0c8f5",
+  "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-apple-darwin\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+  "command": "RUST_TEST_THREADS=2 cargo test --locked --lib -p kasumi-server -p kasumi-store -p kasumi-engine -j 2",
+  "outcome": {
+    "engine_passed": 45,
+    "server_passed": 62,
+    "server_failed": 2,
+    "store": "not run after server failure"
+  },
+  "failures": [
+    "local_runtime_opens_real_transit_tls_publishes_control_serves_and_reopens_durable_state",
+    "three_runtime_nodes_replicate_with_control_quorum_over_audited_pinned_mtls"
+  ],
+  "executables": [
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/kasumi_engine-9449eae6bc2cae32",
+      "sha256": "7ff544e2ac3b1542f2b8b85d324338c3de678cdd84bc3bca7f0bb5ebaea9da6d"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/kasumi_server-cb75044b7bb2cfe4",
+      "sha256": "7ee5a533af6210e17d306b9b38fd82c992182185b0e23c0b19ee39588a588e0d"
+    }
+  ],
+  "logs": [
+    {
+      "file": "kasumi-production-b3fd5bd-library-tests-1.log",
+      "sha256": "5d55ca7babae4e279e48e45e204d2ab1accfa14813cd231cb3df42307dd2c61a"
+    },
+    {
+      "file": "kasumi-production-b3fd5bd-library-tests-2.log",
+      "sha256": "900016eed04e929e416b4fe21e401a10724a6e8ef1619d013349545cdfd310b6"
+    }
+  ],
+  "limitations": [
+    "Ephemeral TLS fixture configurations are derived from source, not preserved as final operator deployments.",
+    "Earlier command invocation was rejected for repeated --lib; its log is retained."
+  ]
+}

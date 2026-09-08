@@ -91,3 +91,13 @@ gate above and usable installation artifacts.
 - A dedicated Debian ARM64 Lima VM is provisioned for Linux acceptance. The
   Rust 1.97.1 validation image is digest-pinned. VM/image provisioning does not
   close any platform, capacity, performance or endurance gate.
+
+- `6b07159` integrates secure standalone initialization and credential families;
+  `85fb812` adds the native endpoint pool and live TLS reload. The combined
+  workspace compiles. `231ef86` enforces owner-only node file descriptors.
+- `b3fd5bd` integrates streaming snapshots, paged backup manifests and coherent
+  read roots. Its frozen validation run passed 45 engine tests and 62 server
+  tests, and found two restore-preparation failures; the store group did not
+  run after those failures. Raw logs and executable/source hashes are preserved
+  in `docs/evidence/integration-b3fd5bd-20260908`. The failures remain open until
+  the corrected integrated source passes them.
