@@ -368,9 +368,54 @@ Follower authorization, complete remote acknowledgment/revocation collection and
 the full issuer drain remain required before global retirement can complete.
 The frozen roster remains in force throughout that unfinished retirement.
 
-The older issuer-local `AuthorizeSignerTrust` interface also remains a separate
-rotation prerequisite: its local stage/abort operations must be bound to the
-global winner and a committed global abort before a complete coordinator uses
-them. The remote Control path adds no authority to that interface and rejects
-remote abort outright. Passing this receiver's tests does not certify the older
-issuer-local path as a complete global rotation protocol.
+Issuer-local `AuthorizeSignerTrust` now carries the canonical exact
+`IssuerSignerDirective`. Both local and remote first publication require the
+committed global stage or activation winner and original local predecessor.
+An issuer-local `StopStage` is rejected until a durable global abort protocol
+exists; it cannot undo committed activation.
+
+## Durable publication coverage
+
+`KasumiAuthority.SignerCoverage` exposes typed `Start`, `Status`, and `Resume`.
+`Start` records a `SignerCoverageCommand` before contacting a receiver. It fixes
+the original physical verifier, enrolled administrative origin and leaf pins,
+frozen roster, global stage and activation winner, local stage predecessor,
+original local activation UUID and deadline, source policy and dispatch identity.
+A second dispatch for the same frozen stage and physical verifier conflicts.
+Replaying the same UUID returns the original record; changed inputs conflict.
+
+`Resume` first durably commits the exact source permission and its coverage phase
+marker. It then performs the original issuer or Control publication through the
+installed pinned native endpoint with a current administrative credential. The
+SDK returns an opaque `CurrentSignerPublication` only after that actual request;
+there is no constructor from a serialized response. The source retains this
+finite observation and its original current-administrator fence through
+acknowledgment consensus and response release. Expiry or a lost response yields
+an unknown outcome; resume resolves the original local receipt and never changes
+the original local command's deadline. Public clients cannot submit an
+acknowledgment DTO.
+
+Dispatches, permission markers, physical bindings and acknowledgments occupy
+immutable encrypted point records. Each pending dispatch reserves bounded space
+for the source permission, phase marker and final acknowledgment. Snapshot
+validation permits a pending dispatch with no future permission. An acknowledgment
+requires its exact earlier dispatch, frozen registration, source permission,
+phase marker and local publication receipt. Restoring a snapshot cannot remove or
+rewrite already retained coverage records. A historical status is useful for
+recovery but cannot reconstruct the SDK's current transport observation.
+
+Authority configuration requires an explicit `signer_publications` field. Set it
+to `null` when this member must not perform remote publication. Otherwise install
+`{"receivers": [...]}`; each receiver contains `verifier`, canonical `endpoint`,
+`certificate_pins`, `server_ca`, `tls: {certificate, private_key}`, and
+`bearer_file`. File paths are absolute. Endpoint and leaf pins must exactly match
+the permanent physical enrollment. A finite attempt loads one atomic private
+bearer-file snapshot; there is no environment fallback or alternate destination.
+The receiver's own current administrator policy remains mandatory.
+
+This is partial coverage collection for available issuer and current Control
+leader endpoints. It does not claim follower, data replica, prepared target,
+revocation, or full issuer-drain coverage. Global retirement remains unavailable
+until every member of the frozen roster has enforced the required permanent stop
+or exact current publication and drain. A single acknowledgment never unfreezes
+admission or retires a generation globally.

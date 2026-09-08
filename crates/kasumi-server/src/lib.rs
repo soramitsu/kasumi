@@ -31,4 +31,5 @@ pub mod target_runtime_config;
 pub mod target_runtime;
 
 mod control_signer_runtime;
+pub mod signer_publication_runtime;
 pub mod signer_runtime;

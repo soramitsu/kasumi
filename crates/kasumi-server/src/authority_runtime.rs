@@ -41,6 +41,8 @@ pub struct AuthorityRuntimeConfig {
     pub scratch_disk: kasumi_store::ScratchDiskConfig,
     pub operational_signer_file: PathBuf,
     pub signer_verifier: crate::signer_runtime::SignerVerifierConfig,
+    #[serde(deserialize_with = "kasumi_types::require_explicit_option")]
+    pub signer_publications: Option<crate::signer_publication_runtime::SignerPublicationConfig>,
     #[serde(deserialize_with = "kasumi_types::deserialize_u64_map")]
     pub installed_verifiers: std::collections::BTreeMap<u64, kasumi_serving::TrustVerifierIdentity>,
     pub keys: KeyProviderSettings,
@@ -97,6 +99,9 @@ impl AuthorityRuntimeConfig {
         )?;
 
         self.scratch_disk.validate()?;
+        if let Some(publications) = &self.signer_publications {
+            publications.validate()?;
+        }
         self.node_settings()?.validate(self.replication.node_id)?;
         ensure!(
             self.installed_verifiers.len() == self.replication.peers.len()
@@ -292,6 +297,11 @@ impl AuthorityRuntime {
         )?;
         network.install_authority_maintenance(Arc::downgrade(&authority))?;
         authority.install_maintenance_transport(network.clone())?;
+        if let Some(publications) = &config.signer_publications {
+            authority.install_signer_publication_transport(
+                publications.open(config.installation.manifest.clone())?,
+            )?;
+        }
         let tls_reload = crate::tls_reload::RuntimeTlsReload::new(
             vec![(
                 crate::tls_reload::ListenerSource::Mutual(config.native.clone()),

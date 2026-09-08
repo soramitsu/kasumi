@@ -11,6 +11,7 @@ description = "Replicated serving authority and lifecycle maintenance for Kasumi
 async-trait.workspace = true
 anyhow.workspace = true
 kasumi-clock.workspace = true
+kasumi-client.workspace = true
 kasumi-types.workspace = true
 kasumi-serving.workspace = true
 kasumi-store.workspace = true

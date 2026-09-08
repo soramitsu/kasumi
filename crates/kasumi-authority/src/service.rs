@@ -146,6 +146,7 @@ pub struct IndependentAuthority {
     voters: BTreeMap<u64, BasicNode>,
     bootstrap_digest: String,
     maintenance_transport: OnceLock<Arc<dyn AuthorityMaintenanceTransport>>,
+    signer_publication_transport: OnceLock<Arc<dyn SignerPublicationTransport>>,
 }
 impl IndependentAuthority {
     /// The authority is an explicitly installed three-voter trust root. It has
@@ -298,6 +299,7 @@ impl IndependentAuthority {
             local_node_id: node_id,
             voters,
             maintenance_transport: OnceLock::new(),
+            signer_publication_transport: OnceLock::new(),
             bootstrap_digest: digest(&("kasumi.authority-bootstrap.v1", &installation, &binding))?,
         }))
     }
@@ -802,3 +804,6 @@ pub use signing_administration::AuthoritySigningResponseFence;
 #[path = "control_signer_service.rs"]
 mod control_signer_service;
 pub use control_signer_service::ControlSignerObservationFence;
+#[path = "signer_coverage_service.rs"]
+mod signer_coverage_service;
+pub use signer_coverage_service::{SignerCoverageFence, SignerPublicationTransport};

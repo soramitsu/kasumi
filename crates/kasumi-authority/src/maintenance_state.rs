@@ -380,6 +380,7 @@ impl Backend {
         }
         status.progress_revision = position.log_id.index;
         status.validate()?;
+        self.coverage_permission_committed(&mut meta, &status, &mut additions)?;
         meta.operational.revision = position.log_id.index;
         meta.operational.membership.validate()?;
         meta.operational.capacity.validate()?;
@@ -523,6 +524,16 @@ impl Backend {
     pub(super) fn completion_reserve(meta: &Meta) -> u64 {
         meta.active_fences
             .saturating_mul(3 * MAX_RECORD_BYTES as u64)
+            .saturating_add(
+                meta.coverage_dispatches
+                    .saturating_sub(meta.coverage_acknowledgments)
+                    .saturating_mul(MAX_RECORD_BYTES as u64),
+            )
+            .saturating_add(
+                meta.coverage_dispatches
+                    .saturating_sub(meta.coverage_permissions)
+                    .saturating_mul(2 * MAX_RECORD_BYTES as u64),
+            )
             .saturating_add(
                 meta.open_control_epochs
                     .saturating_mul(MAX_RECORD_BYTES as u64),

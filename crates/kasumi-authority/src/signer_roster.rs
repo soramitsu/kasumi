@@ -6,11 +6,11 @@ use sha2::{Digest, Sha256};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct FrozenSignerRoster {
-    operation_id: Uuid,
-    revision: u64,
-    roster: SignerVerifierRoster,
+    pub(super) operation_id: Uuid,
+    pub(super) revision: u64,
+    pub(super) roster: SignerVerifierRoster,
 }
-fn roster_key(operation_id: Uuid) -> String {
+pub(super) fn roster_key(operation_id: Uuid) -> String {
     format!("signer-roster/{operation_id}")
 }
 
