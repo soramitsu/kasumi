@@ -318,3 +318,22 @@ a read-only quota getter or caller capacity claim cannot close this dependency.
   dependencies, strict workspace Clippy, fixture-free production graph and all
   production binaries passed. Later focused fixes are integrated, but a new
   full integration run is required; the failed attempt is never treated as pass.
+
+- `ab9b203` removes fixed custody command/audit lifetime ceilings and the 1 MiB
+  hard state ceiling. A checked 64-bit durable byte budget defaults to 64 MiB;
+  `SetLimits` can expand exhausted capacity without discarding history. Closed
+  transfer uses explicit installed `CustodyRaftConfig` capacity. At `b65e0b4`,
+  custody tests passed 26, including 4,200 identities/8,400 audit records and an
+  encrypted snapshot exceeding the old 2 MiB limit, atomic publication, reopen,
+  exact replay and changed-input rejection. Three engine custody tests passed;
+  final affected strict Clippy and production checks passed after removing one
+  obsolete test struct update. Evidence and initial fixture/lint failures are in
+  `docs/evidence/expandable-custody-budget-20260908`. Shared node disk admission
+  and other permanent administrative tables still remain unfinished.
+- `2eba1e3` makes every authority request capture one immutable signer instance.
+  Installing the already activated replacement requires current administrative
+  authority and the same live trust owner. Old response fences remain sealed.
+  Authority tests passed 37, actual TLS replacement/old-response rejection passed,
+  and strict workspace Clippy/production checks passed. Bound evidence is in
+  `docs/evidence/immutable-authority-signers-20260908`; native key-file reload and
+  coordinated global rotation remain separate unfinished work.

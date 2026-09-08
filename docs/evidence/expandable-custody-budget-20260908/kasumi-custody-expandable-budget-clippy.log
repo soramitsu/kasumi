@@ -1,0 +1,21 @@
+    Blocking waiting for file lock on package cache
+    Checking kasumi-types v0.1.0 (/private/tmp/kasumi-production-custody-tables/crates/kasumi-types)
+    Checking kasumi-transport v0.1.0 (/private/tmp/kasumi-production-custody-tables/crates/kasumi-transport)
+   Compiling kasumi-client v0.1.0 (/private/tmp/kasumi-production-custody-tables/crates/kasumi-client)
+    Checking kasumi-serving v0.1.0 (/private/tmp/kasumi-production-custody-tables/crates/kasumi-serving)
+    Checking kasumi-query v0.1.0 (/private/tmp/kasumi-production-custody-tables/crates/kasumi-query)
+    Checking kasumi-store v0.1.0 (/private/tmp/kasumi-production-custody-tables/crates/kasumi-store)
+    Checking kasumi-raft v0.1.0 (/private/tmp/kasumi-production-custody-tables/crates/kasumi-raft)
+    Checking kasumi-engine v0.1.0 (/private/tmp/kasumi-production-custody-tables/crates/kasumi-engine)
+error: struct update has no effect, all the fields in the struct have already been specified
+   --> crates/kasumi-raft/src/custody_state.rs:468:19
+    |
+468 |                 ..byte_full.limits.clone()
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_update
+    = note: `-D clippy::needless-update` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::needless_update)]`
+
+error: could not compile `kasumi-raft` (lib test) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...

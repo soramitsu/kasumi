@@ -1,0 +1,47 @@
+   Compiling kasumi-types v0.1.0 (/private/tmp/kasumi-production-custody-tables/crates/kasumi-types)
+   Compiling kasumi-serving v0.1.0 (/private/tmp/kasumi-production-custody-tables/crates/kasumi-serving)
+   Compiling kasumi-store v0.1.0 (/private/tmp/kasumi-production-custody-tables/crates/kasumi-store)
+   Compiling kasumi-raft v0.1.0 (/private/tmp/kasumi-production-custody-tables/crates/kasumi-raft)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 30.02s
+     Running unittests src/lib.rs (/tmp/kasumi-production-root-target/debug/deps/kasumi_raft-36014a94c98e9cab)
+
+running 26 tests
+test custody_state::tests::closed_request_rejects_payload_fields_and_cross_source_observations ... ok
+test custody_capacity_tests::permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopens ... FAILED
+test custody_state::tests::exhausted_byte_budget_publishes_no_partial_policy ... ok
+test custody_state::tests::full_byte_budget_expands_without_discarding_retained_history ... ok
+test custody_state::tests::custody_point_policy_preserves_large_administrator_sets_and_rejects_old_heads ... ok
+test custody_state::tests::rotation_replay_requires_current_admin_and_preserves_exact_original_actor ... ok
+test custody_state::tests::stale_policy_is_a_permanent_exact_failure_and_changed_identity_conflicts ... ok
+test custody_machine::tests::custody_point_head_receipt_audit_and_applied_cursor_survive_each_write_failure ... ok
+test custody_machine::tests::closed_snapshot_rejects_prior_format_without_rewriting_permanent_storage ... ok
+test control::tests::reserved_committed_retirement_recovers_atomic_custody_after_crash_without_app_key ... ok
+test storage::tests::snapshot_custody_tests::old_snapshot_capture_cannot_regress_newer_accepted_cursor ... ok
+test storage::tests::snapshot_custody_tests::nonretired_snapshot_discards_stale_candidate_coverage_without_retirement_projection ... ok
+test storage::tests::snapshot_custody_tests::equal_index_different_term_log_and_snapshot_coverage_is_rejected ... ok
+test custody_state::tests::point_reducer_matches_full_history_through_replay_conflicts_and_budget_expansion ... ok
+test storage::tests::snapshot_custody_tests::accepted_snapshot_supersedes_uncommitted_candidate_and_survives_late_truncation ... ok
+test storage::tests::snapshot_custody_tests::retired_snapshot_installs_without_original_log_and_recovers_with_only_custody_key ... ok
+test custody_machine::tests::existing_quorum_runs_closed_commands_after_application_key_revocation ... ok
+test storage::tests::snapshot_custody_tests::published_retirement_projection_substitution_fails_closed_after_reopen ... ok
+test storage::tests::snapshot_custody_tests::retired_snapshot_power_loss_never_tears_image_seed_boundary_or_applied_cursor ... ok
+test custody_machine::tests::same_entry_position_snapshot_cannot_substitute_rotated_custody_state ... ok
+test custody_machine::tests::canonical_custody_stream_authenticates_counts_digest_and_record_order ... ok
+test storage::tests::snapshot_custody_tests::snapshot_rejects_missing_substituted_stale_and_payload_custody_before_publication ... ok
+test storage::tests::snapshot_custody_tests::same_position_reencoding_preserves_custody_and_reuses_verified_current_image ... ok
+test storage::tests::snapshot_custody_tests::same_position_cannot_substitute_matching_backend_and_custody_policy ... ok
+test custody_machine::tests::closed_custody_requires_fresh_existing_quorum_after_isolation ... ok
+test custody_machine::tests::streamed_custody_tables_and_snapshot_coverage_publish_at_one_crash_boundary ... ok
+
+failures:
+
+---- custody_capacity_tests::permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopens stdout ----
+Error: committed retirement predecessor or membership unavailable
+
+
+failures:
+    custody_capacity_tests::permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopens
+
+test result: FAILED. 25 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in 18.89s
+
+error: test failed, to rerun pass `-p kasumi-raft --lib`
