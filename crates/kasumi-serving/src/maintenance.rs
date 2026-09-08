@@ -138,9 +138,7 @@ pub enum AuthorityMaintenanceAction {
     /// Consensus records permission for one exact local verifier effect. A
     /// completed directive is not proof that the verifier published that effect.
     AuthorizeSignerTrust {
-        verifier: crate::TrustVerifierIdentity,
-        domain_sha256: String,
-        command: Box<crate::SignerTrustCommand>,
+        directive: Box<crate::IssuerSignerDirective>,
     },
     EnrollLearner {
         node_id: u64,
@@ -192,15 +190,7 @@ impl AuthorityMaintenanceAction {
                 );
                 validate_sha256(certificate_sha256)?;
             }
-            Self::AuthorizeSignerTrust {
-                verifier,
-                domain_sha256,
-                command,
-            } => {
-                verifier.validate()?;
-                validate_sha256(domain_sha256)?;
-                command.digest()?;
-            }
+            Self::AuthorizeSignerTrust { directive } => directive.validate()?,
             Self::EnrollLearner { node_id, member } => {
                 ensure!(*node_id > 0, "authority member ID cannot be zero");
                 member.validate()?;
@@ -235,10 +225,10 @@ impl AuthorityMaintenanceCommand {
             !self.operation_id.is_nil() && self.expected_policy_epoch > 0 && self.not_after_ms > 0,
             "invalid authority maintenance identity or admission deadline"
         );
-        if let AuthorityMaintenanceAction::AuthorizeSignerTrust { command, .. } = &self.action {
+        if let AuthorityMaintenanceAction::AuthorizeSignerTrust { directive } = &self.action {
             ensure!(
-                command.operation_id == self.operation_id
-                    && command.not_after_ms == self.not_after_ms,
+                directive.command.operation_id == self.operation_id
+                    && directive.command.not_after_ms == self.not_after_ms,
                 "signer directive must preserve the original operation and deadline"
             );
         }

@@ -205,6 +205,7 @@ impl kasumi_authority_server::KasumiAuthority for NativeAuthority {
             .audit_result(&context, fence.release().await)
             .await
             .map_err(status)?;
+        let mut source_directive = None;
         let authorization = match &body.action {
             SignerVerifierAction::Observe
             | SignerVerifierAction::ReloadOperationalSigner { .. } => None,
@@ -223,24 +224,27 @@ impl kasumi_authority_server::KasumiAuthority for NativeAuthority {
                 )
                 .await
                 .map_err(status)?,
-            SignerVerifierAction::Administer { command } => Some(
-                self.auth
-                    .audit_result(
-                        &context,
-                        self.authority
-                            .commit_signer_directive(
-                                &context,
-                                &body.verifier,
-                                &body.domain_sha256,
-                                command,
-                            )
-                            .await,
-                    )
-                    .await
-                    .map_err(status)?
-                    .status()
-                    .clone(),
-            ),
+            SignerVerifierAction::Administer { command } => {
+                let committed = Arc::new(
+                    self.auth
+                        .audit_result(
+                            &context,
+                            self.authority
+                                .commit_signer_directive(
+                                    &context,
+                                    &body.verifier,
+                                    &body.domain_sha256,
+                                    command,
+                                )
+                                .await,
+                        )
+                        .await
+                        .map_err(status)?,
+                );
+                let status = committed.status().clone();
+                source_directive = Some(committed);
+                Some(status)
+            }
         };
         let mutated = matches!(
             body.action,
@@ -327,6 +331,9 @@ impl kasumi_authority_server::KasumiAuthority for NativeAuthority {
                         );
                         Some(receipt)
                     } else {
+                        scope.bind_directive(source_directive.clone().ok_or_else(|| {
+                            anyhow::anyhow!("current source signer permission absent")
+                        })?)?;
                         anyhow::ensure!(
                             context
                                 .authorization

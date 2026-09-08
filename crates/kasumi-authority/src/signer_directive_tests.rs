@@ -1,20 +1,48 @@
 #[tokio::test]
 async fn signer_directive_is_ordered_exact_finite_and_preserved_in_encrypted_snapshots() {
     use kasumi_raft::StateMachineBackend;
-    let f = Fixture::new().await;
+    let mut f = Fixture::new().await;
     let service = f.leader().await;
     let verifier = f.settings.installed_members[&service.local_node_id].verifier.clone();
     let domain = f.installation.manifest.signing_domain(0).unwrap().digest().unwrap();
+    use ring::signature::KeyPair;
+    let key = ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new()).unwrap();
+    let key = ring::signature::Ed25519KeyPair::from_pkcs8(key.as_ref()).unwrap();
+    let certificate = f.signing_root.certify(2, hex::encode(key.public_key().as_ref())).unwrap();
     let command = SignerTrustCommand {
         operation_id: Uuid::new_v4(), expected_revision: 0, not_after_ms: 1_050_000,
-        action: SignerTrustAction::StopStage { staged_operation_id: Uuid::new_v4() },
+        action: SignerTrustAction::Stage { certificate: certificate.clone() },
     };
     let context = f.context("operator");
+    assert!(service.commit_signer_directive(&context, &verifier, &domain, &command).await.is_err());
+    for member in f.settings.bootstrap.membership.members.values() {
+        let enrollment = f.maintenance_command(AuthorityMaintenanceAction::EnrollSignerVerifier { enrollment: SignerVerifierEnrollment {
+            verifier: member.verifier.clone(), endpoint: format!("{}/", member.endpoint), certificate_pins: member.certificate_pins.clone(),
+        }}).await;
+        assert_eq!(f.maintenance(AuthorityMaintenanceRequest::Start { command: enrollment }).await.unwrap().phase, AuthorityMaintenancePhase::Completed);
+    }
+    let global = f.maintenance_command(AuthorityMaintenanceAction::StageSignerGeneration { certificate }).await;
+    assert_eq!(f.maintenance(AuthorityMaintenanceRequest::Start { command: global.clone() }).await.unwrap().phase, AuthorityMaintenancePhase::Completed);
+    let mut stop = command.clone();
+    stop.operation_id = Uuid::new_v4();
+    stop.action = SignerTrustAction::StopStage { staged_operation_id: command.operation_id };
+    assert!(service.commit_signer_directive(&context, &verifier, &domain, &stop).await.is_err());
+    assert!(service.backend.maintenance_status(stop.operation_id).unwrap().is_none());
     let accepted = service.commit_signer_directive(&context, &verifier, &domain, &command).await.unwrap();
+    accepted.check().unwrap();
     assert_eq!(accepted.status().phase, AuthorityMaintenancePhase::Completed);
     assert!(matches!(&accepted.status().command.action,
-        AuthorityMaintenanceAction::AuthorizeSignerTrust { command: actual, .. } if **actual == command));
-    // This is permission for dispatch, not an observation of a local stop.
+        AuthorityMaintenanceAction::AuthorizeSignerTrust { directive } if directive.command == command && directive.global_stage_operation_id == global.operation_id));
+    let mut unbound = serde_json::to_value(&accepted.status().command.action).unwrap();
+    let directive = unbound.as_object_mut().unwrap().remove("directive").unwrap();
+    for name in ["verifier", "domain_sha256", "command"] {
+        unbound[name] = directive[name].clone();
+    }
+    assert!(serde_json::from_value::<AuthorityMaintenanceAction>(unbound).is_err());
+    let mut missing_origin = directive;
+    missing_origin.as_object_mut().unwrap().remove("global_activation_operation_id");
+    assert!(serde_json::from_value::<IssuerSignerDirective>(missing_origin).is_err());
+    // This is permission for dispatch, not an observation of local publication.
     service.request_signer().unwrap().check().unwrap();
     assert_eq!(service.commit_signer_directive(&context, &verifier, &domain, &command).await.unwrap().status(), accepted.status());
     let mut changed = command.clone();
@@ -22,17 +50,59 @@ async fn signer_directive_is_ordered_exact_finite_and_preserved_in_encrypted_sna
     assert!(service.commit_signer_directive(&context, &verifier, &domain, &changed).await.is_err());
     assert!(service.signer_directive(&f.context("intruder"), &verifier, &domain, command.operation_id).await.is_err());
     // General authority maintenance may retain a structurally valid rejection;
-    // its invalid requested domain must not make valid snapshots unrecoverable.
+    // its uninstalled physical verifier must not make valid snapshots unrecoverable.
     let mut invalid = command.clone();
     invalid.operation_id = Uuid::new_v4();
+    let mut invalid_directive = IssuerSignerDirective::from_current_head(verifier.clone(), domain.clone(), invalid.clone(), &service.backend.signing_head().unwrap()).unwrap();
+    invalid_directive.verifier.installation_id = Uuid::new_v4();
     let current = service.backend.operational_configuration().unwrap();
     let invalid_command = AuthorityMaintenanceCommand {
         operation_id: invalid.operation_id, expected_policy_epoch: current.policy_epoch,
         expected_operational_revision: current.revision, not_after_ms: invalid.not_after_ms,
-        action: AuthorityMaintenanceAction::AuthorizeSignerTrust { verifier: verifier.clone(), domain_sha256: "00".repeat(32), command: Box::new(invalid) },
+        action: AuthorityMaintenanceAction::AuthorizeSignerTrust { directive: Box::new(invalid_directive) },
     };
     let rejected = f.maintenance(AuthorityMaintenanceRequest::Start { command: invalid_command }).await.unwrap();
     assert!(matches!(rejected.phase, AuthorityMaintenancePhase::Rejected { .. }));
+    let activation = SignerTrustCommand {
+        operation_id: Uuid::new_v4(),
+        expected_revision: 1,
+        not_after_ms: command.not_after_ms,
+        action: SignerTrustAction::Activate {
+            staged_operation_id: command.operation_id,
+            certificate_sha256: match &command.action {
+                SignerTrustAction::Stage { certificate } => certificate.digest().unwrap(),
+                _ => unreachable!(),
+            },
+        },
+    };
+    assert!(service.commit_signer_directive(&context, &verifier, &domain, &activation).await.is_err());
+    assert!(service.backend.maintenance_status(activation.operation_id).unwrap().is_none());
+    let winner = f.maintenance_command(AuthorityMaintenanceAction::ActivateSignerGeneration {
+        stage_operation_id: global.operation_id,
+        certificate_sha256: match &activation.action {
+            SignerTrustAction::Activate { certificate_sha256, .. } => certificate_sha256.clone(),
+            _ => unreachable!(),
+        },
+    }).await;
+    let (won, fence) = service.signing_maintenance(context.clone(), AuthoritySigningRequest {
+        observation_id: Uuid::new_v4(), domain_sha256: domain.clone(),
+        action: AuthoritySigningAction::Start { command: winner.clone() },
+    }).await.unwrap();
+    fence.release().await.unwrap();
+    assert_eq!(won.status.unwrap().phase, AuthorityMaintenancePhase::Completed);
+    accepted.check().unwrap(); // An original stage may finish forward after the global winner.
+    assert!(service.commit_signer_directive(&context, &verifier, &domain, &stop).await.is_err());
+    let activated = service.commit_signer_directive(&context, &verifier, &domain, &activation).await.unwrap();
+    activated.check().unwrap();
+    assert!(matches!(&activated.status().command.action,
+        AuthorityMaintenanceAction::AuthorizeSignerTrust { directive }
+        if directive.global_activation_operation_id == Some(winner.operation_id)));
+    let mut substituted_activation = activation.clone();
+    substituted_activation.operation_id = Uuid::new_v4();
+    if let SignerTrustAction::Activate { staged_operation_id, .. } = &mut substituted_activation.action {
+        *staged_operation_id = Uuid::new_v4();
+    }
+    assert!(service.commit_signer_directive(&context, &verifier, &domain, &substituted_activation).await.is_err());
     let current = f.leader().await;
     let mut snapshot = Vec::new();
     current.backend.snapshot(&mut snapshot).unwrap();
@@ -41,7 +111,7 @@ async fn signer_directive_is_ordered_exact_finite_and_preserved_in_encrypted_sna
     let corrupted = crate::state::snapshot::rewrite_for_test(&snapshot, |value| {
         if value["type"] == "Entry" && value["value"][0] == key {
             let record = &mut value["value"][1]["record"];
-            record["command"]["action"]["domain_sha256"] = serde_json::json!("11".repeat(32));
+            record["command"]["action"]["directive"]["global_stage_operation_id"] = serde_json::json!(Uuid::new_v4());
             let command: AuthorityMaintenanceCommand = serde_json::from_value(record["command"].clone()).unwrap();
             record["command_sha256"] = serde_json::json!(command.digest().unwrap());
         }
@@ -50,7 +120,7 @@ async fn signer_directive_is_ordered_exact_finite_and_preserved_in_encrypted_sna
     let substituted = crate::state::snapshot::rewrite_for_test(&snapshot, |value| {
         if value["type"] == "Entry" && value["value"][0] == key {
             let record = &mut value["value"][1]["record"];
-            record["command"]["action"]["verifier"]["installation_id"] = serde_json::json!(Uuid::new_v4());
+            record["command"]["action"]["directive"]["verifier"]["installation_id"] = serde_json::json!(Uuid::new_v4());
             let command: AuthorityMaintenanceCommand = serde_json::from_value(record["command"].clone()).unwrap();
             record["command_sha256"] = serde_json::json!(command.digest().unwrap());
         }
@@ -58,6 +128,30 @@ async fn signer_directive_is_ordered_exact_finite_and_preserved_in_encrypted_sna
     assert!(current.backend.restore(&mut substituted.as_slice()).is_err());
 
     assert_eq!(current.signer_directive(&context, &verifier, &domain, command.operation_id).await.unwrap().unwrap(), *accepted.status());
+    let activation_key = format!("maintenance/{}", activation.operation_id);
+    let wrong_winner = crate::state::snapshot::rewrite_for_test(&snapshot, |value| {
+        if value["type"] == "Entry" && value["value"][0] == activation_key {
+            let record = &mut value["value"][1]["record"];
+            record["command"]["action"]["directive"]["global_activation_operation_id"] = serde_json::json!(global.operation_id);
+            let command: AuthorityMaintenanceCommand = serde_json::from_value(record["command"].clone()).unwrap();
+            record["command_sha256"] = serde_json::json!(command.digest().unwrap());
+        }
+    });
+    assert!(current.backend.restore(&mut wrong_winner.as_slice()).is_err());
+    let exact_permission = activated.status().clone();
+    service.shutdown().await.unwrap();
+    assert!(accepted.check().is_err(), "a closed source owner cannot authorize publication during reopen");
+    // Physical ownership cannot reopen while any old response still retains its
+    // database handle. Sealing the guard precedes the complete ownership drain.
+    drop(accepted);
+    drop(activated);
+    drop(fence);
+    drop(current);
+    drop(service);
+    f.reopen().await;
+    let reopened = f.leader().await;
+    assert_eq!(reopened.signer_directive(&context, &verifier, &domain, activation.operation_id).await.unwrap().unwrap(), exact_permission);
+    assert_eq!(reopened.backend.signing_head().unwrap().retirement.unwrap().activation_operation_id, winner.operation_id);
     // A fresh identity must not first commit after its immutable admission bound.
     f.clock.0.store(60_000, Ordering::SeqCst);
     let mut expired = command.clone();
@@ -66,6 +160,56 @@ async fn signer_directive_is_ordered_exact_finite_and_preserved_in_encrypted_sna
     let current_verifier = f.settings.installed_members[&current.local_node_id].verifier.clone();
     assert!(current.commit_signer_directive(&context, &current_verifier, &domain, &expired).await.is_err());
     assert!(current.backend.maintenance_status(expired.operation_id).unwrap().is_none());
+    f.close().await;
+}
+
+#[tokio::test]
+async fn issuer_permission_retains_original_policy_while_current_admin_can_read_its_receipt() {
+    use ring::signature::KeyPair;
+    let f = Fixture::new().await;
+    let service = f.leader().await;
+    for member in f.settings.bootstrap.membership.members.values() {
+        let command = f.maintenance_command(AuthorityMaintenanceAction::EnrollSignerVerifier {
+            enrollment: SignerVerifierEnrollment {
+                verifier: member.verifier.clone(),
+                endpoint: format!("{}/", member.endpoint),
+                certificate_pins: member.certificate_pins.clone(),
+            },
+        }).await;
+        assert_eq!(f.maintenance(AuthorityMaintenanceRequest::Start { command }).await.unwrap().phase,
+            AuthorityMaintenancePhase::Completed);
+    }
+    let key = ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new()).unwrap();
+    let key = ring::signature::Ed25519KeyPair::from_pkcs8(key.as_ref()).unwrap();
+    let certificate = f.signing_root.certify(2, hex::encode(key.public_key().as_ref())).unwrap();
+    let global = f.maintenance_command(AuthorityMaintenanceAction::StageSignerGeneration {
+        certificate: certificate.clone(),
+    }).await;
+    assert_eq!(f.maintenance(AuthorityMaintenanceRequest::Start { command: global }).await.unwrap().phase,
+        AuthorityMaintenancePhase::Completed);
+    let verifier = f.settings.installed_members[&service.local_node_id].verifier.clone();
+    let domain = certificate.identity.domain.digest().unwrap();
+    let context = f.context("operator");
+    let command = SignerTrustCommand {
+        operation_id: Uuid::new_v4(), expected_revision: 0, not_after_ms: 1_050_000,
+        action: SignerTrustAction::Stage { certificate },
+    };
+    let permission = service.commit_signer_directive(&context, &verifier, &domain, &command).await.unwrap();
+    permission.check().unwrap();
+    let policy = f.command(AuthorityAction::ReplaceAdministrators {
+        administrators: BTreeSet::from(["operator".into(), "successor".into()]),
+    });
+    f.exact_administrative(policy).await;
+    assert!(permission.check().is_err(), "a retained old-policy permission cannot authorize first publication");
+    let current = f.leader().await;
+    let successor = f.context("successor");
+    assert_eq!(current.signer_directive(&successor, &verifier, &domain, command.operation_id).await.unwrap().unwrap(),
+        *permission.status());
+    // Renewing authorization preserves the original operation and its policy;
+    // it cannot convert historical dispatch permission into a new grant.
+    let renewed = service.commit_signer_directive(&successor, &verifier, &domain, &command).await.unwrap();
+    assert_eq!(renewed.status(), permission.status());
+    assert!(renewed.check().is_err());
     f.close().await;
 }
 

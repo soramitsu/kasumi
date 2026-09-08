@@ -137,16 +137,14 @@ impl SignerVerifierResponse {
         }
         if let Some(authorization) = &self.authorization {
             authorization.validate()?;
-            let AuthorityMaintenanceAction::AuthorizeSignerTrust {
-                verifier,
-                domain_sha256,
-                command,
-            } = &authorization.command.action
+            let AuthorityMaintenanceAction::AuthorizeSignerTrust { directive } =
+                &authorization.command.action
             else {
                 anyhow::bail!("response has another maintenance authorization");
             };
             ensure!(
-                *verifier == request.verifier && *domain_sha256 == request.domain_sha256,
+                directive.verifier == request.verifier
+                    && directive.domain_sha256 == request.domain_sha256,
                 "consensus directive targets another verifier"
             );
             let requested_id = match &request.action {
@@ -158,13 +156,13 @@ impl SignerVerifierResponse {
                 SignerVerifierAction::Administer { command } => command.operation_id,
             };
             ensure!(
-                command.operation_id == requested_id,
+                directive.command.operation_id == requested_id,
                 "consensus directive identity differs"
             );
             if let Some(receipt) = &self.receipt {
                 ensure!(
                     authorization.phase == AuthorityMaintenancePhase::Completed
-                        && **command == receipt.command,
+                        && directive.command == receipt.command,
                     "local publication has no matching committed directive"
                 );
             }

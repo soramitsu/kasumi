@@ -115,10 +115,35 @@ impl IndependentAuthority {
 
 /// Constructed only from an actual consensus outcome after current authorization.
 /// The wire status remains historical authorization, not a local completion proof.
-pub struct CommittedSignerDirective(AuthorityMaintenanceStatus);
+pub struct CommittedSignerDirective {
+    status: AuthorityMaintenanceStatus,
+    term: u64,
+    authority: Arc<IndependentAuthority>,
+    context: RequestContext,
+}
 impl CommittedSignerDirective {
     pub fn status(&self) -> &AuthorityMaintenanceStatus {
-        &self.0
+        &self.status
+    }
+    pub fn context(&self) -> &RequestContext {
+        &self.context
+    }
+    /// First local publication retains this current source permission in
+    /// addition to its original local administrative scope and deadline.
+    pub fn check(&self) -> Result<()> {
+        self.context.authorization.check_live()?;
+        self.authority.group.check_access().map_err(unavailable)?;
+        self.authority
+            .check_installed_configuration()
+            .map_err(unavailable)?;
+        if self.authority.term() != self.term {
+            return Err(unavailable("original signer publication term changed"));
+        }
+        self.authority
+            .backend
+            .check_current_issuer_directive(&self.context, &self.status)
+            .map_err(unavailable)?;
+        self.context.authorization.check_live()
     }
 }
 impl IndependentAuthority {
@@ -140,17 +165,14 @@ impl IndependentAuthority {
         let _serial = self.proposal.lock().await;
         let term = self.barrier(context).await?;
         let epoch = self.backend.authorize_admin(context)?;
-        let action = AuthorityMaintenanceAction::AuthorizeSignerTrust {
-            verifier: verifier.clone(),
-            domain_sha256: domain_sha256.into(),
-            command: Box::new(command.clone()),
-        };
         let status = if let Some(status) = self
             .backend
             .maintenance_status(command.operation_id)
             .map_err(unavailable)?
         {
-            if status.command.action != action {
+            if !matches!(&status.command.action, AuthorityMaintenanceAction::AuthorizeSignerTrust { directive }
+                if directive.verifier == *verifier && directive.domain_sha256 == domain_sha256 && directive.command == *command)
+            {
                 return Err(Error::new(
                     ErrorCode::Conflict,
                     "permanent signer directive differs",
@@ -158,6 +180,16 @@ impl IndependentAuthority {
             }
             status
         } else {
+            let directive = IssuerSignerDirective::from_current_head(
+                verifier.clone(),
+                domain_sha256.into(),
+                command.clone(),
+                &self.backend.signing_head().map_err(unavailable)?,
+            )
+            .map_err(|error| Error::new(ErrorCode::Conflict, error.to_string()))?;
+            let action = AuthorityMaintenanceAction::AuthorizeSignerTrust {
+                directive: Box::new(directive),
+            };
             let current = self
                 .backend
                 .operational_configuration()
@@ -183,7 +215,12 @@ impl IndependentAuthority {
                 "signer directive did not commit permission for local dispatch",
             ));
         }
-        Ok(CommittedSignerDirective(status))
+        Ok(CommittedSignerDirective {
+            status,
+            term,
+            authority: self.clone(),
+            context: context.clone(),
+        })
     }
     pub async fn signer_directive(
         &self,
@@ -199,7 +236,7 @@ impl IndependentAuthority {
             .maintenance_status(operation_id)
             .map_err(unavailable)?;
         if let Some(status) = &status
-            && !matches!(&status.command.action, AuthorityMaintenanceAction::AuthorizeSignerTrust { verifier: actual, domain_sha256: domain, .. } if actual == verifier && domain == domain_sha256)
+            && !matches!(&status.command.action, AuthorityMaintenanceAction::AuthorizeSignerTrust { directive } if directive.verifier == *verifier && directive.domain_sha256 == domain_sha256)
         {
             return Err(Error::new(
                 ErrorCode::Conflict,

@@ -178,13 +178,22 @@ listener requires actual mTLS and a verified finite JWT for the exact authority
 partition. The current consensus administrator policy authorizes every request.
 A request has a fresh observation UUID, immutable physical verifier identity,
 installed signing-domain digest and one action: `observe`, `receipt`, or
-`administer`. The latter carries the typed stage, stop-stage, activate or
-complete-retirement command.
+`administer`. The latter carries a typed stage, activate or local
+complete-retirement command. Local stop-stage is rejected because the global
+abort protocol is not yet installed; it cannot undo a committed activation.
 
 An `AuthorizeSignerTrust` authority maintenance record commits the original
-command, verifier, domain, principal and admission bound before any local effect.
+command, verifier, domain, principal, admission bound and exact global stage
+identity before any local effect. Activation and local retirement also bind the
+committed global activation winner and their original local predecessor.
+Checked snapshots require these permanent prerequisites to precede permission.
+Old unbound permission records are not accepted.
 This is permission to dispatch that exact effect; completion of that consensus
-directive is not proof of local publication. The response separately contains
+directive is not proof of local publication. First publication additionally
+retains the original current source guard: a changed policy, closed source owner
+or substituted winner cannot turn historical permission into a new effect.
+Current administrators can still resolve an already retained local receipt.
+The response separately contains
 the local permanent receipt and a current verifier observation. Receivers must
 check both against the original request. Root signatures and serialized replies
 cannot create the scoped current-quorum authorization used by the local adapter.
