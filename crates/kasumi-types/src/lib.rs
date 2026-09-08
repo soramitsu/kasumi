@@ -481,6 +481,7 @@ pub struct TenantState {
     #[serde(deserialize_with = "require_explicit_option")]
     pub lifecycle_control: Option<LifecycleControlState>,
     pub target_lifecycle: imbl::OrdMap<String, TargetExecutionState>,
+    pub recovery_control: RecoveryControlState,
     pub document_count: u64,
     pub logical_bytes: u64,
     pub policy: Policy,

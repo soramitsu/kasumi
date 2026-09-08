@@ -10,8 +10,9 @@ Tenant images begin with `KASUMIT2`. Every record has an eight-byte big-endian
 payload length followed by canonical JSON. Records explicitly identify metadata,
 collections, documents, archive references, command receipts, staged metadata and
 chunks, change-feed headers and individual changes, history archives, schema and
-retirement records, audit events, Control history and target lifecycle records. Payloads cannot exceed
-32 MiB. Records must follow the specified category/key order, with contiguous
+retirement records, audit events, Control history, target lifecycle records, and
+Control recovery operation, phase, and target identity records. Recovery records
+retain their independent 1 MiB work bound; other payloads cannot exceed 32 MiB. Records must follow the specified category/key order, with contiguous
 indices for sequence members. The terminal zero-length record carries checked
 64-bit record and byte counts and SHA-256 over the preceding image. The decoder
 rejects missing or inconsistent trailers, unordered/duplicate records, embedded
@@ -22,7 +23,10 @@ image to its trusted origin; an unkeyed digest alone is not authority.
 Persistent ordered document maps and primary-ID roots are shared between live
 and leased generations. Snapshot serialization does not allocate a sorted copy
 of every document ID. The accounting cache measures this exact record format and
-updates affected records when commands commit. Coherent point/scan leases keep
+updates affected records when commands commit. Recovery history uses persistent
+map differences to account only added, changed or removed records; unchanged
+roots do not cause history scans. Recovery records require an installed Control
+snapshot and are rejected by application-backup verification. Coherent point/scan leases keep
 only the shared read roots, definitions and required history references. Their
 budget covers metadata plus old document/reference versions and conservative
 persistent-tree path retention caused by concurrent writes. Budget or node
@@ -50,7 +54,9 @@ counts, lengths, hashes, origin, key dependencies and the final resident digest.
 Historical verification builds an encrypted point index containing checked offsets
 into its immutable encrypted spool. It validates documents, unique values,
 lineage, staging, change feeds, cold references, permanent outcomes, audit counters,
-and target signatures one bounded record at a time. Two temporary tables each
+and target signatures one bounded record at a time. Cold-history chunk parsing,
+hashing and encrypted point lookups run in owned blocking workers, retaining the
+original cancellation, deadline, state and workspace through completion. Two temporary tables each
 have an 8 MiB page cache; their keys and pages are encrypted too. The declared
 workspace estimate is 128 MiB, independent of aggregate tenant size. Immediate
 completion instead compares the full authenticated stream to private evidence

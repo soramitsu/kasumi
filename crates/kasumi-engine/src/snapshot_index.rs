@@ -7,7 +7,7 @@ use kasumi_store::{EncryptedTable, SnapshotImage};
 use std::io::{Read, Seek, SeekFrom};
 
 type Key = (u8, String, String);
-const KINDS: usize = 18;
+const KINDS: usize = crate::snapshot_codec::RECORD_KINDS as usize;
 
 pub(crate) struct StagedSnapshot {
     image: SnapshotImage,
@@ -51,6 +51,22 @@ impl StagedSnapshot {
                         item.checked_add(1)
                             .ok_or_else(|| anyhow::anyhow!("change item count overflow"))?,
                     ));
+                }
+                Record::RecoveryPhase(_, record) => {
+                    require(
+                        &index,
+                        &(18, record.operation_id.to_string(), String::new()),
+                    )?;
+                }
+                Record::RecoveryTarget(_, operation) => {
+                    require(&index, &(18, operation.to_string(), String::new()))?;
+                }
+                Record::RecoveryOperation(_, _) => {
+                    let header = get_record(&image, &index, &(0, String::new(), String::new()))?;
+                    ensure!(
+                        matches!(header, Some(Record::Header(head)) if head.tenant == crate::control::CONTROL_TENANT && head.lifecycle_control.is_some()),
+                        "recovery coordinator requires installed Control state"
+                    );
                 }
                 Record::Intent(_, _) | Record::ControlChange(_, _) => {
                     // The header is independently point-addressed. Embedded maps
