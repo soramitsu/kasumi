@@ -597,7 +597,7 @@ impl TargetRecoveryRuntime {
                         fence_id,
                         fence_digest,
                         target,
-                        completion_sha256: control.completion.observation.fact.digest()?,
+                        completion_sha256: control.completion.fact().digest()?,
                     }
                     .digest()?,
                 )

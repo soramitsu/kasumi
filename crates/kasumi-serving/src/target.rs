@@ -96,6 +96,29 @@ pub fn verify_target_completion(
     })
 }
 
+/// Authenticate a permanent completion through its original observation or a
+/// separately signed inspection of the exact original fact. This proof grants
+/// neither mutation authority nor a renewed original phase deadline.
+pub fn verify_committed_completion(
+    expected: &TargetOrigin,
+    proof: &kasumi_types::CommittedCompletion,
+) -> Result<()> {
+    proof.validate()?;
+    ensure!(
+        proof.fact().origin == *expected,
+        "resolved completion origin differs"
+    );
+    match proof {
+        kasumi_types::CommittedCompletion::Original(signed) => {
+            verify_target_completion(expected, signed)?;
+        }
+        kasumi_types::CommittedCompletion::Resolved(signed) => {
+            verify_target_inspection(&signed.observation.input, signed)?;
+        }
+    }
+    Ok(())
+}
+
 #[derive(Clone)]
 pub struct AuthenticatedTargetInspection {
     signed: kasumi_types::SignedTargetInspection,
@@ -106,7 +129,8 @@ impl AuthenticatedTargetInspection {
     }
 }
 /// Historical metadata only, with a separate signature domain and proof type.
-/// No conversion into a completion, activation, stop or renewable lease exists.
+/// An explicit CommittedCompletion::Resolved may consume a positive original
+/// completion observation. It never converts the signature or creates a lease.
 pub fn verify_target_inspection(
     expected: &kasumi_types::TargetInspectionInput,
     signed: &kasumi_types::SignedTargetInspection,

@@ -45,7 +45,7 @@ Replays return the original result without changing later topology, including af
 restart. `finished` requires the issuer winner, every local confirmation, and this
 atomic publication.
 
-The remaining expired-completion proof path and full process acceptance gates below
+The remaining unknown-completion cases and full process acceptance gates below
 still prevent treating this implementation as a completed release acceptance result.
 
 A pre-activation `stop` permanently retains the stop identity. If an issuer
@@ -127,11 +127,21 @@ phase entry remains unresolved history, and the original intent's expiry and
 bootstrap bytes do not change. Expired cleanup work likewise needs a fresh
 `stop_local` admission. Initialization can also receive a fresh committed admission after its original
 work cap expires; its bootstrap and exact voter set remain unchanged. Completion
-keeps its original permanent Control intent. After that intent expires, fresh
-inspection evidence must resolve the original completion and be accepted by the
-issuer; that path remains incomplete. Other unresolved remote phase kinds
-currently require explicit original outcome resolution, and automatic recovery
-after their original admission expires remains an implementation gap.
+keeps its original permanent Control intent and target dispatch cap. After expiry,
+a fresh `inspect_target` intent starts all three voters solely for observation.
+The leader signs a positive observation of the exact original committed fact;
+another voter can receive the identical finite inspection request on retry. Control
+retains that distinct signature and atomically resolves the original pending Complete
+by point reference to its permanent inspection outcome. Issuer activation accepts
+an explicit `CommittedCompletion::Resolved` proof after checking the inspection
+signature, original fact, materializations, and source drain. It does not convert
+the inspection into an original completion signature or renew an old capability.
+
+A missing original completion remains `UnknownOutcome`. No signed negative
+completion outcome or fresh mutation path is installed yet; time passing alone
+cannot authorize either. Other unresolved remote phase kinds require exact
+original outcome resolution, and automatic recovery after their original admission
+expires remains an implementation gap.
 
 Planned start requests freeze a `retirement_id` and `source_backup_destination`.
 The latter names the independently installed source destination and can differ

@@ -23,15 +23,21 @@ fn binding(
     };
     let intent = &signed.observation.intent;
     let request = &intent.request;
-    let completion = &control.completion.observation.fact;
+    let completion = control.completion.fact();
     completion
         .origin
         .accepts_phase(intent, LifecyclePhase::Activate)?;
-    kasumi_serving::verify_target_completion(&completion.origin, &control.completion)?;
+    kasumi_serving::verify_committed_completion(&completion.origin, &control.completion)?;
     ensure!(
         completion.admitted_at_ms <= admitted_at_ms,
         "activation predates actual completed target"
     );
+    if let kasumi_types::CommittedCompletion::Resolved(signed) = control.completion.as_ref() {
+        ensure!(
+            signed.observation.inspection_intent.accepted_at_ms <= admitted_at_ms,
+            "activation predates its independently committed completion inspection"
+        );
+    }
     ensure!(
         receipt.reference == control.reference
             && receipt.request_sha256 == control.intent_sha256
@@ -91,12 +97,7 @@ impl Backend {
                 );
                 binding(command, admitted_at_ms, &receipt)?;
                 ensure!(
-                    control
-                        .completion
-                        .observation
-                        .fact
-                        .origin
-                        .authority_manifest_sha256
+                    control.completion.fact().origin.authority_manifest_sha256
                         == self.installation.manifest.digest()?,
                     "target completion issuer differs"
                 );
@@ -152,8 +153,7 @@ impl Backend {
                     ensure!(
                         control
                             .completion
-                            .observation
-                            .fact
+                            .fact()
                             .origin
                             .authority_manifest_sha256
                             == self.installation.manifest.digest()?,

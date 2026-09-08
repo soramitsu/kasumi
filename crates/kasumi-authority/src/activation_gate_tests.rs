@@ -190,7 +190,9 @@ fn activation(
         fence_digest: fence.digest().unwrap(),
         target: target.clone(),
         control: CommittedActivation {
-            completion: Box::new(completion.clone()),
+            completion: Box::new(kasumi_types::CommittedCompletion::Original(Box::new(
+                completion.clone(),
+            ))),
             reference: accepted.reference(),
             intent_sha256: accepted.digest().unwrap(),
         },
@@ -521,5 +523,157 @@ async fn target_storage_retains_original_phase_and_cannot_install_late_renewal_o
     store.shutdown().await;
     drop(store);
     drop(service);
+    f.close().await;
+}
+
+#[tokio::test]
+async fn resolved_completion_activates_only_with_its_distinct_positive_inspection_signature() {
+    let control = ControlFixture::new();
+    let mut f = control.issuer().await;
+    let t = prepared_target(&f).await;
+    let fence = fence_target(&f, &t).await;
+    // Establish the issuer drain witness before advancing this fixture's
+    // manually controlled lease clock past the original completion lifetime.
+    let undrained = f.command(AuthorityAction::Activate {
+        fence_id: fence.command.command_id,
+        fence_digest: fence.digest().unwrap(),
+        target: t.clone(),
+    });
+    assert!(
+        f.leader()
+            .await
+            .execute(f.context("operator"), undrained)
+            .await
+            .is_err()
+    );
+    let original = completion_fixture(&control, &f, &t, 1_002_000);
+    assert!(
+        serde_json::from_value::<CommittedCompletion>(serde_json::to_value(&original).unwrap())
+            .is_err(),
+        "untagged original completion format must be rejected"
+    );
+    let input = TargetInspectionInput {
+        quorum: TargetQuorumInput {
+            origin_sha256: original.observation.fact.origin.digest().unwrap(),
+            materialized: original.observation.fact.materialized.clone(),
+        },
+        original_phase: original.observation.fact.completion_intent.clone(),
+    };
+    let mut inspection = input.original_phase.clone();
+    inspection.request.command_id = Uuid::new_v4();
+    inspection.request.phase = LifecyclePhase::InspectTarget;
+    inspection.request.phase_input_sha256 = input.digest().unwrap();
+    inspection.request_sha256 = digest(&inspection.request).unwrap();
+    inspection.accepted_at_ms = 1_003_000;
+    inspection.original_credential_expires_at_ms = 1_050_000;
+    inspection.revision += 1;
+    let observation = TargetInspectionObservation {
+        input,
+        inspection_intent: inspection,
+        completion: original.observation.fact.clone(),
+        activation: None,
+        observer_node_id: 1,
+        observed_revision: original.observation.fact.revision,
+        observed_term: original.observation.observed_term,
+    };
+    observation.validate().unwrap();
+    let key = Ed25519KeyPair::from_seed_unchecked(&[1; 32]).unwrap();
+    let resolved = SignedTargetInspection {
+        signature: hex::encode(
+            key.sign(
+                &serde_json::to_vec(&("kasumi.inspected-target-observation.v1", &observation))
+                    .unwrap(),
+            )
+            .as_ref(),
+        ),
+        observation,
+    };
+    kasumi_serving::verify_committed_completion(
+        &original.observation.fact.origin,
+        &CommittedCompletion::Resolved(Box::new(resolved.clone())),
+    )
+    .unwrap();
+    let (mut fresh, _) = activation_intent(&control, &f, &t, &fence, 1_050_000);
+    fresh.observation.intent.request.phase_input_sha256 = ActivateTargetInput {
+        completion_sha256: original.observation.fact.digest().unwrap(),
+        fence_id: fence.command.command_id,
+        fence_digest: fence.digest().unwrap(),
+        target: t.clone(),
+    }
+    .digest()
+    .unwrap();
+    fresh.observation.intent.request_sha256 = digest(&fresh.observation.intent.request).unwrap();
+    control.sign_intent(&mut fresh);
+    f.clock.0.store(3000, Ordering::SeqCst);
+    assert!(
+        f.epoch.observe().unwrap().utc_ms()
+            >= original
+                .observation
+                .fact
+                .completion_intent
+                .original_credential_expires_at_ms
+    );
+    let (service, _) = accepted_on_current_leader(&f, request(&fresh)).await;
+    let mut command = activation(&f, &t, &fence, &fresh, &original);
+    if let AuthorityAction::ActivateCommitted { control, .. } = &mut command.action {
+        *control.completion = CommittedCompletion::Resolved(Box::new(resolved.clone()));
+    }
+    let mut wrong_domain = command.clone();
+    wrong_domain.command_id = Uuid::new_v4();
+    if let AuthorityAction::ActivateCommitted { control, .. } = &mut wrong_domain.action {
+        let CommittedCompletion::Resolved(proof) = control.completion.as_mut() else {
+            unreachable!()
+        };
+        proof.signature = original.signature.clone();
+    }
+    assert!(matches!(
+        exact_administrative(&f, wrong_domain).await.outcome,
+        AuthorityOutcome::Rejected { .. }
+    ));
+    let mut changed_original = command.clone();
+    changed_original.command_id = Uuid::new_v4();
+    if let AuthorityAction::ActivateCommitted { control, .. } = &mut changed_original.action {
+        let CommittedCompletion::Resolved(proof) = control.completion.as_mut() else {
+            unreachable!()
+        };
+        let original = &mut proof.observation.input.original_phase;
+        original.request.command_id = Uuid::new_v4();
+        original.request_sha256 = digest(&original.request).unwrap();
+        proof.observation.completion.completion_intent = original.clone();
+        let input_sha256 = proof.observation.input.digest().unwrap();
+        let inspection = &mut proof.observation.inspection_intent;
+        inspection.request.phase_input_sha256 = input_sha256;
+        inspection.request_sha256 = digest(&inspection.request).unwrap();
+        proof.observation.validate().unwrap();
+        proof.signature = hex::encode(
+            key.sign(
+                &serde_json::to_vec(&(
+                    "kasumi.inspected-target-observation.v1",
+                    &proof.observation,
+                ))
+                .unwrap(),
+            )
+            .as_ref(),
+        );
+    }
+    assert!(matches!(
+        exact_administrative(&f, changed_original).await.outcome,
+        AuthorityOutcome::Rejected { .. }
+    ));
+    let accepted = exact_administrative(&f, command.clone()).await;
+    assert!(matches!(
+        accepted.outcome,
+        AuthorityOutcome::Activated { .. }
+    ));
+    let mut snapshot = Vec::new();
+    kasumi_raft::StateMachineBackend::snapshot(service.backend.as_ref(), &mut snapshot).unwrap();
+    kasumi_raft::StateMachineBackend::validate_snapshot(
+        service.backend.as_ref(),
+        &mut snapshot.as_slice(),
+    )
+    .unwrap();
+    drop(service);
+    f.reopen().await;
+    assert_eq!(exact_administrative(&f, command).await, accepted);
     f.close().await;
 }

@@ -116,6 +116,8 @@ fn coordinator() -> TenantState {
         current_intent: None,
         materialization_intent: None,
         initialization: None,
+        completion_intent: None,
+        completion_attempt: None,
         completion: None,
         retirement: None,
         source_fence: None,

@@ -12,6 +12,8 @@ mod source;
 pub(crate) use source::{issuer_action, retirement_request};
 #[path = "recovery_activation.rs"]
 pub(crate) mod activation;
+#[path = "recovery_completion.rs"]
+pub(crate) mod completion;
 #[path = "recovery_route.rs"]
 pub(crate) mod route;
 
@@ -376,6 +378,8 @@ fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Result<RecoveryR
             materialization_intent: None,
             issuer_preparation: None,
             initialization: None,
+            completion_intent: None,
+            completion_attempt: None,
             completion: None,
             retirement: None,
             source_fence: None,
@@ -479,6 +483,13 @@ fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Result<RecoveryR
                             {
                                 Some(LifecyclePhase::Initialize)
                             }
+                            TargetRuntimeStep::Start(_)
+                            | TargetRuntimeStep::Complete(_)
+                            | TargetRuntimeStep::Inspect(_)
+                                if operation.phase == RecoveryPhase::Complete =>
+                            {
+                                Some(LifecyclePhase::InspectTarget)
+                            }
                             TargetRuntimeStep::StartActivation { .. }
                             | TargetRuntimeStep::Activate { .. }
                             | TargetRuntimeStep::ConfirmActivation(_)
@@ -558,6 +569,10 @@ fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Result<RecoveryR
             if matches!(input.as_ref(),RecoveryDispatch::Authority(command) if matches!(command.action,AuthorityAction::ActivateCommitted{..}))
             {
                 operation.activation_attempt = Some(*phase_id);
+            }
+            if matches!(input.as_ref(), RecoveryDispatch::Target { request, .. } if matches!(request.step, TargetRuntimeStep::Complete(_)))
+            {
+                operation.completion_attempt = Some(*phase_id);
             }
             operation.pending_phase = Some(*phase_id);
             operation.last_phase = Some(*phase_id);
@@ -649,6 +664,16 @@ fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Result<RecoveryR
                         .insert(original_key, original_phase);
                 }
             }
+            if matches!((&prepared.input, outcome.as_ref()), (RecoveryDispatch::Target { request, .. }, RecoveryDispatchOutcome::Target(response)) if matches!(request.step, TargetRuntimeStep::Inspect(_)) && matches!(response.outcome, TargetRuntimeOutcome::Inspected(_)))
+            {
+                prepared.outcome = Some(outcome.as_ref().clone());
+                prepared.resolved_revision = Some(state.revision);
+                state
+                    .recovery_control
+                    .phases
+                    .insert(key.clone(), prepared.clone());
+                completion::resolve_original(state, &operation, prepared.phase_id)?;
+            }
             advance(state, &mut operation, &prepared, outcome)?;
             prepared.outcome = Some(outcome.as_ref().clone());
             prepared.resolved_revision = Some(state.revision);
@@ -684,6 +709,10 @@ pub(crate) fn expected_intent(
         LifecyclePhase::Initialize | LifecyclePhase::Complete => {
             (quorum_input(state, operation)?.digest()?, None)
         }
+        LifecyclePhase::InspectTarget => (
+            completion::inspection_input(state, operation)?.digest()?,
+            None,
+        ),
         LifecyclePhase::Activate => (
             activation::activation_input(state, operation)?
                 .digest()
@@ -698,7 +727,6 @@ pub(crate) fn expected_intent(
             .0,
             None,
         ),
-        _ => return Err(conflict("coordinator phase dispatch is not installed")),
     };
     Ok(CommitLifecycleIntent {
         command_id: phase_id,
@@ -825,7 +853,11 @@ fn validate_input(
             } else if operation.phase == RecoveryPhase::Initialize {
                 LifecyclePhase::Initialize
             } else if operation.phase == RecoveryPhase::Complete {
-                LifecyclePhase::Complete
+                if operation.completion_intent.is_some() {
+                    LifecyclePhase::InspectTarget
+                } else {
+                    LifecyclePhase::Complete
+                }
             } else if operation.phase == RecoveryPhase::Cleanup {
                 LifecyclePhase::StopLocal
             } else if operation.materialization_intent.is_none() {
@@ -833,10 +865,27 @@ fn validate_input(
             } else {
                 LifecyclePhase::ResumeMaterialize
             };
-            if phase == LifecyclePhase::Complete && operation.current_intent.is_some() {
+            if phase == LifecyclePhase::Complete && operation.completion_intent.is_some() {
                 return Err(conflict(
                     "original completion intent must be resolved without replacing its identity",
                 ));
+            }
+            if phase == LifecyclePhase::InspectTarget {
+                let current = intent(
+                    state,
+                    operation,
+                    operation
+                        .current_intent
+                        .ok_or_else(|| conflict("current completion phase absent"))?,
+                )?;
+                let expired_pending = operation.pending_phase.and_then(|id| self::phase(state, operation, id).ok()).is_some_and(|phase| matches!(&phase.input, RecoveryDispatch::Target { request, .. } if authorization.admitted_at_ms >= request.not_after_ms));
+                if authorization.admitted_at_ms < current.original_credential_expires_at_ms
+                    && !expired_pending
+                {
+                    return Err(conflict(
+                        "resolve the live original completion phase before fresh inspection",
+                    ));
+                }
             }
             if phase == LifecyclePhase::ResumeMaterialize {
                 let current = intent(
@@ -916,6 +965,16 @@ fn validate_input(
                     &request.step,
                     true,
                 )?,
+                (_, RecoveryPhase::Complete) if completion::is_inspection(&request.step) => {
+                    completion::validate_step(
+                        state,
+                        operation,
+                        current,
+                        *node_id,
+                        &request.step,
+                        true,
+                    )?
+                }
                 (_, RecoveryPhase::Initialize | RecoveryPhase::Complete) => {
                     quorum::validate_quorum_step(
                         state,
@@ -1101,6 +1160,12 @@ fn validate_outcome(
             }
         }
         (
+            RecoveryDispatch::Target { .. },
+            RecoveryDispatchOutcome::CompletionResolution { inspection_phase },
+        ) => {
+            completion::validate_resolution(state, operation, prepared, *inspection_phase)?;
+        }
+        (
             RecoveryDispatch::Target { node_id, request },
             RecoveryDispatchOutcome::Target(response),
         ) => {
@@ -1147,8 +1212,25 @@ fn validate_outcome(
                         return Err(conflict("native target startup origin differs"));
                     }
                 }
+                (
+                    TargetRuntimeStep::Start(TargetReplicaInput::Inspection(input)),
+                    TargetRuntimeOutcome::Started { origin_sha256 },
+                ) => {
+                    if **input != completion::inspection_input(state, operation)?
+                        || *origin_sha256 != input.quorum.origin_sha256
+                    {
+                        return Err(conflict("inspection startup origin differs"));
+                    }
+                }
+                (TargetRuntimeStep::Inspect(input), TargetRuntimeOutcome::Inspected(signed)) => {
+                    if **input != completion::inspection_input(state, operation)? {
+                        return Err(conflict("inspection acknowledgement input differs"));
+                    }
+                    completion::validate_proof(state, operation, current, *node_id, signed)?;
+                }
                 (TargetRuntimeStep::Complete(input), TargetRuntimeOutcome::Completed(signed)) => {
                     if signed.observation.fact.completion_intent != *current
+                        || signed.observation.fact.admitted_at_ms >= request.not_after_ms
                         || signed.observation.observer_node_id != *node_id
                         || input != &quorum_input(state, operation)?
                     {
@@ -1311,6 +1393,14 @@ fn advance(
             if request.phase == LifecyclePhase::Materialize {
                 operation.materialization_intent = Some(prepared.phase_id);
             }
+            if request.phase == LifecyclePhase::Complete {
+                if operation.completion_intent.is_some() {
+                    return Err(conflict(
+                        "permanent original completion identity already installed",
+                    ));
+                }
+                operation.completion_intent = Some(prepared.phase_id);
+            }
         }
         (RecoveryDispatch::Target { node_id, .. }, RecoveryDispatchOutcome::Target(response)) => {
             let voter = operation
@@ -1366,7 +1456,7 @@ fn advance(
                     operation.current_intent = None;
                     operation.phase = RecoveryPhase::Complete;
                 }
-                TargetRuntimeOutcome::Completed(_) => {
+                TargetRuntimeOutcome::Completed(_) | TargetRuntimeOutcome::Inspected(_) => {
                     operation.completion = Some(prepared.phase_id);
                     operation.current_intent = None;
                     operation.phase = if matches!(
@@ -1390,7 +1480,6 @@ fn advance(
                         operation.phase = RecoveryPhase::Stopped;
                     }
                 }
-                _ => return Err(conflict("unsupported recovery progress outcome")),
             }
         }
         _ => return Err(conflict("unsupported recovery progress transition")),
@@ -1463,7 +1552,8 @@ pub(crate) fn validate(state: &TenantState) -> Result<()> {
                     .values()
                     .all(|v| v.materialization.is_some()))
             || (initialized && operation.initialization.is_none())
-            || (completed && operation.completion.is_none())
+            || (completed
+                && (operation.completion.is_none() || operation.completion_intent.is_none()))
             || (matches!(
                 operation.phase,
                 RecoveryPhase::Cleanup | RecoveryPhase::Stopped
@@ -1521,11 +1611,37 @@ pub(crate) fn validate(state: &TenantState) -> Result<()> {
                 return Err(conflict("recovery pending phase differs"));
             }
         }
-        for id in [operation.current_intent, operation.materialization_intent]
-            .into_iter()
-            .flatten()
+        for id in [
+            operation.current_intent,
+            operation.materialization_intent,
+            operation.completion_intent,
+        ]
+        .into_iter()
+        .flatten()
         {
             intent(state, operation, id)?;
+        }
+        if let Some(id) = operation.completion_intent {
+            let original = intent(state, operation, id)?;
+            origin(state, operation)?.accepts_phase(original, LifecyclePhase::Complete)?;
+            if original.request.phase_input_sha256 != quorum_input(state, operation)?.digest()? {
+                return Err(conflict("original completion identity input differs"));
+            }
+        }
+        if let Some(id) = operation.completion_attempt {
+            let retained = phase(state, operation, id)?;
+            let original = intent(
+                state,
+                operation,
+                operation
+                    .completion_intent
+                    .ok_or_else(|| conflict("original completion identity absent"))?,
+            )?;
+            if !matches!(&retained.input, RecoveryDispatch::Target { request, .. } if request.command_id == original.request.command_id && matches!(request.step, TargetRuntimeStep::Complete(_)))
+                || retained.phase != RecoveryPhase::Complete
+            {
+                return Err(conflict("original completion attempt reference differs"));
+            }
         }
         if operation.materialization_intent.is_some() {
             origin(state, operation)?;
@@ -1569,7 +1685,7 @@ pub(crate) fn validate(state: &TenantState) -> Result<()> {
         for (node_id, voter) in &operation.voters {
             if let Some(id) = voter.started {
                 let record = phase(state, operation, id)?;
-                if !matches!((&record.input,&record.outcome), (RecoveryDispatch::Target {node_id:actual,request},Some(RecoveryDispatchOutcome::Target(response))) if actual==node_id && response.node_id==*node_id && matches!(request.step,TargetRuntimeStep::Start(TargetReplicaInput::Quorum(_))|TargetRuntimeStep::StartActivation{..}) && matches!(response.outcome,TargetRuntimeOutcome::Started{..}))
+                if !matches!((&record.input,&record.outcome), (RecoveryDispatch::Target {node_id:actual,request},Some(RecoveryDispatchOutcome::Target(response))) if actual==node_id && response.node_id==*node_id && matches!(request.step,TargetRuntimeStep::Start(_)|TargetRuntimeStep::StartActivation{..}) && matches!(response.outcome,TargetRuntimeOutcome::Started{..}))
                 {
                     return Err(conflict(
                         "startup progress lacks exact native voter acknowledgement",
@@ -1578,7 +1694,7 @@ pub(crate) fn validate(state: &TenantState) -> Result<()> {
             }
         }
         if operation.initialization.is_some_and(|id| !matches!(phase(state,operation,id).ok().and_then(|p|p.outcome.as_ref()),Some(RecoveryDispatchOutcome::Target(response)) if matches!(response.outcome,TargetRuntimeOutcome::Initialized{..}))) {return Err(conflict("initialization progress reference differs"));}
-        if operation.completion.is_some_and(|id| !matches!(phase(state,operation,id).ok().and_then(|p|p.outcome.as_ref()),Some(RecoveryDispatchOutcome::Target(response)) if matches!(response.outcome,TargetRuntimeOutcome::Completed(_)))) {return Err(conflict("completion progress reference differs"));}
+        if operation.completion.is_some_and(|id| !matches!(phase(state,operation,id).ok().and_then(|p|p.outcome.as_ref()),Some(RecoveryDispatchOutcome::Target(response)) if matches!(response.outcome,TargetRuntimeOutcome::Completed(_)|TargetRuntimeOutcome::Inspected(_)))) {return Err(conflict("completion progress reference differs"));}
         if operation.issuer_preparation.is_some_and(|id| !matches!(phase(state, operation, id).ok().and_then(|p|p.outcome.as_ref()),Some(RecoveryDispatchOutcome::Authority(s)) if matches!(s.receipt.outcome,AuthorityOutcome::TargetPrepared{..}))) {
             return Err(conflict("recovery preparation reference differs"));
         }
@@ -1789,7 +1905,10 @@ fn validate_frozen_input(
                     LifecyclePhase::Materialize | LifecyclePhase::ResumeMaterialize
                 ) | (RecoveryPhase::Cleanup, LifecyclePhase::StopLocal)
                     | (RecoveryPhase::Initialize, LifecyclePhase::Initialize)
-                    | (RecoveryPhase::Complete, LifecyclePhase::Complete)
+                    | (
+                        RecoveryPhase::Complete,
+                        LifecyclePhase::Complete | LifecyclePhase::InspectTarget
+                    )
                     | (
                         RecoveryPhase::Activate | RecoveryPhase::Confirm,
                         LifecyclePhase::Activate
@@ -1833,6 +1952,16 @@ fn validate_frozen_input(
                     &request.step,
                     false,
                 )?,
+                (_, RecoveryPhase::Complete) if completion::is_inspection(&request.step) => {
+                    completion::validate_step(
+                        state,
+                        operation,
+                        current,
+                        *node_id,
+                        &request.step,
+                        false,
+                    )?
+                }
                 (_, RecoveryPhase::Initialize | RecoveryPhase::Complete) => {
                     quorum::validate_quorum_step(
                         state,
@@ -1903,6 +2032,14 @@ pub(crate) fn validate_successor(previous: &TenantState, incoming: &TenantState)
         {
             return Err(conflict("snapshot substituted recovery operation identity"));
         }
+        if let Some(old_id) = old.completion_attempt {
+            let new_id = new
+                .completion_attempt
+                .ok_or_else(|| conflict("snapshot removed original completion attempt"))?;
+            if phase(incoming, new, new_id)?.sequence < phase(previous, old, old_id)?.sequence {
+                return Err(conflict("snapshot regressed original completion attempt"));
+            }
+        }
         if let Some(old_id) = old.activation_attempt {
             let new_id = new
                 .activation_attempt
@@ -1913,6 +2050,7 @@ pub(crate) fn validate_successor(previous: &TenantState, incoming: &TenantState)
         }
         for (old, new) in [
             (old.materialization_intent, new.materialization_intent),
+            (old.completion_intent, new.completion_intent),
             (old.issuer_preparation, new.issuer_preparation),
             (old.initialization, new.initialization),
             (old.completion, new.completion),

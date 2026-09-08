@@ -402,7 +402,9 @@ impl Database {
                 && now < request.not_after_ms
                 && matches!(
                     request.step,
-                    TargetRuntimeStep::Complete(_) | TargetRuntimeStep::Activate { .. }
+                    TargetRuntimeStep::Complete(_)
+                        | TargetRuntimeStep::Inspect(_)
+                        | TargetRuntimeStep::Activate { .. }
                 )
             {
                 let next = operation
@@ -445,6 +447,13 @@ impl Database {
                             if operation.phase == RecoveryPhase::Initialize =>
                         {
                             LifecyclePhase::Initialize
+                        }
+                        TargetRuntimeStep::Start(_)
+                        | TargetRuntimeStep::Complete(_)
+                        | TargetRuntimeStep::Inspect(_)
+                            if operation.phase == RecoveryPhase::Complete =>
+                        {
+                            LifecyclePhase::InspectTarget
                         }
                         TargetRuntimeStep::StartActivation { .. }
                         | TargetRuntimeStep::Activate { .. }
@@ -605,6 +614,15 @@ impl Database {
                     .map(|id| recovery::intent(state, operation, id))
                     .transpose()?;
                 match current {
+                    Some(current)
+                        if kind == LifecyclePhase::Complete
+                            && current.request.phase == LifecyclePhase::InspectTarget
+                            && now < current.original_credential_expires_at_ms =>
+                    {
+                        recovery::completion::next_inspection(
+                            state, operation, current, now, expires,
+                        )?
+                    }
                     Some(current) if now < current.original_credential_expires_at_ms => {
                         let quorum = recovery::quorum_input(state, operation)?;
                         let mut missing = None;
@@ -657,10 +675,13 @@ impl Database {
                         }
                     }
                     Some(_) if kind == LifecyclePhase::Complete => {
-                        return Err(error(
-                            ErrorCode::Unavailable,
-                            "expired original completion requires fresh exact completion-resolution evidence",
-                        ));
+                        RecoveryDispatch::ControlIntent(Box::new(recovery::expected_intent(
+                            state,
+                            operation,
+                            phase_id,
+                            state.policy_epoch,
+                            LifecyclePhase::InspectTarget,
+                        )?))
                     }
                     _ => RecoveryDispatch::ControlIntent(Box::new(recovery::expected_intent(
                         state,

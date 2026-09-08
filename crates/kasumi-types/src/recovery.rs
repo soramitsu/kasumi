@@ -172,6 +172,10 @@ pub struct RecoveryRecord {
     #[serde(deserialize_with = "crate::require_explicit_option")]
     pub initialization: Option<Uuid>,
     #[serde(deserialize_with = "crate::require_explicit_option")]
+    pub completion_intent: Option<Uuid>,
+    #[serde(deserialize_with = "crate::require_explicit_option")]
+    pub completion_attempt: Option<Uuid>,
+    #[serde(deserialize_with = "crate::require_explicit_option")]
     pub completion: Option<Uuid>,
     #[serde(deserialize_with = "crate::require_explicit_option")]
     pub retirement: Option<Uuid>,
@@ -236,6 +240,10 @@ pub enum RecoveryDispatchOutcome {
     AuthorityResolution(Box<SignedAuthorityReceipt>),
     ControlIntent(Box<LifecycleIntent>),
     Target(Box<TargetRuntimeResponse>),
+    /// Exact point reference to a separately retained positive inspection.
+    CompletionResolution {
+        inspection_phase: Uuid,
+    },
     SourceRetired(Box<RetirementReceipt>),
     RoutePublished {
         revision: u64,
