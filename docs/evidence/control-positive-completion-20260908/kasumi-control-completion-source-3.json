@@ -1,0 +1,29 @@
+{
+  "base": "f44133a8627f9bd5818a14b657baf62e82d3afa4",
+  "patch": {
+    "path": "/tmp/kasumi-control-completion-source-3.patch",
+    "sha256": "38b74fe84073e4bd364dbfc842ef49974c9e64249f1aa353bf6770479bf3a16f"
+  },
+  "source_files": {
+    "crates/kasumi-authority/src/activation_gate_tests.rs": "f516834f869444ee5124853b08a709c472d24f3ef4ff71efdaa123f1e5536925",
+    "crates/kasumi-authority/src/activation_state.rs": "1dac633b3bff303bb43863c7d3c7a1a434f5aa4e084ca3446f40112bcd029327",
+    "crates/kasumi-authority/src/target_materialization_tests.rs": "605d9478e0739dfbe9497cd3951b731d53f4be57e81505195e25c27f0b65d25e",
+    "crates/kasumi-engine/src/recovery_activation.rs": "50ec1a219b5b758a06ca04b4e17aa8edefa88b218d74bf7113508591450e264d",
+    "crates/kasumi-engine/src/recovery_completion.rs": "30bb31886be26b4db43e788d52524b6eb05598cea9931b5c266603f6c36c95e4",
+    "crates/kasumi-engine/src/recovery_quorum.rs": "1fbe8da50c592d72eb1146537e73bf0d4f4cd73c35f04f9b12c613a0a1fa47e4",
+    "crates/kasumi-engine/src/recovery_service.rs": "9fd53a01e09ad73d75ba9c9f725bf1967553040e48a8764e50928e734f4d4c1f",
+    "crates/kasumi-engine/src/recovery_state.rs": "ffbebc058ea20f0aee0ff9f1cd05eea57b2e85e9f4cab101d65b3df6d8c16c68",
+    "crates/kasumi-engine/src/snapshot_recovery_tests.rs": "cf742176a8dea7ed05f39419a1128444a59b50e9fa15b09cfa0f2b11f5913ce7",
+    "crates/kasumi-engine/src/target_activation_service.rs": "b8d6a17f1e27b22546ffc7d22e2d50eab1cb0888ea30559d42457c7f3870c8a1",
+    "crates/kasumi-engine/src/target_state.rs": "16cf987b7fc8796968bee4f30b675b6e48074cf023ede612176845413406b814",
+    "crates/kasumi-engine/tests/common/recovery_control.rs": "f9771bebfeb4f4d3bd0eda6c5ede1f6f6805ba3b5bb3a5e9a4de3c52f70cd76c",
+    "crates/kasumi-server/src/target_runtime.rs": "ba465abeafc3b1d4e74fbc931193bf4e85f7ce0ed285fbf9a2754cb48bfd0de0",
+    "crates/kasumi-serving/src/target.rs": "bc608802e9952f270c1c95145d135cc0f0a2757cd98bbd11191fbddf4d945306",
+    "crates/kasumi-types/src/authority_protocol.rs": "fa326ee6544fb8bd621b827a4c234c199c4db0fdad93bb9f12027f7a1fb67f0e",
+    "crates/kasumi-types/src/recovery.rs": "1f486b8e1911703bcc154d85b3249c232dd75cb40aef3f6be7c96022e31fa237",
+    "crates/kasumi-types/src/target.rs": "70f9185b0b291b4498a3887c376a541fb82b826912f4124ae118110ced4da9df",
+    "docs/control-recovery.md": "7e10fb796617ed34fce4ca77e3a346d56c85c8b4cc94f48b3b6daa968cab6952"
+  },
+  "cargo_lock_sha256": "3f693a1bd3dd6614d3ce8e54b2fd960055361c72e5d535b8aa86e1c47e60eb0a",
+  "change_from_source_2": "Fixture prepare_next resolves the exact original phase after uncertain response, retaining one context, phase ID, sequence, pending reference, input and deadline. No production change."
+}

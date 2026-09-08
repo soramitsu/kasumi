@@ -1,0 +1,22 @@
+    Checking kasumi-types v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-types)
+    Checking kasumi-serving v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-serving)
+    Checking kasumi-store v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-store)
+    Checking kasumi-raft v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-raft)
+    Checking kasumi-query v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-query)
+    Checking kasumi-engine v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-engine)
+   Compiling kasumi-client v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-client)
+    Checking kasumi-authority v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-authority)
+    Checking kasumi-server v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-server)
+    Checking kasumi-bench v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-bench)
+error: creating a new box
+   --> crates/kasumi-authority/src/activation_gate_tests.rs:619:9
+    |
+619 |         control.completion = Box::new(CommittedCompletion::Resolved(Box::new(resolved.clone())));
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace existing content with inner value instead: `*control.completion = CommittedCompletion::Resolved(Box::new(resolved.clone()))`
+    |
+    = note: this creates a needless allocation
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#replace_box
+    = note: `-D clippy::replace-box` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::replace_box)]`
+
+error: could not compile `kasumi-authority` (lib test) due to 1 previous error

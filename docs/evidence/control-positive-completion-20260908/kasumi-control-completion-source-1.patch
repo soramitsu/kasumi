@@ -1,0 +1,1446 @@
+diff --git a/crates/kasumi-authority/src/activation_gate_tests.rs b/crates/kasumi-authority/src/activation_gate_tests.rs
+index 63b5cd6..3ff66a2 100644
+--- a/crates/kasumi-authority/src/activation_gate_tests.rs
++++ b/crates/kasumi-authority/src/activation_gate_tests.rs
+@@ -190,7 +190,9 @@ fn activation(
+         fence_digest: fence.digest().unwrap(),
+         target: target.clone(),
+         control: CommittedActivation {
+-            completion: Box::new(completion.clone()),
++            completion: Box::new(kasumi_types::CommittedCompletion::Original(Box::new(
++                completion.clone(),
++            ))),
+             reference: accepted.reference(),
+             intent_sha256: accepted.digest().unwrap(),
+         },
+@@ -523,3 +525,141 @@ async fn target_storage_retains_original_phase_and_cannot_install_late_renewal_o
+     drop(service);
+     f.close().await;
+ }
++
++#[tokio::test]
++async fn resolved_completion_activates_only_with_its_distinct_positive_inspection_signature() {
++    let control = ControlFixture::new();
++    let mut f = control.issuer().await;
++    let t = prepared_target(&f).await;
++    let fence = fence_target(&f, &t).await;
++    let original = completion_fixture(&control, &f, &t, 1_002_000);
++    assert!(
++        serde_json::from_value::<CommittedCompletion>(serde_json::to_value(&original).unwrap())
++            .is_err(),
++        "untagged original completion format must be rejected"
++    );
++    let input = TargetInspectionInput {
++        quorum: TargetQuorumInput {
++            origin_sha256: original.observation.fact.origin.digest().unwrap(),
++            materialized: original.observation.fact.materialized.clone(),
++        },
++        original_phase: original.observation.fact.completion_intent.clone(),
++    };
++    let mut inspection = input.original_phase.clone();
++    inspection.request.command_id = Uuid::new_v4();
++    inspection.request.phase = LifecyclePhase::InspectTarget;
++    inspection.request.phase_input_sha256 = input.digest().unwrap();
++    inspection.request_sha256 = digest(&inspection.request).unwrap();
++    inspection.accepted_at_ms = 1_003_000;
++    inspection.original_credential_expires_at_ms = 1_050_000;
++    inspection.revision += 1;
++    let observation = TargetInspectionObservation {
++        input,
++        inspection_intent: inspection,
++        completion: original.observation.fact.clone(),
++        activation: None,
++        observer_node_id: 1,
++        observed_revision: original.observation.fact.revision,
++        observed_term: original.observation.observed_term,
++    };
++    observation.validate().unwrap();
++    let key = Ed25519KeyPair::from_seed_unchecked(&[1; 32]).unwrap();
++    let resolved = SignedTargetInspection {
++        signature: hex::encode(
++            key.sign(
++                &serde_json::to_vec(&("kasumi.inspected-target-observation.v1", &observation))
++                    .unwrap(),
++            )
++            .as_ref(),
++        ),
++        observation,
++    };
++    kasumi_serving::verify_committed_completion(
++        &original.observation.fact.origin,
++        &CommittedCompletion::Resolved(Box::new(resolved.clone())),
++    )
++    .unwrap();
++    let (mut fresh, _) = activation_intent(&control, &f, &t, &fence, 1_050_000);
++    fresh.observation.intent.request.phase_input_sha256 = ActivateTargetInput {
++        completion_sha256: original.observation.fact.digest().unwrap(),
++        fence_id: fence.command.command_id,
++        fence_digest: fence.digest().unwrap(),
++        target: t.clone(),
++    }
++    .digest()
++    .unwrap();
++    fresh.observation.intent.request_sha256 = digest(&fresh.observation.intent.request).unwrap();
++    control.sign_intent(&mut fresh);
++    f.clock.0.store(3000, Ordering::SeqCst);
++    assert!(
++        f.epoch.observe().unwrap().utc_ms()
++            >= original
++                .observation
++                .fact
++                .completion_intent
++                .original_credential_expires_at_ms
++    );
++    let (service, _) = accepted_on_current_leader(&f, request(&fresh)).await;
++    let mut command = activation(&f, &t, &fence, &fresh, &original);
++    if let AuthorityAction::ActivateCommitted { control, .. } = &mut command.action {
++        control.completion = Box::new(CommittedCompletion::Resolved(Box::new(resolved.clone())));
++    }
++    let mut wrong_domain = command.clone();
++    wrong_domain.command_id = Uuid::new_v4();
++    if let AuthorityAction::ActivateCommitted { control, .. } = &mut wrong_domain.action {
++        let CommittedCompletion::Resolved(proof) = control.completion.as_mut() else {
++            unreachable!()
++        };
++        proof.signature = original.signature.clone();
++    }
++    assert!(matches!(
++        exact_administrative(&f, wrong_domain).await.outcome,
++        AuthorityOutcome::Rejected { .. }
++    ));
++    let mut changed_original = command.clone();
++    changed_original.command_id = Uuid::new_v4();
++    if let AuthorityAction::ActivateCommitted { control, .. } = &mut changed_original.action {
++        let CommittedCompletion::Resolved(proof) = control.completion.as_mut() else {
++            unreachable!()
++        };
++        let original = &mut proof.observation.input.original_phase;
++        original.request.command_id = Uuid::new_v4();
++        original.request_sha256 = digest(&original.request).unwrap();
++        proof.observation.completion.completion_intent = original.clone();
++        let input_sha256 = proof.observation.input.digest().unwrap();
++        let inspection = &mut proof.observation.inspection_intent;
++        inspection.request.phase_input_sha256 = input_sha256;
++        inspection.request_sha256 = digest(&inspection.request).unwrap();
++        proof.observation.validate().unwrap();
++        proof.signature = hex::encode(
++            key.sign(
++                &serde_json::to_vec(&(
++                    "kasumi.inspected-target-observation.v1",
++                    &proof.observation,
++                ))
++                .unwrap(),
++            )
++            .as_ref(),
++        );
++    }
++    assert!(matches!(
++        exact_administrative(&f, changed_original).await.outcome,
++        AuthorityOutcome::Rejected { .. }
++    ));
++    let accepted = exact_administrative(&f, command.clone()).await;
++    assert!(matches!(
++        accepted.outcome,
++        AuthorityOutcome::Activated { .. }
++    ));
++    let mut snapshot = Vec::new();
++    kasumi_raft::StateMachineBackend::snapshot(service.backend.as_ref(), &mut snapshot).unwrap();
++    kasumi_raft::StateMachineBackend::validate_snapshot(
++        service.backend.as_ref(),
++        &mut snapshot.as_slice(),
++    )
++    .unwrap();
++    drop(service);
++    f.reopen().await;
++    assert_eq!(exact_administrative(&f, command).await, accepted);
++    f.close().await;
++}
+diff --git a/crates/kasumi-authority/src/activation_state.rs b/crates/kasumi-authority/src/activation_state.rs
+index ebd0b71..b7701e0 100644
+--- a/crates/kasumi-authority/src/activation_state.rs
++++ b/crates/kasumi-authority/src/activation_state.rs
+@@ -23,15 +23,21 @@ fn binding(
+     };
+     let intent = &signed.observation.intent;
+     let request = &intent.request;
+-    let completion = &control.completion.observation.fact;
++    let completion = control.completion.fact();
+     completion
+         .origin
+         .accepts_phase(intent, LifecyclePhase::Activate)?;
+-    kasumi_serving::verify_target_completion(&completion.origin, &control.completion)?;
++    kasumi_serving::verify_committed_completion(&completion.origin, &control.completion)?;
+     ensure!(
+         completion.admitted_at_ms <= admitted_at_ms,
+         "activation predates actual completed target"
+     );
++    if let kasumi_types::CommittedCompletion::Resolved(signed) = control.completion.as_ref() {
++        ensure!(
++            signed.observation.inspection_intent.accepted_at_ms <= admitted_at_ms,
++            "activation predates its independently committed completion inspection"
++        );
++    }
+     ensure!(
+         receipt.reference == control.reference
+             && receipt.request_sha256 == control.intent_sha256
+@@ -91,12 +97,7 @@ impl Backend {
+                 );
+                 binding(command, admitted_at_ms, &receipt)?;
+                 ensure!(
+-                    control
+-                        .completion
+-                        .observation
+-                        .fact
+-                        .origin
+-                        .authority_manifest_sha256
++                    control.completion.fact().origin.authority_manifest_sha256
+                         == self.installation.manifest.digest()?,
+                     "target completion issuer differs"
+                 );
+@@ -152,8 +153,7 @@ impl Backend {
+                     ensure!(
+                         control
+                             .completion
+-                            .observation
+-                            .fact
++                            .fact()
+                             .origin
+                             .authority_manifest_sha256
+                             == self.installation.manifest.digest()?,
+diff --git a/crates/kasumi-authority/src/target_materialization_tests.rs b/crates/kasumi-authority/src/target_materialization_tests.rs
+index 471c9dc..ddacd3e 100644
+--- a/crates/kasumi-authority/src/target_materialization_tests.rs
++++ b/crates/kasumi-authority/src/target_materialization_tests.rs
+@@ -924,7 +924,9 @@ async fn exact_actual_completion_is_required_for_issuer_and_target_activation()
+         fence_digest: fence.digest().unwrap(),
+         target: f.target.clone(),
+         control: CommittedActivation {
+-            completion: Box::new(signed.clone()),
++            completion: Box::new(kasumi_types::CommittedCompletion::Original(Box::new(
++                signed.clone(),
++            ))),
+             reference: request_ref.reference(),
+             intent_sha256: request_ref.digest().unwrap(),
+         },
+@@ -940,7 +942,11 @@ async fn exact_actual_completion_is_required_for_issuer_and_target_activation()
+     let mut invalid = command.clone();
+     invalid.command_id = Uuid::new_v4();
+     if let AuthorityAction::ActivateCommitted { control, .. } = &mut invalid.action {
+-        control.completion.signature = "00".repeat(64);
++        let kasumi_types::CommittedCompletion::Original(signed) = control.completion.as_mut()
++        else {
++            unreachable!()
++        };
++        signed.signature = "00".repeat(64);
+     }
+     let denied = super::activation_gate_tests::exact_administrative(&f.issuer, invalid).await;
+     assert!(matches!(denied.outcome, AuthorityOutcome::Rejected { .. }));
+diff --git a/crates/kasumi-engine/src/recovery_activation.rs b/crates/kasumi-engine/src/recovery_activation.rs
+index ebd76bb..df18352 100644
+--- a/crates/kasumi-engine/src/recovery_activation.rs
++++ b/crates/kasumi-engine/src/recovery_activation.rs
+@@ -3,10 +3,10 @@
+ //! StopActivation command; time passing alone never permits target deletion.
+ use super::*;
+ 
+-pub(crate) fn completion<'a>(
+-    state: &'a TenantState,
++pub(crate) fn completion(
++    state: &TenantState,
+     operation: &RecoveryRecord,
+-) -> Result<&'a SignedTargetCompletion> {
++) -> Result<CommittedCompletion> {
+     let retained = phase(
+         state,
+         operation,
+@@ -16,7 +16,12 @@ pub(crate) fn completion<'a>(
+     )?;
+     match &retained.outcome {
+         Some(RecoveryDispatchOutcome::Target(response)) => match &response.outcome {
+-            TargetRuntimeOutcome::Completed(signed) => Ok(signed),
++            TargetRuntimeOutcome::Completed(signed) => {
++                Ok(CommittedCompletion::Original(signed.clone()))
++            }
++            TargetRuntimeOutcome::Inspected(signed) => {
++                Ok(CommittedCompletion::Resolved(signed.clone()))
++            }
+             _ => Err(conflict("retained target completion differs")),
+         },
+         _ => Err(conflict("retained target completion absent")),
+@@ -37,7 +42,7 @@ pub(crate) fn activation_input(
+         return Err(conflict("source fence proof absent"));
+     };
+     Ok(ActivateTargetInput {
+-        completion_sha256: completion(state, operation)?.observation.fact.digest()?,
++        completion_sha256: completion(state, operation)?.fact().digest()?,
+         fence_id: signed.receipt.command.command_id,
+         fence_digest: signed
+             .receipt
+@@ -84,7 +89,7 @@ pub(crate) fn action_for_intent(
+         fence_digest: input.fence_digest,
+         target: input.target,
+         control: CommittedActivation {
+-            completion: Box::new(completion(state, operation)?.clone()),
++            completion: Box::new(completion(state, operation)?),
+             reference,
+             intent_sha256,
+         },
+@@ -280,11 +285,7 @@ pub(crate) fn validate_original(
+             if receipt.admitted_at_ms >= expected.not_after_ms
+                 || receipt.admitted_at_ms >= current.original_credential_expires_at_ms
+                 || receipt.admitted_at_ms < current.accepted_at_ms
+-                || receipt.admitted_at_ms
+-                    < completion(state, operation)?
+-                        .observation
+-                        .fact
+-                        .admitted_at_ms
++                || receipt.admitted_at_ms < completion(state, operation)?.fact().admitted_at_ms
+             {
+                 return Err(conflict(
+                     "activation effect exceeds its immutable original admission",
+@@ -437,7 +438,7 @@ pub(crate) fn validate_local_proof(
+         .map_err(|_| conflict("local activation signature differs"))?;
+     let winner = winner(state, operation)?;
+     if (exact_observer && signed.observation.observer_node_id != node)
+-        || signed.observation.completion != completion(state, operation)?.observation.fact
++        || &signed.observation.completion != completion(state, operation)?.fact()
+         || signed.observation.activation.issuer_receipt_sha256
+             != winner
+                 .digest()
+diff --git a/crates/kasumi-engine/src/recovery_completion.rs b/crates/kasumi-engine/src/recovery_completion.rs
+new file mode 100644
+index 0000000..e0b4f4b
+--- /dev/null
++++ b/crates/kasumi-engine/src/recovery_completion.rs
+@@ -0,0 +1,196 @@
++//! Fresh observation of the exact original Complete identity. A positive fact
++//! may resolve it; absence never becomes a negative outcome or new mutation.
++use super::*;
++
++pub(crate) fn inspection_input(
++    state: &TenantState,
++    operation: &RecoveryRecord,
++) -> Result<TargetInspectionInput> {
++    let original = intent(
++        state,
++        operation,
++        operation
++            .completion_intent
++            .ok_or_else(|| conflict("original completion intent absent"))?,
++    )?;
++    origin(state, operation)?.accepts_phase(original, LifecyclePhase::Complete)?;
++    Ok(TargetInspectionInput {
++        quorum: quorum_input(state, operation)?,
++        original_phase: original.clone(),
++    })
++}
++pub(crate) fn is_inspection(step: &TargetRuntimeStep) -> bool {
++    matches!(
++        step,
++        TargetRuntimeStep::Start(TargetReplicaInput::Inspection(_)) | TargetRuntimeStep::Inspect(_)
++    )
++}
++pub(crate) fn validate_step(
++    state: &TenantState,
++    operation: &RecoveryRecord,
++    current: &LifecycleIntent,
++    node: u64,
++    step: &TargetRuntimeStep,
++    admission: bool,
++) -> Result<()> {
++    let input = inspection_input(state, operation)?;
++    input.validate(&origin(state, operation)?, current)?;
++    match step {
++        TargetRuntimeStep::Start(TargetReplicaInput::Inspection(actual)) if **actual == input => {
++            if admission && started_for(state, operation, node, current.request.command_id)? {
++                return Err(conflict(
++                    "target already started under this exact inspection",
++                ));
++            }
++        }
++        TargetRuntimeStep::Inspect(actual) if **actual == input => {
++            if admission && !quorum::all_started(state, operation, current.request.command_id)? {
++                return Err(conflict(
++                    "inspection requires every target started under its exact phase",
++                ));
++            }
++        }
++        _ => return Err(conflict("completion inspection input differs")),
++    }
++    Ok(())
++}
++pub(crate) fn validate_proof(
++    state: &TenantState,
++    operation: &RecoveryRecord,
++    current: &LifecycleIntent,
++    node: u64,
++    signed: &SignedTargetInspection,
++) -> Result<()> {
++    let input = inspection_input(state, operation)?;
++    if signed.observation.inspection_intent != *current
++        || signed.observation.observer_node_id != node
++    {
++        return Err(conflict("completion inspection phase or observer differs"));
++    }
++    kasumi_serving::verify_target_inspection(&input, signed)
++        .map_err(|_| conflict("completion inspection lacks its exact positive signature"))?;
++    if let Some(id) = operation.completion_attempt {
++        let original = phase(state, operation, id)?;
++        let RecoveryDispatch::Target { request, .. } = &original.input else {
++            return Err(conflict("original completion dispatch differs"));
++        };
++        if !matches!(request.step, TargetRuntimeStep::Complete(_))
++            || request.command_id != input.original_phase.request.command_id
++            || signed.observation.completion.admitted_at_ms >= request.not_after_ms
++        {
++            return Err(conflict(
++                "inspected completion exceeded its unchanged original dispatch cap",
++            ));
++        }
++    }
++    Ok(())
++}
++pub(crate) fn validate_resolution(
++    state: &TenantState,
++    operation: &RecoveryRecord,
++    original: &RecoveryPhaseRecord,
++    inspection_phase: Uuid,
++) -> Result<()> {
++    let inspection = phase(state, operation, inspection_phase)?;
++    let (
++        RecoveryDispatch::Target { request: old, .. },
++        RecoveryDispatch::Target { node_id, request },
++        Some(RecoveryDispatchOutcome::Target(response)),
++    ) = (&original.input, &inspection.input, &inspection.outcome)
++    else {
++        return Err(conflict("completion resolution phase references differ"));
++    };
++    let TargetRuntimeOutcome::Inspected(signed) = &response.outcome else {
++        return Err(conflict(
++            "completion resolution lacks a retained positive inspection",
++        ));
++    };
++    if !matches!(old.step, TargetRuntimeStep::Complete(_))
++        || !matches!(request.step, TargetRuntimeStep::Inspect(_))
++        || old.command_id != signed.observation.input.original_phase.request.command_id
++        || signed.observation.completion.admitted_at_ms >= old.not_after_ms
++        || inspection.prepared_revision <= original.prepared_revision
++        || inspection.resolved_revision != original.resolved_revision
++        || response.command_id != request.command_id
++        || response.node_id != *node_id
++    {
++        return Err(conflict(
++            "resolved completion changed its original command or cap",
++        ));
++    }
++    let current = state
++        .lifecycle_control
++        .as_ref()
++        .and_then(|c| c.intents.get(&request.command_id))
++        .ok_or_else(|| conflict("completion inspection Control intent absent"))?;
++    validate_proof(state, operation, current, *node_id, signed)
++}
++pub(crate) fn resolve_original(
++    state: &mut TenantState,
++    operation: &RecoveryRecord,
++    inspection_phase: Uuid,
++) -> Result<()> {
++    let Some(id) = operation.completion_attempt else {
++        return Ok(());
++    };
++    let mut original = phase(state, operation, id)?.clone();
++    if original.outcome.is_some() {
++        return Err(conflict(
++            "original completion already has a permanent outcome",
++        ));
++    }
++    original.resolved_revision = Some(state.revision);
++    validate_resolution(state, operation, &original, inspection_phase)?;
++    original.outcome = Some(RecoveryDispatchOutcome::CompletionResolution { inspection_phase });
++    original.validate()?;
++    state
++        .recovery_control
++        .phases
++        .insert(phase_key(operation.request.operation_id, id), original);
++    Ok(())
++}
++pub(crate) fn next_inspection(
++    state: &TenantState,
++    operation: &RecoveryRecord,
++    current: &LifecycleIntent,
++    now: u64,
++    expires: u64,
++) -> Result<RecoveryDispatch> {
++    let input = inspection_input(state, operation)?;
++    input.validate(&origin(state, operation)?, current)?;
++    let mut missing = None;
++    for node in operation.voters.keys() {
++        if !started_for(state, operation, *node, current.request.command_id)? {
++            missing = Some(*node);
++            break;
++        }
++    }
++    let (node_id, step) = if let Some(node) = missing {
++        (
++            node,
++            TargetRuntimeStep::Start(TargetReplicaInput::Inspection(Box::new(input))),
++        )
++    } else {
++        (
++            *operation
++                .voters
++                .keys()
++                .next()
++                .ok_or_else(|| conflict("inspection voters absent"))?,
++            TargetRuntimeStep::Inspect(Box::new(input)),
++        )
++    };
++    Ok(RecoveryDispatch::Target {
++        node_id,
++        request: Box::new(TargetRuntimeRequest {
++            tenant: operation.request.tenant.clone(),
++            command_id: current.request.command_id,
++            not_after_ms: now
++                .checked_add(operation.request.phase_timeout_ms)
++                .ok_or_else(|| conflict("inspection dispatch deadline overflow"))?
++                .min(expires)
++                .min(current.original_credential_expires_at_ms),
++            step,
++        }),
++    })
++}
+diff --git a/crates/kasumi-engine/src/recovery_quorum.rs b/crates/kasumi-engine/src/recovery_quorum.rs
+index 443c86a..7a0cfc9 100644
+--- a/crates/kasumi-engine/src/recovery_quorum.rs
++++ b/crates/kasumi-engine/src/recovery_quorum.rs
+@@ -123,5 +123,5 @@ pub(crate) fn completion_route_retry(
+ ) -> bool {
+     matches!((&pending.input,input),
+         (RecoveryDispatch::Target {node_id:old,request:original},RecoveryDispatch::Target {node_id:new,request:next})
+-        if matches!(pending.phase,RecoveryPhase::Complete|RecoveryPhase::Confirm) && old!=new && original==next && now<original.not_after_ms && matches!(original.step,TargetRuntimeStep::Complete(_)|TargetRuntimeStep::Activate{..}))
++        if matches!(pending.phase,RecoveryPhase::Complete|RecoveryPhase::Confirm) && old!=new && original==next && now<original.not_after_ms && matches!(original.step,TargetRuntimeStep::Complete(_)|TargetRuntimeStep::Inspect(_)|TargetRuntimeStep::Activate{..}))
+ }
+diff --git a/crates/kasumi-engine/src/recovery_service.rs b/crates/kasumi-engine/src/recovery_service.rs
+index b26e35d..7a0bf24 100644
+--- a/crates/kasumi-engine/src/recovery_service.rs
++++ b/crates/kasumi-engine/src/recovery_service.rs
+@@ -402,7 +402,9 @@ impl Database {
+                 && now < request.not_after_ms
+                 && matches!(
+                     request.step,
+-                    TargetRuntimeStep::Complete(_) | TargetRuntimeStep::Activate { .. }
++                    TargetRuntimeStep::Complete(_)
++                        | TargetRuntimeStep::Inspect(_)
++                        | TargetRuntimeStep::Activate { .. }
+                 )
+             {
+                 let next = operation
+@@ -446,6 +448,13 @@ impl Database {
+                         {
+                             LifecyclePhase::Initialize
+                         }
++                        TargetRuntimeStep::Start(_)
++                        | TargetRuntimeStep::Complete(_)
++                        | TargetRuntimeStep::Inspect(_)
++                            if operation.phase == RecoveryPhase::Complete =>
++                        {
++                            LifecyclePhase::InspectTarget
++                        }
+                         TargetRuntimeStep::StartActivation { .. }
+                         | TargetRuntimeStep::Activate { .. }
+                         | TargetRuntimeStep::ConfirmActivation(_)
+@@ -605,6 +614,15 @@ impl Database {
+                     .map(|id| recovery::intent(state, operation, id))
+                     .transpose()?;
+                 match current {
++                    Some(current)
++                        if kind == LifecyclePhase::Complete
++                            && current.request.phase == LifecyclePhase::InspectTarget
++                            && now < current.original_credential_expires_at_ms =>
++                    {
++                        recovery::completion::next_inspection(
++                            state, operation, current, now, expires,
++                        )?
++                    }
+                     Some(current) if now < current.original_credential_expires_at_ms => {
+                         let quorum = recovery::quorum_input(state, operation)?;
+                         let mut missing = None;
+@@ -657,10 +675,13 @@ impl Database {
+                         }
+                     }
+                     Some(_) if kind == LifecyclePhase::Complete => {
+-                        return Err(error(
+-                            ErrorCode::Unavailable,
+-                            "expired original completion requires fresh exact completion-resolution evidence",
+-                        ));
++                        RecoveryDispatch::ControlIntent(Box::new(recovery::expected_intent(
++                            state,
++                            operation,
++                            phase_id,
++                            state.policy_epoch,
++                            LifecyclePhase::InspectTarget,
++                        )?))
+                     }
+                     _ => RecoveryDispatch::ControlIntent(Box::new(recovery::expected_intent(
+                         state,
+diff --git a/crates/kasumi-engine/src/recovery_state.rs b/crates/kasumi-engine/src/recovery_state.rs
+index 4bceb65..084d3d9 100644
+--- a/crates/kasumi-engine/src/recovery_state.rs
++++ b/crates/kasumi-engine/src/recovery_state.rs
+@@ -12,6 +12,8 @@ mod source;
+ pub(crate) use source::{issuer_action, retirement_request};
+ #[path = "recovery_activation.rs"]
+ pub(crate) mod activation;
++#[path = "recovery_completion.rs"]
++pub(crate) mod completion;
+ #[path = "recovery_route.rs"]
+ pub(crate) mod route;
+ 
+@@ -376,6 +378,8 @@ fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Result<RecoveryR
+             materialization_intent: None,
+             issuer_preparation: None,
+             initialization: None,
++            completion_intent: None,
++            completion_attempt: None,
+             completion: None,
+             retirement: None,
+             source_fence: None,
+@@ -479,6 +483,13 @@ fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Result<RecoveryR
+                             {
+                                 Some(LifecyclePhase::Initialize)
+                             }
++                            TargetRuntimeStep::Start(_)
++                            | TargetRuntimeStep::Complete(_)
++                            | TargetRuntimeStep::Inspect(_)
++                                if operation.phase == RecoveryPhase::Complete =>
++                            {
++                                Some(LifecyclePhase::InspectTarget)
++                            }
+                             TargetRuntimeStep::StartActivation { .. }
+                             | TargetRuntimeStep::Activate { .. }
+                             | TargetRuntimeStep::ConfirmActivation(_)
+@@ -559,6 +570,10 @@ fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Result<RecoveryR
+             {
+                 operation.activation_attempt = Some(*phase_id);
+             }
++            if matches!(input.as_ref(), RecoveryDispatch::Target { request, .. } if matches!(request.step, TargetRuntimeStep::Complete(_)))
++            {
++                operation.completion_attempt = Some(*phase_id);
++            }
+             operation.pending_phase = Some(*phase_id);
+             operation.last_phase = Some(*phase_id);
+             operation.next_phase_sequence = operation
+@@ -649,6 +664,16 @@ fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Result<RecoveryR
+                         .insert(original_key, original_phase);
+                 }
+             }
++            if matches!((&prepared.input, outcome.as_ref()), (RecoveryDispatch::Target { request, .. }, RecoveryDispatchOutcome::Target(response)) if matches!(request.step, TargetRuntimeStep::Inspect(_)) && matches!(response.outcome, TargetRuntimeOutcome::Inspected(_)))
++            {
++                prepared.outcome = Some(outcome.as_ref().clone());
++                prepared.resolved_revision = Some(state.revision);
++                state
++                    .recovery_control
++                    .phases
++                    .insert(key.clone(), prepared.clone());
++                completion::resolve_original(state, &operation, prepared.phase_id)?;
++            }
+             advance(state, &mut operation, &prepared, outcome)?;
+             prepared.outcome = Some(outcome.as_ref().clone());
+             prepared.resolved_revision = Some(state.revision);
+@@ -684,6 +709,10 @@ pub(crate) fn expected_intent(
+         LifecyclePhase::Initialize | LifecyclePhase::Complete => {
+             (quorum_input(state, operation)?.digest()?, None)
+         }
++        LifecyclePhase::InspectTarget => (
++            completion::inspection_input(state, operation)?.digest()?,
++            None,
++        ),
+         LifecyclePhase::Activate => (
+             activation::activation_input(state, operation)?
+                 .digest()
+@@ -698,7 +727,6 @@ pub(crate) fn expected_intent(
+             .0,
+             None,
+         ),
+-        _ => return Err(conflict("coordinator phase dispatch is not installed")),
+     };
+     Ok(CommitLifecycleIntent {
+         command_id: phase_id,
+@@ -825,7 +853,11 @@ fn validate_input(
+             } else if operation.phase == RecoveryPhase::Initialize {
+                 LifecyclePhase::Initialize
+             } else if operation.phase == RecoveryPhase::Complete {
+-                LifecyclePhase::Complete
++                if operation.completion_intent.is_some() {
++                    LifecyclePhase::InspectTarget
++                } else {
++                    LifecyclePhase::Complete
++                }
+             } else if operation.phase == RecoveryPhase::Cleanup {
+                 LifecyclePhase::StopLocal
+             } else if operation.materialization_intent.is_none() {
+@@ -833,11 +865,28 @@ fn validate_input(
+             } else {
+                 LifecyclePhase::ResumeMaterialize
+             };
+-            if phase == LifecyclePhase::Complete && operation.current_intent.is_some() {
++            if phase == LifecyclePhase::Complete && operation.completion_intent.is_some() {
+                 return Err(conflict(
+                     "original completion intent must be resolved without replacing its identity",
+                 ));
+             }
++            if phase == LifecyclePhase::InspectTarget {
++                let current = intent(
++                    state,
++                    operation,
++                    operation
++                        .current_intent
++                        .ok_or_else(|| conflict("current completion phase absent"))?,
++                )?;
++                let expired_pending = operation.pending_phase.and_then(|id| self::phase(state, operation, id).ok()).is_some_and(|phase| matches!(&phase.input, RecoveryDispatch::Target { request, .. } if authorization.admitted_at_ms >= request.not_after_ms));
++                if authorization.admitted_at_ms < current.original_credential_expires_at_ms
++                    && !expired_pending
++                {
++                    return Err(conflict(
++                        "resolve the live original completion phase before fresh inspection",
++                    ));
++                }
++            }
+             if phase == LifecyclePhase::ResumeMaterialize {
+                 let current = intent(
+                     state,
+@@ -916,6 +965,16 @@ fn validate_input(
+                     &request.step,
+                     true,
+                 )?,
++                (_, RecoveryPhase::Complete) if completion::is_inspection(&request.step) => {
++                    completion::validate_step(
++                        state,
++                        operation,
++                        current,
++                        *node_id,
++                        &request.step,
++                        true,
++                    )?
++                }
+                 (_, RecoveryPhase::Initialize | RecoveryPhase::Complete) => {
+                     quorum::validate_quorum_step(
+                         state,
+@@ -1100,6 +1159,12 @@ fn validate_outcome(
+                 ));
+             }
+         }
++        (
++            RecoveryDispatch::Target { .. },
++            RecoveryDispatchOutcome::CompletionResolution { inspection_phase },
++        ) => {
++            completion::validate_resolution(state, operation, prepared, *inspection_phase)?;
++        }
+         (
+             RecoveryDispatch::Target { node_id, request },
+             RecoveryDispatchOutcome::Target(response),
+@@ -1147,8 +1212,25 @@ fn validate_outcome(
+                         return Err(conflict("native target startup origin differs"));
+                     }
+                 }
++                (
++                    TargetRuntimeStep::Start(TargetReplicaInput::Inspection(input)),
++                    TargetRuntimeOutcome::Started { origin_sha256 },
++                ) => {
++                    if **input != completion::inspection_input(state, operation)?
++                        || *origin_sha256 != input.quorum.origin_sha256
++                    {
++                        return Err(conflict("inspection startup origin differs"));
++                    }
++                }
++                (TargetRuntimeStep::Inspect(input), TargetRuntimeOutcome::Inspected(signed)) => {
++                    if **input != completion::inspection_input(state, operation)? {
++                        return Err(conflict("inspection acknowledgement input differs"));
++                    }
++                    completion::validate_proof(state, operation, current, *node_id, signed)?;
++                }
+                 (TargetRuntimeStep::Complete(input), TargetRuntimeOutcome::Completed(signed)) => {
+                     if signed.observation.fact.completion_intent != *current
++                        || signed.observation.fact.admitted_at_ms >= request.not_after_ms
+                         || signed.observation.observer_node_id != *node_id
+                         || input != &quorum_input(state, operation)?
+                     {
+@@ -1311,6 +1393,14 @@ fn advance(
+             if request.phase == LifecyclePhase::Materialize {
+                 operation.materialization_intent = Some(prepared.phase_id);
+             }
++            if request.phase == LifecyclePhase::Complete {
++                if operation.completion_intent.is_some() {
++                    return Err(conflict(
++                        "permanent original completion identity already installed",
++                    ));
++                }
++                operation.completion_intent = Some(prepared.phase_id);
++            }
+         }
+         (RecoveryDispatch::Target { node_id, .. }, RecoveryDispatchOutcome::Target(response)) => {
+             let voter = operation
+@@ -1366,7 +1456,7 @@ fn advance(
+                     operation.current_intent = None;
+                     operation.phase = RecoveryPhase::Complete;
+                 }
+-                TargetRuntimeOutcome::Completed(_) => {
++                TargetRuntimeOutcome::Completed(_) | TargetRuntimeOutcome::Inspected(_) => {
+                     operation.completion = Some(prepared.phase_id);
+                     operation.current_intent = None;
+                     operation.phase = if matches!(
+@@ -1390,7 +1480,6 @@ fn advance(
+                         operation.phase = RecoveryPhase::Stopped;
+                     }
+                 }
+-                _ => return Err(conflict("unsupported recovery progress outcome")),
+             }
+         }
+         _ => return Err(conflict("unsupported recovery progress transition")),
+@@ -1463,7 +1552,8 @@ pub(crate) fn validate(state: &TenantState) -> Result<()> {
+                     .values()
+                     .all(|v| v.materialization.is_some()))
+             || (initialized && operation.initialization.is_none())
+-            || (completed && operation.completion.is_none())
++            || (completed
++                && (operation.completion.is_none() || operation.completion_intent.is_none()))
+             || (matches!(
+                 operation.phase,
+                 RecoveryPhase::Cleanup | RecoveryPhase::Stopped
+@@ -1521,12 +1611,38 @@ pub(crate) fn validate(state: &TenantState) -> Result<()> {
+                 return Err(conflict("recovery pending phase differs"));
+             }
+         }
+-        for id in [operation.current_intent, operation.materialization_intent]
+-            .into_iter()
+-            .flatten()
++        for id in [
++            operation.current_intent,
++            operation.materialization_intent,
++            operation.completion_intent,
++        ]
++        .into_iter()
++        .flatten()
+         {
+             intent(state, operation, id)?;
+         }
++        if let Some(id) = operation.completion_intent {
++            let original = intent(state, operation, id)?;
++            origin(state, operation)?.accepts_phase(original, LifecyclePhase::Complete)?;
++            if original.request.phase_input_sha256 != quorum_input(state, operation)?.digest()? {
++                return Err(conflict("original completion identity input differs"));
++            }
++        }
++        if let Some(id) = operation.completion_attempt {
++            let retained = phase(state, operation, id)?;
++            let original = intent(
++                state,
++                operation,
++                operation
++                    .completion_intent
++                    .ok_or_else(|| conflict("original completion identity absent"))?,
++            )?;
++            if !matches!(&retained.input, RecoveryDispatch::Target { request, .. } if request.command_id == original.request.command_id && matches!(request.step, TargetRuntimeStep::Complete(_)))
++                || retained.phase != RecoveryPhase::Complete
++            {
++                return Err(conflict("original completion attempt reference differs"));
++            }
++        }
+         if operation.materialization_intent.is_some() {
+             origin(state, operation)?;
+         }
+@@ -1569,7 +1685,7 @@ pub(crate) fn validate(state: &TenantState) -> Result<()> {
+         for (node_id, voter) in &operation.voters {
+             if let Some(id) = voter.started {
+                 let record = phase(state, operation, id)?;
+-                if !matches!((&record.input,&record.outcome), (RecoveryDispatch::Target {node_id:actual,request},Some(RecoveryDispatchOutcome::Target(response))) if actual==node_id && response.node_id==*node_id && matches!(request.step,TargetRuntimeStep::Start(TargetReplicaInput::Quorum(_))|TargetRuntimeStep::StartActivation{..}) && matches!(response.outcome,TargetRuntimeOutcome::Started{..}))
++                if !matches!((&record.input,&record.outcome), (RecoveryDispatch::Target {node_id:actual,request},Some(RecoveryDispatchOutcome::Target(response))) if actual==node_id && response.node_id==*node_id && matches!(request.step,TargetRuntimeStep::Start(_)|TargetRuntimeStep::StartActivation{..}) && matches!(response.outcome,TargetRuntimeOutcome::Started{..}))
+                 {
+                     return Err(conflict(
+                         "startup progress lacks exact native voter acknowledgement",
+@@ -1578,7 +1694,7 @@ pub(crate) fn validate(state: &TenantState) -> Result<()> {
+             }
+         }
+         if operation.initialization.is_some_and(|id| !matches!(phase(state,operation,id).ok().and_then(|p|p.outcome.as_ref()),Some(RecoveryDispatchOutcome::Target(response)) if matches!(response.outcome,TargetRuntimeOutcome::Initialized{..}))) {return Err(conflict("initialization progress reference differs"));}
+-        if operation.completion.is_some_and(|id| !matches!(phase(state,operation,id).ok().and_then(|p|p.outcome.as_ref()),Some(RecoveryDispatchOutcome::Target(response)) if matches!(response.outcome,TargetRuntimeOutcome::Completed(_)))) {return Err(conflict("completion progress reference differs"));}
++        if operation.completion.is_some_and(|id| !matches!(phase(state,operation,id).ok().and_then(|p|p.outcome.as_ref()),Some(RecoveryDispatchOutcome::Target(response)) if matches!(response.outcome,TargetRuntimeOutcome::Completed(_)|TargetRuntimeOutcome::Inspected(_)))) {return Err(conflict("completion progress reference differs"));}
+         if operation.issuer_preparation.is_some_and(|id| !matches!(phase(state, operation, id).ok().and_then(|p|p.outcome.as_ref()),Some(RecoveryDispatchOutcome::Authority(s)) if matches!(s.receipt.outcome,AuthorityOutcome::TargetPrepared{..}))) {
+             return Err(conflict("recovery preparation reference differs"));
+         }
+@@ -1789,7 +1905,10 @@ fn validate_frozen_input(
+                     LifecyclePhase::Materialize | LifecyclePhase::ResumeMaterialize
+                 ) | (RecoveryPhase::Cleanup, LifecyclePhase::StopLocal)
+                     | (RecoveryPhase::Initialize, LifecyclePhase::Initialize)
+-                    | (RecoveryPhase::Complete, LifecyclePhase::Complete)
++                    | (
++                        RecoveryPhase::Complete,
++                        LifecyclePhase::Complete | LifecyclePhase::InspectTarget
++                    )
+                     | (
+                         RecoveryPhase::Activate | RecoveryPhase::Confirm,
+                         LifecyclePhase::Activate
+@@ -1833,6 +1952,16 @@ fn validate_frozen_input(
+                     &request.step,
+                     false,
+                 )?,
++                (_, RecoveryPhase::Complete) if completion::is_inspection(&request.step) => {
++                    completion::validate_step(
++                        state,
++                        operation,
++                        current,
++                        *node_id,
++                        &request.step,
++                        false,
++                    )?
++                }
+                 (_, RecoveryPhase::Initialize | RecoveryPhase::Complete) => {
+                     quorum::validate_quorum_step(
+                         state,
+@@ -1903,6 +2032,14 @@ pub(crate) fn validate_successor(previous: &TenantState, incoming: &TenantState)
+         {
+             return Err(conflict("snapshot substituted recovery operation identity"));
+         }
++        if let Some(old_id) = old.completion_attempt {
++            let new_id = new
++                .completion_attempt
++                .ok_or_else(|| conflict("snapshot removed original completion attempt"))?;
++            if phase(incoming, new, new_id)?.sequence < phase(previous, old, old_id)?.sequence {
++                return Err(conflict("snapshot regressed original completion attempt"));
++            }
++        }
+         if let Some(old_id) = old.activation_attempt {
+             let new_id = new
+                 .activation_attempt
+@@ -1913,6 +2050,7 @@ pub(crate) fn validate_successor(previous: &TenantState, incoming: &TenantState)
+         }
+         for (old, new) in [
+             (old.materialization_intent, new.materialization_intent),
++            (old.completion_intent, new.completion_intent),
+             (old.issuer_preparation, new.issuer_preparation),
+             (old.initialization, new.initialization),
+             (old.completion, new.completion),
+diff --git a/crates/kasumi-engine/src/snapshot_recovery_tests.rs b/crates/kasumi-engine/src/snapshot_recovery_tests.rs
+index 5f88fb7..a74767d 100644
+--- a/crates/kasumi-engine/src/snapshot_recovery_tests.rs
++++ b/crates/kasumi-engine/src/snapshot_recovery_tests.rs
+@@ -116,6 +116,8 @@ fn coordinator() -> TenantState {
+         current_intent: None,
+         materialization_intent: None,
+         initialization: None,
++        completion_intent: None,
++        completion_attempt: None,
+         completion: None,
+         retirement: None,
+         source_fence: None,
+diff --git a/crates/kasumi-engine/src/target_activation_service.rs b/crates/kasumi-engine/src/target_activation_service.rs
+index 66804f8..874c38a 100644
+--- a/crates/kasumi-engine/src/target_activation_service.rs
++++ b/crates/kasumi-engine/src/target_activation_service.rs
+@@ -135,7 +135,7 @@ impl Database {
+             .completion
+             .as_ref()
+             .ok_or_else(|| Error::new(ErrorCode::Conflict, "target completion missing"))?;
+-        if completed != &control.completion.observation.fact {
++        if completed != control.completion.fact() {
+             return Err(Error::new(
+                 ErrorCode::Conflict,
+                 "issuer completion differs from actual target",
+diff --git a/crates/kasumi-engine/src/target_state.rs b/crates/kasumi-engine/src/target_state.rs
+index aeffc78..40387f5 100644
+--- a/crates/kasumi-engine/src/target_state.rs
++++ b/crates/kasumi-engine/src/target_state.rs
+@@ -326,7 +326,7 @@ fn activate(
+             .map_err(|_| error(ErrorCode::Conflict, "invalid target activation input"))?,
+         position.log_id.leader_id.node_id,
+     )?;
+-    if &control.completion.observation.fact != completed
++    if control.completion.fact() != completed
+         || signed.receipt.command.tenant != state.tenant
+         || target.incarnation.to_string() != state.incarnation
+         || target.checkpoint != origin.materialization.request.checkpoint
+diff --git a/crates/kasumi-engine/tests/common/recovery_control.rs b/crates/kasumi-engine/tests/common/recovery_control.rs
+index 46fab12..8dd681d 100644
+--- a/crates/kasumi-engine/tests/common/recovery_control.rs
++++ b/crates/kasumi-engine/tests/common/recovery_control.rs
+@@ -90,21 +90,29 @@ async fn snapshot(db: &Arc<Database>) {
+ #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+ async fn recovery_journal_persists_before_dispatch_rejects_substitution_and_recovers_ambiguous_control_commit()
+  {
+-    exercise_completed_recovery(false, None).await;
++    exercise_completed_recovery(false, None, false).await;
+ }
+ #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+ async fn recovery_planned_retirement_freezes_its_exact_request_only_after_target_completion() {
+-    exercise_completed_recovery(true, None).await;
++    exercise_completed_recovery(true, None, false).await;
+ }
+ #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+ async fn recovery_uncertain_activation_resolves_original_winner_and_confirms_every_voter_forward() {
+-    exercise_completed_recovery(false, Some(true)).await;
++    exercise_completed_recovery(false, Some(true), false).await;
+ }
+ #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+ async fn recovery_uncertain_activation_requires_permanent_stop_before_target_cleanup() {
+-    exercise_completed_recovery(false, Some(false)).await;
++    exercise_completed_recovery(false, Some(false), false).await;
+ }
+-async fn exercise_completed_recovery(planned: bool, activation_outcome: Option<bool>) {
++#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
++async fn recovery_expired_completion_resolves_its_exact_positive_fact_before_activation() {
++    exercise_completed_recovery(false, Some(true), true).await;
++}
++async fn exercise_completed_recovery(
++    planned: bool,
++    activation_outcome: Option<bool>,
++    inspect_completion: bool,
++) {
+     let mut f = if activation_outcome == Some(true) {
+         Fixture::with_topology().await
+     } else {
+@@ -437,7 +445,13 @@ async fn exercise_completed_recovery(planned: bool, activation_outcome: Option<b
+     )
+     .await;
+     snapshot(&db).await;
+-    let complete_under = commit_next_control(&f, &db, id).await;
++    let complete_under = commit_next_control_for(
++        &f,
++        &db,
++        id,
++        if inspect_completion { 20_000 } else { 60_000 },
++    )
++    .await;
+     assert_eq!(complete_under.request.phase, LifecyclePhase::Complete);
+     // Prior Initialize startup replies cannot satisfy the new Complete phase.
+     for node_id in 1..=3 {
+@@ -511,7 +525,7 @@ async fn exercise_completed_recovery(planned: bool, activation_outcome: Option<b
+         bootstrap_sha256: "bc".repeat(32),
+     };
+     let observation = TargetCompletionObservation {
+-        fact: completed,
++        fact: completed.clone(),
+         observer_node_id: node_id,
+         observed_revision: request.checkpoint.revision + 3,
+         observed_term: 8,
+@@ -532,7 +546,11 @@ async fn exercise_completed_recovery(planned: bool, activation_outcome: Option<b
+         node_id,
+         outcome: TargetRuntimeOutcome::Completed(Box::new(signed)),
+     }));
+-    resolve_phase(&f, id, complete_phase, outcome).await;
++    if inspect_completion {
++        resolve_expired_completion(&f, &db, id, complete_phase, completed, &attestation).await;
++    } else {
++        resolve_phase(&f, id, complete_phase, outcome).await;
++    }
+     let retirement_phase = if planned {
+         let status = db.recovery_status(f.context("owner"), id).await.unwrap();
+         assert_eq!(status.record().phase, RecoveryPhase::RetireSource);
+@@ -890,13 +908,13 @@ async fn exercise_completed_recovery(planned: bool, activation_outcome: Option<b
+                 },
+                 intent: confirm_under.clone(),
+                 issuer_receipt_sha256: original_receipt.digest().unwrap(),
+-                completion_sha256: control.completion.observation.fact.digest().unwrap(),
++                completion_sha256: control.completion.fact().digest().unwrap(),
+                 admitted_at_ms: confirm_under.accepted_at_ms + 1,
+-                revision: control.completion.observation.fact.revision + 1,
++                revision: control.completion.fact().revision + 1,
+             };
+             let proof = |node_id| {
+                 let observation = TargetActivationObservation {
+-                    completion: control.completion.observation.fact.clone(),
++                    completion: control.completion.fact().clone(),
+                     activation: fact.clone(),
+                     observer_node_id: node_id,
+                     observed_revision: fact.revision,
+@@ -1842,6 +1860,14 @@ async fn recovery_expired_target_requires_fresh_control_admission_and_fences_rev
+ }
+ 
+ async fn commit_next_control(f: &Fixture, db: &Arc<Database>, operation: Uuid) -> LifecycleIntent {
++    commit_next_control_for(f, db, operation, 60_000).await
++}
++async fn commit_next_control_for(
++    f: &Fixture,
++    db: &Arc<Database>,
++    operation: Uuid,
++    duration: u64,
++) -> LifecycleIntent {
+     let (phase_id, input) = prepare_next(f, db, operation).await;
+     let RecoveryDispatch::ControlIntent(command) = input else {
+         panic!("Control phase required")
+@@ -1850,7 +1876,7 @@ async fn commit_next_control(f: &Fixture, db: &Arc<Database>, operation: Uuid) -
+         .recovery_phase(f.context("owner"), operation, phase_id)
+         .await
+         .unwrap();
+-    let mut context = f.context("owner");
++    let mut context = f.context_for("owner", duration);
+     context.authorization = context
+         .authorization
+         .with_expiry_limit(phase.dispatch_limit().await.unwrap())
+@@ -1878,3 +1904,171 @@ async fn commit_next_control(f: &Fixture, db: &Arc<Database>, operation: Uuid) -
+     .await;
+     intent
+ }
++
++async fn resolve_expired_completion(
++    f: &Fixture,
++    db: &Arc<Database>,
++    operation: Uuid,
++    original_phase: Uuid,
++    fact: TargetCompletionFact,
++    keys: &BTreeMap<u64, Ed25519KeyPair>,
++) {
++    let original = db
++        .recovery_phase(f.context("owner"), operation, original_phase)
++        .await
++        .unwrap()
++        .record()
++        .clone();
++    let old_intent = fact.completion_intent.clone();
++    let now = f.context("owner").authorization.expires_at_ms().unwrap() - 60_000;
++    tokio::time::sleep(Duration::from_millis(
++        old_intent
++            .original_credential_expires_at_ms
++            .saturating_sub(now)
++            + 20,
++    ))
++    .await;
++    assert!(
++        db.recovery_phase(f.context("owner"), operation, original_phase)
++            .await
++            .unwrap()
++            .admit_dispatch()
++            .await
++            .is_err()
++    );
++    let inspection = commit_next_control(f, db, operation).await;
++    assert_eq!(inspection.request.phase, LifecyclePhase::InspectTarget);
++    assert_ne!(inspection.request.command_id, old_intent.request.command_id);
++    for node in 1..=3 {
++        let (id, dispatch) = prepare_next(f, db, operation).await;
++        let RecoveryDispatch::Target { node_id, request } = dispatch else {
++            panic!("fresh inspection startup required")
++        };
++        assert_eq!(node_id, node);
++        let TargetRuntimeStep::Start(TargetReplicaInput::Inspection(input)) = request.step else {
++            panic!("inspection-only startup required")
++        };
++        assert_eq!(input.original_phase, old_intent);
++        resolve_phase(
++            f,
++            operation,
++            id,
++            RecoveryDispatchOutcome::Target(Box::new(TargetRuntimeResponse {
++                command_id: request.command_id,
++                node_id,
++                outcome: TargetRuntimeOutcome::Started {
++                    origin_sha256: input.quorum.origin_sha256,
++                },
++            })),
++        )
++        .await;
++    }
++    let (unresolved, first) = prepare_next(f, db, operation).await;
++    let (inspection_phase, next) = prepare_next(f, db, operation).await;
++    let RecoveryDispatch::Target {
++        node_id: first_node,
++        request: first,
++    } = first
++    else {
++        panic!("inspection required")
++    };
++    let RecoveryDispatch::Target { node_id, request } = next else {
++        panic!("inspection peer retry required")
++    };
++    assert_eq!((first_node, node_id), (1, 2));
++    assert_eq!(
++        first, request,
++        "inspection retries preserve their exact finite request"
++    );
++    assert!(
++        db.recovery_phase(f.context("owner"), operation, unresolved)
++            .await
++            .unwrap()
++            .record()
++            .outcome
++            .is_none()
++    );
++    let TargetRuntimeStep::Inspect(input) = request.step else {
++        panic!("metadata inspection required")
++    };
++    let observed_revision = fact.revision;
++    let observation = TargetInspectionObservation {
++        input: *input,
++        inspection_intent: inspection,
++        completion: fact,
++        activation: None,
++        observer_node_id: node_id,
++        observed_revision,
++        observed_term: 8,
++    };
++    let sign = |observation: TargetInspectionObservation| SignedTargetInspection {
++        signature: hex::encode(
++            keys[&node_id]
++                .sign(
++                    &serde_json::to_vec(&("kasumi.inspected-target-observation.v1", &observation))
++                        .unwrap(),
++                )
++                .as_ref(),
++        ),
++        observation,
++    };
++    let response = |signed| {
++        RecoveryDispatchOutcome::Target(Box::new(TargetRuntimeResponse {
++            command_id: request.command_id,
++            node_id,
++            outcome: TargetRuntimeOutcome::Inspected(Box::new(signed)),
++        }))
++    };
++    let mut wrong = observation.clone();
++    wrong.input.original_phase.request.command_id = Uuid::new_v4();
++    assert!(
++        db.resolve_recovery_dispatch(
++            f.context("owner"),
++            operation,
++            inspection_phase,
++            response(sign(wrong))
++        )
++        .await
++        .is_err()
++    );
++    let mut late = observation.clone();
++    late.completion.admitted_at_ms = old_intent.original_credential_expires_at_ms;
++    assert!(
++        db.resolve_recovery_dispatch(
++            f.context("owner"),
++            operation,
++            inspection_phase,
++            response(sign(late))
++        )
++        .await
++        .is_err()
++    );
++    resolve_phase(f, operation, inspection_phase, response(sign(observation))).await;
++    let retained = db
++        .recovery_phase(f.context("owner"), operation, original_phase)
++        .await
++        .unwrap();
++    assert_eq!(retained.record().input, original.input);
++    assert_eq!(
++        retained.record().original_credential_expires_at_ms,
++        original.original_credential_expires_at_ms
++    );
++    assert_eq!(
++        retained.record().outcome,
++        Some(RecoveryDispatchOutcome::CompletionResolution { inspection_phase })
++    );
++    drop(retained);
++    let head = db
++        .recovery_status(f.context("owner"), operation)
++        .await
++        .unwrap();
++    assert_eq!(head.record().completion, Some(inspection_phase));
++    assert_eq!(head.record().completion_attempt, Some(original_phase));
++    assert_eq!(
++        head.record().completion_intent,
++        Some(old_intent.request.command_id)
++    );
++    assert_eq!(head.record().phase, RecoveryPhase::FenceSource);
++    drop(head);
++    snapshot(db).await;
++}
+diff --git a/crates/kasumi-server/src/target_runtime.rs b/crates/kasumi-server/src/target_runtime.rs
+index 34abb81..3052b76 100644
+--- a/crates/kasumi-server/src/target_runtime.rs
++++ b/crates/kasumi-server/src/target_runtime.rs
+@@ -597,7 +597,7 @@ impl TargetRecoveryRuntime {
+                         fence_id,
+                         fence_digest,
+                         target,
+-                        completion_sha256: control.completion.observation.fact.digest()?,
++                        completion_sha256: control.completion.fact().digest()?,
+                     }
+                     .digest()?,
+                 )
+diff --git a/crates/kasumi-serving/src/target.rs b/crates/kasumi-serving/src/target.rs
+index 3dd44e7..60320c0 100644
+--- a/crates/kasumi-serving/src/target.rs
++++ b/crates/kasumi-serving/src/target.rs
+@@ -96,6 +96,29 @@ pub fn verify_target_completion(
+     })
+ }
+ 
++/// Authenticate a permanent completion through its original observation or a
++/// separately signed inspection of the exact original fact. This proof grants
++/// neither mutation authority nor a renewed original phase deadline.
++pub fn verify_committed_completion(
++    expected: &TargetOrigin,
++    proof: &kasumi_types::CommittedCompletion,
++) -> Result<()> {
++    proof.validate()?;
++    ensure!(
++        proof.fact().origin == *expected,
++        "resolved completion origin differs"
++    );
++    match proof {
++        kasumi_types::CommittedCompletion::Original(signed) => {
++            verify_target_completion(expected, signed)?;
++        }
++        kasumi_types::CommittedCompletion::Resolved(signed) => {
++            verify_target_inspection(&signed.observation.input, signed)?;
++        }
++    }
++    Ok(())
++}
++
+ #[derive(Clone)]
+ pub struct AuthenticatedTargetInspection {
+     signed: kasumi_types::SignedTargetInspection,
+@@ -106,7 +129,8 @@ impl AuthenticatedTargetInspection {
+     }
+ }
+ /// Historical metadata only, with a separate signature domain and proof type.
+-/// No conversion into a completion, activation, stop or renewable lease exists.
++/// An explicit CommittedCompletion::Resolved may consume a positive original
++/// completion observation. It never converts the signature or creates a lease.
+ pub fn verify_target_inspection(
+     expected: &kasumi_types::TargetInspectionInput,
+     signed: &kasumi_types::SignedTargetInspection,
+diff --git a/crates/kasumi-types/src/authority_protocol.rs b/crates/kasumi-types/src/authority_protocol.rs
+index 010aec1..2213733 100644
+--- a/crates/kasumi-types/src/authority_protocol.rs
++++ b/crates/kasumi-types/src/authority_protocol.rs
+@@ -303,21 +303,14 @@ pub struct SignedAuthorityReceipt {
+ #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+ #[serde(deny_unknown_fields)]
+ pub struct CommittedActivation {
+-    pub completion: Box<crate::SignedTargetCompletion>,
++    pub completion: Box<crate::CommittedCompletion>,
+     pub reference: crate::LifecycleAuthorityReference,
+     pub intent_sha256: String,
+ }
+ impl CommittedActivation {
+     pub fn validate(&self) -> Result<()> {
+-        self.completion.observation.validate()?;
+-        validate_sha256(
+-            &self
+-                .completion
+-                .observation
+-                .fact
+-                .origin
+-                .authority_manifest_sha256,
+-        )?;
++        self.completion.validate()?;
++        validate_sha256(&self.completion.fact().origin.authority_manifest_sha256)?;
+         self.reference.validate()?;
+         ensure!(
+             matches!(
+diff --git a/crates/kasumi-types/src/recovery.rs b/crates/kasumi-types/src/recovery.rs
+index e968c13..1c27251 100644
+--- a/crates/kasumi-types/src/recovery.rs
++++ b/crates/kasumi-types/src/recovery.rs
+@@ -172,6 +172,10 @@ pub struct RecoveryRecord {
+     #[serde(deserialize_with = "crate::require_explicit_option")]
+     pub initialization: Option<Uuid>,
+     #[serde(deserialize_with = "crate::require_explicit_option")]
++    pub completion_intent: Option<Uuid>,
++    #[serde(deserialize_with = "crate::require_explicit_option")]
++    pub completion_attempt: Option<Uuid>,
++    #[serde(deserialize_with = "crate::require_explicit_option")]
+     pub completion: Option<Uuid>,
+     #[serde(deserialize_with = "crate::require_explicit_option")]
+     pub retirement: Option<Uuid>,
+@@ -236,6 +240,10 @@ pub enum RecoveryDispatchOutcome {
+     AuthorityResolution(Box<SignedAuthorityReceipt>),
+     ControlIntent(Box<LifecycleIntent>),
+     Target(Box<TargetRuntimeResponse>),
++    /// Exact point reference to a separately retained positive inspection.
++    CompletionResolution {
++        inspection_phase: Uuid,
++    },
+     SourceRetired(Box<RetirementReceipt>),
+     RoutePublished {
+         revision: u64,
+diff --git a/crates/kasumi-types/src/target.rs b/crates/kasumi-types/src/target.rs
+index 9af5e75..6551d32 100644
+--- a/crates/kasumi-types/src/target.rs
++++ b/crates/kasumi-types/src/target.rs
+@@ -218,6 +218,40 @@ pub struct SignedTargetCompletion {
+     pub observation: TargetCompletionObservation,
+     pub signature: String,
+ }
++/// An original signed completion or a fresh signed observation of that exact
++/// committed fact. The inspection branch never renews the original mutation.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(
++    tag = "kind",
++    content = "proof",
++    rename_all = "snake_case",
++    deny_unknown_fields
++)]
++pub enum CommittedCompletion {
++    Original(Box<SignedTargetCompletion>),
++    Resolved(Box<SignedTargetInspection>),
++}
++impl CommittedCompletion {
++    pub fn fact(&self) -> &TargetCompletionFact {
++        match self {
++            Self::Original(signed) => &signed.observation.fact,
++            Self::Resolved(signed) => &signed.observation.completion,
++        }
++    }
++    pub fn validate(&self) -> Result<()> {
++        match self {
++            Self::Original(signed) => signed.observation.validate(),
++            Self::Resolved(signed) => {
++                signed.observation.validate()?;
++                require(
++                    signed.observation.input.original_phase.request.phase
++                        == LifecyclePhase::Complete,
++                    "completion resolution must name the exact original Complete phase",
++                )
++            }
++        }
++    }
++}
+ fn require(value: bool, message: &str) -> Result<()> {
+     if value { Ok(()) } else { Err(invalid(message)) }
+ }
+diff --git a/docs/control-recovery.md b/docs/control-recovery.md
+index 3880704..b8b8d81 100644
+--- a/docs/control-recovery.md
++++ b/docs/control-recovery.md
+@@ -45,7 +45,7 @@ Replays return the original result without changing later topology, including af
+ restart. `finished` requires the issuer winner, every local confirmation, and this
+ atomic publication.
+ 
+-The remaining expired-completion proof path and full process acceptance gates below
++The remaining unknown-completion cases and full process acceptance gates below
+ still prevent treating this implementation as a completed release acceptance result.
+ 
+ A pre-activation `stop` permanently retains the stop identity. If an issuer
+@@ -127,11 +127,21 @@ phase entry remains unresolved history, and the original intent's expiry and
+ bootstrap bytes do not change. Expired cleanup work likewise needs a fresh
+ `stop_local` admission. Initialization can also receive a fresh committed admission after its original
+ work cap expires; its bootstrap and exact voter set remain unchanged. Completion
+-keeps its original permanent Control intent. After that intent expires, fresh
+-inspection evidence must resolve the original completion and be accepted by the
+-issuer; that path remains incomplete. Other unresolved remote phase kinds
+-currently require explicit original outcome resolution, and automatic recovery
+-after their original admission expires remains an implementation gap.
++keeps its original permanent Control intent and target dispatch cap. After expiry,
++a fresh `inspect_target` intent starts all three voters solely for observation.
++The leader signs a positive observation of the exact original committed fact;
++another voter can receive the identical finite inspection request on retry. Control
++retains that distinct signature and atomically resolves the original pending Complete
++by point reference to its permanent inspection outcome. Issuer activation accepts
++an explicit `CommittedCompletion::Resolved` proof after checking the inspection
++signature, original fact, materializations, and source drain. It does not convert
++the inspection into an original completion signature or renew an old capability.
++
++A missing original completion remains `UnknownOutcome`. No signed negative
++completion outcome or fresh mutation path is installed yet; time passing alone
++cannot authorize either. Other unresolved remote phase kinds require exact
++original outcome resolution, and automatic recovery after their original admission
++expires remains an implementation gap.
+ 
+ Planned start requests freeze a `retirement_id` and `source_backup_destination`.
+ The latter names the independently installed source destination and can differ

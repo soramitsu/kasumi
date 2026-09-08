@@ -1,0 +1,25 @@
+   Compiling kasumi-types v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-types)
+   Compiling kasumi-serving v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-serving)
+   Compiling kasumi-store v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-store)
+   Compiling kasumi-query v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-query)
+   Compiling kasumi-raft v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-engine)
+   Compiling kasumi-authority v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-authority)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 07s
+     Running unittests src/lib.rs (/tmp/kasumi-production-standalone-target/debug/deps/kasumi_authority-481ba410417b8d16)
+
+running 1 test
+
+thread 'service::tests::issuer_tests::activation_gate_tests::resolved_completion_activates_only_with_its_distinct_positive_inspection_signature' (21315660) panicked at crates/kasumi-authority/src/tests.rs:66:10:
+called `Result::unwrap()` on an `Err` value: Elapsed(())
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test service::tests::issuer_tests::activation_gate_tests::resolved_completion_activates_only_with_its_distinct_positive_inspection_signature ... FAILED
+
+failures:
+
+failures:
+    service::tests::issuer_tests::activation_gate_tests::resolved_completion_activates_only_with_its_distinct_positive_inspection_signature
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 44 filtered out; finished in 21.78s
+
+error: test failed, to rerun pass `-p kasumi-authority --lib`

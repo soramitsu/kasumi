@@ -618,3 +618,12 @@ a read-only quota getter or caller capacity claim cannot close this dependency.
   capacity JSON/Markdown and explicitly marks production acceptance false. All20
   Python checks pass; no new benchmark measurement is claimed. Evidence is in
   `docs/evidence/historical-capacity-scope-20260908`.
+
+- `b5ad88d` adds positive resolution of expired Complete through a fresh exact
+  signed inspection, preserving the original identity/input/deadline and causal
+  snapshot dependencies. Lifecycle14/14, authority45/45, snapshots16/16, strict
+  workspace and fixture-free production compile checks pass. Full source/failed
+  attempts and final fixture-only validation scope are retained in
+  `docs/evidence/control-positive-completion-20260908`. Missing completion still
+  remains unknown; negative resolution and actual three-target TLS acceptance
+  are separate unfinished work.

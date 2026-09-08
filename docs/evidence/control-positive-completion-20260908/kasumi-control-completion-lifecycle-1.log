@@ -1,0 +1,10 @@
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 57.27s
+     Running tests/lifecycle.rs (/tmp/kasumi-production-standalone-target/debug/deps/lifecycle-c70bbb2e0c4a0ca5)
+
+running 1 test
+test recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation has been running for over 60 seconds
+test recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 60.54s
+

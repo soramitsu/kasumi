@@ -1,0 +1,63 @@
+{
+  "records": [
+    {
+      "path": "/tmp/kasumi-control-completion-check.log",
+      "sha256": "982a35acf77d38b432f0484a0c400fc999d11a0af4a709cfcb11bd157e366ce7"
+    },
+    {
+      "path": "/tmp/kasumi-control-completion-check-2.log",
+      "sha256": "b9e6cfd634c5f3a7e7f901fbcd0f7e81da4b18ea6b58f5a8a80e7ab138c2f7e2"
+    },
+    {
+      "path": "/tmp/kasumi-control-completion-authority-1.log",
+      "sha256": "bbbd4e3cafb3bb5b83d6febac111f13c3e38689d40eb52cee495f6a9e4bc492a"
+    },
+    {
+      "path": "/tmp/kasumi-control-completion-authority-2.log",
+      "sha256": "ca3c13cc3138232c77d99e78ccb6141f5fa8191428c84ab0e24bd185c7ee4e86"
+    },
+    {
+      "path": "/tmp/kasumi-control-completion-authority-3.log",
+      "sha256": "76a100c13f5ab8fef8a5d088cf910ef85b2824622b82dbf0484ab58832f43d32"
+    },
+    {
+      "path": "/tmp/kasumi-control-completion-lifecycle-1.log",
+      "sha256": "3af1ca781e8d1ce7a54ede1bc61854fdbc3982823294fb9df495a9f62979544d"
+    },
+    {
+      "path": "/tmp/kasumi-control-completion-source-1.json",
+      "sha256": "84e80e4bc1fe339ccad7b8e8ecde6b83ae40fa72a975977a69903ae41e2e9a4b"
+    },
+    {
+      "path": "/tmp/kasumi-control-completion-source-1.patch",
+      "sha256": "515c1c2c2a41aa477932884712d8ea8220147300ad583e8480a416f0b6d9d5eb"
+    },
+    {
+      "path": "/tmp/kasumi-control-completion-source-2.json",
+      "sha256": "5cf6fa1e829ce8336777a170bfe67ab2f85ddd0bb12cd7c4670e23fa02d48ad9"
+    },
+    {
+      "path": "/tmp/kasumi-control-completion-source-2.patch",
+      "sha256": "e01f5c467405035d5b330c03c3504c3a13a733aa3bf620fbe3312638d0c48ae8"
+    }
+  ],
+  "failure_qualification": "check.log is the first intermediate compile failure before source-1; exact earlier source was not captured. authority-1 and authority-2 both ran source-1 binary e00324b60a98a0a5f307a63f069e6507ac1f2c3e7d9bf20500ba9f0be15805fe; both failed at the fixture issuer drain wait. Source-2 changes only that fixture setup. No production drain guard was changed.",
+  "source_2_authority_executable_sha256": "fc132f4a64dda1377aa1c29e5d03112d0bb46d2f15c4c872274184fa92e01370",
+  "source_2_lifecycle_executable": "181a39ce3682ce82d45f755522f8939f49874b065a586472a63ed8a953f9e62f  /tmp/kasumi-production-standalone-target/debug/deps/lifecycle-c70bbb2e0c4a0ca5",
+  "fixture_failure_followups": [
+    {
+      "source": "source-2",
+      "log": "/tmp/kasumi-control-completion-lifecycle-full.log",
+      "log_sha256": "434b1388f6ff3c26073b133785d007134d0166312c58cad9f27194b3e0717ac5",
+      "result": "13/14 passed; exact Prepare response was UnknownOutcome at fixture helper unwrap; exact bounded phase resolution added in source-3.",
+      "binary_hash_record": "181a39ce3682ce82d45f755522f8939f49874b065a586472a63ed8a953f9e62f  /tmp/kasumi-production-standalone-target/debug/deps/lifecycle-c70bbb2e0c4a0ca5"
+    },
+    {
+      "source": "source-3",
+      "log": "/tmp/kasumi-control-completion-lifecycle-full-2.log",
+      "log_sha256": "7e034451d841b36c31775e6189da700242d6d9b65934a8523b261776840750e2",
+      "result": "13/14 passed; new positive completion passed, planned case saw transient read-quorum Unavailable at planning status unwrap; same-context bounded current-leader reads added in source-4.",
+      "binary_hash_record": "1792650e8ae616962edb2c795d12a73fd417247eeceea3d6fa4bebb03e7f851c  /tmp/kasumi-production-standalone-target/debug/deps/lifecycle-c70bbb2e0c4a0ca5"
+    }
+  ]
+}

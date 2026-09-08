@@ -1,0 +1,369 @@
+{
+  "schema": "kasumi.scoped-source-evidence.v1",
+  "scope": "Exact positive resolution of expired original Complete through a fresh signed target inspection",
+  "commit": "b5ad88de99a4c56476ef5b218fedfb003fd71055",
+  "tree": "c5d59becb2b83e0a6fba9aede68e866e6c2576e3",
+  "base": "f44133a8627f9bd5818a14b657baf62e82d3afa4",
+  "branch": "codex/production-standalone",
+  "worktree": "/private/tmp/kasumi-production-standalone",
+  "host": "macOS-26.6.2-arm64-arm-64bit",
+  "toolchain": {
+    "path": "/tmp/kasumi-control-completion-toolchain.log",
+    "sha256": "e794146d99fad54562fdcbd4a7c8b22b0240d2b0312ff6d879d67939b3131850",
+    "bytes": 192
+  },
+  "cargo_lock_sha256": "3f693a1bd3dd6614d3ce8e54b2fd960055361c72e5d535b8aa86e1c47e60eb0a",
+  "source_files": {
+    "crates/kasumi-authority/src/activation_gate_tests.rs": "09515d81a93a529ccd30bccab86c1da1ca427c3f3d18442a1cbf86451e32c853",
+    "crates/kasumi-authority/src/activation_state.rs": "1dac633b3bff303bb43863c7d3c7a1a434f5aa4e084ca3446f40112bcd029327",
+    "crates/kasumi-authority/src/target_materialization_tests.rs": "605d9478e0739dfbe9497cd3951b731d53f4be57e81505195e25c27f0b65d25e",
+    "crates/kasumi-engine/src/recovery_activation.rs": "50ec1a219b5b758a06ca04b4e17aa8edefa88b218d74bf7113508591450e264d",
+    "crates/kasumi-engine/src/recovery_completion.rs": "30bb31886be26b4db43e788d52524b6eb05598cea9931b5c266603f6c36c95e4",
+    "crates/kasumi-engine/src/recovery_quorum.rs": "1fbe8da50c592d72eb1146537e73bf0d4f4cd73c35f04f9b12c613a0a1fa47e4",
+    "crates/kasumi-engine/src/recovery_service.rs": "9fd53a01e09ad73d75ba9c9f725bf1967553040e48a8764e50928e734f4d4c1f",
+    "crates/kasumi-engine/src/recovery_state.rs": "ffbebc058ea20f0aee0ff9f1cd05eea57b2e85e9f4cab101d65b3df6d8c16c68",
+    "crates/kasumi-engine/src/snapshot_recovery_tests.rs": "cf742176a8dea7ed05f39419a1128444a59b50e9fa15b09cfa0f2b11f5913ce7",
+    "crates/kasumi-engine/src/target_activation_service.rs": "b8d6a17f1e27b22546ffc7d22e2d50eab1cb0888ea30559d42457c7f3870c8a1",
+    "crates/kasumi-engine/src/target_state.rs": "16cf987b7fc8796968bee4f30b675b6e48074cf023ede612176845413406b814",
+    "crates/kasumi-engine/tests/common/recovery_control.rs": "1df236500de9d797cb16f37466599006c94b8e03ba231b29b56b11f4f01ed0c9",
+    "crates/kasumi-server/src/target_runtime.rs": "ba465abeafc3b1d4e74fbc931193bf4e85f7ce0ed285fbf9a2754cb48bfd0de0",
+    "crates/kasumi-serving/src/target.rs": "bc608802e9952f270c1c95145d135cc0f0a2757cd98bbd11191fbddf4d945306",
+    "crates/kasumi-types/src/authority_protocol.rs": "fa326ee6544fb8bd621b827a4c234c199c4db0fdad93bb9f12027f7a1fb67f0e",
+    "crates/kasumi-types/src/recovery.rs": "1f486b8e1911703bcc154d85b3249c232dd75cb40aef3f6be7c96022e31fa237",
+    "crates/kasumi-types/src/target.rs": "70f9185b0b291b4498a3887c376a541fb82b826912f4124ae118110ced4da9df",
+    "docs/control-recovery.md": "7e10fb796617ed34fce4ca77e3a346d56c85c8b4cc94f48b3b6daa968cab6952"
+  },
+  "source_captures": [
+    {
+      "manifest": {
+        "path": "/tmp/kasumi-control-completion-source-1.json",
+        "sha256": "84e80e4bc1fe339ccad7b8e8ecde6b83ae40fa72a975977a69903ae41e2e9a4b",
+        "bytes": 2601
+      },
+      "patch": {
+        "path": "/tmp/kasumi-control-completion-source-1.patch",
+        "sha256": "515c1c2c2a41aa477932884712d8ea8220147300ad583e8480a416f0b6d9d5eb",
+        "bytes": 66648
+      }
+    },
+    {
+      "manifest": {
+        "path": "/tmp/kasumi-control-completion-source-2.json",
+        "sha256": "5cf6fa1e829ce8336777a170bfe67ab2f85ddd0bb12cd7c4670e23fa02d48ad9",
+        "bytes": 2631
+      },
+      "patch": {
+        "path": "/tmp/kasumi-control-completion-source-2.patch",
+        "sha256": "e01f5c467405035d5b330c03c3504c3a13a733aa3bf620fbe3312638d0c48ae8",
+        "bytes": 67152
+      }
+    },
+    {
+      "manifest": {
+        "path": "/tmp/kasumi-control-completion-source-3.json",
+        "sha256": "ed6e75c02615b59be1ad39d84f6312e6d4a1b5cbcddc878a415e060023202ab0",
+        "bytes": 2706
+      },
+      "patch": {
+        "path": "/tmp/kasumi-control-completion-source-3.patch",
+        "sha256": "38b74fe84073e4bd364dbfc842ef49974c9e64249f1aa353bf6770479bf3a16f",
+        "bytes": 70148
+      }
+    },
+    {
+      "manifest": {
+        "path": "/tmp/kasumi-control-completion-source-4.json",
+        "sha256": "82adcc12d50fa4fc1b65644b9f44eb0173b96337818ecce069877780999c8bfb",
+        "bytes": 2664
+      },
+      "patch": {
+        "path": "/tmp/kasumi-control-completion-source-4.patch",
+        "sha256": "e88c984b898a765c3fa99c82b989beb27aa0239c0de6ca754e78fabce916d3d7",
+        "bytes": 71491
+      }
+    },
+    {
+      "manifest": {
+        "path": "/tmp/kasumi-control-completion-source-5.json",
+        "sha256": "1edfd930b23348e829592b089bc5d54b0a77aa49e83b053110ee320f4ebeca9e",
+        "bytes": 2640
+      },
+      "patch": {
+        "path": "/tmp/kasumi-control-completion-source-5.patch",
+        "sha256": "440435b3e4eaf111bf375900c14ca748be27df17f95ac2d18bb34bd06c3a859e",
+        "bytes": 71482
+      }
+    }
+  ],
+  "gates": [
+    {
+      "name": "workspace check",
+      "result": "pass",
+      "source_capture": 1,
+      "command": "CARGO_TARGET_DIR=/tmp/kasumi-production-standalone-target CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=2 cargo +1.97.1 check --workspace --all-features --all-targets -j1",
+      "detail": "1m29s. Later edits were test fixtures only; final strict all-target Clippy rechecked the full workspace.",
+      "log": {
+        "path": "/tmp/kasumi-control-completion-check-2.log",
+        "sha256": "b9e6cfd634c5f3a7e7f901fbcd0f7e81da4b18ea6b58f5a8a80e7ab138c2f7e2",
+        "bytes": 1059
+      }
+    },
+    {
+      "name": "focused authority first corrected test",
+      "result": "pass",
+      "source_capture": 2,
+      "command": "CARGO_TARGET_DIR=/tmp/kasumi-production-standalone-target CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=2 cargo +1.97.1 test -p kasumi-authority --lib resolved_completion_activates_only_with_its_distinct_positive_inspection_signature -j1 -- --nocapture",
+      "detail": "1/1 in5.34s",
+      "log": {
+        "path": "/tmp/kasumi-control-completion-authority-3.log",
+        "sha256": "76a100c13f5ab8fef8a5d088cf910ef85b2824622b82dbf0484ab58832f43d32",
+        "bytes": 561
+      }
+    },
+    {
+      "name": "focused Control completion",
+      "result": "pass",
+      "source_capture": 2,
+      "command": "CARGO_TARGET_DIR=/tmp/kasumi-production-standalone-target CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=2 cargo +1.97.1 test -p kasumi-engine --test lifecycle recovery_expired_completion_resolves_its_exact_positive_fact_before_activation -j1 -- --nocapture",
+      "detail": "1/1 in60.54s; full final lifecycle includes this test again.",
+      "log": {
+        "path": "/tmp/kasumi-control-completion-lifecycle-1.log",
+        "sha256": "3af1ca781e8d1ce7a54ede1bc61854fdbc3982823294fb9df495a9f62979544d",
+        "bytes": 648
+      }
+    },
+    {
+      "name": "full Control lifecycle",
+      "result": "pass",
+      "source_capture": 4,
+      "command": "CARGO_TARGET_DIR=/tmp/kasumi-production-standalone-target CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=2 cargo +1.97.1 test -p kasumi-engine --test lifecycle -j1 -- --nocapture",
+      "detail": "14/14 in107.86s; same source files in committed checkpoint.",
+      "log": {
+        "path": "/tmp/kasumi-control-completion-lifecycle-full-3.log",
+        "sha256": "42f5b9a2d636a93e8fc1e4fcf3312865cbddb551a43583bf6d48b8a14dd66d47",
+        "bytes": 1974
+      }
+    },
+    {
+      "name": "full authority library",
+      "result": "pass",
+      "source_capture": 4,
+      "command": "CARGO_TARGET_DIR=/tmp/kasumi-production-standalone-target CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=2 cargo +1.97.1 test -p kasumi-authority --lib -j1 -- --nocapture",
+      "detail": "45/45 in114.06s. Final source5 only replaces an existing Box in place in the new test, then reruns that focused test.",
+      "log": {
+        "path": "/tmp/kasumi-control-completion-authority-full.log",
+        "sha256": "33b3b4504596414cc367da4225f018b3fc3c0f6fa3847b2520d7c42ef817f08d",
+        "bytes": 5774
+      }
+    },
+    {
+      "name": "snapshot library selection",
+      "result": "pass",
+      "source_capture": 4,
+      "command": "CARGO_TARGET_DIR=/tmp/kasumi-production-standalone-target CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=2 cargo +1.97.1 test -p kasumi-engine --lib snapshot -j1 -- --nocapture",
+      "detail": "16/16 in9.56s; same source files in committed checkpoint.",
+      "log": {
+        "path": "/tmp/kasumi-control-completion-snapshots.log",
+        "sha256": "4df7084b90ac80d5d0588fc53e5f91d31d149046470cb6082af045d9194983be",
+        "bytes": 2164
+      }
+    },
+    {
+      "name": "strict final workspace Clippy",
+      "result": "pass",
+      "source_capture": 5,
+      "command": "CARGO_TARGET_DIR=/tmp/kasumi-production-standalone-target CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=2 cargo +1.97.1 clippy --workspace --all-features --all-targets -j1 -- -D warnings",
+      "detail": "33.40s",
+      "log": {
+        "path": "/tmp/kasumi-control-completion-clippy-2.log",
+        "sha256": "840e8cff46a1d21fcc5cdfa240572aa3662bf62af4e74738ce1ec722a676f29b",
+        "bytes": 667
+      }
+    },
+    {
+      "name": "focused authority final test source",
+      "result": "pass",
+      "source_capture": 5,
+      "command": "CARGO_TARGET_DIR=/tmp/kasumi-production-standalone-target CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=2 cargo +1.97.1 test -p kasumi-authority --lib resolved_completion_activates_only_with_its_distinct_positive_inspection_signature -j1 -- --nocapture",
+      "detail": "1/1 in6.11s",
+      "log": {
+        "path": "/tmp/kasumi-control-completion-authority-4.log",
+        "sha256": "f01a57524cb4175db5366b11fcec1d9dc8bd631415ec9254df38bd3afbb5dc3a",
+        "bytes": 562
+      }
+    },
+    {
+      "name": "fixture-free production compile check",
+      "result": "pass",
+      "source_capture": 5,
+      "command": "CARGO_TARGET_DIR=/tmp/kasumi-production-standalone-target CARGO_BUILD_JOBS=1 cargo +1.97.1 check -p kasumi-server --bins --no-default-features -j1",
+      "detail": "35.98s. This is a compile check, not a release binary build.",
+      "log": {
+        "path": "/tmp/kasumi-control-completion-production.log",
+        "sha256": "6552baf0a25ee408d9dfbff2c88ef7483a4f87f2dc4955da14fe65a16c1725e5",
+        "bytes": 768
+      }
+    },
+    {
+      "name": "format",
+      "result": "pass",
+      "source_capture": 5,
+      "command": "cargo +1.97.1 fmt --all -- --check",
+      "detail": "No output",
+      "log": {
+        "path": "/tmp/kasumi-control-completion-fmt.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bytes": 0
+      }
+    },
+    {
+      "name": "diff whitespace",
+      "result": "pass",
+      "source_capture": 5,
+      "command": "git diff --check",
+      "detail": "No output",
+      "log": {
+        "path": "/tmp/kasumi-control-completion-diff-check.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bytes": 0
+      }
+    }
+  ],
+  "preserved_failures": [
+    {
+      "name": "intermediate compiler failure",
+      "result": "fail",
+      "source_capture": null,
+      "command": "cargo +1.97.1 check --workspace --all-features --all-targets",
+      "detail": "E0425 misplaced planner arm and unreachable match warnings. Corrected before source1; exact original failing source was not separately captured.",
+      "log": {
+        "path": "/tmp/kasumi-control-completion-check.log",
+        "sha256": "982a35acf77d38b432f0484a0c400fc999d11a0af4a709cfcb11bd157e366ce7",
+        "bytes": 3782
+      }
+    },
+    {
+      "name": "first authority fixture drain timeout",
+      "result": "fail",
+      "source_capture": 1,
+      "command": "CARGO_TARGET_DIR=/tmp/kasumi-production-standalone-target CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=2 cargo +1.97.1 test -p kasumi-authority --lib resolved_completion_activates_only_with_its_distinct_positive_inspection_signature -j1 -- --nocapture",
+      "detail": "0/1 in21.78s. Binary e00324b60a98a0a5f307a63f069e6507ac1f2c3e7d9bf20500ba9f0be15805fe. Fixture clock advanced before issuer drain witness existed.",
+      "log": {
+        "path": "/tmp/kasumi-control-completion-authority-1.log",
+        "sha256": "bbbd4e3cafb3bb5b83d6febac111f13c3e38689d40eb52cee495f6a9e4bc492a",
+        "bytes": 1729
+      }
+    },
+    {
+      "name": "same-binary backtrace",
+      "result": "fail",
+      "source_capture": 1,
+      "command": "RUST_BACKTRACE=1 RUST_TEST_THREADS=2 /tmp/kasumi-production-standalone-target/debug/deps/kasumi_authority-481ba410417b8d16 resolved_completion_activates_only_with_its_distinct_positive_inspection_signature --nocapture",
+      "detail": "0/1 in22.33s; same e003 binary. Located activation_gate_tests.rs616. Source2 adds fixture drain attempt before clock advance; production guard unchanged.",
+      "log": {
+        "path": "/tmp/kasumi-control-completion-authority-2.log",
+        "sha256": "ca3c13cc3138232c77d99e78ccb6141f5fa8191428c84ab0e24bd185c7ee4e86",
+        "bytes": 11390
+      }
+    },
+    {
+      "name": "full lifecycle uncertain prepare fixture",
+      "result": "fail",
+      "source_capture": 2,
+      "command": "CARGO_TARGET_DIR=/tmp/kasumi-production-standalone-target CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=2 cargo +1.97.1 test -p kasumi-engine --test lifecycle -j1 -- --nocapture",
+      "detail": "13/14 in110.07s. Fixture unwrapped UnknownOutcome after prepare. Source3 adds exact bounded status/replay with original context, ID, sequence, input and deadline.",
+      "log": {
+        "path": "/tmp/kasumi-control-completion-lifecycle-full.log",
+        "sha256": "434b1388f6ff3c26073b133785d007134d0166312c58cad9f27194b3e0717ac5",
+        "bytes": 2516
+      }
+    },
+    {
+      "name": "full lifecycle planning read fixture",
+      "result": "fail",
+      "source_capture": 3,
+      "command": "CARGO_TARGET_DIR=/tmp/kasumi-production-standalone-target CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=2 cargo +1.97.1 test -p kasumi-engine --test lifecycle -j1 -- --nocapture",
+      "detail": "13/14 in123.25s. Positive completion passed; planned recovery saw transient read-quorum Unavailable. Source4 adds bounded same-context planning read; production unchanged.",
+      "log": {
+        "path": "/tmp/kasumi-control-completion-lifecycle-full-2.log",
+        "sha256": "7e034451d841b36c31775e6189da700242d6d9b65934a8523b261776840750e2",
+        "bytes": 2702
+      }
+    },
+    {
+      "name": "Clippy fixture allocation",
+      "result": "fail",
+      "source_capture": 4,
+      "command": "CARGO_TARGET_DIR=/tmp/kasumi-production-standalone-target CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=2 cargo +1.97.1 clippy --workspace --all-features --all-targets -j1 -- -D warnings",
+      "detail": "replace_box in new authority test. Source5 replaces existing Box contents in place; production unchanged.",
+      "log": {
+        "path": "/tmp/kasumi-control-completion-clippy.log",
+        "sha256": "a9356450756db18a867842eda260644057741de1b1af672e28452f7c18658d1a",
+        "bytes": 1816
+      }
+    }
+  ],
+  "executable_hash_records": [
+    {
+      "record": {
+        "path": "/tmp/kasumi-control-completion-authority-4.binary.sha256",
+        "sha256": "8435f2050bffbc871dfed3cedd1f6c372439623140fe2bfa2669fe45a7c07bdc",
+        "bytes": 152
+      },
+      "contents": "51c3feb914ffecb386528d6928ed5d353ca4124d29a2e5da431540b3de999fe5  /tmp/kasumi-production-standalone-target/debug/deps/kasumi_authority-481ba410417b8d16"
+    },
+    {
+      "record": {
+        "path": "/tmp/kasumi-control-completion-authority-full.binary.sha256",
+        "sha256": "659e9c28305db5e154a9edb20b51825605473e5d658829a6aba826ef516d64c4",
+        "bytes": 152
+      },
+      "contents": "fc132f4a64dda1377aa1c29e5d03112d0bb46d2f15c4c872274184fa92e01370  /tmp/kasumi-production-standalone-target/debug/deps/kasumi_authority-481ba410417b8d16"
+    },
+    {
+      "record": {
+        "path": "/tmp/kasumi-control-completion-lifecycle-1.binary.sha256",
+        "sha256": "b64ec3046a729e7704b8048de8c0d26f9012391c26327c48ce8173047dd17aa9",
+        "bytes": 145
+      },
+      "contents": "181a39ce3682ce82d45f755522f8939f49874b065a586472a63ed8a953f9e62f  /tmp/kasumi-production-standalone-target/debug/deps/lifecycle-c70bbb2e0c4a0ca5"
+    },
+    {
+      "record": {
+        "path": "/tmp/kasumi-control-completion-lifecycle-full-2.binary.sha256",
+        "sha256": "5928281f0d3f65a95d2e7d7db4ed9c449d0950d62a84e520999660cd45ad714a",
+        "bytes": 145
+      },
+      "contents": "1792650e8ae616962edb2c795d12a73fd417247eeceea3d6fa4bebb03e7f851c  /tmp/kasumi-production-standalone-target/debug/deps/lifecycle-c70bbb2e0c4a0ca5"
+    },
+    {
+      "record": {
+        "path": "/tmp/kasumi-control-completion-lifecycle-full-3.binary.sha256",
+        "sha256": "0a4f149b33d590a3f27fb7b37530caaf0c1f6e4613a3fa7924c17d701084441e",
+        "bytes": 145
+      },
+      "contents": "33d7ad4184762fa5b31c34f1b6dc014e794cbd4d476e33533080820b469684b7  /tmp/kasumi-production-standalone-target/debug/deps/lifecycle-c70bbb2e0c4a0ca5"
+    },
+    {
+      "record": {
+        "path": "/tmp/kasumi-control-completion-snapshots.binary.sha256",
+        "sha256": "3317985293b24a24bc550da894fd49a19059d51ab5805842ab7c3ab15e31ac9b",
+        "bytes": 149
+      },
+      "contents": "677c9165bc62a9dd598ee1a3b4b6b7a732656603e1d9a773ba1b79372471a004  /tmp/kasumi-production-standalone-target/debug/deps/kasumi_engine-4b4e80d3850c1c4e"
+    }
+  ],
+  "intermediate_evidence": {
+    "path": "/tmp/kasumi-control-completion-intermediate-evidence.json",
+    "sha256": "3e8f308fbbc9beb3ea26f8e5e575f94d52f3864de898bdb6ae7510a4591e5d09",
+    "bytes": 3417
+  },
+  "limitations": [
+    "Full workspace functional tests and final integrated-source release gates remain parent-owned; this checkpoint runs the scoped suites listed here.",
+    "The new Control completion test uses actual in-process encrypted Control Raft plus explicit signed target/issuer fixtures. Full three-target-process TLS/source-quorum-absent/crash-phase acceptance remains open.",
+    "Missing original completion remains UnknownOutcome. No signed negative resolution or fresh Complete mutation admission is implemented.",
+    "Expired original command identities and dispatch deadlines are unchanged. Positive inspection is explicitly tagged and separately signed; it does not extend old authorization.",
+    "Production check is not a release artifact build; no release executable or packaged artifact was produced by this cohort.",
+    "No backwards-compatibility decoding or fallback was introduced."
+  ]
+}
