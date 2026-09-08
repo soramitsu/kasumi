@@ -256,7 +256,11 @@ impl VerifiedState {
                 .ok_or_else(|| anyhow::anyhow!("backup collection absent")),
         }
     }
-    pub(crate) fn archived(&self, collection: &str, id: &str) -> anyhow::Result<ArchivedDocument> {
+    pub(crate) fn archived(
+        &self,
+        collection: &str,
+        id: &str,
+    ) -> anyhow::Result<Arc<ArchivedDocument>> {
         match self {
             Self::Indexed(state) => state.archived(collection, id),
             _ => self

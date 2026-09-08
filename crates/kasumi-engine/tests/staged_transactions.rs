@@ -953,11 +953,23 @@ async fn small_lease_budget_shares_large_roots_and_expires_on_retained_version_p
             id: "large".into(),
         }],
     };
-    assert!(
-        db.read_snapshot_page(&context(), point.clone())
-            .await
-            .is_ok()
-    );
+    let mut point_fence = db.response_fence(&context()).unwrap();
+    point_fence
+        .bind_snapshot_lease(&lease.lease_id)
+        .await
+        .unwrap();
+    let page = db
+        .read_snapshot_page(&context(), point.clone())
+        .await
+        .unwrap();
+    let encoded = serde_json::to_vec(&page).unwrap();
+    let mut scan_fence = db.response_fence(&context()).unwrap();
+    scan_fence
+        .bind_snapshot_lease(&lease.lease_id)
+        .await
+        .unwrap();
+    point_fence.check().unwrap();
+    scan_fence.check().unwrap();
     db.mutate(
         context(),
         MutationBatch {
@@ -973,6 +985,22 @@ async fn small_lease_budget_shares_large_roots_and_expires_on_retained_version_p
     )
     .await
     .unwrap();
+    // The same bound fences used by native adapters retain only header
+    // metadata. Both encoded/in-flight pages are expired by this publication.
+    assert_eq!(
+        point_fence.check().unwrap_err().code,
+        ErrorCode::CursorExpired
+    );
+    assert_eq!(
+        scan_fence.check().unwrap_err().code,
+        ErrorCode::CursorExpired
+    );
+    assert_eq!(
+        serde_json::from_slice::<SnapshotReadResponse>(&encoded)
+            .unwrap()
+            .revision,
+        lease.revision
+    );
     assert_eq!(
         db.read_snapshot_page(&context(), point)
             .await

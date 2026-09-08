@@ -285,7 +285,7 @@ pub struct CollectionState {
     // Leaf copy-on-write clones Arc handles, never unrelated JSON bodies.
     pub documents: imbl::OrdMap<String, std::sync::Arc<Document>>,
     #[serde(serialize_with = "serialize_resident_map")]
-    pub archived_documents: imbl::OrdMap<String, ArchivedDocument>,
+    pub archived_documents: imbl::OrdMap<String, std::sync::Arc<ArchivedDocument>>,
     pub archived_document_bytes: usize,
 }
 
@@ -494,7 +494,7 @@ pub struct TenantState {
     pub active_staged_transactions: BTreeSet<String>,
     pub change_feed: ChangeFeedState,
     #[serde(serialize_with = "serialize_resident_map")]
-    pub history_archives: imbl::OrdMap<String, RetainedHistoryArchive>,
+    pub history_archives: imbl::OrdMap<String, std::sync::Arc<RetainedHistoryArchive>>,
     pub history_archive_bytes: usize,
     #[serde(serialize_with = "serialize_resident_map")]
     pub schema_activations: imbl::OrdMap<String, StoredSchemaActivation>,

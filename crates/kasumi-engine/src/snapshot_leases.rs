@@ -1,100 +1,32 @@
-//! Coherent, bounded point and collection pages from one retained generation.
+//! Coherent pages hold only their bounded selection outside the root manager.
 use super::*;
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-pub(super) struct RetainedSnapshot {
-    generation: Arc<crate::Generation>,
-    principal: String,
-    created: Duration,
-    ttl: Duration,
-    term: u64,
-    bytes: AtomicUsize,
-    metadata_bytes: usize,
-    ids: kasumi_query::ReadIds,
-    reservation: Mutex<Reservation>,
-}
-
-impl RetainedSnapshot {
-    fn header(&self, lease_id: &str) -> SnapshotLease {
-        let state = &self.generation.state;
-        SnapshotLease {
-            lease_id: lease_id.into(),
-            revision: state.revision,
-            incarnation: state.incarnation.clone(),
-            policy_epoch: state.policy_epoch,
-            schema_epoch: state.schema_epoch,
-            ttl_ms: self.ttl.as_millis() as u64,
-        }
-    }
-    pub(super) fn retain(&self, now: Duration, pressured: bool) -> bool {
-        !pressured && now.saturating_sub(self.created) < self.ttl
-    }
-    pub(super) fn refresh(&self, current: &crate::Generation) -> bool {
-        let budget = current.state.limits.atomic.max_snapshot_lease_bytes;
-        let mut bytes = self.metadata_bytes;
-        // Persistent maps skip shared branches. Charge old versions and the
-        // copied path nodes only where writes diverged from the leased root.
-        for (name, old) in &self.generation.state.collections {
-            let Some(new) = current.state.collections.get(name) else {
-                return false;
-            };
-            for difference in old.documents.diff(&new.documents) {
-                use imbl::ordmap::DiffItem;
-                let retained = match difference {
-                    DiffItem::Add(_, _) => 0,
-                    DiffItem::Update {
-                        old: (_, value), ..
-                    }
-                    | DiffItem::Remove(_, value) => match crate::accounting::encoded_len(value) {
-                        Ok(bytes) => bytes,
-                        Err(_) => return false,
-                    },
-                };
-                // A tree update retains at most O(log N) old internal nodes.
-                let nodes = (old.documents.len().max(1).ilog2() as usize + 1).saturating_mul(256);
-                bytes = bytes.saturating_add(retained).saturating_add(nodes);
-                if bytes > budget {
-                    return false;
-                }
-            }
-            for difference in old.archived_documents.diff(&new.archived_documents) {
-                use imbl::ordmap::DiffItem;
-                let retained = match difference {
-                    DiffItem::Add(_, _) => 0,
-                    DiffItem::Update {
-                        old: (_, value), ..
-                    }
-                    | DiffItem::Remove(_, value) => match crate::accounting::encoded_len(value) {
-                        Ok(bytes) => bytes,
-                        Err(_) => return false,
-                    },
-                };
-                let nodes =
-                    (old.archived_documents.len().max(1).ilog2() as usize + 1).saturating_mul(256);
-                bytes = bytes.saturating_add(retained).saturating_add(nodes);
-                if bytes > budget {
-                    return false;
-                }
-            }
-        }
-        let mut reservation = self.reservation.lock().unwrap_or_else(|p| p.into_inner());
-        let old = self.bytes.load(Ordering::Acquire);
-        if bytes > old
-            && reservation
-                .reserve_additional((bytes - old) as u64)
-                .is_err()
-        {
-            return false;
-        }
-        if bytes < old {
-            reservation.retain(bytes as u64);
-        }
-        self.bytes.store(bytes, Ordering::Release);
-        true
-    }
-}
+use crate::state::lease_retention::{LeaseHandle, PageAccess, PageSelection, SelectedSnapshot};
 
 impl Database {
+    // Publication and selection share a mutex. Waiting for it, walking a changed
+    // payload, and dropping retained roots run on owned blocking work, so they
+    // cannot starve the async replication and credential-renewal tasks.
+    async fn snapshot_retention_work<T: Send + 'static>(
+        &self,
+        cancellation: QueryCancellation,
+        action: impl FnOnce(Arc<crate::TenantEngine>) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        self.access()?;
+        let registration = self.work.begin(cancellation.clone())?;
+        let engine = self.engine.clone();
+        let worker = tokio::task::spawn_blocking(move || {
+            let result = action(engine);
+            (result, registration)
+        });
+        let (result, _registration) = tokio::select! {
+            result = tokio::time::timeout(Duration::from_secs(5), worker) => result
+                .map_err(|_| Error::new(ErrorCode::ResourceExhausted, "snapshot retention deadline exceeded"))?
+                .map_err(|_| Error::new(ErrorCode::Unavailable, "snapshot retention worker failed"))?,
+            _ = cancelled(&cancellation) => return Err(cancelled_error()),
+        };
+        result
+    }
+
     pub async fn open_snapshot_lease(
         &self,
         context: &RequestContext,
@@ -109,148 +41,65 @@ impl Database {
         context: &RequestContext,
         request: OpenSnapshotLease,
     ) -> Result<SnapshotLease> {
-        self.access()?;
-        let _registration = self.work.begin(QueryCancellation::default())?;
         self.engine
             .authorize_discovery(context, Action::Read, None)?;
         self.barrier().await?;
-        let generation = self.engine.generation()?;
-        self.engine.authorize_discovery(
-            context,
-            Action::Read,
-            Some(generation.state.policy_epoch),
-        )?;
-        if request.ttl_ms == 0 || request.ttl_ms > generation.state.limits.cursor_ttl_ms {
-            return Err(Error::new(
-                ErrorCode::InvalidArgument,
-                "snapshot lease TTL outside bounds",
-            ));
-        }
-        // Opening a lease retains roots, not another copy of the tenant.
-        let bytes =
-            generation
-                .state
-                .collections
-                .values()
-                .try_fold(4096usize, |total, collection| {
-                    crate::accounting::encoded_len(&collection.definition)
-                        .map(|size| total.saturating_add(size).saturating_add(1024))
-                })?;
-        if bytes > generation.state.limits.atomic.max_snapshot_lease_bytes {
-            return Err(Error::new(
-                ErrorCode::ResourceExhausted,
-                "snapshot lease metadata exceeds quota",
-            ));
-        }
-        let mut reservation = self.admission().reserve(bytes as u64, None)?;
-        reservation.retain(bytes as u64);
-        let lease_id = uuid::Uuid::new_v4().to_string();
-        let lease = Arc::new(RetainedSnapshot {
-            ids: generation.indexes.read_ids(),
-            generation: Arc::new(generation.lease_view()),
-            principal: context.principal.clone(),
-            created: self.clock.now(),
-            ttl: Duration::from_millis(request.ttl_ms),
-            term: self.group.raft().metrics().borrow().current_term,
-            bytes: AtomicUsize::new(bytes),
-            metadata_bytes: bytes,
-            reservation: Mutex::new(reservation),
-        });
-        let header = lease.header(&lease_id);
-        {
-            let mut leases = self.snapshot_leases.lock().map_err(|_| {
-                Error::new(ErrorCode::Unavailable, "snapshot lease storage unavailable")
-            })?;
-            leases.retain(|_, lease| lease.retain(self.clock.now(), false));
-            let retained = leases
-                .values()
-                .try_fold(bytes, |total, lease| {
-                    total.checked_add(lease.bytes.load(Ordering::Acquire))
-                })
-                .ok_or_else(|| {
-                    Error::new(ErrorCode::ResourceExhausted, "snapshot lease byte overflow")
-                })?;
-            let limits = &lease.generation.state.limits.atomic;
-            if leases.len() >= limits.max_snapshot_leases
-                || retained > limits.max_snapshot_lease_bytes
-            {
-                return Err(Error::new(
-                    ErrorCode::ResourceExhausted,
-                    "snapshot lease quota exhausted",
-                ));
-            }
-            leases.insert(lease_id.clone(), lease.clone());
-        }
+        let cancellation = QueryCancellation::default();
+        let _cancel_on_drop = CancelOnDrop(cancellation.clone());
+        let admitted_context = context.clone();
+        let clock = self.clock.clone();
+        let term = self.group.raft().metrics().borrow().current_term;
+        let node = self.admission().clone();
+        let lease = self
+            .snapshot_retention_work(cancellation, move |engine| {
+                engine.leases.open(
+                    &engine,
+                    &admitted_context,
+                    request.ttl_ms,
+                    clock,
+                    term,
+                    &node,
+                )
+            })
+            .await?;
+        let header = lease.header.clone();
         let release = self
             .release_event(
                 context,
                 None,
                 header.revision,
-                lease.generation.state.policy.strict_read_audit,
+                lease.strict_read_audit,
                 header.policy_epoch,
                 "discovery",
             )
             .await;
         if let Err(error) = release {
-            self.snapshot_leases
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .remove(&lease_id);
+            // Closing is also owned blocking work; cancellation may detach it,
+            // but it retains the engine and registration until actual completion.
+            let _ = self
+                .close_snapshot_lease_inner(context, &header.lease_id)
+                .await;
             return Err(error);
         }
-        if let Err(error) = self.checked_snapshot_lease(context, &lease_id) {
-            self.snapshot_leases
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .remove(&lease_id);
-            return Err(error);
-        }
+        self.checked_snapshot_lease(context, &header.lease_id)
+            .await?;
         Ok(header)
     }
 
-    fn checked_snapshot_lease(
+    pub(super) async fn checked_snapshot_lease(
         &self,
         context: &RequestContext,
         lease_id: &str,
-    ) -> Result<Arc<RetainedSnapshot>> {
-        self.access()?;
-        self.engine
-            .authorize_discovery(context, Action::Read, None)?;
-        let generation = self.engine.generation()?;
-        let lease = {
-            let mut leases = self.snapshot_leases.lock().map_err(|_| {
-                Error::new(ErrorCode::Unavailable, "snapshot lease storage unavailable")
-            })?;
-            let mut retained = 0usize;
-            leases.retain(|_, lease| {
-                let keep = lease.retain(self.clock.now(), false) && lease.refresh(&generation);
-                retained = retained.saturating_add(if keep {
-                    lease.bytes.load(Ordering::Acquire)
-                } else {
-                    0
-                });
-                keep && retained <= generation.state.limits.atomic.max_snapshot_lease_bytes
-            });
-            leases.get(lease_id).cloned().ok_or_else(|| {
-                Error::new(
-                    ErrorCode::CursorExpired,
-                    "snapshot lease unavailable or retention budget exhausted",
-                )
-            })?
-        };
-        if !lease.retain(self.clock.now(), false)
-            || lease.principal != context.principal
-            || lease.generation.state.incarnation != generation.state.incarnation
-            || lease.generation.state.policy_epoch != generation.state.policy_epoch
-            || lease.generation.state.schema_epoch != generation.state.schema_epoch
-            || lease.term != self.group.raft().metrics().borrow().current_term
-        {
-            return Err(Error::new(
-                ErrorCode::CursorExpired,
-                "snapshot lease expired or authority changed",
-            ));
-        }
-        Ok(lease)
+    ) -> Result<Arc<LeaseHandle>> {
+        let context = context.clone();
+        let lease_id = lease_id.to_owned();
+        let term = self.group.raft().metrics().borrow().current_term;
+        self.snapshot_retention_work(QueryCancellation::default(), move |engine| {
+            engine
+                .leases
+                .checked_handle(&engine, &context, &lease_id, term)
+        })
+        .await
     }
 
     pub async fn close_snapshot_lease(
@@ -258,26 +107,50 @@ impl Database {
         context: &RequestContext,
         lease_id: &str,
     ) -> Result<()> {
-        let result = (|| {
-            self.access()?;
-            self.engine
-                .authorize_discovery(context, Action::Read, None)?;
-            let mut leases = self.snapshot_leases.lock().map_err(|_| {
-                Error::new(ErrorCode::Unavailable, "snapshot lease storage unavailable")
-            })?;
-            if leases
-                .get(lease_id)
-                .is_some_and(|lease| lease.principal != context.principal)
-            {
-                return Err(Error::new(
-                    ErrorCode::Forbidden,
-                    "snapshot lease belongs to another principal",
-                ));
-            }
-            leases.remove(lease_id);
-            Ok(())
-        })();
+        let result = self.close_snapshot_lease_inner(context, lease_id).await;
         self.audit_result(context, result).await
+    }
+
+    async fn close_snapshot_lease_inner(
+        &self,
+        context: &RequestContext,
+        lease_id: &str,
+    ) -> Result<()> {
+        let context = context.clone();
+        let lease_id = lease_id.to_owned();
+        self.snapshot_retention_work(QueryCancellation::default(), move |engine| {
+            engine.authorize_discovery(&context, Action::Read, None)?;
+            engine.leases.close(&context, &lease_id)
+        })
+        .await
+    }
+
+    async fn select_snapshot_page(
+        &self,
+        context: &RequestContext,
+        lease_id: &str,
+        request: PageSelection,
+        cancellation: &QueryCancellation,
+    ) -> Result<SelectedSnapshot> {
+        let context = context.clone();
+        let lease_id = lease_id.to_owned();
+        let term = self.group.raft().metrics().borrow().current_term;
+        let node = self.admission().clone();
+        let token = cancellation.clone();
+        self.snapshot_retention_work(cancellation.clone(), move |engine| {
+            engine.leases.select(
+                &engine,
+                &lease_id,
+                request,
+                PageAccess {
+                    context: &context,
+                    term,
+                    node: &node,
+                    cancellation: &token,
+                },
+            )
+        })
+        .await
     }
 
     pub async fn read_snapshot_page(
@@ -295,68 +168,46 @@ impl Database {
         request: ReadSnapshotPage,
     ) -> Result<SnapshotReadResponse> {
         self.barrier().await?;
-        let lease = self.checked_snapshot_lease(context, &request.lease_id)?;
-        if request.documents.is_empty() || request.documents.len() > 256 {
-            return Err(Error::new(
-                ErrorCode::InvalidArgument,
-                "snapshot point page outside bounds",
-            ));
-        }
-        let mut keys = BTreeSet::new();
-        let mut collections = BTreeSet::new();
-        for key in &request.documents {
-            validate_name(&key.collection)?;
-            validate_name(&key.id)?;
-            if !keys.insert(key) {
-                return Err(Error::new(
-                    ErrorCode::InvalidArgument,
-                    "duplicate snapshot point",
-                ));
-            }
-            self.engine.authorize_release(
-                context,
-                Some(&key.collection),
-                Action::Read,
-                lease.generation.state.policy_epoch,
-            )?;
-            if !lease
-                .generation
-                .state
-                .collections
-                .contains_key(&key.collection)
-            {
-                return Err(Error::new(
-                    ErrorCode::NotFound,
-                    "snapshot collection not found",
-                ));
-            }
-            collections.insert(key.collection.clone());
-        }
         let cancellation = QueryCancellation::default();
         let _cancel_on_drop = CancelOnDrop(cancellation.clone());
         let registration = Arc::new(self.work.begin(cancellation.clone())?);
-        let snapshot = ReadSnapshotRequest {
-            documents: request.documents,
-            queries: vec![],
-        };
-        let reservation = self.admission().reserve(
-            snapshot_workspace(&lease.generation.state.limits, &snapshot),
-            Some(cancellation.clone()),
-        )?;
         let permit = self.query_slots.clone().try_acquire_owned().map_err(|_| {
             Error::new(
                 ErrorCode::ResourceExhausted,
                 "snapshot concurrency limit reached",
             )
         })?;
+        let SelectedSnapshot {
+            handle,
+            generation,
+            reservation,
+            ..
+        } = self
+            .select_snapshot_page(
+                context,
+                &request.lease_id,
+                PageSelection::Points(request.documents.clone()),
+                &cancellation,
+            )
+            .await?;
+        let collections = request
+            .documents
+            .iter()
+            .map(|key| {
+                let strict = generation.state.policy.strict_read_audit
+                    || generation.state.collections[&key.collection]
+                        .definition
+                        .strict_read_audit;
+                (key.collection.clone(), strict)
+            })
+            .collect();
+        let snapshot = ReadSnapshotRequest {
+            documents: request.documents,
+            queries: vec![],
+        };
         let work = SnapshotWork {
             generation: self
-                .hydrate_history(
-                    lease.generation.clone(),
-                    &snapshot.documents,
-                    &[],
-                    &cancellation,
-                )
+                .hydrate_history(generation, &snapshot.documents, &[], &cancellation)
                 .await?,
             request: snapshot,
             cancellation: cancellation.clone(),
@@ -377,45 +228,43 @@ impl Database {
         };
         let response = response?;
         reservation.retain_workspace();
-        self.release_snapshot_page(
-            context,
-            &request.lease_id,
-            &lease,
-            &collections,
-            &cancellation,
-        )
-        .await?;
+        self.release_snapshot_page(context, &handle, &collections, &cancellation)
+            .await?;
         Ok(response)
     }
 
     async fn release_snapshot_page(
         &self,
         context: &RequestContext,
-        lease_id: &str,
-        lease: &RetainedSnapshot,
-        collections: &BTreeSet<String>,
+        lease: &LeaseHandle,
+        collections: &BTreeMap<String, bool>,
         cancellation: &QueryCancellation,
     ) -> Result<()> {
-        let state = &lease.generation.state;
-        for collection in collections {
+        for (collection, strict) in collections {
             self.release(
                 context,
                 collection,
-                state.revision,
-                state.policy.strict_read_audit
-                    || state.collections[collection].definition.strict_read_audit,
-                state.policy_epoch,
+                lease.header.revision,
+                *strict,
+                lease.header.policy_epoch,
             )
             .await?;
         }
-        self.checked_snapshot_lease(context, lease_id)?;
+        self.checked_snapshot_lease(context, &lease.header.lease_id)
+            .await?;
+        if !lease.live() {
+            return Err(Error::new(
+                ErrorCode::CursorExpired,
+                "snapshot lease expired before response release",
+            ));
+        }
         self.admission().check_release(cancellation)?;
-        for collection in collections {
+        for collection in collections.keys() {
             self.engine.authorize_release(
                 context,
                 Some(collection),
                 Action::Read,
-                state.policy_epoch,
+                lease.header.policy_epoch,
             )?;
         }
         Ok(())
@@ -436,107 +285,47 @@ impl Database {
         request: ScanSnapshotPage,
     ) -> Result<SnapshotScanPage> {
         self.barrier().await?;
-        let lease = self.checked_snapshot_lease(context, &request.lease_id)?;
-        validate_name(&request.collection)?;
-        if let Some(after) = &request.after_id {
-            validate_name(after)?;
-        }
-        self.engine.authorize_release(
-            context,
-            Some(&request.collection),
-            Action::Read,
-            lease.generation.state.policy_epoch,
-        )?;
-        if !lease
-            .generation
-            .state
-            .collections
-            .contains_key(&request.collection)
-        {
-            return Err(Error::new(
-                ErrorCode::NotFound,
-                "snapshot collection not found",
-            ));
-        }
-        if request.limit == 0 || request.limit > lease.generation.state.limits.max_page_size {
-            return Err(Error::new(
-                ErrorCode::InvalidArgument,
-                "snapshot scan limit outside bounds",
-            ));
-        }
         let cancellation = QueryCancellation::default();
         let _cancel_on_drop = CancelOnDrop(cancellation.clone());
         let registration = Arc::new(self.work.begin(cancellation.clone())?);
-        let reservation = self.admission().reserve(
-            lease
-                .generation
-                .state
-                .limits
-                .max_result_bytes
-                .saturating_mul(3) as u64,
-            Some(cancellation.clone()),
-        )?;
         let permit = self.query_slots.clone().try_acquire_owned().map_err(|_| {
             Error::new(
                 ErrorCode::ResourceExhausted,
                 "snapshot concurrency limit reached",
             )
         })?;
-        let candidates = lease.ids.document_ids_after(
-            &request.collection,
-            request.after_id.as_deref(),
-            request.limit + 1,
-        )?;
-        let collection = &lease.generation.state.collections[&request.collection];
-        let mut keys = Vec::new();
-        let mut bytes = crate::accounting::encoded_len(&SnapshotScanPage {
-            snapshot: lease.header(&request.lease_id),
-            collection: request.collection.clone(),
-            data_epoch: collection.data_epoch,
-            documents: vec![],
-            next_after_id: None,
-        })?
-        .saturating_add(256);
-        let mut has_more = false;
-        for id in candidates {
-            let document_bytes = if let Some(document) = collection.documents.get(&id) {
-                crate::accounting::encoded_len(document)?
-            } else {
-                collection
-                    .archived_documents
-                    .get(&id)
-                    .ok_or_else(|| {
-                        Error::new(ErrorCode::Corruption, "snapshot index identity missing")
-                    })?
-                    .document_bytes
-            };
-            if keys.len() >= request.limit
-                || bytes.saturating_add(document_bytes + 1)
-                    > lease.generation.state.limits.max_result_bytes
-            {
-                if keys.is_empty() {
-                    return Err(Error::new(
-                        ErrorCode::ResourceExhausted,
-                        "snapshot document cannot fit page budget",
-                    ));
-                }
-                has_more = true;
-                break;
-            }
-            bytes += document_bytes + 1;
-            keys.push(DocumentKey {
-                collection: request.collection.clone(),
-                id,
-            });
-        }
-        let generation = self
-            .hydrate_history(lease.generation.clone(), &keys, &[], &cancellation)
-            .await?;
-        let work = ScanWork {
-            lease: lease.clone(),
+        let SelectedSnapshot {
+            handle,
             generation,
-            ids: keys.into_iter().map(|key| key.id).collect(),
-            has_more,
+            scan_ids,
+            scan_has_more,
+            reservation,
+        } = self
+            .select_snapshot_page(
+                context,
+                &request.lease_id,
+                PageSelection::Scan(request.clone()),
+                &cancellation,
+            )
+            .await?;
+        let keys = scan_ids
+            .iter()
+            .map(|id| DocumentKey {
+                collection: request.collection.clone(),
+                id: id.clone(),
+            })
+            .collect::<Vec<_>>();
+        let strict = generation.state.policy.strict_read_audit
+            || generation.state.collections[&request.collection]
+                .definition
+                .strict_read_audit;
+        let work = ScanWork {
+            lease: handle.clone(),
+            generation: self
+                .hydrate_history(generation, &keys, &[], &cancellation)
+                .await?,
+            ids: scan_ids,
+            has_more: scan_has_more,
             request: request.clone(),
             cancellation: cancellation.clone(),
             _permit: permit,
@@ -558,9 +347,8 @@ impl Database {
         reservation.retain_workspace();
         self.release_snapshot_page(
             context,
-            &request.lease_id,
-            &lease,
-            &BTreeSet::from([request.collection]),
+            &handle,
+            &BTreeMap::from([(request.collection, strict)]),
             &cancellation,
         )
         .await?;
@@ -569,7 +357,7 @@ impl Database {
 }
 
 struct ScanWork {
-    lease: Arc<RetainedSnapshot>,
+    lease: Arc<LeaseHandle>,
     generation: Arc<crate::Generation>,
     ids: Vec<String>,
     has_more: bool,
@@ -597,7 +385,7 @@ impl ScanWork {
         let state = &self.generation.state;
         let collection = &state.collections[&self.request.collection];
         let mut response = SnapshotScanPage {
-            snapshot: self.lease.header(&self.request.lease_id),
+            snapshot: self.lease.header.clone(),
             collection: self.request.collection.clone(),
             data_epoch: collection.data_epoch,
             documents: vec![],

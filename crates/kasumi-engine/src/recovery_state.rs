@@ -258,7 +258,7 @@ impl TenantEngine {
                 "recovery retained state or audit capacity unavailable",
             ));
         }
-        self.current.store(Some(Arc::new(Generation {
+        self.publish_generation(Some(Arc::new(Generation {
             state: next,
             indexes: previous.indexes.clone(),
             receipt_expiry: previous.receipt_expiry.clone(),

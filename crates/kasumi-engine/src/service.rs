@@ -369,7 +369,6 @@ pub struct Database {
     group: RaftGroup,
     store: Arc<TenantStore>,
     cursors: Mutex<HashMap<String, Cursor>>,
-    snapshot_leases: Mutex<HashMap<String, Arc<snapshot_leases::RetainedSnapshot>>>,
     archive_destinations: Mutex<BTreeMap<String, Arc<dyn BackupDestination>>>,
     query_slots: Arc<tokio::sync::Semaphore>,
     clock: Arc<dyn LeaseClock>,
@@ -400,6 +399,7 @@ pub struct ResponseFence<'a> {
     cancellation: QueryCancellation,
     read_admission: Option<(Vec<ReadAssertion>, Reservation)>,
     schema_admission: Option<(Vec<ReadAssertion>, Reservation)>,
+    snapshot_lease: Option<Arc<crate::state::lease_retention::LeaseHandle>>,
     _workspace: Reservation,
 }
 
@@ -411,6 +411,23 @@ fn staged_stop_acknowledgement(_error: Error) -> Error {
 }
 
 impl ResponseFence<'_> {
+    /// Bind the exact retained snapshot through final transport handoff. The
+    /// handle carries expiry and identity only; it owns no document or ID roots.
+    pub async fn bind_snapshot_lease(&mut self, lease_id: &str) -> Result<()> {
+        if self.snapshot_lease.is_some() {
+            return Err(Error::new(
+                ErrorCode::Conflict,
+                "response snapshot lease is already bound",
+            ));
+        }
+        self.snapshot_lease = Some(
+            self.database
+                .checked_snapshot_lease(&self.context, lease_id)
+                .await?,
+        );
+        self.check()
+    }
+
     /// Successful return is the adapter's authorized handoff boundary. Bytes
     /// handed to a transport are previously released plaintext; client receipt
     /// is not asserted, and transport buffering cannot recall those bytes.
@@ -459,6 +476,18 @@ impl ResponseFence<'_> {
                 now,
             )?;
         }
+        if let Some(lease) = &self.snapshot_lease
+            && (!lease.live()
+                || lease.term != self.database.group.raft().metrics().borrow().current_term
+                || lease.header.incarnation != generation.state.incarnation
+                || lease.header.policy_epoch != generation.state.policy_epoch
+                || lease.header.schema_epoch != generation.state.schema_epoch)
+        {
+            return Err(Error::new(
+                ErrorCode::CursorExpired,
+                "snapshot lease expired before encoded response release",
+            ));
+        }
         Ok(())
     }
 }
@@ -498,6 +527,7 @@ impl Database {
             cancellation,
             read_admission: None,
             schema_admission: None,
+            snapshot_lease: None,
             _workspace: workspace,
         })
     }
@@ -628,7 +658,6 @@ impl Database {
             group,
             store,
             cursors: Mutex::new(HashMap::new()),
-            snapshot_leases: Mutex::new(HashMap::new()),
             archive_destinations: Mutex::new(BTreeMap::new()),
             query_slots: Arc::new(tokio::sync::Semaphore::new(4)),
             clock: clocks.elapsed,
@@ -742,10 +771,6 @@ impl Database {
                 .await;
         }
         self.engine.seal();
-        self.snapshot_leases
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clear();
         self.cursors
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -791,10 +816,6 @@ impl Database {
         if self.store.check_access().is_err() {
             self.work.seal();
             self.engine.seal();
-            self.snapshot_leases
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .clear();
             self.cursors
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
@@ -823,30 +844,42 @@ impl Database {
                     _ = tokio::time::sleep(Duration::from_secs(1)) => {},
                 }
                 let Some(db) = weak.upgrade() else { break };
-                let _ = db.access();
-                if db.engine.generation().is_err() {
-                    db.work.seal();
+                // Aborting the async monitor cannot abort a running blocking
+                // job. Its registration keeps shutdown draining until both the
+                // database owner and its retained roots are actually released.
+                let Ok(registration) = db.work.begin(QueryCancellation::default()) else {
+                    break;
+                };
+                struct RetentionCheck {
+                    database: Arc<Database>,
+                    _registration: WorkRegistration,
                 }
-                let pressured = db.admission.get().is_some_and(|node| {
-                    let status = node.snapshot();
-                    status.pressured || !status.sample_usable
-                });
-                let now = db.clock.now();
-                db.cursors
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .retain(|_, c| !pressured && now.saturating_sub(c.created) < c.ttl);
-                db.snapshot_leases
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .retain(|_, lease| {
-                        lease.retain(now, pressured)
-                            && db
-                                .engine
-                                .generation()
-                                .is_ok_and(|generation| lease.refresh(&generation))
+                let work = RetentionCheck {
+                    database: db,
+                    _registration: registration,
+                };
+                let check = tokio::task::spawn_blocking(move || {
+                    let db = &work.database;
+                    let _ = db.access();
+                    if db.engine.generation().is_err() {
+                        db.work.seal();
+                    }
+                    let pressured = db.admission.get().is_some_and(|node| {
+                        let status = node.snapshot();
+                        status.pressured || !status.sample_usable
                     });
-                if db.engine.generation().is_err() {
+                    let now = db.clock.now();
+                    db.cursors
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .retain(|_, c| !pressured && now.saturating_sub(c.created) < c.ttl);
+                    let term = db.group.raft().metrics().borrow().current_term;
+                    db.engine.leases.expire_idle(pressured, term);
+                    let serving = db.engine.generation().is_ok();
+                    drop(work);
+                    serving
+                });
+                if !check.await.unwrap_or(false) {
                     break;
                 }
             }
