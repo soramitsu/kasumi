@@ -10,10 +10,13 @@ submit internal operations use `Database::new_with_admission`.
 The default high-water mark is half physical RAM, reduced by Linux cgroup memory
 ceilings. The low-water mark is seven eighths of high water. The workspace budget
 defaults to the smaller of one quarter of high water and 512 MiB, with 64 active
-operations. All values are configurable. Linux reads process resident pages from
+operations. An explicit high-water mark is checked against detected host/container
+capacity at startup; a larger value is rejected, and an explicit value cannot
+bypass a failed capacity probe. This is startup validation, not a promise that
+the host or container ceiling cannot subsequently change. Linux reads process resident pages from
 `/proc/self/statm`; macOS uses `MACH_TASK_BASIC_INFO`. Production Linux must mount
 the applicable cgroup hierarchy for automatic ceiling discovery; an explicit
-`high_water_bytes` is appropriate for unusual mount layouts.
+`high_water_bytes` may impose a smaller operator limit for unusual mount layouts.
 
 RSS probes run every 250 ms. Measurements older than one second are refreshed
 synchronously at admission and query result release. Age is measured from probe
