@@ -1,0 +1,133 @@
+{
+  "kind": "intermediate production build and offline installation smoke; not final release acceptance",
+  "source": "f8e96181c52db24f92c4f00783e3e6fd13c3e04e",
+  "source_archive_sha256": "e75a3349f0d042e9cb87ead7122d8d83152b8f0ca4d539dbbe7e94eb40067bc9",
+  "lock_sha256": "f7d97206d4d99dd69b3350354a5bb4d673aad5560540a342cb9e465a28a7629a",
+  "validation_image": "sha256:217fb658c8d1733e976fe179e7c8e0bfad2d364d40dc6d6bef6171afaa015fb8",
+  "platform": "aarch64-unknown-linux-gnu",
+  "rustc": "1.97.1 (8bab26f4f 2026-07-14)",
+  "build_command": "cargo build --locked --release -j 2 -p kasumi-server --bins --no-default-features",
+  "build_exit_code": 0,
+  "executable_sha256": {
+    "/target/release/kasumi-authority": "4e5cfdfb0e478038b790904a443aa8c91f7cb70b6d80f995a1a1b49dff2c9e5e",
+    "/target/release/kasumictl": "525d8558a0d094f3d9a28492ff3e9b5621de5dbea59a1001e9ddeb1c4de1ab87",
+    "/target/release/kasumid": "9de89626c156d7b82fe7a04fb002e38e1439a2fc8eea5b895454cb53938766e7"
+  },
+  "production_dependency_graph": "cargo tree --locked --offline -p kasumi-server --no-default-features -e normal,build,features; no test-utils features",
+  "smoke": {
+    "network": "Docker --network none; native/MCP use its own loopback interfaces",
+    "initialization": "passed",
+    "configuration": "passed",
+    "configuration_sha256": "387b953d1fdf51739d82ea2f855b63a1db703018b869ce31dac953ed008b8f8d",
+    "owner_only_file_and_directory_check": "passed; no /077 permission matches",
+    "native_credential_renewal": "passed",
+    "stopped_administrator_recovery": "passed",
+    "restart_and_recovered_native_credential_renewal": "passed",
+    "MCP": "TLS1.3, protocol2026-07-28 server/discover and5tools; local deployment advertises no OAuth authorization server"
+  },
+  "retained_diagnostics": [
+    "Initial binary probes used incorrect executable names; authoritative executable inventory is separately hashed.",
+    "First feature graph included dev edges; corrected normal/build graph excludes all fixture features.",
+    "MCP probes1-4 used obsolete initialize or omitted required stateless metadata. Corrected probe5 passed; all failures are retained."
+  ],
+  "limitations": [
+    "This predates later integrated release subsystems.",
+    "This smoke does not cover final backup/restore, rotations, HA, capacity, endurance or full platform tests.",
+    "Private credentials and keys remain only in the exclusive VM installation; evidence contains no bearer material."
+  ],
+  "mcp_harness_sha256": "3dd689aa21b2eed0a465acf13366f275bd65d7399dbf03b354f6d870f130d8d3",
+  "logs": [
+    {
+      "file": "logs/kasumi-production-f8e9618-linux-arm64-binaries.log",
+      "sha256": "17fe7ae9b33c17407dbb5532cedef02dd44c8a920a15d4ff2c56ab1925b81777"
+    },
+    {
+      "file": "logs/kasumi-production-f8e9618-linux-arm64-binary-hashes.log",
+      "sha256": "e1f7865f03425539d58d00cee4bb72ea8a0fa3a9d74069d802c47d6b9c09ef59"
+    },
+    {
+      "file": "logs/kasumi-production-f8e9618-linux-arm64-build.log",
+      "sha256": "6f09b8cf0bd633ef96c011746c38c81adb1a047111bc7705b98cdea3129f54bb"
+    },
+    {
+      "file": "logs/kasumi-production-f8e9618-linux-arm64-executables.log",
+      "sha256": "63d4f94029f054cfab4dd2ac8a3252838ecda39dde17127bf7928ae98bb3f7ac"
+    },
+    {
+      "file": "logs/kasumi-production-f8e9618-linux-arm64-production-features.log",
+      "sha256": "657e3a662e5648b8877e7649c33aa6d40451063ce4db4ead87b8e03e461550d8"
+    },
+    {
+      "file": "logs/kasumi-production-f8e9618-linux-arm64-production-normal-build-features.log",
+      "sha256": "0f94e8cfe6c78c64397a3da8538f8085713a7f40f705491e1a20300004775f97"
+    },
+    {
+      "file": "logs/kasumi-production-f8e9618-linux-offline-admin-recovery.log",
+      "sha256": "aa59efe7f69dc81c08c179e86021a3550e735e4f0e67463f5892d2725f0388b6"
+    },
+    {
+      "file": "logs/kasumi-production-f8e9618-linux-offline-check-config.log",
+      "sha256": "d3bc5233a13a1bf0305f28beaa7bd91f6bbd448bec5e7eb79565578c1fe9985b"
+    },
+    {
+      "file": "logs/kasumi-production-f8e9618-linux-offline-file-permissions.log",
+      "sha256": "b055fc3c3f9a3e24884f823d3786d39698244da6327470a54ee635204d33a838"
+    },
+    {
+      "file": "logs/kasumi-production-f8e9618-linux-offline-final-stop.log",
+      "sha256": "5547b3ea96e3224516145083a0b3f52539d3dacc47fd4fe1e39fc5840809fd40"
+    },
+    {
+      "file": "logs/kasumi-production-f8e9618-linux-offline-init.log",
+      "sha256": "94888df31c15590bc16b554f6694a5a19131c645923477e2be68a80e40cf679f"
+    },
+    {
+      "file": "logs/kasumi-production-f8e9618-linux-offline-mcp-2.log",
+      "sha256": "cc30114e9a55818cbec5e173aa959ed98481f73f4188cfeb71c389a9604931d9"
+    },
+    {
+      "file": "logs/kasumi-production-f8e9618-linux-offline-mcp-3.log",
+      "sha256": "8b25d2a05504ca0d69250ff54c8e8a16e2a7fda9517c3b28896911df9dd87c0a"
+    },
+    {
+      "file": "logs/kasumi-production-f8e9618-linux-offline-mcp-4.log",
+      "sha256": "11cc758650acaf1e48c5de379d39ed2a28612e29abcd0fdbe937f27e825a3630"
+    },
+    {
+      "file": "logs/kasumi-production-f8e9618-linux-offline-mcp-5.log",
+      "sha256": "d16d64827532dba57049c5d9c6e1c44091a19e34b40eb5ef43b5a05d2a2273a8"
+    },
+    {
+      "file": "logs/kasumi-production-f8e9618-linux-offline-mcp.log",
+      "sha256": "03e1736eb86042c3ed6e15f3fa78ef88c6beba99340838171118e4b196f25e14"
+    },
+    {
+      "file": "logs/kasumi-production-f8e9618-linux-offline-native-renew.log",
+      "sha256": "373d4ab2f76eefc5c2382e6670e5dbbdb3630fcf82250ac67ea8702a778697c3"
+    },
+    {
+      "file": "logs/kasumi-production-f8e9618-linux-offline-process-outcome.log",
+      "sha256": "f5a2b935f2fe65ad7766a52c809cf2f75b0417ffed34bcac39b0553ba8d219a8"
+    },
+    {
+      "file": "logs/kasumi-production-f8e9618-linux-offline-process.log",
+      "sha256": "edeae507cdf10072b2ca617ebf397c20c1bf813b883ac75dbef57e9ccaeb711f"
+    },
+    {
+      "file": "logs/kasumi-production-f8e9618-linux-offline-recovered-native-renew.log",
+      "sha256": "ea39a84ab628ebe43811cc7501c9ed81bcac7b2b56a78e15e749fc92acedb1be"
+    },
+    {
+      "file": "logs/kasumi-production-f8e9618-linux-offline-restart.log",
+      "sha256": "5547b3ea96e3224516145083a0b3f52539d3dacc47fd4fe1e39fc5840809fd40"
+    },
+    {
+      "file": "logs/kasumi-production-f8e9618-linux-offline-server.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "logs/kasumi-production-f8e9618-linux-offline-stop.log",
+      "sha256": "5547b3ea96e3224516145083a0b3f52539d3dacc47fd4fe1e39fc5840809fd40"
+    }
+  ]
+}

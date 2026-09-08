@@ -131,3 +131,38 @@ gate above and usable installation artifacts.
   spooling. Removing tenant-sized serialized buffers does not yet establish the
   bounded maintenance-workspace gate; streaming invariant verification remains
   necessary before the 3 GiB acceptance run.
+
+- `49e7182` integrates durable backup session creation, permanent completion/abort,
+  completed-root restore ownership and bounded aborted-namespace cleanup. The
+  source-purpose check also binds each root's exact recovery checkpoint to its
+  authenticated restore lineage. Full live verification still materializes a
+  logical tenant and is not a bounded-workspace acceptance result.
+- `708a881` adds the ordered tenant audit pruning primitive. Each applying
+  replica checks the exact hot prefix, verifies the original encryption purpose,
+  preserves its local ciphertext cache and installed external destination, then
+  publishes the matching archive root, byte/count totals and pruning watermark.
+  Two focused fault tests pass, and the frozen checkpoint passes strict workspace
+  Clippy. Automatic pruning remains disabled until snapshot and full-backup
+  dependency transfer is complete. Removing the old hot-record count setting,
+  reserving shared node maintenance capacity and runtime S3 installation remain
+  open; the new byte-budget fields do not complete those requirements.
+- `b7d0754` integrates permanent local signer trust, generation fences and a
+  separate historical verification path. Runtime lease envelopes and distributed
+  activation/retirement coordination remain unwired.
+- `4f4e203` integrates protected service-audit status/export/archive verification
+  through native SDK and CLI. Export attempts retain their original stream/end
+  and endpoint/trust/resource bindings; current Control policy, original
+  credentials and independent audit-store access fence response release. The
+  implementation branch passed its real TLS acceptance and scoped strict checks;
+  final integration gates remain open.
+- Frozen `18667b9` workspace validation finished with 423 passed, one failed and
+  two ignored tests. The failure was an in-memory fault fixture without a durable
+  audit archive; `708a881` supplies an explicit private archive. Results and exact
+  executable hashes are retained in `docs/evidence/integration-18667b9-20260908`.
+- Intermediate Linux ARM64 production binaries at `f8e9618` built successfully
+  without fixture features. An offline installation passed initialization,
+  configuration and private-file checks, native renewal, stopped administrator
+  recovery, restart and MCP discovery over TLS 1.3. Source, configuration,
+  executable hashes and failed harness attempts are retained in
+  `docs/evidence/linux-arm64-f8e9618-20260908`. These precede current integration
+  and do not close final platform, recovery, capacity or endurance gates.

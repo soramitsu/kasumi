@@ -1,5 +1,6 @@
 # Official Docker Hub rust:1.97.1-bookworm, resolved 2026-09-08.
-FROM rust:1.97.1-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97
+ARG RUST_BUILD_IMAGE=rust:1.97.1-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97
+FROM ${RUST_BUILD_IMAGE}
 RUN apt-get update \
     && apt-get install -y --no-install-recommends clang cmake python3 ripgrep \
     && rm -rf /var/lib/apt/lists/*
