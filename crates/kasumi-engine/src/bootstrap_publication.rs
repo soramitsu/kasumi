@@ -43,14 +43,17 @@ impl Publication {
         let registration = restored.publication_registration();
         self.deadline
             .blocking(workspace, registration, move || {
-                // Cancellation must not release either source/target ownership,
-                // the bootstrap gate or workspace before this actual job drains.
-                self.check()?;
-                bind_deployment(&self.stores, &binding)?;
-                self.check()?;
-                persist_new_checked(&self.stores, &restored.bytes, || self.check())?;
-                self.check()?;
-                Ok((restored, gate))
+                // Declare the serial guard first so error cleanup destroys stores
+                // and prepared state before releasing bootstrap serialization.
+                let serial = gate;
+                let prepared = restored;
+                let publication = self;
+                publication.check()?;
+                bind_deployment(&publication.stores, &binding)?;
+                publication.check()?;
+                persist_new_checked(&publication.stores, &prepared.bytes, || publication.check())?;
+                publication.check()?;
+                Ok((prepared, serial))
             })
             .await
     }
