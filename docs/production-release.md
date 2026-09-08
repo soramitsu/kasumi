@@ -587,3 +587,13 @@ a read-only quota getter or caller capacity claim cannot close this dependency.
   no candidate was produced. The subsequent owned VM expansion to16GiB is bound
   separately in `docs/evidence/linux-reference-memory-expansion-20260908` and
   does not amend the failed result. A fresh complete run is required.
+
+- `036eeff` isolates the native network benchmark from all server/engine/store
+  fixture dependencies. Embedded and loopback fixture capabilities are explicit,
+  historical matrix reports declare that scope, and frozen functional gates now
+  require the production network driver graph/build plus actual compiled-feature
+  and executable validation. Two credential tests, strict workspace Clippy,
+  formatting and all19 Python tests pass. Combined `b3c2c45` all-target/all-feature
+  workspace check passes in65s. Evidence is in
+  `docs/evidence/production-network-feature-isolation-20260908`; no new native
+  capacity or final production benchmark execution is claimed.

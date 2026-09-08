@@ -1,0 +1,35 @@
+{
+  "source_commit": "036eeff52f1ef22896e21f8851280626e7cdb7f9",
+  "source_tree": "1a11f19e6c53c9e09e8a5ac68f7c28dc2163838a",
+  "gates": {
+    "network_tests": "2 passed; build30.00s/test0.03s; final Rust/manifest content, before final Python-only artifact validator",
+    "strict_workspace_clippy": "All targets/all features; final036eeff; passed65s",
+    "python": "All19 tests passed1.184s on036eeff",
+    "format": "passed",
+    "dependency_tree": "actual network normal/build graph contains no Kasumi server/engine/store/Raft or fixture features"
+  },
+  "binary": {
+    "path": "/tmp/kasumi-production-root-target/debug/deps/kasumi_bench_network-1aac7a782e6f4c26",
+    "sha256": "8a8deccef6cba1677c1b7623a470edd635e46339a123507c3d9fee377e5b04c1",
+    "profile": "test, not production release"
+  },
+  "combined_check": {
+    "source": "b3c2c45b3da6ae15b57c487dff66e57c6230e5e9",
+    "result": "All-target/all-feature workspace check passed65s; no full test execution from check"
+  },
+  "files": {
+    "kasumi-benchmark-network-features.log": "d404cc6cce5073e5a661443301344b0cea2e8101242db72eb641b66d6505ad91",
+    "kasumi-network-feature-tests.log": "4391c6c267c438b2701de5e0dddaa20a6a74688cc9cc89ad8a3575d766750b16",
+    "kasumi-network-feature-clippy.log": "32b34db42350c0b2cb33a167a677b791b9ebabe18ec1ec4792fccae5d2d1034c",
+    "kasumi-network-feature-python.log": "314b190854975f3faed98def16442e2d5a07cde87523edb5d0158800c7d11672",
+    "kasumi-network-feature-python-final.log": "3aaddaf369bd0ae5f21a157f6ce279c104b7706bc7a6571c0caec12d3e1a353f",
+    "kasumi-network-feature-format.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "kasumi-network-feature-test-executable.sha256": "85eccd1a05167daa3f59cc44fffe87d200026c8230fa1eb5873d3dcb228dbacb",
+    "kasumi-combined-route-staged-issuer-check.log": "32b34db42350c0b2cb33a167a677b791b9ebabe18ec1ec4792fccae5d2d1034c"
+  },
+  "limitations": [
+    "No final release network executable or actual native capacity/load gate from this checkpoint.",
+    "Historical embedded/loopback matrix still explicitly requires fixture capabilities and cannot certify production binaries.",
+    "The next native capacity driver is separate unvalidated source work; it is not included in036eeff or this evidence."
+  ]
+}

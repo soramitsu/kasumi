@@ -1,0 +1,494 @@
+kasumi-bench v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-bench) network
+anyhow v1.0.104 default,std
+hex v0.4.3 alloc,default,std
+kasumi-client v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-client) 
+anyhow v1.0.104 default,std
+hex v0.4.3 alloc,default,std
+kasumi-clock v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-clock) 
+anyhow v1.0.104 default,std
+libc v0.2.189 default,std
+kasumi-serving v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-serving) 
+anyhow v1.0.104 default,std
+hex v0.4.3 alloc,default,std
+kasumi-clock v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-clock)  (*)
+kasumi-types v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-types) 
+anyhow v1.0.104 default,std
+imbl v7.0.1 serde
+archery v1.2.3 
+bitmaps v3.2.1 (/private/tmp/kasumi-production-drain-validation/vendor/bitmaps-3.2.1) default,std
+equivalent v1.0.2 
+imbl-sized-chunks v0.1.3 default,std
+bitmaps v3.2.1 (/private/tmp/kasumi-production-drain-validation/vendor/bitmaps-3.2.1) default,std
+rand_core v0.9.5 
+rand_xoshiro v0.7.0 
+rand_core v0.9.5 
+serde_core v1.0.229 default,rc,result,std
+wide v0.7.33 default,std
+bytemuck v1.25.2 
+safe_arch v0.7.4 bytemuck,default
+bytemuck v1.25.2 
+version_check v0.9.5 
+kasumi-clock v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-clock)  (*)
+serde v1.0.229 default,derive,rc,serde_derive,std
+serde_core v1.0.229 default,rc,result,std
+serde_derive v1.0.229 (proc-macro) default
+proc-macro2 v1.0.107 default,proc-macro
+unicode-ident v1.0.24 
+quote v1.0.47 default,proc-macro
+proc-macro2 v1.0.107 default,proc-macro (*)
+syn v3.0.5 clone-impls,default,derive,extra-traits,full,parsing,printing,proc-macro,visit-mut
+proc-macro2 v1.0.107 default,proc-macro (*)
+quote v1.0.47 default,proc-macro (*)
+unicode-ident v1.0.24 
+serde_json v1.0.151 arbitrary_precision,default,std
+itoa v1.0.18 
+memchr v2.8.3 alloc,default,std
+serde_core v1.0.229 default,rc,result,std
+zmij v1.0.23 
+sha2 v0.10.9 default,std
+cfg-if v1.0.4 
+cpufeatures v0.2.17 
+libc v0.2.189 default,std
+digest v0.10.7 alloc,block-buffer,core-api,default,std
+block-buffer v0.10.4 
+generic-array v0.14.7 more_lengths
+typenum v1.20.1 
+version_check v0.9.5 
+crypto-common v0.1.7 std
+generic-array v0.14.7 more_lengths (*)
+typenum v1.20.1 
+thiserror v2.0.20 default,std
+thiserror-impl v2.0.20 (proc-macro) 
+proc-macro2 v1.0.107 default,proc-macro (*)
+quote v1.0.47 default,proc-macro (*)
+syn v3.0.5 clone-impls,default,derive,extra-traits,full,parsing,printing,proc-macro,visit-mut (*)
+uuid v1.26.0 default,rng,serde,std,v4
+getrandom v0.4.3 
+cfg-if v1.0.4 
+libc v0.2.189 default,std
+serde_core v1.0.229 default,rc,result,std
+ring v0.17.14 alloc,default,dev_urandom_fallback
+cfg-if v1.0.4 
+getrandom v0.2.17 
+cfg-if v1.0.4 
+libc v0.2.189 default,std
+libc v0.2.189 default,std
+untrusted v0.9.0 
+cc v1.4.5 
+find-msvc-tools v0.1.12 
+shlex v2.0.1 default,std
+serde v1.0.229 default,derive,rc,serde_derive,std (*)
+serde_json v1.0.151 arbitrary_precision,default,std (*)
+sha2 v0.10.9 default,std (*)
+tokio v1.53.1 bytes,default,fs,full,io-std,io-util,libc,macros,mio,net,parking_lot,process,rt,rt-multi-thread,signal,signal-hook-registry,socket2,sync,time,tokio-macros
+bytes v1.12.1 default,std
+libc v0.2.189 default,std
+mio v1.2.3 net,os-ext,os-poll
+libc v0.2.189 default,std
+parking_lot v0.12.5 default
+lock_api v0.4.14 atomic_usize,default
+scopeguard v1.2.0 
+parking_lot_core v0.9.12 
+cfg-if v1.0.4 
+libc v0.2.189 default,std
+smallvec v1.16.0 const_generics,const_new
+pin-project-lite v0.2.17 
+signal-hook-registry v1.4.8 
+errno v0.3.14 default,std
+libc v0.2.189 default,std
+libc v0.2.189 default,std
+socket2 v0.6.5 all
+libc v0.2.189 default,std
+tokio-macros v2.7.2 (proc-macro) 
+proc-macro2 v1.0.107 default,proc-macro (*)
+quote v1.0.47 default,proc-macro (*)
+syn v3.0.5 clone-impls,default,derive,extra-traits,full,parsing,printing,proc-macro,visit-mut (*)
+url v2.5.8 default,std
+form_urlencoded v1.2.2 alloc,default,std
+percent-encoding v2.3.2 alloc,default,std
+idna v1.1.0 alloc,compiled_data,std
+idna_adapter v1.2.2 compiled_data
+icu_normalizer v2.3.0 compiled_data
+icu_collections v2.3.0 
+displaydoc v0.2.7 (proc-macro) 
+proc-macro2 v1.0.107 default,proc-macro (*)
+quote v1.0.47 default,proc-macro (*)
+syn v3.0.5 clone-impls,default,derive,extra-traits,full,parsing,printing,proc-macro,visit-mut (*)
+potential_utf v0.1.6 zerovec
+zerovec v0.11.8 derive,yoke
+yoke v0.8.3 derive,zerofrom
+stable_deref_trait v1.2.1 
+yoke-derive v0.8.2 (proc-macro) 
+proc-macro2 v1.0.107 default,proc-macro (*)
+quote v1.0.47 default,proc-macro (*)
+syn v2.0.119 clone-impls,default,derive,extra-traits,fold,full,parsing,printing,proc-macro,visit,visit-mut
+proc-macro2 v1.0.107 default,proc-macro (*)
+quote v1.0.47 default,proc-macro (*)
+unicode-ident v1.0.24 
+synstructure v0.13.2 default,proc-macro
+proc-macro2 v1.0.107 default,proc-macro (*)
+quote v1.0.47 default,proc-macro (*)
+syn v2.0.119 clone-impls,default,derive,extra-traits,fold,full,parsing,printing,proc-macro,visit,visit-mut (*)
+zerofrom v0.1.8 derive
+zerofrom-derive v0.1.7 (proc-macro) 
+proc-macro2 v1.0.107 default,proc-macro (*)
+quote v1.0.47 default,proc-macro (*)
+syn v2.0.119 clone-impls,default,derive,extra-traits,fold,full,parsing,printing,proc-macro,visit,visit-mut (*)
+synstructure v0.13.2 default,proc-macro (*)
+zerofrom v0.1.8 derive (*)
+zerovec-derive v0.11.6 (proc-macro) 
+proc-macro2 v1.0.107 default,proc-macro (*)
+quote v1.0.47 default,proc-macro (*)
+syn v3.0.5 clone-impls,default,derive,extra-traits,full,parsing,printing,proc-macro,visit-mut (*)
+utf8_iter v1.0.4 
+yoke v0.8.3 derive,zerofrom (*)
+zerofrom v0.1.8 derive (*)
+zerovec v0.11.8 derive,yoke (*)
+icu_normalizer_data v2.3.0 
+icu_provider v2.3.1 baked
+displaydoc v0.2.7 (proc-macro)  (*)
+icu_locale_core v2.3.0 zerovec
+displaydoc v0.2.7 (proc-macro)  (*)
+litemap v0.8.3 
+tinystr v0.8.4 zerovec
+displaydoc v0.2.7 (proc-macro)  (*)
+zerovec v0.11.8 derive,yoke (*)
+writeable v0.6.4 
+zerovec v0.11.8 derive,yoke (*)
+writeable v0.6.4 
+yoke v0.8.3 derive,zerofrom (*)
+zerofrom v0.1.8 derive (*)
+zerotrie v0.2.5 yoke,zerofrom
+displaydoc v0.2.7 (proc-macro)  (*)
+yoke v0.8.3 derive,zerofrom (*)
+zerofrom v0.1.8 derive (*)
+zerovec v0.11.8 derive,yoke (*)
+smallvec v1.16.0 const_generics,const_new
+zerovec v0.11.8 derive,yoke (*)
+icu_properties v2.3.0 compiled_data
+displaydoc v0.2.7 (proc-macro)  (*)
+icu_collections v2.3.0  (*)
+icu_locale_core v2.3.0 zerovec (*)
+icu_properties_data v2.3.0 
+icu_provider v2.3.1 baked (*)
+zerotrie v0.2.5 yoke,zerofrom (*)
+zerovec v0.11.8 derive,yoke (*)
+smallvec v1.16.0 const_generics,const_new
+utf8_iter v1.0.4 
+percent-encoding v2.3.2 alloc,default,std
+uuid v1.26.0 default,rng,serde,std,v4 (*)
+kasumi-transport v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-transport) 
+anyhow v1.0.104 default,std
+http v1.5.0 default,std
+bytes v1.12.1 default,std
+itoa v1.0.18 
+hyper-util v0.1.20 client,client-legacy,client-proxy,default,http1,http2,server,server-auto,service,tokio
+base64 v0.22.1 alloc,default,std
+bytes v1.12.1 default,std
+futures-channel v0.3.34 alloc,default,std
+futures-core v0.3.34 alloc,default,std
+futures-util v0.3.34 alloc,slab
+futures-core v0.3.34 alloc,default,std
+futures-task v0.3.34 alloc
+pin-project-lite v0.2.17 
+slab v0.4.12 default,std
+http v1.5.0 default,std (*)
+http-body v1.1.0 
+bytes v1.12.1 default,std
+http v1.5.0 default,std (*)
+hyper v1.11.1 client,default,http1,http2,server
+atomic-waker v1.1.2 
+bytes v1.12.1 default,std
+futures-channel v0.3.34 alloc,default,std (*)
+futures-core v0.3.34 alloc,default,std
+h2 v0.4.19 
+atomic-waker v1.1.2 
+bytes v1.12.1 default,std
+fnv v1.0.7 default,std
+futures-core v0.3.34 alloc,default,std
+futures-sink v0.3.34 alloc,default,std
+http v1.5.0 default,std (*)
+indexmap v2.14.1 default,std
+equivalent v1.0.2 
+hashbrown v0.17.1 
+slab v0.4.12 default,std
+tokio v1.53.1 bytes,default,fs,full,io-std,io-util,libc,macros,mio,net,parking_lot,process,rt,rt-multi-thread,signal,signal-hook-registry,socket2,sync,time,tokio-macros (*)
+tokio-util v0.7.19 codec,default,io,libc
+bytes v1.12.1 default,std
+futures-core v0.3.34 alloc,default,std
+futures-sink v0.3.34 alloc,default,std
+libc v0.2.189 default,std
+pin-project-lite v0.2.17 
+tokio v1.53.1 bytes,default,fs,full,io-std,io-util,libc,macros,mio,net,parking_lot,process,rt,rt-multi-thread,signal,signal-hook-registry,socket2,sync,time,tokio-macros (*)
+tracing v0.1.44 attributes,default,std,tracing-attributes
+pin-project-lite v0.2.17 
+tracing-attributes v0.1.31 (proc-macro) 
+proc-macro2 v1.0.107 default,proc-macro (*)
+quote v1.0.47 default,proc-macro (*)
+syn v2.0.119 clone-impls,default,derive,extra-traits,fold,full,parsing,printing,proc-macro,visit,visit-mut (*)
+tracing-core v0.1.36 once_cell,std
+once_cell v1.21.4 alloc,default,race,std
+http v1.5.0 default,std (*)
+http-body v1.1.0  (*)
+httparse v1.10.1 default,std
+httpdate v1.0.3 
+itoa v1.0.18 
+pin-project-lite v0.2.17 
+smallvec v1.16.0 const_generics,const_new
+tokio v1.53.1 bytes,default,fs,full,io-std,io-util,libc,macros,mio,net,parking_lot,process,rt,rt-multi-thread,signal,signal-hook-registry,socket2,sync,time,tokio-macros (*)
+want v0.3.1 
+try-lock v0.2.5 
+ipnet v2.12.1 default,std
+libc v0.2.189 default,std
+percent-encoding v2.3.2 alloc,default,std
+pin-project-lite v0.2.17 
+socket2 v0.6.5 all (*)
+tokio v1.53.1 bytes,default,fs,full,io-std,io-util,libc,macros,mio,net,parking_lot,process,rt,rt-multi-thread,signal,signal-hook-registry,socket2,sync,time,tokio-macros (*)
+tower-service v0.3.3 
+tracing v0.1.44 attributes,default,std,tracing-attributes (*)
+libc v0.2.189 default,std
+rustls v0.23.43 log,logging,ring,std,tls12
+log v0.4.34 
+once_cell v1.21.4 alloc,default,race,std
+ring v0.17.14 alloc,default,dev_urandom_fallback (*)
+rustls-pki-types v1.15.1 alloc,default,std
+zeroize v1.9.0 alloc,default
+rustls-webpki v0.103.15 alloc,ring,std
+ring v0.17.14 alloc,default,dev_urandom_fallback (*)
+rustls-pki-types v1.15.1 alloc,default,std (*)
+untrusted v0.9.0 
+subtle v2.6.1 
+zeroize v1.9.0 alloc,default
+sha2 v0.10.9 default,std (*)
+tokio v1.53.1 bytes,default,fs,full,io-std,io-util,libc,macros,mio,net,parking_lot,process,rt,rt-multi-thread,signal,signal-hook-registry,socket2,sync,time,tokio-macros (*)
+tokio-rustls v0.26.5 logging,ring,tls12
+rustls v0.23.43 log,logging,ring,std,tls12 (*)
+tokio v1.53.1 bytes,default,fs,full,io-std,io-util,libc,macros,mio,net,parking_lot,process,rt,rt-multi-thread,signal,signal-hook-registry,socket2,sync,time,tokio-macros (*)
+tonic v0.14.6 _tls-any,channel,codegen,router,server,tls-connect-info,tls-ring,transport
+async-trait v0.1.92 (proc-macro) 
+proc-macro2 v1.0.107 default,proc-macro (*)
+quote v1.0.47 default,proc-macro (*)
+syn v3.0.5 clone-impls,default,derive,extra-traits,full,parsing,printing,proc-macro,visit-mut (*)
+axum v0.8.9 
+axum-core v0.5.6 
+bytes v1.12.1 default,std
+futures-core v0.3.34 alloc,default,std
+http v1.5.0 default,std (*)
+http-body v1.1.0  (*)
+http-body-util v0.1.5 default
+bytes v1.12.1 default,std
+futures-core v0.3.34 alloc,default,std
+http v1.5.0 default,std (*)
+http-body v1.1.0  (*)
+pin-project-lite v0.2.17 
+mime v0.3.17 
+pin-project-lite v0.2.17 
+sync_wrapper v1.0.2 futures,futures-core
+futures-core v0.3.34 alloc,default,std
+tower-layer v0.3.3 
+tower-service v0.3.3 
+bytes v1.12.1 default,std
+futures-util v0.3.34 alloc,slab (*)
+http v1.5.0 default,std (*)
+http-body v1.1.0  (*)
+http-body-util v0.1.5 default (*)
+itoa v1.0.18 
+matchit v0.8.4 default
+memchr v2.8.3 alloc,default,std
+mime v0.3.17 
+percent-encoding v2.3.2 alloc,default,std
+pin-project-lite v0.2.17 
+serde_core v1.0.229 default,rc,result,std
+sync_wrapper v1.0.2 futures,futures-core (*)
+tower v0.5.3 balance,buffer,discover,futures-core,futures-util,indexmap,limit,load,load-shed,make,pin-project-lite,ready-cache,retry,slab,sync_wrapper,timeout,tokio,tokio-util,tracing,util
+futures-core v0.3.34 alloc,default,std
+futures-util v0.3.34 alloc,slab (*)
+indexmap v2.14.1 default,std (*)
+pin-project-lite v0.2.17 
+slab v0.4.12 default,std
+sync_wrapper v1.0.2 futures,futures-core (*)
+tokio v1.53.1 bytes,default,fs,full,io-std,io-util,libc,macros,mio,net,parking_lot,process,rt,rt-multi-thread,signal,signal-hook-registry,socket2,sync,time,tokio-macros (*)
+tokio-util v0.7.19 codec,default,io,libc (*)
+tower-layer v0.3.3 
+tower-service v0.3.3 
+tracing v0.1.44 attributes,default,std,tracing-attributes (*)
+tower-layer v0.3.3 
+tower-service v0.3.3 
+base64 v0.22.1 alloc,default,std
+bytes v1.12.1 default,std
+h2 v0.4.19  (*)
+http v1.5.0 default,std (*)
+http-body v1.1.0  (*)
+http-body-util v0.1.5 default (*)
+hyper v1.11.1 client,default,http1,http2,server (*)
+hyper-timeout v0.5.2 
+hyper v1.11.1 client,default,http1,http2,server (*)
+hyper-util v0.1.20 client,client-legacy,client-proxy,default,http1,http2,server,server-auto,service,tokio (*)
+pin-project-lite v0.2.17 
+tokio v1.53.1 bytes,default,fs,full,io-std,io-util,libc,macros,mio,net,parking_lot,process,rt,rt-multi-thread,signal,signal-hook-registry,socket2,sync,time,tokio-macros (*)
+tower-service v0.3.3 
+hyper-util v0.1.20 client,client-legacy,client-proxy,default,http1,http2,server,server-auto,service,tokio (*)
+percent-encoding v2.3.2 alloc,default,std
+pin-project v1.1.13 
+pin-project-internal v1.1.13 (proc-macro) 
+proc-macro2 v1.0.107 default,proc-macro (*)
+quote v1.0.47 default,proc-macro (*)
+syn v2.0.119 clone-impls,default,derive,extra-traits,fold,full,parsing,printing,proc-macro,visit,visit-mut (*)
+socket2 v0.6.5 all (*)
+sync_wrapper v1.0.2 futures,futures-core (*)
+tokio v1.53.1 bytes,default,fs,full,io-std,io-util,libc,macros,mio,net,parking_lot,process,rt,rt-multi-thread,signal,signal-hook-registry,socket2,sync,time,tokio-macros (*)
+tokio-rustls v0.26.5 logging,ring,tls12 (*)
+tokio-stream v0.1.19 net
+futures-core v0.3.34 alloc,default,std
+pin-project-lite v0.2.17 
+tokio v1.53.1 bytes,default,fs,full,io-std,io-util,libc,macros,mio,net,parking_lot,process,rt,rt-multi-thread,signal,signal-hook-registry,socket2,sync,time,tokio-macros (*)
+tower v0.5.3 balance,buffer,discover,futures-core,futures-util,indexmap,limit,load,load-shed,make,pin-project-lite,ready-cache,retry,slab,sync_wrapper,timeout,tokio,tokio-util,tracing,util (*)
+tower-layer v0.3.3 
+tower-service v0.3.3 
+tracing v0.1.44 attributes,default,std,tracing-attributes (*)
+tower v0.5.3 balance,buffer,discover,futures-core,futures-util,indexmap,limit,load,load-shed,make,pin-project-lite,ready-cache,retry,slab,sync_wrapper,timeout,tokio,tokio-util,tracing,util (*)
+url v2.5.8 default,std (*)
+zeroize v1.9.0 alloc,default
+kasumi-types v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-types)  (*)
+prost v0.14.4 default,derive,std
+bytes v1.12.1 default,std
+prost-derive v0.14.4 (proc-macro) 
+anyhow v1.0.104 default,std
+itertools v0.14.0 default,use_alloc,use_std
+either v1.18.0 std,use_std
+proc-macro2 v1.0.107 default,proc-macro (*)
+quote v1.0.47 default,proc-macro (*)
+syn v2.0.119 clone-impls,default,derive,extra-traits,fold,full,parsing,printing,proc-macro,visit,visit-mut (*)
+serde v1.0.229 default,derive,rc,serde_derive,std (*)
+serde_json v1.0.151 arbitrary_precision,default,std (*)
+thiserror v2.0.20 default,std (*)
+tokio v1.53.1 bytes,default,fs,full,io-std,io-util,libc,macros,mio,net,parking_lot,process,rt,rt-multi-thread,signal,signal-hook-registry,socket2,sync,time,tokio-macros (*)
+tonic v0.14.6 _tls-any,channel,codegen,router,server,tls-connect-info,tls-ring,transport (*)
+tonic-prost v0.14.6 
+bytes v1.12.1 default,std
+prost v0.14.4 default,derive,std (*)
+tonic v0.14.6 _tls-any,channel,codegen,router,server,tls-connect-info,tls-ring,transport (*)
+url v2.5.8 default,std (*)
+uuid v1.26.0 default,rng,serde,std,v4 (*)
+prost-build v0.14.4 cleanup-markdown,default,format
+heck v0.5.0 
+itertools v0.14.0 default,use_alloc,use_std (*)
+log v0.4.34 
+multimap v0.10.1 
+petgraph v0.8.3 std
+fixedbitset v0.5.7 
+hashbrown v0.15.5 default-hasher,inline-more
+foldhash v0.1.5 
+indexmap v2.14.1 std
+equivalent v1.0.2 
+hashbrown v0.17.1 
+prettyplease v0.2.37 
+proc-macro2 v1.0.107 default,proc-macro (*)
+syn v2.0.119 clone-impls,default,derive,extra-traits,fold,full,parsing,printing,proc-macro,visit,visit-mut (*)
+prost v0.14.4 derive,std
+bytes v1.12.1 
+prost-derive v0.14.4 (proc-macro)  (*)
+prost-types v0.14.4 default,std
+prost v0.14.4 derive,std (*)
+pulldown-cmark v0.13.4 
+bitflags v2.13.1 std
+memchr v2.8.3 alloc,default,std
+unicase v2.9.0 
+pulldown-cmark-to-cmark v22.0.1 
+pulldown-cmark v0.13.4  (*)
+regex v1.13.1 std,unicode-bool
+regex-automata v0.4.18 alloc,meta,nfa-pikevm,nfa-thompson,std,syntax,unicode-bool
+regex-syntax v0.8.11 std,unicode-bool
+regex-syntax v0.8.11 std,unicode-bool
+syn v2.0.119 clone-impls,default,derive,extra-traits,fold,full,parsing,printing,proc-macro,visit,visit-mut (*)
+tempfile v3.27.0 default,getrandom
+fastrand v2.5.0 alloc,default,std
+getrandom v0.4.3  (*)
+once_cell v1.21.4 alloc,race,std
+rustix v1.1.4 alloc,default,fs,std
+bitflags v2.13.1 std
+errno v0.3.14 std
+libc v0.2.189 std
+libc v0.2.189 std
+protoc-bin-vendored v3.2.0 
+protoc-bin-vendored-linux-aarch_64 v3.2.0 
+protoc-bin-vendored-linux-ppcle_64 v3.2.0 
+protoc-bin-vendored-linux-s390_64 v3.2.0 
+protoc-bin-vendored-linux-x86_32 v3.2.0 
+protoc-bin-vendored-linux-x86_64 v3.2.0 
+protoc-bin-vendored-macos-aarch_64 v3.2.0 
+protoc-bin-vendored-macos-x86_64 v3.2.0 
+protoc-bin-vendored-win32 v3.2.0 
+tonic-prost-build v0.14.6 cleanup-markdown,default,transport
+prettyplease v0.2.37  (*)
+proc-macro2 v1.0.107 default,proc-macro (*)
+prost-build v0.14.4 cleanup-markdown,default,format (*)
+prost-types v0.14.4 default,std (*)
+quote v1.0.47 default,proc-macro (*)
+syn v2.0.119 clone-impls,default,derive,extra-traits,fold,full,parsing,printing,proc-macro,visit,visit-mut (*)
+tempfile v3.27.0 default,getrandom (*)
+tonic-build v0.14.6 transport
+prettyplease v0.2.37  (*)
+proc-macro2 v1.0.107 default,proc-macro (*)
+quote v1.0.47 default,proc-macro (*)
+syn v2.0.119 clone-impls,default,derive,extra-traits,fold,full,parsing,printing,proc-macro,visit,visit-mut (*)
+kasumi-transport v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-transport)  (*)
+kasumi-types v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-types)  (*)
+libc v0.2.189 default,std
+reqwest v0.12.28 __rustls,__rustls-ring,__tls,json,rustls-tls,rustls-tls-webpki-roots,rustls-tls-webpki-roots-no-provider
+base64 v0.22.1 alloc,default,std
+bytes v1.12.1 default,std
+futures-core v0.3.34 alloc,default,std
+http v1.5.0 default,std (*)
+http-body v1.1.0  (*)
+http-body-util v0.1.5 default (*)
+hyper v1.11.1 client,default,http1,http2,server (*)
+hyper-rustls v0.27.9 http1,ring,tls12,webpki-roots,webpki-tokio
+http v1.5.0 default,std (*)
+hyper v1.11.1 client,default,http1,http2,server (*)
+hyper-util v0.1.20 client,client-legacy,client-proxy,default,http1,http2,server,server-auto,service,tokio (*)
+rustls v0.23.43 log,logging,ring,std,tls12 (*)
+tokio v1.53.1 bytes,default,fs,full,io-std,io-util,libc,macros,mio,net,parking_lot,process,rt,rt-multi-thread,signal,signal-hook-registry,socket2,sync,time,tokio-macros (*)
+tokio-rustls v0.26.5 logging,ring,tls12 (*)
+tower-service v0.3.3 
+webpki-roots v1.0.9 
+rustls-pki-types v1.15.1 alloc,default,std (*)
+hyper-util v0.1.20 client,client-legacy,client-proxy,default,http1,http2,server,server-auto,service,tokio (*)
+log v0.4.34 
+percent-encoding v2.3.2 alloc,default,std
+pin-project-lite v0.2.17 
+rustls v0.23.43 log,logging,ring,std,tls12 (*)
+rustls-pki-types v1.15.1 alloc,default,std (*)
+serde v1.0.229 default,derive,rc,serde_derive,std (*)
+serde_json v1.0.151 arbitrary_precision,default,std (*)
+serde_urlencoded v0.7.1 
+form_urlencoded v1.2.2 alloc,default,std (*)
+itoa v1.0.18 
+ryu v1.0.23 
+serde v1.0.229 default,derive,rc,serde_derive,std (*)
+sync_wrapper v1.0.2 futures,futures-core (*)
+tokio v1.53.1 bytes,default,fs,full,io-std,io-util,libc,macros,mio,net,parking_lot,process,rt,rt-multi-thread,signal,signal-hook-registry,socket2,sync,time,tokio-macros (*)
+tokio-rustls v0.26.5 logging,ring,tls12 (*)
+tower v0.5.3 balance,buffer,discover,futures-core,futures-util,indexmap,limit,load,load-shed,make,pin-project-lite,ready-cache,retry,slab,sync_wrapper,timeout,tokio,tokio-util,tracing,util (*)
+tower-http v0.6.11 follow-redirect,futures-util,tower
+bitflags v2.13.1 std
+bytes v1.12.1 default,std
+futures-util v0.3.34 alloc,slab (*)
+http v1.5.0 default,std (*)
+http-body v1.1.0  (*)
+pin-project-lite v0.2.17 
+tower v0.5.3 balance,buffer,discover,futures-core,futures-util,indexmap,limit,load,load-shed,make,pin-project-lite,ready-cache,retry,slab,sync_wrapper,timeout,tokio,tokio-util,tracing,util (*)
+tower-layer v0.3.3 
+tower-service v0.3.3 
+url v2.5.8 default,std (*)
+tower-service v0.3.3 
+url v2.5.8 default,std (*)
+webpki-roots v1.0.9  (*)
+serde v1.0.229 default,derive,rc,serde_derive,std (*)
+serde_json v1.0.151 arbitrary_precision,default,std (*)
+sha2 v0.10.9 default,std (*)
+tempfile v3.27.0 default,getrandom (*)
+tokio v1.53.1 bytes,default,fs,full,io-std,io-util,libc,macros,mio,net,parking_lot,process,rt,rt-multi-thread,signal,signal-hook-registry,socket2,sync,time,tokio-macros (*)
+tonic v0.14.6 _tls-any,channel,codegen,router,server,tls-connect-info,tls-ring,transport (*)
+uuid v1.26.0 default,rng,serde,std,v4 (*)
+zeroize v1.9.0 alloc,default
