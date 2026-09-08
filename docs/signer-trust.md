@@ -419,3 +419,9 @@ revocation, or full issuer-drain coverage. Global retirement remains unavailable
 until every member of the frozen roster has enforced the required permanent stop
 or exact current publication and drain. A single acknowledgment never unfreezes
 admission or retires a generation globally.
+
+Authority reopen from an older Raft snapshot with newer durable authority rows
+is a separate required recovery gate. Current history checks reject replacing
+that state with an incomplete snapshot. A checkpoint-bound logical prefix and
+exact replay of later durable positions are still required; passing a manual
+snapshot validation plus ordinary restart does not certify that case.

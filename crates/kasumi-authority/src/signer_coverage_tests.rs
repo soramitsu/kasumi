@@ -228,15 +228,28 @@ async fn coverage_dispatch_precedes_permission_and_survives_exact_encrypted_rest
             .unwrap()
             .is_none()
     );
-    let permission_fence = authority
-        .authorize_signer_maintenance(context.clone())
-        .await
-        .unwrap();
+    let transport = Arc::new(UnavailableCoverageTransport {
+        authority: Arc::downgrade(&authority),
+        observed: std::sync::atomic::AtomicBool::new(false),
+    });
     authority
-        .coverage_permission_before_dispatch(&context, &permission_fence, &pending.dispatch)
-        .await
+        .install_signer_publication_transport(transport.clone())
         .unwrap();
-    drop(permission_fence);
+    assert_eq!(
+        authority
+            .signer_coverage(
+                context.clone(),
+                SignerCoverageRequest::Resume {
+                    operation_id: command.operation_id
+                }
+            )
+            .await
+            .err()
+            .unwrap()
+            .code,
+        ErrorCode::UnknownOutcome
+    );
+    assert!(transport.observed.load(Ordering::SeqCst));
     let permission = authority
         .backend
         .maintenance_status(local.operation_id)
@@ -319,4 +332,31 @@ async fn coverage_dispatch_precedes_permission_and_survives_exact_encrypted_rest
     assert!(historical.acknowledgment.is_none());
     drop(fence);
     fixture.close().await;
+}
+
+// A failed installed transport may exercise dispatch ordering but cannot
+// manufacture the SDK's opaque actual-native acknowledgment owner.
+struct UnavailableCoverageTransport {
+    authority: std::sync::Weak<IndependentAuthority>,
+    observed: std::sync::atomic::AtomicBool,
+}
+#[async_trait::async_trait]
+impl SignerPublicationTransport for UnavailableCoverageTransport {
+    async fn observe(
+        &self,
+        dispatch: &SignerCoverageDispatch,
+    ) -> anyhow::Result<kasumi_client::CurrentSignerPublication> {
+        let authority = self.authority.upgrade().unwrap();
+        let permission = authority
+            .backend
+            .maintenance_status(dispatch.command.publication.command().operation_id)?
+            .unwrap();
+        anyhow::ensure!(
+            permission.phase == AuthorityMaintenancePhase::Completed
+                && permission.progress_revision > dispatch.revision,
+            "transport dispatched before its durable original permission"
+        );
+        self.observed.store(true, Ordering::SeqCst);
+        anyhow::bail!("injected publication connection failure")
+    }
 }

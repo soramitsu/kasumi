@@ -117,7 +117,8 @@ impl IndependentAuthority {
                         publication: publication.response().clone(),
                     },
                 )
-                .await?;
+                .await
+                .map_err(unknown)?;
             publication.check(&status.dispatch).map_err(unknown)?;
             current_publication = Some(publication);
         }
