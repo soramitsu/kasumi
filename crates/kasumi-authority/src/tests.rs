@@ -35,6 +35,7 @@ struct Fixture {
     trust: AuthorityTrust,
     settings: AuthorityNodeSettings,
     signing: kasumi_serving::test_utils::FixtureAuthority,
+    signing_root: InstallationSigningRoot,
     readiness: Arc<TestMaintenanceTransport>,
 }
 impl Fixture {
@@ -93,6 +94,9 @@ impl Fixture {
                 },
             )]),
         };
+        let signing_root =
+            InstallationSigningRoot::from_pkcs8(manifest.signing_domain(0).unwrap(), key.as_ref())
+                .unwrap();
         let signing = root.install(manifest.clone(), 0).unwrap();
         let trust = signing.trust.clone();
         let installation = AuthorityInstallation {
@@ -101,7 +105,7 @@ impl Fixture {
         };
         let clock = Arc::new(Clock(AtomicU64::new(0)));
         let epoch = Arc::new(EpochClock::new(clock.clone(), Arc::new(Wall)).unwrap());
-        let settings = test_settings(ordinary_state_bytes);
+        let settings = test_settings(ordinary_state_bytes, signing.signer.certificate().clone());
         let readiness = Arc::new(TestMaintenanceTransport::default());
         let mut services = Vec::new();
         let mut stores = Vec::new();
@@ -163,6 +167,7 @@ impl Fixture {
             trust,
             settings,
             signing,
+            signing_root,
             readiness,
         };
         fixture.services[0].initialize().await.unwrap();
@@ -1000,7 +1005,10 @@ include!("target_stop_tests.rs");
 #[path = "issuer_tests.rs"]
 mod issuer_tests;
 
-fn test_settings(ordinary_state_bytes: u64) -> AuthorityNodeSettings {
+fn test_settings(
+    ordinary_state_bytes: u64,
+    initial_signer_certificate: SigningCertificate,
+) -> AuthorityNodeSettings {
     let installed_members: BTreeMap<_, _> = (1..=4)
         .map(|id| {
             (
@@ -1016,6 +1024,7 @@ fn test_settings(ordinary_state_bytes: u64) -> AuthorityNodeSettings {
         .collect();
     AuthorityNodeSettings {
         bootstrap: crate::AuthorityBootstrap {
+            initial_signer_certificate,
             administrators: BTreeSet::from(["operator".into()]),
             capacity: AuthorityCapacity {
                 max_tenants: 100,

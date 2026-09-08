@@ -4,7 +4,7 @@
 use super::*;
 
 pub struct AuthorityAdministrativeFence {
-    authority: Arc<IndependentAuthority>,
+    pub(super) authority: Arc<IndependentAuthority>,
     context: RequestContext,
     policy_epoch: u64,
     term: u64,
@@ -80,12 +80,12 @@ impl IndependentAuthority {
             }
             authorization.check()?;
             deadline.check().map_err(unavailable)?;
-            signer.check().map_err(unavailable)?;
+            self.check_active_signer(&signer)?;
             *current = signer.clone();
         }
         authorization.release().await.map_err(unknown)?;
         deadline.check().map_err(unknown)?;
-        signer.check().map_err(unknown)
+        self.check_active_signer(&signer).map_err(unknown)
     }
     pub async fn authorize_signer_maintenance(
         self: &Arc<Self>,

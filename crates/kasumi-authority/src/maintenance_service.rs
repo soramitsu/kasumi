@@ -295,7 +295,9 @@ impl IndependentAuthority {
                         .map_err(unknown)?;
                     }
                 }
-                AuthorityMaintenanceAction::SetCapacity { .. }
+                AuthorityMaintenanceAction::StageSignerGeneration { .. }
+                | AuthorityMaintenanceAction::ActivateSignerGeneration { .. }
+                | AuthorityMaintenanceAction::SetCapacity { .. }
                 | AuthorityMaintenanceAction::AuthorizeSignerTrust { .. } => {
                     return Err(Error::new(
                         ErrorCode::Corruption,

@@ -236,6 +236,7 @@ impl IndependentAuthority {
             )
         })?;
         let max = self.installation().manifest.max_lease_ms;
+        self.check_active_signer(&signer)?;
         let signed = signer
             .sign_lifecycle_lease(LifecycleLeaseClaims {
                 request: request.clone(),

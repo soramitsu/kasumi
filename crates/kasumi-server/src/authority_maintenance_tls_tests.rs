@@ -170,6 +170,7 @@ async fn actual_tls_peer_readiness_enrolls_replaces_and_fences_revoked_member() 
     };
     let signing = root.install(installation.manifest.clone(), 0).unwrap();
     let bootstrap = AuthorityBootstrap {
+        initial_signer_certificate: signing.signer.certificate().clone(),
         administrators: BTreeSet::from(["operator".into()]),
         capacity: AuthorityCapacity {
             max_tenants: 100,

@@ -104,6 +104,7 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
             id,
             kasumi_authority::AuthorityNodeSettings {
                 bootstrap: kasumi_authority::AuthorityBootstrap {
+                    initial_signer_certificate: issuer_signing.signer.certificate().clone(),
                     administrators: BTreeSet::from(["operator".into()]),
                     capacity: kasumi_serving::AuthorityCapacity {
                         max_tenants: 10,
