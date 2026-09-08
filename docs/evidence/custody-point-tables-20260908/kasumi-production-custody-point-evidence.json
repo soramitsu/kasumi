@@ -1,0 +1,12 @@
+{
+  "source": "b2fd97d939bfa815b757c935efc6c9deb2c08600",
+  "source_tree": "f5020ebf67f146b55baf0dbeeda985a2f1e46735",
+  "lockfile_sha256": "a4a3883969dc9486548a1aea841ecf45c482c99e4ea1e0d47b56f6c52b2afa08",
+  "log_sha256": "3d13b711ccc90b0cd3d87589dfe6dce85392e1d1421995761034c003690d2e9e",
+  "test_executable": "/tmp/kasumi-production-validation-target/debug/deps/kasumi_raft-36014a94c98e9cab",
+  "test_executable_sha256": "bf1aea86b8dd231263cb8f74d95c57fb88f6de41756431153f0f8bd18ff06774",
+  "result": [
+    "ok. 38 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 71.24s"
+  ],
+  "limitation": "Intermediate macOS ARM64 custody point-table gate; custody snapshots and fixed lifetime limits still remain."
+}
