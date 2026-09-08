@@ -1144,13 +1144,14 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
     );
     let publication_bearer = dir.path().join("publication.bearer");
     kasumi_store::private_files::create(&publication_bearer, operator.as_bytes()).unwrap();
+    let publication_transport = Arc::new(CoverageTransport {
+        config: config.clone(),
+        trust: trust.clone(),
+        bearer_file: publication_bearer,
+        expire_first: std::sync::atomic::AtomicBool::new(true),
+    });
     leader
-        .install_signer_publication_transport(Arc::new(CoverageTransport {
-            config: config.clone(),
-            trust: trust.clone(),
-            bearer_file: publication_bearer,
-            expire_first: std::sync::atomic::AtomicBool::new(true),
-        }))
+        .install_signer_publication_transport(publication_transport.clone())
         .unwrap();
     let coverage = SignerCoverageCommand {
         operation_id: uuid::Uuid::new_v4(),
@@ -1196,10 +1197,32 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
     let resume = SignerCoverageRequest::Resume {
         operation_id: coverage.operation_id,
     };
-    assert!(
-        client.signer_coverage(&operator, &resume).await.is_err(),
-        "an expired first response cannot acknowledge the committed remote effect"
-    );
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            match client.signer_coverage(&operator, &resume).await {
+                Err(kasumi_client::ClientError::Transport(status))
+                    if matches!(
+                        status.code(),
+                        tonic::Code::Unknown | tonic::Code::Unavailable
+                    ) => {}
+                result => panic!(
+                    "expected an uncertain response before acknowledging the remote effect: {result:?}"
+                ),
+            }
+            if !publication_transport
+                .expire_first
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                break;
+            }
+            // An earlier connection or finite observation may have failed before
+            // reaching the injected expiration. Resolve only this dispatch and
+            // its unchanged local command until that boundary was exercised.
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
     assert_eq!(local_owner.current().unwrap().active.identity.generation, 2);
     let uncertain = client
         .signer_coverage(
@@ -1214,7 +1237,22 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
         uncertain.status, started.status,
         "the immutable dispatch survives lost publication acknowledgment"
     );
-    let covered = client.signer_coverage(&operator, &resume).await.unwrap();
+    let covered = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            match client.signer_coverage(&operator, &resume).await {
+                Ok(response) => break response,
+                Err(kasumi_client::ClientError::Transport(status))
+                    if matches!(
+                        status.code(),
+                        tonic::Code::Unknown | tonic::Code::Unavailable
+                    ) => {}
+                Err(error) => panic!("definitive coverage dispatch rejection: {error:?}"),
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
     let acknowledgment = covered.status.acknowledgment.as_ref().unwrap();
     assert_eq!(
         acknowledgment.publication.receipt().unwrap().command,
