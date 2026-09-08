@@ -146,6 +146,10 @@ pub(crate) struct CapacityObservation {
     pub logical_bytes: u64,
     pub logical_budget_bytes: u64,
     pub snapshot_disk_budget_bytes: u64,
+    pub schema_activation_bytes: u64,
+    pub schema_activation_budget_bytes: u64,
+    pub retirement_bytes: u64,
+    pub retirement_budget_bytes: u64,
 }
 #[derive(Serialize)]
 pub(crate) struct GroupObservation {
@@ -584,6 +588,13 @@ impl Observation {
                     "snapshot_disk_budget_bytes",
                     capacity.snapshot_disk_budget_bytes
                 );
+                group_gauge!("schema_activation_bytes", capacity.schema_activation_bytes);
+                group_gauge!(
+                    "schema_activation_budget_bytes",
+                    capacity.schema_activation_budget_bytes
+                );
+                group_gauge!("retirement_bytes", capacity.retirement_bytes);
+                group_gauge!("retirement_budget_bytes", capacity.retirement_budget_bytes);
             }
         }
         writeln!(out, "# TYPE kasumi_backup_requests_total counter\n# TYPE kasumi_backup_requests_inflight gauge").unwrap();

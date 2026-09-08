@@ -1,0 +1,104 @@
+{
+  "recorded_at_utc": "2026-09-08T12:06:26.607268+00:00",
+  "source_commit": "8c99af9de6220527acc04098c48d76863da48db9",
+  "source_tree": "986904e1b9aac9d6955e39d84058756a407abe2e",
+  "physical_comparison_commit": "37a384357332792322e28b1acb9f899c88c8fbaa",
+  "source_base": "bf9f2401ae0dc421c7f479d48ae86696dcfc66d3",
+  "working_tree_clean": true,
+  "cargo_lock_sha256": "9f29f1383152d5ddf05b5b07955ca8b2766e1e06e2cd03ce77040d14f9371559",
+  "rust_toolchain": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-apple-darwin\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+  "source_files": {
+    "crates/kasumi-authority/src/activation_state.rs": "324267d7c32411d0a8f9e8fc064e35fe2d8d20592334dba3acd60127bdf9fa21",
+    "crates/kasumi-client/src/target.rs": "9d495ff15efb4346b84ba9e17bfcd240d167f4d048354e6c805a008a7d8046df",
+    "crates/kasumi-engine/src/recovery_activation.rs": "cdb36d12be1c03ead1f2c31794a604be63cdd941da1609596fb0b8c95c77c5ce",
+    "crates/kasumi-engine/src/recovery_quorum.rs": "b30c6dc9f1432e6cc5607a95ca4a168a381129bdd8cc1a114144b04db71df17f",
+    "crates/kasumi-engine/src/recovery_service.rs": "e62ef9e74d451044048cbb3c2cbeb226c8017cdd558cea5af8e4d1c7abb3961d",
+    "crates/kasumi-engine/src/recovery_source.rs": "772357ee62052e91956bb455648f6e19b58b6d5313a16ccd2ca3237305426ffb",
+    "crates/kasumi-engine/src/recovery_state.rs": "963ae0f16e6e8705d740ad8d499c99443d3b1c766e50b78569fb68ec70096bbe",
+    "crates/kasumi-engine/src/snapshot_recovery_tests.rs": "bc106aa3afd3f05ef0a9847d00bda0ce0ea435916e20891ce0730b3807c9c927",
+    "crates/kasumi-engine/tests/common/recovery_control.rs": "d99ae3724a6ddddaa0d21417ef3fab9d8f73be6f250f36c27a02dc302b6a0f71",
+    "crates/kasumi-server/src/recovery_runtime.rs": "ba318e1d350f44eabe2c928b60d29163425ec9c1c4bd60c8f3116daa7584108f",
+    "crates/kasumi-server/src/target_runtime.rs": "4caf2e3a444e794f956e001dc7f9d234012d9576b0e3781b68660b6c703dec5b",
+    "crates/kasumi-serving/src/lifecycle.rs": "3532bb96b281d0f62e874f0bc9d450b4a8bed4c3dc8e66000dbba36eb0d9e15b",
+    "crates/kasumi-types/src/recovery.rs": "cec11ebc1a519741cd861b833192c9771eaf92d3b8a149a11044161f6e044812",
+    "crates/kasumi-types/src/target_runtime_protocol.rs": "b09f86ff6352e79eef6f9c6001f570078ec9a7a8dd38e107855436f3e09cb42d",
+    "docs/control-recovery.md": "8ac8a693a93fd6f3f37afe1a304d8cccc1f9b6c2eeba614633793099622b240e"
+  },
+  "logs": {
+    "initial_check_failure": {
+      "path": "/tmp/kasumi-control-activation-check.log",
+      "sha256": "c16a64c963f22b74c4dd3f137ed81c24500eab158a792f7c72eb159647bf7d8a"
+    },
+    "workspace_check": {
+      "path": "/tmp/kasumi-control-activation-check-2.log",
+      "sha256": "fe2409f470c7a61c0f0b60a43f6c395e7c6e4335fa5915dcbc21dbf4f799cb10"
+    },
+    "physical_verifier": {
+      "path": "/tmp/kasumi-control-activation-verifier-test.log",
+      "sha256": "cca131b98ba220e6b372091be1d7e5f5b4632a025ccebf5b71c546fefae364a6"
+    },
+    "lifecycle": {
+      "path": "/tmp/kasumi-control-activation-lifecycle.log",
+      "sha256": "327a437a995a638e20a8f4688533593dba1b6382170d914cda089ecbb14df65d"
+    },
+    "strict_clippy": {
+      "path": "/tmp/kasumi-control-activation-clippy.log",
+      "sha256": "3f4294105cad97d0f4f0a92c5ff951404add737b58d67ac0c3df6db43109afdf"
+    },
+    "snapshots": {
+      "path": "/tmp/kasumi-control-activation-snapshots.log",
+      "sha256": "94477f3d1f88952e076a2be1b0c19ae71ce525db4b1cf89a74c1dd527e5309dd"
+    },
+    "canonical_planned_mode": {
+      "path": "/tmp/kasumi-control-activation-types.log",
+      "sha256": "90925fcaab64550409024aaf89c6f2e4a56a92750ef047f033da29510d978fa3"
+    },
+    "production_no_fixture_check": {
+      "path": "/tmp/kasumi-control-activation-production.log",
+      "sha256": "b3a14de9a1f5908b2757baf6d1fa904bb41df26372ee4a44a08f9689fcab0a83"
+    }
+  },
+  "executables": {
+    "authority": {
+      "path": "/tmp/kasumi-production-standalone-target/debug/deps/kasumi_authority-481ba410417b8d16",
+      "sha256": "f6a205b95ba4c337baae70430d5ba1c22fc65e017b1fe24e6a34b83859194b1b"
+    },
+    "lifecycle": {
+      "path": "/tmp/kasumi-production-standalone-target/debug/deps/lifecycle-c70bbb2e0c4a0ca5",
+      "sha256": "7d450e3ec352c95a45696a5437995dae451d1186ea58b205393d1b3d142de4af"
+    },
+    "engine_snapshots": {
+      "path": "/tmp/kasumi-production-standalone-target/debug/deps/kasumi_engine-4b4e80d3850c1c4e",
+      "sha256": "286288f1868df2aad87146168fdf94f535ed3abab017cd660bbb0c1e142f5b30"
+    },
+    "types": {
+      "path": "/tmp/kasumi-production-standalone-target/debug/deps/kasumi_types-bcc7d464aa0c58d2",
+      "sha256": "3f0bd7a3837e39d841ce9a4120dff6f822576b113d53092400843a9d295d1067"
+    }
+  },
+  "results": {
+    "workspace_all_features_all_targets_check": "passed, 64s",
+    "strict_workspace_all_features_all_targets_clippy": "passed, 73s",
+    "lifecycle": "10/10 passed, 83.79s",
+    "snapshots": "15/15 passed, 22.44s",
+    "physical_verifier": "1/1 passed",
+    "canonical_planned_mode": "1/1 passed",
+    "server_bins_no_default_features_check": "passed, 85s",
+    "format_and_diff_check": "passed"
+  },
+  "scope": [
+    "Canonical planned start freezes retirement identity and source alias; actual finite request is admitted only after target completion.",
+    "Prepare exact Control activation and issuer acceptance digest before dispatch; independently verified permanent issuer winner.",
+    "Signed StopActivation outcome atomically resolves original immutable phase; activated result proceeds forward, negative result permits target stop.",
+    "Every voter starts under fresh finite activation authorization; Started never supplies activation proof. Same-request peer retry and exact signed voter confirmation.",
+    "Physical verifier identity participates in issuer activation voter comparison."
+  ],
+  "limitations": [
+    "This is a source checkpoint, not final integrated release acceptance.",
+    "Initial workspace check failed on four explicit anyhow-to-domain-error mappings; raw output retained, but a complete pre-fix worktree manifest was not captured.",
+    "Replicated lifecycle tests use in-memory Raft transport, encrypted local stores and explicit cryptographic issuer/target fixtures. They do not execute real target voter processes or prove actual source drain timing.",
+    "New StartActivation server/SDK/runtime path compiled, but no new native target-process activation gate ran in this checkpoint.",
+    "Route publication and expired original Complete proof resolution remain unimplemented. Other expired phases still require exact receipt resolution where fresh admission is not installed.",
+    "Production command is cargo check with no default features, not a release artifact build."
+  ]
+}

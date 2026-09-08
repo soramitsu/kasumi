@@ -1,0 +1,5 @@
+{
+  "configuration": "/var/lib/kasumi/installation/kasumi.json",
+  "control_profile": "/var/lib/kasumi/installation/profiles/control.json",
+  "tenant_profile": "/var/lib/kasumi/installation/profiles/default.json"
+}

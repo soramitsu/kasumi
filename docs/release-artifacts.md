@@ -23,6 +23,12 @@ exact tested production binaries; it does not rebuild replacements. Its own
 source and the gate runner must match the frozen source. Output directories are
 exclusive; failed partial directories remain for inspection.
 
+Use the same Python interpreter as the functional runner. The recorded concurrency
+and every command must match the current gate contract, including doctests,
+strict Clippy targets and production feature flags. Old evidence missing these
+required fields is rejected. When executing scripts directly from frozen source,
+set `PYTHONDONTWRITEBYTECODE=1` so imports cannot create new source inputs.
+
 `SHA256SUMS` covers both archives. The package's `provenance.json` retains source,
 tree, lockfile, executable, functional-evidence and packager hashes. `sbom.spdx.json`
 lists packages actually reported by Cargo's production gate, including cached
@@ -45,6 +51,65 @@ to the source commit's timestamp. This makes assembly reproducible for identical
 inputs. It does not prove bit-identical recompilation: compiler, linker, system
 packages and path-remapping need a separately pinned build environment and an
 actual second-build comparison.
+
+## Candidate workflow
+
+`.github/workflows/release-candidate.yml` is manually dispatched against reviewed
+source on dedicated ephemeral self-hosted runners. Provision `kasumi-acceptance`
+runners for Linux X64, Linux ARM64 and macOS ARM64 with at least 8 GiB RAM and
+64 GiB free workspace disk, Python 3.11+, Git and the native platform build tools.
+Linux needs Docker; macOS needs rustup, Xcode command-line tools and CMake.
+The labels identify operator-provisioned hosts; adding this workflow does not
+provision them or establish a passing run. Keep production identities and data
+off these acceptance hosts.
+
+The workflow freezes the checked-out commit, records host/image/package identity,
+and runs the full functional gate set with two Cargo jobs. Linux uses the pinned
+Rust image and Debian snapshot repositories from the validation Dockerfile.
+Actions are pinned to exact commits. Packaging runs twice and compares archive
+checksums; this verifies assembly reproducibility, not independent recompilation.
+Both failed-run logs and successful candidate archives are uploaded as workflow
+artifacts. Hard runner loss can interrupt that upload, so keep the exclusive
+workspace until evidence is copied to operator storage. The workflow does not
+publish a GitHub release or certify the separate release acceptance gates.
+
+The [GitHub runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
+documents runner platforms and hosted limits. This workflow uses explicit
+acceptance hosts because the ordinary hosted disk allocation is smaller than
+the observed full debug-test and release-build workspace.
+
+## OCI image recipe
+
+The runtime recipe in `release/oci/Dockerfile` uses an exact Debian Bookworm slim
+index; `release/oci/base-image.json` retains its resolved platform manifests.
+Build only from the candidate directory produced by the matching packager:
+
+```sh
+docker buildx build --platform linux/arm64 \
+  --file /absolute/evidence/final-functional/source/release/oci/Dockerfile \
+  --output type=oci,dest=/absolute/artifacts/kasumi-linux-arm64.oci.tar \
+  /absolute/artifacts/candidate-001
+```
+
+Select `linux/amd64` only for the independently validated Linux x86-64 candidate.
+The packager supplies the minimal build context and binary SHA-256 list; the
+image checks those exact copied executables. It contains the full candidate
+notices and Cargo SBOM under `/opt/kasumi` and runs as UID/GID 65532. Initialize
+and serve with the same private mounted data volume and user. The initialization
+directory must be absent. Initialization remains offline and loopback-bound;
+network exposure requires an explicit listener and TLS client configuration.
+Use `/opt/kasumi/bin/kasumi-authority` as an explicit entrypoint for a separately
+installed authority group. No installation identity or fixture state is baked in.
+
+Record the BuildKit version/image, OCI digest, base package inventory and a full
+image SBOM, then exercise offline initialization, restart and shutdown with the
+exported image before accepting it. An initial ARM64 recipe smoke built and ran
+a Docker image using historical `8e90ff2` production binaries, including offline
+initialization, authenticated access, backup verification and restart. That
+source's workspace gate failed. The smoke does not approve those binaries or
+replace an actual final candidate, OCI-layout export and platform SBOM gate.
+Its failures and exact environment are retained in
+`docs/evidence/linux-image-systemd-smoke-20260908`.
 
 ## systemd installation
 
@@ -75,6 +140,12 @@ and private `/var/lib/kasumi-authority/authority.json`. HA data members may use
 the data unit after installing the exact HA configuration at its configured path.
 If an installation uses external archive/key paths, explicitly configure the
 unit's required read/write directories to match those installed resources.
+
+The exact data unit passed an initial native Debian ARM64 smoke with historical
+`8e90ff2` binaries: dedicated-user startup, authenticated requests, TLS reload,
+restart and drained shutdown. Both units passed `systemd-analyze verify`; the
+authority unit still requires actual HA runtime validation. Repeat these checks
+with the final accepted artifacts.
 
 These are candidate artifacts. Complete cross-platform functional validation,
 external-service/recovery/capacity/retention/performance gates and the actual

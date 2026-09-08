@@ -1,0 +1,9 @@
+{
+  "tenant": "release-smoke",
+  "source_incarnation": "e0f34070-7668-4372-928a-1e82e38e038c",
+  "revision": 0,
+  "resident_sha256": "fc736c5f3e232b3833de911b0208cc9c4edc8c0a0689bb980a0e75bce07f1599",
+  "backup_id": "d21d5bf4-bc58-4671-b946-2245eaee72c9",
+  "manifest_ciphertext_sha256": "15b6f316310cca1f869b8399baa8c70979d2f4439988d1df3b4569736b6ca764",
+  "key_lineage_digest": "9224c3033c5b83f4dfc50408f5e6170edb682306f86c9ee38e31cf94a54ad5f6"
+}

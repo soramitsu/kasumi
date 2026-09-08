@@ -1,0 +1,3 @@
+    Checking kasumi-server v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-server)
+    Checking kasumi-bench v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-bench)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 33.21s

@@ -469,3 +469,48 @@ a read-only quota getter or caller capacity claim cannot close this dependency.
 - Packaging source531d86e test/provenance checks and earlier failures are retained
   in `docs/evidence/release-packaging-20260908`. No final candidate package has
   yet passed end-to-end assembly and deployment.
+
+- `bf9f240` independently authenticates planned source application retirement and
+  custody receipt verification, and dispatches the exact unavailable-source
+  issuer fence. Seven engine lifecycle tests, actual TLS backup/retirement and
+  strict workspace checks pass; final fixture-free check remains pending after
+  the custody split. Evidence: `docs/evidence/control-source-fencing-20260908`.
+  Phase-time retirement deadlines and complete activation/publication remain open.
+
+- `42bf607` adds a pinned native acceptance workflow, exact gate-command
+  verification, host provenance, a dated Debian package snapshot and an OCI
+  recipe that verifies binary hashes and architecture. Sixteen Python tests and
+  native macOS host preflight pass; the corrected workflow passes actionlint.
+  The initial lint failure and source-qualified results are retained in
+  `docs/evidence/candidate-workflow-20260908`. Actual workflow execution, image
+  builds, final candidate assembly and compiler reproducibility remain open.
+
+- `4cc27db` replaces schema activation and retirement lifetime record-count
+  ceilings with exact checked 64-bit byte budgets. Terminal outcome capacity is
+  reserved before publication, source fencing or positive Raft commitment;
+  exhausted identities remain exactly replayable and budgets can expand beyond
+  2 GiB. Twenty-three engine cases and all45Raft tests pass, followed by strict
+  workspace Clippy, fixture-free server checks and formatting. Source-qualified
+  evidence and the initial Clippy fixture failure are retained in
+  `docs/evidence/permanent-history-byte-budgets-20260908`. Resident permanent-map
+  migration, persistent disk admission and native import reservations remain open.
+
+- Recipe `42bf607` built the pinned Linux validation image and passed an initial
+  native ARM64 runtime-image and exact systemd data-unit smoke with historical
+  `8e90ff2` binaries. Offline initialization, native audit/credential access,
+  encrypted backup verification, TLS reload, restart and drained shutdown pass.
+  The original 2 GiB work-admission rejection and same-session success after a
+  clean 4 GiB restart are preserved. Both units pass static verification; the
+  authority service was not run. Evidence:
+  `docs/evidence/linux-image-systemd-smoke-20260908`. These recipe checks do not
+  approve the failed historical workspace source or close final OCI/SBOM,
+  compiler reproducibility, capacity and endurance gates.
+
+- `8c99af9` coordinates permanent issuer activation, exact StopActivation
+  resolution, all-voter fresh startup and signed local confirmations. Planned
+  retirement receives its finite cutoff at the actual source-fencing phase;
+  activation voter comparisons include physical verifier identity. Ten lifecycle
+  and fifteen snapshot tests, two focused regressions, strict workspace and
+  fixture-free checks pass. Evidence:
+  `docs/evidence/control-recovery-activation-20260908`. Actual target processes,
+  route publication and expired original Complete resolution remain open.

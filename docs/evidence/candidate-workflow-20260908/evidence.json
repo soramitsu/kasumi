@@ -1,0 +1,29 @@
+{
+  "source": "42bf60702ec9fedb3529dd79def868e4c097bb30",
+  "tree": "f2e88b2bbd48b16dab8b9b7eefe3f0332fa8d326",
+  "lockfile_sha256": "9f29f1383152d5ddf05b5b07955ca8b2766e1e06e2cd03ce77040d14f9371559",
+  "platform": "macOS ARM64",
+  "python_source": "5deefbf231a51e24eeaa486991d137c2f8bc391d",
+  "python_executable_sha256": "ac60cfe0268614638d0ffa35f3b0284fc7b3a11482723793455e17eeb278509e",
+  "results": {
+    "python": "16 passed in 13.252 seconds on 5deefbf; subsequent 42bf607 changes only workflow YAML",
+    "host_preflight": "Passed on native macOS ARM64 source 5deefbf",
+    "actionlint": "Initial 5deefbf failure preserved; final 42bf607 passes with actionlint 1.7.12 and an empty success log"
+  },
+  "files": {
+    "kasumi-candidate-workflow-python.log": "4a87b340948b18e15e92338946ea05ff5bd22e8416ac50437aa990e9078e3c60",
+    "kasumi-release-host-5deefbf.json": "635a0b9877f9362b0639a280b9a8616bb75ac8c90b7b30dda1d26181fa5ae8f5",
+    "kasumi-release-host-5deefbf.log": "d94354e14acb619d19531ef04dc91e233e8d3f12d304ce892612e7280cdbf6a7",
+    "kasumi-candidate-workflow-actionlint.log": "030f7a660cc0551233a488963a3c910bd64ec052e88e237b96fe29251a9a7947",
+    "kasumi-candidate-workflow-actionlint-fixed.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "actionlint-provenance.json": "a7a6c810d2efcc7c847c478d5d7de31209c81f2fb77f77fd3b60db68df34838d",
+    "actionlint-checksums.txt": "433028cf0ba3c42163ea1a668dedce30fcdbe84fe912b1a5e288c006eab8a4f5"
+  },
+  "limitations": [
+    "Workflow was statically checked; no GitHub acceptance runner execution has occurred.",
+    "Pinned APT-snapshot build image has not yet been built.",
+    "OCI recipe has not yet produced or run an image.",
+    "Repeated-assembly comparison is not independent compiler reproducibility.",
+    "Final functional, cross-platform, capacity, recovery and endurance gates remain open."
+  ]
+}
