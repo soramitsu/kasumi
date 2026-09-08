@@ -7,6 +7,11 @@
 //! store call can return owned plaintext to its caller; that copy is not revocable.
 
 mod archive_objects;
+mod audit_archive;
+pub use audit_archive::{
+    AuditArchiveDestination, AuditSegmentBuilder, FilesystemAuditArchive, PreparedAuditSegment,
+    S3AuditArchive, VerifiedAuditSegment,
+};
 mod backup;
 mod keys;
 mod serving_access;
@@ -28,7 +33,7 @@ pub use storage_domains::{CustodyStore, StorageBinding, TenantStorageSet};
 
 use std::{
     collections::{BTreeMap, HashMap},
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         Arc, Weak,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -119,6 +124,7 @@ pub(crate) fn durable_directory(path: &Path) -> Result<()> {
 
 pub struct NodeStore {
     db: Database,
+    path: Option<PathBuf>,
     tenants: AsyncMutex<HashMap<String, Arc<AsyncMutex<Weak<TenantStore>>>>>,
 }
 
@@ -131,7 +137,7 @@ impl NodeStore {
             .unwrap_or_else(|| Path::new("."));
         durable_directory(parent).context("creating database directory")?;
         let db = Database::create(path).context("opening durable database")?;
-        let node = Self::from_database(db)?;
+        let node = Self::from_database(db, Some(std::fs::canonicalize(path)?))?;
         // redb synchronizes file contents; a new directory entry needs its own
         // persistence before any acknowledged first write can be crash durable.
         std::fs::File::open(parent)?
@@ -142,10 +148,10 @@ impl NodeStore {
 
     #[cfg(any(test, feature = "test-utils"))]
     pub fn open_with_backend(backend: impl redb::StorageBackend) -> Result<Arc<Self>> {
-        Self::from_database(Database::builder().create_with_backend(backend)?)
+        Self::from_database(Database::builder().create_with_backend(backend)?, None)
     }
 
-    fn from_database(db: Database) -> Result<Arc<Self>> {
+    fn from_database(db: Database, path: Option<PathBuf>) -> Result<Arc<Self>> {
         let mut tx = db.begin_write()?;
         tx.set_durability(Durability::Immediate)?;
         tx.set_two_phase_commit(true);
@@ -156,6 +162,7 @@ impl NodeStore {
         tx.commit()?;
         Ok(Arc::new(Self {
             db,
+            path,
             tenants: AsyncMutex::new(HashMap::new()),
         }))
     }
@@ -514,6 +521,15 @@ impl TenantStore {
 
     pub fn tenant(&self) -> &str {
         &self.tenant
+    }
+    /// Archive defaults share the durable installation root. Test-only memory
+    /// backends must supply an explicit archive destination instead.
+    pub fn durable_directory(&self) -> Result<&Path> {
+        self.node
+            .path
+            .as_deref()
+            .and_then(Path::parent)
+            .context("storage backend has no durable directory")
     }
     pub fn storage_access(&self) -> &StorageAccess {
         &self.access

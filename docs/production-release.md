@@ -18,7 +18,7 @@ branch evidence remain historical records; they do not certify this integration.
 
 - [x] Create `codex/production-v1` and integrate committed resource credentials,
   Control lifecycle and schema admission (`c30437f`, `d9ef813`, `15f35b2`).
-- [ ] Import a source-frozen copy of the owned target runner; preserve its original
+- [x] Import a source-frozen copy of the owned target runner; preserve its original
   worktree, failed attempts and focused evidence; reconcile with schema admission.
 - [ ] Streaming engine/Raft/backup snapshots, encrypted staging, paged manifests,
   checked 64-bit aggregate lengths, and shared/delta-accounted coherent reads.
@@ -68,3 +68,18 @@ Mark a milestone complete only when its implementation is integrated and its
 required checks actually pass. Completing scaffolding or a focused diagnostic
 does not complete a whole milestone. Release readiness requires every acceptance
 gate above and usable installation artifacts.
+
+## Current verified increments
+
+- `7200732` integrates the preserved target runner with schema admission. The
+  merged workspace compiles; composed recovery process acceptance is still open.
+- `f2e64af` vendors the minimal bitmaps/lru fixes. All 107 upstream unit/doctests
+  pass; both patched regressions pass Miri, and isolated copies with the fixes
+  removed reproduce both memory errors. Raw logs, rejected stale-cache attempts,
+  input hashes and compiler versions are in
+  `docs/evidence/dependency-patches-20260908`. Full release dependency disposition
+  remains open until every final target graph and all third-party notices pass.
+- The bounded audit archive codec and filesystem publication primitive pass four
+  focused tests: authenticated counts before release, 8 MiB capacity with u64
+  positions, exact durable replay, and symlink/corruption isolation. Automatic
+  pruning, replica preservation and runtime wiring are separate unfinished work.
