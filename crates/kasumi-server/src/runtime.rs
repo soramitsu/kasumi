@@ -2112,6 +2112,7 @@ mod tests {
         let audit = SecurityAudit::open(
             service.clone(),
             kasumi_types::AuditRetentionBudget::default(),
+            kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
         )
         .unwrap();
         audit
@@ -2151,6 +2152,7 @@ mod tests {
         let audit = SecurityAudit::open(
             service.clone(),
             kasumi_types::AuditRetentionBudget::default(),
+            kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
         )
         .unwrap();
         assert!(

@@ -75,6 +75,7 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
     let audit = kasumi_engine::SecurityAudit::open(
         audit_store.clone(),
         kasumi_types::AuditRetentionBudget::default(),
+        kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
     )
     .unwrap();
     auth.install_audit(audit.clone()).unwrap();

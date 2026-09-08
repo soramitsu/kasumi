@@ -9,7 +9,8 @@ async fn canceled_queued_schema_activation_finishes_once_and_checks_receipt_rele
     )
     .await
     .unwrap();
-    let audit = SecurityAudit::open(audit_store, kasumi_types::AuditRetentionBudget::default()).unwrap();
+    let node_admission = NodeAdmission::new(AdmissionConfig::default()).unwrap();
+    let audit = SecurityAudit::open(audit_store, kasumi_types::AuditRetentionBudget::default(), node_admission.clone()).unwrap();
     let store = TenantStore::open_fixture(
         node,
         "schema-cancel".into(),
@@ -45,6 +46,7 @@ async fn canceled_queued_schema_activation_finishes_once_and_checks_receipt_rele
     )
     .await
     .unwrap();
+    db.install_admission(node_admission).unwrap();
     let request = SchemaChangeSet {
         activation_id: "cancel".into(),
         expected_incarnation: db.engine.generation().unwrap().state.incarnation.clone(),
