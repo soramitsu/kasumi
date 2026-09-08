@@ -165,6 +165,7 @@ pub async fn open_serving_target(
             );
             drop(state);
             engine.install_storage_access(material.application())?;
+            engine.verify_bootstrap_dependencies_checked(|| proof.check(&live))?;
             proof.check(&live)?;
             Ok::<_, anyhow::Error>((engine, bootstrap))
         })

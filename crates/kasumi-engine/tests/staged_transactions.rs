@@ -1,3 +1,4 @@
+use kasumi_engine::test_utils::SnapshotFixture;
 mod common;
 
 use kasumi_engine::TenantEngine;
@@ -106,7 +107,7 @@ fn apply(db: &TenantEngine, timestamp_ms: u64, operation: Operation) -> Result<W
         .unwrap();
     assert_eq!(
         db.snapshot_bytes().unwrap() as u64,
-        db.snapshot().unwrap().len(),
+        db.fixture_snapshot().unwrap().len(),
         "canonical stage accounting after revision {revision}"
     );
     result
@@ -183,7 +184,9 @@ fn large_transaction_stays_invisible_then_publishes_one_generation_and_permanent
         Limits::default(),
     )
     .unwrap();
-    recovered.restore(&db.snapshot().unwrap()).unwrap();
+    recovered
+        .fixture_restore(&db.fixture_snapshot().unwrap())
+        .unwrap();
     assert_eq!(
         apply(
             &recovered,
@@ -447,11 +450,12 @@ fn changed_limits_preserve_historic_outcomes_and_keep_active_snapshots_recoverab
             .code,
         ErrorCode::ResourceExhausted
     );
-    let snapshot = db.snapshot().unwrap();
+    let snapshot = db.fixture_snapshot().unwrap();
     let recovered = engine(Limits::default());
-    recovered.restore(&snapshot).unwrap();
+    recovered.fixture_restore(&snapshot).unwrap();
     assert_eq!(recovered.generation().unwrap().state.document_count, 0);
-    let mut corrupt: TenantState = TenantEngine::decode_snapshot_state(&snapshot).unwrap();
+    let mut corrupt: TenantState =
+        kasumi_engine::test_utils::decode_snapshot_candidate(&snapshot).unwrap();
     let key = corrupt.active_staged_transactions.first().unwrap().clone();
     corrupt
         .staged_transactions
@@ -460,12 +464,12 @@ fn changed_limits_preserve_historic_outcomes_and_keep_active_snapshots_recoverab
         .uploaded_payload_bytes += 1;
     assert!(
         recovered
-            .restore(
-                &kasumi_engine::TenantEngine::encode_snapshot_state(&corrupt, 64 << 20).unwrap()
+            .fixture_restore(
+                &kasumi_engine::test_utils::encode_snapshot_candidate(&corrupt, 64 << 20).unwrap()
             )
             .is_err()
     );
-    assert_eq!(recovered.snapshot().unwrap(), snapshot);
+    assert_eq!(recovered.fixture_snapshot().unwrap(), snapshot);
     for (index, chunk) in chunks.into_iter().enumerate().skip(1) {
         apply(
             &recovered,
@@ -482,9 +486,9 @@ fn changed_limits_preserve_historic_outcomes_and_keep_active_snapshots_recoverab
     let mut limits = recovered.generation().unwrap().state.limits.clone();
     limits.atomic.max_operations = 100;
     apply(&recovered, 7, Operation::SetLimits(limits)).unwrap();
-    let final_snapshot = recovered.snapshot().unwrap();
+    let final_snapshot = recovered.fixture_snapshot().unwrap();
     let restarted = engine(Limits::default());
-    restarted.restore(&final_snapshot).unwrap();
+    restarted.fixture_restore(&final_snapshot).unwrap();
     assert_eq!(
         apply(&restarted, 8, Operation::FinalizeStaged(reference)).unwrap(),
         receipt

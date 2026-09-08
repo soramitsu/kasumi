@@ -1,3 +1,4 @@
+use kasumi_engine::test_utils::SnapshotFixture;
 mod common;
 use kasumi_engine::{Database, SecurityAudit, TenantEngine};
 use kasumi_store::{NodeStore, TenantStore, test_utils::LocalKeyProvider};
@@ -72,7 +73,7 @@ fn apply_as(db: &TenantEngine, principal: &str, operation: Operation) -> Result<
         )
         .unwrap();
     assert_eq!(
-        db.snapshot().unwrap().len(),
+        db.fixture_snapshot().unwrap().len(),
         db.snapshot_bytes().unwrap() as u64
     );
     result
@@ -440,20 +441,23 @@ fn schema_shape_immutable_mode_snapshot_validation_and_retained_quota() {
         .code,
         ErrorCode::QuotaExceeded
     );
-    let bytes = db.snapshot().unwrap();
+    let bytes = db.fixture_snapshot().unwrap();
     let recovered = engine(Limits::default());
-    recovered.restore(&bytes).unwrap();
-    assert_eq!(bytes, recovered.snapshot().unwrap());
-    let mut state: TenantState = TenantEngine::decode_snapshot_state(&bytes).unwrap();
+    recovered.fixture_restore(&bytes).unwrap();
+    assert_eq!(bytes, recovered.fixture_snapshot().unwrap());
+    let mut state: TenantState =
+        kasumi_engine::test_utils::decode_snapshot_candidate(&bytes).unwrap();
     state.schema_activation_bytes += 1;
     assert_eq!(
         recovered
-            .restore(&kasumi_engine::TenantEngine::encode_snapshot_state(&state, 64 << 20).unwrap())
+            .fixture_restore(
+                &kasumi_engine::test_utils::encode_snapshot_candidate(&state, 64 << 20).unwrap()
+            )
             .unwrap_err()
             .code,
         ErrorCode::Corruption
     );
-    assert_eq!(bytes, recovered.snapshot().unwrap());
+    assert_eq!(bytes, recovered.fixture_snapshot().unwrap());
 }
 
 #[test]

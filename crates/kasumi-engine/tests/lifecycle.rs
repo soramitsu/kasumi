@@ -1,3 +1,4 @@
+use kasumi_engine::test_utils::SnapshotFixture;
 mod common;
 use kasumi_engine::{
     Database, LifecycleSigner, ReplicaPlacement, ReplicatedBootstrap, initialize_replicated,
@@ -717,9 +718,9 @@ async fn control_rejects_unfinishable_byte_budget_and_substituted_authenticated_
     )
     .await
     .unwrap();
-    let original = db.engine().snapshot().unwrap();
+    let original = db.engine().fixture_snapshot().unwrap();
     let mut state: TenantState =
-        kasumi_engine::TenantEngine::decode_snapshot_state(&original).unwrap();
+        kasumi_engine::test_utils::decode_snapshot_candidate(&original).unwrap();
     let retained = state
         .lifecycle_control
         .as_mut()
@@ -730,10 +731,12 @@ async fn control_rejects_unfinishable_byte_budget_and_substituted_authenticated_
     retained.original_credential_expires_at_ms += 1000;
     assert!(
         db.engine()
-            .restore(&kasumi_engine::TenantEngine::encode_snapshot_state(&state, 64 << 20).unwrap())
+            .fixture_restore(
+                &kasumi_engine::test_utils::encode_snapshot_candidate(&state, 64 << 20).unwrap()
+            )
             .is_err()
     );
-    assert_eq!(original, db.engine().snapshot().unwrap());
+    assert_eq!(original, db.engine().fixture_snapshot().unwrap());
     let proof = db
         .observe_lifecycle_intent(f.context("owner"), intent.command_id)
         .await

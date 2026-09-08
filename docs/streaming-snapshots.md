@@ -33,9 +33,9 @@ at most 64 KiB, and a final byte count, record count and digest. Snapshot transf
 uses encrypted scratch files and runs filesystem/crypto work on blocking workers.
 Each scratch file has an ephemeral random key and authenticated 64 KiB slots;
 plaintext scratch files and persisted scratch keys do not exist. Immutable image
-handles offer independent readers and constant-size clones. The Rust engine's
-`snapshot`, candidate encoder, decoder and restore APIs use these encrypted
-images; encoding an unvalidated candidate requires an explicit disk byte budget.
+handles offer independent readers and constant-size clones. Public snapshot
+capture and staged restore preparation use these encrypted images. Private
+logical candidate codecs require an explicit disk byte budget when encoding.
 No public engine snapshot API constructs a tenant-sized byte vector. Durable staging
 writes bounded encrypted chunks and publishes their manifest together with the
 matching custody/applied position. Interrupted publication preserves the previous
@@ -97,12 +97,30 @@ source. This does not yet establish final bounded-memory verification or the
 state. Full backups copy and verify the same chain in their owned session object
 namespace and stage target cache dependencies before publishing restored genesis.
 
-The low-level public engine `snapshot()` currently still returns a logical
-candidate, not a portable archive-complete image. Its matching `restore()` refuses
-to publish pruned state without an installed store and a fully verified local
-archive chain. Replacing these public methods with complete bundle APIs and
-privatizing candidate codecs is a mandatory first-release follow-up; accepting
-both formats as a compatibility fallback is not permitted.
+The public `TenantEngine::snapshot(admission, timeout_ms)` asynchronously captures
+a complete backend bundle using the installed store and explicit node admission.
+The public `prepare_snapshot_restore(image, admission, timeout_ms)` verifies and
+stages that bundle without changing live state or any applied position. Its first
+pass checks framing, complete counts, digest and EOF with a 64 KiB buffer; logical
+allocation is admitted before semantic decoding. All blocking work keeps the
+exact store/OS ownership and byte reservation through actual completion, including
+when a caller cancels or times out. The staged result holds only the verified
+image and identity metadata, not another resident tenant generation.
+
+These backend images do not contain the enclosing Raft LogId/membership envelope.
+Publication belongs to the owning Raft snapshot transaction or the exclusive
+stopped-installation recovery coordinator. Public running-state overwrite and
+logical-format decoder/encoder aliases have been removed. Arithmetic and
+corruption tests use an explicitly gated `test-utils` candidate codec; production
+builds without fixture features cannot call or decode that fixture API.
+
+Every application bootstrap with retained archive references is verified against
+its installed cache before Raft opens or serves after restart. Standalone and
+ordinary HA startup use the installed node admission, and target-phase startup
+uses its existing owned recovery work and original phase/credential fences.
+Missing, corrupt or unavailable historical dependencies therefore prevent a
+restored genesis from reopening; a previous verification does not substitute for
+current durable availability.
 
 Control bundles use the same framing but authorize only the exact `NodeControl`
 storage purpose and `__kasumi_control` domain. Their archive records use the

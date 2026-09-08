@@ -1,3 +1,4 @@
+use kasumi_engine::test_utils::SnapshotFixture;
 mod common;
 use kasumi_engine::{Database, SecurityAudit};
 use kasumi_store::BackupDestination;
@@ -165,7 +166,7 @@ async fn change_feed_is_atomic_ordered_resumable_and_detects_retention_gaps() {
     assert!(caught_up);
     assert_eq!(
         db.engine().snapshot_bytes().unwrap() as u64,
-        db.engine().snapshot().unwrap().len()
+        db.engine().fixture_snapshot().unwrap().len()
     );
     db.shutdown().await.unwrap();
     audit.shutdown().await;
@@ -272,7 +273,7 @@ async fn change_feed_is_atomic_ordered_resumable_and_detects_retention_gaps() {
     );
     assert_eq!(
         db.engine().snapshot_bytes().unwrap() as u64,
-        db.engine().snapshot().unwrap().len()
+        db.engine().fixture_snapshot().unwrap().len()
     );
     db.shutdown().await.unwrap();
     audit.shutdown().await;
@@ -466,7 +467,7 @@ async fn archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_res
         .unwrap();
     assert_eq!(
         db.engine().snapshot_bytes().unwrap() as u64,
-        db.engine().snapshot().unwrap().len()
+        db.engine().fixture_snapshot().unwrap().len()
     );
     assert!(
         !db.backup(context(), destination.as_ref(), uuid::Uuid::new_v4())

@@ -199,7 +199,7 @@ fn replicated_credential_admission_uses_only_captured_time_after_local_expiry() 
         );
         assert!(replica.generation().unwrap().state.receipts.is_empty());
     }
-    assert_eq!(first.snapshot().unwrap(), second.snapshot().unwrap());
+    assert_eq!(first.logical_snapshot().unwrap(), second.logical_snapshot().unwrap());
 }
 
 #[tokio::test]

@@ -50,6 +50,7 @@ rcgen = { version = "0.14", features = ["x509-parser"] }
 time = "0.3"
 
 [dev-dependencies]
+kasumi-engine = { workspace = true, features = ["test-utils"] }
 base64 = "0.22"
 rcgen = { version = "0.14", features = ["x509-parser"] }
 tempfile.workspace = true

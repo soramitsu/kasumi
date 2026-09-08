@@ -1,3 +1,4 @@
+use kasumi_engine::test_utils::SnapshotFixture;
 mod common;
 
 use kasumi_engine::{Database, TenantEngine};
@@ -160,9 +161,9 @@ fn conditional_batches_fence_dependencies_and_phantoms_but_not_audits_or_replays
             4
         );
     }
-    let snapshot = db.snapshot().unwrap();
-    db.restore(&snapshot).unwrap();
-    assert_eq!(db.snapshot().unwrap(), snapshot);
+    let snapshot = db.fixture_snapshot().unwrap();
+    db.fixture_restore(&snapshot).unwrap();
+    assert_eq!(db.fixture_snapshot().unwrap(), snapshot);
 }
 
 #[test]
@@ -350,8 +351,8 @@ fn audit_budget_blocks_effects_and_can_be_increased_without_losing_records() {
     db.apply_command(revision + 3, write).unwrap().unwrap();
     assert_eq!(db.generation().unwrap().state.document_count, 1);
     assert_eq!(db.generation().unwrap().state.audits.len(), retained + 2);
-    let snapshot = db.snapshot().unwrap();
-    db.restore(&snapshot).unwrap();
+    let snapshot = db.fixture_snapshot().unwrap();
+    db.fixture_restore(&snapshot).unwrap();
     assert_eq!(
         db.generation()
             .unwrap()
@@ -400,7 +401,7 @@ fn receipt_expiry_index_obeys_exact_boundary_and_rebuilds_from_snapshot() {
         .unwrap()
         .unwrap();
     assert_eq!(db.generation().unwrap().state.receipts.len(), 2);
-    db.restore(&db.snapshot().unwrap()).unwrap();
+    db.fixture_restore(&db.fixture_snapshot().unwrap()).unwrap();
     db.apply_command(6, make("first", "d", 86_402_000))
         .unwrap()
         .unwrap();
@@ -451,7 +452,9 @@ fn retirement_is_terminal_and_survives_snapshot_recovery() {
     .unwrap()
     .unwrap();
     let restored = engine(false, Limits::default());
-    restored.restore(&db.snapshot().unwrap()).unwrap();
+    restored
+        .fixture_restore(&db.fixture_snapshot().unwrap())
+        .unwrap();
     assert!(restored.generation().unwrap().state.retired);
     assert_eq!(
         restored
@@ -544,7 +547,9 @@ fn receipts_survive_snapshot_and_precede_changed_schema_and_cas() {
         .unwrap()
         .unwrap();
     let restored = engine(false, Limits::default());
-    restored.restore(&db.snapshot().unwrap()).unwrap();
+    restored
+        .fixture_restore(&db.fixture_snapshot().unwrap())
+        .unwrap();
     assert_eq!(
         restored
             .apply_command(4, command(Operation::Mutate(input)))
@@ -676,20 +681,24 @@ fn concurrent_cas_has_exactly_one_winner() {
 #[test]
 fn tampered_snapshot_never_changes_current_generation() {
     let db = engine(false, Limits::default());
-    let before = db.snapshot().unwrap();
-    let mut corrupt = TenantEngine::decode_snapshot_state(&before).unwrap();
+    let before = db.fixture_snapshot().unwrap();
+    let mut corrupt = kasumi_engine::test_utils::decode_snapshot_candidate(&before).unwrap();
     corrupt.logical_bytes = 999;
     assert_eq!(
-        db.restore(&TenantEngine::encode_snapshot_state(&corrupt, 64 << 20).unwrap())
-            .unwrap_err()
-            .code,
+        db.fixture_restore(
+            &kasumi_engine::test_utils::encode_snapshot_candidate(&corrupt, 64 << 20).unwrap()
+        )
+        .unwrap_err()
+        .code,
         ErrorCode::Corruption
     );
-    assert_eq!(db.snapshot().unwrap(), before);
+    assert_eq!(db.fixture_snapshot().unwrap(), before);
     corrupt.tenant = "other".into();
     assert!(
-        db.restore(&TenantEngine::encode_snapshot_state(&corrupt, 64 << 20).unwrap())
-            .is_err()
+        db.fixture_restore(
+            &kasumi_engine::test_utils::encode_snapshot_candidate(&corrupt, 64 << 20).unwrap()
+        )
+        .is_err()
     );
 }
 

@@ -106,9 +106,10 @@ substitutes the target purpose for the authenticated original purpose or omits
 unavailable archive dependencies.
 
 Remaining release work: paginated wrapping-key retention reporting/CLI, historical
-provider-map installation, live S3 acceptance, public complete snapshot API
-replacement, independent bootstrap-cache verification on every reopen, and final
-capacity/endurance gates. Live verification still rebuilds
+provider-map installation, live S3 acceptance, and final capacity/endurance gates.
+Complete backend snapshot APIs now use explicit admitted asynchronous work, and
+bootstrap reopening independently verifies every required local archive before
+starting Raft. Live verification still rebuilds
 a full unpublished logical state and reserves proportional memory; archive streaming
 does not certify the bounded-maintenance or real 3 GiB gates.
 

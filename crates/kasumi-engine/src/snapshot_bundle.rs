@@ -207,7 +207,16 @@ pub(super) fn write(
 /// Logical candidates are never sufficient evidence to publish a pruned state.
 /// A caller with a locally installed store must independently verify the whole
 /// already-preserved chain in an owned blocking worker.
+#[cfg(any(test, feature = "test-utils"))]
 pub(super) fn verify_local(generation: &Generation, store: &TenantStore) -> Result<()> {
+    verify_local_checked(generation, store, || Ok(()))
+}
+pub(super) fn verify_local_checked(
+    generation: &Generation,
+    store: &TenantStore,
+    check: impl Fn() -> Result<()>,
+) -> Result<()> {
+    check()?;
     store.check_access()?;
     let source = store.storage_access().purpose();
     authorize_root(&generation.state, source, store.storage_access().purpose())?;
@@ -219,6 +228,7 @@ pub(super) fn verify_local(generation: &Generation, store: &TenantStore) -> Resu
         .map(|head| head.object.clone());
     let mut counts = Counts::default();
     while let Some(link) = expected {
+        check()?;
         let ciphertext = placement.cache().read_blocking(&link)?;
         let reference = verify_dependency(&generation.state, source, store, &ciphertext, &link)?;
         if counts.archive_records == 0 {
@@ -240,6 +250,7 @@ pub(super) fn verify_local(generation: &Generation, store: &TenantStore) -> Resu
             && counts.archive_records == retention.archive_segments,
         "local audit archive accounting differs"
     );
+    check()?;
     store.check_access()?;
     Ok(())
 }
@@ -299,6 +310,79 @@ impl Decoder<'_> {
         usize::try_from(length).map_err(|_| overflow())
     }
 }
+impl Decoder<'_> {
+    fn finish(mut self) -> Result<Counts> {
+        let mut counts = [0; 32];
+        self.bytes(&mut counts)?;
+        ensure!(
+            counts == self.counts.encode(),
+            "snapshot final counts differ"
+        );
+        let actual = self.digest.finalize();
+        let mut digest = [0; 32];
+        self.reader.read_exact(&mut digest)?;
+        ensure!(actual.as_slice() == digest, "snapshot final digest differs");
+        let mut extra = [0];
+        ensure!(
+            self.reader.read(&mut extra)? == 0,
+            "snapshot trailing bytes"
+        );
+        Ok(self.counts)
+    }
+}
+
+/// Verify framing/counts/digest with a 64 KiB buffer before using the declared
+/// logical byte count for restore admission. Semantic decoding follows under
+/// the larger admitted reservation, and still rechecks the complete stream.
+pub(super) fn inspect(reader: &mut dyn Read) -> Result<u64> {
+    let mut decoder = Decoder {
+        reader,
+        digest: Sha256::new(),
+        counts: Counts::default(),
+    };
+    let mut magic = [0; 8];
+    decoder.bytes(&mut magic)?;
+    ensure!(&magic == MAGIC, "unsupported tenant snapshot bundle format");
+    let mut buffer = vec![0; CHUNK];
+    let length = decoder.length(SOURCE_LIMIT)?;
+    decoder.bytes(&mut buffer[..length])?;
+    let mut short = false;
+    loop {
+        match decoder.tag()? {
+            LOGICAL => {
+                ensure!(!short, "noncanonical logical snapshot frames");
+                let length = decoder.length(CHUNK)?;
+                short = length < CHUNK;
+                decoder.bytes(&mut buffer[..length])?;
+                decoder.counts.record(false, length)?;
+            }
+            LOGICAL_END => break,
+            _ => anyhow::bail!("invalid logical snapshot record"),
+        }
+    }
+    ensure!(
+        decoder.counts.logical_records != 0,
+        "logical snapshot absent"
+    );
+    loop {
+        match decoder.tag()? {
+            ARCHIVE => {
+                let length = decoder.length(MAX_AUDIT_SEGMENT_BYTES)?;
+                let mut remaining = length;
+                while remaining != 0 {
+                    let take = remaining.min(CHUNK);
+                    decoder.bytes(&mut buffer[..take])?;
+                    remaining -= take;
+                }
+                decoder.counts.record(true, length)?;
+            }
+            END => break,
+            _ => anyhow::bail!("invalid audit snapshot record"),
+        }
+    }
+    Ok(decoder.finish()?.logical_bytes)
+}
+
 struct LogicalReader<'a, 'b> {
     decoder: &'a mut Decoder<'b>,
     buffer: Vec<u8>,
@@ -418,21 +502,7 @@ pub(super) fn read(engine: &TenantEngine, reader: &mut dyn Read) -> Result<Gener
         decoder.tag()? == END,
         "snapshot trailing dependency or missing final record"
     );
-    let mut counts = [0; 32];
-    decoder.bytes(&mut counts)?;
-    ensure!(
-        counts == decoder.counts.encode(),
-        "snapshot final counts differ"
-    );
-    let actual = decoder.digest.finalize();
-    let mut digest = [0; 32];
-    decoder.reader.read_exact(&mut digest)?;
-    ensure!(actual.as_slice() == digest, "snapshot final digest differs");
-    let mut extra = [0];
-    ensure!(
-        decoder.reader.read(&mut extra)? == 0,
-        "snapshot trailing bytes"
-    );
+    decoder.finish()?;
     store.check_access()?;
     Ok(generation)
 }
@@ -549,11 +619,11 @@ mod tests {
         let (_target_dir, target, target_store) = fixture(&incarnation).await;
         let references = install_chain(&source, &source_store);
         let snapshot = capture(source.clone()).await.unwrap();
-        let logical = source.snapshot().unwrap();
+        let logical = source.logical_snapshot().unwrap();
         let incomplete_target = target.clone();
         let candidate = logical.clone();
         assert!(
-            tokio::task::spawn_blocking(move || incomplete_target.restore(&candidate))
+            tokio::task::spawn_blocking(move || incomplete_target.restore_candidate(&candidate))
                 .await
                 .unwrap()
                 .is_err()
@@ -604,7 +674,7 @@ mod tests {
         let recaptured = capture(target.clone()).await.unwrap();
         assert_eq!(snapshot, recaptured);
         restore(target.clone(), recaptured).await.unwrap();
-        tokio::task::spawn_blocking(move || target.restore(&logical))
+        tokio::task::spawn_blocking(move || target.restore_candidate(&logical))
             .await
             .unwrap()
             .unwrap();
@@ -635,7 +705,7 @@ mod tests {
         assert!(restore(target.clone(), trailing).await.is_err());
         assert_eq!(target.generation().unwrap().state.audit_retention, before);
         // The logical-only encoding is not a supported transport fallback.
-        let logical = source.snapshot().unwrap();
+        let logical = source.logical_snapshot().unwrap();
         let mut logical_bytes = Vec::new();
         logical.reader().read_to_end(&mut logical_bytes).unwrap();
         assert!(restore(target.clone(), logical_bytes).await.is_err());
@@ -696,6 +766,48 @@ mod tests {
             )
             .is_err()
         );
+        source_store.shutdown().await;
+        target_store.shutdown().await;
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn public_capture_and_restore_preparation_are_complete_admitted_and_never_publish() {
+        let incarnation = uuid::Uuid::new_v4().to_string();
+        let (_source_dir, source, source_store) = fixture(&incarnation).await;
+        let (_target_dir, target, target_store) = fixture(&incarnation).await;
+        install_chain(&source, &source_store);
+        let admission = crate::admission::NodeAdmission::new(Default::default()).unwrap();
+        let image = source.snapshot(admission.clone(), 60_000).await.unwrap();
+        let before = target.generation().unwrap().state.audit_retention.clone();
+        let prepared = target
+            .prepare_snapshot_restore(image.clone(), admission.clone(), 60_000)
+            .await
+            .unwrap();
+        assert_eq!(prepared.tenant(), "tenant");
+        assert_eq!(prepared.incarnation(), incarnation);
+        assert_eq!(
+            prepared.revision(),
+            source.generation().unwrap().state.revision
+        );
+        assert_eq!(prepared.image(), &image);
+        assert_eq!(target.generation().unwrap().state.audit_retention, before);
+        assert_eq!(admission.snapshot().reserved_bytes, 0);
+        assert!(
+            target
+                .prepare_snapshot_restore(
+                    source.logical_snapshot().unwrap(),
+                    admission.clone(),
+                    60_000
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(admission.snapshot().reserved_bytes, 0);
+        let denied = crate::admission::NodeAdmission::new(crate::admission::AdmissionConfig {
+            max_inflight_bytes: Some(1 << 20),
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(source.snapshot(denied, 60_000).await.is_err());
         source_store.shutdown().await;
         target_store.shutdown().await;
     }

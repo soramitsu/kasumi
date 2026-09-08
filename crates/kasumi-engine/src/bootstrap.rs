@@ -151,6 +151,9 @@ pub async fn prepare_replicated_restore(
     persist_new(&targets, &restored.bytes)?;
     let engine = restored.engine;
     engine.install_storage_access(&target)?;
+    engine
+        .verify_bootstrap_dependencies_owned(replica.admission.clone())
+        .await?;
     let group = RaftGroup::open(
         replica.node_id,
         format!("{}/{}", target.tenant(), bootstrap.incarnation),
@@ -267,7 +270,7 @@ pub async fn open_replicated(
                 bootstrap.initial_policy.clone(),
                 bootstrap.initial_limits.clone(),
             )?;
-            let bytes = engine.snapshot()?;
+            let bytes = engine.logical_snapshot()?;
             persist_new(&stores, &bytes)?;
             bytes
         }
@@ -275,6 +278,9 @@ pub async fn open_replicated(
     validate_bootstrap_control(&stores, &bytes)?;
     let engine = Arc::new(TenantEngine::from_bootstrap(store.tenant(), &bytes)?);
     engine.install_storage_access(&store)?;
+    engine
+        .verify_bootstrap_dependencies_owned(security_audit.admission().clone())
+        .await?;
     anyhow::ensure!(
         engine.generation()?.state.incarnation == bootstrap.incarnation,
         "replicated incarnation differs from bootstrap"
@@ -531,7 +537,7 @@ async fn open_local_inner(
                 initial_policy,
                 initial_limits,
             )?;
-            let bytes = engine.snapshot()?;
+            let bytes = engine.logical_snapshot()?;
             persist_new(&stores, &bytes)?;
             bytes
         }
@@ -568,6 +574,15 @@ async fn start_prepared(
 ) -> anyhow::Result<Arc<Database>> {
     let store = stores.application().clone();
     engine.install_storage_access(&store)?;
+    let admission = match &runtime {
+        LocalRuntime::Production(Some(admission)) => admission.clone(),
+        LocalRuntime::Production(None) => security_audit.admission().clone(),
+        #[cfg(any(test, feature = "test-utils"))]
+        LocalRuntime::Fixture { admission, .. } => admission.clone(),
+    };
+    engine
+        .verify_bootstrap_dependencies_owned(admission)
+        .await?;
     let incarnation = engine.generation()?.state.incarnation.clone();
     let group = RaftGroup::local(
         1,
