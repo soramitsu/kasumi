@@ -224,9 +224,10 @@ Use the native authority client's `signing_maintenance` with an independently
 installed `domain_sha256`, fresh `observation_id` and typed `observe`, `receipt`
 or `start` action. Replies supply the current `policy_epoch` and
 `operational_revision` for a new exact command. `start` accepts
-`StageSignerGeneration` and `ActivateSignerGeneration` commands. The former
-retains the successor certificate; the latter names that exact stage operation
-and certificate digest. The original command UUID, expected revisions and finite
+`EnrollSignerVerifier`, `AdmitControlVerifiers`, `StageSignerGeneration` and
+`ActivateSignerGeneration`. Stage retains the successor certificate and freezes
+the complete enrolled physical verifier table; activation names that exact stage
+operation and certificate digest. The original command UUID, expected revisions and finite
 `not_after_ms` remain unchanged across retries. This endpoint uses current
 mTLS/JWT policy and quorum authorization, so operators can resolve an activation
 that has sealed the loaded operational key.
@@ -241,9 +242,9 @@ and key reload then install the selected key on each issuer member.
 
 Global retirement remains pending after activation. A local retirement receipt
 cannot clear it, and a new global stage is rejected while retirement is pending.
-The coordinator still needs the complete enrolled receiver/issuer roster,
-current authenticated acknowledgments or permanent revocations, and the full
-issuer drain before global retirement can complete. Global stage abort and
+The coordinator still needs current authenticated acknowledgments or permanent
+revocations for every entry in the frozen roster, and the full issuer drain
+before global retirement can complete. Global stage abort and
 retirement completion are not exposed yet. These prerequisites are required
 before the release can claim complete distributed signer rotation.
 
@@ -253,3 +254,65 @@ existing parent), `max_bytes`, and `min_free_bytes`. Use the same installed
 runtime scratch configuration when initializing its separate verifier store.
 Runtime opening passes the shared node owner to both stores; it does not create
 an independent per-request or per-verifier allowance.
+
+## Physical verifier enrollment and rotation freeze
+
+Before staging, enroll each physical verifier through `EnrollSignerVerifier`.
+An enrollment binds the durable installation UUID and node ID to one canonical
+HTTPS administrative origin and explicit certificate pins. Credentials stay in
+installed local file sources. An endpoint or certificate cannot identify two
+physical owners, and an allocated physical identity cannot be overwritten by a
+new command, path alias or endpoint change. Enrollment commands retain exact
+permanent completion or rejection outcomes and use the original finite deadline.
+
+For every installed lifecycle Control root, `AdmitControlVerifiers` must retain
+its exact root, exhaustive issuer partition descriptor and physical Control node
+set. Each node must already have an enrolled administrative endpoint. This is an
+explicit current-administrator enrollment fact. It is not a remote publication
+acknowledgment or a proof that an independently running Control copy has stopped.
+
+Stage checks all authority members, retained tenant incarnations, prepared
+targets, committed lifecycle target identities and admitted Control receivers.
+Historical identities are retained conservatively, including revoked issuers;
+a later retirement coordinator must resolve their exact permanent revocations.
+A missing receiver rejects stage. The reducer orders the enrollment records in
+an encrypted, disk-admitted table and retains checked 64-bit counts and a digest
+in a permanent frozen-roster record atomically with the stage outcome. It never
+constructs an unbounded in-memory roster. Snapshots verify both directions of
+the command/enrollment/freeze links and the frozen counts and digest; restoring
+cannot erase or substitute an already retained physical identity.
+
+The committed stage stops new old-generation serving and lifecycle leases and
+fences lease responses waiting for release. It blocks new physical enrollments,
+Control admissions, tenant enrollments, target preparations, lifecycle intents
+and authority learner admissions. Exact committed replays and fencing/stopping
+operations remain available. Activation permits the selected successor signer;
+the roster remains frozen throughout pending retirement. No abort operation can
+currently undo a committed stage or activation.
+
+`signing_maintenance` also accepts `verifiers` with an
+`expected_operational_revision`, optional exact physical `after` identity and a
+`limit` of 1–64. The SDK returns bounded typed registrations and an exact next
+identity. Every page has a current administrator/quorum response fence. A changed
+operational revision rejects continuation instead of silently restarting it.
+
+The next protocol work must bind live Control admission and remote verifier
+publication to this registry, persist exact acknowledgments or revocations,
+and complete the full issuer drain. Until then, global retirement stays pending;
+these enrollment operations do not certify complete distributed rotation.
+
+The engine's owned `ControlAdministrativeFence` now supplies the current Control
+side of remote verifier authorization. It is constructed only after an actual
+Control quorum barrier and pins the exact lifecycle installation and issuer
+partition, policy epoch, leader term and committed membership, including learners.
+It retains the original finite credential and revocation guard, registers draining
+work, and accounts for bounded installation and retained membership metadata.
+Expiry, revocation, a membership or policy transition, or a failed or cancelled
+release permanently closes that observation. A fresh credential cannot renew it.
+
+This observation alone does not identify physical verifier installations. The
+remote adapter must still match the actual Control membership and local physical
+owner to a fresh authenticated issuer registry observation, dispatch an exact
+committed directive, and durably return publication or permanent-stop evidence.
+Global retirement remains pending until every enrolled receiver and issuer drain
+has that coverage.

@@ -182,6 +182,40 @@ impl TargetRequestAdmission {
         let clock = kasumi_clock::EpochClock::system().map_err(unauthorized)?;
         Self::capture_with_clock(context, timeout_ms, clock.as_ref())
     }
+    /// Native dispatch carries one absolute cap from its durable coordinator
+    /// phase. Network retry and provider acquisition cannot re-anchor it.
+    pub fn capture_until(
+        context: RequestContext,
+        timeout_ms: u64,
+        not_after_ms: u64,
+    ) -> Result<Self> {
+        let clock = kasumi_clock::EpochClock::system().map_err(unauthorized)?;
+        Self::capture_until_with_clock(context, timeout_ms, not_after_ms, clock.as_ref())
+    }
+    fn capture_until_with_clock(
+        context: RequestContext,
+        timeout_ms: u64,
+        not_after_ms: u64,
+        clock: &kasumi_clock::EpochClock,
+    ) -> Result<Self> {
+        let observation = clock.observe().map_err(unauthorized)?;
+        let remaining = not_after_ms
+            .checked_sub(observation.utc_ms())
+            .filter(|remaining| *remaining > 0)
+            .ok_or_else(|| unauthorized("native target dispatch deadline elapsed"))?;
+        let limit = observation
+            .utc_ms()
+            .checked_add(timeout_ms)
+            .ok_or_else(|| unauthorized("native target deadline overflow"))?
+            .min(not_after_ms);
+        let elapsed = observation.until(limit).map_err(unauthorized)?;
+        let mut result = Self::capture_with_clock(context, timeout_ms.min(remaining), clock)?;
+        // Preserve the earlier paired observation, including time spent in
+        // capture_with_clock itself. Its ordinary work timer can only be tighter.
+        result.elapsed = elapsed;
+        result.check()?;
+        Ok(result)
+    }
     fn capture_with_clock(
         context: RequestContext,
         timeout_ms: u64,
@@ -497,5 +531,46 @@ mod admission_tests {
         assert!(!polled.load(Ordering::SeqCst));
         clock.0.store(1, Ordering::SeqCst);
         assert!(admission.check().is_err());
+    }
+    #[test]
+    fn native_absolute_dispatch_cap_survives_retry_and_never_expands_node_work_limit() {
+        for (timeout_ms, cap_ms) in [(25, 100), (100, 25)] {
+            let clock = Arc::new(Clock(AtomicU64::new(0)));
+            let epoch = kasumi_clock::EpochClock::new(clock.clone(), Arc::new(Wall)).unwrap();
+            let observation = epoch.observe().unwrap();
+            let context = RequestContext {
+                tenant: "__kasumi_control".into(),
+                principal: "owner".into(),
+                request_id: "original".into(),
+                scopes: BTreeSet::from([Action::Admin]),
+                authorization: RequestAuthorization::from_verified_credential(
+                    observation.utc_ms() + 1000,
+                    &observation,
+                    CredentialResource::Control {
+                        incarnation: uuid::Uuid::new_v4(),
+                    },
+                )
+                .unwrap(),
+            };
+            let cap = observation.utc_ms() + cap_ms;
+            let admission = TargetRequestAdmission::capture_until_with_clock(
+                context.clone(),
+                timeout_ms,
+                cap,
+                &epoch,
+            )
+            .unwrap();
+            clock.0.store(26, Ordering::SeqCst);
+            assert!(admission.check().is_err());
+            context.authorization.check_live().unwrap();
+            if cap_ms == 25 {
+                assert!(
+                    TargetRequestAdmission::capture_until_with_clock(
+                        context, timeout_ms, cap, &epoch
+                    )
+                    .is_err()
+                );
+            }
+        }
     }
 }

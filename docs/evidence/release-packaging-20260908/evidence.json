@@ -1,0 +1,22 @@
+{
+  "source": "531d86e9ea54c1faeb15d1251d69f652bc2f59ca",
+  "tree": "fceafa453a73a21d0b698ccc084f9e5dad3debd4",
+  "lockfile_sha256": "a4a3883969dc9486548a1aea841ecf45c482c99e4ea1e0d47b56f6c52b2afa08",
+  "platform": "macOS ARM64",
+  "python": "3.12 bundled runtime; executable hash was not captured at test time",
+  "result": "16 Python tests passed; conservative 438-package license/author source inventory verified",
+  "files": {
+    "kasumi-packaging-531d86e-python.log": "23ef7794de2442b481fbe409ac7c0cc0591da9d5b3509c5eff5aecd8f41c6e1a",
+    "kasumi-notices-authors-inventory-check.json": "06b5a2562515aad7ba6653e5977ebe80e27575e61ff4efc03770190c774cb048",
+    "kasumi-packaging-unit-tests.log": "88fda995f4d3cd2bb4a56f4f64c21189593c8a52bbb696ab3f9f342feaa4e0bf",
+    "kasumi-packaging-unit-tests-fixed.log": "3410302f99f55f5b8232e8dede5d3b32c340543bfc2e46f9d511ee55fc0f341a",
+    "kasumi-packaging-python-all.log": "06e2cd072f1ebbcb869035770d44f65db1e766c3a476aff68716672bf88587bc",
+    "kasumi-packaging-python-all-fixed.log": "1a2164120c7e72adf81927be098436e3ddf953cfc388f0c5d32845ac5b55ec54"
+  },
+  "limitations": [
+    "No end-to-end candidate archive was assembled from a successful final functional run.",
+    "The conservative metadata set is not the production compiled package SBOM.",
+    "systemd units have not been run or systemd-analyze verified.",
+    "No OCI artifacts or independent compiler reproducibility run completed."
+  ]
+}

@@ -1,0 +1,11 @@
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 22.05s
+     Running tests/lifecycle.rs (/tmp/kasumi-production-runtime-target/debug/deps/lifecycle-c70bbb2e0c4a0ca5)
+
+running 3 tests
+test control_administration::current_control_administration_retains_exact_resource_revocation_and_original_lifetime ... ok
+test control_administration::current_control_administration_pins_actual_membership_and_pending_policy_across_restart ... ok
+test control_administration::current_control_administration_cannot_release_through_a_cached_leader_after_quorum_loss ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 10.85s
+

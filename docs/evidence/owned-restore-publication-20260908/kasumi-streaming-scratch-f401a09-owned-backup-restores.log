@@ -1,0 +1,12 @@
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 15.71s
+     Running tests/backup_checkpoint.rs (/tmp/kasumi-production-streaming-target/debug/deps/backup_checkpoint-2f7f32893a68a25a)
+
+running 4 tests
+test cancelled_restore_publication_keeps_storage_and_workspace_until_write_drains ... ok
+test local_restore_binds_exact_source_purpose_even_without_cold_archives ... ok
+test restore_hands_off_verified_workspace_with_production_and_destination_reserves ... ok
+test archived_audit_backup_is_self_contained_and_source_unavailable_restore_preserves_exact_chain ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 13.91s
+

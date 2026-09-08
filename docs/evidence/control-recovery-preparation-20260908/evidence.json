@@ -1,0 +1,126 @@
+{
+  "format": 1,
+  "generated_at_utc": "2026-09-08T10:19:13.484607+00:00",
+  "source_commit": "f3c0185bd46c1b1fe0bdb362743a977d40a88f69",
+  "source_tree": "8d05455914c77ac8a5c8f5c9ac5edbdaaae469a4",
+  "source_clean": true,
+  "cargo_lock_sha256": "a4a3883969dc9486548a1aea841ecf45c482c99e4ea1e0d47b56f6c52b2afa08",
+  "platform": "macOS-26.6.2-arm64-arm-64bit",
+  "machine": "arm64",
+  "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-apple-darwin\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+  "target_directory": "/tmp/kasumi-production-standalone-target",
+  "cargo_jobs": 2,
+  "rust_test_threads": 2,
+  "source_files": {
+    "path": "/tmp/kasumi-control-recovery-source-files.json",
+    "sha256": "035ca420313ac7a424daa18474480456af7ae0b3dc30767b1542347beda8a601",
+    "count": 1155
+  },
+  "checks": {
+    "replicated_journal": {
+      "log": "/tmp/kasumi-recovery-final-journal.log",
+      "sha256": "1f9d1557b9deb69b855b400139e3679f1751b2763f976a33ad3c2fbfc68812c6",
+      "result": "2/2 passed"
+    },
+    "native_mtls_control_and_issuer": {
+      "log": "/tmp/kasumi-recovery-final-native.log",
+      "sha256": "d34038273515a96ad25214ec6c4ebd7aff5f399b4145883345c2959c40ad7d16",
+      "result": "1/1 passed"
+    },
+    "snapshots": {
+      "log": "/tmp/kasumi-recovery-combined-snapshots-1.log",
+      "sha256": "106c336f47b8d62a52faee9386093bffe97e05f5682bd70e5bc946d3e86a0e19",
+      "result": "15/15 passed"
+    },
+    "original_target_deadlines": {
+      "log": "/tmp/kasumi-recovery-combined-deadline-1.log",
+      "sha256": "81c3e371d0b4698d484211d231f27848fa9e137f2fd10db2f980d7b0bacffe25",
+      "result": "2/2 passed"
+    },
+    "authorization_narrowing_and_revocation": {
+      "log": "/tmp/kasumi-recovery-combined-authorization-1.log",
+      "sha256": "9e2985eb3c5c64de3e465f535dc9f8095f831055ce41e65ef742ca5b54dcc2ad",
+      "result": "3/3 passed"
+    },
+    "workspace_strict_clippy": {
+      "log": "/tmp/kasumi-recovery-combined-clippy-2.log",
+      "sha256": "c8557c4d8e30e203c3ecb0efea4df7c5790debf40359c0a97698251ed6397c16",
+      "result": "passed: workspace all-features all-targets -D warnings"
+    },
+    "production_no_fixture_bins": {
+      "log": "/tmp/kasumi-recovery-combined-production-1.log",
+      "sha256": "e1e67cc8b8c0d4f4d2f54a7c994cf60140d8e09b7340d8db8e209b1a64778cc6",
+      "result": "passed: server bins no-default-features"
+    },
+    "format": {
+      "log": "/tmp/kasumi-recovery-combined-format-1.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "result": "passed"
+    }
+  },
+  "executables": [
+    {
+      "path": "/tmp/kasumi-production-standalone-target/debug/deps/lifecycle-11aab87d84f8fd79",
+      "sha256": "12bb798e2a1d8293937425e8988aa6821dab530e63ce7b00b60a028a91630820"
+    },
+    {
+      "path": "/tmp/kasumi-production-standalone-target/debug/deps/kasumi_server-8b9768f86cabe832",
+      "sha256": "7a3ed77c258d46c826f61c4b97b2a45a43e0031308a4aedf79516fc196fbdac4"
+    },
+    {
+      "path": "/tmp/kasumi-production-standalone-target/debug/deps/kasumi_engine-e86d7e092c5bb129",
+      "sha256": "6629ec0d875b9c41fcfc435e68b7485ca0de4f6b73b45271b49ef89a59e5a5d8"
+    },
+    {
+      "path": "/tmp/kasumi-production-standalone-target/debug/deps/kasumi_types-bcc7d464aa0c58d2",
+      "sha256": "771db1be85e3df2b0439ac3f26ba0f27c50908301e760afd0097d15db39550a4"
+    }
+  ],
+  "preserved_development_failures": [
+    {
+      "log": "/tmp/kasumi-recovery-journal-tests-7.log",
+      "sha256": "f88c7fda1163a0430719399ed3e59bfaa7285402b92f4a1dd36cf670929c3ee3",
+      "disposition": "Development cleanup regression held a VerifiedRecoveryPhase (database owner) over restart; fixed by dropping that test proof before exclusive reopen.",
+      "source_state": "Earlier development or integration source; not substituted for final-source checks."
+    },
+    {
+      "log": "/tmp/kasumi-recovery-journal-tests-8.log",
+      "sha256": "a25a6b8b445640b56a22eed339b2a3d440c5a616fef5888488ded5897bfe2607",
+      "disposition": "Paired deadline test received UnknownOutcome after the original Control resolve; exact binary passed isolated. Fixture now resolves the same retained phase outcome with a fresh invocation, without changing IDs/deadlines.",
+      "source_state": "Earlier development or integration source; not substituted for final-source checks."
+    },
+    {
+      "log": "/tmp/kasumi-recovery-native-tests-2.log",
+      "sha256": "a37829603e01da1eb0f7be5340ac51713eed06739bd056f00b0ac9cca8379df3",
+      "disposition": "Pre-existing six-node TLS fixture lost issuer acknowledgement before new coordinator code under one-second lease. Fixture now grants five-second real lifetime and exercises full matching issuer drain.",
+      "source_state": "Earlier development or integration source; not substituted for final-source checks."
+    },
+    {
+      "log": "/tmp/kasumi-recovery-combined-native-1.log",
+      "sha256": "b886e787c9c57a8217f5155432d18d2c287bfd665ded4721b325b2ca4eff907b",
+      "disposition": "New fixture tried second live enrollment of already used city tenant; issuer correctly rejected it. Fixed to independent recovery-city tenant.",
+      "source_state": "Earlier development or integration source; not substituted for final-source checks."
+    },
+    {
+      "log": "/tmp/kasumi-recovery-combined-clippy-1.log",
+      "sha256": "9f0b892250990844ddd52d22deff5c7d21c0935054bdab848b69f291dd0f84bb",
+      "disposition": "Scratch/codec merge duplicated a source_purpose_sha256 literal in a snapshot fixture; removed duplicate.",
+      "source_state": "Earlier development or integration source; not substituted for final-source checks."
+    }
+  ],
+  "scope": [
+    "Closed replicated typed operation/phase/target journals and canonical snapshot validation/accounting.",
+    "Installed production native issuer/Control/target dispatch for PrepareTarget and materialization; three exact target facts required.",
+    "StopTarget, separate StopLocal admission, complete installed issuer drain and all-voter signed cleanup evidence; stopped target identities remain permanent.",
+    "Typed native API and Rust client plus private durable CLI start/stop attempt files.",
+    "Original dispatch deadlines and live original revocation/resource/policy/quorum response fences."
+  ],
+  "limitations": [
+    "Coordinator deliberately returns unavailable at Initialize and later completion, retirement/fencing, activation/confirmation and route publication phases.",
+    "Automatic fresh admission after unresolved expired non-target remote phases remains incomplete.",
+    "The real TLS test has actual separate replicated Control and issuer groups, with an intentionally unavailable target endpoint. It does not execute the complete distributed target runner or encrypted full-backup restore.",
+    "Journal materialization/cleanup tests use explicit cryptographic fixtures for target and issuer observations. Existing separate encrypted target-runner tests are not represented as final-source gates here.",
+    "CLI attempt code compiles and uses tested private-file primitives, but this checkpoint has no full standalone CLI distributed-recovery acceptance run.",
+    "These macOS ARM64 focused gates are not the full workspace release gates, cross-platform artifacts, 3 GiB capacity proof, or 24-hour HA soak."
+  ]
+}

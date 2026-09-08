@@ -109,6 +109,9 @@ impl KasumiClientPool {
             return Err(deadline());
         }
         let end = Instant::now().checked_add(timeout).ok_or_else(deadline)?;
+        // One atomic credential snapshot belongs to this entire finite operation.
+        // Renewal is observed by the next invocation, never by an endpoint retry.
+        let bearer = token(self.credential.as_ref()).map_err(|_| ClientError::Authorization)?;
         let mut members = if let Some(member) = pinned {
             if !self.endpoints.contains_key(&member) {
                 return Err(ClientError::Authorization);
@@ -142,8 +145,6 @@ impl KasumiClientPool {
                             })?;
                         entry.insert(client);
                     }
-                    let bearer =
-                        token(self.credential.as_ref()).map_err(|_| ClientError::Authorization)?;
                     dispatched = true;
                     let client = self.clients.get_mut(member).unwrap();
                     client.set_deadline(end);

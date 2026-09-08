@@ -1,0 +1,626 @@
+//! Current-quorum recovery administration and exact journal dispatch admission.
+use super::*;
+use crate::state::recovery::{
+    self, MAX_COMMAND_BYTES, RecoveryAuthorization, RecoveryCommand, RecoveryMutation,
+};
+use uuid::Uuid;
+
+pub struct VerifiedRecoveryStatus {
+    database: Arc<Database>,
+    context: RequestContext,
+    record: RecoveryRecord,
+    policy_epoch: u64,
+    term: u64,
+    _reservation: Reservation,
+}
+impl VerifiedRecoveryStatus {
+    pub fn record(&self) -> &RecoveryRecord {
+        &self.record
+    }
+    pub async fn release(&self) -> Result<()> {
+        self.database
+            .recovery_release(&self.context, self.policy_epoch, self.term)
+            .await
+    }
+}
+/// The serialized phase is history. admit_dispatch separately checks current
+/// Control authority and the original phase deadline before any remote effect.
+pub struct VerifiedRecoveryPhase {
+    database: Arc<Database>,
+    context: RequestContext,
+    record: RecoveryPhaseRecord,
+    policy_epoch: u64,
+    term: u64,
+    _reservation: Reservation,
+}
+impl VerifiedRecoveryPhase {
+    pub fn record(&self) -> &RecoveryPhaseRecord {
+        &self.record
+    }
+    pub async fn release(&self) -> Result<()> {
+        self.database
+            .recovery_release(&self.context, self.policy_epoch, self.term)
+            .await
+    }
+    pub async fn dispatch_limit(&self) -> Result<u64> {
+        self.release().await?;
+        let state = self.database.engine.generation()?;
+        let operation = state
+            .state
+            .recovery_control
+            .operations
+            .get(&self.record.operation_id.to_string())
+            .ok_or_else(|| error(ErrorCode::NotFound, "recovery operation absent"))?;
+        recovery::dispatch_limit(operation, &self.record)
+    }
+    pub async fn admit_dispatch(&self) -> Result<()> {
+        self.release().await?;
+        let current = self.database.engine.generation()?;
+        let head = current
+            .state
+            .recovery_control
+            .operations
+            .get(&self.record.operation_id.to_string())
+            .ok_or_else(|| error(ErrorCode::NotFound, "recovery operation absent"))?;
+        let phase = recovery::phase(&current.state, head, self.record.phase_id)?;
+        let limit = recovery::dispatch_limit(head, &self.record)?;
+        let limit = match &phase.input {
+            RecoveryDispatch::Authority(command) => limit.min(command.not_after_ms),
+            RecoveryDispatch::Target { request, .. } => limit.min(request.not_after_ms),
+            _ => limit,
+        };
+        if head.pending_phase != Some(self.record.phase_id)
+            || phase.input_sha256 != self.record.input_sha256
+            || phase.outcome.is_some()
+            || self.database.lifecycle_now()? >= limit
+        {
+            return Err(error(
+                ErrorCode::Conflict,
+                "original recovery dispatch is no longer eligible",
+            ));
+        }
+        self.context.authorization.check_live()
+    }
+}
+impl Database {
+    async fn recovery_release(
+        &self,
+        context: &RequestContext,
+        epoch: u64,
+        term: u64,
+    ) -> Result<()> {
+        if self.lifecycle_barrier(context).await? != term {
+            return Err(error(
+                ErrorCode::Unavailable,
+                "recovery response quorum term changed",
+            ));
+        }
+        self.engine
+            .authorize_release(context, None, Action::Admin, epoch)?;
+        context.authorization.check_live()?;
+        self.access()
+    }
+    pub async fn recovery_status(
+        self: &Arc<Self>,
+        context: RequestContext,
+        operation_id: Uuid,
+    ) -> Result<VerifiedRecoveryStatus> {
+        let _work = self.work.begin(QueryCancellation::default())?;
+        let mut reservation = self
+            .admission()
+            .reserve((MAX_RECOVERY_RECORD_BYTES * 2) as u64, None)?;
+        let term = self.lifecycle_barrier(&context).await?;
+        let state = self.engine.generation()?;
+        let record = state
+            .state
+            .recovery_control
+            .operations
+            .get(&operation_id.to_string())
+            .cloned()
+            .ok_or_else(|| error(ErrorCode::NotFound, "recovery operation absent"))?;
+        let policy_epoch = state.state.policy_epoch;
+        drop(state);
+        self.control_observation_audit(
+            &context,
+            operation_id,
+            record.request_sha256.clone(),
+            record.updated_revision,
+            policy_epoch,
+        )
+        .await?;
+        reservation.retain_workspace();
+        let result = VerifiedRecoveryStatus {
+            database: self.clone(),
+            context,
+            record,
+            policy_epoch,
+            term,
+            _reservation: reservation,
+        };
+        result.release().await?;
+        Ok(result)
+    }
+    pub async fn recovery_phase(
+        self: &Arc<Self>,
+        context: RequestContext,
+        operation_id: Uuid,
+        phase_id: Uuid,
+    ) -> Result<VerifiedRecoveryPhase> {
+        let _work = self.work.begin(QueryCancellation::default())?;
+        let mut reservation = self
+            .admission()
+            .reserve((MAX_RECOVERY_RECORD_BYTES * 2) as u64, None)?;
+        let term = self.lifecycle_barrier(&context).await?;
+        let state = self.engine.generation()?;
+        let record = state
+            .state
+            .recovery_control
+            .phases
+            .get(&recovery::phase_key(operation_id, phase_id))
+            .filter(|record| record.operation_id == operation_id)
+            .cloned()
+            .ok_or_else(|| error(ErrorCode::NotFound, "recovery phase absent"))?;
+        let policy_epoch = state.state.policy_epoch;
+        drop(state);
+        self.control_observation_audit(
+            &context,
+            phase_id,
+            record.input_sha256.clone(),
+            record.prepared_revision,
+            policy_epoch,
+        )
+        .await?;
+        reservation.retain_workspace();
+        let result = VerifiedRecoveryPhase {
+            database: self.clone(),
+            context,
+            record,
+            policy_epoch,
+            term,
+            _reservation: reservation,
+        };
+        result.release().await?;
+        Ok(result)
+    }
+    pub async fn recovery_control(
+        self: &Arc<Self>,
+        context: RequestContext,
+        request: RecoveryControlCommand,
+    ) -> Result<VerifiedRecoveryStatus> {
+        let (operation_id, mutation) = match request {
+            RecoveryControlCommand::Start(request) => {
+                (request.operation_id, RecoveryMutation::Start(request))
+            }
+            RecoveryControlCommand::Stop {
+                operation_id,
+                command_id,
+            } => (
+                operation_id,
+                RecoveryMutation::Stop {
+                    operation_id,
+                    command_id,
+                },
+            ),
+        };
+        self.recovery_write(context.clone(), mutation).await?;
+        self.recovery_status(context, operation_id)
+            .await
+            .map_err(unknown)
+    }
+    /// Internal coordinator boundary. No native RPC accepts a caller-supplied
+    /// phase input or outcome; the reducer checks the installed workflow again.
+    pub async fn prepare_recovery_dispatch(
+        self: &Arc<Self>,
+        context: RequestContext,
+        operation_id: Uuid,
+        phase_id: Uuid,
+        expected_sequence: u64,
+        expected_pending: Option<Uuid>,
+        input: RecoveryDispatch,
+    ) -> Result<VerifiedRecoveryPhase> {
+        self.recovery_write(
+            context.clone(),
+            RecoveryMutation::Prepare {
+                operation_id,
+                phase_id,
+                expected_sequence,
+                expected_pending,
+                input: Box::new(input),
+            },
+        )
+        .await?;
+        self.recovery_phase(context, operation_id, phase_id)
+            .await
+            .map_err(unknown)
+    }
+    pub async fn resolve_recovery_dispatch(
+        self: &Arc<Self>,
+        context: RequestContext,
+        operation_id: Uuid,
+        phase_id: Uuid,
+        outcome: RecoveryDispatchOutcome,
+    ) -> Result<VerifiedRecoveryStatus> {
+        self.recovery_write(
+            context.clone(),
+            RecoveryMutation::Resolve {
+                operation_id,
+                phase_id,
+                outcome: Box::new(outcome),
+            },
+        )
+        .await?;
+        self.recovery_status(context, operation_id)
+            .await
+            .map_err(unknown)
+    }
+    async fn recovery_write(
+        self: &Arc<Self>,
+        context: RequestContext,
+        mutation: RecoveryMutation,
+    ) -> Result<RecoveryRecord> {
+        let term = self.lifecycle_barrier(&context).await?;
+        let policy_epoch = self.engine.generation()?.state.policy_epoch;
+        let expires_at_ms = context.authorization.expires_at_ms().ok_or_else(|| {
+            error(
+                ErrorCode::Unauthorized,
+                "recovery requires a finite original credential",
+            )
+        })?;
+        let authorization = RecoveryAuthorization {
+            context: context.clone(),
+            policy_epoch,
+            admitted_at_ms: u64::MAX,
+            expires_at_ms,
+        };
+        let command = RecoveryCommand {
+            authorization,
+            mutation,
+        };
+        command.encode()?;
+        let reservation = self
+            .admission()
+            .reserve((MAX_COMMAND_BYTES * 4) as u64, None)?;
+        let registration = self.work.begin(QueryCancellation::default())?;
+        let worker = RecoveryProposal {
+            database: self.clone(),
+            command,
+            term,
+            _reservation: reservation,
+            _registration: registration,
+        };
+        let result = tokio::time::timeout(Duration::from_secs(10), tokio::spawn(worker.run()))
+            .await
+            .map_err(unknown)?
+            .map_err(unknown)?
+            .map_err(unknown)??;
+        self.recovery_release(&context, policy_epoch, term)
+            .await
+            .map_err(unknown)?;
+        Ok(result)
+    }
+    /// Build the next bounded semantic input using the same current Control
+    /// admission. The returned DTO grants nothing until prepare commits it.
+    pub async fn next_recovery_dispatch(
+        self: &Arc<Self>,
+        context: &RequestContext,
+        operation_id: Uuid,
+        phase_id: Uuid,
+    ) -> Result<Option<RecoveryDispatch>> {
+        self.lifecycle_barrier(context).await?;
+        let now = self.lifecycle_now()?;
+        let expires = context.authorization.expires_at_ms().ok_or_else(|| {
+            error(
+                ErrorCode::Unauthorized,
+                "finite recovery credential required",
+            )
+        })?;
+        let current = self.engine.generation()?;
+        let state = &current.state;
+        let operation = state
+            .recovery_control
+            .operations
+            .get(&operation_id.to_string())
+            .ok_or_else(|| error(ErrorCode::NotFound, "recovery operation absent"))?;
+        if operation.phase.terminal() {
+            return Ok(None);
+        }
+        if let Some(id) = operation.pending_phase {
+            let pending = recovery::phase(state, operation, id)?;
+            if let RecoveryDispatch::Target { node_id, request } = &pending.input
+                && operation.phase == RecoveryPhase::Complete
+                && now < request.not_after_ms
+                && matches!(request.step, TargetRuntimeStep::Complete(_))
+            {
+                let next = operation
+                    .voters
+                    .keys()
+                    .copied()
+                    .find(|id| id > node_id)
+                    .or_else(|| operation.voters.keys().next().copied())
+                    .ok_or_else(|| error(ErrorCode::Corruption, "recovery voters absent"))?;
+                return Ok(Some(RecoveryDispatch::Target {
+                    node_id: next,
+                    request: request.clone(),
+                }));
+            }
+            let fresh_phase = match &pending.input {
+                RecoveryDispatch::Target { request, .. } if now >= request.not_after_ms => {
+                    match request.step {
+                        TargetRuntimeStep::Materialize(_)
+                        | TargetRuntimeStep::ResumeMaterialization(_) => {
+                            LifecyclePhase::ResumeMaterialize
+                        }
+                        TargetRuntimeStep::Stop(_) => LifecyclePhase::StopLocal,
+                        TargetRuntimeStep::Start(TargetReplicaInput::Quorum(_))
+                        | TargetRuntimeStep::Initialize(_)
+                            if operation.phase == RecoveryPhase::Initialize =>
+                        {
+                            LifecyclePhase::Initialize
+                        }
+                        _ => {
+                            return Err(error(
+                                ErrorCode::Conflict,
+                                "pending phase has no fresh admission path",
+                            ));
+                        }
+                    }
+                }
+                _ => {
+                    return Err(error(
+                        ErrorCode::Conflict,
+                        "resolve pending exact recovery phase before preparing another",
+                    ));
+                }
+            };
+            return Ok(Some(RecoveryDispatch::ControlIntent(Box::new(
+                recovery::expected_intent(
+                    state,
+                    operation,
+                    phase_id,
+                    state.policy_epoch,
+                    fresh_phase,
+                )?,
+            ))));
+        }
+        if let Some(id) = operation.last_phase {
+            let previous = recovery::phase(state, operation, id)?;
+            if previous.phase == operation.phase
+                && matches!(&previous.outcome,Some(RecoveryDispatchOutcome::Authority(signed)) if matches!(signed.receipt.outcome,AuthorityOutcome::Rejected{..}))
+            {
+                return Err(error(
+                    ErrorCode::Conflict,
+                    "issuer rejected the exact recovery input; inspect its retained phase outcome",
+                ));
+            }
+        }
+        let input = match operation.phase {
+            RecoveryPhase::Prepare | RecoveryPhase::StopTarget => {
+                let action = if operation.phase == RecoveryPhase::Prepare {
+                    AuthorityAction::PrepareTarget {
+                        source_incarnation: operation.request.source_incarnation,
+                        source_epoch: operation.request.source_authority_epoch,
+                        target: recovery::target(&operation.request),
+                    }
+                } else {
+                    AuthorityAction::StopTarget {
+                        source_incarnation: operation.request.source_incarnation,
+                        source_epoch: operation.request.source_authority_epoch,
+                        target: recovery::target(&operation.request),
+                    }
+                };
+                RecoveryDispatch::Authority(Box::new(AuthorityCommand {
+                    tenant: operation.request.tenant.clone(),
+                    command_id: phase_id,
+                    expected_policy_epoch: operation.request.authority_policy_epoch,
+                    not_after_ms: now
+                        .checked_add(operation.request.phase_timeout_ms)
+                        .ok_or_else(|| {
+                            error(ErrorCode::InvalidArgument, "phase deadline overflow")
+                        })?
+                        .min(expires),
+                    action,
+                }))
+            }
+            RecoveryPhase::Materialize | RecoveryPhase::Cleanup => {
+                let current = operation
+                    .current_intent
+                    .map(|id| recovery::intent(state, operation, id))
+                    .transpose()?;
+                match current {
+                    Some(current) if now < current.original_credential_expires_at_ms => {
+                        let node_id = operation
+                            .voters
+                            .iter()
+                            .find(|(_, v)| {
+                                if operation.phase == RecoveryPhase::Materialize {
+                                    v.materialization.is_none()
+                                } else {
+                                    v.cleanup.is_none()
+                                }
+                            })
+                            .map(|(id, _)| *id)
+                            .ok_or_else(|| {
+                                error(
+                                    ErrorCode::Corruption,
+                                    "recovery phase has no unfinished voter",
+                                )
+                            })?;
+                        let step = if operation.phase == RecoveryPhase::Cleanup {
+                            TargetRuntimeStep::Stop(recovery::stop_reference(state, operation)?)
+                        } else if current.request.phase == LifecyclePhase::ResumeMaterialize {
+                            TargetRuntimeStep::ResumeMaterialization(Box::new(recovery::origin(
+                                state, operation,
+                            )?))
+                        } else {
+                            TargetRuntimeStep::Materialize(
+                                operation.request.materialization.clone(),
+                            )
+                        };
+                        RecoveryDispatch::Target {
+                            node_id,
+                            request: Box::new(TargetRuntimeRequest {
+                                tenant: operation.request.tenant.clone(),
+                                command_id: current.request.command_id,
+                                not_after_ms: now
+                                    .checked_add(operation.request.phase_timeout_ms)
+                                    .ok_or_else(|| {
+                                        error(
+                                            ErrorCode::InvalidArgument,
+                                            "recovery dispatch deadline overflow",
+                                        )
+                                    })?
+                                    .min(expires)
+                                    .min(current.original_credential_expires_at_ms),
+                                step,
+                            }),
+                        }
+                    }
+                    _ => {
+                        let phase = if operation.phase == RecoveryPhase::Cleanup {
+                            LifecyclePhase::StopLocal
+                        } else if operation.materialization_intent.is_none() {
+                            LifecyclePhase::Materialize
+                        } else {
+                            LifecyclePhase::ResumeMaterialize
+                        };
+                        RecoveryDispatch::ControlIntent(Box::new(recovery::expected_intent(
+                            state,
+                            operation,
+                            phase_id,
+                            state.policy_epoch,
+                            phase,
+                        )?))
+                    }
+                }
+            }
+
+            RecoveryPhase::Initialize | RecoveryPhase::Complete => {
+                let kind = if operation.phase == RecoveryPhase::Initialize {
+                    LifecyclePhase::Initialize
+                } else {
+                    LifecyclePhase::Complete
+                };
+                let current = operation
+                    .current_intent
+                    .map(|id| recovery::intent(state, operation, id))
+                    .transpose()?;
+                match current {
+                    Some(current) if now < current.original_credential_expires_at_ms => {
+                        let quorum = recovery::quorum_input(state, operation)?;
+                        let mut missing = None;
+                        for id in operation.voters.keys() {
+                            if !recovery::started_for(
+                                state,
+                                operation,
+                                *id,
+                                current.request.command_id,
+                            )? {
+                                missing = Some(*id);
+                                break;
+                            }
+                        }
+                        let (node_id, step) = if let Some(id) = missing {
+                            (
+                                id,
+                                TargetRuntimeStep::Start(TargetReplicaInput::Quorum(quorum)),
+                            )
+                        } else {
+                            let first = *operation.voters.keys().next().ok_or_else(|| {
+                                error(ErrorCode::Corruption, "recovery voters absent")
+                            })?;
+                            (
+                                first,
+                                if kind == LifecyclePhase::Initialize {
+                                    TargetRuntimeStep::Initialize(quorum)
+                                } else {
+                                    TargetRuntimeStep::Complete(quorum)
+                                },
+                            )
+                        };
+                        RecoveryDispatch::Target {
+                            node_id,
+                            request: Box::new(TargetRuntimeRequest {
+                                tenant: operation.request.tenant.clone(),
+                                command_id: current.request.command_id,
+                                not_after_ms: now
+                                    .checked_add(operation.request.phase_timeout_ms)
+                                    .ok_or_else(|| {
+                                        error(
+                                            ErrorCode::InvalidArgument,
+                                            "recovery dispatch deadline overflow",
+                                        )
+                                    })?
+                                    .min(expires)
+                                    .min(current.original_credential_expires_at_ms),
+                                step,
+                            }),
+                        }
+                    }
+                    Some(_) if kind == LifecyclePhase::Complete => {
+                        return Err(error(
+                            ErrorCode::Unavailable,
+                            "expired original completion requires fresh exact completion-resolution evidence",
+                        ));
+                    }
+                    _ => RecoveryDispatch::ControlIntent(Box::new(recovery::expected_intent(
+                        state,
+                        operation,
+                        phase_id,
+                        state.policy_epoch,
+                        kind,
+                    )?)),
+                }
+            }
+            _ => {
+                return Err(error(
+                    ErrorCode::Unavailable,
+                    "recovery has reached a phase whose coordinator dispatcher is not installed",
+                ));
+            }
+        };
+        context.authorization.check_live()?;
+        Ok(Some(input))
+    }
+}
+struct RecoveryProposal {
+    database: Arc<Database>,
+    command: RecoveryCommand,
+    term: u64,
+    _reservation: Reservation,
+    _registration: WorkRegistration,
+}
+impl RecoveryProposal {
+    async fn run(mut self) -> anyhow::Result<Result<RecoveryRecord>> {
+        let _gate = self.database.proposal_gate.clone().lock_owned().await;
+        let authorization = &mut self.command.authorization;
+        if let Err(error) = self
+            .database
+            .recovery_release(
+                &authorization.context,
+                authorization.policy_epoch,
+                self.term,
+            )
+            .await
+        {
+            return Ok(Err(error));
+        }
+        authorization.admitted_at_ms = self.database.lifecycle_now()?;
+        if authorization.admitted_at_ms >= authorization.expires_at_ms {
+            return Ok(Err(error(
+                ErrorCode::Unauthorized,
+                "queued original recovery credential expired",
+            )));
+        }
+        let bytes = self.database.group.write(self.command.encode()?).await?;
+        Ok(serde_json::from_slice(&bytes)?)
+    }
+}
+fn error(code: ErrorCode, message: &str) -> Error {
+    Error::new(code, message)
+}
+fn unknown(_: impl std::fmt::Display) -> Error {
+    error(
+        ErrorCode::UnknownOutcome,
+        "recovery effect may be committed; resolve its exact permanent operation and phase",
+    )
+}

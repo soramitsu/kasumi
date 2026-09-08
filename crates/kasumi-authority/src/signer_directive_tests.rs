@@ -105,6 +105,12 @@ async fn replicated_signer_head_fences_unchanged_local_keys_and_rejects_snapshot
     let request = |action| AuthoritySigningRequest {
         observation_id: Uuid::new_v4(), domain_sha256: domain.digest().unwrap(), action,
     };
+    for member in fixture.settings.bootstrap.membership.members.values() {
+        let command = fixture.maintenance_command(AuthorityMaintenanceAction::EnrollSignerVerifier {enrollment: SignerVerifierEnrollment {
+            verifier: member.verifier.clone(), endpoint: format!("{}/", member.endpoint), certificate_pins: member.certificate_pins.clone(),
+        }}).await;
+        assert_eq!(fixture.maintenance(AuthorityMaintenanceRequest::Start {command}).await.unwrap().phase, AuthorityMaintenancePhase::Completed);
+    }
     let (_, retained) = service.maintenance(context.clone(), AuthorityMaintenanceRequest::Configuration).await.unwrap();
     retained.release().await.unwrap();
     let (initial, _) = service.signing_maintenance(context.clone(), request(AuthoritySigningAction::Observe)).await.unwrap();
@@ -169,4 +175,40 @@ async fn replicated_signer_head_fences_unchanged_local_keys_and_rejects_snapshot
     assert_eq!(historical.status.unwrap().command, stage);
     assert!(historical.current.retirement.is_some());
     fixture.close().await;
+}
+
+#[tokio::test]
+async fn frozen_signer_roster_cannot_be_bypassed_by_source_unavailable_activation() {
+    use kasumi_raft::StateMachineBackend;
+    let f = Fixture::new().await;
+    let service = f.leader().await;
+    let source = f.enroll(&service).await;
+    for member in f.settings.bootstrap.membership.members.values() {
+        let command = f.maintenance_command(AuthorityMaintenanceAction::EnrollSignerVerifier {enrollment: SignerVerifierEnrollment {
+            verifier: member.verifier.clone(), endpoint: format!("{}/", member.endpoint), certificate_pins: member.certificate_pins.clone(),
+        }}).await;
+        assert_eq!(f.maintenance(AuthorityMaintenanceRequest::Start {command}).await.unwrap().phase, AuthorityMaintenancePhase::Completed);
+    }
+    use ring::signature::KeyPair;
+    let key = ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new()).unwrap();
+    let key = ring::signature::Ed25519KeyPair::from_pkcs8(key.as_ref()).unwrap();
+    let certificate = f.signing_root.certify(2, hex::encode(key.public_key().as_ref())).unwrap();
+    let stage = f.maintenance_command(AuthorityMaintenanceAction::StageSignerGeneration {certificate}).await;
+    assert_eq!(f.maintenance(AuthorityMaintenanceRequest::Start {command: stage}).await.unwrap().phase, AuthorityMaintenancePhase::Completed);
+    let fenced = f.exact_administrative(f.command(AuthorityAction::Fence {incarnation: source, authority_epoch: 1})).await;
+    let mut unknown = target(source);
+    unknown.nodes = nodes().into_iter().map(|mut node| {node.verifier.installation_id = Uuid::new_v4(); node}).collect();
+    let activation = f.command(AuthorityAction::Activate {fence_id: fenced.command.command_id, fence_digest: fenced.digest().unwrap(), target: unknown});
+    assert_eq!(service.execute(f.context("operator"), activation.clone()).await.err().unwrap().code, ErrorCode::Unavailable);
+    f.clock.0.store(1000, Ordering::SeqCst);
+    let rejected = f.exact_administrative(activation.clone()).await;
+    assert!(matches!(rejected.outcome, AuthorityOutcome::Rejected {code: ErrorCode::Conflict, ..}));
+    assert_eq!(f.exact_administrative(activation).await, rejected);
+    // Forward recovery onto an already covered physical receiver is still
+    // possible. It cannot acquire a new old-generation lease during the stage.
+    let known = f.command(AuthorityAction::Activate {fence_id: fenced.command.command_id, fence_digest: fenced.digest().unwrap(), target: target(source)});
+    assert!(matches!(f.exact_administrative(known).await.outcome, AuthorityOutcome::Activated { .. }));
+    let mut snapshot = Vec::new(); service.backend.snapshot(&mut snapshot).unwrap();
+    service.backend.validate_snapshot(&mut snapshot.as_slice()).unwrap();
+    f.close().await;
 }

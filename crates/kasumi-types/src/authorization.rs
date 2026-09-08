@@ -17,6 +17,10 @@ enum AuthorizationMetadata {
 #[derive(Clone)]
 enum LiveAuthorization {
     ServiceIdentity,
+    Limited {
+        original: Arc<LiveAuthorization>,
+        deadline: ElapsedDeadline,
+    },
     Credential {
         deadline: ElapsedDeadline,
         liveness: Option<Arc<dyn CredentialLiveness>>,
@@ -114,20 +118,47 @@ impl RequestAuthorization {
     /// Source admission, serialized leader execution and plaintext handoff call
     /// this against the original local proof, not its serialized metadata.
     pub fn check_live(&self) -> Result<()> {
-        match self.live.as_deref() {
-            Some(LiveAuthorization::ServiceIdentity) => Ok(()),
-            Some(LiveAuthorization::Credential { deadline, liveness }) => {
-                deadline.check().map_err(|_| expired())?;
-                if let Some(liveness) = liveness {
-                    liveness.check()?;
-                }
-                deadline.check().map_err(|_| expired())
-            }
-            None => Err(Error::new(
-                ErrorCode::Unauthorized,
-                "replicated authorization metadata is not a live invocation",
-            )),
+        self.live
+            .as_deref()
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorCode::Unauthorized,
+                    "replicated authorization metadata is not a live invocation",
+                )
+            })?
+            .check()
+    }
+    /// Narrow a live invocation to an earlier durable phase deadline. This
+    /// preserves its original clock anchor and revocation guard, cannot mint
+    /// authority from serialized metadata, and never modifies its parent.
+    pub fn with_expiry_limit(&self, limit_ms: u64) -> Result<Self> {
+        self.check_live()?;
+        let AuthorizationMetadata::Credential {
+            expires_at_ms,
+            resource,
+        } = &self.metadata
+        else {
+            return Err(expired());
+        };
+        if limit_ms >= *expires_at_ms {
+            return Ok(self.clone());
         }
+        let live = self.live.as_ref().ok_or_else(expired)?;
+        let (original, deadline) = match live.as_ref() {
+            LiveAuthorization::Credential { deadline, .. } => (live.clone(), deadline),
+            LiveAuthorization::Limited { original, deadline } => (original.clone(), deadline),
+            LiveAuthorization::ServiceIdentity => return Err(expired()),
+        };
+        let deadline = deadline
+            .shortened_by(std::time::Duration::from_millis(expires_at_ms - limit_ms))
+            .map_err(|_| expired())?;
+        Ok(Self {
+            metadata: AuthorizationMetadata::Credential {
+                expires_at_ms: limit_ms,
+                resource: resource.clone(),
+            },
+            live: Some(Arc::new(LiveAuthorization::Limited { original, deadline })),
+        })
     }
     /// Deterministic replica check against the trusted timestamp captured by the
     /// serialized leader. It deliberately does not sample a replica wall clock.
@@ -157,13 +188,7 @@ impl RequestAuthorization {
         }
     }
     pub fn credential_family(&self) -> Option<uuid::Uuid> {
-        match self.live.as_deref() {
-            Some(LiveAuthorization::Credential {
-                liveness: Some(guard),
-                ..
-            }) => guard.family_id(),
-            _ => None,
-        }
+        self.live.as_deref().and_then(LiveAuthorization::family)
     }
     pub fn resource(&self) -> Option<&CredentialResource> {
         match &self.metadata {
@@ -188,6 +213,35 @@ impl RequestAuthorization {
     pub fn require_authority(&self, authority_id: uuid::Uuid, partition: u16) -> Result<()> {
         self.resource()
             .map_or(Ok(()), |r| r.require_authority(authority_id, partition))
+    }
+}
+impl LiveAuthorization {
+    fn check(&self) -> Result<()> {
+        match self {
+            Self::ServiceIdentity => Ok(()),
+            Self::Credential { deadline, liveness } => {
+                deadline.check().map_err(|_| expired())?;
+                if let Some(guard) = liveness {
+                    guard.check()?;
+                }
+                deadline.check().map_err(|_| expired())
+            }
+            Self::Limited { original, deadline } => {
+                original.check()?;
+                deadline.check().map_err(|_| expired())?;
+                original.check()
+            }
+        }
+    }
+    fn family(&self) -> Option<uuid::Uuid> {
+        match self {
+            Self::Credential {
+                liveness: Some(guard),
+                ..
+            } => guard.family_id(),
+            Self::Limited { original, .. } => original.family(),
+            _ => None,
+        }
     }
 }
 fn expired() -> Error {
@@ -270,5 +324,51 @@ mod tests {
             )
             .is_err()
         );
+    }
+    #[test]
+    fn narrowing_keeps_original_anchor_revocation_and_parent_deadline() {
+        struct Guard(std::sync::atomic::AtomicBool);
+        impl CredentialLiveness for Guard {
+            fn check(&self) -> Result<()> {
+                if self.0.load(Ordering::SeqCst) {
+                    Ok(())
+                } else {
+                    Err(expired())
+                }
+            }
+            fn family_id(&self) -> Option<uuid::Uuid> {
+                Some(uuid::Uuid::from_u128(9))
+            }
+        }
+        let clock = Arc::new(Clock(AtomicU64::new(20)));
+        let epoch = EpochClock::new(clock.clone(), Arc::new(Wall)).unwrap();
+        let guard = Arc::new(Guard(std::sync::atomic::AtomicBool::new(true)));
+        let original = RequestAuthorization::from_verified_credential_with_liveness(
+            2000,
+            &epoch.observe().unwrap(),
+            resource(),
+            guard.clone(),
+        )
+        .unwrap();
+        clock.0.store(200, Ordering::SeqCst);
+        let shorter = original.with_expiry_limit(1300).unwrap();
+        assert_eq!(shorter.expires_at_ms(), Some(1300));
+        assert_eq!(shorter.credential_family(), original.credential_family());
+        assert_eq!(
+            shorter.with_expiry_limit(2500).unwrap().expires_at_ms(),
+            Some(1300)
+        );
+        clock.0.store(320, Ordering::SeqCst);
+        assert!(shorter.check_live().is_err());
+        original.check_live().unwrap();
+        assert!(original.with_expiry_limit(1300).is_err());
+        original.check_live().unwrap();
+        let later = original.with_expiry_limit(1700).unwrap();
+        guard.0.store(false, Ordering::SeqCst);
+        assert!(original.check_live().is_err());
+        assert!(later.check_live().is_err());
+        let decoded: RequestAuthorization =
+            serde_json::from_slice(&serde_json::to_vec(&later).unwrap()).unwrap();
+        assert!(decoded.with_expiry_limit(1500).is_err());
     }
 }

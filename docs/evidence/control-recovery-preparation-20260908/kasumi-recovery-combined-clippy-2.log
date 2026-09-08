@@ -1,0 +1,5 @@
+    Checking kasumi-server v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-server)
+    Checking kasumi-store v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-store)
+    Checking kasumi-engine v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-engine)
+    Checking kasumi-query v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-query)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 13.73s

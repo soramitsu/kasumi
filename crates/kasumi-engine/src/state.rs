@@ -18,6 +18,8 @@ use std::sync::{Arc, Mutex};
 pub(crate) mod history;
 #[path = "lifecycle_state.rs"]
 pub(crate) mod lifecycle;
+#[path = "recovery_state.rs"]
+pub(crate) mod recovery;
 #[path = "retirement_state.rs"]
 pub(crate) mod retirement;
 #[path = "schema_activation.rs"]
@@ -98,6 +100,9 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
         position: &kasumi_raft::AppliedEntryContext,
         bytes: &[u8],
     ) -> anyhow::Result<kasumi_raft::AppliedResponse> {
+        if bytes.starts_with(recovery::PREFIX) {
+            return self.apply_recovery(position, bytes);
+        }
         if bytes.starts_with(target::PREFIX) {
             return self.apply_target(position, bytes);
         }
@@ -1010,6 +1015,10 @@ impl TenantEngine {
         validate_limits(&state.limits)?;
         validate_policy(&state.policy, &state.limits)?;
         lifecycle::validate(&state)?;
+        recovery::validate(&state)?;
+        if let Ok(current) = self.generation() {
+            recovery::validate_successor(&current.state, &state)?;
+        }
         validate_target_history(&state)?;
         for entry in state.target_lifecycle.values() {
             if let Some(completed) = &entry.completion {

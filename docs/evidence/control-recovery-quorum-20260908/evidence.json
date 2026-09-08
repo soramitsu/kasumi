@@ -1,0 +1,71 @@
+{
+  "format": 1,
+  "created_at_utc": "2026-09-08T10:35:05.349253+00:00",
+  "source_commit": "cabebf877af0a820ac4ff6fe19b23346484dfee3",
+  "source_tree": "b30652103043f9a58d44fee326d6f04f825936e1",
+  "source_clean": true,
+  "cargo_lock_sha256": "a4a3883969dc9486548a1aea841ecf45c482c99e4ea1e0d47b56f6c52b2afa08",
+  "platform": "macOS-26.6.2-arm64-arm-64bit",
+  "toolchain": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-apple-darwin\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+  "cargo_jobs": 2,
+  "rust_test_threads": 2,
+  "source_files": {
+    "path": "/tmp/kasumi-control-recovery-quorum-source-files.json",
+    "sha256": "d307a4ffa56df11ad35cfd15bb3500c47e59be48dc9648089f41521a8ee3d7ac"
+  },
+  "logs": [
+    {
+      "path": "/tmp/kasumi-recovery-quorum-check-1.log",
+      "sha256": "93546f33ca34d978b96aedd40dbc601a468c04d2fdad306c9609467b2f3a23bf"
+    },
+    {
+      "path": "/tmp/kasumi-recovery-quorum-tests-1.log",
+      "sha256": "32824e7e08091f37c56abe133e9b1ff67110f81083e6659b586bdfa0a2bcb8b9"
+    },
+    {
+      "path": "/tmp/kasumi-recovery-quorum-clippy-1.log",
+      "sha256": "81b0345f85af482a9ba66124e1315ad94c3b75aab5719290418b62397a09fe7e"
+    },
+    {
+      "path": "/tmp/kasumi-recovery-quorum-snapshots-1.log",
+      "sha256": "a1024eef735579ea9505f22cc9122df0f020a87ddd9be5adf1855c41d1f0fbc0"
+    },
+    {
+      "path": "/tmp/kasumi-recovery-quorum-production-1.log",
+      "sha256": "12e76c34a4800d1da1cd594a3122fec412e6c8832d4878ba88103e5ac9f4b455"
+    }
+  ],
+  "executables": [
+    {
+      "path": "/tmp/kasumi-production-standalone-target/debug/deps/lifecycle-11aab87d84f8fd79",
+      "sha256": "571b83b4c2de30f85a22ff02a4fd8b0e23edb149905dbbf0b4aad0b70d0901bd"
+    },
+    {
+      "path": "/tmp/kasumi-production-standalone-target/debug/deps/kasumi_engine-e86d7e092c5bb129",
+      "sha256": "6c2cfb9496b3b1582510179bf4318352f78dc8c07fe9cd4f09a99de3d9001a56"
+    }
+  ],
+  "results": {
+    "workspace_all_targets_all_features_check": "passed before final fixture additions; final strict Clippy covers final sources",
+    "replicated_recovery": "2/2 passed in19.40s",
+    "snapshots": "15/15 passed in9.60s",
+    "strict_clippy": "workspace all-features all-targets -D warnings passed",
+    "production_bins": "server bins no-default-features check passed",
+    "format_diff": "passed"
+  },
+  "scope": [
+    "Reconstruct exact three-voter signed materialization quorum for initialization and completion.",
+    "Require each voter startup under the exact current Control intent; only designated voter initializes.",
+    "Retry completion on another installed voter preserving original command and absolute deadline; prior unresolved phase retained.",
+    "Verify exact signed current-quorum completion before source fencing/retirement phase.",
+    "Validate full snapshot predecessor obligations and monotonic startup references while retaining every immutable phase record."
+  ],
+  "limitations": [
+    "No actual three-target-process native quorum integration added in this increment; journal tests use explicit target cryptographic fixtures.",
+    "Full physical encrypted restore, initialization and completion must still pass final real TLS target-runner acceptance.",
+    "Source retirement/fencing, issuer activation, target confirmation and route publication dispatch remain unavailable.",
+    "Expired ambiguous original Complete requires new authenticated resolution evidence; original completion identity and deadline are not replaced.",
+    "Unresolved expired non-target phases and original authority policy epoch changes remain follow-up recovery work.",
+    "Prior f3c0185 native mTLS evidence is preserved separately and is not claimed as this increment's final-source native gate."
+  ]
+}

@@ -443,7 +443,7 @@ impl ValidatedApplicationSnapshot {
             };
             let counts = get::<staging::SnapshotChunks>(&self.lineage, &("stage", &key))?
                 .unwrap_or_default();
-            let uploading = staging::validate_snapshot_record(&key, &stage, h.revision, &counts)?;
+            let uploading = staging::validate_snapshot_record(&key, &stage, h, &counts)?;
             ensure!(
                 uploading == self.index.get(8, &key, "")?.is_some(),
                 "staged active index differs"
@@ -989,7 +989,11 @@ mod tests {
         state.staged_transactions.insert(
             stage_key.clone(),
             StagedTransaction {
-                principal: "owner".into(),
+                scope: StagedTransactionScope {
+                    tenant: state.tenant.clone(),
+                    incarnation: state.incarnation.clone(),
+                    principal: "owner".into(),
+                },
                 transaction_id: "upload".into(),
                 manifest_digest: staged_digest(&manifest).unwrap().0,
                 manifest,
@@ -1079,7 +1083,7 @@ mod tests {
     }
     #[test]
     fn authenticated_semantic_substitutions_fail_both_validation_paths() {
-        for case in 0..13 {
+        for case in 0..16 {
             let mut candidate = state();
             match case {
                 0 => candidate.document_count += 1,
@@ -1124,6 +1128,18 @@ mod tests {
                         .get_mut(&staging::identity("owner", "upload").unwrap())
                         .unwrap()
                         .manifest_digest = "00".repeat(32)
+                }
+                13..=15 => {
+                    let scope = &mut candidate
+                        .staged_transactions
+                        .get_mut(&staging::identity("owner", "upload").unwrap())
+                        .unwrap()
+                        .scope;
+                    match case {
+                        13 => scope.principal = "replacement".into(),
+                        14 => scope.tenant = "other-tenant".into(),
+                        _ => scope.incarnation = "unretained-incarnation".into(),
+                    }
                 }
                 _ => {
                     candidate

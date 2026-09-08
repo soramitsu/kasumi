@@ -962,18 +962,14 @@ async fn encrypted_restart_restarts_full_drain_and_never_reuses_an_old_incarnati
             .unwrap(),
         accepted
     );
-    let second_fence = service
-        .execute(
-            fixture.context("operator"),
-            fixture.command(AuthorityAction::Fence {
-                incarnation: replacement.incarnation,
-                authority_epoch: 2,
-            }),
-        )
-        .await
-        .unwrap()
-        .0
-        .receipt;
+    // Restart can commit this fence before its acknowledgment reaches the caller.
+    // Resolve its original identity and authorization before testing reuse.
+    let second_fence = fixture
+        .exact_administrative(fixture.command(AuthorityAction::Fence {
+            incarnation: replacement.incarnation,
+            authority_epoch: 2,
+        }))
+        .await;
     let mut reused = target(replacement.incarnation);
     reused.incarnation = source;
     let stale = fixture.command(AuthorityAction::Activate {

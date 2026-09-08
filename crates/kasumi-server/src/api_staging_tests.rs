@@ -20,10 +20,20 @@ async fn native_staging_and_coherent_lease_pages_share_exact_state_and_authority
         .collect();
     let manifest = kasumi_types::StagedManifest::from_chunks(&chunks).unwrap();
     let reference = kasumi_types::StagedTransactionRef {
+        scope: kasumi_types::StagedTransactionScope {
+            tenant: "tenant-a".into(),
+            principal: "person".into(),
+            incarnation: fixture.incarnation.to_string(),
+        },
         transaction_id: "wire-stage".into(),
         manifest_digest: kasumi_types::staged_digest(&manifest).unwrap().0,
     };
     let begin = kasumi_types::BeginStagedTransaction {
+        scope: kasumi_types::StagedTransactionScope {
+            tenant: "tenant-a".into(),
+            principal: "person".into(),
+            incarnation: fixture.incarnation.to_string(),
+        },
         transaction_id: reference.transaction_id.clone(),
         manifest,
         ttl_ms: 60_000,

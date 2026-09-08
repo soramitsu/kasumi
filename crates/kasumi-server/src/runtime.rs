@@ -343,6 +343,9 @@ impl RuntimeConfig {
         configured_control_context(&self.control)?;
         if let Some(lifecycle) = &self.control.lifecycle {
             lifecycle.validate(self.mode, self.control.incarnation.as_deref())?;
+            if let Some(recovery) = &lifecycle.recovery {
+                recovery.validate(self)?;
+            }
         }
         let mut tenants = BTreeSet::new();
         let mut standalone_installation = None;
@@ -1224,6 +1227,10 @@ impl NodeRuntime {
             { runtime.audit_release_gate = native_admin.audit_release_gate(); }
             let mut admin = tonic::service::Routes::new(native_admin.service());
             if let Some(signer) = lifecycle_signer {
+                if config.control.lifecycle.as_ref().is_some_and(|lifecycle| lifecycle.recovery.is_some()) {
+                    let coordinator = crate::recovery_runtime::ControlRecoveryCoordinator::new(&config, runtime.control.database.clone(), signer.clone(), runtime.authority_trusts.clone())?;
+                    admin = admin.add_service(crate::rpc::NativeRecoveryControl::new(coordinator, auth.clone()).service());
+                }
                 admin = admin.add_service(crate::rpc::NativeLifecycleControl::new(runtime.control.database.clone(), signer, auth.clone())?.service());
             }
             if let Some(target)=&runtime.target_recovery {admin=admin.add_service(crate::rpc::NativeTargetRecovery::new(target.clone(),auth.clone()).service());}
@@ -1881,7 +1888,10 @@ pub fn example_config() -> RuntimeConfig {
                     private_key: "/etc/kasumi/node-authority-key.pem".into(),
                 },
                 server_ca: "/etc/kasumi/authority-ca.pem".into(),
-                bearer_file: "/etc/kasumi/credentials/authority-token".into(),
+                bearer_files: BTreeMap::from([(
+                    0,
+                    "/etc/kasumi/credentials/authority-0-token".into(),
+                )]),
                 principal: "storage-node-1".into(),
             },
         )]),

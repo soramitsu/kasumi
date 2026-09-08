@@ -2,6 +2,8 @@ use crate::admission::{CancelOnDrop, NodeAdmission, Reservation, WorkFence, Work
 use crate::{SecurityAudit, SecurityEvent, SecurityEventKind, SecurityOutcome, TenantEngine};
 #[path = "audit_maintenance_service.rs"]
 mod audit_maintenance_service;
+#[path = "control_administration.rs"]
+pub(crate) mod control_administration;
 use kasumi_clock::{LeaseClock, SystemLeaseClock};
 use kasumi_query::QueryCancellation;
 use kasumi_raft::RaftGroup;
@@ -25,6 +27,8 @@ mod history_reads;
 pub use custody_service::{CustodyResponseFence, RetiredCustody};
 #[path = "lifecycle_service.rs"]
 pub(crate) mod lifecycle_service;
+#[path = "recovery_service.rs"]
+pub(crate) mod recovery_service;
 #[path = "restore_lineage_service.rs"]
 mod restore_lineage_service;
 #[path = "retirement_service.rs"]
@@ -1182,13 +1186,13 @@ impl Database {
                 &context,
                 request,
             )?,
-            Operation::BeginStaged(request) => crate::state::staging::authorize_manifest(
+            Operation::BeginStaged(request) => crate::state::staging::authorize_begin(
                 &self.engine.generation()?.state,
                 &context,
-                &request.manifest,
+                request,
             )?,
             Operation::AppendStaged(request) => {
-                crate::state::staging::lookup(
+                crate::state::staging::authorize_upload(
                     &self.engine.generation()?.state,
                     &context,
                     &request.transaction,
@@ -1200,7 +1204,7 @@ impl Database {
                 request,
             )?,
             Operation::FinalizeStaged(reference) => {
-                crate::state::staging::lookup(
+                crate::state::staging::authorize_upload(
                     &self.engine.generation()?.state,
                     &context,
                     reference,

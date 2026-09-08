@@ -110,6 +110,9 @@ impl Backend {
         let mut writes = Vec::new();
         match &prepared.request {
             LifecycleAuthorityRequest::AcceptIntent(signed) => {
+                if let Err(error) = Self::check_new_verifier_admission(&meta) {
+                    return Ok(Err(error));
+                }
                 if prepared.admitted_at_ms
                     >= signed.observation.intent.original_credential_expires_at_ms
                 {

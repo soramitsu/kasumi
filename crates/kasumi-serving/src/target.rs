@@ -233,3 +233,71 @@ pub fn verify_local_target_cleanup(
         &signed.signature,
     )
 }
+
+/// Verify retained physical cleanup against the exact committed issuer
+/// partition. This returns historical evidence only and cannot create a lease
+/// or a live cleanup capability from a Control journal record.
+pub fn verify_local_target_cleanup_history(
+    partition: &kasumi_types::ControlAuthorityPartition,
+    expected: &kasumi_types::LifecycleIntent,
+    node_id: u64,
+    reference: &crate::TargetStopReference,
+    signed: &crate::SignedLocalTargetCleanup,
+) -> Result<()> {
+    use kasumi_types::{AuthorityAction, AuthorityOutcome, SigningDomain};
+    partition.validate()?;
+    signed.fact.validate()?;
+    reference.validate()?;
+    let observation = &signed.fact.stopped.observation;
+    let receipt = &observation.stop;
+    receipt.command.validate()?;
+    ensure!(
+        signed.fact.intent == *expected
+            && signed.fact.node_id == node_id
+            && observation.reference == *reference
+            && expected.request.authority_partition == partition.key()
+            && receipt.command.tenant == expected.request.tenant
+            && receipt.authority_id == partition.authority_id
+            && receipt.manifest_digest == partition.manifest_sha256
+            && receipt.partition == partition.partition
+            && receipt.revision > 0
+            && receipt.term > 0
+            && receipt.command_digest == receipt.command.digest()?
+            && observation.observed_revision >= receipt.revision
+            && observation.observed_term >= receipt.term
+            && observation.drain_ms == partition.drain_ms,
+        "retained physical cleanup issuer, original phase, or complete drain differs"
+    );
+    ensure!(
+        matches!((&receipt.command.action,&receipt.outcome),
+        (AuthorityAction::StopTarget {source_incarnation,source_epoch,target},AuthorityOutcome::TargetStopped {source_incarnation:actual_source,source_epoch:actual_epoch,target:actual})
+        if source_incarnation==actual_source && source_epoch==actual_epoch && target==actual
+            && target.nodes == expected.request.target_nodes.values().map(|node| kasumi_types::NodeIdentity {
+                node_id: node.node_id, verifier: node.verifier.clone(), principal: node.principal.clone(), certificate_sha256: node.certificate_sha256.clone()
+            }).collect()),
+        "retained cleanup lacks exact permanent target stop"
+    );
+    crate::HistoricalSigningTrust::install(SigningDomain {
+        authority_id: partition.authority_id,
+        partition: partition.partition,
+        manifest_sha256: partition.manifest_sha256.clone(),
+        root_public_key: partition.signing_public_key.clone(),
+        retirement_drain_ms: partition.drain_ms,
+    })?
+    .verify(
+        "kasumi.target-stop-drained.v1",
+        observation,
+        &signed.fact.stopped.signature,
+    )?;
+    let node = expected
+        .request
+        .target_nodes
+        .get(&node_id)
+        .ok_or_else(|| anyhow::anyhow!("retained cleanup target signer absent"))?;
+    verify(
+        &node.attestation_public_key,
+        "kasumi.local-target-cleanup.v1",
+        &signed.fact,
+        &signed.signature,
+    )
+}

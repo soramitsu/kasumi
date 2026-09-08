@@ -1,0 +1,15 @@
+{
+  "source": "40e7154246678cd6f708d53729e560eeee3d1be7",
+  "command": [
+    "cargo",
+    "+1.97.1",
+    "check",
+    "--workspace",
+    "--all-features",
+    "--all-targets",
+    "-j2"
+  ],
+  "exit_code": 0,
+  "log": "kasumi-combined-recovery-handoff-check.log",
+  "log_sha256": "a36ccbc88386e7d7a84d2807a4e613faef94de2da1c0c8bfdbe38ab037dabc78"
+}

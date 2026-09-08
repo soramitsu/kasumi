@@ -267,6 +267,45 @@ impl Fixture {
         .await
         .expect("original rejected completion did not resolve")
     }
+    // Resolve an uncertain denial using its original identity and authorization.
+    // An unchanged audit count after a transport error is not a budget outcome.
+    async fn rejected_intent(
+        &self,
+        context: RequestContext,
+        request: CommitLifecycleIntent,
+    ) -> Error {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let result = self
+                    .leader()
+                    .await
+                    .lifecycle_control(
+                        context.clone(),
+                        LifecycleControlCommand::CommitIntent(request.clone().into()),
+                    )
+                    .await;
+                let db = self.leader().await;
+                let generation = db.engine().generation().unwrap();
+                let control = generation.state.lifecycle_control.as_ref().unwrap();
+                assert!(control.pending_change.is_some());
+                assert!(
+                    !control.intents.contains_key(&request.command_id),
+                    "intent unexpectedly committed while issuance was closed"
+                );
+                match result {
+                    Err(error)
+                        if matches!(
+                            error.code,
+                            ErrorCode::UnknownOutcome | ErrorCode::Unavailable
+                        ) => {}
+                    Err(error) => return error,
+                    Ok(receipt) => panic!("closed issuance accepted an intent: {receipt:?}"),
+                }
+            }
+        })
+        .await
+        .expect("original denied intent did not resolve")
+    }
     fn context(&self, principal: &str) -> RequestContext {
         self.context_for(principal, 60_000)
     }
@@ -890,38 +929,57 @@ async fn control_completion_audit_reservation_survives_denials_and_current_admin
     }
     // Fill the byte budget with denied attempts. Completion reserves the full
     // worst-case record even when the original administrative request was short.
-    let mut retained = 4;
-    for attempt in 0..2000 {
-        assert!(
-            db.lifecycle_control(
-                f.context("owner"),
-                LifecycleControlCommand::CommitIntent((f.intent(epoch)).into())
-            )
-            .await
-            .is_err()
+    // This fixture has no archive worker: observe the absolute retained history
+    // cursor and require the actual ordered budget rejection, not an unchanged
+    // vector length following an unavailable/ambiguous request.
+    assert!(db.audit_maintenance_status().is_none());
+    let audit_sequence = |db: &Database| {
+        let generation = db.engine().generation().unwrap();
+        let retention = &generation.state.audit_retention;
+        assert_eq!(
+            retention.next_sequence - retention.pruned_before,
+            generation.state.audits.len() as u64
         );
-        let count = db.engine().generation().unwrap().state.audits.len();
-        if count == retained {
-            break;
+        retention.next_sequence
+    };
+    let initial_sequence = audit_sequence(&db);
+    let mut retained = initial_sequence;
+    for attempt in 0..2000 {
+        let error = f.rejected_intent(f.context("owner"), f.intent(epoch)).await;
+        let count = audit_sequence(f.leader().await.as_ref());
+        match error.code {
+            ErrorCode::Conflict => {
+                assert_eq!(error.message, "lifecycle issuance is closed");
+                assert!(count > retained, "ordered denial must retain its audit");
+                retained = count;
+            }
+            ErrorCode::AuditUnavailable => {
+                assert_eq!(
+                    error.message,
+                    "required audit cannot fit serialized tenant budget"
+                );
+                // A prior ambiguous retry may already have filled the remaining
+                // room, but the definitive capacity rejection adds no event.
+                assert!(count >= retained);
+                retained = count;
+                break;
+            }
+            _ => panic!("unexpected closed-issuance result: {error:?}"),
         }
-        retained = count;
         assert!(attempt < 1999, "completion byte budget did not fill");
     }
-    assert!(retained > 4);
+    assert!(retained > initial_sequence);
     for _ in 0..3 {
-        assert!(
-            db.lifecycle_control(
-                f.context("owner"),
-                LifecycleControlCommand::CommitIntent((f.intent(epoch)).into()),
-            )
-            .await
-            .is_err()
-        );
+        let error = f.rejected_intent(f.context("owner"), f.intent(epoch)).await;
+        assert_eq!(error.code, ErrorCode::AuditUnavailable);
         assert_eq!(
-            db.engine().generation().unwrap().state.audits.len(),
-            retained
+            error.message,
+            "required audit cannot fit serialized tenant budget"
         );
+        assert_eq!(audit_sequence(f.leader().await.as_ref()), retained);
     }
+    drop(db);
+    let db = f.leader().await;
     let pending = db
         .observe_lifecycle_change(f.context("owner"), change.command_id)
         .await
@@ -941,10 +999,7 @@ async fn control_completion_audit_reservation_survives_denials_and_current_admin
         .code,
         ErrorCode::UnknownOutcome
     );
-    assert_eq!(
-        db.engine().generation().unwrap().state.audits.len(),
-        retained + 1
-    );
+    assert_eq!(audit_sequence(f.leader().await.as_ref()), retained + 1);
     let request = ReadLifecycleStatus {
         command_id: change.command_id,
         expected_incarnation: f.installation.root.control_incarnation,
@@ -961,10 +1016,7 @@ async fn control_completion_audit_reservation_survives_denials_and_current_admin
     assert!(
         matches!(status.command,Some(LifecycleCommandStatus::PolicyChange(ref c)) if c.completed_revision.is_some() && c.completion_stops.as_ref().unwrap().len()==2)
     );
-    assert_eq!(
-        db.engine().generation().unwrap().state.audits.len(),
-        retained + 1
-    );
+    assert_eq!(audit_sequence(f.leader().await.as_ref()), retained + 1);
     drop(pending);
     drop(db);
     f.close().await;
@@ -1048,3 +1100,8 @@ async fn control_rejects_unfinishable_byte_budget_and_substituted_authenticated_
     drop(db);
     f.close().await;
 }
+
+#[path = "common/control_administration.rs"]
+mod control_administration;
+#[path = "common/recovery_control.rs"]
+mod recovery_control;
