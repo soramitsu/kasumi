@@ -419,3 +419,22 @@ a read-only quota getter or caller capacity claim cannot close this dependency.
   test gate. On `8e90ff2` macOS, eleven documentation tests pass; evidence is in
   `docs/evidence/workspace-doctests-20260908`. Native Linux ARM64 full functional
   validation of that exact source is in progress and is not a recorded pass.
+
+- `f401a09` publishes restore state in an owned blocking worker that retains the
+  original finite invocation, bootstrap lock, source/target stores and workspace
+  reservation through actual disk drain. Four restore cases, deadline queue,
+  real three-node TLS lifecycle and local recovery pass with strict/production
+  checks. Evidence: `docs/evidence/owned-restore-publication-20260908`.
+- `c1dc8b0` freezes explicit physical verifier enrollment during signing rotation.
+  Authority tests pass42 and native TLS passes, with strict/production checks.
+  Evidence: `docs/evidence/frozen-verifier-roster-20260908`. Current remote
+  acknowledgments, live Control registry binding and full issuer drain remain
+  unfinished. Combined `97a14cd` workspace check passes in130seconds.
+- Candidate packaging (`f084e03`, `531d86e`) retains compiled dependency identity,
+  exact source/binary/log provenance, normalized archives, SPDX Cargo inventory,
+  original notices, referenced author lists and hardened systemd units. Sixteen
+  Python tests pass, including tamper/relabeling rejection and deterministic
+  archive assembly; conservative metadata license provenance passes438packages.
+  These are development checks. Actual end-to-end candidate production assembly,
+  OS/OCI SBOMs, OCI images, reproducible compiler builds and release acceptance
+  remain open. Procedures are in `docs/release-artifacts.md`.

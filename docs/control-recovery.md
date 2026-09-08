@@ -10,12 +10,18 @@ snapshots; historical application backups reject these Control records.
 The current executable slice prepares the replacement at the independent issuer,
 commits a Control materialization intent, and dispatches existing native target
 materialization on each installed voter. All three signed facts must agree on the
-same original bootstrap before the journal advances to `initialize`.
+same original bootstrap before the journal advances to `initialize`. It then
+commits separate initialization and completion intents, starts every voter under
+each exact current intent, initializes only through the designated voter, and
+requires a signed current-quorum completion proof. Historical startup replies
+from an earlier phase cannot satisfy a new phase. A completion retry can use
+another installed voter with the same original command and absolute deadline;
+the unresolved prior attempt remains retained.
 
-**Initialization, completion, source retirement/fencing, activation confirmation,
-and route publication are not yet dispatched by this coordinator.** `resume`
-returns an explicit unavailable error at these phases. This slice is not a
-complete disaster recovery workflow or a release acceptance result.
+**Source retirement/fencing, activation confirmation, and route publication are
+not yet dispatched by this coordinator.** `resume` returns an explicit
+unavailable error at these phases. This slice is not a complete disaster recovery
+workflow or a release acceptance result.
 
 A pre-activation `stop` permanently retains the stop identity, obtains the issuer's
 permanent target stop, commits a separate local cleanup intent, and requests
@@ -84,14 +90,19 @@ An expired target materialization is admitted through a fresh committed
 `resume_materialize` phase bound to the exact original `TargetOrigin`. Its old
 phase entry remains unresolved history, and the original intent's expiry and
 bootstrap bytes do not change. Expired cleanup work likewise needs a fresh
-`stop_local` admission. Other unresolved remote phase kinds currently require
-explicit original outcome resolution; automatic recovery after their original
-admission expires remains an implementation gap.
+`stop_local` admission. Initialization can also receive a fresh committed admission after its original
+work cap expires; its bootstrap and exact voter set remain unchanged. Completion
+keeps its original permanent Control intent. After that intent expires, fresh
+inspection evidence must resolve the original completion and be accepted by the
+issuer; that path remains incomplete. Other unresolved remote phase kinds
+currently require explicit original outcome resolution, and automatic recovery
+after their original admission expires remains an implementation gap.
 
 The native integration test uses real mTLS with separate replicated Control and
 issuer groups and an intentionally unavailable target endpoint. It verifies
 issuer preparation, Control phase commitment, durable unresolved dispatch, and
 stop preparation. The replicated journal tests verify restart and three-voter
-signed materialization/cleanup facts using explicit cryptographic fixtures.
+signed materialization/cleanup facts, current-phase startup, designated
+initialization, and completion using explicit cryptographic fixtures.
 Actual encrypted target execution has separate target-runner tests. These checks
 do not substitute for the planned final multi-process recovery acceptance run.

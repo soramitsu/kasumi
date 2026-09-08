@@ -1,0 +1,9 @@
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.76s
+     Running tests/restore_deadline.rs (/tmp/kasumi-production-streaming-target/debug/deps/restore_deadline-e15d30fdc0a6ac00)
+
+running 1 test
+test restore_deadline_bounds_source_io_and_gate_queue_without_blocking_another_tenant ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.87s
+

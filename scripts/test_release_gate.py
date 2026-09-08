@@ -8,6 +8,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import release_gate
 
@@ -48,6 +49,24 @@ class ReleaseGateTests(unittest.TestCase):
             self.assertNotEqual(recorded, release_gate.sha256(executable))
             self.assertEqual(result["log_sha256"], release_gate.sha256(root / "failed.log"))
 
+    def test_build_inventory_includes_fresh_non_executable_dependencies(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            messages = [
+                {"reason": "compiler-artifact", "package_id": "registry+example#dep@1.0.0",
+                 "fresh": True, "features": ["std"], "executable": None,
+                 "target": {"name": "dep", "kind": ["lib"], "crate_types": ["lib"]}},
+                {"reason": "compiler-artifact", "package_id": "registry+example#dep@1.0.0",
+                 "features": ["alloc"], "target": {"name": "build-script-build",
+                 "kind": ["custom-build"], "crate_types": ["bin"]}},
+            ]
+            command = [sys.executable, "-c", "print(" + repr("\n".join(map(json.dumps, messages))) + ")"]
+            result = release_gate.run_gate("inventory", command, root, root, os.environ.copy())
+            self.assertEqual(result["executables"], {})
+            package = result["compiled_packages"]["registry+example#dep@1.0.0"]
+            self.assertEqual(package["features"], ["alloc", "std"])
+            self.assertEqual(len(package["targets"]), 2)
+
     def test_content_and_new_inputs_change_inventory_without_relying_on_mtime(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -71,6 +90,17 @@ class ReleaseGateTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 release_gate.run_gate("unowned", command, root, root, os.environ.copy())
             self.assertTrue((root / "unowned.log").is_file())
+
+    def test_cleanup_error_preserves_original_rejection_and_cleanup_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            artifact = {"reason": "compiler-artifact", "executable": str(root / "unowned")}
+            command = [sys.executable, "-c", "print(" + repr(json.dumps(artifact)) + ")"]
+            with patch("release_gate.os.killpg", side_effect=PermissionError("group cleanup denied")):
+                with self.assertRaises(ValueError) as raised:
+                    release_gate.run_gate("cleanup-error", command, root, root, os.environ.copy())
+            self.assertTrue(any("cleanup denied" in note for note in raised.exception.__notes__))
+            self.assertTrue((root / "cleanup-error.log").is_file())
 
 
 if __name__ == "__main__":

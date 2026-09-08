@@ -1,0 +1,540 @@
+{
+  "schema": 1,
+  "packages": [
+    {
+      "name": "asn1-rs-impl",
+      "version": "0.2.0",
+      "upstream_commit": "a20e5f7319c896737ad0f2557037817b91ad854f",
+      "repository": "https://github.com/rusticata/asn1-rs.git",
+      "files": [
+        {
+          "path": "rusticata--asn1-rs--a20e5f7319c8--LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "source_url": "https://raw.githubusercontent.com/rusticata/asn1-rs/a20e5f7319c896737ad0f2557037817b91ad854f/LICENSE-APACHE"
+        },
+        {
+          "path": "rusticata--asn1-rs--a20e5f7319c8--LICENSE-MIT",
+          "sha256": "a5c61b93b6ee1d104af9920cf020ff3c7efe818e31fe562c72261847a728f513",
+          "source_url": "https://raw.githubusercontent.com/rusticata/asn1-rs/a20e5f7319c896737ad0f2557037817b91ad854f/LICENSE-MIT"
+        }
+      ]
+    },
+    {
+      "name": "datasketches",
+      "version": "0.2.0",
+      "upstream_commit": "fdb38b85d22e6549ab283bf3b9b133659267d19f",
+      "repository": "https://github.com/apache/datasketches-rust",
+      "files": [
+        {
+          "path": "apache--datasketches-rust--fdb38b85d22e--LICENSE",
+          "sha256": "2a93522cc3e0d15510a70e0e7aaf33dc6a1588c39ca4a5c60c4b0121ed25eaf4",
+          "source_url": "https://raw.githubusercontent.com/apache/datasketches-rust/fdb38b85d22e6549ab283bf3b9b133659267d19f/LICENSE"
+        },
+        {
+          "path": "apache--datasketches-rust--fdb38b85d22e--NOTICE",
+          "sha256": "624b424b930d7ce49f8856323c6aa5ffbcaa71a474d60bf8f60852f8aa20bcfa",
+          "source_url": "https://raw.githubusercontent.com/apache/datasketches-rust/fdb38b85d22e6549ab283bf3b9b133659267d19f/NOTICE"
+        }
+      ]
+    },
+    {
+      "name": "htmlescape",
+      "version": "0.3.1",
+      "license_selection": "Apache-2.0",
+      "locked_crate_sha256": "e9025058dae765dee5070ec375f591e2ba14638c63feff74f13805a72e523163",
+      "disposition": "Published Cargo.toml offers Apache-2.0 / MIT / MPL-2.0. Select Apache-2.0 and retain its full text plus the exact published declaration; the repository has no additional license/NOTICE file.",
+      "files": [
+        {
+          "path": "htmlescape-0.3.1-published-Cargo.toml",
+          "sha256": "daad7e32ff2b04d0a74c3c9364a7c209f9b5a71f60193ca3c393f8fa6cc0dd7f",
+          "source_url": "https://static.crates.io/crates/htmlescape/htmlescape-0.3.1.crate#Cargo.toml"
+        },
+        {
+          "path": "htmlescape-0.3.1-selected-Apache-2.0.txt",
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+          "source_url": "https://www.apache.org/licenses/LICENSE-2.0.txt"
+        }
+      ]
+    },
+    {
+      "name": "jsonschema-macros",
+      "version": "0.52.1",
+      "upstream_commit": "94546ceb734c6076e73c4a6723de98804ad63ae6",
+      "repository": "https://github.com/Stranger6667/jsonschema",
+      "files": [
+        {
+          "path": "Stranger6667--jsonschema--94546ceb734c--LICENSE",
+          "sha256": "117829c3ca21efb132d81a44b55363d395ab8eea18526873bc828da4c0e5f038",
+          "source_url": "https://raw.githubusercontent.com/Stranger6667/jsonschema/94546ceb734c6076e73c4a6723de98804ad63ae6/LICENSE"
+        }
+      ]
+    },
+    {
+      "name": "jsonschema-macros-core",
+      "version": "0.52.1",
+      "upstream_commit": "94546ceb734c6076e73c4a6723de98804ad63ae6",
+      "repository": "https://github.com/Stranger6667/jsonschema",
+      "files": [
+        {
+          "path": "Stranger6667--jsonschema--94546ceb734c--LICENSE",
+          "sha256": "117829c3ca21efb132d81a44b55363d395ab8eea18526873bc828da4c0e5f038",
+          "source_url": "https://raw.githubusercontent.com/Stranger6667/jsonschema/94546ceb734c6076e73c4a6723de98804ad63ae6/LICENSE"
+        }
+      ]
+    },
+    {
+      "name": "jsonschema-regex",
+      "version": "0.52.1",
+      "upstream_commit": "94546ceb734c6076e73c4a6723de98804ad63ae6",
+      "repository": "https://github.com/Stranger6667/jsonschema",
+      "files": [
+        {
+          "path": "Stranger6667--jsonschema--94546ceb734c--LICENSE",
+          "sha256": "117829c3ca21efb132d81a44b55363d395ab8eea18526873bc828da4c0e5f038",
+          "source_url": "https://raw.githubusercontent.com/Stranger6667/jsonschema/94546ceb734c6076e73c4a6723de98804ad63ae6/LICENSE"
+        }
+      ]
+    },
+    {
+      "name": "jsonschema-value",
+      "version": "0.52.1",
+      "upstream_commit": "94546ceb734c6076e73c4a6723de98804ad63ae6",
+      "repository": "https://github.com/Stranger6667/jsonschema",
+      "files": [
+        {
+          "path": "Stranger6667--jsonschema--94546ceb734c--LICENSE",
+          "sha256": "117829c3ca21efb132d81a44b55363d395ab8eea18526873bc828da4c0e5f038",
+          "source_url": "https://raw.githubusercontent.com/Stranger6667/jsonschema/94546ceb734c6076e73c4a6723de98804ad63ae6/LICENSE"
+        }
+      ]
+    },
+    {
+      "name": "kanaria",
+      "version": "0.2.0",
+      "upstream_commit": "c994ccf06d179851a1c7c3285c3a408ccb6279ec",
+      "repository": "https://github.com/sam-osamu/com.kanaria",
+      "files": [
+        {
+          "path": "sam-osamu--kanaria--c994ccf06d17--LICENSE.txt",
+          "sha256": "f44d765862a602a68553b3614e63b0ea4646d7698d2c34fc8d60f7998c9a8e7b",
+          "source_url": "https://raw.githubusercontent.com/sam-osamu/kanaria/c994ccf06d179851a1c7c3285c3a408ccb6279ec/LICENSE.txt"
+        }
+      ],
+      "resolved_repository": "https://github.com/sam-osamu/kanaria"
+    },
+    {
+      "name": "lindera",
+      "version": "5.3.0",
+      "upstream_commit": "b805dbe17cdd71b9aec319d604dfea96933744b4",
+      "repository": "https://github.com/lindera/lindera",
+      "files": [
+        {
+          "path": "lindera--lindera--b805dbe17cdd--LICENSE",
+          "sha256": "d37249886de3136db31717f15f6ade215a36fbed1c782381e38b2bf6047e8ec4",
+          "source_url": "https://raw.githubusercontent.com/lindera/lindera/b805dbe17cdd71b9aec319d604dfea96933744b4/LICENSE"
+        }
+      ]
+    },
+    {
+      "name": "lindera-analysis",
+      "version": "5.3.0",
+      "upstream_commit": "b805dbe17cdd71b9aec319d604dfea96933744b4",
+      "repository": "https://github.com/lindera/lindera",
+      "files": [
+        {
+          "path": "lindera--lindera--b805dbe17cdd--LICENSE",
+          "sha256": "d37249886de3136db31717f15f6ade215a36fbed1c782381e38b2bf6047e8ec4",
+          "source_url": "https://raw.githubusercontent.com/lindera/lindera/b805dbe17cdd71b9aec319d604dfea96933744b4/LICENSE"
+        }
+      ]
+    },
+    {
+      "name": "lindera-dictionary",
+      "version": "5.3.0",
+      "upstream_commit": "b805dbe17cdd71b9aec319d604dfea96933744b4",
+      "repository": "https://github.com/lindera/lindera",
+      "files": [
+        {
+          "path": "lindera--lindera--b805dbe17cdd--LICENSE",
+          "sha256": "d37249886de3136db31717f15f6ade215a36fbed1c782381e38b2bf6047e8ec4",
+          "source_url": "https://raw.githubusercontent.com/lindera/lindera/b805dbe17cdd71b9aec319d604dfea96933744b4/LICENSE"
+        }
+      ]
+    },
+    {
+      "name": "openraft",
+      "version": "0.9.25",
+      "upstream_commit": "8815cdba2826f74e848acef361ad03f93bb1c3f8",
+      "repository": "https://github.com/datafuselabs/openraft",
+      "files": [
+        {
+          "path": "datafuselabs--openraft--8815cdba2826--LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "source_url": "https://raw.githubusercontent.com/datafuselabs/openraft/8815cdba2826f74e848acef361ad03f93bb1c3f8/LICENSE-MIT"
+        },
+        {
+          "path": "datafuselabs--openraft--8815cdba2826--LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "source_url": "https://raw.githubusercontent.com/datafuselabs/openraft/8815cdba2826f74e848acef361ad03f93bb1c3f8/LICENSE-APACHE"
+        }
+      ]
+    },
+    {
+      "name": "openraft-macros",
+      "version": "0.9.25",
+      "upstream_commit": "8815cdba2826f74e848acef361ad03f93bb1c3f8",
+      "repository": "https://github.com/datafuselabs/openraft",
+      "files": [
+        {
+          "path": "datafuselabs--openraft--8815cdba2826--LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "source_url": "https://raw.githubusercontent.com/datafuselabs/openraft/8815cdba2826f74e848acef361ad03f93bb1c3f8/LICENSE-MIT"
+        },
+        {
+          "path": "datafuselabs--openraft--8815cdba2826--LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "source_url": "https://raw.githubusercontent.com/datafuselabs/openraft/8815cdba2826f74e848acef361ad03f93bb1c3f8/LICENSE-APACHE"
+        }
+      ]
+    },
+    {
+      "name": "ownedbytes",
+      "version": "0.9.0",
+      "upstream_commit": "c6e77d27c605cb3cea1a933fa7d68632aeb7865e",
+      "repository": "https://github.com/quickwit-oss/tantivy",
+      "files": [
+        {
+          "path": "quickwit-oss--tantivy--c6e77d27c605--LICENSE",
+          "sha256": "acacd14bebbffdb30d62443c282fb4da3e81915a9f69c63d5d745a029f44de8a",
+          "source_url": "https://raw.githubusercontent.com/quickwit-oss/tantivy/c6e77d27c605cb3cea1a933fa7d68632aeb7865e/LICENSE"
+        },
+        {
+          "path": "quickwit-oss--tantivy--c6e77d27c605--AUTHORS",
+          "sha256": "141e25490cf9e0d3a05374171cb0a42c91a0cf0fb2041ba4c010f466e89b596d",
+          "source_url": "https://raw.githubusercontent.com/quickwit-oss/tantivy/c6e77d27c605cb3cea1a933fa7d68632aeb7865e/AUTHORS"
+        }
+      ]
+    },
+    {
+      "name": "protoc-bin-vendored",
+      "version": "3.2.0",
+      "upstream_commit": "895c0433c3727a552970ce961e398e20e52d6353",
+      "repository": "https://github.com/stepancheg/rust-protoc-bin-vendored/",
+      "files": [
+        {
+          "path": "stepancheg--rust-protoc-bin-vendored--895c0433c372--LICENSE.txt",
+          "sha256": "97647e63047ef75a82ee2928b335df94f45c87e08777dc033393c73294f3a57a",
+          "source_url": "https://raw.githubusercontent.com/stepancheg/rust-protoc-bin-vendored/895c0433c3727a552970ce961e398e20e52d6353/LICENSE.txt"
+        }
+      ]
+    },
+    {
+      "name": "protoc-bin-vendored-linux-aarch_64",
+      "version": "3.2.0",
+      "upstream_commit": "895c0433c3727a552970ce961e398e20e52d6353",
+      "repository": "https://github.com/stepancheg/rust-protoc-bin-vendored/",
+      "files": [
+        {
+          "path": "stepancheg--rust-protoc-bin-vendored--895c0433c372--LICENSE.txt",
+          "sha256": "97647e63047ef75a82ee2928b335df94f45c87e08777dc033393c73294f3a57a",
+          "source_url": "https://raw.githubusercontent.com/stepancheg/rust-protoc-bin-vendored/895c0433c3727a552970ce961e398e20e52d6353/LICENSE.txt"
+        }
+      ]
+    },
+    {
+      "name": "protoc-bin-vendored-linux-ppcle_64",
+      "version": "3.2.0",
+      "upstream_commit": "895c0433c3727a552970ce961e398e20e52d6353",
+      "repository": "https://github.com/stepancheg/rust-protoc-bin-vendored/",
+      "files": [
+        {
+          "path": "stepancheg--rust-protoc-bin-vendored--895c0433c372--LICENSE.txt",
+          "sha256": "97647e63047ef75a82ee2928b335df94f45c87e08777dc033393c73294f3a57a",
+          "source_url": "https://raw.githubusercontent.com/stepancheg/rust-protoc-bin-vendored/895c0433c3727a552970ce961e398e20e52d6353/LICENSE.txt"
+        }
+      ]
+    },
+    {
+      "name": "protoc-bin-vendored-linux-s390_64",
+      "version": "3.2.0",
+      "upstream_commit": "895c0433c3727a552970ce961e398e20e52d6353",
+      "repository": "https://github.com/stepancheg/rust-protoc-bin-vendored/",
+      "files": [
+        {
+          "path": "stepancheg--rust-protoc-bin-vendored--895c0433c372--LICENSE.txt",
+          "sha256": "97647e63047ef75a82ee2928b335df94f45c87e08777dc033393c73294f3a57a",
+          "source_url": "https://raw.githubusercontent.com/stepancheg/rust-protoc-bin-vendored/895c0433c3727a552970ce961e398e20e52d6353/LICENSE.txt"
+        }
+      ]
+    },
+    {
+      "name": "protoc-bin-vendored-linux-x86_32",
+      "version": "3.2.0",
+      "upstream_commit": "895c0433c3727a552970ce961e398e20e52d6353",
+      "repository": "https://github.com/stepancheg/rust-protoc-bin-vendored/",
+      "files": [
+        {
+          "path": "stepancheg--rust-protoc-bin-vendored--895c0433c372--LICENSE.txt",
+          "sha256": "97647e63047ef75a82ee2928b335df94f45c87e08777dc033393c73294f3a57a",
+          "source_url": "https://raw.githubusercontent.com/stepancheg/rust-protoc-bin-vendored/895c0433c3727a552970ce961e398e20e52d6353/LICENSE.txt"
+        }
+      ]
+    },
+    {
+      "name": "protoc-bin-vendored-linux-x86_64",
+      "version": "3.2.0",
+      "upstream_commit": "895c0433c3727a552970ce961e398e20e52d6353",
+      "repository": "https://github.com/stepancheg/rust-protoc-bin-vendored/",
+      "files": [
+        {
+          "path": "stepancheg--rust-protoc-bin-vendored--895c0433c372--LICENSE.txt",
+          "sha256": "97647e63047ef75a82ee2928b335df94f45c87e08777dc033393c73294f3a57a",
+          "source_url": "https://raw.githubusercontent.com/stepancheg/rust-protoc-bin-vendored/895c0433c3727a552970ce961e398e20e52d6353/LICENSE.txt"
+        }
+      ]
+    },
+    {
+      "name": "protoc-bin-vendored-macos-aarch_64",
+      "version": "3.2.0",
+      "upstream_commit": "895c0433c3727a552970ce961e398e20e52d6353",
+      "repository": "https://github.com/stepancheg/rust-protoc-bin-vendored/",
+      "files": [
+        {
+          "path": "stepancheg--rust-protoc-bin-vendored--895c0433c372--LICENSE.txt",
+          "sha256": "97647e63047ef75a82ee2928b335df94f45c87e08777dc033393c73294f3a57a",
+          "source_url": "https://raw.githubusercontent.com/stepancheg/rust-protoc-bin-vendored/895c0433c3727a552970ce961e398e20e52d6353/LICENSE.txt"
+        }
+      ]
+    },
+    {
+      "name": "protoc-bin-vendored-macos-x86_64",
+      "version": "3.2.0",
+      "upstream_commit": "895c0433c3727a552970ce961e398e20e52d6353",
+      "repository": "https://github.com/stepancheg/rust-protoc-bin-vendored/",
+      "files": [
+        {
+          "path": "stepancheg--rust-protoc-bin-vendored--895c0433c372--LICENSE.txt",
+          "sha256": "97647e63047ef75a82ee2928b335df94f45c87e08777dc033393c73294f3a57a",
+          "source_url": "https://raw.githubusercontent.com/stepancheg/rust-protoc-bin-vendored/895c0433c3727a552970ce961e398e20e52d6353/LICENSE.txt"
+        }
+      ]
+    },
+    {
+      "name": "protoc-bin-vendored-win32",
+      "version": "3.2.0",
+      "upstream_commit": "895c0433c3727a552970ce961e398e20e52d6353",
+      "repository": "https://github.com/stepancheg/rust-protoc-bin-vendored/",
+      "files": [
+        {
+          "path": "stepancheg--rust-protoc-bin-vendored--895c0433c372--LICENSE.txt",
+          "sha256": "97647e63047ef75a82ee2928b335df94f45c87e08777dc033393c73294f3a57a",
+          "source_url": "https://raw.githubusercontent.com/stepancheg/rust-protoc-bin-vendored/895c0433c3727a552970ce961e398e20e52d6353/LICENSE.txt"
+        }
+      ]
+    },
+    {
+      "name": "rmcp",
+      "version": "3.2.0",
+      "upstream_commit": "51ccb42993d6eb5075399672ce7a0c21a0e55eea",
+      "repository": "https://github.com/modelcontextprotocol/rust-sdk/",
+      "files": [
+        {
+          "path": "modelcontextprotocol--rust-sdk--51ccb42993d6--LICENSE",
+          "sha256": "0382b0057770ca05e9c350a50aa3b1c1fea84da0bc81d723bf00b9aa841be58a",
+          "source_url": "https://raw.githubusercontent.com/modelcontextprotocol/rust-sdk/51ccb42993d6eb5075399672ce7a0c21a0e55eea/LICENSE"
+        }
+      ]
+    },
+    {
+      "name": "rmcp-macros",
+      "version": "3.2.0",
+      "upstream_commit": "51ccb42993d6eb5075399672ce7a0c21a0e55eea",
+      "repository": "https://github.com/modelcontextprotocol/rust-sdk/",
+      "files": [
+        {
+          "path": "modelcontextprotocol--rust-sdk--51ccb42993d6--LICENSE",
+          "sha256": "0382b0057770ca05e9c350a50aa3b1c1fea84da0bc81d723bf00b9aa841be58a",
+          "source_url": "https://raw.githubusercontent.com/modelcontextprotocol/rust-sdk/51ccb42993d6eb5075399672ce7a0c21a0e55eea/LICENSE"
+        }
+      ]
+    },
+    {
+      "name": "tantivy-bitpacker",
+      "version": "0.10.0",
+      "upstream_commit": "9e63fc508153ef770f9ff980c8fa2f11e8e2e6db",
+      "repository": "https://github.com/quickwit-oss/tantivy",
+      "files": [
+        {
+          "path": "quickwit-oss--tantivy--9e63fc508153--LICENSE",
+          "sha256": "acacd14bebbffdb30d62443c282fb4da3e81915a9f69c63d5d745a029f44de8a",
+          "source_url": "https://raw.githubusercontent.com/quickwit-oss/tantivy/9e63fc508153ef770f9ff980c8fa2f11e8e2e6db/LICENSE"
+        },
+        {
+          "path": "quickwit-oss--tantivy--9e63fc508153--AUTHORS",
+          "sha256": "141e25490cf9e0d3a05374171cb0a42c91a0cf0fb2041ba4c010f466e89b596d",
+          "source_url": "https://raw.githubusercontent.com/quickwit-oss/tantivy/9e63fc508153ef770f9ff980c8fa2f11e8e2e6db/AUTHORS"
+        }
+      ]
+    },
+    {
+      "name": "tantivy-columnar",
+      "version": "0.7.0",
+      "upstream_commit": "9e63fc508153ef770f9ff980c8fa2f11e8e2e6db",
+      "repository": "https://github.com/quickwit-oss/tantivy",
+      "files": [
+        {
+          "path": "quickwit-oss--tantivy--9e63fc508153--LICENSE",
+          "sha256": "acacd14bebbffdb30d62443c282fb4da3e81915a9f69c63d5d745a029f44de8a",
+          "source_url": "https://raw.githubusercontent.com/quickwit-oss/tantivy/9e63fc508153ef770f9ff980c8fa2f11e8e2e6db/LICENSE"
+        },
+        {
+          "path": "quickwit-oss--tantivy--9e63fc508153--AUTHORS",
+          "sha256": "141e25490cf9e0d3a05374171cb0a42c91a0cf0fb2041ba4c010f466e89b596d",
+          "source_url": "https://raw.githubusercontent.com/quickwit-oss/tantivy/9e63fc508153ef770f9ff980c8fa2f11e8e2e6db/AUTHORS"
+        }
+      ]
+    },
+    {
+      "name": "tantivy-common",
+      "version": "0.11.0",
+      "upstream_commit": "9e63fc508153ef770f9ff980c8fa2f11e8e2e6db",
+      "repository": "https://github.com/quickwit-oss/tantivy",
+      "files": [
+        {
+          "path": "quickwit-oss--tantivy--9e63fc508153--LICENSE",
+          "sha256": "acacd14bebbffdb30d62443c282fb4da3e81915a9f69c63d5d745a029f44de8a",
+          "source_url": "https://raw.githubusercontent.com/quickwit-oss/tantivy/9e63fc508153ef770f9ff980c8fa2f11e8e2e6db/LICENSE"
+        },
+        {
+          "path": "quickwit-oss--tantivy--9e63fc508153--AUTHORS",
+          "sha256": "141e25490cf9e0d3a05374171cb0a42c91a0cf0fb2041ba4c010f466e89b596d",
+          "source_url": "https://raw.githubusercontent.com/quickwit-oss/tantivy/9e63fc508153ef770f9ff980c8fa2f11e8e2e6db/AUTHORS"
+        }
+      ]
+    },
+    {
+      "name": "tantivy-query-grammar",
+      "version": "0.26.0",
+      "upstream_commit": "9e63fc508153ef770f9ff980c8fa2f11e8e2e6db",
+      "repository": "https://github.com/quickwit-oss/tantivy",
+      "files": [
+        {
+          "path": "quickwit-oss--tantivy--9e63fc508153--LICENSE",
+          "sha256": "acacd14bebbffdb30d62443c282fb4da3e81915a9f69c63d5d745a029f44de8a",
+          "source_url": "https://raw.githubusercontent.com/quickwit-oss/tantivy/9e63fc508153ef770f9ff980c8fa2f11e8e2e6db/LICENSE"
+        },
+        {
+          "path": "quickwit-oss--tantivy--9e63fc508153--AUTHORS",
+          "sha256": "141e25490cf9e0d3a05374171cb0a42c91a0cf0fb2041ba4c010f466e89b596d",
+          "source_url": "https://raw.githubusercontent.com/quickwit-oss/tantivy/9e63fc508153ef770f9ff980c8fa2f11e8e2e6db/AUTHORS"
+        }
+      ]
+    },
+    {
+      "name": "tantivy-sstable",
+      "version": "0.7.0",
+      "upstream_commit": "9e63fc508153ef770f9ff980c8fa2f11e8e2e6db",
+      "repository": "https://github.com/quickwit-oss/tantivy",
+      "files": [
+        {
+          "path": "quickwit-oss--tantivy--9e63fc508153--LICENSE",
+          "sha256": "acacd14bebbffdb30d62443c282fb4da3e81915a9f69c63d5d745a029f44de8a",
+          "source_url": "https://raw.githubusercontent.com/quickwit-oss/tantivy/9e63fc508153ef770f9ff980c8fa2f11e8e2e6db/LICENSE"
+        },
+        {
+          "path": "quickwit-oss--tantivy--9e63fc508153--AUTHORS",
+          "sha256": "141e25490cf9e0d3a05374171cb0a42c91a0cf0fb2041ba4c010f466e89b596d",
+          "source_url": "https://raw.githubusercontent.com/quickwit-oss/tantivy/9e63fc508153ef770f9ff980c8fa2f11e8e2e6db/AUTHORS"
+        }
+      ]
+    },
+    {
+      "name": "tantivy-stacker",
+      "version": "0.7.0",
+      "upstream_commit": "9e63fc508153ef770f9ff980c8fa2f11e8e2e6db",
+      "repository": "https://github.com/quickwit-oss/tantivy",
+      "files": [
+        {
+          "path": "quickwit-oss--tantivy--9e63fc508153--LICENSE",
+          "sha256": "acacd14bebbffdb30d62443c282fb4da3e81915a9f69c63d5d745a029f44de8a",
+          "source_url": "https://raw.githubusercontent.com/quickwit-oss/tantivy/9e63fc508153ef770f9ff980c8fa2f11e8e2e6db/LICENSE"
+        },
+        {
+          "path": "quickwit-oss--tantivy--9e63fc508153--AUTHORS",
+          "sha256": "141e25490cf9e0d3a05374171cb0a42c91a0cf0fb2041ba4c010f466e89b596d",
+          "source_url": "https://raw.githubusercontent.com/quickwit-oss/tantivy/9e63fc508153ef770f9ff980c8fa2f11e8e2e6db/AUTHORS"
+        }
+      ]
+    },
+    {
+      "name": "tantivy-tokenizer-api",
+      "version": "0.7.0",
+      "upstream_commit": "9e63fc508153ef770f9ff980c8fa2f11e8e2e6db",
+      "repository": "https://github.com/quickwit-oss/tantivy",
+      "files": [
+        {
+          "path": "quickwit-oss--tantivy--9e63fc508153--LICENSE",
+          "sha256": "acacd14bebbffdb30d62443c282fb4da3e81915a9f69c63d5d745a029f44de8a",
+          "source_url": "https://raw.githubusercontent.com/quickwit-oss/tantivy/9e63fc508153ef770f9ff980c8fa2f11e8e2e6db/LICENSE"
+        },
+        {
+          "path": "quickwit-oss--tantivy--9e63fc508153--AUTHORS",
+          "sha256": "141e25490cf9e0d3a05374171cb0a42c91a0cf0fb2041ba4c010f466e89b596d",
+          "source_url": "https://raw.githubusercontent.com/quickwit-oss/tantivy/9e63fc508153ef770f9ff980c8fa2f11e8e2e6db/AUTHORS"
+        }
+      ]
+    },
+    {
+      "name": "tonic-prost",
+      "version": "0.14.6",
+      "upstream_commit": "6cb6056b5a748bc5a29bd48f4602dbc4e552bb7d",
+      "repository": "https://github.com/hyperium/tonic",
+      "files": [
+        {
+          "path": "hyperium--tonic--6cb6056b5a74--LICENSE",
+          "sha256": "e24a56698aa6feaf3a02272b3624f9dc255d982970c5ed97ac4525a95056a5b3",
+          "source_url": "https://raw.githubusercontent.com/hyperium/tonic/6cb6056b5a748bc5a29bd48f4602dbc4e552bb7d/LICENSE"
+        }
+      ]
+    },
+    {
+      "name": "tonic-prost-build",
+      "version": "0.14.6",
+      "upstream_commit": "6cb6056b5a748bc5a29bd48f4602dbc4e552bb7d",
+      "repository": "https://github.com/hyperium/tonic",
+      "files": [
+        {
+          "path": "hyperium--tonic--6cb6056b5a74--LICENSE",
+          "sha256": "e24a56698aa6feaf3a02272b3624f9dc255d982970c5ed97ac4525a95056a5b3",
+          "source_url": "https://raw.githubusercontent.com/hyperium/tonic/6cb6056b5a748bc5a29bd48f4602dbc4e552bb7d/LICENSE"
+        }
+      ]
+    },
+    {
+      "name": "uuid-simd",
+      "version": "0.8.0",
+      "upstream_commit": "d74c030d9dc4f3cae02146d1f497ff62726ef09a",
+      "repository": "https://github.com/Nugine/simd",
+      "files": [
+        {
+          "path": "Nugine--simd--d74c030d9dc4--LICENSE",
+          "sha256": "71674605ec4c087fe9eb534e3e4f9e26eb2e4aabcd76a29fd156c6a844d44b3d",
+          "source_url": "https://raw.githubusercontent.com/Nugine/simd/d74c030d9dc4f3cae02146d1f497ff62726ef09a/LICENSE"
+        }
+      ]
+    },
+    {
+      "name": "vsimd",
+      "version": "0.8.0",
+      "upstream_commit": "d74c030d9dc4f3cae02146d1f497ff62726ef09a",
+      "repository": "https://github.com/Nugine/simd",
+      "files": [
+        {
+          "path": "Nugine--simd--d74c030d9dc4--LICENSE",
+          "sha256": "71674605ec4c087fe9eb534e3e4f9e26eb2e4aabcd76a29fd156c6a844d44b3d",
+          "source_url": "https://raw.githubusercontent.com/Nugine/simd/d74c030d9dc4f3cae02146d1f497ff62726ef09a/LICENSE"
+        }
+      ]
+    }
+  ]
+}

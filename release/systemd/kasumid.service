@@ -1,0 +1,40 @@
+[Unit]
+Description=Kasumi database
+Documentation=https://github.com/soramitsu/kasumi
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=exec
+User=kasumi
+Group=kasumi
+UMask=0077
+StateDirectory=kasumi
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/kasumi
+ExecStart=/usr/local/bin/kasumid serve /var/lib/kasumi/installation/kasumi.json
+ExecReload=/bin/kill -HUP $MAINPID
+KillSignal=SIGTERM
+TimeoutStopSec=infinity
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadWritePaths=/var/lib/kasumi
+
+[Install]
+WantedBy=multi-user.target

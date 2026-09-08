@@ -1,0 +1,9 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.86s
+     Running unittests src/lib.rs (/tmp/kasumi-production-streaming-target/debug/deps/kasumi_server-3ef3c426e5743964)
+
+running 2 tests
+test local_recovery::tests::local_stop_persists_identity_before_cleanup_and_rejects_unrelated_files ... ok
+test local_recovery::tests::local_recovery_resumes_each_phase_and_fences_old_resources_after_activation ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 78 filtered out; finished in 16.16s
+
