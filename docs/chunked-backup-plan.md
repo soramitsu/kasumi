@@ -53,8 +53,8 @@ The implementation verifies historical objects using the source key authority
 and target tenant provider; unavailable historical keys reject restoration.
 It does not silently re-encrypt or discard inaccessible history.
 
-The resident stream remains bounded by the 2 GiB snapshot format and the node
-admission budget. Export holds a coherent generation and a one-chunk channel;
+The resident stream uses the configured 64-bit tenant quota and node admission
+budget, with bounded semantic records and encrypted scratch spools. Export holds a coherent generation and a one-chunk channel;
 restore reconstructs only resident state, not every historical body. Archive
 metadata and declared structured index values remain resident. Each referenced
 historical object is read and checked separately. Aborted operations can leave

@@ -655,17 +655,20 @@ fn concurrent_cas_has_exactly_one_winner() {
 fn tampered_snapshot_never_changes_current_generation() {
     let db = engine(false, Limits::default());
     let before = db.snapshot().unwrap();
-    let mut corrupt: serde_json::Value = serde_json::from_slice(&before).unwrap();
-    corrupt["logical_bytes"] = json!(999);
+    let mut corrupt = TenantEngine::decode_snapshot_state(&before).unwrap();
+    corrupt.logical_bytes = 999;
     assert_eq!(
-        db.restore(&serde_json::to_vec(&corrupt).unwrap())
+        db.restore(&TenantEngine::encode_snapshot_state(&corrupt, 64 << 20).unwrap())
             .unwrap_err()
             .code,
         ErrorCode::Corruption
     );
     assert_eq!(db.snapshot().unwrap(), before);
-    corrupt["tenant"] = json!("other");
-    assert!(db.restore(&serde_json::to_vec(&corrupt).unwrap()).is_err());
+    corrupt.tenant = "other".into();
+    assert!(
+        db.restore(&TenantEngine::encode_snapshot_state(&corrupt, 64 << 20).unwrap())
+            .is_err()
+    );
 }
 
 #[test]

@@ -165,7 +165,9 @@ pub async fn open_target_replica(
             .ok_or_else(|| anyhow::anyhow!("published target bootstrap missing"))?;
         let manifest: Manifest = serde_json::from_slice(&manifest_bytes)?;
         anyhow::ensure!(
-            manifest.bytes <= MAX_BOOTSTRAP,
+            manifest.format == 2
+                && manifest.bytes > 0
+                && manifest.chunks == manifest.bytes.div_ceil(CHUNK as u64),
             "target bootstrap exceeds bound"
         );
         let workspace = Arc::new(config.admission.reserve(
@@ -220,7 +222,7 @@ pub async fn open_target_replica(
                             &input_copy.materialized,
                         )?;
                         anyhow::ensure!(
-                            expected == hex::encode(Sha256::digest(&bytes)),
+                            expected == bytes.sha256(),
                             "target physical bootstrap differs from signed materializations"
                         );
                         let encoded = material

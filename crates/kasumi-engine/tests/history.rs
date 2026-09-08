@@ -164,7 +164,7 @@ async fn change_feed_is_atomic_ordered_resumable_and_detects_retention_gaps() {
     assert_eq!(events[0].sequence, 3);
     assert!(caught_up);
     assert_eq!(
-        db.engine().snapshot_bytes().unwrap(),
+        db.engine().snapshot_bytes().unwrap() as u64,
         db.engine().snapshot().unwrap().len()
     );
     db.shutdown().await.unwrap();
@@ -271,7 +271,7 @@ async fn change_feed_is_atomic_ordered_resumable_and_detects_retention_gaps() {
         ErrorCode::Forbidden
     );
     assert_eq!(
-        db.engine().snapshot_bytes().unwrap(),
+        db.engine().snapshot_bytes().unwrap() as u64,
         db.engine().snapshot().unwrap().len()
     );
     db.shutdown().await.unwrap();
@@ -465,7 +465,7 @@ async fn archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_res
         .await
         .unwrap();
     assert_eq!(
-        db.engine().snapshot_bytes().unwrap(),
+        db.engine().snapshot_bytes().unwrap() as u64,
         db.engine().snapshot().unwrap().len()
     );
     assert!(
@@ -630,7 +630,7 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
     let full: serde_json::Value = serde_json::from_slice(&full.snapshot).unwrap();
     assert_eq!(full["kind"], "full_database");
     assert!(
-        full["chunks"].as_array().unwrap().len() >= 2,
+        full["chunk_count"].as_u64().unwrap() >= 2,
         "exercise real multiple-chunk resident export"
     );
     db.shutdown().await.unwrap();

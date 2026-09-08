@@ -8,7 +8,8 @@ struct StateStream {
     sender: tokio::sync::mpsc::Sender<Vec<u8>>,
     buffer: Vec<u8>,
     hash: Sha256,
-    total: usize,
+    total: u64,
+    limit: u64,
     cancellation: QueryCancellation,
 }
 
@@ -20,7 +21,7 @@ impl StateStream {
             .blocking_send(bytes)
             .map_err(|_| std::io::Error::other("backup consumer stopped"))
     }
-    fn finish(mut self) -> std::io::Result<(usize, String)> {
+    fn finish(mut self) -> std::io::Result<(u64, String)> {
         if !self.buffer.is_empty() {
             self.send_chunk()?;
         }
@@ -34,8 +35,8 @@ impl Write for StateStream {
         let len = bytes.len();
         self.total = self
             .total
-            .checked_add(len)
-            .filter(|value| *value <= MAX_STATE_BYTES)
+            .checked_add(len as u64)
+            .filter(|value| *value <= self.limit)
             .ok_or_else(|| std::io::Error::other("backup resident state exceeds format limit"))?;
         self.hash.update(bytes);
         while !bytes.is_empty() {
@@ -62,8 +63,8 @@ struct StreamWork {
 }
 
 impl StreamWork {
-    fn run(mut self) -> Result<(usize, String)> {
-        serde_json::to_writer(&mut self.writer, &self.generation.state)
+    fn run(mut self) -> Result<(u64, String)> {
+        crate::snapshot_codec::write(&self.generation.state, &mut self.writer)
             .map_err(|_| Error::new(ErrorCode::Unavailable, "backup state stream failed"))?;
         self.writer
             .finish()
@@ -97,13 +98,8 @@ impl Database {
         self.engine
             .authorize_release(&context, None, Action::Admin, state.policy_epoch)?;
         let reservation = Arc::new(
-            self.admission().reserve(
-                generation
-                    .snapshot_bytes()?
-                    .saturating_mul(2)
-                    .saturating_add(96 << 20) as u64,
-                Some(cancellation.clone()),
-            )?,
+            self.admission()
+                .reserve((96 << 20) as u64, Some(cancellation.clone()))?,
         );
         self.maintenance_audit_inner(context.clone(), "backup", "started", state.revision)
             .await?;
@@ -115,6 +111,7 @@ impl Database {
                 buffer: Vec::with_capacity(CHUNK_BYTES),
                 hash: Sha256::new(),
                 total: 0,
+                limit: state.limits.max_snapshot_bytes,
                 cancellation: cancellation.clone(),
             },
             _reservation: reservation.clone(),
@@ -122,7 +119,10 @@ impl Database {
             _registration: self.work.begin(cancellation.clone())?,
         };
         let producer = tokio::task::spawn_blocking(move || work.run());
-        let mut chunks = Vec::new();
+        let mut chunks = Vec::with_capacity(PAGE_CHUNKS);
+        let mut chunk_count = 0u64;
+        let mut page_count = 0u64;
+        let mut last_page = None;
         let mut key_catalogs = BTreeSet::new();
         while let Some(bytes) = tokio::select! {
             bytes = receiver.recv() => bytes,
@@ -141,12 +141,65 @@ impl Database {
                 )
                 .await?;
             key_catalogs.insert(published.key_catalog_sha256);
+            chunk_count = chunk_count
+                .checked_add(1)
+                .ok_or_else(|| Error::new(ErrorCode::Corruption, "backup chunk overflow"))?;
             chunks.push(BackupChunk {
                 object_id: published.id,
                 ciphertext_sha256: published.ciphertext_sha256,
                 plaintext_sha256,
                 plaintext_bytes,
             });
+            if chunks.len() == PAGE_CHUNKS {
+                let page = BackupPage {
+                    index: page_count,
+                    previous: last_page.take(),
+                    chunks: std::mem::replace(&mut chunks, Vec::with_capacity(PAGE_CHUNKS)),
+                };
+                let published = self
+                    .publish_history_object(
+                        &context,
+                        state.policy_epoch,
+                        state.revision,
+                        serde_json::to_vec(&page).map_err(|_| {
+                            Error::new(ErrorCode::Corruption, "backup page encoding failed")
+                        })?,
+                        destination,
+                        &cancellation,
+                    )
+                    .await?;
+                key_catalogs.insert(published.key_catalog_sha256);
+                last_page = Some(BackupPageRef {
+                    object_id: published.id,
+                    ciphertext_sha256: published.ciphertext_sha256,
+                });
+                page_count += 1;
+            }
+        }
+        if !chunks.is_empty() {
+            let page = BackupPage {
+                index: page_count,
+                previous: last_page.take(),
+                chunks,
+            };
+            let published = self
+                .publish_history_object(
+                    &context,
+                    state.policy_epoch,
+                    state.revision,
+                    serde_json::to_vec(&page).map_err(|_| {
+                        Error::new(ErrorCode::Corruption, "backup page encoding failed")
+                    })?,
+                    destination,
+                    &cancellation,
+                )
+                .await?;
+            key_catalogs.insert(published.key_catalog_sha256);
+            last_page = Some(BackupPageRef {
+                object_id: published.id,
+                ciphertext_sha256: published.ciphertext_sha256,
+            });
+            page_count += 1;
         }
         let (resident_bytes, resident_sha256) = producer
             .await
@@ -158,7 +211,11 @@ impl Database {
             revision: state.revision,
             resident_bytes,
             resident_sha256,
-            chunks,
+            chunk_count,
+            page_count,
+            last_page: last_page.ok_or_else(|| {
+                Error::new(ErrorCode::Corruption, "backup manifest pages missing")
+            })?,
         };
         manifest
             .validate()

@@ -317,20 +317,20 @@ impl Backend {
     }
     pub(super) fn validate_lifecycle_snapshot(&self, snapshot: &Snapshot) -> Result<()> {
         let (mut receipts, mut epochs, mut open) = (0, 0, 0);
-        for (key, record) in &snapshot.records {
+        snapshot.records.visit(|key, record| {
             match record {
                 Record::Lifecycle(receipt) => {
                     receipts += 1;
                     receipt.validate(&self.installation.manifest, self.installation.partition)?;
                     ensure!(
-                        *key == receipt.reference.key()?
+                        key == receipt.reference.key()?
                             && receipt.accepted_revision <= snapshot.meta.revision,
                         "control receipt snapshot position differs"
                     );
                     match &receipt.request {
                         LifecycleAuthorityRequest::AcceptIntent(signed) => {
                             let Some(Record::ControlEpoch(epoch)) =
-                                snapshot.records.get(&receipt.reference.epoch_key()?)
+                                snapshot.records.get(&receipt.reference.epoch_key()?)?
                             else {
                                 anyhow::bail!("control epoch anchor missing")
                             };
@@ -342,13 +342,13 @@ impl Backend {
                                 )
                             };
                             ensure!(
-                                *epoch == expected,
+                                epoch == expected,
                                 "control intent snapshot installation differs"
                             );
                         }
                         LifecycleAuthorityRequest::StopEpoch(signed) => {
                             if let Some(Record::ControlEpoch(epoch)) =
-                                snapshot.records.get(&receipt.reference.epoch_key()?)
+                                snapshot.records.get(&receipt.reference.epoch_key()?)?
                             {
                                 ensure!(
                                     epoch.matches_stop(&signed.observation.stop),
@@ -361,12 +361,12 @@ impl Backend {
                 Record::ControlEpoch(epoch) => {
                     epochs += 1;
                     ensure!(
-                        *key == epoch.reference.epoch_key()?
+                        key == epoch.reference.epoch_key()?
                             && epoch.reference == epoch.first_intent.epoch_stop(),
                         "control anchor identity differs"
                     );
                     let Some(Record::Lifecycle(first)) =
-                        snapshot.records.get(&epoch.first_intent.key()?)
+                        snapshot.records.get(&epoch.first_intent.key()?)?
                     else {
                         anyhow::bail!("first control intent missing")
                     };
@@ -374,13 +374,14 @@ impl Backend {
                         matches!(first.request, LifecycleAuthorityRequest::AcceptIntent(_)),
                         "control anchor is not an intent"
                     );
-                    if !snapshot.records.contains_key(&epoch.reference.key()?) {
+                    if !snapshot.records.contains_key(&epoch.reference.key()?)? {
                         open += 1;
                     }
                 }
                 _ => {}
             }
-        }
+            Ok(())
+        })?;
         ensure!(
             (receipts, epochs, open)
                 == (
@@ -399,7 +400,8 @@ impl Backend {
                 ensure!(
                     snapshot
                         .records
-                        .get(name)
+                        .get(name)?
+                        .as_ref()
                         .map(serde_json::to_vec)
                         .transpose()?
                         .as_deref()

@@ -3,6 +3,7 @@ use crate::control::{AppliedEntryContext, HEADERS, HeaderPayload, LogHeader, Ret
 use crate::lifetime::{StorageHandle, StorageLease};
 use crate::{BasicNode, RaftLimits, SnapshotBuffer, StateMachineBackend, TypeConfig};
 use anyhow::{Context, Result, ensure};
+use kasumi_store::{EncryptedSpool, SnapshotImage};
 use kasumi_store::{TenantStorageSet, TenantStore, WriteOp};
 use openraft::{
     Entry, EntryPayload, LogId, LogState, OptionalSend, RaftLogReader, RaftSnapshotBuilder,
@@ -10,6 +11,7 @@ use openraft::{
     storage::{LogFlushed, RaftLogStorage, RaftStateMachine},
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use std::io::{Read, Write};
 use std::{
     collections::{BTreeMap, HashMap},
     fmt::Debug,
@@ -614,13 +616,12 @@ pub(crate) enum SnapshotKind {
     Custody,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone)]
 pub(crate) struct SnapshotEnvelope {
     pub(crate) version: u32,
     pub(crate) kind: SnapshotKind,
     pub(crate) meta: SnapshotMeta<u64, BasicNode>,
-    pub(crate) backend: Vec<u8>,
+    pub(crate) backend: SnapshotImage,
     pub(crate) retirement: Option<crate::snapshot_custody::SnapshotRetirement>,
 }
 
@@ -712,7 +713,7 @@ fn validate_snapshot_coverage(
             && snapshot.kind == SnapshotKind::Application
             && coverage.manifest_id == manifest.id
             && coverage.snapshot_sha256 == manifest.sha256
-            && coverage.backend_sha256 == sha256(&snapshot.backend)
+            && coverage.backend_sha256 == snapshot.backend.sha256()
             && coverage.meta == snapshot.meta,
         "snapshot/control coverage mismatch"
     );
@@ -732,38 +733,31 @@ struct PendingSnapshot {
 
 fn stage_snapshot(
     domains: &TenantStorageSet,
-    bytes: &[u8],
+    bytes: &SnapshotImage,
     limit: u64,
     snapshot: &SnapshotEnvelope,
 ) -> Result<PendingSnapshot> {
     let meta = &snapshot.meta;
     let store = domains.application();
-    ensure!(bytes.len() as u64 <= limit, "snapshot exceeds byte limit");
+    ensure!(bytes.len() <= limit, "snapshot exceeds byte limit");
     cleanup_snapshots(store, limit)?;
     let previous = load_manifest(store, b"current", limit)?;
     let manifest = SnapshotManifest {
         version: 1,
-        sha256: sha256(bytes),
+        sha256: bytes.sha256().to_owned(),
         id: uuid::Uuid::new_v4().to_string(),
-        bytes: bytes.len() as u64,
-        chunks: bytes.len().div_ceil(SNAPSHOT_CHUNK_BYTES) as u64,
+        bytes: bytes.len(),
+        chunks: bytes.len().div_ceil(SNAPSHOT_CHUNK_BYTES as u64),
     };
     let encoded = serde_json::to_vec(&manifest)?;
     store.write_batch(&[put(SNAPSHOT, b"pending", encoded.clone())])?;
-    // Limit temporary write batches to 32 MiB as well as each individual record.
-    for (batch, bytes) in bytes.chunks(SNAPSHOT_CHUNK_BYTES * 8).enumerate() {
-        let writes = bytes
-            .chunks(SNAPSHOT_CHUNK_BYTES)
-            .enumerate()
-            .map(|(offset, bytes)| {
-                put(
-                    SNAPSHOT,
-                    &chunk_key(&manifest, (batch * 8 + offset) as u64),
-                    bytes.to_vec(),
-                )
-            })
-            .collect::<Vec<_>>();
-        store.write_batch(&writes)?;
+    let mut reader = bytes.reader();
+    let mut remaining = bytes.len();
+    for index in 0..manifest.chunks {
+        let mut chunk = vec![0; remaining.min(SNAPSHOT_CHUNK_BYTES as u64) as usize];
+        reader.read_exact(&mut chunk)?;
+        remaining -= chunk.len() as u64;
+        store.write_batch(&[put(SNAPSHOT, &chunk_key(&manifest, index), chunk)])?;
     }
     let mut install = vec![
         put(SNAPSHOT, b"current", encoded),
@@ -776,7 +770,7 @@ fn stage_snapshot(
         kind: SnapshotKind::Application,
         manifest_id: manifest.id,
         snapshot_sha256: manifest.sha256,
-        backend_sha256: sha256(&snapshot.backend),
+        backend_sha256: snapshot.backend.sha256().to_owned(),
         meta: meta.clone(),
     };
     Ok(PendingSnapshot {
@@ -815,7 +809,7 @@ fn persist_snapshot(
     limit: u64,
     snapshot: &SnapshotEnvelope,
 ) -> Result<()> {
-    let pending = stage_snapshot(domains, bytes, limit, snapshot)?;
+    let pending = stage_snapshot(domains, &SnapshotImage::from_bytes(bytes)?, limit, snapshot)?;
     publish_snapshot(domains, pending, snapshot)?;
     cleanup_snapshots(domains.application(), limit)
 }
@@ -883,13 +877,13 @@ impl StateMachine {
             if let Some(snapshot) = load_snapshot(&captured, limit)? {
                 validate_snapshot_coverage(&captured_domains, &snapshot, limit)?;
                 ensure!(snapshot.version == 1, "unsupported raft snapshot version");
-                let actual = target.validate_snapshot(&snapshot.backend)?;
+                let actual = target.validate_snapshot(&mut snapshot.backend.reader())?;
                 crate::snapshot_custody::check_backend(
                     &snapshot.meta,
                     snapshot.retirement.as_ref(),
                     actual,
                 )?;
-                target.restore(&snapshot.backend)?;
+                target.restore(&mut snapshot.backend.reader())?;
                 Ok(AppliedState {
                     log_id: snapshot.meta.last_log_id,
                     membership: snapshot.meta.last_membership,
@@ -925,31 +919,35 @@ impl StateMachine {
     }
 }
 
+struct LogicalSnapshot {
+    meta: SnapshotMeta<u64, BasicNode>,
+    backend: crate::CapturedSnapshot,
+    retirement: Option<crate::snapshot_custody::SnapshotRetirement>,
+}
 pub struct SnapshotBuilder {
     machine: StateMachine,
-    captured: Result<Arc<SnapshotEnvelope>>,
+    captured: Result<Arc<LogicalSnapshot>>,
 }
 
 fn load_snapshot(store: &TenantStore, limit: u64) -> Result<Option<SnapshotEnvelope>> {
     load_manifest(store, b"current", limit)?
         .map(|manifest| {
-            let mut bytes = Vec::new();
-            bytes.try_reserve_exact(usize::try_from(manifest.bytes)?)?;
-            for chunk in 0..manifest.chunks {
+            let mut spool = EncryptedSpool::new(limit)?;
+            for index in 0..manifest.chunks {
                 let data = store
-                    .get(SNAPSHOT, &chunk_key(&manifest, chunk))?
+                    .get(SNAPSHOT, &chunk_key(&manifest, index))?
                     .context("missing snapshot chunk")?;
                 let expected =
-                    (manifest.bytes - bytes.len() as u64).min(SNAPSHOT_CHUNK_BYTES as u64) as usize;
+                    (manifest.bytes - spool.len()).min(SNAPSHOT_CHUNK_BYTES as u64) as usize;
                 ensure!(data.len() == expected, "snapshot chunk length mismatch");
-                bytes.extend_from_slice(&data);
+                spool.write_all(&data)?;
             }
-            ensure!(bytes.len() as u64 == manifest.bytes, "incomplete snapshot");
+            let image = SnapshotImage::freeze(spool)?;
             ensure!(
-                sha256(&bytes) == manifest.sha256,
+                image.len() == manifest.bytes && image.sha256() == manifest.sha256,
                 "snapshot content digest differs"
             );
-            Ok(postcard::from_bytes(&bytes)?)
+            SnapshotEnvelope::decode(&mut image.reader(), limit)
         })
         .transpose()
 }
@@ -957,10 +955,7 @@ fn load_snapshot(store: &TenantStore, limit: u64) -> Result<Option<SnapshotEnvel
 pub(crate) fn as_snapshot(snapshot: &SnapshotEnvelope, limit: u64) -> Result<Snapshot<TypeConfig>> {
     Ok(Snapshot {
         meta: snapshot.meta.clone(),
-        snapshot: Box::new(SnapshotBuffer::from_bytes(
-            postcard::to_allocvec(&snapshot)?,
-            limit,
-        )?),
+        snapshot: Box::new(SnapshotBuffer::from_image(snapshot.encode(limit)?)),
     })
 }
 
@@ -996,8 +991,15 @@ impl RaftSnapshotBuilder<TypeConfig> for SnapshotBuilder {
                 }
                 return as_snapshot(&current, limit);
             }
+            let captured = SnapshotEnvelope {
+                version: 1,
+                kind: SnapshotKind::Application,
+                meta: captured.meta.clone(),
+                backend: SnapshotImage::capture(limit, |writer| captured.backend.write(writer))?,
+                retirement: captured.retirement.clone(),
+            };
             let snapshot = as_snapshot(&captured, limit)?;
-            let pending = stage_snapshot(&domains, snapshot.snapshot.as_bytes(), limit, &captured)?;
+            let pending = stage_snapshot(&domains, &snapshot.snapshot.image()?, limit, &captured)?;
             let publication = applied
                 .lock()
                 .map_err(|_| anyhow::anyhow!("applied publication lock poisoned"))?;
@@ -1114,7 +1116,7 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
 
     async fn get_snapshot_builder(&mut self) -> Self::SnapshotBuilder {
         let machine = self.clone();
-        let captured = tokio::task::spawn_blocking(move || -> Result<SnapshotEnvelope> {
+        let captured = tokio::task::spawn_blocking(move || -> Result<LogicalSnapshot> {
             machine.domains.check_access()?;
             let state = machine
                 .state
@@ -1125,17 +1127,15 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
                 last_membership: state.membership.clone(),
                 snapshot_id: uuid::Uuid::new_v4().to_string(),
             };
-            let backend = machine.backend.snapshot()?;
+            let captured = machine.backend.capture_snapshot()?;
             let retirement = crate::snapshot_custody::capture(
                 machine.domains.custody(),
                 &meta,
-                backend.retirement,
+                captured.retirement.clone(),
             )?;
-            Ok(SnapshotEnvelope {
-                version: 1,
-                kind: SnapshotKind::Application,
+            Ok(LogicalSnapshot {
                 meta,
-                backend: backend.data,
+                backend: captured,
                 retirement,
             })
         })
@@ -1152,9 +1152,9 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
 
     async fn begin_receiving_snapshot(&mut self) -> Result<Box<SnapshotBuffer>, StorageError<u64>> {
         self.store.check_access().map_err(err)?;
-        Ok(Box::new(SnapshotBuffer::new(
-            self.limits.max_snapshot_bytes,
-        )))
+        Ok(Box::new(
+            SnapshotBuffer::new(self.limits.max_snapshot_bytes).map_err(err)?,
+        ))
     }
 
     async fn install_snapshot(
@@ -1163,16 +1163,20 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
         snapshot: Box<SnapshotBuffer>,
     ) -> Result<(), StorageError<u64>> {
         let gate = self.snapshot_gate.clone().lock_owned().await;
-        if snapshot.as_bytes().len() as u64 > self.limits.max_snapshot_bytes {
+        if snapshot.len() > self.limits.max_snapshot_bytes {
             return Err(err("snapshot exceeds byte limit"));
         }
         let meta = meta.clone();
         let machine = self.clone();
         tokio::task::spawn_blocking(move || -> Result<()> {
             let _gate = gate;
-            // Parsing allocates the complete backend image. Do it off the
-            // runtime along with validation, persistence, and materialization.
-            let envelope: SnapshotEnvelope = postcard::from_bytes(snapshot.as_bytes())?;
+            // Parsing stages bounded records into encrypted scratch. Keep disk,
+            // crypto, validation and materialization off the async runtime.
+            let snapshot = snapshot.into_image()?;
+            let envelope = SnapshotEnvelope::decode(
+                &mut snapshot.reader(),
+                machine.limits.max_snapshot_bytes,
+            )?;
             ensure!(
                 envelope.version == 1 && envelope.meta == meta,
                 "snapshot metadata mismatch"
@@ -1209,13 +1213,15 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
                 state.membership = envelope.meta.last_membership;
                 return Ok(());
             }
-            let actual = machine.backend.validate_snapshot(&envelope.backend)?;
+            let actual = machine
+                .backend
+                .validate_snapshot(&mut envelope.backend.reader())?;
             crate::snapshot_custody::check_backend(&meta, envelope.retirement.as_ref(), actual)?;
             // Durably install encrypted chunks and their manifest, then atomically publish backend state.
             // A crash between these steps recovers the new snapshot on restart.
             let pending = stage_snapshot(
                 &machine.domains,
-                snapshot.as_bytes(),
+                &snapshot,
                 machine.limits.max_snapshot_bytes,
                 &envelope,
             )?;
@@ -1227,7 +1233,7 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
                 publish_snapshot(&machine.domains, pending, &envelope)?;
             }
             cleanup_snapshots(&machine.store, machine.limits.max_snapshot_bytes)?;
-            machine.backend.restore(&envelope.backend)?;
+            machine.backend.restore(&mut envelope.backend.reader())?;
             state.log_id = envelope.meta.last_log_id;
             state.membership = envelope.meta.last_membership;
             Ok(())

@@ -30,6 +30,21 @@ pub struct Generation {
     _read_reservations: Vec<crate::admission::Reservation>,
 }
 impl Generation {
+    /// Share persistent document roots without retaining receipts, staging,
+    /// audit history, or the previous generation of secondary/text indexes.
+    pub(crate) fn lease_view(&self) -> Self {
+        let mut state = crate::snapshot_codec::metadata(&self.state);
+        state.collections = self.state.collections.clone();
+        state.history_archives = self.state.history_archives.clone();
+        Self {
+            state,
+            indexes: Arc::new(QueryIndexes::default()),
+            receipt_expiry: ReceiptExpiry::new(),
+            snapshot_accounting: SnapshotAccounting::default(),
+            _read_reservations: Vec::new(),
+        }
+    }
+
     pub(crate) fn read_view(
         &self,
         collections: BTreeMap<String, CollectionState>,
@@ -122,22 +137,29 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
             retirement,
         })
     }
-    fn snapshot(&self) -> anyhow::Result<kasumi_raft::BackendSnapshot> {
+    fn capture_snapshot(&self) -> anyhow::Result<kasumi_raft::CapturedSnapshot> {
         let generation = self.generation()?;
-        Ok(kasumi_raft::BackendSnapshot {
-            data: Self::encode_generation(&generation)?,
-            retirement: custody_snapshot::retired(&generation.state)?,
-        })
+        let retirement = custody_snapshot::retired(&generation.state)?;
+        Ok(kasumi_raft::CapturedSnapshot::new(
+            retirement,
+            move |writer| Self::write_generation(&generation, writer).map_err(Into::into),
+        ))
     }
     fn validate_snapshot(
         &self,
-        bytes: &[u8],
+        bytes: &mut dyn std::io::Read,
     ) -> anyhow::Result<Option<kasumi_raft::RetiredSnapshotState>> {
-        let generation = self.prepare_snapshot(bytes)?;
+        let generation = self.prepare_snapshot_reader(bytes)?;
         custody_snapshot::retired(&generation.state).map_err(Into::into)
     }
-    fn restore(&self, bytes: &[u8]) -> anyhow::Result<()> {
-        Ok(TenantEngine::restore(self, bytes)?)
+    fn restore(&self, bytes: &mut dyn std::io::Read) -> anyhow::Result<()> {
+        let _guard = self
+            .apply_lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("tenant apply lock poisoned"))?;
+        let generation = self.prepare_snapshot_reader(bytes)?;
+        self.current.store(Some(Arc::new(generation)));
+        Ok(())
     }
 }
 
@@ -293,16 +315,24 @@ impl TenantEngine {
             policy,
             limits,
             collections: BTreeMap::new(),
-            receipts: imbl::HashMap::new(),
-            staged_transactions: imbl::HashMap::new(),
+            receipts: imbl::OrdMap::new(),
+            staged_transactions: imbl::OrdMap::new(),
             active_staged_transactions: BTreeSet::new(),
             change_feed: ChangeFeedState::empty(),
-            history_archives: imbl::HashMap::new(),
+            history_archives: imbl::OrdMap::new(),
             history_archive_bytes: 0,
-            schema_activations: imbl::HashMap::new(),
+            schema_activations: imbl::OrdMap::new(),
             schema_activation_bytes: 0,
-            retirements: imbl::HashMap::new(),
+            retirements: imbl::OrdMap::new(),
             retirement_bytes: 0,
+            audit_retention: AuditRetentionState::empty(uuid::Uuid::from_bytes(
+                Sha256::digest(
+                    serde_json::to_vec(&("kasumi.audit-stream.v1", &tenant, &incarnation))
+                        .expect("identity serializes"),
+                )[..16]
+                    .try_into()
+                    .expect("digest width"),
+            )),
             audits: imbl::Vector::new(),
         };
         let indexes = Arc::new(QueryIndexes::build(&state.collections)?);
@@ -332,8 +362,11 @@ impl TenantEngine {
         })
     }
 
-    pub(crate) fn from_bootstrap(expected_tenant: &str, bytes: &[u8]) -> Result<Self> {
-        let state: TenantState = serde_json::from_slice(bytes)
+    pub(crate) fn from_bootstrap(
+        expected_tenant: &str,
+        bytes: &kasumi_store::SnapshotImage,
+    ) -> Result<Self> {
+        let state = crate::snapshot_codec::read(&mut bytes.reader())
             .map_err(|_| Error::new(ErrorCode::Corruption, "invalid tenant bootstrap"))?;
         if state.tenant != expected_tenant || state.revision != state.revision_base {
             return Err(Error::new(
@@ -350,19 +383,19 @@ impl TenantEngine {
             apply_lock: Mutex::new(()),
             current: ArcSwapOption::empty(),
         };
-        let generation = engine.prepare_snapshot(bytes)?;
+        let generation = engine.prepare_state(state)?;
         engine.current.store(Some(Arc::new(generation)));
         Ok(engine)
     }
 
     pub(crate) fn restored_bootstrap(
-        bytes: &[u8],
+        bytes: &kasumi_store::SnapshotImage,
         expected_tenant: &str,
         incarnation: String,
         checkpoint: FullBackupCheckpoint,
         target_origin: Option<TargetOrigin>,
-    ) -> Result<Vec<u8>> {
-        let mut state: TenantState = serde_json::from_slice(bytes)
+    ) -> Result<kasumi_store::SnapshotImage> {
+        let mut state = crate::snapshot_codec::read(&mut bytes.reader())
             .map_err(|_| Error::new(ErrorCode::Corruption, "invalid logical backup"))?;
         if state.tenant != expected_tenant {
             return Err(Error::new(ErrorCode::Forbidden, "backup tenant mismatch"));
@@ -431,8 +464,10 @@ impl TenantEngine {
                 "restore metadata exceeds snapshot quota; increase the source quota before making this backup",
             ));
         }
-        serde_json::to_vec(&state)
-            .map_err(|_| Error::new(ErrorCode::Corruption, "restored bootstrap encoding failed"))
+        kasumi_store::SnapshotImage::capture(state.limits.max_snapshot_bytes, |writer| {
+            crate::snapshot_codec::write(&state, writer)
+        })
+        .map_err(|e| Error::new(ErrorCode::Corruption, e.to_string()))
     }
 
     pub fn generation(&self) -> Result<Arc<Generation>> {
@@ -452,7 +487,10 @@ impl TenantEngine {
     /// A full logical backup can be captured at any committed revision. It is
     /// validated as a snapshot; only the later restored genesis must begin at
     /// its revision base.
-    pub(crate) fn verify_logical_snapshot(bytes: &[u8], state: &TenantState) -> Result<()> {
+    pub(crate) fn verify_logical_snapshot(
+        _bytes: &kasumi_store::SnapshotImage,
+        state: &TenantState,
+    ) -> Result<()> {
         let verifier = Self {
             access: std::sync::OnceLock::new(),
             tenant: state.tenant.clone(),
@@ -462,7 +500,7 @@ impl TenantEngine {
             apply_lock: Mutex::new(()),
             current: ArcSwapOption::empty(),
         };
-        verifier.prepare_snapshot(bytes)?;
+        verifier.prepare_state(state.clone())?;
         Ok(())
     }
 
@@ -617,21 +655,25 @@ impl TenantEngine {
             command.operation,
             Operation::Audit(_) | Operation::MaintenanceAudit(_)
         ) {
-            next.audits.push_back(AuditEvent {
-                event_id: format!("{}:{revision}", next.incarnation),
-                principal: command.context.principal.clone(),
-                action: action.into(),
-                request_id: command.context.request_id.clone(),
-                timestamp_ms: command.timestamp_ms,
-                data_revision: Some(revision),
-                outcome: if outcome.is_ok() {
-                    "committed"
-                } else {
-                    "rejected"
-                }
-                .into(),
-                collection: None,
-            });
+            let event_id = format!("{}:{revision}", next.incarnation);
+            append_audit(
+                &mut next,
+                AuditEvent {
+                    event_id,
+                    principal: command.context.principal.clone(),
+                    action: action.into(),
+                    request_id: command.context.request_id.clone(),
+                    timestamp_ms: command.timestamp_ms,
+                    data_revision: Some(revision),
+                    outcome: if outcome.is_ok() {
+                        "committed"
+                    } else {
+                        "rejected"
+                    }
+                    .into(),
+                    collection: None,
+                },
+            )?;
         }
         let changed = if changed_documents {
             operation_changes(&previous.state, &command)?
@@ -771,7 +813,7 @@ impl TenantEngine {
                 .ok_or_else(|| Error::new(ErrorCode::Corruption, "required audit missing"))?
                 .clone();
             event.outcome = "rejected".into();
-            rejected.audits.push_back(event);
+            append_audit(&mut rejected, event)?;
             let accounting = previous.snapshot_accounting.updated(
                 &previous.state,
                 &rejected,
@@ -810,22 +852,44 @@ impl TenantEngine {
         )))
     }
 
-    pub fn snapshot(&self) -> Result<Vec<u8>> {
-        Self::encode_generation(self.generation()?.as_ref())
+    /// Decode canonical records without publishing state. Callers must still
+    /// validate logical invariants before installing this untrusted candidate.
+    pub fn decode_snapshot_state(bytes: &kasumi_store::SnapshotImage) -> Result<TenantState> {
+        crate::snapshot_codec::read(&mut bytes.reader())
+            .map_err(|e| Error::new(ErrorCode::Corruption, e.to_string()))
+    }
+    /// Encode an unvalidated candidate in encrypted staging. Callers choose the
+    /// aggregate disk workspace bound; logical quotas are checked on restore.
+    pub fn encode_snapshot_state(
+        state: &TenantState,
+        max_bytes: u64,
+    ) -> Result<kasumi_store::SnapshotImage> {
+        kasumi_store::SnapshotImage::capture(max_bytes, |writer| {
+            crate::snapshot_codec::write(state, writer)
+        })
+        .map_err(|e| Error::new(ErrorCode::Corruption, e.to_string()))
     }
 
-    fn encode_generation(generation: &Generation) -> Result<Vec<u8>> {
-        let bytes = serde_json::to_vec(&generation.state)
-            .map_err(|_| Error::new(ErrorCode::Corruption, "snapshot encoding failed"))?;
-        if bytes.len() != generation.snapshot_accounting.bytes(&generation.state)?
-            || !generation.snapshot_accounting.fits(&generation.state)?
-        {
+    pub(crate) fn write_generation(
+        generation: &Generation,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<()> {
+        if !generation.snapshot_accounting.fits(&generation.state)? {
             return Err(Error::new(
                 ErrorCode::Corruption,
                 "snapshot byte accounting mismatch",
             ));
         }
-        Ok(bytes)
+        crate::snapshot_codec::write(&generation.state, writer)
+            .map_err(|_| Error::new(ErrorCode::Corruption, "snapshot encoding failed"))
+    }
+
+    pub fn snapshot(&self) -> Result<kasumi_store::SnapshotImage> {
+        let generation = self.generation()?;
+        kasumi_store::SnapshotImage::capture(generation.state.limits.max_snapshot_bytes, |writer| {
+            Ok(Self::write_generation(&generation, writer)?)
+        })
+        .map_err(|e| Error::new(ErrorCode::Corruption, e.to_string()))
     }
 
     pub fn snapshot_bytes(&self) -> Result<usize> {
@@ -833,25 +897,23 @@ impl TenantEngine {
         generation.snapshot_accounting.bytes(&generation.state)
     }
 
-    pub fn restore(&self, bytes: &[u8]) -> Result<()> {
+    pub fn restore(&self, bytes: &kasumi_store::SnapshotImage) -> Result<()> {
         let _guard = self
             .apply_lock
             .lock()
             .map_err(|_| Error::new(ErrorCode::Unavailable, "tenant apply lock poisoned"))?;
-        let generation = self.prepare_snapshot(bytes)?;
+        let generation = self.prepare_snapshot_reader(&mut bytes.reader())?;
         self.current.store(Some(Arc::new(generation)));
         Ok(())
     }
 
-    fn prepare_snapshot(&self, bytes: &[u8]) -> Result<Generation> {
-        if bytes.len() > MAX_TENANT_SNAPSHOT_BYTES {
-            return Err(Error::new(
-                ErrorCode::Corruption,
-                "snapshot exceeds format budget",
-            ));
-        }
-        let state: TenantState = serde_json::from_slice(bytes)
+    fn prepare_snapshot_reader(&self, reader: &mut dyn std::io::Read) -> Result<Generation> {
+        let state: TenantState = crate::snapshot_codec::read(reader)
             .map_err(|_| Error::new(ErrorCode::Corruption, "invalid tenant snapshot"))?;
+        self.prepare_state(state)
+    }
+
+    fn prepare_state(&self, state: TenantState) -> Result<Generation> {
         if state.tenant != self.tenant
             || state.incarnation != self.incarnation
             || state.revision_base != self.revision_base
@@ -1042,6 +1104,7 @@ impl TenantEngine {
                 "snapshot logical accounting mismatch",
             ));
         }
+        validate_audits(&state)?;
         let snapshot_accounting = SnapshotAccounting::rebuild(&state)?;
         staging::validate_restored(&state)?;
         schema::validate_restored(&state)?;
@@ -1438,7 +1501,7 @@ fn apply_operation(
                     "invalid read audit event",
                 ));
             }
-            state.audits.push_back(event.clone());
+            append_audit(state, event.clone())?;
             Ok((Ok(receipt()), false))
         }
         Operation::MaintenanceAudit(event) => {
@@ -1481,7 +1544,7 @@ fn apply_operation(
                 }
                 state.pending_restore = None;
             }
-            state.audits.push_back(event.clone());
+            append_audit(state, event.clone())?;
             Ok((Ok(receipt()), false))
         }
     }
@@ -1792,7 +1855,6 @@ fn validate_limits(limits: &Limits) -> Result<()> {
         || atomic.max_snapshot_leases == 0
         || atomic.max_snapshot_leases > 128
         || atomic.max_snapshot_lease_bytes == 0
-        || atomic.max_snapshot_lease_bytes > MAX_TENANT_SNAPSHOT_BYTES
     {
         return Err(Error::new(
             ErrorCode::InvalidArgument,
@@ -1818,7 +1880,6 @@ fn validate_limits(limits: &Limits) -> Result<()> {
         || limits.max_documents == 0
         || limits.max_logical_bytes == 0
         || limits.max_snapshot_bytes < 4096
-        || limits.max_snapshot_bytes > MAX_TENANT_SNAPSHOT_BYTES
         || limits.max_query_groups == 0
         || limits.max_cursor_bytes == 0
         || limits.max_cursors == 0
@@ -1965,8 +2026,11 @@ mod restore_budget_tests {
             .unwrap()
             .unwrap();
         let mut source = engine.generation().unwrap().state.clone();
-        source.limits.max_snapshot_bytes = encoded_len(&source).unwrap() + 20;
-        let bytes = serde_json::to_vec(&source).unwrap();
+        source.limits.max_snapshot_bytes = TenantEngine::encode_snapshot_state(&source, 64 << 20)
+            .unwrap()
+            .len() as u64
+            + 20;
+        let bytes = TenantEngine::encode_snapshot_state(&source, 64 << 20).unwrap();
         engine.restore(&bytes).unwrap(); // Source itself is a valid recoverable snapshot.
         let outcome = TenantEngine::restored_bootstrap(
             &bytes,
@@ -1976,7 +2040,7 @@ mod restore_budget_tests {
                 tenant: source.tenant.clone(),
                 source_incarnation: source.incarnation.clone(),
                 revision: source.revision,
-                resident_sha256: hex::encode(Sha256::digest(&bytes)),
+                resident_sha256: bytes.sha256().to_owned(),
                 backup_id: uuid::Uuid::new_v4(),
                 manifest_ciphertext_sha256: "00".repeat(32),
                 key_lineage_digest: "00".repeat(32),
@@ -1986,4 +2050,57 @@ mod restore_budget_tests {
         assert_eq!(outcome.unwrap_err().code, ErrorCode::QuotaExceeded);
         assert_eq!(engine.snapshot().unwrap(), bytes);
     }
+}
+
+/// Appends a hot event with its permanent stream position and exact encoded budget.
+pub(crate) fn append_audit(state: &mut TenantState, event: AuditEvent) -> Result<()> {
+    let bytes = encoded_len(&event)?;
+    if bytes > MAX_AUDIT_EVENT_BYTES {
+        return Err(Error::new(
+            ErrorCode::QuotaExceeded,
+            "audit event exceeds record budget",
+        ));
+    }
+    let next = state
+        .audit_retention
+        .next_sequence
+        .checked_add(1)
+        .ok_or_else(|| Error::new(ErrorCode::Corruption, "audit sequence exhausted"))?;
+    let hot = state
+        .audit_retention
+        .hot_bytes
+        .checked_add(bytes as u64)
+        .ok_or_else(|| Error::new(ErrorCode::Corruption, "audit byte count overflow"))?;
+    state.audits.push_back(event);
+    state.audit_retention.next_sequence = next;
+    state.audit_retention.hot_bytes = hot;
+    Ok(())
+}
+fn validate_audits(state: &TenantState) -> Result<()> {
+    state.audit_retention.validate()?;
+    let hot = state.audits.iter().try_fold(0u64, |total, event| {
+        let bytes = encoded_len(event)?;
+        if bytes > MAX_AUDIT_EVENT_BYTES {
+            return Err(Error::new(
+                ErrorCode::Corruption,
+                "audit event exceeds record budget",
+            ));
+        }
+        total
+            .checked_add(bytes as u64)
+            .ok_or_else(|| Error::new(ErrorCode::Corruption, "audit byte count overflow"))
+    })?;
+    if state
+        .audit_retention
+        .next_sequence
+        .checked_sub(state.audit_retention.pruned_before)
+        != Some(state.audits.len() as u64)
+        || hot != state.audit_retention.hot_bytes
+    {
+        return Err(Error::new(
+            ErrorCode::Corruption,
+            "audit retention accounting differs",
+        ));
+    }
+    Ok(())
 }

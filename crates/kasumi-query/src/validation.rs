@@ -182,7 +182,7 @@ pub fn validate_document(definition: &CollectionDefinition, body: &Value) -> Res
 
 pub fn validate_collection(
     definition: &CollectionDefinition,
-    documents: &imbl::HashMap<String, std::sync::Arc<Document>>,
+    documents: &imbl::OrdMap<String, std::sync::Arc<Document>>,
 ) -> Result<()> {
     validate_name(&definition.name)?;
     if definition.retention_class == CollectionRetentionClass::ArchivableHistory

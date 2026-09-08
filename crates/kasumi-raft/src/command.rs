@@ -38,7 +38,7 @@ pub struct RetirementReplayState {
     pub audit_count: usize,
     pub max_audit_records: usize,
     pub snapshot_bytes: usize,
-    pub max_snapshot_bytes: usize,
+    pub max_snapshot_bytes: u64,
     pub staged_outcome_headroom: usize,
 }
 
@@ -116,7 +116,7 @@ impl RetirementLogSeed {
                 && self.source.max_retirements <= 100_000
                 && self.source.retirement_count <= self.source.max_retirements
                 && self.source.audit_count <= self.source.max_audit_records
-                && self.source.snapshot_bytes <= self.source.max_snapshot_bytes,
+                && self.source.snapshot_bytes as u64 <= self.source.max_snapshot_bytes,
             "retirement seed source binding differs"
         );
         for principal in &self.source.administrators {
@@ -286,7 +286,7 @@ impl RetirementLogSeed {
             .and_then(|n| n.checked_add(audit_bytes))
             .and_then(|n| n.checked_add(1024))
             .and_then(|n| n.checked_add(self.source.staged_outcome_headroom));
-        if required.is_none_or(|bytes| bytes > self.source.max_snapshot_bytes) {
+        if required.is_none_or(|bytes| bytes as u64 > self.source.max_snapshot_bytes) {
             return Err(kasumi_types::Error::new(
                 kasumi_types::ErrorCode::QuotaExceeded,
                 "retirement completion capacity unavailable",

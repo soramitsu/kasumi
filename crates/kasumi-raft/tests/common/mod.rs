@@ -51,21 +51,26 @@ impl StateMachineBackend for Backend {
         data.insert(index, command.to_vec());
         Ok(kasumi_raft::AppliedResponse::application(command.to_vec()))
     }
-    fn snapshot(&self) -> Result<kasumi_raft::BackendSnapshot> {
+    fn capture_snapshot(&self) -> Result<kasumi_raft::CapturedSnapshot> {
         ensure!(
             !self.fail_snapshot.load(Ordering::Acquire),
             "injected snapshot capture failure"
         );
-        Ok(kasumi_raft::BackendSnapshot::application(
-            serde_json::to_vec(&*self.data.lock().unwrap())?,
-        ))
+        let data = self.data.lock().unwrap().clone();
+        Ok(kasumi_raft::CapturedSnapshot::new(None, move |writer| {
+            serde_json::to_writer(writer, &data)?;
+            Ok(())
+        }))
     }
-    fn validate_snapshot(&self, bytes: &[u8]) -> Result<Option<kasumi_raft::RetiredSnapshotState>> {
-        serde_json::from_slice::<BTreeMap<u64, Vec<u8>>>(bytes)?;
+    fn validate_snapshot(
+        &self,
+        bytes: &mut dyn std::io::Read,
+    ) -> Result<Option<kasumi_raft::RetiredSnapshotState>> {
+        serde_json::from_reader::<_, BTreeMap<u64, Vec<u8>>>(bytes)?;
         Ok(None)
     }
-    fn restore(&self, bytes: &[u8]) -> Result<()> {
-        let restored = serde_json::from_slice(bytes)?;
+    fn restore(&self, bytes: &mut dyn std::io::Read) -> Result<()> {
+        let restored = serde_json::from_reader(bytes)?;
         *self.data.lock().unwrap() = restored;
         Ok(())
     }

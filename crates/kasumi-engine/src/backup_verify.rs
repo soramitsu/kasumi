@@ -7,7 +7,12 @@ use crate::{
 };
 use kasumi_types::*;
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeSet, future::Future, sync::Arc};
+use std::{
+    collections::BTreeSet,
+    future::Future,
+    io::{Read, Seek, SeekFrom, Write},
+    sync::Arc,
+};
 
 pub(crate) struct VerificationWork {
     _permit: tokio::sync::OwnedSemaphorePermit,
@@ -150,7 +155,7 @@ impl VerificationDeadline {
 
 pub(crate) struct VerifiedBackup {
     pub state: TenantState,
-    pub bytes: Vec<u8>,
+    pub bytes: kasumi_store::SnapshotImage,
     pub checkpoint: FullBackupCheckpoint,
     pub _reservation: Arc<Reservation>,
     pub _registration: Option<Arc<VerificationWork>>,
@@ -198,42 +203,109 @@ pub(crate) async fn verify(
         admission.reserve(
             manifest
                 .resident_bytes
-                .saturating_mul(6)
-                .saturating_add(64 << 20) as u64,
+                .saturating_mul(3)
+                .saturating_add(64 << 20),
             reader.cancellation(),
         )?,
     );
     let ownership = reader.work_registration();
-    let mut bytes = Vec::with_capacity(manifest.resident_bytes);
-    let mut digest = Sha256::new();
-    for chunk in &manifest.chunks {
+    // Walk the authenticated reverse page chain into an encrypted fixed-slot
+    // spool. Reversing it needs one page of workspace, independent of backup size.
+    let page_budget = manifest
+        .page_count
+        .checked_mul((PAGE_BYTES + 8) as u64)
+        .ok_or_else(|| anyhow::anyhow!("backup page count overflow"))?;
+    let mut pages = kasumi_store::EncryptedSpool::new(page_budget)?;
+    let mut reference = Some(manifest.last_page.clone());
+    for expected in (0..manifest.page_count).rev() {
         reader.check_access().await?;
+        let edge = reference
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("backup page chain incomplete"))?;
         let contents = reader
             .object(
-                chunk.object_id,
-                chunk.plaintext_bytes,
-                Some(&chunk.ciphertext_sha256),
+                edge.object_id,
+                PAGE_BYTES,
+                Some(&edge.ciphertext_sha256),
                 false,
             )
             .await?;
         anyhow::ensure!(
-            contents.revision == manifest.revision
-                && contents.snapshot.len() == chunk.plaintext_bytes
-                && hex::encode(Sha256::digest(&contents.snapshot)) == chunk.plaintext_sha256,
-            "full backup chunk plaintext differs"
+            contents.revision == manifest.revision,
+            "backup page revision differs"
+        );
+        let page: BackupPage = serde_json::from_slice(&contents.snapshot)?;
+        page.validate()?;
+        anyhow::ensure!(
+            page.index == expected
+                && (expected + 1 == manifest.page_count || page.chunks.len() == PAGE_CHUNKS),
+            "backup page order differs"
         );
         key_catalogs.insert(contents.key_catalog_sha256.clone());
-        digest.update(&contents.snapshot);
-        bytes.extend_from_slice(&contents.snapshot);
+        pages.write_all(&(contents.snapshot.len() as u64).to_be_bytes())?;
+        pages.write_all(&contents.snapshot)?;
+        pages.write_all(&vec![0; PAGE_BYTES - contents.snapshot.len()])?;
+        reference = page.previous;
     }
     anyhow::ensure!(
-        bytes.len() == manifest.resident_bytes
+        reference.is_none(),
+        "backup page chain has trailing ancestors"
+    );
+    let mut spool = kasumi_store::EncryptedSpool::new(manifest.resident_bytes)?;
+    let mut digest = Sha256::new();
+    let mut chunk_count = 0u64;
+    for index in (0..manifest.page_count).rev() {
+        pages.seek(SeekFrom::Start(index * (PAGE_BYTES + 8) as u64))?;
+        let mut length = [0; 8];
+        pages.read_exact(&mut length)?;
+        let size = u64::from_be_bytes(length);
+        anyhow::ensure!(size <= PAGE_BYTES as u64, "staged backup page corrupt");
+        let mut bytes = vec![0; size as usize];
+        pages.read_exact(&mut bytes)?;
+        let page: BackupPage = serde_json::from_slice(&bytes)?;
+        for chunk in &page.chunks {
+            reader.check_access().await?;
+            let contents = reader
+                .object(
+                    chunk.object_id,
+                    chunk.plaintext_bytes,
+                    Some(&chunk.ciphertext_sha256),
+                    false,
+                )
+                .await?;
+            anyhow::ensure!(
+                contents.revision == manifest.revision
+                    && contents.snapshot.len() == chunk.plaintext_bytes
+                    && hex::encode(Sha256::digest(&contents.snapshot)) == chunk.plaintext_sha256,
+                "full backup chunk plaintext differs"
+            );
+            chunk_count = chunk_count
+                .checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!("backup chunk count overflow"))?;
+            anyhow::ensure!(
+                chunk_count <= manifest.chunk_count
+                    && (chunk_count == manifest.chunk_count
+                        || chunk.plaintext_bytes == CHUNK_BYTES),
+                "backup chunk order or size differs"
+            );
+            key_catalogs.insert(contents.key_catalog_sha256.clone());
+            digest.update(&contents.snapshot);
+            spool.write_all(&contents.snapshot)?;
+        }
+    }
+    anyhow::ensure!(
+        chunk_count == manifest.chunk_count,
+        "backup chunk count differs"
+    );
+    anyhow::ensure!(
+        spool.len() == manifest.resident_bytes
             && hex::encode(digest.finalize()) == manifest.resident_sha256,
         "full backup resident stream differs"
     );
     let (state, bytes) = deadline
         .blocking(reservation.clone(), ownership.clone(), move || {
-            let state: TenantState = serde_json::from_slice(&bytes)?;
+            let bytes = kasumi_store::SnapshotImage::freeze(spool)?;
+            let state = crate::snapshot_codec::read(&mut bytes.reader())?;
             Ok((state, bytes))
         })
         .await?;

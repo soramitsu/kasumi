@@ -33,19 +33,22 @@ impl StateMachineBackend for PausedSnapshot {
         self.inner.apply(position, command)
     }
 
-    fn snapshot(&self) -> Result<kasumi_raft::BackendSnapshot> {
+    fn capture_snapshot(&self) -> Result<kasumi_raft::CapturedSnapshot> {
         if let Some(entered) = self.entered.lock().unwrap().take() {
             let _ = entered.send(());
             self.release.lock().unwrap().recv_timeout(WAIT)?;
         }
-        self.inner.snapshot()
+        self.inner.capture_snapshot()
     }
 
-    fn validate_snapshot(&self, bytes: &[u8]) -> Result<Option<kasumi_raft::RetiredSnapshotState>> {
+    fn validate_snapshot(
+        &self,
+        bytes: &mut dyn std::io::Read,
+    ) -> Result<Option<kasumi_raft::RetiredSnapshotState>> {
         self.inner.validate_snapshot(bytes)
     }
 
-    fn restore(&self, bytes: &[u8]) -> Result<()> {
+    fn restore(&self, bytes: &mut dyn std::io::Read) -> Result<()> {
         self.inner.restore(bytes)
     }
 }

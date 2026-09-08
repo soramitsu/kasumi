@@ -98,25 +98,29 @@ impl TenantEngine {
                 "target audit quota exhausted",
             ));
         } else {
-            next.audits.push_back(AuditEvent {
-                event_id: format!("{}:{revision}", next.incarnation),
-                principal: authorization.context.principal.clone(),
-                action: match &command {
-                    TargetCommand::Complete { .. } => "target_complete",
-                    TargetCommand::Activate { .. } => "target_activate",
-                }
-                .into(),
-                request_id: authorization.context.request_id.clone(),
-                timestamp_ms: authorization.admitted_at_ms,
-                data_revision: Some(revision),
-                outcome: if outcome.is_ok() {
-                    "committed"
-                } else {
-                    "rejected"
-                }
-                .into(),
-                collection: None,
-            });
+            let event_id = format!("{}:{revision}", next.incarnation);
+            super::append_audit(
+                &mut next,
+                AuditEvent {
+                    event_id,
+                    principal: authorization.context.principal.clone(),
+                    action: match &command {
+                        TargetCommand::Complete { .. } => "target_complete",
+                        TargetCommand::Activate { .. } => "target_activate",
+                    }
+                    .into(),
+                    request_id: authorization.context.request_id.clone(),
+                    timestamp_ms: authorization.admitted_at_ms,
+                    data_revision: Some(revision),
+                    outcome: if outcome.is_ok() {
+                        "committed"
+                    } else {
+                        "rejected"
+                    }
+                    .into(),
+                    collection: None,
+                },
+            )?;
         }
         let mut accounting = SnapshotAccounting::rebuild(&next)?;
         if !accounting.fits(&next)? || validate_target_history(&next).is_err() {

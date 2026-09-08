@@ -112,8 +112,9 @@ async fn permanent_target_stop_defeats_missing_and_prepared_generations_then_reo
         AuthorityOutcome::Rejected { .. }
     ));
     use kasumi_raft::StateMachineBackend;
-    let snapshot = service.backend.snapshot().unwrap();
-    service.backend.validate_snapshot(&snapshot.data).unwrap();
+    let mut snapshot = Vec::new();
+    service.backend.snapshot(&mut snapshot).unwrap();
+    service.backend.validate_snapshot(&mut snapshot.as_slice()).unwrap();
     drop(fence);
     drop(service);
     fixture.reopen().await;

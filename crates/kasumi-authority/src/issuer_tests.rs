@@ -252,8 +252,12 @@ async fn control_epoch_stop_preserves_exact_identity_replay_and_restarts_full_dr
         .unwrap();
     verify_control_epoch_stop(&stop.observation.stop, &drained).unwrap();
     use kasumi_raft::StateMachineBackend;
-    let snapshot = service.backend.snapshot().unwrap();
-    service.backend.validate_snapshot(&snapshot.data).unwrap();
+    let mut snapshot = Vec::new();
+    service.backend.snapshot(&mut snapshot).unwrap();
+    service
+        .backend
+        .validate_snapshot(&mut snapshot.as_slice())
+        .unwrap();
     drop(fence);
     drop(service);
     f.reopen().await;
@@ -465,18 +469,20 @@ async fn lifecycle_byte_exhaustion_preserves_reserved_epoch_stop_and_exact_snaps
         .await
         .unwrap();
     use kasumi_raft::StateMachineBackend;
-    let snapshot = service.backend.snapshot().unwrap();
-    service.backend.validate_snapshot(&snapshot.data).unwrap();
-    let mut modified: serde_json::Value = serde_json::from_slice(&snapshot.data).unwrap();
+    let mut snapshot = Vec::new();
+    service.backend.snapshot(&mut snapshot).unwrap();
+    service
+        .backend
+        .validate_snapshot(&mut snapshot.as_slice())
+        .unwrap();
     let key = stop.reference().key().unwrap();
-    modified["records"][&key]["record"]["original_principal"] =
-        serde_json::json!("substituted-admin");
-    assert!(
-        service
-            .backend
-            .restore(&serde_json::to_vec(&modified).unwrap())
-            .is_err()
-    );
+    let modified = crate::state::snapshot::rewrite_for_test(&snapshot, |value| {
+        if value["type"] == "Entry" && value["value"][0] == key {
+            value["value"][1]["record"]["original_principal"] =
+                serde_json::json!("substituted-admin");
+        }
+    });
+    assert!(service.backend.restore(&mut modified.as_slice()).is_err());
     let retained = service
         .read_lifecycle_receipt(f.context("operator"), stop.reference())
         .await

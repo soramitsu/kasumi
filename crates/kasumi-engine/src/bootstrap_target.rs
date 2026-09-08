@@ -60,9 +60,9 @@ fn verify_persisted_digest(stores: &TenantStorageSet, expected: &str) -> anyhow:
         .ok_or_else(|| anyhow::anyhow!("target bootstrap absent"))?;
     let manifest: Manifest = serde_json::from_slice(&encoded)?;
     anyhow::ensure!(
-        manifest.format == 1
-            && manifest.bytes <= MAX_BOOTSTRAP
-            && manifest.chunks == manifest.bytes.div_ceil(CHUNK)
+        manifest.format == 2
+            && manifest.bytes > 0
+            && manifest.chunks == manifest.bytes.div_ceil(CHUNK as u64)
             && manifest.digest == expected,
         "target bootstrap manifest differs"
     );
@@ -71,13 +71,13 @@ fn verify_persisted_digest(stores: &TenantStorageSet, expected: &str) -> anyhow:
     for index in 0..manifest.chunks {
         let bytes = stores
             .application()
-            .get_bounded(NS, &(index as u64).to_be_bytes(), CHUNK)?
+            .get_bounded(NS, &index.to_be_bytes(), CHUNK)?
             .ok_or_else(|| anyhow::anyhow!("target bootstrap chunk absent"))?;
         anyhow::ensure!(
-            bytes.len() == (manifest.bytes - read).min(CHUNK),
+            bytes.len() as u64 == (manifest.bytes - read).min(CHUNK as u64),
             "target bootstrap chunk length differs"
         );
-        read += bytes.len();
+        read += bytes.len() as u64;
         digest.update(&bytes);
         stores.check_access()?;
     }
@@ -251,16 +251,15 @@ impl TargetPublication {
 }
 fn persist_target(
     stores: &TenantStorageSet,
-    bytes: &[u8],
+    bytes: &SnapshotImage,
     authorization: &TargetPublication,
 ) -> anyhow::Result<()> {
     authorization.check()?;
     anyhow::ensure!(
-        bytes.len() <= MAX_BOOTSTRAP
-            && stores
-                .application()
-                .get_bounded(NS, b"manifest", 64 << 10)?
-                .is_none()
+        stores
+            .application()
+            .get_bounded(NS, b"manifest", 64 << 10)?
+            .is_none()
             && stores
                 .custody()
                 .store()
@@ -268,17 +267,21 @@ fn persist_target(
                 .is_none(),
         "target publication would replace an initialized generation"
     );
-    for (i, chunk) in bytes.chunks(CHUNK).enumerate() {
+    let chunks = bytes.len().div_ceil(CHUNK as u64);
+    let mut reader = bytes.reader();
+    for i in 0..chunks {
+        let mut chunk = vec![0; (bytes.len() - i * CHUNK as u64).min(CHUNK as u64) as usize];
+        reader.read_exact(&mut chunk)?;
         authorization.check()?;
         stores
             .application()
-            .write_batch(&[WriteOp::put(NS, (i as u64).to_be_bytes(), chunk)])?;
+            .write_batch(&[WriteOp::put(NS, i.to_be_bytes(), chunk)])?;
     }
     let manifest = Manifest {
-        format: 1,
+        format: 2,
         bytes: bytes.len(),
-        chunks: bytes.len().div_ceil(CHUNK),
-        digest: hex::encode(Sha256::digest(bytes)),
+        chunks,
+        digest: bytes.sha256().to_owned(),
     };
     authorization.check()?;
     stores.write_batch(

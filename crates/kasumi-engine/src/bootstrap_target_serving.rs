@@ -134,7 +134,7 @@ pub async fn open_serving_target(
                     .target_lifecycle
                     .get(&state.state.incarnation)
                     .is_some_and(|entry| entry.origin == expected.origin)
-                    && hex::encode(Sha256::digest(&bytes))
+                    && bytes.sha256()
                         == expected
                             .completion
                             .as_ref()
