@@ -297,6 +297,11 @@ async fn operational_source_is_private_bounded_and_cannot_substitute_installed_t
     installed.shutdown().await;
     assert!(retained.check().is_err());
     drop(installed);
+    assert!(
+        f.open().await.is_err(),
+        "retained metadata owners must drain before reopening"
+    );
+    drop(retained);
     let reopened = f.open().await.unwrap();
     OperationalSignerConfig::load(&path, &domain)
         .unwrap()
@@ -304,9 +309,5 @@ async fn operational_source_is_private_bounded_and_cannot_substitute_installed_t
         .unwrap()
         .check()
         .unwrap();
-    assert!(
-        retained.check().is_err(),
-        "a fresh metadata owner cannot revive old signers"
-    );
     reopened.shutdown().await;
 }
