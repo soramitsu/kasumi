@@ -995,7 +995,7 @@ async fn pinned_read_roots_and_streamed_namespace_publication_preserve_isolation
         ])
         .unwrap();
     let pinned = store.read_view().unwrap();
-    let staged = EncryptedTable::new(64 << 20).unwrap();
+    let staged = EncryptedTable::new(&ScratchDisk::fixture(), 64 << 20).unwrap();
     staged.insert(b"new", b"replacement").unwrap();
     assert!(staged.insert(b"new", b"substituted").is_err());
     store

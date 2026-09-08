@@ -383,7 +383,7 @@ mod tests {
     use super::*;
     fn disk(max_bytes: u64, min_free_bytes: u64) -> Arc<ScratchDisk> {
         let directory = tempfile::tempdir().unwrap();
-        ScratchDisk::open_inner(
+        let disk = ScratchDisk::open_inner(
             ScratchDiskConfig {
                 directory: directory.path().to_owned(),
                 max_bytes,
@@ -391,7 +391,16 @@ mod tests {
             },
             Some(directory),
         )
-        .unwrap()
+        .unwrap();
+        // Synthetic free-space observations must not race unrelated test files
+        // on the host's actual shared filesystem promise ledger.
+        if min_free_bytes != 0 {
+            let mut owned = Arc::try_unwrap(disk).expect("unique test governor");
+            owned.device = Arc::new(Device::default());
+            Arc::new(owned)
+        } else {
+            disk
+        }
     }
     #[test]
     fn physical_directory_reopens_share_budget_and_cannot_change_it() {
@@ -469,5 +478,88 @@ mod tests {
             .validate()
             .is_err()
         );
+    }
+
+    #[test]
+    fn concurrent_spools_cannot_each_spend_the_aggregate_budget() {
+        use std::{io::Write, sync::Barrier};
+        let disk = disk(1 << 20, 0);
+        let barrier = Arc::new(Barrier::new(33));
+        let mut workers = Vec::new();
+        for _ in 0..32 {
+            let disk = disk.clone();
+            let barrier = barrier.clone();
+            workers.push(std::thread::spawn(move || {
+                let mut spool = crate::EncryptedSpool::new(&disk, 1 << 20).unwrap();
+                let accepted = spool.write_all(&[19]).is_ok();
+                assert_eq!(spool.len(), u64::from(accepted));
+                barrier.wait();
+                barrier.wait();
+                accepted
+            }));
+        }
+        barrier.wait();
+        let unit = disk.rounded((64 << 10) + 40).unwrap();
+        let capacity = disk.config.max_bytes / unit;
+        assert_eq!(disk.snapshot().charged_bytes, capacity * unit);
+        barrier.wait();
+        let accepted = workers
+            .into_iter()
+            .map(|worker| u64::from(worker.join().unwrap()))
+            .sum::<u64>();
+        assert_eq!(accepted, capacity);
+        assert_eq!(disk.snapshot().charged_bytes, 0);
+        assert_eq!(disk.snapshot().live_files, 0);
+    }
+
+    #[test]
+    fn immutable_image_readers_retain_capacity_until_the_last_owner_drains() {
+        use std::io::{Read, Write};
+        let disk = disk(1 << 20, 0);
+        let image = crate::SnapshotImage::capture(&disk, 128 << 10, |writer| {
+            writer.write_all(&[37; 128 << 10])?;
+            Ok(())
+        })
+        .unwrap();
+        let charge = disk.snapshot().charged_bytes;
+        assert!(charge > image.len());
+        assert!(Arc::ptr_eq(image.disk(), &disk));
+        let mut reader = image.reader();
+        let clone = image.clone();
+        drop(image);
+        drop(clone);
+        assert_eq!(disk.snapshot().charged_bytes, charge);
+        let mut bytes = [0; 128];
+        reader.read_exact(&mut bytes).unwrap();
+        assert_eq!(bytes, [37; 128]);
+        drop(reader);
+        assert_eq!(disk.snapshot().charged_bytes, 0);
+    }
+
+    #[test]
+    fn truncation_and_rejected_growth_preserve_exact_file_charges() {
+        use std::io::{Read, Seek, Write};
+        let disk = disk(1 << 20, 0);
+        let mut spool = crate::EncryptedSpool::new(&disk, 8 << 20).unwrap();
+        spool.write_all(&[73; 128 << 10]).unwrap();
+        spool.flush().unwrap();
+        let charged = disk.snapshot().charged_bytes;
+        // reserve failure must not mutate the existing logical bytes or extent.
+        let (file, mut competing) = disk.file().unwrap();
+        competing.grow((1 << 20) - charged).unwrap();
+        assert!(spool.write_all(&[0]).is_err());
+        assert_eq!(spool.len(), 128 << 10);
+        drop(file);
+        drop(competing);
+        assert_eq!(disk.snapshot().charged_bytes, charged);
+        spool.resize(7).unwrap();
+        let one_block = disk.rounded((64 << 10) + 40).unwrap();
+        assert_eq!(disk.snapshot().charged_bytes, one_block);
+        spool.rewind().unwrap();
+        let mut bytes = Vec::new();
+        spool.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, [73; 7]);
+        spool.resize(0).unwrap();
+        assert_eq!(disk.snapshot().charged_bytes, 0);
     }
 }
