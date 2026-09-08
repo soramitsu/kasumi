@@ -75,6 +75,7 @@ pub struct TenantEngine {
     revision_base: u64,
     restoration_identity: String,
     access: std::sync::OnceLock<kasumi_store::StorageAccess>,
+    pub(crate) snapshot_store: std::sync::OnceLock<Arc<kasumi_store::TenantStore>>,
 }
 
 impl kasumi_raft::StateMachineBackend for TenantEngine {
@@ -203,7 +204,10 @@ impl TenantEngine {
     /// Installed before Raft replay or native publication. Pure arithmetic
     /// engine fixtures have no store; a serving database retains this exact
     /// capability through generation reads and ordered state publication.
-    pub(crate) fn install_storage_access(&self, store: &kasumi_store::TenantStore) -> Result<()> {
+    pub(crate) fn install_storage_access(
+        &self,
+        store: &Arc<kasumi_store::TenantStore>,
+    ) -> Result<()> {
         store
             .check_access()
             .map_err(|_| Error::new(ErrorCode::Sealed, "storage serving authority unavailable"))?;
@@ -224,6 +228,12 @@ impl TenantEngine {
                 ));
             }
         }
+        self.snapshot_store.set(store.clone()).map_err(|_| {
+            Error::new(
+                ErrorCode::Conflict,
+                "engine storage owner already installed",
+            )
+        })?;
         self.access.set(access).map_err(|_| {
             Error::new(
                 ErrorCode::Conflict,
@@ -348,6 +358,7 @@ impl TenantEngine {
         Ok(Self {
             restoration_identity,
             access: std::sync::OnceLock::new(),
+            snapshot_store: std::sync::OnceLock::new(),
             current: ArcSwapOption::from_pointee(Generation {
                 state,
                 indexes,
@@ -376,6 +387,7 @@ impl TenantEngine {
         }
         let engine = Self {
             access: std::sync::OnceLock::new(),
+            snapshot_store: std::sync::OnceLock::new(),
             tenant: state.tenant.clone(),
             incarnation: state.incarnation.clone(),
             revision_base: state.revision_base,
@@ -493,6 +505,7 @@ impl TenantEngine {
     ) -> Result<()> {
         let verifier = Self {
             access: std::sync::OnceLock::new(),
+            snapshot_store: std::sync::OnceLock::new(),
             tenant: state.tenant.clone(),
             incarnation: state.incarnation.clone(),
             revision_base: state.revision_base,
