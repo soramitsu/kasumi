@@ -36,7 +36,11 @@ impl std::fmt::Debug for EncryptedSpool {
 
 impl EncryptedSpool {
     pub fn new(disk: &Arc<ScratchDisk>, limit: u64) -> io::Result<Self> {
-        Self::offset(limit.div_ceil(BLOCK as u64))?;
+        if Self::offset(limit.div_ceil(BLOCK as u64))? > i64::MAX as u64 {
+            return Err(io::Error::other(
+                "spool limit exceeds supported file offsets",
+            ));
+        }
         let (file, charge) = disk.file()?;
         // Unnamed temporary files have owner-only permissions and cannot be
         // reopened after a crash. No key or pathname is persisted.

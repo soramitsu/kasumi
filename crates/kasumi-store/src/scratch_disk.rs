@@ -437,6 +437,29 @@ mod tests {
         drop(second);
         assert_eq!(disk.snapshot().live_files, 0);
     }
+
+    #[test]
+    fn separate_governors_cannot_double_spend_filesystem_promises() {
+        let first = disk(1 << 20, 1 << 16);
+        let mut second = Arc::try_unwrap(disk(1 << 20, 1 << 16)).unwrap();
+        second.device = first.device.clone();
+        let second = Arc::new(second);
+        *first.available_override.lock().unwrap() = Some(1 << 17);
+        *second.available_override.lock().unwrap() = Some(1 << 17);
+        let (first_file, mut first_charge) = first.file().unwrap();
+        let (second_file, mut second_charge) = second.file().unwrap();
+        first_charge.grow(1 << 16).unwrap();
+        assert!(second_charge.grow(1 << 16).is_err());
+        assert_eq!(second.snapshot().charged_bytes, 0);
+        assert_eq!(second.snapshot().filesystem_pending_bytes, 1 << 16);
+        drop(first_file);
+        drop(first_charge);
+        second_charge.grow(1 << 16).unwrap();
+        assert_eq!(second.snapshot().charged_bytes, 1 << 16);
+        drop(second_file);
+        drop(second_charge);
+        assert_eq!(first.snapshot().filesystem_pending_bytes, 0);
+    }
     #[test]
     fn pinned_directory_survives_path_substitution_without_using_replacement() {
         let disk = disk(1 << 20, 0);
