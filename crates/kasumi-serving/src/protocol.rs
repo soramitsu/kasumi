@@ -82,22 +82,8 @@ impl AuthorityManifest {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct NodeIdentity {
-    pub node_id: u64,
-    pub principal: String,
-    /// SHA-256 of the actual authenticated mTLS leaf DER, never body metadata.
-    pub certificate_sha256: String,
-}
-impl NodeIdentity {
-    pub fn validate(&self) -> Result<()> {
-        ensure!(self.node_id > 0, "zero node identity");
-        validate_name(&self.principal)?;
-        validate_sha256(&self.certificate_sha256)?;
-        Ok(())
-    }
-}
+pub use kasumi_types::NodeIdentity;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServingIdentity {

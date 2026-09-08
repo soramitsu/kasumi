@@ -89,6 +89,12 @@ pub struct Authenticator {
 }
 
 impl Authenticator {
+    pub(crate) fn signer_admission_deadline(
+        &self,
+        not_after_ms: u64,
+    ) -> anyhow::Result<kasumi_clock::ElapsedDeadline> {
+        self.clock.observe()?.until(not_after_ms)
+    }
     pub fn new(config: AuthConfig) -> anyhow::Result<Arc<Self>> {
         Self::new_with_clock(config, EpochClock::system()?)
     }

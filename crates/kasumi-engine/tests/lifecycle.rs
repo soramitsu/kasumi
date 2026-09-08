@@ -258,6 +258,7 @@ impl Fixture {
                         id,
                         LifecycleNode {
                             node_id: id,
+                            verifier: kasumi_serving::test_utils::fixture_verifier(id),
                             principal: format!("target-{id}"),
                             certificate_sha256: format!("{id:064x}"),
                             attestation_public_key: format!("{:064x}", id + 100),

@@ -393,7 +393,8 @@ impl TargetJournal {
                 && target.nodes.iter().all(|node| intent
                     .target_nodes
                     .get(&node.node_id)
-                    .is_some_and(|expected| expected.principal == node.principal
+                    .is_some_and(|expected| expected.verifier == node.verifier
+                        && expected.principal == node.principal
                         && expected.certificate_sha256 == node.certificate_sha256))
                 && intent.phase_input_sha256
                     == kasumi_serving::digest(&(

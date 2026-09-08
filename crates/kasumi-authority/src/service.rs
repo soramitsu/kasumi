@@ -181,6 +181,10 @@ impl IndependentAuthority {
     ) -> anyhow::Result<Arc<Self>> {
         installation.validate()?;
         settings.validate(node_id)?;
+        ensure!(
+            settings.installed_members[&node_id].verifier == signer.verifier_identity()?,
+            "operational signer physical verifier differs from installed authority member"
+        );
         let voters = settings.bootstrap.voters();
         let partition = installation
             .manifest
@@ -734,3 +738,7 @@ fn require_drain_witness(
     }
     Ok(())
 }
+
+#[path = "signer_administration.rs"]
+mod signer_administration;
+pub use signer_administration::{AuthorityAdministrativeFence, CommittedSignerDirective};

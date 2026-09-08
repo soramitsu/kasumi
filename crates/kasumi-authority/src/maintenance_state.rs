@@ -191,6 +191,20 @@ impl Backend {
                         ))
                     });
                 }
+                if matches!(
+                    command.action,
+                    AuthorityMaintenanceAction::AuthorizeSignerTrust { .. }
+                ) && !prepared
+                    .context
+                    .authorization
+                    .expires_at_ms()
+                    .is_some_and(|expiry| command.not_after_ms <= expiry)
+                {
+                    return Ok(Err(Error::new(
+                        ErrorCode::Unauthorized,
+                        "signer directive exceeds the original finite credential",
+                    )));
+                }
                 if command.expected_policy_epoch != meta.policy_epoch
                     || prepared.admitted_at_ms > command.not_after_ms
                 {
@@ -215,6 +229,12 @@ impl Backend {
                 } else if let AuthorityMaintenanceAction::SetCapacity { capacity } = &command.action
                 {
                     meta.operational.capacity = capacity.clone();
+                    status.phase = AuthorityMaintenancePhase::Completed;
+                    meta.operational.revision = position.log_id.index;
+                } else if matches!(
+                    command.action,
+                    AuthorityMaintenanceAction::AuthorizeSignerTrust { .. }
+                ) {
                     status.phase = AuthorityMaintenancePhase::Completed;
                     meta.operational.revision = position.log_id.index;
                 } else {
@@ -322,7 +342,8 @@ impl Backend {
                             .context("member revocation count exhausted")?;
                         status.phase = AuthorityMaintenancePhase::Draining;
                     }
-                    AuthorityMaintenanceAction::SetCapacity { .. } => {
+                    AuthorityMaintenanceAction::SetCapacity { .. }
+                    | AuthorityMaintenanceAction::AuthorizeSignerTrust { .. } => {
                         anyhow::bail!("capacity maintenance requires no dispatch")
                     }
                 }
@@ -400,6 +421,44 @@ impl Backend {
         }
         let mut next = meta.operational.membership.clone();
         match &command.action {
+            AuthorityMaintenanceAction::AuthorizeSignerTrust {
+                verifier,
+                domain_sha256,
+                command,
+            } => {
+                if next
+                    .members
+                    .get(&verifier.node_id)
+                    .is_none_or(|member| member.verifier != *verifier)
+                    || self
+                        .record(&revoked_key(verifier.node_id))
+                        .map_err(unavailable)?
+                        .is_some()
+                    || *domain_sha256
+                        != self
+                            .installation
+                            .manifest
+                            .signing_domain(self.installation.partition)
+                            .map_err(unavailable)?
+                            .digest()
+                            .map_err(unavailable)?
+                {
+                    return Err(conflict(
+                        "signer directive member or installed domain differs",
+                    ));
+                }
+                if let SignerTrustAction::Stage { certificate } = &command.action {
+                    certificate
+                        .verify(
+                            &self
+                                .installation
+                                .manifest
+                                .signing_domain(self.installation.partition)
+                                .map_err(unavailable)?,
+                        )
+                        .map_err(unavailable)?;
+                }
+            }
             AuthorityMaintenanceAction::EnrollLearner { node_id, member } => {
                 if next.members.contains_key(node_id)
                     || self
@@ -478,6 +537,16 @@ impl Backend {
                     if !status.phase.terminal() {
                         ensure!(pending.replace(status.command.operation_id).is_none(), "multiple unfinished authority maintenance operations");
                     }
+                    if let AuthorityMaintenanceAction::AuthorizeSignerTrust { verifier, domain_sha256, command } = &status.command.action {
+                        ensure!(matches!(status.phase, AuthorityMaintenancePhase::Completed | AuthorityMaintenancePhase::Rejected { .. }), "signer authorization has an impossible dispatched phase");
+                        if status.phase == AuthorityMaintenancePhase::Completed {
+                            let domain = self.installation.manifest.signing_domain(self.installation.partition)?;
+                            ensure!(*domain_sha256 == domain.digest()?, "signer directive snapshot domain differs");
+                            ensure!(state.membership.members.get(&verifier.node_id).is_some_and(|member| member.verifier == *verifier)
+                                || matches!(snapshot.records.get(&revoked_key(verifier.node_id))?, Some(Record::RevokedMember(ref record)) if record.member.verifier == *verifier), "signer directive member lacks its permanent physical identity");
+                            if let SignerTrustAction::Stage { certificate } = &command.action { certificate.verify(&domain)?; }
+                        }
+                    }
                     if let AuthorityMaintenanceAction::EnrollLearner { node_id, member } = &status.command.action
                         && matches!(status.phase, AuthorityMaintenancePhase::Dispatched | AuthorityMaintenancePhase::Completed) {
                         if let Some(current) = state.membership.members.get(node_id) {
@@ -489,7 +558,7 @@ impl Backend {
                 }
                 Record::RevokedMember(revoked) => {
                     revoked.member.validate()?;
-                    ensure!(revoked.node_id > 0 && revoked.revision > 0 && revoked.revision <= snapshot.meta.revision
+                    ensure!(revoked.node_id == revoked.member.verifier.node_id && revoked.revision > 0 && revoked.revision <= snapshot.meta.revision
                         && key == revoked_key(revoked.node_id) && !state.membership.members.contains_key(&revoked.node_id),
                         "revoked authority member snapshot identity differs");
                     let Some(Record::Maintenance(status)) = snapshot.records.get(&operation_key(revoked.operation_id))? else {

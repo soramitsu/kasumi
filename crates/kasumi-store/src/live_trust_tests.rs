@@ -148,6 +148,7 @@ impl Fixture {
         SignerTrustCommand {
             operation_id: Uuid::new_v4(),
             expected_revision: trust.current().unwrap().revision,
+            not_after_ms: u64::MAX,
             action,
         }
     }
@@ -635,6 +636,7 @@ async fn encrypted_current_generation_fences_lease_admission_and_retained_respon
         authority_epoch: 1,
         node: NodeIdentity {
             node_id: 1,
+            verifier: f.verifier.clone(),
             principal: "data-1".into(),
             certificate_sha256: "ab".repeat(32),
         },

@@ -164,6 +164,7 @@ mod tests {
                 authority_epoch: 1,
                 node: kasumi_serving::NodeIdentity {
                     node_id: node,
+                    verifier: kasumi_serving::test_utils::fixture_verifier(node),
                     principal: format!("node-{node}"),
                     certificate_sha256: format!("{node:064x}"),
                 },

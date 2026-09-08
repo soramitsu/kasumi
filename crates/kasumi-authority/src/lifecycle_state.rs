@@ -233,7 +233,8 @@ impl Backend {
             .get(&request.target_node.node_id)
             .context("target node not approved")?;
         ensure!(
-            expected.principal == request.target_node.principal
+            expected.verifier == request.target_node.verifier
+                && expected.principal == request.target_node.principal
                 && expected.certificate_sha256 == request.target_node.certificate_sha256,
             "target credential differs"
         );
@@ -411,7 +412,9 @@ fn same_nodes(
     nodes.len() == expected.len()
         && nodes.iter().all(|node| {
             expected.get(&node.node_id).is_some_and(|n| {
-                n.principal == node.principal && n.certificate_sha256 == node.certificate_sha256
+                n.verifier == node.verifier
+                    && n.principal == node.principal
+                    && n.certificate_sha256 == node.certificate_sha256
             })
         })
 }

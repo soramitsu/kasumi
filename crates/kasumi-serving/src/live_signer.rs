@@ -23,6 +23,10 @@ impl LiveGenerationSigner {
     pub fn certificate(&self) -> &SigningCertificate {
         self.signer.certificate()
     }
+    pub fn verifier_identity(&self) -> Result<crate::TrustVerifierIdentity> {
+        self.check()?;
+        Ok(self.trust.current()?.verifier)
+    }
     pub fn check(&self) -> Result<()> {
         ensure!(
             self.trust.current()?.active == *self.signer.certificate(),

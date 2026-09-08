@@ -101,7 +101,8 @@ impl AuthorityTrust {
             .get(&c.request.target_node.node_id)
             .context("phase target node not approved")?;
         ensure!(
-            node.principal == c.request.target_node.principal
+            node.verifier == c.request.target_node.verifier
+                && node.principal == c.request.target_node.principal
                 && node.certificate_sha256 == c.request.target_node.certificate_sha256,
             "phase capability target credential differs"
         );
@@ -126,6 +127,10 @@ impl LifecycleBoot {
         clock: Arc<dyn LeaseClock>,
     ) -> Result<Self> {
         node.validate()?;
+        ensure!(
+            node.verifier == trust.verifier_identity()?,
+            "lifecycle boot physical verifier differs from installed live owner"
+        );
         let now = clock.now();
         Ok(Self {
             trust,
@@ -166,7 +171,8 @@ impl LifecycleBoot {
             .get(&self.node.node_id)
             .context("phase target node not approved")?;
         ensure!(
-            node.principal == self.node.principal
+            node.verifier == self.node.verifier
+                && node.principal == self.node.principal
                 && node.certificate_sha256 == self.node.certificate_sha256,
             "phase target credential differs"
         );
