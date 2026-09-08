@@ -1,0 +1,24 @@
+{
+  "source": "c8d20ffef7f9b5c05f6e4223a1ac4add4526aa76",
+  "source_tree": "9b377dece31b707a9a0faa9b8d24a3fc53466c34",
+  "lockfile_sha256": "a4a3883969dc9486548a1aea841ecf45c482c99e4ea1e0d47b56f6c52b2afa08",
+  "gates": [
+    {
+      "log": "kasumi-production-custody-bound-tests.log",
+      "log_sha256": "ffc69782f7d1d9764dfbbfb8fc12af1b5383ff059049e848aedd9dcf6288d254",
+      "results": [
+        "ok. 22 passed; 0 failed; 0 ignored; 0 measured; 18 filtered out; finished in 5.84s"
+      ],
+      "test_executable_sha256": "bc51a2d571f3120d34af142ca6c7b5648c5438045dee6d6a81544fc0ad661be2"
+    },
+    {
+      "log": "kasumi-production-custody-engine-tests.log",
+      "log_sha256": "546ff23945de37b371aaedc821fa8bcb3ad3e576191af38126a6e08d66f7f633",
+      "results": [
+        "ok. 3 passed; 0 failed; 0 ignored; 0 measured; 56 filtered out; finished in 6.97s"
+      ],
+      "test_executable_sha256": "78250bc5f4e67e4fedbb91aa748163e5e38704509a5a931f5a5cd926070d927a"
+    }
+  ],
+  "scope": "Focused macOS ARM64 custody/policy/snapshot and engine credential-budget integration; not final acceptance."
+}

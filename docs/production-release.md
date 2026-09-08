@@ -242,3 +242,14 @@ gate above and usable installation artifacts.
   remain in progress. These are intermediate results, not final release gates.
 - Tenant archive placement, reserved capacity and current administration limits
   are documented in [tenant audit retention](tenant-audit-retention.md).
+
+- `c8d20ff` stores custody command identities/receipts and audit entries in
+  independently addressed encrypted records. A bounded policy head and exact
+  history accounting publish atomically with each new receipt/event and applied
+  cursor. Current authorization and original replay actors/outcomes are unchanged.
+  The full Raft library passed 38 tests at `b2fd97d`; the following fault test
+  passed every storage-write failure and strict Raft Clippy. The latest custody
+  filter passed 22 tests, and three engine custody/credential/expansion tests
+  passed. Source, lockfile, executable and log hashes are retained in
+  `docs/evidence/custody-point-tables-20260908`. Custody snapshot materialization
+  and existing lifetime count/aggregate limits remain explicit unfinished work.
