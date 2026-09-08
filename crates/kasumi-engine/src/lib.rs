@@ -75,3 +75,6 @@ pub use target_journal::{
 };
 
 pub use bootstrap::target_serving::{TargetServingReplica, open_serving_target};
+
+#[cfg(any(test, feature = "test-utils"))]
+pub use bootstrap::open_fixture_with_epoch_clock;

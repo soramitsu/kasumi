@@ -192,6 +192,30 @@ impl CommandClock for SystemCommandClock {
     }
 }
 
+#[cfg(any(test, feature = "test-utils"))]
+struct FixtureCommandClock(Arc<kasumi_clock::EpochClock>);
+#[cfg(any(test, feature = "test-utils"))]
+impl CommandClock for FixtureCommandClock {
+    fn now_ms(&self) -> Result<u64> {
+        self.0
+            .now_ms()
+            .map_err(|_| Error::new(ErrorCode::Unavailable, "trusted fixture clock unavailable"))
+    }
+}
+
+struct DatabaseClocks {
+    elapsed: Arc<dyn LeaseClock>,
+    command: Arc<dyn CommandClock>,
+}
+impl Default for DatabaseClocks {
+    fn default() -> Self {
+        Self {
+            elapsed: Arc::new(SystemLeaseClock),
+            command: Arc::new(SystemCommandClock),
+        }
+    }
+}
+
 struct DenialWork {
     audit: Arc<SecurityAudit>,
     event: SecurityEvent,
@@ -513,7 +537,14 @@ impl Database {
         admission: Arc<NodeAdmission>,
         security_audit: Arc<SecurityAudit>,
     ) -> Arc<Self> {
-        Self::new_inner(engine, group, store, Some(admission), security_audit)
+        Self::new_inner(
+            engine,
+            group,
+            store,
+            Some(admission),
+            security_audit,
+            DatabaseClocks::default(),
+        )
     }
 
     pub fn new(
@@ -522,7 +553,48 @@ impl Database {
         store: Arc<TenantStore>,
         security_audit: Arc<SecurityAudit>,
     ) -> Arc<Self> {
-        Self::new_inner(engine, group, store, None, security_audit)
+        Self::new_inner(
+            engine,
+            group,
+            store,
+            None,
+            security_audit,
+            DatabaseClocks::default(),
+        )
+    }
+
+    /// Fixture-only constructor. One paired clock drives command admission UTC
+    /// and snapshot/cursor elapsed leases; existing authorization deadlines retain
+    /// their original observations. Production catalogs are always rejected.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) fn new_fixture_with_epoch_clock(
+        engine: Arc<TenantEngine>,
+        group: RaftGroup,
+        store: Arc<TenantStore>,
+        admission: Arc<NodeAdmission>,
+        security_audit: Arc<SecurityAudit>,
+        clock: Arc<kasumi_clock::EpochClock>,
+    ) -> anyhow::Result<Arc<Self>> {
+        anyhow::ensure!(
+            matches!(
+                store.storage_access().purpose(),
+                kasumi_store::StoragePurpose::LocalFixture
+            ) && Arc::ptr_eq(&store, group.storage_domains().application()),
+            "fixture clock requires the exact fixture application store"
+        );
+        clock.now_ms()?;
+        let clocks = DatabaseClocks {
+            elapsed: clock.elapsed_clock(),
+            command: Arc::new(FixtureCommandClock(clock)),
+        };
+        Ok(Self::new_inner(
+            engine,
+            group,
+            store,
+            Some(admission),
+            security_audit,
+            clocks,
+        ))
     }
 
     fn new_inner(
@@ -531,6 +603,7 @@ impl Database {
         store: Arc<TenantStore>,
         admission: Option<Arc<NodeAdmission>>,
         security_audit: Arc<SecurityAudit>,
+        clocks: DatabaseClocks,
     ) -> Arc<Self> {
         // This authenticated durable bootstrap binding is immutable for the
         // lifetime of the database. A one-member view is never a local-mode signal.
@@ -548,7 +621,7 @@ impl Database {
             snapshot_leases: Mutex::new(HashMap::new()),
             archive_destinations: Mutex::new(BTreeMap::new()),
             query_slots: Arc::new(tokio::sync::Semaphore::new(4)),
-            clock: Arc::new(SystemLeaseClock),
+            clock: clocks.elapsed,
             admission: admission.map(OnceLock::from).unwrap_or_default(),
             work: Arc::new(WorkFence::default()),
             security_audit,
@@ -559,7 +632,7 @@ impl Database {
             shutdown_gate: tokio::sync::Mutex::new(()),
             seal_monitor: tokio::sync::Mutex::new(None),
             proposal_gate: Arc::new(tokio::sync::Mutex::new(())),
-            command_clock: Mutex::new(Arc::new(SystemCommandClock)),
+            command_clock: Mutex::new(clocks.command),
         });
         database.spawn_seal_monitor();
         database
@@ -1700,7 +1773,11 @@ impl Database {
         let identity = serde_json::to_vec(&(&context.principal, idempotency_key))
             .map_err(|_| Error::new(ErrorCode::InvalidArgument, "receipt identity invalid"))?;
         let key = hex::encode(Sha256::digest(identity));
-        let now = now_ms()?;
+        let now = self
+            .command_clock
+            .lock()
+            .map_err(|_| Error::new(ErrorCode::Unavailable, "command clock unavailable"))?
+            .now_ms()?;
         let receipt = generation
             .state
             .receipts
