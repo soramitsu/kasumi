@@ -31,40 +31,60 @@ pub(super) struct PreparedState {
     pub bytes: kasumi_store::SnapshotImage,
     pub engine: Arc<TenantEngine>,
     pub sha256: String,
+    _materialization: Arc<crate::admission::Reservation>,
 }
 
 impl VerifiedBackup {
     pub(super) async fn into_genesis(
         self,
         deadline: VerificationDeadline,
+        admission: Arc<NodeAdmission>,
         tenant: String,
         incarnation: String,
         target_origin: Option<TargetOrigin>,
     ) -> anyhow::Result<PreparedState> {
-        deadline
-            .blocking(
-                self._reservation.clone(),
-                self._registration.clone(),
-                move || {
-                    let bytes = TenantEngine::restored_bootstrap(
-                        self.bytes
-                            .as_ref()
-                            .ok_or_else(|| anyhow::anyhow!("restore snapshot image missing"))?,
-                        &tenant,
-                        incarnation,
-                        self.checkpoint.clone(),
-                        target_origin,
-                    )?;
-                    deadline.check()?;
-                    let engine = Arc::new(TenantEngine::from_bootstrap(&tenant, &bytes)?);
-                    let sha256 = bytes.sha256().to_owned();
-                    Ok(PreparedState {
-                        bytes,
-                        engine,
-                        sha256,
-                    })
-                },
+        let workspace = self
+            .state
+            .metadata()
+            .limits
+            .max_snapshot_bytes
+            .min(
+                self.bytes
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("restore snapshot image missing"))?
+                    .len(),
             )
+            .checked_mul(3)
+            .and_then(|v| v.checked_add(64 << 20))
+            .ok_or_else(|| anyhow::anyhow!("restore materialization budget overflow"))?;
+        let materialization = Arc::new(admission.reserve(workspace, None)?);
+        let retained_materialization = materialization.clone();
+        deadline
+            .blocking(materialization, self._registration.clone(), move || {
+                let crate::backup_verify::VerifiedState::Indexed(source) = self.state else {
+                    anyhow::bail!("restore requires independently verified indexed state");
+                };
+                drop(self.bytes);
+                let (bytes, engine) = TenantEngine::materialize_verified_restore(
+                    *source,
+                    &tenant,
+                    incarnation,
+                    self.checkpoint,
+                    target_origin,
+                )?;
+                // Keep the old bounded index charge through its actual drop,
+                // independently of the newly materialized target's charge.
+                drop(self._reservation);
+                deadline.check()?;
+                let engine = Arc::new(engine);
+                let sha256 = bytes.sha256().to_owned();
+                Ok(PreparedState {
+                    bytes,
+                    engine,
+                    sha256,
+                    _materialization: retained_materialization,
+                })
+            })
             .await
     }
 }
@@ -164,7 +184,7 @@ impl BackupReader for RestoreReader<'_> {
     }
     async fn audit_dependency<'a>(
         &'a self,
-        state: &'a TenantState,
+        state: &'a crate::backup_verify::VerifiedState,
         root: &'a kasumi_store::StoragePurpose,
         link: &'a AuditArchiveLink,
     ) -> anyhow::Result<kasumi_store::PreparedAuditSegment> {
@@ -182,13 +202,13 @@ impl BackupReader for RestoreReader<'_> {
         self.check_access().await?;
         let dependency = kasumi_store::InspectedAuditDependency::from_link(&ciphertext, link)?;
         anyhow::ensure!(
-            dependency.source_tenant() == state.tenant
-                && dependency.reference().stream_id == state.audit_retention.stream_id,
+            dependency.source_tenant() == state.metadata().tenant
+                && dependency.reference().stream_id == state.metadata().audit_retention.stream_id,
             "restore audit stream differs"
         );
-        crate::authorize_audit_source(state, root, dependency.source_purpose())?;
+        state.authorize_source(root, dependency.source_purpose())?;
         let verifier = kasumi_store::HistoricalAuditVerifier::new(
-            &state.tenant,
+            &state.metadata().tenant,
             dependency.source_purpose(),
             self.source.keys.as_ref(),
             self.target.storage_access(),
@@ -197,7 +217,7 @@ impl BackupReader for RestoreReader<'_> {
         self.check_access().await?;
         // The target must independently retain access to every original archive
         // key before its new genesis can depend on this local ciphertext cache.
-        let reference = crate::backup_verify::verify_audit_dependency(
+        let reference = crate::backup_verify::verify_indexed_audit_dependency(
             state,
             root,
             self.target,
@@ -344,38 +364,33 @@ pub(super) async fn load_authorized(
     // One trusted deterministic relocation for every replica, leaving the
     // immutable source manifest and object ciphertext unchanged.
     let alias = source.destination_alias.clone();
+    let relocation_work = registration.clone();
+    let relocation_cancellation = reader.cancellation();
     let (state, bytes) = deadline
         .blocking(reservation.clone(), registration.clone(), move || {
             drop(bytes.ok_or_else(|| anyhow::anyhow!("restore snapshot image missing"))?);
-            let mut state = match state {
-                crate::backup_verify::VerifiedState::Decoded(state) => state,
-                crate::backup_verify::VerifiedState::Captured(_) => {
-                    anyhow::bail!("restore requires independently decoded state")
-                }
+            let state = match state {
+                crate::backup_verify::VerifiedState::Indexed(state) => state,
+                _ => anyhow::bail!("restore requires independently verified indexed state"),
             };
-            state.history_archive_bytes = 0;
-            for (id, mut archive) in state.history_archives.clone() {
-                archive.storage_destination = alias.clone();
-                archive.storage_backup_session = Some(backup_id);
-                state.history_archive_bytes = state
-                    .history_archive_bytes
-                    .checked_add(crate::state::history::metadata_entry(&id, &archive)?)
-                    .ok_or_else(|| anyhow::anyhow!("restored history catalog size overflow"))?;
-                state.history_archives.insert(id, archive);
-            }
-            let bytes =
-                kasumi_store::SnapshotImage::capture(state.limits.max_snapshot_bytes, |writer| {
-                    crate::snapshot_codec::write(&state, writer)
-                })?;
-            deadline.check()?;
-            TenantEngine::verify_logical_snapshot(&bytes, &state)?;
+            let state = (*state).relocate(&alias, backup_id, || {
+                deadline.check()?;
+                if let Some(work) = &relocation_work {
+                    work.check()?;
+                }
+                if let Some(token) = &relocation_cancellation {
+                    token.check()?;
+                }
+                Ok(())
+            })?;
+            let bytes = state.image().clone();
             Ok((state, bytes))
         })
         .await?;
     reader.check_access().await?;
     Ok(VerifiedBackup {
         source_purpose,
-        state: crate::backup_verify::VerifiedState::Decoded(state),
+        state: crate::backup_verify::VerifiedState::Indexed(Box::new(state)),
         bytes: Some(bytes),
         checkpoint,
         _reservation: reservation,

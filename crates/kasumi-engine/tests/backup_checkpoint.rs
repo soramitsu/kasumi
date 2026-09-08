@@ -20,8 +20,8 @@ fn context() -> RequestContext {
     }
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn immediate_complete_readback_reuses_captured_roots_under_fixed_workspace_budget() {
-    let maximum = 320 << 20;
+async fn captured_and_historical_backup_verification_fit_fixed_production_workspace() {
+    let maximum = 384 << 20;
     let fixture = Fixture::with_admission(
         Limits {
             max_batch_bytes: 1 << 20,
@@ -66,6 +66,12 @@ async fn immediate_complete_readback_reuses_captured_roots_under_fixed_workspace
         .await
         .unwrap();
     assert_eq!(proof.checkpoint().tenant, "checkpoint");
+    let independently_verified = fixture
+        .db
+        .verify_backup_checkpoint_named(context(), "approved", proof.checkpoint().backup_id)
+        .await
+        .unwrap();
+    assert_eq!(independently_verified.checkpoint(), proof.checkpoint());
     assert_eq!(
         fixture.audit.admission().snapshot().reserved_bytes,
         3 * AuditRetentionBudget::MAINTENANCE_BYTES
