@@ -2137,12 +2137,8 @@ fn fresh_file(path: &Path) -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
     }
-    let file = std::fs::OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(path)
-        .context("restore target must be fresh")?;
-    file.sync_all()?;
+    kasumi_store::private_files::create(path, &[])
+        .context("restore target must be fresh and private")?;
     for directory in parent.ancestors() {
         if !directory.as_os_str().is_empty() {
             std::fs::File::open(directory)?.sync_all()?;
@@ -2321,6 +2317,36 @@ mod tests {
             max_bytes: 0,
         };
         assert!(destination.validate().is_err());
+    }
+    #[test]
+    #[cfg(unix)]
+    fn fresh_restore_file_is_private_exclusive_and_accepted_by_storage() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("generations/tenant/target.redb");
+        fresh_file(&path).unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            std::fs::metadata(path.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert!(fresh_file(&path).is_err());
+        let node = NodeStore::open(&path).unwrap();
+        drop(node);
+        let original = std::fs::read(&path).unwrap();
+        assert!(fresh_file(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        let link = path.with_extension("link");
+        symlink(&path, &link).unwrap();
+        assert!(fresh_file(&link).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
     }
     #[test]
     fn generation_paths_cannot_inherit_tenant_traversal() {
