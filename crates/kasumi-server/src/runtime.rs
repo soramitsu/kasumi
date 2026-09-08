@@ -1888,7 +1888,10 @@ pub fn example_config() -> RuntimeConfig {
                     private_key: "/etc/kasumi/node-authority-key.pem".into(),
                 },
                 server_ca: "/etc/kasumi/authority-ca.pem".into(),
-                bearer_file: "/etc/kasumi/credentials/authority-token".into(),
+                bearer_files: BTreeMap::from([(
+                    0,
+                    "/etc/kasumi/credentials/authority-0-token".into(),
+                )]),
                 principal: "storage-node-1".into(),
             },
         )]),

@@ -98,7 +98,7 @@ pub(super) async fn exercise(f: Fixture<'_>) {
             private_key: dir.join("client-key.pem"),
         },
         server_ca: dir.join("ca.pem"),
-        bearer_file: dir.join("issuer.jwt").display().to_string(),
+        bearer_files: BTreeMap::from([(0, dir.join("issuer.jwt").display().to_string())]),
         principal: "operator".into(),
     };
     let mut request = RecoveryStart {
@@ -143,7 +143,7 @@ pub(super) async fn exercise(f: Fixture<'_>) {
         source_incarnation: request.source_incarnation,
         source_purpose_sha256: request.source_purpose_sha256.clone(),
         authority: "issuer".into(),
-        issuer_admin_bearer_file: configured.bearer_file.clone(),
+        issuer_admin_bearer_file: configured.bearer_files[&0].clone(),
         targets: request
             .target_nodes
             .iter()

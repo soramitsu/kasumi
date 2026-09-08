@@ -96,6 +96,9 @@ impl KasumiAuthorityPool {
             return Err(deadline());
         }
         let deadline_at = Instant::now().checked_add(timeout).ok_or_else(deadline)?;
+        // One atomic credential snapshot belongs to this entire finite operation.
+        // Renewal is observed by the next invocation, never by an endpoint retry.
+        let bearer = token(self.credential.as_ref()).map_err(|_| ClientError::Authorization)?;
         let mut members: Vec<_> = self.endpoints.keys().copied().collect();
         let index = members.iter().position(|id| *id == self.preferred).unwrap();
         members.rotate_left(index);
@@ -124,8 +127,6 @@ impl KasumiAuthorityPool {
                         })?;
                         entry.insert(client);
                     }
-                    let bearer =
-                        token(self.credential.as_ref()).map_err(|_| ClientError::Authorization)?;
                     let client = self.clients.get_mut(member).unwrap();
                     client.set_deadline(deadline_at);
                     dispatch(client, &bearer).await

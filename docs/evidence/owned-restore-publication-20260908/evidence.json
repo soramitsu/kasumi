@@ -1,0 +1,154 @@
+{
+  "source": "f401a09b73feb02a6aad3f5547ad39ee2074ed36",
+  "tree": "ec52638e784f28bd23ce59d087394ce0c847ecac",
+  "lockfile_sha256": "9f29f1383152d5ddf05b5b07955ca8b2766e1e06e2cd03ce77040d14f9371559",
+  "target": "/tmp/kasumi-production-streaming-target",
+  "gates": [
+    {
+      "name": "owned-backup-restores",
+      "command": [
+        "cargo",
+        "+1.97.1",
+        "test",
+        "-p",
+        "kasumi-engine",
+        "--all-features",
+        "--test",
+        "backup_checkpoint",
+        "restore",
+        "-j2"
+      ],
+      "exit": 0,
+      "seconds": 31.633,
+      "log": "/tmp/kasumi-streaming-scratch-f401a09-owned-backup-restores.log",
+      "log_sha256": "c757bff9e7d2377e5940c816cc417c697b8eaf02a46f531af884ae1f254875ea",
+      "executables": {
+        "/tmp/kasumi-production-streaming-target/debug/deps/backup_checkpoint-2f7f32893a68a25a": "be9907410dd08e7ac2fce4b167825da056beffd930040b3c7d250dad45cacd2f"
+      },
+      "selected_no_tests": false
+    },
+    {
+      "name": "owned-deadlines",
+      "command": [
+        "cargo",
+        "+1.97.1",
+        "test",
+        "-p",
+        "kasumi-engine",
+        "--all-features",
+        "--test",
+        "restore_deadline",
+        "-j2"
+      ],
+      "exit": 0,
+      "seconds": 5.652,
+      "log": "/tmp/kasumi-streaming-scratch-f401a09-owned-deadlines.log",
+      "log_sha256": "ff2880950da3c1e3fd73b77903bad44f447fce3abbbfe66ab7c7fe8e300b2fd7",
+      "executables": {
+        "/tmp/kasumi-production-streaming-target/debug/deps/restore_deadline-e15d30fdc0a6ac00": "d9426845fbc51e03d82be31013f908d44f666582902a0967e271674d7d736c6c"
+      },
+      "selected_no_tests": false
+    },
+    {
+      "name": "owned-replicated-runtime",
+      "command": [
+        "cargo",
+        "+1.97.1",
+        "test",
+        "-p",
+        "kasumi-server",
+        "--all-features",
+        "--lib",
+        "three_runtime_nodes_replicate_with_control_quorum_over_audited_pinned_mtls",
+        "-j2"
+      ],
+      "exit": 0,
+      "seconds": 155.667,
+      "log": "/tmp/kasumi-streaming-scratch-f401a09-owned-replicated-runtime.log",
+      "log_sha256": "bc1b118ed177c10a153db44155d05bedb32e3daded1fdf42fe1567d7bee65c5f",
+      "executables": {
+        "/tmp/kasumi-production-streaming-target/debug/deps/kasumi_server-3ef3c426e5743964": "3824aeddf06cba9260d0424d189b7b278e8db1abef6c60b61b9a4ac1ae3ea222"
+      },
+      "selected_no_tests": false
+    },
+    {
+      "name": "owned-local-recovery",
+      "command": [
+        "cargo",
+        "+1.97.1",
+        "test",
+        "-p",
+        "kasumi-server",
+        "--all-features",
+        "--lib",
+        "local_recovery::tests",
+        "-j2"
+      ],
+      "exit": 0,
+      "seconds": 17.367,
+      "log": "/tmp/kasumi-streaming-scratch-f401a09-owned-local-recovery.log",
+      "log_sha256": "702851d7634adb70dc30ebcbe0a57d70af71323a9f35e8f211caab63203ed142",
+      "executables": {
+        "/tmp/kasumi-production-streaming-target/debug/deps/kasumi_server-3ef3c426e5743964": "3824aeddf06cba9260d0424d189b7b278e8db1abef6c60b61b9a4ac1ae3ea222"
+      },
+      "selected_no_tests": false
+    },
+    {
+      "name": "owned-clippy",
+      "command": [
+        "cargo",
+        "+1.97.1",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "-j2",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit": 0,
+      "seconds": 32.653,
+      "log": "/tmp/kasumi-streaming-scratch-f401a09-owned-clippy.log",
+      "log_sha256": "1f75013c5211cf22e211dc3c747f5edf0603a32a0934c368c5d03568a63e7dea",
+      "executables": {},
+      "selected_no_tests": false
+    },
+    {
+      "name": "owned-production",
+      "command": [
+        "cargo",
+        "+1.97.1",
+        "check",
+        "-p",
+        "kasumi-server",
+        "--bins",
+        "--no-default-features",
+        "-j2"
+      ],
+      "exit": 0,
+      "seconds": 13.355,
+      "log": "/tmp/kasumi-streaming-scratch-f401a09-owned-production.log",
+      "log_sha256": "41d529b441cc7b2e7252478f80d5d30f08166becd4e78dca0f4d19728d91aee7",
+      "executables": {},
+      "selected_no_tests": false
+    },
+    {
+      "name": "owned-format",
+      "command": [
+        "cargo",
+        "+1.97.1",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit": 0,
+      "seconds": 1.19,
+      "log": "/tmp/kasumi-streaming-scratch-f401a09-owned-format.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "executables": {},
+      "selected_no_tests": false
+    }
+  ]
+}
