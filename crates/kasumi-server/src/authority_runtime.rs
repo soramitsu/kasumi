@@ -38,7 +38,7 @@ pub struct AuthorityRuntimeConfig {
     pub bootstrap: AuthorityBootstrap,
     pub resource_budget_bytes: u64,
     pub database_path: PathBuf,
-    pub operational_signer: crate::signer_runtime::OperationalSignerConfig,
+    pub operational_signer_file: PathBuf,
     pub signer_verifier: crate::signer_runtime::SignerVerifierConfig,
     #[serde(deserialize_with = "kasumi_types::deserialize_u64_map")]
     pub installed_verifiers: std::collections::BTreeMap<u64, kasumi_serving::TrustVerifierIdentity>,
@@ -107,7 +107,8 @@ impl AuthorityRuntimeConfig {
             "authority storage path must be an installed absolute path"
         );
         self.signer_verifier.validate()?;
-        self.operational_signer.validate(
+        crate::signer_runtime::OperationalSignerConfig::load(
+            &self.operational_signer_file,
             &self
                 .installation
                 .manifest
@@ -205,7 +206,14 @@ impl AuthorityRuntime {
                 Arc::new(file_secret),
             )
             .await?;
-        let signer = config.operational_signer.open(&signer_verifier)?;
+        let signer = crate::signer_runtime::OperationalSignerConfig::load(
+            &config.operational_signer_file,
+            &config
+                .installation
+                .manifest
+                .signing_domain(config.installation.partition)?,
+        )?
+        .open(&signer_verifier)?;
         let native = TcpListener::bind(config.native.listen).await?;
         let cluster = TcpListener::bind(config.replication.listener.listen).await?;
         let node = NodeStore::open(&config.database_path)?;
@@ -344,6 +352,7 @@ impl AuthorityRuntime {
             let router = tonic::service::Routes::new(
                 NativeAuthority::new(self.authority.clone(), self.auth)
                     .with_signer_verifier(self.signer_verifier.clone())
+                    .with_operational_signer_file(self.config.operational_signer_file.clone())
                     .service(),
             )
             .into_axum_router();

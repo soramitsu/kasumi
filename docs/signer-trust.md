@@ -88,16 +88,38 @@ The trusted runtime can explicitly replace its operational key under a current
 administrative fence after activation. The replacement must use the exact same
 live verifier owner, not a copied store with an equal public identity. Existing
 requests retain their old signer and response fences. There is no implicit
-key-file reload or fallback to the installation root; native key-source reload
-and the distributed rotation coordinator still need operational wiring.
+key-file watcher or fallback to the installation root. Explicit native reload
+uses the installed private descriptor; the distributed rotation coordinator
+still needs operational wiring.
 
 ## Runtime installation
 
 The authority manifest partition `public_key` is the installation root's public
 key. Its private key belongs in separate operator backup and is never loaded by
-an authority daemon. The authority configuration uses `operational_signer` with
-an explicit root-certified `certificate` and an absolute private PKCS#8
-`key_file`. The operational key must differ from the root key.
+an authority daemon. The authority configuration requires `operational_signer_file`, an absolute
+owner-only JSON descriptor containing an explicit root-certified `certificate`
+and an absolute private PKCS#8 `key_file`. The operational key must differ from
+the root key. Replace the complete descriptor atomically when preparing a new
+key; its certificate must match the key file. The runtime reads one bounded
+private descriptor snapshot at startup and on an explicit authenticated reload.
+
+After activating the intended local durable head, use the native client's
+`signer_maintenance` with `reload_operational_signer`, its exact
+`expected_revision`, `certificate_sha256`, and finite `not_after_ms`. The request
+also names the exact physical verifier and independently installed domain. The
+mTLS/JWT/current-quorum administrative boundary is required even if the former
+operational signer is sealed. The original elapsed deadline fences publication
+and response release. Invalid, staged, retired, mismatched, or oversized key
+sources leave the previous slot intact. Existing requests always retain their
+original signer and cannot be re-signed by a successful reload.
+
+A successful reply's `loaded_certificate` is a current reload observation for
+that request, not a permanent completion receipt or a remote activation proof.
+Reload does not change the durable trust revision. If its response is uncertain,
+repeat the same request while its admission remains valid; a later fresh
+administrative invocation must still name the same current durable head. A
+restart reads the currently installed descriptor and validates it against the
+retained encrypted trust state before admitting any lease.
 
 Each authority and data/Control runtime configures `signer_verifier` with:
 

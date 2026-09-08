@@ -178,6 +178,18 @@ pub struct OperationalSignerConfig {
     pub key_file: PathBuf,
 }
 impl OperationalSignerConfig {
+    /// Read one bounded private descriptor snapshot. Its installed path is never
+    /// chosen by a network request, and a changed key must match its certificate.
+    pub(crate) fn load(path: &Path, domain: &SigningDomain) -> Result<Self> {
+        ensure!(
+            path.is_absolute(),
+            "operational signer descriptor requires an absolute path"
+        );
+        let config: Self = serde_json::from_slice(&read_private_file(path, 128 << 10)?)?;
+        config.validate(domain)?;
+        Ok(config)
+    }
+
     pub fn validate(&self, domain: &SigningDomain) -> Result<()> {
         ensure!(
             self.key_file.is_absolute(),

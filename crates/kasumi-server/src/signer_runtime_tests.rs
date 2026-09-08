@@ -264,3 +264,49 @@ async fn initialization_rejects_noninitial_and_mismatched_domains_without_publis
     );
     installed.shutdown().await;
 }
+
+#[tokio::test]
+async fn operational_source_is_private_bounded_and_cannot_substitute_installed_trust() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    f.input.initialize().await.unwrap();
+    let installed = f.open().await.unwrap();
+    let domain = f.manifest.signing_domain(0).unwrap();
+    let path = f._directory.path().join("current.json");
+    let bytes = serde_json::to_vec(&f.operational).unwrap();
+    private_files::create(&path, &bytes).unwrap();
+    let retained = OperationalSignerConfig::load(&path, &domain)
+        .unwrap()
+        .open(&installed)
+        .unwrap();
+    assert!(OperationalSignerConfig::load(Path::new("relative.json"), &domain).is_err());
+    let link = f._directory.path().join("alias.json");
+    std::os::unix::fs::symlink(&path, &link).unwrap();
+    assert!(OperationalSignerConfig::load(&link, &domain).is_err());
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(OperationalSignerConfig::load(&path, &domain).is_err());
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    private_files::replace(&path, &vec![b' '; (128 << 10) + 1]).unwrap();
+    assert!(OperationalSignerConfig::load(&path, &domain).is_err());
+    let mut forged = f.operational.clone();
+    forged.certificate.root_signature = "00".repeat(64);
+    private_files::replace(&path, &serde_json::to_vec(&forged).unwrap()).unwrap();
+    assert!(OperationalSignerConfig::load(&path, &domain).is_err());
+    retained.check().unwrap();
+    private_files::replace(&path, &bytes).unwrap();
+    installed.shutdown().await;
+    assert!(retained.check().is_err());
+    drop(installed);
+    let reopened = f.open().await.unwrap();
+    OperationalSignerConfig::load(&path, &domain)
+        .unwrap()
+        .open(&reopened)
+        .unwrap()
+        .check()
+        .unwrap();
+    assert!(
+        retained.check().is_err(),
+        "a fresh metadata owner cannot revive old signers"
+    );
+    reopened.shutdown().await;
+}
