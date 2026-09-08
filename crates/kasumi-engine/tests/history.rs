@@ -636,10 +636,13 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
                                     Err(error) => assert_eq!(error.code, ErrorCode::UnknownOutcome),
                                 }
                             }
-                            Err(error) => assert!(matches!(
-                                error.code,
-                                ErrorCode::UnknownOutcome | ErrorCode::Unavailable
-                            )),
+                            Err(error) => assert!(
+                                matches!(
+                                    error.code,
+                                    ErrorCode::UnknownOutcome | ErrorCode::Unavailable
+                                ),
+                                "original staged status resolution rejected: {error:?}"
+                            ),
                         }
                         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
                     }
