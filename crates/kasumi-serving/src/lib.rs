@@ -29,3 +29,8 @@ pub use target_runtime_protocol::*;
 
 mod maintenance;
 pub use maintenance::*;
+
+mod signing;
+pub use signing::*;
+mod live_trust;
+pub use live_trust::*;

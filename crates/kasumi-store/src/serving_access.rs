@@ -20,6 +20,9 @@ pub enum StoragePurpose {
     },
     SecurityAudit,
     NodeControl,
+    LiveSignerTrust {
+        verifier: kasumi_serving::TrustVerifierIdentity,
+    },
     TargetJournal {
         control_root: kasumi_types::ControlSigningRoot,
         node: kasumi_serving::NodeIdentity,
@@ -212,6 +215,15 @@ impl StorageAccess {
             lifecycle: None,
         }
     }
+    /// Independent local trust metadata is never part of a restored data image.
+    pub fn live_signer_trust(verifier: kasumi_serving::TrustVerifierIdentity) -> Result<Self> {
+        verifier.validate()?;
+        Ok(Self {
+            purpose: StoragePurpose::LiveSignerTrust { verifier },
+            gate: None,
+            lifecycle: None,
+        })
+    }
     /// Installed metadata purpose, separately keyed from application/custody.
     /// This can access only the exact reserved target journal namespace.
     pub fn target_journal(
@@ -333,6 +345,7 @@ impl StorageAccess {
             }
             StoragePurpose::SecurityAudit => tenant == "__kasumi_security",
             StoragePurpose::NodeControl => tenant == "__kasumi_control",
+            StoragePurpose::LiveSignerTrust { verifier } => tenant == verifier.tenant(),
             StoragePurpose::TargetJournal { control_root, node } => {
                 tenant
                     == format!(
