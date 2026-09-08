@@ -119,6 +119,12 @@ impl AuthorityMembership {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AuthorityMaintenanceAction {
+    EnrollSignerVerifier {
+        enrollment: crate::SignerVerifierEnrollment,
+    },
+    AdmitControlVerifiers {
+        admission: crate::ControlVerifierAdmission,
+    },
     StageSignerGeneration {
         certificate: crate::SigningCertificate,
     },
@@ -151,11 +157,16 @@ impl AuthorityMaintenanceAction {
     pub fn is_signing_head_transition(&self) -> bool {
         matches!(
             self,
-            Self::StageSignerGeneration { .. } | Self::ActivateSignerGeneration { .. }
+            Self::StageSignerGeneration { .. }
+                | Self::ActivateSignerGeneration { .. }
+                | Self::EnrollSignerVerifier { .. }
+                | Self::AdmitControlVerifiers { .. }
         )
     }
     pub fn validate(&self) -> Result<()> {
         match self {
+            Self::EnrollSignerVerifier { enrollment } => enrollment.validate()?,
+            Self::AdmitControlVerifiers { admission } => admission.validate()?,
             Self::StageSignerGeneration { certificate } => {
                 crate::SigningCertificateVerification::verify(
                     certificate,

@@ -295,7 +295,9 @@ impl IndependentAuthority {
                         .map_err(unknown)?;
                     }
                 }
-                AuthorityMaintenanceAction::StageSignerGeneration { .. }
+                AuthorityMaintenanceAction::EnrollSignerVerifier { .. }
+                | AuthorityMaintenanceAction::AdmitControlVerifiers { .. }
+                | AuthorityMaintenanceAction::StageSignerGeneration { .. }
                 | AuthorityMaintenanceAction::ActivateSignerGeneration { .. }
                 | AuthorityMaintenanceAction::SetCapacity { .. }
                 | AuthorityMaintenanceAction::AuthorizeSignerTrust { .. } => {

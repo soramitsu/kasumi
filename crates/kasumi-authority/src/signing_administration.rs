@@ -49,7 +49,7 @@ impl IndependentAuthority {
         }
         let authorization = self.authorize_signer_maintenance(context.clone()).await?;
         let status = match &request.action {
-            AuthoritySigningAction::Observe => None,
+            AuthoritySigningAction::Observe | AuthoritySigningAction::Verifiers { .. } => None,
             AuthoritySigningAction::Receipt { operation_id } => self
                 .backend
                 .maintenance_status(*operation_id)
@@ -92,7 +92,22 @@ impl IndependentAuthority {
             ));
         }
         let observation = self.backend.signing_observation().map_err(unavailable)?;
+        let verifier_page = if let AuthoritySigningAction::Verifiers {
+            expected_operational_revision,
+            after,
+            limit,
+        } = &request.action
+        {
+            Some(
+                self.backend
+                    .signer_verifier_page(*expected_operational_revision, after.as_ref(), *limit)
+                    .map_err(|error| Error::new(ErrorCode::Conflict, error.to_string()))?,
+            )
+        } else {
+            None
+        };
         let response = AuthoritySigningResponse {
+            verifier_page,
             request_sha256: request.digest().map_err(unavailable)?,
             current: observation.0.clone(),
             policy_epoch: observation.1,
