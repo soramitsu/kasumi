@@ -4,13 +4,15 @@ use super::*;
 use kasumi_store::{AuditSegmentBuilder, PreparedAuditSegment};
 use kasumi_types::{
     AuditArchiveReference, AuditRetentionState, MAX_AUDIT_EVENT_BYTES, MAX_AUDIT_SEGMENT_BYTES,
+    SecurityAuditCursor, SecurityAuditPage, SecurityAuditStatus,
 };
 use std::time::Duration;
 use uuid::Uuid;
 
 const META: &str = "security.audit.meta";
 const ARCHIVES: &str = "security.audit.archives";
-const MAX_PAGE_BYTES: usize = 1 << 20;
+// Reserve wire-envelope and per-record separator bytes inside the shared limit.
+const MAX_PAGE_BYTES: usize = kasumi_types::MAX_SECURITY_AUDIT_PAGE_BYTES - 4096;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -59,36 +61,6 @@ impl Head {
         self.position.validate()?;
         Ok(WriteOp::put(META, b"head", serde_json::to_vec(self)?))
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SecurityAuditStatus {
-    pub position: AuditRetentionState,
-    pub budget: AuditRetentionBudget,
-    pub archived_bytes: u64,
-    pub archive_segments: u64,
-    pub draining: bool,
-    pub persistence_failed: bool,
-    pub maintenance_failures: u64,
-    pub last_failure: Option<String>,
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SecurityAuditCursor {
-    pub stream_id: Uuid,
-    pub next_sequence: u64,
-    pub through_sequence: u64,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SecurityAuditPage {
-    pub stream_id: Uuid,
-    /// Fixed end chosen by the first page; callers carry this into later pages.
-    pub through_sequence: u64,
-    pub next_sequence: u64,
-    pub records: Vec<serde_json::Value>,
 }
 
 pub(super) fn start_worker(runtime: &tokio::runtime::Handle, weak: Weak<AuditWriter>) {
@@ -370,9 +342,21 @@ impl SecurityAudit {
         let end = first_index
             .saturating_add(u64::from(limit))
             .min(state.head.segments);
-        (first_index..end)
-            .map(|index| self.archive_reference(index))
-            .collect()
+        let mut page = Vec::new();
+        let mut bytes = 0usize;
+        for index in first_index..end {
+            let reference = self.archive_reference(index)?;
+            let size = serde_json::to_vec(&reference)?.len();
+            if bytes
+                .checked_add(size)
+                .is_none_or(|next| next > MAX_PAGE_BYTES)
+            {
+                break;
+            }
+            bytes += size;
+            page.push(reference);
+        }
+        Ok(page)
     }
     fn archive_reference(&self, index: u64) -> Result<AuditArchiveReference> {
         let bytes = self

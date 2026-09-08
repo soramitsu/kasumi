@@ -23,6 +23,10 @@ pub use target::NativeTargetRecovery;
 mod authority;
 #[path = "rpc_backup_sessions.rs"]
 mod backup_sessions;
+#[path = "rpc_security_audit.rs"]
+mod security_audit;
+#[cfg(test)]
+pub(crate) use security_audit::AuditReleaseGate;
 #[path = "rpc_credentials.rs"]
 mod credentials;
 #[path = "rpc_retirement.rs"]
@@ -45,6 +49,8 @@ pub struct NativeAdmin {
     registry: DatabaseRegistry,
     auth: Arc<Authenticator>,
     management: Option<Arc<crate::administration::Administration>>,
+    #[cfg(test)]
+    audit_release_gate: Arc<tokio::sync::Mutex<Option<AuditReleaseGate>>>,
 }
 
 async fn verified<T>(auth: &Authenticator, request: &Request<T>) -> Result<RequestContext, Status> {
@@ -553,11 +559,17 @@ impl kasumi_data_server::KasumiData for NativeData {
 }
 
 impl NativeAdmin {
+    #[cfg(test)]
+    pub(crate) fn audit_release_gate(&self) -> Arc<tokio::sync::Mutex<Option<AuditReleaseGate>>> {
+        self.audit_release_gate.clone()
+    }
     pub fn new(registry: DatabaseRegistry, auth: Arc<Authenticator>) -> Self {
         Self {
             registry,
             auth,
             management: None,
+            #[cfg(test)]
+            audit_release_gate: Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
     pub fn with_management(
@@ -618,6 +630,35 @@ impl NativeAdmin {
 
 #[tonic::async_trait]
 impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
+    async fn security_audit_status(
+        &self,
+        request: Request<SecurityAuditJsonRequest>,
+    ) -> Result<Response<SecurityAuditJsonResponse>, Status> {
+        self.security_audit_rpc(request, security_audit::AuditOperation::Status)
+            .await
+    }
+    async fn security_audit_export(
+        &self,
+        request: Request<SecurityAuditJsonRequest>,
+    ) -> Result<Response<SecurityAuditJsonResponse>, Status> {
+        self.security_audit_rpc(request, security_audit::AuditOperation::Export)
+            .await
+    }
+    async fn security_audit_archives(
+        &self,
+        request: Request<SecurityAuditJsonRequest>,
+    ) -> Result<Response<SecurityAuditJsonResponse>, Status> {
+        self.security_audit_rpc(request, security_audit::AuditOperation::Archives)
+            .await
+    }
+    async fn security_audit_verify(
+        &self,
+        request: Request<SecurityAuditJsonRequest>,
+    ) -> Result<Response<SecurityAuditJsonResponse>, Status> {
+        self.security_audit_rpc(request, security_audit::AuditOperation::Verify)
+            .await
+    }
+
     async fn create_credential(
         &self,
         request: Request<CredentialJsonRequest>,
