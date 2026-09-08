@@ -1,7 +1,6 @@
 //! One complete-graph verifier shared by current administrative readback and
 //! empty-target restore. Reader implementations own their authority boundary.
 use crate::{
-    TenantEngine,
     admission::{NodeAdmission, Reservation, WorkRegistration},
     backup_format::*,
 };
@@ -74,7 +73,7 @@ pub(crate) trait BackupReader: Sync {
     fn audit_target(&self) -> Option<Arc<kasumi_store::TenantStore>>;
     fn audit_dependency<'a>(
         &'a self,
-        state: &'a TenantState,
+        state: &'a VerifiedState,
         root: &'a kasumi_store::StoragePurpose,
         link: &'a AuditArchiveLink,
     ) -> impl Future<Output = anyhow::Result<kasumi_store::PreparedAuditSegment>> + Send + 'a;
@@ -107,6 +106,27 @@ pub(crate) async fn verify_audit_dependency(
         .verify_historical_audit(&dependency, dependency.source_purpose())
         .await?;
     Ok(verified.reference().clone())
+}
+
+pub(crate) async fn verify_indexed_audit_dependency(
+    state: &VerifiedState,
+    root: &kasumi_store::StoragePurpose,
+    store: &kasumi_store::TenantStore,
+    ciphertext: &[u8],
+    link: &AuditArchiveLink,
+) -> anyhow::Result<AuditArchiveReference> {
+    let dependency = kasumi_store::InspectedAuditDependency::from_link(ciphertext, link)?;
+    anyhow::ensure!(
+        dependency.source_tenant() == state.metadata().tenant
+            && dependency.reference().stream_id == state.metadata().audit_retention.stream_id,
+        "backup audit stream differs"
+    );
+    state.authorize_source(root, dependency.source_purpose())?;
+    Ok(store
+        .verify_historical_audit(&dependency, dependency.source_purpose())
+        .await?
+        .reference()
+        .clone())
 }
 
 #[derive(Clone, Copy)]
@@ -201,14 +221,62 @@ pub(crate) struct ResidentCapture {
 }
 pub(crate) enum VerifiedState {
     Captured(Arc<crate::Generation>),
-    Decoded(Box<TenantState>),
+    Indexed(Box<crate::state::snapshot_validation::ValidatedApplicationSnapshot>),
 }
-impl std::ops::Deref for VerifiedState {
-    type Target = TenantState;
-    fn deref(&self) -> &Self::Target {
+impl VerifiedState {
+    /// Metadata fields only; record maps are accessed explicitly below so an
+    /// indexed header cannot accidentally masquerade as a complete TenantState.
+    pub(crate) fn metadata(&self) -> &TenantState {
         match self {
             Self::Captured(generation) => &generation.state,
-            Self::Decoded(state) => state,
+            Self::Indexed(state) => state.header(),
+        }
+    }
+    pub(crate) fn authorize_source(
+        &self,
+        root: &kasumi_store::StoragePurpose,
+        source: &kasumi_store::StoragePurpose,
+    ) -> anyhow::Result<()> {
+        match self {
+            Self::Captured(generation) => {
+                crate::authorize_audit_source(&generation.state, root, source)
+            }
+            Self::Indexed(state) => state.authorize_source(root, source),
+        }
+    }
+    pub(crate) fn collection(&self, name: &str) -> anyhow::Result<CollectionState> {
+        match self {
+            Self::Indexed(state) => state.collection(name),
+            _ => self
+                .metadata()
+                .collections
+                .get(name)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("backup collection absent")),
+        }
+    }
+    pub(crate) fn archived(&self, collection: &str, id: &str) -> anyhow::Result<ArchivedDocument> {
+        match self {
+            Self::Indexed(state) => state.archived(collection, id),
+            _ => self
+                .metadata()
+                .collections
+                .get(collection)
+                .and_then(|c| c.archived_documents.get(id))
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("backup archived reference absent")),
+        }
+    }
+    pub(crate) fn records(
+        &self,
+        kind: u8,
+        primary: Option<&str>,
+    ) -> anyhow::Result<
+        Box<dyn Iterator<Item = anyhow::Result<crate::snapshot_codec::Record>> + Send + '_>,
+    > {
+        match self {
+            Self::Indexed(state) => Ok(Box::new(state.index().cursor(kind, primary)?)),
+            _ => crate::snapshot_codec::records(self.metadata(), kind, primary),
         }
     }
 }
@@ -308,10 +376,7 @@ pub(crate) async fn verify(
         if capture.is_some() {
             64 << 20
         } else {
-            manifest
-                .resident_bytes
-                .saturating_mul(3)
-                .saturating_add(64 << 20)
+            128 << 20
         },
         reader.cancellation(),
     )?);
@@ -420,49 +485,55 @@ pub(crate) async fn verify(
             && hex::encode(digest.finalize()) == manifest.resident_sha256,
         "full backup resident stream differs"
     );
-    let (state, bytes) = deadline
-        .blocking(
-            reservation.clone(),
-            ownership.clone(),
-            move || match capture {
-                Some(capture) => Ok((VerifiedState::Captured(capture.generation), None)),
-                None => {
-                    let bytes =
-                        kasumi_store::SnapshotImage::freeze(spool.ok_or_else(|| {
-                            anyhow::anyhow!("historical backup staging missing")
-                        })?)?;
-                    let state = VerifiedState::Decoded(Box::new(crate::snapshot_codec::read(
-                        &mut bytes.reader(),
-                    )?));
-                    Ok((state, Some(bytes)))
-                }
-            },
-        )
-        .await?;
-    reader.authorize_state(&state).await?;
+    let semantic_work = ownership.clone();
+    let semantic_cancellation = reader.cancellation();
+    let (state, bytes) =
+        deadline
+            .blocking(
+                reservation.clone(),
+                ownership.clone(),
+                move || match capture {
+                    Some(capture) => Ok((VerifiedState::Captured(capture.generation), None)),
+                    None => {
+                        let bytes =
+                            kasumi_store::SnapshotImage::freeze(spool.ok_or_else(|| {
+                                anyhow::anyhow!("historical backup staging missing")
+                            })?)?;
+                        let disk = bytes
+                            .len()
+                            .checked_mul(8)
+                            .and_then(|v| v.checked_add(64 << 20))
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("snapshot index disk budget overflow")
+                            })?;
+                        let state = VerifiedState::Indexed(Box::new(
+                        crate::state::snapshot_validation::ValidatedApplicationSnapshot::validate(
+                            bytes.clone(), disk, || {
+                                deadline.check()?;
+                                if let Some(work) = &semantic_work { work.check()?; }
+                                if let Some(token) = &semantic_cancellation { token.check()?; }
+                                Ok(())
+                            }
+                        )?
+                    ));
+                        Ok((state, Some(bytes)))
+                    }
+                },
+            )
+            .await?;
+    reader.authorize_state(state.metadata()).await?;
     anyhow::ensure!(
-        state.tenant == manifest.tenant
-            && state.incarnation == manifest.source_incarnation
-            && state.revision == manifest.revision,
+        state.metadata().tenant == manifest.tenant
+            && state.metadata().incarnation == manifest.source_incarnation
+            && state.metadata().revision == manifest.revision,
         "full backup state identity differs"
     );
-    crate::authorize_audit_source(&state, &source_purpose, &source_purpose)?;
-    // Check all source accounting, structured indexes, identities, and archive
-    // references before trusting any transitive catalog descriptor.
-    let (state, bytes) = deadline
-        .blocking(reservation.clone(), ownership.clone(), move || {
-            if matches!(state, VerifiedState::Decoded(_)) {
-                TenantEngine::verify_logical_snapshot(
-                    bytes
-                        .as_ref()
-                        .ok_or_else(|| anyhow::anyhow!("historical snapshot image missing"))?,
-                    &state,
-                )?;
-            }
-            Ok((state, bytes))
-        })
-        .await?;
-    for archive in state.history_archives.values() {
+    state.authorize_source(&source_purpose, &source_purpose)?;
+    for archive in state.records(11, None)? {
+        let crate::snapshot_codec::Record::Archive(_, archive) = archive? else {
+            unreachable!()
+        };
+
         reader.check_access().await?;
         let contents = reader
             .object(
@@ -473,9 +544,10 @@ pub(crate) async fn verify(
             )
             .await?;
         key_catalogs.add(&contents.key_catalog_sha256)?;
-        contents
-            .source_purpose
-            .validate_application_identity(&state.tenant, &archive.manifest.source_incarnation)?;
+        contents.source_purpose.validate_application_identity(
+            &state.metadata().tenant,
+            &archive.manifest.source_incarnation,
+        )?;
         let history_purpose = contents.source_purpose.clone();
         let stored: HistoryArchiveManifest = serde_json::from_slice(&contents.snapshot)?;
         anyhow::ensure!(
@@ -519,11 +591,9 @@ pub(crate) async fn verify(
                         .all(|pair| pair[0].id < pair[1].id),
                 "full backup history chunk identity differs"
             );
-            let collection = &state.collections[&archive.manifest.collection];
+            let collection = state.collection(&archive.manifest.collection)?;
             for doc in &body.documents {
-                let reference = collection.archived_documents.get(&doc.id).ok_or_else(|| {
-                    anyhow::anyhow!("full backup archived document reference missing")
-                })?;
+                let reference = state.archived(&archive.manifest.collection, &doc.id)?;
                 anyhow::ensure!(
                     reference.archive_id == archive.manifest.archive_id
                         && reference.chunk_index == index
@@ -537,7 +607,7 @@ pub(crate) async fn verify(
             }
         }
     }
-    let retention = &state.audit_retention;
+    let retention = &state.metadata().audit_retention;
     let mut expected = retention
         .archive_head
         .as_ref()

@@ -4,6 +4,8 @@ mod custody_snapshot;
 mod snapshot_api;
 #[path = "snapshot_bundle.rs"]
 mod snapshot_bundle;
+#[path = "snapshot_validation.rs"]
+pub(crate) mod snapshot_validation;
 use crate::accounting::{SnapshotAccounting, encoded_len};
 use arc_swap::ArcSwapOption;
 use kasumi_query::{QueryIndexes, check_unique, validate_collection, validate_document};
@@ -404,6 +406,10 @@ impl TenantEngine {
     ) -> Result<Self> {
         let state = crate::snapshot_codec::read(&mut bytes.reader())
             .map_err(|_| Error::new(ErrorCode::Corruption, "invalid tenant bootstrap"))?;
+        Self::from_bootstrap_state(expected_tenant, state)
+    }
+
+    fn from_bootstrap_state(expected_tenant: &str, state: TenantState) -> Result<Self> {
         if state.tenant != expected_tenant || state.revision != state.revision_base {
             return Err(Error::new(
                 ErrorCode::Corruption,
@@ -426,6 +432,7 @@ impl TenantEngine {
         Ok(engine)
     }
 
+    #[cfg(test)]
     pub(crate) fn restored_bootstrap(
         bytes: &kasumi_store::SnapshotImage,
         expected_tenant: &str,
@@ -439,6 +446,19 @@ impl TenantEngine {
             return Err(Error::new(ErrorCode::Forbidden, "backup tenant mismatch"));
         }
         Self::verify_logical_snapshot(bytes, &state)?;
+        Self::rebind_restored_state(&mut state, incarnation, checkpoint, target_origin)?;
+        kasumi_store::SnapshotImage::capture(state.limits.max_snapshot_bytes, |writer| {
+            crate::snapshot_codec::write(&state, writer)
+        })
+        .map_err(|e| Error::new(ErrorCode::Corruption, e.to_string()))
+    }
+
+    fn rebind_restored_state(
+        state: &mut TenantState,
+        incarnation: String,
+        checkpoint: FullBackupCheckpoint,
+        target_origin: Option<TargetOrigin>,
+    ) -> Result<()> {
         validate_name(&incarnation)?;
         checkpoint.validate()?;
         if checkpoint.tenant != state.tenant
@@ -496,16 +516,33 @@ impl TenantEngine {
             .checked_add(1)
             .ok_or_else(|| Error::new(ErrorCode::Corruption, "revision exhausted"))?;
         state.revision = state.revision_base;
-        if !SnapshotAccounting::rebuild(&state)?.fits(&state)? {
+        if !SnapshotAccounting::rebuild(state)?.fits(state)? {
             return Err(Error::new(
                 ErrorCode::QuotaExceeded,
                 "restore metadata exceeds snapshot quota; increase the source quota before making this backup",
             ));
         }
-        kasumi_store::SnapshotImage::capture(state.limits.max_snapshot_bytes, |writer| {
-            crate::snapshot_codec::write(&state, writer)
-        })
-        .map_err(|e| Error::new(ErrorCode::Corruption, e.to_string()))
+        Ok(())
+    }
+
+    pub(crate) fn materialize_verified_restore(
+        source: snapshot_validation::ValidatedApplicationSnapshot,
+        expected_tenant: &str,
+        incarnation: String,
+        checkpoint: FullBackupCheckpoint,
+        target_origin: Option<TargetOrigin>,
+    ) -> Result<(kasumi_store::SnapshotImage, Self)> {
+        if source.header().tenant != expected_tenant {
+            return Err(Error::new(ErrorCode::Forbidden, "backup tenant mismatch"));
+        }
+        let image = source.into_image();
+        let mut state = crate::snapshot_codec::read(&mut image.reader())
+            .map_err(|error| Error::new(ErrorCode::Corruption, error.to_string()))?;
+        drop(image);
+        Self::rebind_restored_state(&mut state, incarnation, checkpoint, target_origin)?;
+        let engine = Self::from_bootstrap_state(expected_tenant, state)?;
+        let image = engine.logical_snapshot()?;
+        Ok((image, engine))
     }
 
     pub fn generation(&self) -> Result<Arc<Generation>> {
@@ -525,6 +562,7 @@ impl TenantEngine {
     /// A full logical backup can be captured at any committed revision. It is
     /// validated as a snapshot; only the later restored genesis must begin at
     /// its revision base.
+    #[cfg(test)]
     pub(crate) fn verify_logical_snapshot(
         _bytes: &kasumi_store::SnapshotImage,
         state: &TenantState,

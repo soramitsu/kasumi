@@ -172,14 +172,15 @@ pub async fn materialize_target_replica(
     let _workspace = verified._reservation.clone();
     let bootstrap = ReplicatedBootstrap {
         incarnation: replica.incarnation.to_string(),
-        initial_policy: verified.state.policy.clone(),
-        initial_limits: verified.state.limits.clone(),
+        initial_policy: verified.state.metadata().policy.clone(),
+        initial_limits: verified.state.metadata().limits.clone(),
         voters,
     };
     bootstrap.validate()?;
     let restored = operation
         .run(verified.into_genesis(
             operation.deadline,
+            replica.admission.clone(),
             target.tenant().into(),
             bootstrap.incarnation.clone(),
             Some(origin.clone()),

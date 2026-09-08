@@ -124,9 +124,9 @@ pub async fn prepare_replicated_restore(
             deadline,
         )))
         .await??;
-    let source_revision = verified.state.revision;
+    let source_revision = verified.state.metadata().revision;
     let _restore_workspace = verified._reservation.clone();
-    let original = &verified.state;
+    let original = verified.state.metadata();
     anyhow::ensure!(
         replica.incarnation.to_string() != original.incarnation,
         "restore requires a fresh incarnation"
@@ -141,6 +141,7 @@ pub async fn prepare_replicated_restore(
     let restored = verified
         .into_genesis(
             deadline,
+            replica.admission.clone(),
             target.tenant().into(),
             bootstrap.incarnation.clone(),
             None,
@@ -728,9 +729,9 @@ pub async fn restore_local(
         verified.checkpoint == request.checkpoint,
         "verified local backup differs from exact checkpoint"
     );
-    let source_revision = verified.state.revision;
+    let source_revision = verified.state.metadata().revision;
     let _restore_workspace = verified._reservation.clone();
-    let original = &verified.state;
+    let original = verified.state.metadata();
     anyhow::ensure!(
         !incarnation.is_nil() && incarnation.to_string() != original.incarnation,
         "restore requires a fresh database incarnation"
@@ -738,6 +739,7 @@ pub async fn restore_local(
     let restored = verified
         .into_genesis(
             deadline,
+            admission.clone(),
             target.tenant().into(),
             incarnation.to_string(),
             None,
