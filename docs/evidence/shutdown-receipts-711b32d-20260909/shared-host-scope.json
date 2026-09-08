@@ -1,0 +1,18 @@
+{
+  "scope": "Functional regression run on shared macOS ARM64 host; no quiet-host performance, capacity, endurance, or release-acceptance claim.",
+  "recorded_at": "2026-09-08T15:49:22.318224+00:00",
+  "root_session": 28258,
+  "concurrent_warm_harness": {
+    "owner": "01a07b15-4969-75c0-817e-c0e43e33e385",
+    "session": 45793,
+    "process_group": 26793,
+    "scope": "One previously compiled dependency graph, corrected final engine test executable only, --no-run --locked --offline jobs1. No local native test execution.",
+    "timeout_seconds": 300,
+    "exit_code": 0,
+    "duration_seconds": 73.937,
+    "process_group_drained": true,
+    "local_native_executed": false
+  },
+  "small_host_broker_allowance": "Independent jobs1 pure host/broker/contract graph only; excludes Kasumi engine/store/server/Raft and all native/provider work.",
+  "memory_pressure_observation": "The system has 68719476736 (4194304 pages with a page size of 16384).\nSystem-wide memory free percentage: 39%\n"
+}

@@ -1,0 +1,159 @@
+{
+  "scope": "macOS ARM64 focused original-receipt, shutdown, physical-memory and lease ownership regressions after explicit shared-host lane handoff. No performance/capacity or final release acceptance.",
+  "source_before": {
+    "head": "711b32d962f7406820129dd53533c45a3c5fd2a8",
+    "tree": "aaa88a77afeef3ba437ad2e4a418f62d6cf1690e",
+    "status": "",
+    "lock_sha256": "f42fec1f6e7232b1cd5e9c564cfff56dfec7634f2548eab7eb2096a0d0c17c78"
+  },
+  "tools": {
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo": "7672ead309d505577c018fff2cafb3433601f073e38cbe87359ac1f7b944bbf5",
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc": "210df6794001b73ec3d453878707fa1e0bdcb63c427024a6e6574bbe5615a4da",
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustdoc": "aa94960b6a477441f6d1a797394daf4cafcc889d837550c8fa462b102e3fa5da"
+  },
+  "runner_sha256": "074a1a540dccb6e983c984040a9ec08f8c4f5c7a353420d7be04c92ccee4387c",
+  "per_gate_timeout_seconds": 900,
+  "gates": [
+    {
+      "name": "verifier-worker-registration",
+      "command": [
+        "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+        "test",
+        "--locked",
+        "-j1",
+        "-p",
+        "kasumi-serving",
+        "--lib",
+        "live_trust::background_tests",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "seconds": 32.873815792030655,
+      "process_group_id": 26403,
+      "process_exit_code": 0,
+      "exit_code": 0,
+      "problem": null,
+      "cleanup": {
+        "signals": [],
+        "process_returncode": 0,
+        "process_group_drained": true
+      },
+      "required_test": "live_trust::background_tests::task_installation_is_atomic_with_close_and_cancelled_drain_retains_ownership",
+      "required_test_passed": true,
+      "log_sha256": "9b54d8880bf02f892802efd13f5b9afac71456835e1b0493240fcf544f3cf88f",
+      "artifacts": [
+        {
+          "path": "/tmp/kasumi-production-root-target/debug/deps/kasumi_serving-b2e1134e24db0e16",
+          "sha256": "3e7c8218a4c29a932f35a9548b8a333c8f30fb01d1dbfe6a04f4644d11f3dfb9",
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 2,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": []
+        }
+      ]
+    },
+    {
+      "name": "audit-workers",
+      "command": [
+        "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+        "test",
+        "--locked",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--lib",
+        "security_audit",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "seconds": 118.39477758307476,
+      "process_group_id": 26572,
+      "process_exit_code": 0,
+      "exit_code": 0,
+      "problem": null,
+      "cleanup": {
+        "signals": [],
+        "process_returncode": 0,
+        "process_group_drained": true
+      },
+      "required_test": "security_audit::tests::archive_worker_before_registration_is_joined_through_cancelled_shutdown_and_reopen",
+      "required_test_passed": true,
+      "log_sha256": "b5825ca3404c3c18da1a50c0c576f4260329bfb433e790e7c9135995316f4103",
+      "artifacts": [
+        {
+          "path": "/tmp/kasumi-production-root-target/debug/deps/kasumi_engine-4b4e80d3850c1c4e",
+          "sha256": "7daa613d3b374e8206555f832a7f89e1ea90dfc9f321bfc8e314709020de8bd7",
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 2,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": [
+            "default",
+            "test-utils"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "tenant-audit-worker",
+      "command": [
+        "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+        "test",
+        "--locked",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--lib",
+        "service::audit_maintenance_service::tests",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "seconds": 4.380135584040545,
+      "process_group_id": 26918,
+      "process_exit_code": 101,
+      "exit_code": 101,
+      "problem": null,
+      "cleanup": {
+        "signals": [],
+        "process_returncode": 101,
+        "process_group_drained": true
+      },
+      "required_test": "service::audit_maintenance_service::tests::tenant_audit_worker_keeps_its_owner_through_cancelled_shutdown",
+      "required_test_passed": false,
+      "log_sha256": "5f711831890ba94f169751da6ccb74580ae546046c66c9fef89b9eda0ee156df",
+      "artifacts": [
+        {
+          "path": "/tmp/kasumi-production-root-target/debug/deps/kasumi_engine-4b4e80d3850c1c4e",
+          "sha256": "7daa613d3b374e8206555f832a7f89e1ea90dfc9f321bfc8e314709020de8bd7",
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 2,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": [
+            "default",
+            "test-utils"
+          ]
+        }
+      ]
+    }
+  ],
+  "source_after": {
+    "head": "711b32d962f7406820129dd53533c45a3c5fd2a8",
+    "tree": "aaa88a77afeef3ba437ad2e4a418f62d6cf1690e",
+    "status": "",
+    "lock_sha256": "f42fec1f6e7232b1cd5e9c564cfff56dfec7634f2548eab7eb2096a0d0c17c78"
+  }
+}

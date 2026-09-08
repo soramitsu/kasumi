@@ -126,6 +126,14 @@ gate above and usable installation artifacts.
 
 ## Current verified increments
 
+- Frozen shutdown/receipt checkpoint `711b32d` passed one verifier-worker and
+  five security-audit tests, then failed its new tenant-audit shutdown fixture
+  because that tenant had no administrator. The other tenant maintenance test
+  passed. All later functional/strict/production gates were skipped, and every
+  owned process group drained. Preserve this failure in
+  `docs/evidence/shutdown-receipts-711b32d-20260909`; the combined source remains
+  unmerged pending correction and execution, including the original Linux
+  restored-runtime restart regression.
 - A read-only audit of the locked JSON decoder and the actual historical Linux
   production feature inventory identifies literal-key reinterpretation in
   native and MCP requests. Canonical snapshot and history integrity checks reject
