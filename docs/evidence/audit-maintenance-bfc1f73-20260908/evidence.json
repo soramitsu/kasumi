@@ -1,0 +1,77 @@
+{
+  "kind": "focused byte-budget and reserved audit maintenance gates; not release acceptance",
+  "source": "bfc1f73130b18971dfdc04fe8f6e640d56a9e43a",
+  "lock_sha256": "497d1a81eac52249a4235d1ca31c73f9d2a08c1ad73b1e920b21f2f782c9369c",
+  "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-apple-darwin\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+  "results": {
+    "bfc1f73_engine_audit": "12 passed",
+    "bfc1f73_Control_completion": "1 passed",
+    "b5d3f10_native_budget": "1 passed",
+    "b5d3f10_retirement_headroom": "1 passed",
+    "b5d3f10_closed_configuration": "1 passed",
+    "b5d3f10_strict_workspace_clippy": "passed",
+    "1dd752b_mutation_budget": "1 passed"
+  },
+  "retained_failures": [
+    "1dd752b expanded Control fixture lost its held leader after hundreds of small audit records.",
+    "b5d3f10 archival and bounded Control capacity fixtures omitted required observed data revisions; bfc1f73 fixes both and passes them."
+  ],
+  "limitations": [
+    "Production bootstrap worker startup is not wired by this checkpoint.",
+    "Raw worker tests use explicitly initialized encrypted fixture storage.",
+    "No platform, large-tenant, S3 interoperability or endurance acceptance is implied.",
+    "Intermediate executable hashes were not captured at each gate closure; final release harness must capture them before target reuse."
+  ],
+  "logs": [
+    {
+      "source": "1dd752b5a8d4fb4edecd67ffdd364778d12e6b46",
+      "file": "logs/kasumi-production-1dd752b-contract-audit.log",
+      "sha256": "e3a0c8c0862cbf7d574464ee7746b8fda678c018dd84deaa35e03ec0fc60c163"
+    },
+    {
+      "source": "1dd752b5a8d4fb4edecd67ffdd364778d12e6b46",
+      "file": "logs/kasumi-production-1dd752b-lifecycle-audit.log",
+      "sha256": "c862724657248443102bb94e8ddb73b3b43872317f75715d04209d34b706e71a"
+    },
+    {
+      "source": "b5d3f109703c6588e9377f5e93445ec1c74e2615",
+      "file": "logs/kasumi-production-b5d3f10-engine-audit.log",
+      "sha256": "823cc7b9422dc09a1a1b171bf5133e5e58ad2fc610e2290026cbb0887e080e93"
+    },
+    {
+      "source": "b5d3f109703c6588e9377f5e93445ec1c74e2615",
+      "file": "logs/kasumi-production-b5d3f10-lifecycle-audit.log",
+      "sha256": "c6abc03a97fb747ee311692f9e2d9fd6b09e64881a10e38864b61f62e0939331"
+    },
+    {
+      "source": "b5d3f109703c6588e9377f5e93445ec1c74e2615",
+      "file": "logs/kasumi-production-b5d3f10-native-audit.log",
+      "sha256": "a17a5ee9dcdac6241b3edfedccb65308d571fa5f2b69aacac14ae50b18caf459"
+    },
+    {
+      "source": "b5d3f109703c6588e9377f5e93445ec1c74e2615",
+      "file": "logs/kasumi-production-b5d3f10-retirement-audit.log",
+      "sha256": "f1289cb9cedb0af32ef0e73f36571827f9c892c8d3f0246767563adaf2a281e1"
+    },
+    {
+      "source": "b5d3f109703c6588e9377f5e93445ec1c74e2615",
+      "file": "logs/kasumi-production-b5d3f10-closed-limits.log",
+      "sha256": "b2e2a346b4adb17e0523641d990e869aafe6098a33ccb850b024f3a3c5b8f3ae"
+    },
+    {
+      "source": "b5d3f109703c6588e9377f5e93445ec1c74e2615",
+      "file": "logs/kasumi-production-b5d3f10-clippy.log",
+      "sha256": "0274158e478202dc0bc71bfabd7d1468530d99f6f65c7470494fee1d1425ba96"
+    },
+    {
+      "source": "bfc1f73130b18971dfdc04fe8f6e640d56a9e43a",
+      "file": "logs/kasumi-production-bfc1f73-engine-audit.log",
+      "sha256": "1b61773ad1cd46fdd0010a0ca827ed26e35d300fe65e121d9dc19ba90238ccc3"
+    },
+    {
+      "source": "bfc1f73130b18971dfdc04fe8f6e640d56a9e43a",
+      "file": "logs/kasumi-production-bfc1f73-lifecycle-audit.log",
+      "sha256": "91d226e05407bb396e59e12fd9879e908fe3cef541bbc5b65d5d2ddeca3dbcd3"
+    }
+  ]
+}

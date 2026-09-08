@@ -5,7 +5,8 @@ struct ServingFixture {
     directory: tempfile::TempDir,
     databases: Vec<Arc<Database>>,
     audits: Vec<Arc<SecurityAudit>>,
-    signer: kasumi_serving::AuthoritySigner,
+    signer: Arc<kasumi_serving::AuthoritySigner>,
+    trust: kasumi_serving::AuthorityTrust,
     manifest: kasumi_serving::AuthorityManifest,
     bootstrap: crate::ReplicatedBootstrap,
     clock: Arc<CredentialClock>,
@@ -17,7 +18,7 @@ impl ServingFixture {
         let keys =
             ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
                 .unwrap();
-        let signer = kasumi_serving::AuthoritySigner::from_pkcs8(keys.as_ref()).unwrap();
+        let root = kasumi_serving::test_utils::FixtureSigningRoot::from_pkcs8(keys.as_ref()).unwrap();
         let manifest = kasumi_serving::AuthorityManifest {
             lifecycle_controls: std::collections::BTreeMap::new(),
             authority_id: uuid::Uuid::new_v4(),
@@ -27,10 +28,13 @@ impl ServingFixture {
                 0,
                 kasumi_serving::AuthorityPartition {
                     group: "independent-fixture-issuer".into(),
-                    public_key: signer.public_key(),
+                    public_key: root.public_key(),
                 },
             )]),
         };
+        let signing = root.install(manifest.clone(), 0).unwrap();
+        let signer = signing.signer;
+        let trust = signing.trust;
         let context = RequestContext {
             tenant: "serving-expiry".into(),
             principal: "owner".into(),
@@ -66,6 +70,7 @@ impl ServingFixture {
             databases: vec![],
             audits: vec![],
             signer,
+            trust,
             manifest,
             bootstrap,
             clock: Arc::new(CredentialClock(std::sync::atomic::AtomicU64::new(0))),
@@ -97,7 +102,7 @@ impl ServingFixture {
         let group = format!("{}/{}", self.context.tenant, self.bootstrap.incarnation);
         for id in 1..=3 {
             let boot = kasumi_serving::ServingBoot::with_test_clock(
-                kasumi_serving::AuthorityTrust::install(self.manifest.clone()).unwrap(),
+                self.trust.clone(),
                 kasumi_serving::ServingIdentity {
                     tenant: self.context.tenant.clone(),
                     incarnation: uuid::Uuid::parse_str(&self.bootstrap.incarnation).unwrap(),

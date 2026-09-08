@@ -1,0 +1,22 @@
+   Compiling serde_core v1.0.229
+   Compiling syn v3.0.5
+   Compiling crypto-common v0.1.7
+   Compiling serde v1.0.229
+   Compiling digest v0.10.7
+   Compiling serde_derive v1.0.229
+   Compiling thiserror-impl v2.0.20
+   Compiling memchr v2.8.3
+   Compiling imbl v7.0.1
+   Compiling serde_json v1.0.151
+   Compiling sha2 v0.10.9
+   Compiling thiserror v2.0.20
+   Compiling uuid v1.26.0
+   Compiling kasumi-types v0.1.0 (/private/tmp/kasumi-production-archive-worker-validation/crates/kasumi-types)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 22.29s
+     Running unittests src/lib.rs (/tmp/kasumi-production-root-target/debug/deps/kasumi_types-bcc7d464aa0c58d2)
+
+running 1 test
+test audit::tests::limits_reject_removed_count_ceiling_and_missing_format_fields ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.04s
+

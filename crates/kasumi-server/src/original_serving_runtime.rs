@@ -95,6 +95,7 @@ impl Administration {
         // independently admitted again. This never uses a preparation fallback.
         let (access, lease) = crate::serving_runtime::acquire_tenant_access(
             &self.config,
+            &self.authority_trusts,
             self.credential.clone(),
             tenant,
             Uuid::parse_str(incarnation)?,

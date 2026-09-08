@@ -217,6 +217,7 @@ mod original_serving_runtime;
 
 pub struct Administration {
     pub(crate) config: RuntimeConfig,
+    authority_trusts: BTreeMap<String, kasumi_serving::AuthorityTrust>,
     node: Arc<NodeStore>,
     registry: DatabaseRegistry,
     control: Arc<Database>,
@@ -420,6 +421,7 @@ impl Administration {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         config: RuntimeConfig,
+        authority_trusts: BTreeMap<String, kasumi_serving::AuthorityTrust>,
         node: Arc<NodeStore>,
         registry: DatabaseRegistry,
         control: Arc<Database>,
@@ -451,6 +453,7 @@ impl Administration {
         let control_context = crate::runtime::configured_control_context(&config.control)?;
         Ok(Arc::new(Self {
             config,
+            authority_trusts,
             node,
             registry,
             control,
@@ -975,6 +978,7 @@ impl Administration {
                     generation_path(&self.config.database_path, &context.tenant, incarnation);
                 let (storage_access, lease) = crate::serving_runtime::acquire_tenant_access(
                     &self.config,
+                    &self.authority_trusts,
                     self.credential.clone(),
                     &context.tenant,
                     incarnation,
@@ -1828,6 +1832,7 @@ impl Administration {
         ensure!(path.is_file(), "durably routed generation file is missing");
         let (storage_access, lease) = match crate::serving_runtime::acquire_tenant_access(
             &self.config,
+            &self.authority_trusts,
             self.credential.clone(),
             tenant,
             incarnation,
@@ -1839,6 +1844,7 @@ impl Administration {
             Err(_) => {
                 crate::serving_runtime::acquire_tenant_access(
                     &self.config,
+                    &self.authority_trusts,
                     self.credential.clone(),
                     tenant,
                     incarnation,

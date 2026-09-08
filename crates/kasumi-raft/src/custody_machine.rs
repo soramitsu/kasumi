@@ -563,4 +563,70 @@ mod tests {
         }
         Ok(())
     }
+    #[tokio::test]
+    async fn custody_point_head_receipt_audit_and_applied_cursor_survive_each_write_failure()
+    -> Result<()> {
+        let disk = FaultBackend::new();
+        let (domains, _, _, mut log) = fixture(disk.clone()).await?;
+        log.blocking_append([membership(), retirement_entry()?])
+            .await?;
+        log.save_committed(Some(id(1))).await?;
+        assert!(crate::ControlLog::open(domains.custody().clone(), 1, group())?.recover_retired()?);
+        let initial = control::custody_state(domains.custody())?;
+        let command = rotation(&initial.origin.request);
+        log.blocking_append([Entry {
+            log_id: id(2),
+            payload: EntryPayload::Normal(crate::RaftCommand::custody(&command)?),
+        }])
+        .await?;
+        log.save_committed(Some(id(2))).await?;
+        let (_, membership) = applied(domains.custody())?;
+        let position = AppliedEntryContext {
+            log_id: id(2),
+            previous: Some(id(1)),
+            membership,
+            retirement_seed: None,
+            command_sha256: crate::command::sha256(&command.encoded()?),
+        };
+        let baseline = disk.crash();
+        drop(log);
+        drop(domains);
+        let measured = baseline.crash();
+        let (domains, _, _, _) = fixture(measured.clone()).await?;
+        let start = measured.operations();
+        control::apply_custody(domains.custody(), &position, &command)?;
+        let operations = measured.operations() - start;
+        let complete = control::custody_state(domains.custody())?;
+        assert_eq!(complete.commands.len(), 1);
+        assert_eq!(complete.audit.len(), 1);
+        assert!(operations > 0);
+        drop(domains);
+        for failure in 0..=operations {
+            let disk = baseline.crash();
+            let (domains, _, _, _) = fixture(disk.clone()).await?;
+            disk.fail_after(failure);
+            let result = control::apply_custody(domains.custody(), &position, &command);
+            let crash = disk.crash();
+            disk.disarm();
+            drop(domains);
+            let (reopened, _, _, _) = fixture(crash).await?;
+            let actual = control::custody_state(reopened.custody())?;
+            let (cursor, _) = applied(reopened.custody())?;
+            if actual == initial {
+                assert_eq!(cursor, Some(id(1)), "cursor torn at {failure}");
+                assert!(result.is_err(), "successful result lost at {failure}");
+                assert!(
+                    crate::custody_tables::receipt(reopened.custody().store(), "rotate")?.is_none()
+                );
+            } else {
+                assert_eq!(actual, complete, "custody records torn at {failure}");
+                assert_eq!(cursor, Some(id(2)), "cursor torn at {failure}");
+                assert_eq!(
+                    crate::custody_tables::receipt(reopened.custody().store(), "rotate")?,
+                    complete.commands.get("rotate").cloned()
+                );
+            }
+        }
+        Ok(())
+    }
 }

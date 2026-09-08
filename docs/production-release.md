@@ -199,3 +199,57 @@ gate above and usable installation artifacts.
   and build feature graph excludes fixtures. Source, executable and log hashes
   are in `docs/evidence/linux-amd64-f8e9618-20260908`. Translation is explicitly
   not native performance or endurance evidence.
+
+- Frozen `8df1234` completed 43 test groups with 413 passed, one failed and two
+  ignored; its authority process aborted after another 17 passed tests with a
+  target recovery stack overflow. The server failure rejected newly created
+  target archive-cache entries during physical cleanup. Both failures are
+  retained in `docs/evidence/integration-8df1234-20260908`. `e80475a` pins the
+  recovery future before composing monitors; its branch regression passed on the
+  default stack. Exact local archive ownership cleanup remains in progress.
+- Corrected `bfc1f73` passes all 12 audit-focused engine tests and the Control
+  completion capacity test. `b5d3f10` passes strict workspace Clippy, native full
+  audit-budget expansion, retirement byte-headroom and closed-configuration
+  checks. `1dd752b` also passes the mutation rollback/expansion check. Failures
+  and corrected results are retained in
+  `docs/evidence/audit-maintenance-bfc1f73-20260908`; production startup wiring
+  is still separate from these explicit worker tests.
+- `c0f3a9` integrates protected health/readiness/Prometheus and structured daemon
+  diagnostics. The branch passed actual TLS authorization, expiry/revocation,
+  policy and storage release fences, bounded projections, strict server lint and
+  production checks. Authority/coordinator observations, missing measurements,
+  follower semantics and readiness limits remain explicit in `observability.md`.
+- `189e164` replaces public logical snapshot/overwrite APIs with an async admitted
+  complete snapshot and staged-only verification. Raft or an exclusive stopped
+  coordinator owns publication. Startup now verifies bootstrap archive chains;
+  the branch passed missing-cache reopen, nine snapshot and nine backup tests,
+  strict affected lint and production checks. Final bounded verification remains
+  open because historical verification still materializes logical state.
+- `4831c4c` installs explicit tenant archive destinations before normal, target and
+  offline runtime materialization/replay. A required map selects filesystem or
+  renewable-file-backed S3 destinations; encrypted placement binding rejects a
+  removed or changed destination. Local stopped recovery supplies its observed
+  cache separately. Both configuration tests and strict server Clippy passed;
+  the first helper compile failure is preserved.
+
+- `d53aa94` combines the production audit bootstrap pool, exact shared governor
+  checks, and generation-certified authority envelopes. The merged source passed
+  all 37 Raft library tests and server all-target/all-feature compilation. The
+  streaming checkpoint passed 44 affected integration tests; its corrected
+  admission contract test passed another two. The canonical authority branch
+  passed authority, serving, live trust, initializer and focused TLS checks.
+  Coordinated online signer activation and complete verifier retirement drains
+  remain in progress. These are intermediate results, not final release gates.
+- Tenant archive placement, reserved capacity and current administration limits
+  are documented in [tenant audit retention](tenant-audit-retention.md).
+
+- `c8d20ff` stores custody command identities/receipts and audit entries in
+  independently addressed encrypted records. A bounded policy head and exact
+  history accounting publish atomically with each new receipt/event and applied
+  cursor. Current authorization and original replay actors/outcomes are unchanged.
+  The full Raft library passed 38 tests at `b2fd97d`; the following fault test
+  passed every storage-write failure and strict Raft Clippy. The latest custody
+  filter passed 22 tests, and three engine custody/credential/expansion tests
+  passed. Source, lockfile, executable and log hashes are retained in
+  `docs/evidence/custody-point-tables-20260908`. Custody snapshot materialization
+  and existing lifetime count/aggregate limits remain explicit unfinished work.

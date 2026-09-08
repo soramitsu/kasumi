@@ -32,6 +32,7 @@ struct Fixture {
     clock: Arc<Clock>,
     epoch: Arc<EpochClock>,
     installation: AuthorityInstallation,
+    trust: AuthorityTrust,
     settings: AuthorityNodeSettings,
     readiness: Arc<TestMaintenanceTransport>,
 }
@@ -70,7 +71,8 @@ impl Fixture {
         let router = Arc::new(InProcessRouter::default());
         let key = ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
             .unwrap();
-        let signer = Arc::new(AuthoritySigner::from_pkcs8(key.as_ref()).unwrap());
+        let root =
+            kasumi_serving::test_utils::FixtureSigningRoot::from_pkcs8(key.as_ref()).unwrap();
         let manifest = AuthorityManifest {
             lifecycle_controls: controls,
             authority_id: Uuid::new_v4(),
@@ -80,10 +82,13 @@ impl Fixture {
                 0,
                 AuthorityPartition {
                     group: "independent-control".into(),
-                    public_key: signer.public_key(),
+                    public_key: root.public_key(),
                 },
             )]),
         };
+        let signing = root.install(manifest.clone(), 0).unwrap();
+        let signer = signing.signer;
+        let trust = signing.trust;
         let installation = AuthorityInstallation {
             manifest,
             partition: 0,
@@ -146,6 +151,7 @@ impl Fixture {
             clock,
             epoch,
             installation,
+            trust,
             settings,
             readiness,
         };
@@ -320,7 +326,7 @@ fn target(source: Uuid) -> RecoveryTarget {
 }
 fn boot(fixture: &Fixture, incarnation: Uuid, epoch: u64) -> ServingBoot {
     ServingBoot::with_test_clock(
-        AuthorityTrust::install(fixture.installation.manifest.clone()).unwrap(),
+        fixture.trust.clone(),
         ServingIdentity {
             tenant: "city".into(),
             incarnation,
@@ -417,8 +423,9 @@ async fn independent_quorum_fence_drains_original_lease_and_competing_activation
         .filter(|r| matches!(r.0.receipt.outcome, AuthorityOutcome::Activated { .. }))
         .collect::<Vec<_>>();
     assert_eq!(accepted.len(), 1);
-    let proof = AuthorityTrust::install(fixture.installation.manifest.clone())
-        .unwrap()
+    let proof = fixture
+        .trust
+        .clone()
         .verify_activation(accepted[0].0.clone())
         .unwrap();
     let AuthorityOutcome::Activated {
@@ -779,10 +786,7 @@ async fn exact_target_preparation_cannot_serve_and_needs_a_fresh_active_lease_af
         .await
         .unwrap()
         .0;
-    let proof = AuthorityTrust::install(fixture.installation.manifest.clone())
-        .unwrap()
-        .verify_activation(accepted)
-        .unwrap();
+    let proof = fixture.trust.clone().verify_activation(accepted).unwrap();
     let lease = acquire(&fixture, &service, &active_boot).await;
     assert_eq!(lease.activation_digest(), proof.digest().unwrap());
     gate.promote_prepared(lease).unwrap();

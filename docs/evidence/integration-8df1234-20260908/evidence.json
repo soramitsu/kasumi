@@ -1,0 +1,29 @@
+{
+  "kind": "intermediate frozen integration functional gates; failed",
+  "source": "8df123488d74a99e76f4f87998301d840fc4d996",
+  "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-apple-darwin\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+  "lock_sha256": "497d1a81eac52249a4235d1ca31c73f9d2a08c1ad73b1e920b21f2f782c9369c",
+  "command": "cargo test --locked --workspace --all-features --all-targets --no-fail-fast -j2 -- --test-threads=2",
+  "exit_code": 101,
+  "counts": {
+    "passed_in_completed_groups": 413,
+    "failed_in_completed_groups": 1,
+    "ignored_in_completed_groups": 2,
+    "completed_groups": 43,
+    "passed_before_authority_abort": 17
+  },
+  "failures": [
+    "Authority library process aborted with stack overflow in exact_actual_completion_is_required_for_issuer_and_target_activation; remaining authority tests did not finish.",
+    "Server local_stop_persists_identity_before_cleanup_and_rejects_unrelated_files rejected unexpected target entries during resume."
+  ],
+  "limitations": [
+    "This source precedes newer integration work.",
+    "Executable hashes were not captured at run closure before the shared target directory was reused. No executable hash or final-release acceptance is claimed for this run."
+  ],
+  "logs": [
+    {
+      "file": "logs/kasumi-production-8df1234-workspace-tests.log",
+      "sha256": "face970a8929f29cab359557286a6a3dd9a3b15118ebc6eb8e3944437b76e6d7"
+    }
+  ]
+}

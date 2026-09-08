@@ -1,0 +1,13 @@
+{
+  "source": "4831c4c",
+  "tests": "2 passed",
+  "strict_clippy_exit_code": 0,
+  "failed_source": "823f90b",
+  "failure": "Archive placement installation initially returned Arc<TenantAuditArchive> where Result<()> was required; corrected explicitly propagating success.",
+  "logs_sha256": {
+    "kasumi-production-823f90b-archive-config-tests.log": "8fe86d443b9b578f414a930caf363f718d7cf018576857edd2d1ced0d8b0a56d",
+    "kasumi-production-4831c4c-archive-config-tests.log": "6d0e3ca2204f55624f4f659eef0bc79ae3603c9b176bf93ebfede74e4f0e98c8",
+    "kasumi-production-4831c4c-archive-config-clippy.log": "1c95d404e79ea55b5aa790712ec4267d686a62b2f900fb1652e8c7083f2e8350"
+  },
+  "limitation": "Intermediate focused evidence. Executable hashes were not captured at the closure of this run, so it does not satisfy final release binary provenance."
+}

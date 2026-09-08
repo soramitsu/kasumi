@@ -1,0 +1,9 @@
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-production-archive-worker-fixed-validation/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 47.23s
+     Running tests/lifecycle.rs (/tmp/kasumi-production-validation-target/debug/deps/lifecycle-9602cd53223f9d39)
+
+running 1 test
+test control_completion_audit_reservation_survives_denials_and_current_admin_status_recovery ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 18.44s
+

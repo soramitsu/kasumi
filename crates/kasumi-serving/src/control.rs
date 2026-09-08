@@ -64,8 +64,15 @@ pub fn verify_control_epoch_stop(
             && observation.drain_ms == expected.authority_partition.drain_ms,
         "control stop proof identity or drain differs"
     );
-    verify(
-        &expected.authority_partition.signing_public_key,
+    let partition = &expected.authority_partition;
+    crate::HistoricalSigningTrust::install(crate::SigningDomain {
+        authority_id: partition.authority_id,
+        partition: partition.partition,
+        manifest_sha256: partition.manifest_sha256.clone(),
+        root_public_key: partition.signing_public_key.clone(),
+        retirement_drain_ms: partition.drain_ms,
+    })?
+    .verify(
         "kasumi.control-epoch-drained.v1",
         observation,
         &signed.signature,

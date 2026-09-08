@@ -1,0 +1,75 @@
+   Compiling syn v3.0.5
+   Compiling stable_deref_trait v1.2.1
+   Compiling yoke v0.8.3
+   Compiling cc v1.4.5
+   Compiling hashbrown v0.17.1
+   Compiling indexmap v2.14.1
+   Compiling tokio-macros v2.7.2
+   Compiling zerovec-derive v0.11.6
+   Compiling tokio v1.53.1
+   Compiling zerovec v0.11.8
+   Compiling displaydoc v0.2.7
+   Compiling futures-macro v0.3.34
+   Compiling futures-util v0.3.34
+   Compiling tinystr v0.8.4
+   Compiling tokio-util v0.7.19
+   Compiling icu_locale_core v2.3.0
+   Compiling zerotrie v0.2.5
+   Compiling potential_utf v0.1.6
+   Compiling ring v0.17.14
+   Compiling icu_collections v2.3.0
+   Compiling icu_provider v2.3.1
+   Compiling serde_derive v1.0.229
+   Compiling serde v1.0.229
+   Compiling h2 v0.4.19
+   Compiling icu_properties v2.3.0
+   Compiling icu_normalizer v2.3.0
+   Compiling hyper v1.11.1
+   Compiling idna_adapter v1.2.2
+   Compiling rustls v0.23.43
+   Compiling hyper-util v0.1.20
+   Compiling idna v1.1.0
+   Compiling rustls-webpki v0.103.15
+   Compiling thiserror-impl v2.0.20
+   Compiling num-traits v0.2.19
+   Compiling serde_json v1.0.151
+   Compiling tower v0.5.3
+   Compiling thiserror v2.0.20
+   Compiling url v2.5.8
+   Compiling tokio-rustls v0.26.5
+   Compiling hyper-timeout v0.5.2
+   Compiling tokio-stream v0.1.19
+   Compiling async-trait v0.1.92
+   Compiling time-macros v0.2.32
+   Compiling clap_derive v4.6.4
+   Compiling rust_decimal v1.43.0
+   Compiling serde_urlencoded v0.7.1
+   Compiling tonic v0.14.6
+   Compiling hyper-rustls v0.27.9
+   Compiling kasumi-types v0.1.0 (/private/tmp/kasumi-production-archive-worker-validation/crates/kasumi-types)
+   Compiling tower-http v0.6.11
+   Compiling anyerror v0.1.13
+   Compiling futures-executor v0.3.34
+   Compiling deranged v0.5.8
+   Compiling time v0.3.55
+   Compiling kasumi-serving v0.1.0 (/private/tmp/kasumi-production-archive-worker-validation/crates/kasumi-serving)
+   Compiling byte-unit v5.2.5
+   Compiling reqwest v0.12.28
+   Compiling futures v0.3.34
+   Compiling validit v0.2.6
+   Compiling kasumi-transport v0.1.0 (/private/tmp/kasumi-production-archive-worker-validation/crates/kasumi-transport)
+   Compiling clap v4.6.6
+   Compiling chrono v0.4.45
+   Compiling cobs v0.3.0
+   Compiling openraft v0.9.25
+   Compiling kasumi-store v0.1.0 (/private/tmp/kasumi-production-archive-worker-validation/crates/kasumi-store)
+   Compiling postcard v1.1.3
+   Compiling kasumi-raft v0.1.0 (/private/tmp/kasumi-production-archive-worker-validation/crates/kasumi-raft)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 35s
+     Running unittests src/lib.rs (/tmp/kasumi-production-root-target/debug/deps/kasumi_raft-36014a94c98e9cab)
+
+running 1 test
+test control::tests::retirement_reserves_full_width_audit_bytes_before_commitment ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 36 filtered out; finished in 0.01s
+

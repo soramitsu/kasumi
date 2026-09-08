@@ -1,0 +1,15 @@
+{
+  "source": "044ea02107aa8675c7c37cb5f8dc35868d766e6f",
+  "source_tree": "d447251b381e6fc42e982d5f21ad8d0dbd953098",
+  "lockfile_sha256": "a4a3883969dc9486548a1aea841ecf45c482c99e4ea1e0d47b56f6c52b2afa08",
+  "test_executable_sha256": "7794dc6aa2bd6aad355651279f55a31f3f84114b41a4afe0e4f975c947fd6e28",
+  "results": [
+    "ok. 1 passed; 0 failed; 0 ignored; 0 measured; 38 filtered out; finished in 0.27s"
+  ],
+  "clippy_exit_code": 0,
+  "logs": {
+    "kasumi-production-custody-fault-tests.log": "53163e69dce9ea6f6235b0e718793bf0a88b5da2c55962bd313bc4cc1aad99e0",
+    "kasumi-production-custody-point-clippy.log": "eb4b137be0120f252afae85d993c5d9908d4fac3c5282bc80e6a6e5178e708d3"
+  },
+  "scope": "Intermediate macOS ARM64 custody atomic point publication at every storage write failure and strict affected crate lint."
+}

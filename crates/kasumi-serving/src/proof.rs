@@ -1,51 +1,42 @@
 use crate::*;
 use anyhow::{Context, Result, ensure};
 use kasumi_clock::{LeaseClock, SystemLeaseClock};
-use ring::signature::{ED25519, Ed25519KeyPair, KeyPair, UnparsedPublicKey};
 use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
 use uuid::Uuid;
 
-/// Explicit installed secret. No deserializer, Debug output or request endpoint
-/// accepts an issuer key. The corresponding public key is fixed in the manifest.
-pub struct AuthoritySigner(Ed25519KeyPair);
+/// Operational signing owner. The installation root is never a runtime issuer.
+pub struct AuthoritySigner(LiveGenerationSigner);
 impl AuthoritySigner {
-    pub fn from_pkcs8(bytes: &[u8]) -> Result<Self> {
-        Ok(Self(Ed25519KeyPair::from_pkcs8(bytes).map_err(|_| {
-            anyhow::anyhow!("invalid installed authority signing key")
-        })?))
+    pub fn new(owner: LiveGenerationSigner) -> Self {
+        Self(owner)
     }
-    pub fn public_key(&self) -> String {
-        hex::encode(self.0.public_key().as_ref())
+    pub fn certificate(&self) -> &SigningCertificate {
+        self.0.certificate()
+    }
+    pub fn check(&self) -> Result<()> {
+        self.0.check()
+    }
+    fn sign<T: serde::Serialize>(&self, purpose: &str, value: &T) -> Result<GenerationSignature> {
+        let signed = self.0.sign(purpose, value)?;
+        let wire = signed.signature().clone();
+        signed.check()?;
+        Ok(wire)
     }
     pub fn sign_lifecycle_receipt(
         &self,
         receipt: LifecycleAuthorityReceipt,
     ) -> Result<SignedLifecycleAuthorityReceipt> {
-        let signature = hex::encode(
-            self.0
-                .sign(&serde_json::to_vec(&(
-                    "kasumi.issuer-control-receipt.v1",
-                    &receipt,
-                ))?)
-                .as_ref(),
-        );
+        let signature = self.sign("kasumi.issuer-control-receipt.v1", &receipt)?;
         Ok(SignedLifecycleAuthorityReceipt { receipt, signature })
     }
     pub fn sign_control_epoch_stop(
         &self,
         observation: kasumi_types::ControlEpochStopObservation,
     ) -> Result<kasumi_types::SignedControlEpochStop> {
-        let signature = hex::encode(
-            self.0
-                .sign(&serde_json::to_vec(&(
-                    "kasumi.control-epoch-drained.v1",
-                    &observation,
-                ))?)
-                .as_ref(),
-        );
+        let signature = self.sign("kasumi.control-epoch-drained.v1", &observation)?;
         Ok(kasumi_types::SignedControlEpochStop {
             observation,
             signature,
@@ -55,36 +46,23 @@ impl AuthoritySigner {
         &self,
         claims: LifecycleLeaseClaims,
     ) -> Result<SignedLifecycleLease> {
-        let signature = hex::encode(
-            self.0
-                .sign(&serde_json::to_vec(&(
-                    "kasumi.lifecycle-lease.v1",
-                    &claims,
-                ))?)
-                .as_ref(),
-        );
+        let signature = self.sign("kasumi.lifecycle-lease.v1", &claims)?;
         Ok(SignedLifecycleLease { claims, signature })
     }
     pub fn sign_lease(&self, claims: LeaseClaims) -> Result<SignedLease> {
-        let bytes = serde_json::to_vec(&("kasumi.serving-lease.v1", &claims))?;
-        Ok(SignedLease {
-            claims,
-            signature: hex::encode(self.0.sign(&bytes).as_ref()),
-        })
+        let signature = self.sign("kasumi.serving-lease.v1", &claims)?;
+        Ok(SignedLease { claims, signature })
     }
     pub fn sign_target_stop(&self, observation: TargetStopObservation) -> Result<SignedTargetStop> {
-        let bytes = serde_json::to_vec(&("kasumi.target-stop-drained.v1", &observation))?;
+        let signature = self.sign("kasumi.target-stop-drained.v1", &observation)?;
         Ok(SignedTargetStop {
             observation,
-            signature: hex::encode(self.0.sign(&bytes).as_ref()),
+            signature,
         })
     }
     pub fn sign_receipt(&self, receipt: AuthorityReceipt) -> Result<SignedAuthorityReceipt> {
-        let bytes = serde_json::to_vec(&("kasumi.authority-proof.v1", &receipt))?;
-        Ok(SignedAuthorityReceipt {
-            receipt,
-            signature: hex::encode(self.0.sign(&bytes).as_ref()),
-        })
+        let signature = self.sign("kasumi.authority-proof.v1", &receipt)?;
+        Ok(SignedAuthorityReceipt { receipt, signature })
     }
 }
 
@@ -92,6 +70,7 @@ impl AuthoritySigner {
 pub struct AuthorityTrust {
     manifest: Arc<AuthorityManifest>,
     digest: String,
+    live: std::collections::BTreeMap<u16, Arc<LiveSignerTrust>>,
 }
 impl AuthorityTrust {
     pub fn install(manifest: AuthorityManifest) -> Result<Self> {
@@ -100,7 +79,46 @@ impl AuthorityTrust {
         Ok(Self {
             manifest: Arc::new(manifest),
             digest,
+            live: Default::default(),
         })
+    }
+    /// Attach exact durable local owners. Installation-root verification alone
+    /// cannot construct a serving or lifecycle lease.
+    pub fn with_live_verifiers(
+        mut self,
+        live: std::collections::BTreeMap<u16, Arc<LiveSignerTrust>>,
+    ) -> Result<Self> {
+        ensure!(
+            live.keys().eq(self.manifest.partitions.keys()),
+            "exact complete local signer verifier set required"
+        );
+        for (partition, owner) in &live {
+            ensure!(
+                owner.current()?.active.identity.domain
+                    == self.manifest.signing_domain(*partition)?,
+                "live verifier belongs to another installation"
+            );
+        }
+        self.live = live;
+        Ok(self)
+    }
+    pub(crate) fn require_live_partition(&self, partition: u16) -> Result<&Arc<LiveSignerTrust>> {
+        let owner = self
+            .live
+            .get(&partition)
+            .context("current durable live signer verifier is not installed")?;
+        owner.current()?;
+        Ok(owner)
+    }
+    pub(crate) fn verify_live<T: serde::Serialize>(
+        &self,
+        partition: u16,
+        purpose: &str,
+        value: &T,
+        signature: &GenerationSignature,
+    ) -> Result<SignerGenerationFence> {
+        self.require_live_partition(partition)?
+            .verify_live(purpose, value, signature)
     }
     pub fn manifest(&self) -> &AuthorityManifest {
         &self.manifest
@@ -113,20 +131,10 @@ impl AuthorityTrust {
         partition: u16,
         domain: &str,
         value: &T,
-        signature: &str,
+        signature: &GenerationSignature,
     ) -> Result<()> {
-        let key = &self
-            .manifest
-            .partitions
-            .get(&partition)
-            .context("unknown authority partition")?
-            .public_key;
-        let bytes = serde_json::to_vec(&(domain, value))?;
-        let signature = hex::decode(signature)?;
-        ensure!(signature.len() == 64, "invalid authority signature length");
-        UnparsedPublicKey::new(&ED25519, hex::decode(key)?)
-            .verify(&bytes, &signature)
-            .map_err(|_| anyhow::anyhow!("authority signature invalid"))
+        HistoricalSigningTrust::install(self.manifest.signing_domain(partition)?)?
+            .verify(domain, value, signature)
     }
     pub fn verify_target_stop(
         &self,
@@ -233,6 +241,7 @@ impl ServingBoot {
         clock: Arc<dyn LeaseClock>,
     ) -> Result<Self> {
         identity.validate()?;
+        trust.require_live_partition(trust.manifest.partition(&identity.tenant)?)?;
         let initial = clock.now();
         Ok(Self {
             id: Uuid::new_v4(),
@@ -338,7 +347,7 @@ impl LeaseAttempt {
             (claims.request.identity.authority_epoch == 1) == claims.recovery_checkpoint.is_none(),
             "lease activation origin absent or unexpected"
         );
-        trust.verify(
+        let signer = trust.verify_live(
             claims.partition,
             "kasumi.serving-lease.v1",
             claims,
@@ -353,6 +362,7 @@ impl LeaseAttempt {
             start: self.start,
             deadline,
             signed,
+            signer,
         };
         proof.check()?;
         Ok(proof)
@@ -365,6 +375,7 @@ pub struct VerifiedLease {
     pub(crate) start: Duration,
     pub(crate) deadline: Duration,
     pub(crate) signed: SignedLease,
+    signer: SignerGenerationFence,
 }
 impl VerifiedLease {
     pub fn identity(&self) -> &ServingIdentity {
@@ -375,11 +386,13 @@ impl VerifiedLease {
     }
     /// Remaining verified authority on the original suspend-aware boot clock.
     pub fn remaining(&self) -> Result<Duration> {
+        self.signer.check()?;
         let now = self.boot.now()?;
         ensure!(now < self.deadline, "serving grant expired");
         Ok(self.deadline - now)
     }
     pub fn check(&self) -> Result<()> {
+        self.signer.check()?;
         ensure!(self.boot.now()? < self.deadline, "serving grant expired");
         Ok(())
     }

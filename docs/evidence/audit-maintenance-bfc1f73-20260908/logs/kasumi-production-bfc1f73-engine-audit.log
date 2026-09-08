@@ -1,0 +1,33 @@
+   Compiling bitmaps v3.2.1 (/private/tmp/kasumi-production-archive-worker-fixed-validation/vendor/bitmaps-3.2.1)
+   Compiling kasumi-clock v0.1.0 (/private/tmp/kasumi-production-archive-worker-fixed-validation/crates/kasumi-clock)
+   Compiling imbl-sized-chunks v0.1.3
+   Compiling imbl v7.0.1
+   Compiling lru v0.16.4 (/private/tmp/kasumi-production-archive-worker-fixed-validation/vendor/lru-0.16.4)
+   Compiling tantivy v0.26.1
+   Compiling kasumi-types v0.1.0 (/private/tmp/kasumi-production-archive-worker-fixed-validation/crates/kasumi-types)
+   Compiling kasumi-serving v0.1.0 (/private/tmp/kasumi-production-archive-worker-fixed-validation/crates/kasumi-serving)
+   Compiling kasumi-transport v0.1.0 (/private/tmp/kasumi-production-archive-worker-fixed-validation/crates/kasumi-transport)
+   Compiling lindera-tantivy v5.0.1
+   Compiling kasumi-query v0.1.0 (/private/tmp/kasumi-production-archive-worker-fixed-validation/crates/kasumi-query)
+   Compiling kasumi-store v0.1.0 (/private/tmp/kasumi-production-archive-worker-fixed-validation/crates/kasumi-store)
+   Compiling kasumi-raft v0.1.0 (/private/tmp/kasumi-production-archive-worker-fixed-validation/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-production-archive-worker-fixed-validation/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 46s
+     Running unittests src/lib.rs (/tmp/kasumi-production-validation-target/debug/deps/kasumi_engine-3732489bcab4ccb8)
+
+running 12 tests
+test admission::tests::reserved_audit_workspace_remains_usable_under_rss_pressure ... ok
+test audit_maintenance::tests::tenants_share_capacity_and_retained_workers_keep_it_owned ... ok
+test audit_source::tests::historical_incarnation_requires_complete_lineage_and_preserves_exact_source_checkpoint ... ok
+test audit_source::tests::replica_nodes_and_historical_epochs_share_history_without_aliasing_other_installations ... ok
+test security_audit::tests::cancelled_queued_audit_and_cancelled_shutdown_drain_before_immediate_reopen ... ok
+test security_audit::tests::live_opens_share_sequence_and_preserve_concurrent_records_through_reopen ... ok
+test security_audit::tests::uncertain_audit_commit_fences_queued_writers_until_sequence_recovery ... ok
+test service::audit_maintenance_service::tests::encrypted_worker_drains_hot_history_when_ordinary_capacity_is_full ... ok
+test snapshot_codec::tests::archived_audit_prefix_preserves_absolute_sequences_and_head ... ok
+test state::tenant_audit::tests::authenticated_wrong_prefix_and_corrupt_ciphertext_never_prune ... ok
+test state::tenant_audit::tests::uncertain_publication_keeps_hot_prefix_and_exact_replay_publishes_matching_root ... ok
+test security_audit::retention::tests::uncertain_publication_survives_restart_and_repeated_hot_budget_crossings_preserve_complete_history ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 45 filtered out; finished in 52.09s
+

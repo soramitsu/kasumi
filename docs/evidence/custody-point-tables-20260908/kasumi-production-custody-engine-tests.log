@@ -1,0 +1,20 @@
+   Compiling kasumi-types v0.1.0 (/private/tmp/kasumi-production-custody-bound-validation/crates/kasumi-types)
+   Compiling lru v0.16.4 (/private/tmp/kasumi-production-custody-bound-validation/vendor/lru-0.16.4)
+   Compiling tantivy v0.26.1
+   Compiling kasumi-serving v0.1.0 (/private/tmp/kasumi-production-custody-bound-validation/crates/kasumi-serving)
+   Compiling kasumi-transport v0.1.0 (/private/tmp/kasumi-production-custody-bound-validation/crates/kasumi-transport)
+   Compiling kasumi-store v0.1.0 (/private/tmp/kasumi-production-custody-bound-validation/crates/kasumi-store)
+   Compiling lindera-tantivy v5.0.1
+   Compiling kasumi-query v0.1.0 (/private/tmp/kasumi-production-custody-bound-validation/crates/kasumi-query)
+   Compiling kasumi-raft v0.1.0 (/private/tmp/kasumi-production-custody-bound-validation/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-production-custody-bound-validation/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3m 27s
+     Running unittests src/lib.rs (/tmp/kasumi-production-validation-target/debug/deps/kasumi_engine-d954104df0323488)
+
+running 3 tests
+test service::tests::committed_custody_with_expired_ack_recovers_only_with_fresh_authority ... ok
+test service::tests::custody_observations_preserve_mutation_capacity_and_exhaustion_can_expand ... ok
+test service::tests::queued_custody_credentials_expire_without_accepting_a_permanent_identity ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 56 filtered out; finished in 6.97s
+

@@ -1,0 +1,67 @@
+    Checking stable_deref_trait v1.2.1
+    Checking tokio v1.53.1
+    Checking yoke v0.8.3
+    Checking zerovec v0.11.8
+    Checking tracing v0.1.44
+    Checking futures-util v0.3.34
+    Checking tinystr v0.8.4
+    Checking hashbrown v0.17.1
+    Checking icu_locale_core v2.3.0
+    Checking indexmap v2.14.1
+    Checking tokio-util v0.7.19
+    Checking zerotrie v0.2.5
+    Checking potential_utf v0.1.6
+    Checking icu_provider v2.3.1
+    Checking icu_collections v2.3.0
+    Checking serde v1.0.229
+    Checking ring v0.17.14
+    Checking h2 v0.4.19
+    Checking icu_normalizer v2.3.0
+    Checking icu_properties v2.3.0
+    Checking idna_adapter v1.2.2
+    Checking hyper v1.11.1
+    Checking idna v1.1.0
+    Checking rustls-webpki v0.103.15
+    Checking tower v0.5.3
+    Checking hyper-util v0.1.20
+    Checking thiserror v2.0.20
+    Checking rustls v0.23.43
+    Checking url v2.5.8
+    Checking getrandom v0.4.3
+    Checking bitmaps v3.2.1 (/private/tmp/kasumi-production-custody-fault-validation/vendor/bitmaps-3.2.1)
+    Checking imbl-sized-chunks v0.1.3
+    Checking serde_json v1.0.151
+    Checking tokio-rustls v0.26.5
+    Checking num-traits v0.2.19
+    Checking imbl v7.0.1
+    Checking uuid v1.26.0
+    Checking kasumi-clock v0.1.0 (/private/tmp/kasumi-production-custody-fault-validation/crates/kasumi-clock)
+    Checking hyper-timeout v0.5.2
+    Checking tokio-stream v0.1.19
+    Checking rust_decimal v1.43.0
+    Checking tonic v0.14.6
+   Compiling time-macros v0.2.32
+    Checking serde_urlencoded v0.7.1
+    Checking hyper-rustls v0.27.9
+    Checking kasumi-types v0.1.0 (/private/tmp/kasumi-production-custody-fault-validation/crates/kasumi-types)
+    Checking tower-http v0.6.11
+    Checking anyerror v0.1.13
+    Checking futures-executor v0.3.34
+    Checking deranged v0.5.8
+    Checking time v0.3.55
+    Checking reqwest v0.12.28
+    Checking tempfile v3.27.0
+    Checking byte-unit v5.2.5
+    Checking futures v0.3.34
+    Checking validit v0.2.6
+    Checking kasumi-transport v0.1.0 (/private/tmp/kasumi-production-custody-fault-validation/crates/kasumi-transport)
+    Checking chrono v0.4.45
+    Checking clap v4.6.6
+    Checking cobs v0.3.0
+    Checking tracing-futures v0.2.5
+    Checking openraft v0.9.25
+    Checking kasumi-serving v0.1.0 (/private/tmp/kasumi-production-custody-fault-validation/crates/kasumi-serving)
+    Checking kasumi-store v0.1.0 (/private/tmp/kasumi-production-custody-fault-validation/crates/kasumi-store)
+    Checking postcard v1.1.3
+    Checking kasumi-raft v0.1.0 (/private/tmp/kasumi-production-custody-fault-validation/crates/kasumi-raft)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 19.03s

@@ -247,11 +247,10 @@ pub(crate) fn installation_writes(
             if current_position
                 .is_none_or(|id| Some(id.index) <= meta.last_log_id.map(|id| id.index))
             {
-                writes.push(WriteOp::put(
-                    META,
-                    crate::control::CUSTODY_STATE,
-                    serde_json::to_vec(&retirement.custody)?,
-                ));
+                writes.extend(crate::custody_tables::installation_writes(
+                    control,
+                    &retirement.custody,
+                )?);
             }
             writes.push(WriteOp::put(
                 META,

@@ -274,6 +274,7 @@ async fn benchmark(
     config.replication = None;
     config.control.incarnation = None;
     config.serving_authorities.clear();
+    config.signer_verifier = None;
     config.database_path = path.join("node.redb");
     config.auth = AuthConfig {
         issuer: issuer_url.clone(),

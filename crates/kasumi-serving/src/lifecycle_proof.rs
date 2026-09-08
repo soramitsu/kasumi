@@ -154,6 +154,7 @@ impl LifecycleBoot {
             .trust
             .manifest()
             .partition(&intent.observation().intent.request.tenant)?;
+        self.trust.require_live_partition(partition)?;
         self.trust
             .manifest()
             .verify_lifecycle_request(partition, &request)?;
@@ -199,6 +200,12 @@ impl LifecycleAttempt {
             signed.claims.request == self.request,
             "phase response from another attempt or boot"
         );
+        let signer = self.boot.trust.verify_live(
+            signed.claims.partition,
+            "kasumi.lifecycle-lease.v1",
+            &signed.claims,
+            &signed.signature,
+        )?;
         let deadline = self
             .start
             .checked_add(Duration::from_millis(signed.claims.credential_lifetime_ms))
@@ -208,6 +215,7 @@ impl LifecycleAttempt {
             deadline,
             start: self.start,
             signed,
+            signer,
         };
         proof.check()?;
         Ok(proof)
@@ -219,6 +227,7 @@ pub struct VerifiedLifecycleLease {
     deadline: Duration,
     start: Duration,
     signed: SignedLifecycleLease,
+    signer: SignerGenerationFence,
 }
 impl VerifiedLifecycleLease {
     pub(crate) fn require_continuous_renewal(&self, next: &Self) -> Result<()> {
@@ -241,11 +250,13 @@ impl VerifiedLifecycleLease {
         Ok(())
     }
     pub fn remaining(&self) -> Result<Duration> {
+        self.signer.check()?;
         let now = self.boot.now()?;
         ensure!(now < self.deadline, "phase grant expired");
         Ok(self.deadline - now)
     }
     pub fn check(&self) -> Result<()> {
+        self.signer.check()?;
         ensure!(self.boot.now()? < self.deadline, "phase grant expired");
         Ok(())
     }

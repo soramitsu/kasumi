@@ -160,7 +160,7 @@ pub struct LifecycleLeaseClaims {
 #[serde(deny_unknown_fields)]
 pub struct SignedLifecycleLease {
     pub claims: LifecycleLeaseClaims,
-    pub signature: String,
+    pub signature: kasumi_types::GenerationSignature,
 }
 
 impl AuthorityManifest {
@@ -256,5 +256,5 @@ impl LifecycleAuthorityReceipt {
 #[serde(deny_unknown_fields)]
 pub struct SignedLifecycleAuthorityReceipt {
     pub receipt: LifecycleAuthorityReceipt,
-    pub signature: String,
+    pub signature: kasumi_types::GenerationSignature,
 }

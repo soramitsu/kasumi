@@ -214,7 +214,7 @@ impl MaterialFixture {
         Arc<kasumi_engine::SecurityAudit>,
     ) {
         let issuer = self.issuer.leader().await;
-        let trust = AuthorityTrust::install(self.issuer.installation.manifest.clone()).unwrap();
+        let trust = self.issuer.trust.clone();
         let node_identity = nodes().into_iter().find(|n| n.node_id == id).unwrap();
         let node_context = AuthenticatedNode::from_verified_transport(
             self.issuer.context(&node_identity.principal),
@@ -783,7 +783,7 @@ async fn exact_actual_completion_is_required_for_issuer_and_target_activation() 
         .unwrap()
         .0
         .unwrap();
-    let trust = AuthorityTrust::install(f.issuer.installation.manifest.clone()).unwrap();
+    let trust = f.issuer.trust.clone();
     trust.verify_activation(accepted_signed.clone()).unwrap();
     let targets = f.open_targets(&intent, &input, &router).await;
     let index = current_target(&targets).await;
@@ -1187,7 +1187,7 @@ async fn expired_completion_with_missing_journal_recovers_only_exact_inspection_
     f.issuer.clock.0.store(600, Ordering::SeqCst);
     let issuer = f.issuer.leader().await;
     let node_identity = nodes().first().unwrap().clone();
-    let trust = AuthorityTrust::install(f.issuer.installation.manifest.clone()).unwrap();
+    let trust = f.issuer.trust.clone();
     let old = ControlTrust::install(f.control.root.clone())
         .unwrap()
         .verify_intent(&complete)
@@ -1309,7 +1309,7 @@ impl MaterialFixture {
     /// Actual issuer phase without constructing any application provider/store.
     async fn journal_scope(&self, intent: &SignedControlIntent) -> Arc<TargetOperationScope> {
         let issuer = self.issuer.leader().await;
-        let trust = AuthorityTrust::install(self.issuer.installation.manifest.clone()).unwrap();
+        let trust = self.issuer.trust.clone();
         let identity = nodes().first().unwrap().clone();
         let verified = ControlTrust::install(self.control.root.clone())
             .unwrap()
@@ -1458,7 +1458,7 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
         .await
         .unwrap()
         .0;
-    let trust = AuthorityTrust::install(f.issuer.installation.manifest.clone()).unwrap();
+    let trust = f.issuer.trust.clone();
     let proof = trust.verify_target_stop(signed, &reference).unwrap();
     let stop_intent = f
         .commit_phase_input(
