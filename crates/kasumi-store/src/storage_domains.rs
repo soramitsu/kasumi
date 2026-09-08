@@ -255,7 +255,19 @@ impl TenantStorageSet {
     /// Both leases are held through actual fsync, including on caller cancellation.
     /// The synchronous call must be owned by the caller's tracked blocking worker.
     pub fn write_batch(&self, application_ops: &[WriteOp], custody_ops: &[WriteOp]) -> Result<()> {
+        self.write_batch_replacing_custody(application_ops, custody_ops, &[])
+    }
+
+    /// Stream verified custody tables while publishing the application manifest,
+    /// custody head and applied position in the same durable domain transaction.
+    pub fn write_batch_replacing_custody(
+        &self,
+        application_ops: &[WriteOp],
+        custody_ops: &[WriteOp],
+        replacements: &[(&str, &EncryptedTable)],
+    ) -> Result<()> {
         validate_batch(&[application_ops, custody_ops])?;
+        crate::read_view::validate_replacements(replacements, custody_ops)?;
         let application = &self.application;
         let custody = &self.custody.store;
         let _app_access = AccessGuard(application);
@@ -278,6 +290,13 @@ impl TenantStorageSet {
         tx.set_durability(Durability::Immediate)?;
         tx.set_two_phase_commit(true);
         write_domain(&tx, application, &app_state, &app_catalog, application_ops)?;
+        crate::read_view::replace_domain(
+            &tx,
+            custody,
+            &custody_state,
+            &custody_catalog,
+            replacements,
+        )?;
         write_domain(&tx, custody, &custody_state, &custody_catalog, custody_ops)?;
         application.require_access(&app_state)?;
         custody.require_access(&custody_state)?;

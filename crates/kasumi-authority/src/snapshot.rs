@@ -30,7 +30,7 @@ impl SnapshotRecords {
         })
     }
     pub(super) fn publish(&self, store: &TenantStore) -> Result<()> {
-        store.replace_namespace(NS, &self.0)
+        store.replace_namespaces(&[(NS, &self.0)], &[])
     }
 }
 fn disk_budget(maximum: u64) -> Result<u64> {

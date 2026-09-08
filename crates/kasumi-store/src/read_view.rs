@@ -13,39 +13,30 @@ impl TenantStore {
             transaction: self.node.db.begin_read()?,
         })
     }
-    /// Replace a verified namespace in one durable transaction. The source may
-    /// stream arbitrarily many bounded records; failed reads abort publication.
-    pub fn replace_namespace(&self, namespace: &str, source: &EncryptedTable) -> Result<()> {
+    /// Replace verified encrypted tables and publish their metadata in one
+    /// durable transaction. The caller owns validation, disk/work admission and
+    /// the blocking operation through actual completion.
+    pub fn replace_namespaces(
+        &self,
+        replacements: &[(&str, &EncryptedTable)],
+        operations: &[WriteOp],
+    ) -> Result<()> {
+        validate_replacements(replacements, operations)?;
         let _access = AccessGuard(self);
-        validate_record(namespace, &[], 0)?;
         self.check_access()?;
         let _mutation = self.mutations.lock();
+        let state = self.state.read();
+        self.require_access(&state)?;
+        let catalog = self.catalog.read();
         let mut tx = self.node.db.begin_write()?;
         tx.set_durability(Durability::Immediate)?;
         tx.set_two_phase_commit(true);
-        {
-            let state = self.state.read();
-            self.require_access(&state)?;
-            let prefix = namespace_prefix(
-                &self.tenant,
-                namespace,
-                state.keys.get(INDEX_KEY).context("index key missing")?,
-            );
-            let mut table = tx.open_table(RECORDS)?;
-            table.retain_in(prefix.as_slice().., |key, _| !key.starts_with(&prefix))?;
-        }
-        source.visit(|key, value| {
-            let state = self.state.read();
-            self.require_access(&state)?;
-            let catalog = self.catalog.read();
-            let operation = WriteOp::put(namespace, key, value);
-            validate_batch(&[std::slice::from_ref(&operation)])?;
-            write_domain(&tx, self, &state, &catalog, &[operation])
-        })?;
-        self.check_access()?;
+        replace_domain(&tx, self, &state, &catalog, replacements)?;
+        write_domain(&tx, self, &state, &catalog, operations)?;
+        self.require_access(&state)?;
         tx.commit()
-            .context("namespace publication outcome may be unknown")?;
-        self.check_access()
+            .context("table publication outcome may be unknown")?;
+        self.require_access(&state)
     }
 }
 impl TenantReadView {
@@ -142,4 +133,59 @@ impl TenantReadView {
         }
         store.check_access()
     }
+}
+
+pub(crate) fn validate_replacements(
+    replacements: &[(&str, &EncryptedTable)],
+    operations: &[WriteOp],
+) -> Result<()> {
+    validate_batch(&[operations])?;
+    let mut names = std::collections::BTreeSet::new();
+    for (namespace, _) in replacements {
+        validate_record(namespace, &[], 0)?;
+        ensure!(names.insert(*namespace), "duplicate replacement namespace");
+    }
+    for operation in operations {
+        let namespace = match operation {
+            WriteOp::Put { namespace, .. } | WriteOp::Delete { namespace, .. } => namespace,
+        };
+        ensure!(
+            !names.contains(namespace.as_str()),
+            "metadata overlaps a replaced table"
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn replace_domain(
+    tx: &redb::WriteTransaction,
+    store: &TenantStore,
+    state: &KeyState,
+    catalog: &KeyCatalog,
+    replacements: &[(&str, &EncryptedTable)],
+) -> Result<()> {
+    for (namespace, source) in replacements {
+        store.require_access(state)?;
+        let prefix = namespace_prefix(
+            &store.tenant,
+            namespace,
+            state.keys.get(INDEX_KEY).context("index key missing")?,
+        );
+        {
+            let mut table = tx.open_table(RECORDS)?;
+            table.retain_in(prefix.as_slice().., |key, _| !key.starts_with(&prefix))?;
+        }
+        let mut count = 0u64;
+        source.visit(|key, value| {
+            count = count
+                .checked_add(1)
+                .context("replacement record count overflow")?;
+            store.require_access(state)?;
+            let operation = WriteOp::put(*namespace, key, value);
+            validate_batch(&[std::slice::from_ref(&operation)])?;
+            write_domain(tx, store, state, catalog, &[operation])
+        })?;
+        store.require_access(state)?;
+    }
+    Ok(())
 }

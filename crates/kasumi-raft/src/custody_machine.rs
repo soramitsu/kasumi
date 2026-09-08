@@ -78,14 +78,14 @@ pub(crate) fn publish(custody: &CustodyStore, snapshot: &SnapshotEnvelope) -> Re
     );
     let digest = crate::command::sha256(&bytes);
     let backend_digest = crate::command::sha256(&[]);
-    let mut writes = crate::snapshot_custody::installation_writes(
+    let mut install = crate::snapshot_custody::installation_writes(
         custody,
         &snapshot.meta,
         Some(retirement),
         &backend_digest,
         &digest,
     )?;
-    writes.push(WriteOp::put(
+    install.writes.push(WriteOp::put(
         META,
         b"snapshot_coverage",
         serde_json::to_vec(&SnapshotCoverage {
@@ -96,8 +96,16 @@ pub(crate) fn publish(custody: &CustodyStore, snapshot: &SnapshotEnvelope) -> Re
             meta: snapshot.meta.clone(),
         })?,
     ));
-    writes.push(WriteOp::put(CLOSED_SNAPSHOT, b"current", bytes));
-    custody.store().write_batch(&writes)
+    install
+        .writes
+        .push(WriteOp::put(CLOSED_SNAPSHOT, b"current", bytes));
+    let replacements = install.records.as_ref().map(|records| records.namespaces());
+    custody.store().replace_namespaces(
+        replacements
+            .as_ref()
+            .map_or(&[], |namespaces| namespaces.as_slice()),
+        &install.writes,
+    )
 }
 
 pub(crate) fn load_snapshot(custody: &CustodyStore) -> Result<Option<SnapshotEnvelope>> {
@@ -443,6 +451,23 @@ mod tests {
         publish(domains.custody(), &legitimate)?;
         publish(domains.custody(), &capture(domains.custody())?)?;
         assert_eq!(control::custody_state(domains.custody())?, before);
+        let mut later = capture(domains.custody())?;
+        later.meta.last_log_id = Some(id(3));
+        later
+            .retirement
+            .as_mut()
+            .unwrap()
+            .custody
+            .commands
+            .get_mut("rotate")
+            .unwrap()
+            .principal = "substituted".into();
+        let error = publish(domains.custody(), &later).unwrap_err();
+        assert!(
+            error.to_string().contains("permanent custody history"),
+            "{error}"
+        );
+        assert_eq!(control::custody_state(domains.custody())?, before);
         Ok(())
     }
 
@@ -625,6 +650,74 @@ mod tests {
                     crate::custody_tables::receipt(reopened.custody().store(), "rotate")?,
                     complete.commands.get("rotate").cloned()
                 );
+            }
+        }
+        Ok(())
+    }
+    #[tokio::test]
+    async fn streamed_custody_tables_and_snapshot_coverage_publish_at_one_crash_boundary()
+    -> Result<()> {
+        let disk = FaultBackend::new();
+        let (domains, _, _, mut log) = fixture(disk.clone()).await?;
+        log.blocking_append([membership(), retirement_entry()?])
+            .await?;
+        log.save_committed(Some(id(1))).await?;
+        assert!(crate::ControlLog::open(domains.custody().clone(), 1, group())?.recover_retired()?);
+        let command = rotation(&control::custody_state(domains.custody())?.origin.request);
+        log.blocking_append([Entry {
+            log_id: id(2),
+            payload: EntryPayload::Normal(crate::RaftCommand::custody(&command)?),
+        }])
+        .await?;
+        log.save_committed(Some(id(2))).await?;
+        let (_, membership) = applied(domains.custody())?;
+        control::apply_custody(
+            domains.custody(),
+            &AppliedEntryContext {
+                log_id: id(2),
+                previous: Some(id(1)),
+                membership,
+                retirement_seed: None,
+                command_sha256: crate::command::sha256(&command.encoded()?),
+            },
+            &command,
+        )?;
+        let original = control::custody_state(domains.custody())?;
+        let baseline = disk.crash();
+        drop(log);
+        drop(domains);
+        let measure = baseline.crash();
+        let (domains, _, _, _) = fixture(measure.clone()).await?;
+        let snapshot = capture(domains.custody())?;
+        let start = measure.operations();
+        publish(domains.custody(), &snapshot)?;
+        let operations = measure.operations() - start;
+        assert!(operations > 0);
+        drop(domains);
+        for failure in 0..=operations {
+            let disk = baseline.crash();
+            let (domains, _, _, _) = fixture(disk.clone()).await?;
+            let snapshot = capture(domains.custody())?;
+            disk.fail_after(failure);
+            let result = publish(domains.custody(), &snapshot);
+            let crash = disk.crash();
+            disk.disarm();
+            drop(domains);
+            let (reopened, _, _, _) = fixture(crash).await?;
+            assert_eq!(
+                control::custody_state(reopened.custody())?,
+                original,
+                "table torn at {failure}"
+            );
+            let installed = load_snapshot(reopened.custody())?;
+            let cursor: AppliedCursor =
+                load(reopened.custody().store(), META, b"applied")?.unwrap();
+            if let Some(installed) = installed {
+                assert_eq!(installed.meta, snapshot.meta);
+                assert!(matches!(cursor, AppliedCursor::Snapshot { .. }));
+            } else {
+                assert!(result.is_err(), "successful snapshot absent at {failure}");
+                assert!(matches!(cursor, AppliedCursor::Entry(_)));
             }
         }
         Ok(())
