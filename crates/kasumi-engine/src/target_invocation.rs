@@ -380,17 +380,25 @@ impl TargetOperation {
         self.invocation()
             .prepare(self.context(), phase, input_sha256, admitted_at_ms)
     }
-    pub async fn run<T>(
-        &self,
-        future: impl Future<Output = anyhow::Result<T>>,
-    ) -> anyhow::Result<T> {
-        self.check()?;
-        let result = self
-            .admission
-            .run(self.invocation().run(&self.token, future))
-            .await?;
-        self.check()?;
-        Ok(result)
+    pub fn run<'a, T>(
+        &'a self,
+        future: impl Future<Output = anyhow::Result<T>> + 'a,
+    ) -> impl Future<Output = anyhow::Result<T>> + 'a {
+        // Recovery verification futures retain typed lineage and graph state.
+        // Put that state on the heap before composing the nested phase, request
+        // and timeout monitors, so each monitor carries only its pinned owner.
+        // Cancellation still drops this same future and the original operation
+        // retains all detached worker and storage ownership until actual drain.
+        let future = Box::pin(future);
+        async move {
+            self.check()?;
+            let result = self
+                .admission
+                .run(self.invocation().run(&self.token, future))
+                .await?;
+            self.check()?;
+            Ok(result)
+        }
     }
 }
 
