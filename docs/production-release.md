@@ -469,3 +469,10 @@ a read-only quota getter or caller capacity claim cannot close this dependency.
 - Packaging source531d86e test/provenance checks and earlier failures are retained
   in `docs/evidence/release-packaging-20260908`. No final candidate package has
   yet passed end-to-end assembly and deployment.
+
+- `bf9f240` independently authenticates planned source application retirement and
+  custody receipt verification, and dispatches the exact unavailable-source
+  issuer fence. Seven engine lifecycle tests, actual TLS backup/retirement and
+  strict workspace checks pass; final fixture-free check remains pending after
+  the custody split. Evidence: `docs/evidence/control-source-fencing-20260908`.
+  Phase-time retirement deadlines and complete activation/publication remain open.

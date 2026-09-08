@@ -1,0 +1,99 @@
+{
+  "commit": "bf9f2401ae0dc421c7f479d48ae86696dcfc66d3",
+  "tree": "25304308e41487b818e5d859e99d260111c665de",
+  "source_files": {
+    "path": "/tmp/kasumi-control-source-fence-source-files.json",
+    "bytes": 174940,
+    "sha256": "05e5cf817a45f8c78260446e17c16432d5764f36a7489a1fe927ddadcdedec2d"
+  },
+  "lockfile": {
+    "path": "/tmp/kasumi-production-standalone/Cargo.lock",
+    "bytes": 119474,
+    "sha256": "9f29f1383152d5ddf05b5b07955ca8b2766e1e06e2cd03ce77040d14f9371559"
+  },
+  "runtime": {
+    "toolchain": "Rust1.97.1",
+    "platform": "aarch64-apple-darwin",
+    "cargo_jobs": 2,
+    "test_threads": 2
+  },
+  "logs": [
+    {
+      "path": "/tmp/kasumi-control-source-fence-check.log",
+      "bytes": 865,
+      "sha256": "85f35aa4adb76be278a8079c3f92627f520bc94ebb7dcf9fba453edee6f85b0c",
+      "outcome": "passed workspace/all-features/all-targets before final source-custody split"
+    },
+    {
+      "path": "/tmp/kasumi-control-source-fence-tests.log",
+      "bytes": 943,
+      "sha256": "37a9a64eab2288b8c63ceacde220b704733e61037dc4271817606a139e4548ef",
+      "outcome": "passed focused recovery2/2 before final snapshot invariant tightening"
+    },
+    {
+      "path": "/tmp/kasumi-control-source-fence-final-lifecycle.log",
+      "bytes": 1154,
+      "sha256": "28ea7e7a8f0bc50ce67ff3df57dc1d512d3df3817bfeee99880b9286723deab9",
+      "outcome": "passed lifecycle7/7 before Clippy-only nested-if collapse"
+    },
+    {
+      "path": "/tmp/kasumi-control-source-fence-clippy.log",
+      "bytes": 2030,
+      "sha256": "66ddd8c3c027ba21defad056bc2a925d6ff0e36a32b06e10f0eabc494ab7e151",
+      "outcome": "failed lint: one collapsible_if; retained"
+    },
+    {
+      "path": "/tmp/kasumi-control-source-fence-clippy-2.log",
+      "bytes": 473,
+      "sha256": "82a7fdf00bcf2f231586fdff6d6731579bafb952927bd7c94247dc82a51f1b8a",
+      "outcome": "passed strict workspace before source-custody split"
+    },
+    {
+      "path": "/tmp/kasumi-control-source-fence-final-lifecycle-2.log",
+      "bytes": 1154,
+      "sha256": "15dc3a2303ca119c898e97af8aea454822209e8d2303835ab47d99e9b17e9a12",
+      "outcome": "passed final engine-source lifecycle7/7 in34.33s; subsequent changes affect server/docs only"
+    },
+    {
+      "path": "/tmp/kasumi-control-source-fence-production.log",
+      "bytes": 768,
+      "sha256": "4eecf38cc54df91a9da3677e95b51748dd0f38b9e86fa5ff5c6e3cfd50fb4738",
+      "outcome": "passed production no-default-feature server bins before source-custody split"
+    },
+    {
+      "path": "/tmp/kasumi-control-source-custody-clippy.log",
+      "bytes": 269,
+      "sha256": "ffe6ed41b7338fa165e7edc7ddf743c77ecac90c72aec8eb7b7928ae67649a8d",
+      "outcome": "passed final strict workspace/allfeatures/alltargets after source-custody split"
+    },
+    {
+      "path": "/tmp/kasumi-control-source-custody-native.log",
+      "bytes": 1390,
+      "sha256": "bea985e7f8db6a1bc3da60eee0e3b20849a7fcd3daf33f1514fdb39e5fa19008",
+      "outcome": "passed final native TLS backup/retirement1/1 in6.95s; linker unwind-size warning retained"
+    }
+  ],
+  "executables": [
+    {
+      "path": "/tmp/kasumi-production-standalone-target/debug/deps/lifecycle-c70bbb2e0c4a0ca5",
+      "bytes": 155919112,
+      "sha256": "272f2c65f1309a095997bed3527d27bb91031fb9cbfde98ecc27b4729acac50d",
+      "tests": "Final engine-source lifecycle7/7"
+    },
+    {
+      "path": "/tmp/kasumi-production-standalone-target/debug/deps/kasumi_server-8b9768f86cabe832",
+      "bytes": 287832512,
+      "sha256": "78d0d9f8036289fd89a8fdcebed6c4418653210872abf1737c64305090e65072",
+      "tests": "Final server-source native TLS backup/retirement1/1"
+    }
+  ],
+  "limitations": [
+    "This is an incremental macOS checkpoint, not final Linux or complete recovery acceptance.",
+    "The final documentation-only deadline-gap paragraph was added after code checks; executable source did not change.",
+    "Source-unavailable fence progression is exercised with cryptographic issuer fixtures in an actual replicated Control journal.",
+    "The native test runs the production planned source helper, not a complete Control-to-all-target recovery.",
+    "Planned start currently freezes retirement deadline too early; canonical phase-admission replacement is next.",
+    "Activation, activation confirmation, route publication, expired completion evidence, and expired non-target ambiguity remain open.",
+    "Final production-no-default-feature check after custody split is deferred for the root quiet acceptance window; all-feature strict workspace and native server build passed."
+  ]
+}
