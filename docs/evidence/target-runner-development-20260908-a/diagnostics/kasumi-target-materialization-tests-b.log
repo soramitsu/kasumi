@@ -1,0 +1,10 @@
+   Compiling kasumi-authority v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-authority)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.55s
+     Running unittests src/lib.rs (/tmp/kasumi-custody-substrate-target/debug/deps/kasumi_authority-507625201966ab62)
+
+running 2 tests
+test service::tests::issuer_tests::target_materialization_tests::actual_target_materialization_preserves_image_and_original_operation_fence ... ok
+test service::tests::issuer_tests::target_materialization_tests::three_actual_materializations_initialize_and_commit_completion_with_restart_proof ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 12.25s
+

@@ -5,10 +5,14 @@ mod control;
 pub use control::*;
 mod gate;
 mod lifecycle;
+mod lifecycle_gate;
 mod lifecycle_proof;
 pub use lifecycle::*;
+pub use lifecycle_gate::{LifecycleFence, LifecycleGate};
 pub use lifecycle_proof::*;
 mod proof;
+mod target;
+pub use target::*;
 mod target_stop;
 pub use target_stop::*;
 mod protocol;
@@ -19,3 +23,6 @@ pub use proof::{
 pub use protocol::*;
 #[cfg(test)]
 mod tests;
+
+mod target_runtime_protocol;
+pub use target_runtime_protocol::*;

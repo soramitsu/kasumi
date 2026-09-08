@@ -230,6 +230,7 @@ impl Fixture {
                             node_id: id,
                             principal: format!("target-{id}"),
                             certificate_sha256: format!("{id:064x}"),
+                            attestation_public_key: format!("{:064x}", id + 100),
                         },
                     )
                 })

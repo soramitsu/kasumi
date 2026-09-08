@@ -1,0 +1,36 @@
+    Checking kasumi-clock v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-clock)
+    Checking kasumi-types v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-types)
+    Checking kasumi-serving v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-serving)
+    Checking kasumi-store v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-store)
+    Checking kasumi-raft v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-raft)
+    Checking kasumi-query v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-query)
+    Checking kasumi-engine v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-engine)
+error: enclosing `Ok` and `?` operator are unneeded
+   --> crates/kasumi-engine/src/target_activation_service.rs:170:30
+    |
+170 |                 .run(async { Ok(task.await??) })
+    |                              ^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_question_mark
+    = note: `-D clippy::needless-question-mark` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::needless_question_mark)]`
+help: remove the enclosing `Ok` and `?` operator
+    |
+170 -                 .run(async { Ok(task.await??) })
+170 +                 .run(async { task.await? })
+    |
+
+error: enclosing `Ok` and `?` operator are unneeded
+   --> crates/kasumi-engine/src/target_service.rs:148:30
+    |
+148 |                 .run(async { Ok(task.await??) })
+    |                              ^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_question_mark
+help: remove the enclosing `Ok` and `?` operator
+    |
+148 -                 .run(async { Ok(task.await??) })
+148 +                 .run(async { task.await? })
+    |
+
+error: could not compile `kasumi-engine` (lib) due to 2 previous errors

@@ -30,6 +30,48 @@ impl ServingGate {
             authority_digest,
         }))
     }
+    pub fn requires_lifecycle(&self) -> Result<bool> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("serving gate poisoned"))?;
+        if state.closed || state.lease.check().is_err() {
+            state.closed = true;
+            self.closed.send_replace(true);
+            anyhow::bail!("serving gate expired");
+        }
+        Ok(!state
+            .lease
+            .boot
+            .trust
+            .manifest()
+            .lifecycle_controls
+            .is_empty())
+    }
+    pub fn is_prepared(&self) -> Result<bool> {
+        self.check()?;
+        Ok(self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("serving gate poisoned"))?
+            .lease
+            .signed
+            .claims
+            .request
+            .purpose
+            == LeasePurpose::RestorePreparation)
+    }
+    pub fn authority(&self) -> Result<crate::AuthorityTrust> {
+        self.check()?;
+        Ok(self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("serving gate poisoned"))?
+            .lease
+            .boot
+            .trust
+            .clone())
+    }
     pub fn identity(&self) -> &ServingIdentity {
         &self.identity
     }

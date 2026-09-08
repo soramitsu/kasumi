@@ -555,3 +555,6 @@ fn authorized<T>(bearer: &str, value: T) -> Result<Request<T>, ClientError> {
     );
     Ok(request)
 }
+
+mod target;
+pub use target::{KasumiTargetClient, TargetAcknowledgement};

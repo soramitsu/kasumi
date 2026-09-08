@@ -1,0 +1,15 @@
+   Compiling kasumi-types v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-types)
+   Compiling kasumi-serving v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-serving)
+   Compiling kasumi-store v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-store)
+   Compiling kasumi-query v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-query)
+   Compiling kasumi-raft v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-engine)
+   Compiling kasumi-authority v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-authority)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 48.85s
+     Running unittests src/lib.rs (/tmp/kasumi-custody-substrate-target/debug/deps/kasumi_authority-507625201966ab62)
+
+running 1 test
+test service::tests::issuer_tests::target_materialization_tests::independent_target_journal_reserves_stop_after_normal_quota_and_recovers_encrypted ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 24 filtered out; finished in 2.82s
+

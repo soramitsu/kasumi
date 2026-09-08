@@ -265,7 +265,7 @@ impl RaftGroup {
     }
 
     pub async fn initialize(&self, members: BTreeMap<u64, BasicNode>) -> Result<()> {
-        self.check_access()?;
+        self.check_proposal()?;
         ensure!(!members.is_empty(), "membership cannot be empty");
         self.raft
             .initialize(members)
@@ -277,7 +277,7 @@ impl RaftGroup {
     /// Success means quorum persistence followed by local atomic application.
     /// Timeout/cancellation does not imply rollback: retry with an application idempotency key.
     pub async fn write(&self, command: Vec<u8>) -> Result<Vec<u8>> {
-        self.check_access()?;
+        self.check_proposal()?;
         let response = self
             .raft
             .client_write(RaftCommand::application(command))
@@ -291,7 +291,7 @@ impl RaftGroup {
         command: Vec<u8>,
         seed: RetirementLogSeed,
     ) -> Result<Vec<u8>> {
-        self.check_access()?;
+        self.check_proposal()?;
         let response = self
             .raft
             .client_write(RaftCommand::retirement(command, seed)?)
@@ -306,7 +306,7 @@ impl RaftGroup {
     }
 
     pub async fn write_custody(&self, command: CustodyCommand) -> Result<Vec<u8>> {
-        self.check_access()?;
+        self.check_proposal()?;
         let response = self
             .raft
             .client_write(RaftCommand::custody(&command)?)
@@ -325,13 +325,13 @@ impl RaftGroup {
     }
 
     pub async fn add_learner(&self, id: u64, node: BasicNode) -> Result<()> {
-        self.check_access()?;
+        self.check_proposal()?;
         self.raft.add_learner(id, node, true).await?;
         Ok(())
     }
 
     pub async fn change_membership(&self, voters: BTreeSet<u64>) -> Result<()> {
-        self.check_access()?;
+        self.check_proposal()?;
         ensure!(!voters.is_empty(), "membership cannot be empty");
         self.raft.change_membership(voters, false).await?;
         Ok(())
@@ -343,6 +343,13 @@ impl RaftGroup {
         Ok(())
     }
 
+    fn check_proposal(&self) -> Result<()> {
+        self.check_access()?;
+        self.store
+            .application()
+            .storage_access()
+            .check_consensus_proposal()
+    }
     pub fn check_access(&self) -> Result<()> {
         ensure!(
             self.ownership.load(Ordering::Acquire),
@@ -370,3 +377,6 @@ impl RaftGroup {
         result.map_err(Into::into)
     }
 }
+
+mod local_applied;
+pub use local_applied::ConfirmedLocalApplication;

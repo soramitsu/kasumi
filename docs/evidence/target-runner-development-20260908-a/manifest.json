@@ -1,0 +1,406 @@
+{
+  "kind": "unfinished-development-handoff",
+  "verified": false,
+  "files": [
+    {
+      "path": "HANDOFF.md",
+      "sha256": "cf5bb1d0b182314dd7a310b4acc34bc826eb9f1825515237d42e01940a2c12e5",
+      "bytes": 1782
+    },
+    {
+      "path": "diagnostics/kasumi-target-activation-diagnostic-g.log",
+      "sha256": "462e4f4cdaf8c509bb00324724a2013a9d375aa90c26cad5143a0bb569163a08",
+      "bytes": 1973
+    },
+    {
+      "path": "diagnostics/kasumi-target-activation-tests-a.log",
+      "sha256": "f3173cfebca71a7a728e1224cf25e198dacf7a52408384dc6f0a3408a2b1b746",
+      "bytes": 2147
+    },
+    {
+      "path": "diagnostics/kasumi-target-activation-tests-b.log",
+      "sha256": "95bb707c45206bf9df282b0453b6572eb163006c40a002a2f35f8e72888d148d",
+      "bytes": 1701
+    },
+    {
+      "path": "diagnostics/kasumi-target-activation-tests-c.log",
+      "sha256": "b6c190fab02737d74ee583a6bbde8325bc9c8e160948e427f7c5661996fce34b",
+      "bytes": 1692
+    },
+    {
+      "path": "diagnostics/kasumi-target-activation-tests-d.log",
+      "sha256": "b58debd205104ff7485213560386cdafb19ad34d39450728bbeb3b44eede82e3",
+      "bytes": 846
+    },
+    {
+      "path": "diagnostics/kasumi-target-activation-tests-e.log",
+      "sha256": "96ec7c1ba9461b39689644f9fd23e316fd1a925b7768d2fdcc63c9c45c0374b6",
+      "bytes": 2720
+    },
+    {
+      "path": "diagnostics/kasumi-target-activation-tests-f.log",
+      "sha256": "05c31f811abd4f6b33b1fb841598c78405ed969a275047bf943a5c50599e9d88",
+      "bytes": 2148
+    },
+    {
+      "path": "diagnostics/kasumi-target-activation-tests-h.log",
+      "sha256": "81548606fd6d85f65cc995b9b4606a1df01ca9377b62ed355b125120bf0a6da0",
+      "bytes": 1384
+    },
+    {
+      "path": "diagnostics/kasumi-target-clippy-preflight.log",
+      "sha256": "72ac13279ffde00c28d8445cbdaaa48aa9b49241b6eaa4224cc86707d7601bb2",
+      "bytes": 1189
+    },
+    {
+      "path": "diagnostics/kasumi-target-inspection-confirmation-check-a.log",
+      "sha256": "4336fc6c50700e52b48afab804eb954f0ca2d4b788f91ce4a5b7b3267ef52353",
+      "bytes": 712
+    },
+    {
+      "path": "diagnostics/kasumi-target-inspection-tests-a.log",
+      "sha256": "0177d308e9d765671bdd2dcdc47b62d3746775331aa89a7a4828d54eed965df3",
+      "bytes": 1694
+    },
+    {
+      "path": "diagnostics/kasumi-target-inspection-tests-b.log",
+      "sha256": "f4234a2e094250ca9dcaaa631eeeccf878fc701657f50e27646860bb3855658e",
+      "bytes": 819
+    },
+    {
+      "path": "diagnostics/kasumi-target-journal-check-a.log",
+      "sha256": "0dd7987a769b1e9ce66a0dfceac8e57af53bb5c91aaf70fe11becf85d9294195",
+      "bytes": 2630
+    },
+    {
+      "path": "diagnostics/kasumi-target-journal-check-b.log",
+      "sha256": "c486bbbddefa02b351ff5340653c530d400e56bf19d438286e2d1fb4563a1f77",
+      "bytes": 164
+    },
+    {
+      "path": "diagnostics/kasumi-target-journal-tests-a.log",
+      "sha256": "52e7b14fff3d113d47abbb322178c89baa0f34dba0443f19d1236eb08311dc68",
+      "bytes": 1095
+    },
+    {
+      "path": "diagnostics/kasumi-target-lineage-check.log",
+      "sha256": "faa50981f934318ee4ee1c10a949eaa64ea0764c48e3ee519276879b53cceca6",
+      "bytes": 999
+    },
+    {
+      "path": "diagnostics/kasumi-target-local-confirmation-check-a.log",
+      "sha256": "be3e6a567c6ee937d4c5c463a46e6bd0dc57767b3f0efacf568a24921720d7a5",
+      "bytes": 712
+    },
+    {
+      "path": "diagnostics/kasumi-target-local-confirmation-test-a.log",
+      "sha256": "f4907890eaf7b33a211b985a92cf7ae4a9f7f5d6b0a527270172cbf9e38033d0",
+      "bytes": 635
+    },
+    {
+      "path": "diagnostics/kasumi-target-local-position-check-a.log",
+      "sha256": "56999841653609f090bb1183738b1f9ce3012f0bf7d83845420ac8b3db4adcfc",
+      "bytes": 890
+    },
+    {
+      "path": "diagnostics/kasumi-target-materialization-e.log",
+      "sha256": "a4843a7e3b887cb619ef593ef65f2c58e6664e8697725f0cb34ffc85d1ec42a5",
+      "bytes": 2306
+    },
+    {
+      "path": "diagnostics/kasumi-target-materialization-f.log",
+      "sha256": "c33c70059615829d0e96be99fc75198118bda5ba46ef7a58dc857c4be5c3868b",
+      "bytes": 844
+    },
+    {
+      "path": "diagnostics/kasumi-target-materialization-g.log",
+      "sha256": "d7af8be58c64def52ce177087a9b5b6872fde71625e96c2d298b47bcd1410a47",
+      "bytes": 1810
+    },
+    {
+      "path": "diagnostics/kasumi-target-materialization-tests-a.log",
+      "sha256": "2d335e883e37b469dc251c9e100e40e0ed4707fc3a90136a14647c03751804cf",
+      "bytes": 2339
+    },
+    {
+      "path": "diagnostics/kasumi-target-materialization-tests-b.log",
+      "sha256": "5d19c13b0c3786ab38f34a236cba5ec4e4abc18d19b9721b52e5216d50f38eb4",
+      "bytes": 705
+    },
+    {
+      "path": "diagnostics/kasumi-target-materialization-tests-c.log",
+      "sha256": "7cd0821537dbb4c7f63047f0c02a54c73a04ed2622229c1283fe49ae081d673e",
+      "bytes": 1355
+    },
+    {
+      "path": "diagnostics/kasumi-target-materialization-tests-d.log",
+      "sha256": "6afe9e225639a2015b115932dd8c480af3e730064675ee5659cf26f184ef8325",
+      "bytes": 1235
+    },
+    {
+      "path": "diagnostics/kasumi-target-projection-check-a.log",
+      "sha256": "4769b6c1efb5c26c719bc55d86247060e81c48bf50554a9786f724b5990d2756",
+      "bytes": 2842
+    },
+    {
+      "path": "diagnostics/kasumi-target-projection-check-b.log",
+      "sha256": "e69830f51b29a5971c9120afacd06e04a2f8e9184f849c0220abc9b06d773ed4",
+      "bytes": 443
+    },
+    {
+      "path": "diagnostics/kasumi-target-projection-test-a.log",
+      "sha256": "1b555d7bf76401bb60361c8551c57d47a0cb4e420ce4ee19249f9dae5ead409f",
+      "bytes": 1988
+    },
+    {
+      "path": "diagnostics/kasumi-target-request-admission-a.log",
+      "sha256": "6109a373c1bd6cdd79719a46fe8bed8f4de2465862b7f20bb06a0ef22eb3a856",
+      "bytes": 884
+    },
+    {
+      "path": "diagnostics/kasumi-target-request-admission-b.log",
+      "sha256": "643a541039902929300e39f71e163fa807efed9fc7cfdcc8c98c3514fc6b0009",
+      "bytes": 743
+    },
+    {
+      "path": "diagnostics/kasumi-target-request-admission-c.log",
+      "sha256": "82dde22637055dc64fd6f53db9e5e15a63bc0e62fc31026899e5e4a0516979c8",
+      "bytes": 525
+    },
+    {
+      "path": "diagnostics/kasumi-target-resource-check.log",
+      "sha256": "650ce04cd20679027415c3d460606ae44f952c70cfceca93dcf7fc443b941bbf",
+      "bytes": 1189
+    },
+    {
+      "path": "diagnostics/kasumi-target-resource-targets-check.log",
+      "sha256": "f64ad33394c28e8aa83457e2aa4ca714b653acf71d4854df3f24ad0cd347a665",
+      "bytes": 1189
+    },
+    {
+      "path": "diagnostics/kasumi-target-runner-check-a.log",
+      "sha256": "2663b1b42994d06d00257d00853932c4bffe23b67a75c55c2b64a9722702d559",
+      "bytes": 1165
+    },
+    {
+      "path": "diagnostics/kasumi-target-runner-check-b.log",
+      "sha256": "ffc21e4f82b1d1d3ecc11baf157c905750665ad4222c168699c532909658df8a",
+      "bytes": 1368
+    },
+    {
+      "path": "diagnostics/kasumi-target-runner-check-c.log",
+      "sha256": "42bdc7f9a0e4608a6b696b2497030b449c4a59586b7dfc7802847c26e09a8afd",
+      "bytes": 979
+    },
+    {
+      "path": "diagnostics/kasumi-target-runner-clippy-j.log",
+      "sha256": "4411f56de228041ecf031bd552fa3f07e057dbc1d79ee6dcb6fa188fcf71b229",
+      "bytes": 1914
+    },
+    {
+      "path": "diagnostics/kasumi-target-runner-clippy-k.log",
+      "sha256": "6b45fb2671acdb92f3d612e37df1a3ad232c0e1a5b1a1b5b1a603082acda2924",
+      "bytes": 1864
+    },
+    {
+      "path": "diagnostics/kasumi-target-runner-clippy-l.log",
+      "sha256": "2e69b13ec2c68d9087fa8e052588a4a44948d5eb0e3f3ad576d1268ddb02ebd9",
+      "bytes": 888
+    },
+    {
+      "path": "diagnostics/kasumi-target-runner-engine-check-a.log",
+      "sha256": "0f4903cd0578c45b03bf95710b912d7a8141411419c47ff18dca05556bd24cc0",
+      "bytes": 1054
+    },
+    {
+      "path": "diagnostics/kasumi-target-runner-engine-check-b.log",
+      "sha256": "7e3dea8a57c56607b9a5dca5540f68398c74afeb13ce5584143b569d62d072c4",
+      "bytes": 2651
+    },
+    {
+      "path": "diagnostics/kasumi-target-runner-engine-check-c.log",
+      "sha256": "a48e0180567f9515d9804d3d51046bf04ed10ecc7bc51a9ad501c8170638fc03",
+      "bytes": 1440
+    },
+    {
+      "path": "diagnostics/kasumi-target-runner-engine-check-d.log",
+      "sha256": "055a75078d911b66401fd7d49b45da784e0931927adb76fac070234336c21ca9",
+      "bytes": 1439
+    },
+    {
+      "path": "diagnostics/kasumi-target-runner-engine-check-e.log",
+      "sha256": "8093cc95f43ba77b91fe303aacd82a827ee6e5d7b964a084d137e8e915c1cfc6",
+      "bytes": 1623
+    },
+    {
+      "path": "diagnostics/kasumi-target-runner-engine-check-f.log",
+      "sha256": "e6959d79cc525bc61cd3f05e137aeca305185ff403ab8840ad014a0f8182938a",
+      "bytes": 164
+    },
+    {
+      "path": "diagnostics/kasumi-target-runner-engine-check-g.log",
+      "sha256": "755d134501777492caa0fce3b96ec5cabbfc0187961a2868c6591b43a364deea",
+      "bytes": 1280
+    },
+    {
+      "path": "diagnostics/kasumi-target-runner-workspace-check-i.log",
+      "sha256": "60ba0df8d569b471ae05340cefe0d476c714a5d620820a38417c795bb7c8209f",
+      "bytes": 979
+    },
+    {
+      "path": "diagnostics/kasumi-target-runtime-check-a.log",
+      "sha256": "5798711e142b4296331cb6ef060fd1a59d1aea9a44f047ec3f919c3ac1fe97d7",
+      "bytes": 3165
+    },
+    {
+      "path": "diagnostics/kasumi-target-runtime-check-b.log",
+      "sha256": "321d0843eff60bc7980150f8c528865687f83d3ce456072a4df9cc30a88307a4",
+      "bytes": 1307
+    },
+    {
+      "path": "diagnostics/kasumi-target-runtime-check-c.log",
+      "sha256": "0dbee266431c7eec1119bcd48389e1e357da15b061088e671726f97404d33507",
+      "bytes": 466
+    },
+    {
+      "path": "diagnostics/kasumi-target-runtime-check-d.log",
+      "sha256": "e0d240dd05b9c1d2439da746c1d1e69c352df17f7c5d3435fbc59f04cf1661fb",
+      "bytes": 255
+    },
+    {
+      "path": "diagnostics/kasumi-target-runtime-check-e.log",
+      "sha256": "1b22e871e6cebed90f4043dec9dcfef8c21ab005256ceb37f95cd3d1d5119779",
+      "bytes": 712
+    },
+    {
+      "path": "diagnostics/kasumi-target-runtime-check-f.log",
+      "sha256": "b2553a5e6a575b2e7118a85b36e0cb6845a66e926d9ababd4c08c85f95e39095",
+      "bytes": 685
+    },
+    {
+      "path": "diagnostics/kasumi-target-runtime-check-g.log",
+      "sha256": "4526ff4b087958e0de9d46e3e2e14ae4eedb9388461010200087a245560609d6",
+      "bytes": 255
+    },
+    {
+      "path": "diagnostics/kasumi-target-runtime-clippy-a.log",
+      "sha256": "7aa607e73ca78b3fe6f32a7393000b0b4a62fd7c0284ff8c97735b7663a7c97a",
+      "bytes": 2497
+    },
+    {
+      "path": "diagnostics/kasumi-target-runtime-clippy-b.log",
+      "sha256": "a91784c3c132beb5fe9c0cf4a938d0eaa865f5e4945a1321a1906cd8e7b3cc33",
+      "bytes": 2300
+    },
+    {
+      "path": "diagnostics/kasumi-target-runtime-outcome-a.log",
+      "sha256": "2c179d5096881b53a8f83ea557f65f72ad64c1b6be9ae889cfdf636c6cdd9b66",
+      "bytes": 1449
+    },
+    {
+      "path": "diagnostics/kasumi-target-server-tests-a.log",
+      "sha256": "f69eba04c9c98f6d0485c48f37eb2605d0d5e6217a5d1e431aabe82062ffe30f",
+      "bytes": 6384
+    },
+    {
+      "path": "diagnostics/kasumi-target-serving-check-a.log",
+      "sha256": "4f56759b3577cd1e524ca9d7c040d6572cb52be837bc293dac7e9edd2f77e122",
+      "bytes": 5746
+    },
+    {
+      "path": "diagnostics/kasumi-target-serving-check-b.log",
+      "sha256": "8e04fa43c4810e8e231be6eb927d7fecf703609228ff2cfe58b07252f096b245",
+      "bytes": 254
+    },
+    {
+      "path": "diagnostics/kasumi-target-serving-runtime-check-a.log",
+      "sha256": "67046fee737c34bd66ed6d33dcdc685f93d0db6760179e1e1d4fb8d28b3821f1",
+      "bytes": 255
+    },
+    {
+      "path": "diagnostics/kasumi-target-serving-runtime-clippy-a.log",
+      "sha256": "076260d9fc9371a0e264c7d3dc0d0446153e131dd0ae2fe6752275f8527e9e3b",
+      "bytes": 346
+    },
+    {
+      "path": "diagnostics/kasumi-target-serving-runtime-clippy-b.log",
+      "sha256": "6573ada1c29d4b2c6243aee1a60b16bf1e7c3f75d4e52f1b558a8aa807102055",
+      "bytes": 712
+    },
+    {
+      "path": "diagnostics/kasumi-target-serving-test-a.log",
+      "sha256": "a444419574532e6a78e0ad3055a7750ab91bf5501f1c48072eb38ff0659cb3c8",
+      "bytes": 1088
+    },
+    {
+      "path": "diagnostics/kasumi-target-serving-test-b.log",
+      "sha256": "a3632123b804615fe78dbbbd0eda72d5bdca463c493cd28dc84ee3a24ad7a149",
+      "bytes": 1325
+    },
+    {
+      "path": "diagnostics/kasumi-target-serving-test-c.log",
+      "sha256": "3d579a23e2d806b6b7b6785e7d37c8a6429a033984464dbf6838ecd5add1090c",
+      "bytes": 1081
+    },
+    {
+      "path": "diagnostics/kasumi-target-stop-check-a.log",
+      "sha256": "415ebf018bfc3e44204737703d2461b4c6c8678fbf4dc107b3486b5aaebcd85d",
+      "bytes": 1213
+    },
+    {
+      "path": "diagnostics/kasumi-target-stop-clippy-a.log",
+      "sha256": "aa68d5262191b1eab4e85d5f9ba3b695c9801911c266493ae5c9a65fa9199123",
+      "bytes": 1213
+    },
+    {
+      "path": "diagnostics/kasumi-target-stop-native-a.log",
+      "sha256": "23bf649c80243402b526bd961d9a8fffdb3613f451ebb0f18063541e11eebe69",
+      "bytes": 1368
+    },
+    {
+      "path": "diagnostics/kasumi-target-stop-tests-a.log",
+      "sha256": "46f39316c5e67acf93856f6bc7b8c9cc8286c1a3d659a03773e053dab22187a3",
+      "bytes": 1839
+    },
+    {
+      "path": "diagnostics/kasumi-target-stop-tests-b.log",
+      "sha256": "23d71e17ae04ca09633999983243ee883a7beb10fd26fa6a32e23e65fc637903",
+      "bytes": 643
+    },
+    {
+      "path": "diagnostics/kasumi-target-stop-tests-c.log",
+      "sha256": "55ce2bcc7762f043cf2483db1bb504dca55b592c53d5cc31c8ad154aeef1f705",
+      "bytes": 843
+    },
+    {
+      "path": "diagnostics/kasumi-target-transition-check.log",
+      "sha256": "068c2044911100ac462d586932fbcb829cb0f6fe4d3a0875ddb23526c473e419",
+      "bytes": 999
+    },
+    {
+      "path": "earlier-runner-draft.md",
+      "sha256": "f9fe3eea79d8adb09f7c0caa35b86c1a7435de8eb8fbbdb4087dbd26729707ce",
+      "bytes": 4385
+    },
+    {
+      "path": "git-status.txt",
+      "sha256": "9f3b8addea754256fb2239ea3132e25f3d766f9506505f12a6e1d31df57a25bd",
+      "bytes": 2812
+    },
+    {
+      "path": "progress-history.md",
+      "sha256": "434a0585f69dbb370494a57ae35a6b077867a4ed8effc0946e00273cc6caacdd",
+      "bytes": 39665
+    },
+    {
+      "path": "source-manifest.json",
+      "sha256": "3e8303339583183c3b04be1ba2f9064735749822f7a643a54fafe690817cfb88",
+      "bytes": 149021
+    },
+    {
+      "path": "source.tar.gz",
+      "sha256": "417fb66178c9eb6e10a448192d43409347290cd4c9993bce8f481d46a92ec19f",
+      "bytes": 2477085
+    }
+  ]
+}

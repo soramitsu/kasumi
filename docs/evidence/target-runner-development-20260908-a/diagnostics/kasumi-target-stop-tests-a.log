@@ -1,0 +1,31 @@
+   Compiling kasumi-clock v0.1.0 (/private/tmp/kasumi-control-lifecycle/crates/kasumi-clock)
+   Compiling kasumi-types v0.1.0 (/private/tmp/kasumi-control-lifecycle/crates/kasumi-types)
+   Compiling kasumi-serving v0.1.0 (/private/tmp/kasumi-control-lifecycle/crates/kasumi-serving)
+   Compiling kasumi-store v0.1.0 (/private/tmp/kasumi-control-lifecycle/crates/kasumi-store)
+   Compiling kasumi-raft v0.1.0 (/private/tmp/kasumi-control-lifecycle/crates/kasumi-raft)
+   Compiling kasumi-authority v0.1.0 (/private/tmp/kasumi-control-lifecycle/crates/kasumi-authority)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 25.86s
+     Running unittests src/lib.rs (/tmp/kasumi-custody-substrate-target/debug/deps/kasumi_authority-fad8fb0008c4fbcc)
+
+running 2 tests
+test service::tests::permanent_target_stop_defeats_missing_and_prepared_generations_then_reopens_after_full_drain ... FAILED
+test service::tests::target_stop_and_activation_ordering_preserves_committed_winner_and_current_admin_release ... ok
+
+failures:
+
+---- service::tests::permanent_target_stop_defeats_missing_and_prepared_generations_then_reopens_after_full_drain stdout ----
+
+thread 'service::tests::permanent_target_stop_defeats_missing_and_prepared_generations_then_reopens_after_full_drain' (16275656) panicked at crates/kasumi-authority/src/tests.rs:211:88:
+called `Result::unwrap()` on an `Err` value: opening durable database
+
+Caused by:
+    Database already open. Cannot acquire lock.
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    service::tests::permanent_target_stop_defeats_missing_and_prepared_generations_then_reopens_after_full_drain
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 7 filtered out; finished in 5.57s
+
+error: test failed, to rerun pass `-p kasumi-authority --lib`

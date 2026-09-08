@@ -147,6 +147,10 @@ pub struct LifecycleLeaseClaims {
     pub partition: u16,
     pub authority_term: u64,
     pub authority_revision: u64,
+    /// The issuer's actual current incarnation role. Cleanup has no application
+    /// authority; inspection may use the exact prepared or activated role.
+    #[serde(deserialize_with = "kasumi_types::require_explicit_option")]
+    pub application_purpose: Option<LeasePurpose>,
     pub lifetime_ms: u64,
     /// Remaining actual node JWT AND original committed Control JWT at issuer
     /// admission, capped by the immutable maximum and anchored before dispatch.

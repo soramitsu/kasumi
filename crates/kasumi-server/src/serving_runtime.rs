@@ -104,6 +104,9 @@ impl Drop for RuntimeLease {
     }
 }
 impl RuntimeLease {
+    pub(crate) fn gate(&self) -> &Arc<ServingGate> {
+        &self.gate
+    }
     pub(crate) async fn acquire(
         config: &ServingAuthorityConfig,
         credential: CredentialSource,

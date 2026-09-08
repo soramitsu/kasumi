@@ -1,0 +1,19 @@
+    Checking kasumi-types v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-types)
+    Checking kasumi-serving v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-serving)
+    Checking kasumi-store v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-store)
+    Checking kasumi-raft v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-raft)
+    Checking kasumi-query v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-query)
+    Checking kasumi-client v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-client)
+    Checking kasumi-engine v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-engine)
+    Checking kasumi-authority v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-authority)
+    Checking kasumi-server v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-server)
+error[E0433]: cannot find module or crate `ring` in this scope
+  --> crates/kasumi-server/src/target_runtime.rs:18:5
+   |
+18 | use ring::signature::{Ed25519KeyPair, KeyPair};
+   |     ^^^^ use of unresolved module or unlinked crate `ring`
+   |
+   = help: if you wanted to use a crate named `ring`, use `cargo add ring` to add it to your `Cargo.toml`
+
+For more information about this error, try `rustc --explain E0433`.
+error: could not compile `kasumi-server` (lib) due to 1 previous error

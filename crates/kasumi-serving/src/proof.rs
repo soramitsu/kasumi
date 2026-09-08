@@ -170,6 +170,9 @@ impl AuthorityTrust {
             (
                 AuthorityAction::Activate {
                     target: requested, ..
+                }
+                | AuthorityAction::ActivateCommitted {
+                    target: requested, ..
                 },
                 AuthorityOutcome::Activated {
                     target,

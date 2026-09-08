@@ -149,6 +149,8 @@ fn default_prepared_limit() -> usize {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeConfig {
+    #[serde(deserialize_with = "kasumi_types::require_explicit_option")]
+    pub target_recovery: Option<crate::target_runtime_config::TargetRecoveryConfig>,
     pub serving_authorities: BTreeMap<String, crate::serving_runtime::ServingAuthorityConfig>,
     #[serde(default = "default_prepared_limit")]
     pub max_prepared_generations_per_tenant: usize,
@@ -185,6 +187,9 @@ impl RuntimeConfig {
         ensure!(self.format == 1, "unsupported runtime configuration format");
         absolute(&self.database_path)?;
         self.admission.validate()?;
+        if let Some(target) = &self.target_recovery {
+            target.validate(self)?;
+        }
         for (name, authority) in &self.serving_authorities {
             kasumi_types::validate_name(name)?;
             authority.validate()?;
@@ -215,7 +220,8 @@ impl RuntimeConfig {
             Authenticator::new(self.auth.clone())?,
         )?;
         ensure!(
-            !self.tenants.is_empty() && self.tenants.len() <= 10_000,
+            (!self.tenants.is_empty() || self.target_recovery.is_some())
+                && self.tenants.len() <= 10_000,
             "configure 1–10000 tenants"
         );
         ensure!(
@@ -762,6 +768,7 @@ pub struct NodeRuntime {
     local_certificate_pin: CertificatePin,
     closed: bool,
     administration: Option<Arc<crate::administration::Administration>>,
+    target_recovery: Option<Arc<crate::target_runtime::TargetRecoveryRuntime>>,
 }
 
 impl NodeRuntime {
@@ -904,6 +911,7 @@ impl NodeRuntime {
             local_certificate_pin,
             closed: false,
             administration: None,
+            target_recovery: None,
         };
         let result = async {
             let mut managed = vec![crate::administration::ManagedTenant {
@@ -1000,6 +1008,9 @@ impl NodeRuntime {
                 });
                 (tenant.tenant.clone(), factory)
             }).collect();
+            if config.target_recovery.is_some() {
+                runtime.target_recovery=Some(crate::target_runtime::TargetRecoveryRuntime::open(config.clone(),credential.clone(),admission.clone(),runtime.audit.clone(),runtime.cluster.clone().context("target requires installed cluster")?,destinations.clone(),registry.clone()).await?);
+            }
             let administration = crate::administration::Administration::new(
                 config.clone(),
                 registry.clone(),
@@ -1032,6 +1043,7 @@ impl NodeRuntime {
             if let Some(signer) = lifecycle_signer {
                 admin = admin.add_service(crate::rpc::NativeLifecycleControl::new(runtime.control.database.clone(), signer, auth.clone())?.service());
             }
+            if let Some(target)=&runtime.target_recovery {admin=admin.add_service(crate::rpc::NativeTargetRecovery::new(target.clone(),auth.clone()).service());}
             let admin = admin.into_axum_router();
             runtime.data_listeners = vec![
                 BoundListener {
@@ -1433,6 +1445,9 @@ impl NodeRuntime {
     }
 
     pub async fn shutdown(&mut self) -> Result<()> {
+        if let Some(target) = self.target_recovery.take() {
+            target.shutdown().await?;
+        }
         if self.closed {
             return Ok(());
         }
@@ -1612,6 +1627,7 @@ pub fn example_config() -> RuntimeConfig {
         strict_read_audit: false,
     };
     RuntimeConfig {
+        target_recovery: None,
         serving_authorities: BTreeMap::from([(
             "storage-fence".into(),
             crate::serving_runtime::ServingAuthorityConfig {
