@@ -373,3 +373,22 @@ a read-only quota getter or caller capacity claim cannot close this dependency.
   hashes are in `docs/evidence/frozen-linux-arm64-functional-3ee5787-20260908`.
   Binaries are preserved separately in the dedicated VM. Subsequent fixes require
   a fresh final-source run; this failed attempt is never substituted by a pass.
+
+- `ad71568` removes target-journal lifetime count caps and the 256 MiB metadata
+  ceiling. Checked 64-bit counts and configurable byte capacity retain completion,
+  activation and permanent-stop reserves. Actual encrypted exhaustion, drained
+  expansion, original retry, full-budget stop/restart and unsupported-head
+  rejection pass; nine materialization-filter cases and affected strict Clippy
+  pass. Combined `a59ddb4` passes fixture-free server checks and strict runtime
+  private-key validation. Evidence is in `docs/evidence/expandable-target-journal-20260908`.
+- `5859d8e` adds a replicated authority signing head, explicit staged activation,
+  generation fences and current administrative outcome resolution. Authority
+  tests pass 40, actual TLS transition passes, and strict workspace/production
+  checks pass. Evidence is in `docs/evidence/replicated-signing-head-20260908`.
+  Complete verifier enrollment, remote acknowledgments and global retirement
+  drains remain unfinished.
+- Exact voter replacement and actual restore-worker drain regressions pass on
+  their recorded macOS sources. Evidence is in
+  `docs/evidence/exact-voter-replacement-20260908` and
+  `docs/evidence/restore-worker-drain-20260908`. These do not replace the failed
+  frozen Linux workspace gate.

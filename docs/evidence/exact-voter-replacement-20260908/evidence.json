@@ -1,0 +1,14 @@
+{
+  "source_commit": "7f4ff2f73bc2799238e1b880f965eb771dcaf73b",
+  "source_dirty": "",
+  "captured_at_utc": "2026-09-08T09:29:59.705929+00:00",
+  "log": "/tmp/kasumi-runtime-leader-removal-isolated.log",
+  "log_sha256": "d4378707bcc6232d770da9c05daa3e01b6304ff4f6f7f0f793a0aa25b2650e4c",
+  "executable": "/tmp/kasumi-production-runtime-target/debug/deps/kasumi_authority-481ba410417b8d16",
+  "executable_sha256": "c986dcf38408b7e3cfb33244420f7f79ae82ba15a6b3ed475e4d9f24882a7f42",
+  "lockfile_sha256": "a4a3883969dc9486548a1aea841ecf45c482c99e4ea1e0d47b56f6c52b2afa08",
+  "results": [
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 38 filtered out; finished in 7.80s"
+  ],
+  "scope": "Exact original voter replacement resolution fixture. Clean branch gate, global signing-head work stashed. Production semantics, command deadline and authorization lifetime unchanged. The Linux full workspace failure remains separately recorded by root; this focused macOS result is not that gate."
+}

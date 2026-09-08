@@ -1,0 +1,40 @@
+{
+  "checkpoint": "ad7156831a0d473bd27eaefd2900b5ff90f822bb",
+  "platform": "macOS ARM64",
+  "toolchain": "Rust 1.97.1",
+  "logs": {
+    "/tmp/kasumi-target-journal-budget-tests.log": "af98b7adef81f9858c2391abc97311b017d2932a19342f3d179f6cbbbc5487aa",
+    "/tmp/kasumi-target-journal-materialization-tests.log": "12f5f69492e164b7fc63758665d1f676dc03eb86166e4da00a61789d6c1370c7",
+    "/tmp/kasumi-target-journal-types-tests.log": "9dde9979fc9e5ba9de38cb570e90db8fffb62d95a8eb8ed6d87bf8c957abb64f",
+    "/tmp/kasumi-target-journal-budget-clippy.log": "0b0800592df36bd26c9f3dc312e99c9e2b0da8437344b2c99832bc03305b89c5",
+    "/tmp/kasumi-runtime-strict-key-tests.log": "419dd8324f1d1486594e0130cb1cca3d6dd769f1a398666dd20262ea287b530d",
+    "/tmp/kasumi-target-journal-production-check.log": "606f6ec860d301bb0f7cb46a3123060c4b75af82c26eb52d0580225669e51e21"
+  },
+  "executables": {
+    "/tmp/kasumi-production-root-target/debug/deps/kasumi_authority-481ba410417b8d16": "d6a2c42029be48c4b36d8524310f7d157b5c0be164f9f40ee1c972ba588148d4",
+    "/tmp/kasumi-production-root-target/debug/deps/kasumi_types-bcc7d464aa0c58d2": "014b1293b083c65e89d350b4278871ac824d90335ac6b59892d5e73507ace534"
+  },
+  "results": {
+    "journal": "1 passed,4.29s",
+    "materialization_filter": "9 passed,58.92s",
+    "limits": "1 passed",
+    "strict": "authority/engine/types all-features all-targets passed,85s"
+  },
+  "limitations": [
+    "Configured budget exhaustion/expansion tested with two phase identities; no actual100001-record lifetime gate or physical metadata capacity measurement.",
+    "New metadata head is mandatory; obsolete/unversioned/missing heads reject without rewriting retained records.",
+    "Operational capacity change currently requires all old journal owners to drain before reopening.",
+    "Cross-platform and final-source gates remain open; combined a59 production check passed."
+  ],
+  "tree": "e9689298e47e3542b5807febe27df225778abd01",
+  "lockfile_sha256": "a4a3883969dc9486548a1aea841ecf45c482c99e4ea1e0d47b56f6c52b2afa08",
+  "combined_source": "a59ddb49e4d4e13283eaf4298ec064af9e83a5e1",
+  "combined_results": {
+    "private_key_reader": "1passed0.03s; strict regular inode/owner/mode/nofollow/size validation",
+    "production": "server binaries no-default-features check passed33.54s"
+  },
+  "combined_executable": {
+    "path": "/tmp/kasumi-production-root-target/debug/deps/kasumi_server-8b9768f86cabe832",
+    "sha256": "477164b8578980cf67bf153098fee0136e51491644b709d6320d36d630c21198"
+  }
+}

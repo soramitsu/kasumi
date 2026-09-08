@@ -1,0 +1,14 @@
+{
+  "source": "b395d1eeb0f44a782f511b6e87025c370f91a0b5",
+  "platform": "macOS ARM64",
+  "toolchain": "Rust 1.97.1",
+  "logs": {
+    "/tmp/kasumi-restore-drain-a047d4f-tests.log": "c488a96434416956b38a7d01b2c4b5e7cf2f1013eae825f2272afa98df79ca74",
+    "/tmp/kasumi-restore-drain-combined-tests.log": "02e6f3ce17bbee82a6537308a0449838b88415fc496f35bbcdae7f00970bb054"
+  },
+  "executable": "/tmp/kasumi-production-root-target/debug/deps/kasumi_engine-e86d7e092c5bb129",
+  "executable_sha256": "b4cce97d1b8b9c75ba7f5a8d322efba4f6106e1c9f29b0acf3a338f26decb4e0",
+  "result": "one expiry-drain regression passed in0.11s",
+  "preserved_failure": "a047 integration test build missed mandatory source purpose in recovery fixture; b395 supplies exact matching fixture digest",
+  "limitation": "Focused macOS result; failed native Linux full workspace remains failed"
+}
