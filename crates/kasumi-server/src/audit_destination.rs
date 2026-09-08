@@ -102,7 +102,8 @@ impl crate::runtime::RuntimeConfig {
             Some(destination) => destination.open()?,
             None => cache.clone() as Arc<dyn AuditArchiveDestination>,
         };
-        store.install_tenant_audit_archive(cache, destination)
+        store.install_tenant_audit_archive(cache, destination)?;
+        Ok(())
     }
 }
 
