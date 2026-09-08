@@ -1,6 +1,7 @@
 //! Authenticated network adapters. All data operations delegate to kasumi-engine.
 pub mod administration;
 pub mod api;
+pub mod audit_destination;
 pub mod auth;
 pub mod authority_runtime;
 pub mod cluster;

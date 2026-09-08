@@ -118,3 +118,16 @@ gate above and usable installation artifacts.
   Its branch tests exercised real TLS backups, phase restart, target activation,
   permanent stops, substituted-file refusal and active-generation maintenance.
   Final combined-source and source-unavailable HA recovery acceptance remain open.
+
+- `f8e9618` requires an explicit node governor for service-audit retention. Its
+  frozen parallel library rerun passes 46 engine and 60 store tests (one live
+  provider test ignored), with 25/26 authority and 66/67 server tests passing.
+  The remaining authority acknowledgement and obsolete standalone restore test
+  are retained in `docs/evidence/integration-f8e9618-20260908`; neither is waived.
+- `f144d1a` integrates exact configured operator-key backups, private dependency
+  verification and durable credential-renewal retry coverage. Historical archive
+  dependencies must still be proven before any wrapping-key retirement.
+- Live backup verification still decodes a complete logical state after encrypted
+  spooling. Removing tenant-sized serialized buffers does not yet establish the
+  bounded maintenance-workspace gate; streaming invariant verification remains
+  necessary before the 3 GiB acceptance run.

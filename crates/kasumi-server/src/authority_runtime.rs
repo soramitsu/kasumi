@@ -83,7 +83,7 @@ impl AuthorityRuntimeConfig {
             roots[0] != roots[1] && roots[0] != roots[2] && roots[1] != roots[2],
             "authority/control/security wrapping roots must be independent"
         );
-        self.security_audit.retention.validate()?;
+        self.security_audit.validate()?;
         Ok(())
     }
 }

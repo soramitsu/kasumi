@@ -1,0 +1,62 @@
+{
+  "kind": "development integration diagnostics; not final release acceptance",
+  "source": "f8e96181c52db24f92c4f00783e3e6fd13c3e04e",
+  "lock_sha256": "f7d97206d4d99dd69b3350354a5bb4d673aad5560540a342cb9e465a28a7629a",
+  "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-apple-darwin\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+  "command": "cargo test --locked --no-fail-fast -j 2 -p kasumi-engine -p kasumi-store -p kasumi-server -p kasumi-authority --lib",
+  "environment": {
+    "CARGO_TARGET_DIR": "/tmp/kasumi-production-validation-target",
+    "RUST_TEST_THREADS": "unset; default parallel test scheduling"
+  },
+  "outcome": {
+    "authority": {
+      "passed": 25,
+      "failed": 1
+    },
+    "engine": {
+      "passed": 46,
+      "failed": 0
+    },
+    "server": {
+      "passed": 66,
+      "failed": 1
+    },
+    "store": {
+      "passed": 60,
+      "failed": 0,
+      "ignored": 1
+    }
+  },
+  "failures": [
+    "authority target_stop_tests.rs:158: acknowledgement UnknownOutcome during permanent target stop setup",
+    "server runtime.rs:3108: obsolete live standalone PrepareRestore expectation; stopped coordinator tests pass"
+  ],
+  "executables": [
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/kasumi_authority-12a96b448f5fea56",
+      "sha256": "18838803e7c5c05f512635bc73afc86623e1c21f6b3278cebd5179bf05e23e10"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/kasumi_engine-42449a560671b0a3",
+      "sha256": "c6929c747ccbfe2a9935b3011403494d6a05b14cc99e66c3c1921d601055c340"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/kasumi_server-6556b5b224367cf9",
+      "sha256": "8436437ce2ddd3cec0d25d881f8bdcb1cffd2a6f7aac5de95458c6fde0b229a0"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/kasumi_store-de46cd898d5ebad1",
+      "sha256": "8c881aa93b3d58793cfd089a31cda006c98977c2ca08679bf1a448d838a4d499"
+    }
+  ],
+  "logs": [
+    {
+      "file": "logs/kasumi-production-f8e9618-library-tests.log",
+      "sha256": "8f635041908e30f0e3eb68e20bf783a9eb51bf014062ac34a12d8b8b4f0d1bac"
+    }
+  ],
+  "limitations": [
+    "Ephemeral fixture configuration is derived from frozen source, not a retained operator acceptance deployment.",
+    "Corrections and later integrated changes require their own frozen tests."
+  ]
+}

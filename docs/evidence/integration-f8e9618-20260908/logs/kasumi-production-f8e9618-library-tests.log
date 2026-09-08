@@ -1,0 +1,271 @@
+   Compiling bitmaps v3.2.1 (/private/tmp/kasumi-production-recovery-validation/vendor/bitmaps-3.2.1)
+   Compiling kasumi-clock v0.1.0 (/private/tmp/kasumi-production-recovery-validation/crates/kasumi-clock)
+   Compiling imbl-sized-chunks v0.1.3
+   Compiling kasumi-transport v0.1.0 (/private/tmp/kasumi-production-recovery-validation/crates/kasumi-transport)
+   Compiling imbl v7.0.1
+   Compiling kasumi-types v0.1.0 (/private/tmp/kasumi-production-recovery-validation/crates/kasumi-types)
+   Compiling lru v0.16.4 (/private/tmp/kasumi-production-recovery-validation/vendor/lru-0.16.4)
+   Compiling tantivy v0.26.1
+   Compiling kasumi-serving v0.1.0 (/private/tmp/kasumi-production-recovery-validation/crates/kasumi-serving)
+   Compiling kasumi-store v0.1.0 (/private/tmp/kasumi-production-recovery-validation/crates/kasumi-store)
+   Compiling kasumi-raft v0.1.0 (/private/tmp/kasumi-production-recovery-validation/crates/kasumi-raft)
+   Compiling lindera-tantivy v5.0.1
+   Compiling kasumi-query v0.1.0 (/private/tmp/kasumi-production-recovery-validation/crates/kasumi-query)
+   Compiling kasumi-client v0.1.0 (/private/tmp/kasumi-production-recovery-validation/crates/kasumi-client)
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-production-recovery-validation/crates/kasumi-engine)
+   Compiling kasumi-authority v0.1.0 (/private/tmp/kasumi-production-recovery-validation/crates/kasumi-authority)
+   Compiling kasumi-server v0.1.0 (/private/tmp/kasumi-production-recovery-validation/crates/kasumi-server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 17s
+     Running unittests src/lib.rs (/tmp/kasumi-production-validation-target/debug/deps/kasumi_authority-12a96b448f5fea56)
+
+running 26 tests
+test service::tests::completed_drain_witness_eviction_preserves_active_waits_and_restarts_evicted_identity ... ok
+test service::tests::issuer_tests::activation_gate_tests::target_storage_retains_original_phase_and_cannot_install_late_renewal_or_new_gate ... ok
+test service::tests::exact_target_preparation_cannot_serve_and_needs_a_fresh_active_lease_after_drain ... ok
+test service::tests::exact_stop_defeats_delayed_activation_and_committed_activation_wins_resolution ... ok
+test service::tests::actual_encrypted_source_materialization_is_fenced_but_independent_custody_stays_available ... ok
+test service::tests::current_admin_self_revocation_yields_unknown_and_new_custodian_recovers_exact_identity ... ok
+test service::tests::independent_quorum_fence_drains_original_lease_and_competing_activations_cannot_overlap ... ok
+test service::tests::encrypted_restart_restarts_full_drain_and_never_reuses_an_old_incarnation ... ok
+test service::tests::actual_authority_quorum_loss_rejects_lease_and_activation_without_source_fallback ... ok
+test service::tests::issuer_tests::activation_gate_tests::committed_activation_rejects_raw_bypass_preserves_exact_winner_and_encrypted_recovery ... ok
+test service::tests::issuer_tests::lifecycle_original_deadline_survives_queued_acceptance_delayed_reply_and_clock_regression ... ok
+test service::tests::issuer_tests::activation_gate_tests::stopped_control_epoch_and_queued_original_expiry_defeat_new_activation_effects ... ok
+test service::tests::issuer_tests::control_stop_before_intent_and_reserved_capacity_defeat_late_publication ... ok
+test service::tests::issuer_tests::lifecycle_byte_exhaustion_preserves_reserved_epoch_stop_and_exact_snapshot_history ... ok
+test service::tests::issuer_tests::control_epoch_stop_preserves_exact_identity_replay_and_restarts_full_drain ... ok
+test service::tests::target_stop_and_activation_ordering_preserves_committed_winner_and_current_admin_release ... ok
+test service::tests::issuer_tests::target_materialization_tests::followup_request_keeps_both_original_credential_fences_and_cannot_reopen_phase ... ok
+test service::tests::target_stop_queued_past_original_credential_expiry_accepts_no_tombstone ... ok
+test service::tests::issuer_tests::target_materialization_tests::actual_target_materialization_preserves_image_and_original_operation_fence ... ok
+test service::tests::permanent_target_stop_defeats_missing_and_prepared_generations_then_reopens_after_full_drain ... FAILED
+test service::tests::issuer_tests::target_materialization_tests::independent_target_journal_reserves_stop_after_normal_quota_and_recovers_encrypted ... ok
+test service::tests::target_stop_capacity_and_current_credential_quorum_fences_are_explicit ... ok
+test service::tests::issuer_tests::target_materialization_tests::dropping_target_on_non_runtime_thread_retains_shutdown_work_until_real_drain ... ok
+test service::tests::issuer_tests::target_materialization_tests::expired_completion_with_missing_journal_recovers_only_exact_inspection_facts ... ok
+test service::tests::issuer_tests::target_materialization_tests::three_actual_materializations_initialize_and_commit_completion_with_restart_proof ... ok
+test service::tests::issuer_tests::target_materialization_tests::exact_actual_completion_is_required_for_issuer_and_target_activation ... ok
+
+failures:
+
+---- service::tests::permanent_target_stop_defeats_missing_and_prepared_generations_then_reopens_after_full_drain stdout ----
+
+thread 'service::tests::permanent_target_stop_defeats_missing_and_prepared_generations_then_reopens_after_full_drain' (18725799) panicked at crates/kasumi-authority/src/target_stop_tests.rs:158:10:
+called `Result::unwrap()` on an `Err` value: Error { code: UnknownOutcome, message: "authority acknowledgement unavailable; resolve the exact permanent command identity" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    service::tests::permanent_target_stop_defeats_missing_and_prepared_generations_then_reopens_after_full_drain
+
+test result: FAILED. 25 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 45.08s
+
+error: test failed, to rerun pass `-p kasumi-authority --lib`
+     Running unittests src/lib.rs (/tmp/kasumi-production-validation-target/debug/deps/kasumi_engine-42449a560671b0a3)
+
+running 46 tests
+test admission::tests::pressure_cancels_queries_but_never_changes_write_work_and_uses_hysteresis ... ok
+test admission::tests::queued_rebuild_expands_its_existing_slot_and_rejects_growth_without_losing_charge ... ok
+test admission::tests::real_process_rss_and_physical_capacity_are_measured ... ok
+test admission::tests::result_release_rechecks_pressure_after_suspend_even_for_completed_work ... ok
+test admission::tests::retained_cursor_releases_operation_slot_but_keeps_bytes_until_last_owner ... ok
+test admission::tests::shutdown_drain_waits_for_detached_work_to_release_its_registration ... ok
+test admission::tests::suspend_invalidates_old_measurement_and_slow_or_failed_probe_denies ... ok
+test admission::tests::cancelled_detached_worker_keeps_semaphore_and_reservation_until_exit ... ok
+test security_audit::tests::uncertain_audit_commit_fences_queued_writers_until_sequence_recovery ... ok
+test bootstrap::backup_restore::tests::expired_restore_worker_keeps_its_admission_charge_until_actual_completion ... ok
+test backup_verify::tests::expired_live_verification_worker_keeps_bytes_and_shutdown_registration_until_done ... ok
+test security_audit::tests::cancelled_queued_audit_and_cancelled_shutdown_drain_before_immediate_reopen ... ok
+test security_audit::tests::live_opens_share_sequence_and_preserve_concurrent_records_through_reopen ... ok
+test service::tests::canceled_queued_schema_activation_finishes_once_and_checks_receipt_release_authority ... ok
+test service::tests::committed_effect_with_expired_ack_is_resolved_by_fresh_credential ... ok
+test service::tests::committed_custody_with_expired_ack_recovers_only_with_fresh_authority ... ok
+test service::tests::query_shutdown_drains_abandoned_output_and_captured_generation ... ok
+test service::tests::expired_queued_and_canceled_credentials_accept_no_effect_or_identity ... ok
+test service::tests::committed_retirement_with_expired_reply_has_fresh_authorized_receipt_recovery ... ok
+test service::tests::accepted_stop_release_failure_is_unknown_and_reopen_recovers_exact_tombstone ... ok
+test service::tests::guarded_stop_queued_deadline_and_cancellation_leave_only_actual_durable_outcomes ... ok
+test service::tests::generic_administration_cannot_inject_a_claimed_retirement_preparation ... ok
+test service::tests::lineage_read_keeps_original_expiry_and_current_collection_policy_at_release ... ok
+test service::tests::long_backup_verification_and_encoded_read_recheck_original_credential ... ok
+test service::tests::custody_observations_preserve_mutation_capacity_and_exhaustion_can_expand ... ok
+test service::tests::replicated_credential_admission_uses_only_captured_time_after_local_expiry ... ok
+test service::tests::queued_deadlines_use_admission_time_and_survive_caller_cancellation ... ok
+test service::tests::queued_custody_credentials_expire_without_accepting_a_permanent_identity ... ok
+test service::tests::queued_expired_credential_cannot_accept_retirement_or_its_id ... ok
+test service::tests::queued_schema_before_expiry_rejects_all_definitions_and_retains_original_failure ... ok
+test service::tests::queued_stop_checks_authority_after_an_earlier_ordered_write ... ok
+test snapshot_codec::tests::archived_audit_prefix_preserves_absolute_sequences_and_head ... ok
+test service::tests::queued_staged_finalize_checks_fresh_time_and_canceled_callers_keep_durable_outcomes ... ok
+test snapshot_codec::tests::authenticated_duplicate_header_is_rejected ... ok
+test snapshot_codec::tests::canonical_stream_requires_terminal_counts_digest_and_exact_eof ... ok
+test snapshot_codec::tests::oversized_record_is_rejected_before_payload_read_or_allocation ... ok
+test target_invocation::admission_tests::original_short_timeout_expires_during_acquisition_and_cannot_reanchor_after_suspend ... ok
+test state::restore_budget_tests::restored_identity_metadata_is_validated_before_bootstrap_persistence ... ok
+test service::tests::queued_stop_credential_expiry_never_accepts_missing_identity ... ok
+test service::tests::retained_stop_response_fence_expires_without_changing_permanent_outcome ... ok
+test service::tests::schema_original_deadline_and_current_lookup_dependencies_survive_until_encoded_release ... ok
+test service::tests::serialized_authorization_never_becomes_fresh_service_or_credential_authority ... ok
+test service::tests::queued_retirement_uses_trusted_admission_deadline_and_cancellation_keeps_exact_outcome ... ok
+test service::tests::serving_expiry_rejects_queued_effect_and_late_read_or_committed_ack_then_reopens_exactly ... ok
+test service::tests::serving_expiry_suppresses_long_backup_verification_and_post_publication_proof ... ok
+test security_audit::retention::tests::uncertain_publication_survives_restart_and_repeated_hot_budget_crossings_preserve_complete_history ... ok
+
+test result: ok. 46 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 57.88s
+
+     Running unittests src/lib.rs (/tmp/kasumi-production-validation-target/debug/deps/kasumi_server-6556b5b224367cf9)
+
+running 67 tests
+test administration::tests::management_entry_future_bounds_stack_residency ... ok
+test administration::tests::generation_paths_cannot_inherit_tenant_traversal ... ok
+test administration::tests::closed_commands_reject_path_and_tenant_overrides ... ok
+test administration::tests::fresh_restore_file_is_private_exclusive_and_accepted_by_storage ... ok
+test api::tests::embedded_native_and_mcp_denials_have_one_durable_record_per_request ... ok
+test api::tests::mcp_rejects_legacy_mismatched_metadata_bad_origins_and_unauthenticated_calls ... ok
+test api::tests::long_schema_property_errors_match_native_mcp_and_durable_receipts ... ok
+test api::tests::guarded_stop_secure_sdk_preserves_exact_identity_and_native_authority ... ok
+test api::tests::native_and_mcp_share_exact_data_receipts_query_and_authorization ... ok
+test api::tests::current_mcp_discovery_and_tool_catalog_work_without_initialize ... ok
+test api::tests::both_adapters_reject_wrong_identity_tenant_scope_and_admin_escalation ... ok
+test api::tests::native_listener_reloads_complete_tls_and_rejects_invalid_replacement ... ok
+test api::tests::native_status_bounds_worst_case_header_escaping ... ok
+test api::tests::native_history_archive_and_durable_feed_preserve_exact_rows_and_scope ... ok
+test api::tests::native_and_mcp_lost_committed_responses_resolve_without_reapplying ... ok
+test api::tests::encoded_response_credential_expiry_is_audited_and_preserves_committed_receipt ... ok
+test api::tests::native_pool_replays_uncertain_batches_and_never_moves_historical_pages ... ok
+test api::tests::native_backup_proof_is_admin_only_configured_and_verified_through_secure_sdk ... ok
+test api::tests::native_snapshot_preserves_exact_data_and_its_read_set_rejects_a_stale_commit ... ok
+test auth::tests::config_rejects_cleartext_credentials_and_symmetric_algorithms ... ok
+test auth::tests::credential_expiring_during_required_authentication_audit_is_never_released ... ok
+test auth::tests::identity_and_tenant_come_only_from_verified_access_token ... ok
+test auth::tests::missing_audit_sink_blocks_valid_tokens_and_cannot_be_reconfigured ... ok
+test auth::tests::rejects_wrong_audience_issuer_expiry_not_before_and_id_tokens ... ok
+test auth::tests::untrusted_signatures_and_unknown_keys_never_gain_access ... ok
+test auth::tests::verified_credential_expiry_survives_suspend_wall_rollback_and_injected_origin ... ok
+test lifecycle_runtime::tests::lifecycle_startup_requires_explicit_configuration ... ok
+test api::tests::protected_resource_metadata_and_challenges_advertise_only_configured_issuer ... ok
+test api::tests::native_schema_activation_is_atomic_scoped_permanent_and_private ... ok
+test local_auth::tests::local_issuer_renewal_preserves_deadlines_and_revocation_fences_existing_requests ... ok
+test api::tests::native_staging_and_coherent_lease_pages_share_exact_state_and_authority ... ok
+test mcp::response_tests::envelope_accounting_includes_large_request_ids_and_bounds_errors ... ok
+test api::tests::required_audit_failure_blocks_dispatch_and_preserves_authentication_denials ... ok
+test mcp::response_tests::quoted_payload_stays_within_wire_limit_without_redundant_text_copy ... ok
+test api::tests::required_service_audits_are_durable_and_exclude_unverified_identity_and_payloads ... ok
+test api::tests::reserved_control_and_security_tenants_are_never_data_routes ... ok
+test api::tests::private_native_control_route_can_raise_a_full_audit_budget ... ok
+test api::tests::shared_adapter_release_audits_a_seal_after_response_encoding ... ok
+test runtime::lifecycle_tests::fenced_source_startup_keeps_control_handle_without_constructing_application_provider ... ok
+test rpc::authority_tests::actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_recovery ... ok
+test api::tests::native_resources_and_two_restore_hops_preserve_immutable_issuer_facts ... ok
+test runtime::lifecycle_tests::local_runtime_opens_real_transit_tls_publishes_control_serves_and_reopens_durable_state ... FAILED
+test runtime::lifecycle_tests::startup_and_serving_drains_finish_live_tls_requests_before_reopening_node ... ok
+test runtime::tests::admin_client_requires_https_server_pin_and_runtime_token_reference ... ok
+test runtime::tests::operator_example_is_valid_secret_free_and_rejects_inline_credentials ... ok
+test runtime::tests::private_key_file_permissions_are_checked_on_opened_file ... ok
+test runtime::tests::rejects_cleartext_credential_urls_ambient_variable_names_and_missing_administrators ... ok
+test runtime::tests::rejects_shared_wrapping_keys_reserved_tenants_and_ambiguous_listeners ... ok
+test runtime::tests::replication_is_explicit_three_voters_with_unique_pins_and_domains ... ok
+test runtime::tests::service_audit_survives_reopen_and_tenant_sealing_and_fails_closed_at_quota ... ok
+test runtime::tests::staged_topology_permits_supersets_but_rejects_changed_pins_and_removed_routes ... ok
+test local_recovery::tests::local_stop_persists_identity_before_cleanup_and_rejects_unrelated_files ... ok
+test runtime::lifecycle_tests::initial_control_bootstrap_rejects_mismatched_policy_and_raft_traffic ... ok
+test target_runtime::outcome_tests::panic_and_abort_after_dispatch_are_unknown_but_inner_rejection_is_preserved ... ok
+test target_runtime::outcome_tests::timed_out_waiter_keeps_actual_worker_admission_owned_until_completion ... ok
+test tls::lifecycle_tests::accept_io_failure_drains_active_tls_request_before_releasing_node ... ok
+test tls::lifecycle_tests::reset_queued_before_listener_start_is_audited_and_next_tls_request_succeeds ... ok
+test tls::lifecycle_tests::socket_setup_failure_is_audited_and_does_not_stop_listener ... ok
+test rpc::lifecycle_tests::pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong_resource_and_partition ... ok
+test standalone::tests::initialized_standalone_serves_native_mcp_and_durable_credential_lifecycle ... ok
+test local_recovery::tests::local_recovery_resumes_each_phase_and_fences_old_resources_after_activation ... ok
+test runtime::lifecycle_tests::initial_tenant_bootstrap_rejects_mismatched_limits_and_raft_traffic ... ok
+test standalone::tests::offline_maintenance_and_administrator_recovery_require_exclusive_ownership ... ok
+test runtime::lifecycle_tests::original_tenant_reopens_after_key_outage_without_reviving_retained_handles ... ok
+test runtime::lifecycle_tests::retired_runtime_reopens_current_custody_without_constructing_application_provider ... ok
+test runtime::lifecycle_tests::runtime_catches_up_spare_and_replaces_three_voters_through_admin_control ... ok
+test runtime::lifecycle_tests::three_runtime_nodes_replicate_with_control_quorum_over_audited_pinned_mtls ... ok
+
+failures:
+
+---- runtime::lifecycle_tests::local_runtime_opens_real_transit_tls_publishes_control_serves_and_reopens_durable_state stdout ----
+
+thread 'runtime::lifecycle_tests::local_runtime_opens_real_transit_tls_publishes_control_serves_and_reopens_durable_state' (18740690) panicked at crates/kasumi-server/src/runtime.rs:3108:22:
+called `Result::unwrap()` on an `Err` value: Error { code: Unavailable, message: "administrative operation failed; inspect status before retrying" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    runtime::lifecycle_tests::local_runtime_opens_real_transit_tls_publishes_control_serves_and_reopens_durable_state
+
+test result: FAILED. 66 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 82.82s
+
+error: test failed, to rerun pass `-p kasumi-server --lib`
+     Running unittests src/lib.rs (/tmp/kasumi-production-validation-target/debug/deps/kasumi_store-de46cd898d5ebad1)
+
+running 61 tests
+test backup::minio_live::actual_minio_tls_sigv4_encrypted_roundtrip_create_only_and_access_denial ... ignored, requires explicit KASUMI_MINIO_DOCKER_HOST, KASUMI_MINIO_DOCKER_CONFIG and KASUMI_MINIO_WORKDIR; official pinned image must be pre-pulled
+test backup::s3_tests::aws_published_signature_v4_get_object_vector ... ok
+test backup::sessions_s3::tests::bounded_s3_xml_rejects_wrong_scope_order_truncation_and_entities ... ok
+test backup::sessions_s3::tests::signed_query_uses_aws_encoding_and_sorting ... ok
+test audit_archive::tests::existing_nonprivate_archive_directory_is_rejected_without_chmod ... ok
+test backup::tests::destination_byte_limits_and_untrusted_format_are_rejected ... ok
+test audit_archive::tests::historical_verification_checks_the_original_clock_and_release_fence ... ok
+test audit_archive::tests::historical_source_is_exact_and_does_not_reopen_a_live_generation ... ok
+test backup::s3_tests::s3_tls_round_trip_signed_session_token_create_only_and_bounded_download ... ok
+test audit_archive::tests::authentication_and_final_record_counts_precede_any_release ... ok
+test audit_archive::tests::object_symlink_cannot_read_or_overwrite_unrelated_files ... ok
+test backup::tests::historical_backup_keeps_original_key_dependencies_after_rewrap ... ok
+test backup::tests::encrypted_bundle_round_trip_filesystem_reopen_and_tamper_rejection ... ok
+test backup::tests::removal_of_an_inactive_backup_key_dependency_breaks_authentication ... ok
+test audit_archive::tests::verified_archive_is_private_immutable_contiguous_and_reopenable ... ok
+test backup::s3_tests::s3_credentials_are_reloaded_as_one_atomic_bundle ... ok
+test file_keys::tests::file_keyring_rotation_binding_fresh_reads_and_reopen ... ok
+test keys::tests::transit_origin_path_and_wrapped_version_validation ... ok
+test file_keys::tests::rejects_public_keyrings_symlinks_and_unsupported_formats ... ok
+test keys::tests::transit_rejects_missing_trust_tls12_redirects_malformed_and_oversized_responses ... ok
+test file_keys::tests::standalone_catalog_binds_installation_tenant_and_generation ... ok
+test keys::tests::transit_reads_replaced_token_for_every_request_and_never_caches_failure ... ok
+test backup_sessions::tests::session_keeps_historical_source_purpose_separate_from_current_access ... ok
+test backup_sessions::tests::filesystem_cleanup_rejects_directory_symlink_substitution ... ok
+test spool::tests::corrupted_or_reordered_blocks_fail_authentication ... ok
+test spool::tests::encrypted_spool_seek_overwrite_and_bounds ... ok
+test keys::tests::transit_tls_generation_fresh_decrypt_rewrap_context_and_revocation ... ok
+test catalog_budget::exact_catalog_boundary_leaves_room_for_worst_case_manifest_tenant_encoding ... ok
+test catalog_budget::catalog_byte_quota_rejects_initialization_rotation_and_rewrap_before_persistence ... ok
+test storage_domains::tests::post_commit_domain_expiry_reports_uncertainty_and_retains_complete_write ... ok
+test storage_domains::tests::every_interrupted_domain_transaction_recovers_whole_old_or_whole_new ... ok
+test storage_domains::tests::combined_quota_and_substituted_catalog_binding_fail_before_publication ... ok
+test backup_sessions::tests::completion_excludes_abort_and_corrupt_publication_never_grants_cleanup ... ok
+test storage_domains::tests::control_reopens_without_any_application_key_probe_after_revocation ... ok
+test tests::a_late_success_cannot_undo_an_explicit_seal ... ok
+test tests::bounded_encrypted_reads_reject_payload_before_plaintext_allocation ... ok
+test tests::a_fresh_probe_covers_every_retained_version_and_revocation_seals_warm_state ... ok
+test tests::canceled_shutdown_drains_blocked_probe_and_releases_the_database_file ... ok
+test tests::atomic_batches_and_cross_namespace_isolation_survive_reopen ... ok
+test tests::every_injected_commit_failure_recovers_whole_batch_or_previous_state ... ok
+test tests::expiry_during_fsync_reports_unknown_outcome_and_preserves_committed_batch ... ok
+test tests::expiry_during_key_catalog_fsync_does_not_acknowledge_rotation ... ok
+test storage_domains::tests::domains_require_distinct_actual_wrapping_policies_and_same_node ... ok
+test tests::completed_shutdown_allows_distinct_store_without_reviving_retained_handles ... ok
+test tests::delayed_probe_cannot_extend_a_lease_past_sixty_seconds_from_start ... ok
+test tests::ciphertext_corruption_swapping_and_wrong_tenant_are_rejected ... ok
+test tests::different_tenants_do_not_share_a_slow_key_service_open_gate ... ok
+test tests::invalid_batch_does_not_apply_earlier_operations ... ok
+test tests::periodic_probes_start_every_twenty_seconds_despite_provider_latency ... ok
+test tests::faulty_provider_rewrap_cannot_replace_data_keys_or_break_recovery ... ok
+test tests::names_keys_and_values_are_absent_from_disk_and_nonce_changes_on_overwrite ... ok
+test tests::wrapping_catalog_is_atomic_across_every_injected_commit_failure ... ok
+test tests::node_files_are_private_nofollow_and_keep_exclusive_database_ownership ... ok
+test audit_archive::tests::segment_capacity_is_bounded_and_positions_use_checked_u64 ... ok
+test tests::shutdown_fences_a_waiting_background_task_registration ... ok
+test tests::sixty_second_suspend_aware_expiry_and_explicit_recovery ... ok
+test tests::pinned_read_roots_and_streamed_namespace_publication_preserve_isolation ... ok
+test tests::expiry_watchdog_discards_keys_and_notifies_without_an_incoming_request ... ok
+test tests::rewrap_preserves_documents_after_retiring_old_wrapping_versions ... ok
+test keys::tests::transit_timeout_is_bounded_and_seals_existing_plaintext ... ok
+test backup_sessions::tests::filesystem_abort_cleanup_is_bounded_repeatable_and_retains_control_and_other_namespaces ... ok
+
+test result: ok. 60 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 44.33s
+
+error: 2 targets failed:
+    `-p kasumi-authority --lib`
+    `-p kasumi-server --lib`

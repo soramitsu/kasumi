@@ -1,0 +1,39 @@
+Reading package lists...
+Building dependency tree...
+Reading state information...
+The following NEW packages will be installed:
+  binfmt-support qemu-user qemu-user-binfmt
+0 upgraded, 3 newly installed, 0 to remove and 21 not upgraded.
+Need to get 64.3 MB of archives.
+After this operation, 475 MB of additional disk space will be used.
+Get:1 file:/etc/apt/mirrors/debian.list Mirrorlist [30 B]
+Get:2 https://deb.debian.org/debian trixie/main arm64 binfmt-support arm64 2.2.2-7+b1 [68.2 kB]
+Get:3 https://deb.debian.org/debian trixie/main arm64 qemu-user arm64 1:10.0.11+ds-0+deb13u1 [64.2 MB]
+Get:4 https://deb.debian.org/debian trixie/main arm64 qemu-user-binfmt arm64 1:10.0.11+ds-0+deb13u1 [2068 B]
+debconf: unable to initialize frontend: Dialog
+debconf: (Dialog frontend will not work on a dumb terminal, an emacs shell buffer, or without a controlling terminal.)
+debconf: falling back to frontend: Readline
+debconf: unable to initialize frontend: Readline
+debconf: (This frontend requires a controlling tty.)
+debconf: falling back to frontend: Teletype
+debconf: unable to initialize frontend: Teletype
+debconf: (This frontend requires a controlling tty.)
+debconf: falling back to frontend: Noninteractive
+Fetched 64.3 MB in 1s (79.6 MB/s)
+Selecting previously unselected package binfmt-support.
+(Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 34223 files and directories currently installed.)
+Preparing to unpack .../binfmt-support_2.2.2-7+b1_arm64.deb ...
+Unpacking binfmt-support (2.2.2-7+b1) ...
+Selecting previously unselected package qemu-user.
+Preparing to unpack .../qemu-user_1%3a10.0.11+ds-0+deb13u1_arm64.deb ...
+Unpacking qemu-user (1:10.0.11+ds-0+deb13u1) ...
+Selecting previously unselected package qemu-user-binfmt.
+Preparing to unpack .../qemu-user-binfmt_1%3a10.0.11+ds-0+deb13u1_arm64.deb ...
+Unpacking qemu-user-binfmt (1:10.0.11+ds-0+deb13u1) ...
+Setting up qemu-user (1:10.0.11+ds-0+deb13u1) ...
+Setting up binfmt-support (2.2.2-7+b1) ...
+update-binfmts: warning: python3.13 already enabled in kernel.
+Created symlink '/etc/systemd/system/multi-user.target.wants/binfmt-support.service' → '/usr/lib/systemd/system/binfmt-support.service'.
+Setting up qemu-user-binfmt (1:10.0.11+ds-0+deb13u1) ...
+Processing triggers for man-db (2.13.1-1) ...
+Processing triggers for systemd (257.13-1~deb13u1) ...
