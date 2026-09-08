@@ -90,6 +90,21 @@ async fn snapshot(db: &Arc<Database>) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn recovery_journal_persists_before_dispatch_rejects_substitution_and_recovers_ambiguous_control_commit()
  {
+    exercise_completed_recovery(false, None).await;
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn recovery_planned_retirement_freezes_its_exact_request_only_after_target_completion() {
+    exercise_completed_recovery(true, None).await;
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn recovery_uncertain_activation_resolves_original_winner_and_confirms_every_voter_forward() {
+    exercise_completed_recovery(false, Some(true)).await;
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn recovery_uncertain_activation_requires_permanent_stop_before_target_cleanup() {
+    exercise_completed_recovery(false, Some(false)).await;
+}
+async fn exercise_completed_recovery(planned: bool, activation_outcome: Option<bool>) {
     let mut f = Fixture::new().await;
     let mut request = request(&f);
     let mut attestation = BTreeMap::new();
@@ -97,6 +112,12 @@ async fn recovery_journal_persists_before_dispatch_rejects_substitution_and_reco
         let pair = key();
         node.attestation_public_key = hex::encode(pair.public_key().as_ref());
         attestation.insert(node.node_id, pair);
+    }
+    if planned {
+        request.source_mode = RecoverySourceMode::Planned {
+            retirement_id: format!("retirement-{}", request.operation_id),
+            source_backup_destination: "source-backup".into(),
+        };
     }
     let id = request.operation_id;
     let db = f.leader().await;
@@ -508,6 +529,71 @@ async fn recovery_journal_persists_before_dispatch_rejects_substitution_and_reco
         outcome: TargetRuntimeOutcome::Completed(Box::new(signed)),
     }));
     resolve_phase(&f, id, complete_phase, outcome).await;
+    let retirement_phase = if planned {
+        let status = db.recovery_status(f.context("owner"), id).await.unwrap();
+        assert_eq!(status.record().phase, RecoveryPhase::RetireSource);
+        drop(status);
+        let (phase_id, input) = prepare_next(&f, &db, id).await;
+        let RecoveryDispatch::RetireSource(retirement) = input else {
+            panic!("planned recovery must prepare its exact source retirement");
+        };
+        assert_eq!(retirement.destination, "source-backup");
+        assert_ne!(
+            retirement.destination,
+            request.materialization.destination_alias
+        );
+        assert_eq!(retirement.checkpoint, request.checkpoint);
+        assert_eq!(
+            retirement.expected_source_incarnation,
+            request.source_incarnation.to_string()
+        );
+        assert_eq!(
+            retirement.target_incarnation,
+            request.target_incarnation.to_string()
+        );
+        let phase = db
+            .recovery_phase(f.context("owner"), id, phase_id)
+            .await
+            .unwrap();
+        assert!(retirement.not_after_ms > phase.record().admitted_at_ms);
+        assert!(retirement.not_after_ms <= phase.dispatch_limit().await.unwrap());
+        drop(phase);
+        let mut receipt = RetirementReceipt {
+            tenant: request.tenant.clone(),
+            principal: "independent-source-admin".into(),
+            retirement_id: retirement.retirement_id.clone(),
+            request_digest: retirement.reference().unwrap().request_digest,
+            source_incarnation: request.source_incarnation.to_string(),
+            target_incarnation: Uuid::new_v4().to_string(),
+            revision: request.checkpoint.revision + 1,
+            policy_epoch: 1,
+            admitted_at_ms: retirement.not_after_ms - 1,
+            checkpoint: request.checkpoint.clone(),
+            closure_digest: "e1".repeat(32),
+        };
+        assert!(
+            db.resolve_recovery_dispatch(
+                f.context("owner"),
+                id,
+                phase_id,
+                RecoveryDispatchOutcome::SourceRetired(Box::new(receipt.clone()))
+            )
+            .await
+            .is_err()
+        );
+        receipt.target_incarnation = request.target_incarnation.to_string();
+        resolve_phase(
+            &f,
+            id,
+            phase_id,
+            RecoveryDispatchOutcome::SourceRetired(Box::new(receipt)),
+        )
+        .await;
+        Some(phase_id)
+    } else {
+        None
+    };
+
     assert_eq!(
         db.recovery_status(f.context("owner"), id)
             .await
@@ -516,19 +602,409 @@ async fn recovery_journal_persists_before_dispatch_rejects_substitution_and_reco
             .phase,
         RecoveryPhase::FenceSource
     );
-    snapshot(&db).await;
-    let stopped = db
-        .recovery_control(
+    let (fence_phase, input) = prepare_next(&f, &db, id).await;
+    let RecoveryDispatch::Authority(command) = &input else {
+        panic!("source-unavailable recovery must use its installed issuer");
+    };
+    assert_eq!(
+        command.action,
+        AuthorityAction::Fence {
+            incarnation: request.source_incarnation,
+            authority_epoch: request.source_authority_epoch,
+        }
+    );
+    let partition = &f.installation.partitions[&request.authority_partition];
+    let mut receipt = AuthorityReceipt {
+        authority_id: partition.authority_id,
+        manifest_digest: partition.manifest_sha256.clone(),
+        partition: partition.partition,
+        command: command.as_ref().clone(),
+        command_digest: command.digest().unwrap(),
+        principal: "issuer-admin".into(),
+        term: 3,
+        revision: 11,
+        admitted_at_ms: command.not_after_ms - 1,
+        outcome: AuthorityOutcome::Fenced {
+            incarnation: Uuid::new_v4(),
+            authority_epoch: request.source_authority_epoch,
+        },
+    };
+    let sign = |receipt: &AuthorityReceipt| SignedAuthorityReceipt {
+        signature: f.partition_keys[&partition.key()]
+            .sign("kasumi.authority-proof.v1", receipt)
+            .unwrap(),
+        receipt: receipt.clone(),
+    };
+    assert!(
+        db.resolve_recovery_dispatch(
             f.context("owner"),
-            RecoveryControlCommand::Stop {
-                operation_id: id,
-                command_id: Uuid::new_v4(),
-            },
+            id,
+            fence_phase,
+            RecoveryDispatchOutcome::Authority(Box::new(sign(&receipt)))
         )
         .await
-        .unwrap();
-    assert_eq!(stopped.record().phase, RecoveryPhase::StopTarget);
-    drop(stopped);
+        .is_err()
+    );
+    receipt.outcome = AuthorityOutcome::Fenced {
+        incarnation: request.source_incarnation,
+        authority_epoch: request.source_authority_epoch,
+    };
+    let fenced = resolve_phase(
+        &f,
+        id,
+        fence_phase,
+        RecoveryDispatchOutcome::Authority(Box::new(sign(&receipt))),
+    )
+    .await;
+    assert_eq!(fenced.record().source_fence, Some(fence_phase));
+    assert_eq!(
+        fenced.record().retirement,
+        retirement_phase,
+        "source fencing must preserve the explicitly selected retirement mode"
+    );
+    assert_eq!(fenced.record().phase, RecoveryPhase::Activate);
+    drop(fenced);
+    snapshot(&db).await;
+    if let Some(activated) = activation_outcome {
+        let activate_under = commit_next_intent(&f, &db, id).await;
+        assert_eq!(activate_under.request.phase, LifecyclePhase::Activate);
+        let (activation_phase, input) = prepare_next(&f, &db, id).await;
+        let RecoveryDispatch::Authority(original) = input else {
+            panic!("issuer activation command required")
+        };
+        let AuthorityAction::ActivateCommitted {
+            control, target, ..
+        } = &original.action
+        else {
+            panic!("closed committed activation required")
+        };
+        assert_eq!(
+            control.reference.identity,
+            LifecycleAuthorityIdentity::Intent(activate_under.request.command_id)
+        );
+        assert!(original.not_after_ms <= activate_under.original_credential_expires_at_ms);
+        let uncertain = db
+            .recovery_control(
+                f.context("owner"),
+                RecoveryControlCommand::Stop {
+                    operation_id: id,
+                    command_id: Uuid::new_v4(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            uncertain.record().phase,
+            RecoveryPhase::StopActivation,
+            "unknown activation cannot authorize target cleanup"
+        );
+        assert_eq!(
+            uncertain.record().activation_attempt,
+            Some(activation_phase)
+        );
+        drop(uncertain);
+        let (stop_phase, input) = prepare_next(&f, &db, id).await;
+        let RecoveryDispatch::Authority(stop) = input else {
+            panic!("permanent activation resolution required")
+        };
+        assert_eq!(
+            stop.action,
+            AuthorityAction::StopActivation {
+                original: original.clone()
+            }
+        );
+        let original_receipt = AuthorityReceipt {
+            authority_id: partition.authority_id,
+            manifest_digest: partition.manifest_sha256.clone(),
+            partition: partition.partition,
+            command: *original.clone(),
+            command_digest: original.digest().unwrap(),
+            principal: "issuer-admin".into(),
+            term: 3,
+            revision: 12,
+            admitted_at_ms: activate_under.accepted_at_ms + 1,
+            outcome: if activated {
+                AuthorityOutcome::Activated {
+                    target: target.clone(),
+                    authority_epoch: request.source_authority_epoch + 1,
+                }
+            } else {
+                AuthorityOutcome::ActivationStopped {
+                    original_digest: original.digest().unwrap(),
+                }
+            },
+        };
+        let stopped = AuthorityReceipt {
+            authority_id: partition.authority_id,
+            manifest_digest: partition.manifest_sha256.clone(),
+            partition: partition.partition,
+            command: *stop.clone(),
+            command_digest: stop.digest().unwrap(),
+            principal: "issuer-admin".into(),
+            term: 3,
+            revision: 13,
+            admitted_at_ms: stop.not_after_ms - 1,
+            outcome: AuthorityOutcome::ActivationResolved {
+                original: Box::new(original_receipt.clone()),
+            },
+        };
+        let mut wrong = stopped.clone();
+        if let AuthorityOutcome::ActivationResolved { original } = &mut wrong.outcome {
+            original.command.command_id = Uuid::new_v4();
+            original.command_digest = original.command.digest().unwrap();
+        }
+        assert!(
+            db.resolve_recovery_dispatch(
+                f.context("owner"),
+                id,
+                stop_phase,
+                RecoveryDispatchOutcome::Authority(Box::new(sign(&wrong)))
+            )
+            .await
+            .is_err()
+        );
+        let resolved = resolve_phase(
+            &f,
+            id,
+            stop_phase,
+            RecoveryDispatchOutcome::Authority(Box::new(sign(&stopped))),
+        )
+        .await;
+        assert_eq!(
+            resolved.record().phase,
+            if activated {
+                RecoveryPhase::Confirm
+            } else {
+                RecoveryPhase::StopTarget
+            }
+        );
+        assert_eq!(
+            resolved.record().activation,
+            activated.then_some(activation_phase)
+        );
+        drop(resolved);
+        let old = db
+            .recovery_phase(f.context("owner"), id, activation_phase)
+            .await
+            .unwrap();
+        assert!(matches!(
+            old.record().outcome,
+            Some(RecoveryDispatchOutcome::AuthorityResolution(_))
+        ));
+        assert_eq!(
+            old.record().input,
+            RecoveryDispatch::Authority(original.clone()),
+            "resolution must retain unchanged original cutoff and identity"
+        );
+        drop(old);
+        snapshot(&db).await;
+        if activated {
+            let confirm_under = commit_next_intent(&f, &db, id).await;
+            assert_ne!(
+                confirm_under.request.command_id,
+                activate_under.request.command_id
+            );
+            assert_eq!(
+                confirm_under.request.phase_input_sha256,
+                activate_under.request.phase_input_sha256
+            );
+            for node in 1..=3 {
+                let (phase, input) = prepare_next(&f, &db, id).await;
+                let RecoveryDispatch::Target {
+                    node_id,
+                    request: started,
+                } = input
+                else {
+                    panic!("fresh activation startup required")
+                };
+                assert_eq!(node_id, node);
+                let TargetRuntimeStep::StartActivation {
+                    quorum,
+                    issuer_command_id,
+                } = started.step
+                else {
+                    panic!("startup must bind committed issuer winner")
+                };
+                assert_eq!(issuer_command_id, original.command_id);
+                assert_eq!(started.command_id, confirm_under.request.command_id);
+                resolve_phase(
+                    &f,
+                    id,
+                    phase,
+                    RecoveryDispatchOutcome::Target(Box::new(TargetRuntimeResponse {
+                        command_id: started.command_id,
+                        node_id: node,
+                        outcome: TargetRuntimeOutcome::Started {
+                            origin_sha256: quorum.origin_sha256,
+                        },
+                    })),
+                )
+                .await;
+                assert!(
+                    db.recovery_status(f.context("owner"), id)
+                        .await
+                        .unwrap()
+                        .record()
+                        .voters
+                        .values()
+                        .all(|v| v.confirmation.is_none()),
+                    "Started is never local activation evidence"
+                );
+            }
+            let (ambiguous, first) = prepare_next(&f, &db, id).await;
+            let (local_phase, retried) = prepare_next(&f, &db, id).await;
+            let RecoveryDispatch::Target {
+                node_id: first_node,
+                request: first,
+            } = first
+            else {
+                panic!("local activation required")
+            };
+            let RecoveryDispatch::Target {
+                node_id,
+                request: local,
+            } = retried
+            else {
+                panic!("exact peer retry required")
+            };
+            assert_eq!((first_node, node_id), (1, 2));
+            assert_eq!(local, first);
+            assert!(
+                db.recovery_phase(f.context("owner"), id, ambiguous)
+                    .await
+                    .unwrap()
+                    .record()
+                    .outcome
+                    .is_none()
+            );
+            let fact = TargetActivationFact {
+                position: TargetCommitPosition {
+                    index: 3,
+                    term: 9,
+                    leader_node_id: node_id,
+                    command_sha256: "e2".repeat(32),
+                },
+                intent: confirm_under.clone(),
+                issuer_receipt_sha256: original_receipt.digest().unwrap(),
+                completion_sha256: control.completion.observation.fact.digest().unwrap(),
+                admitted_at_ms: confirm_under.accepted_at_ms + 1,
+                revision: control.completion.observation.fact.revision + 1,
+            };
+            let proof = |node_id| {
+                let observation = TargetActivationObservation {
+                    completion: control.completion.observation.fact.clone(),
+                    activation: fact.clone(),
+                    observer_node_id: node_id,
+                    observed_revision: fact.revision,
+                    observed_term: 9,
+                };
+                SignedTargetActivation {
+                    signature: hex::encode(
+                        attestation[&node_id]
+                            .sign(
+                                &serde_json::to_vec(&(
+                                    "kasumi.activated-target-observation.v1",
+                                    &observation,
+                                ))
+                                .unwrap(),
+                            )
+                            .as_ref(),
+                    ),
+                    observation,
+                }
+            };
+            let response = |command_id, node_id| {
+                RecoveryDispatchOutcome::Target(Box::new(TargetRuntimeResponse {
+                    command_id,
+                    node_id,
+                    outcome: TargetRuntimeOutcome::Activated(Box::new(proof(node_id))),
+                }))
+            };
+            let mut forged = response(local.command_id, node_id);
+            let RecoveryDispatchOutcome::Target(reply) = &mut forged else {
+                unreachable!()
+            };
+            let TargetRuntimeOutcome::Activated(signed) = &mut reply.outcome else {
+                unreachable!()
+            };
+            signed.observation.activation.issuer_receipt_sha256 = "f2".repeat(32);
+            signed.signature = hex::encode(
+                attestation[&node_id]
+                    .sign(
+                        &serde_json::to_vec(&(
+                            "kasumi.activated-target-observation.v1",
+                            &signed.observation,
+                        ))
+                        .unwrap(),
+                    )
+                    .as_ref(),
+            );
+            assert!(
+                db.resolve_recovery_dispatch(f.context("owner"), id, local_phase, forged)
+                    .await
+                    .is_err()
+            );
+            resolve_phase(&f, id, local_phase, response(local.command_id, node_id)).await;
+            for node in [1, 3] {
+                let (phase, input) = prepare_next(&f, &db, id).await;
+                let RecoveryDispatch::Target {
+                    node_id,
+                    request: confirm,
+                } = input
+                else {
+                    panic!("every voter must locally confirm activation")
+                };
+                assert_eq!(node_id, node);
+                let TargetRuntimeStep::ConfirmActivation(expected) = confirm.step else {
+                    panic!("exact retained activation confirmation required")
+                };
+                assert_eq!(expected.observation.activation, fact);
+                resolve_phase(&f, id, phase, response(confirm.command_id, node)).await;
+            }
+            let published = db.recovery_status(f.context("owner"), id).await.unwrap();
+            assert_eq!(published.record().phase, RecoveryPhase::Publish);
+            assert_eq!(published.record().activation, Some(activation_phase));
+            assert!(
+                published
+                    .record()
+                    .voters
+                    .values()
+                    .all(|v| v.confirmation.is_some())
+            );
+            drop(published);
+            snapshot(&db).await;
+            drop(db);
+            f.close().await;
+            f.open().await;
+            let db = f.leader().await;
+            assert_eq!(
+                db.recovery_status(f.context("owner"), id)
+                    .await
+                    .unwrap()
+                    .record()
+                    .phase,
+                RecoveryPhase::Publish,
+                "activated recovery must resume forward after restart"
+            );
+            drop(db);
+            f.close().await;
+            return;
+        }
+    }
+    if activation_outcome.is_none() {
+        let stopped = db
+            .recovery_control(
+                f.context("owner"),
+                RecoveryControlCommand::Stop {
+                    operation_id: id,
+                    command_id: Uuid::new_v4(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(stopped.record().phase, RecoveryPhase::StopTarget);
+        drop(stopped);
+    }
     let (stop_phase, input) = prepare_next(&f, &db, id).await;
     let RecoveryDispatch::Authority(command) = &input else {
         panic!("stop issuer phase required")
@@ -802,6 +1278,43 @@ async fn resolve_phase(
     })
     .await
     .expect("original recovery phase outcome did not resolve")
+}
+async fn commit_next_intent(f: &Fixture, db: &Arc<Database>, operation: Uuid) -> LifecycleIntent {
+    let (phase_id, input) = prepare_next(f, db, operation).await;
+    let RecoveryDispatch::ControlIntent(command) = input else {
+        panic!("committed Control phase required")
+    };
+    let prepared = db
+        .recovery_phase(f.context("owner"), operation, phase_id)
+        .await
+        .unwrap();
+    let mut context = f.context("owner");
+    context.authorization = context
+        .authorization
+        .with_expiry_limit(prepared.dispatch_limit().await.unwrap())
+        .unwrap();
+    drop(prepared);
+    db.lifecycle_control(context, LifecycleControlCommand::CommitIntent(command))
+        .await
+        .unwrap();
+    let intent = db
+        .engine()
+        .generation()
+        .unwrap()
+        .state
+        .lifecycle_control
+        .as_ref()
+        .unwrap()
+        .intents[&phase_id]
+        .clone();
+    resolve_phase(
+        f,
+        operation,
+        phase_id,
+        RecoveryDispatchOutcome::ControlIntent(Box::new(intent.clone())),
+    )
+    .await;
+    intent
 }
 async fn prepare_next(
     f: &Fixture,

@@ -203,7 +203,7 @@ fn digest_records(
                     unreachable!()
                 };
                 validate_sha256(&doc.document_sha256)?;
-                (id, doc.version, doc.document_sha256)
+                (id, doc.version, doc.document_sha256.clone())
             };
             record(&mut digest, &("document", id, version, hash), &mut check)?;
             count = count

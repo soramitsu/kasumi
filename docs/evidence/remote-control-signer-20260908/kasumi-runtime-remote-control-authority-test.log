@@ -1,0 +1,15 @@
+   Compiling kasumi-types v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-types)
+   Compiling kasumi-serving v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-serving)
+   Compiling kasumi-query v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-query)
+   Compiling kasumi-store v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-store)
+   Compiling kasumi-raft v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-engine)
+   Compiling kasumi-authority v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-authority)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 09s
+     Running unittests src/lib.rs (/tmp/kasumi-production-runtime-target/debug/deps/kasumi_authority-481ba410417b8d16)
+
+running 1 test
+test service::tests::issuer_tests::control_signer_tests::remote_control_directives_bind_physical_receiver_and_forward_winner_across_restart ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 42 filtered out; finished in 10.65s
+

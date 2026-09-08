@@ -123,5 +123,5 @@ pub(crate) fn completion_route_retry(
 ) -> bool {
     matches!((&pending.input,input),
         (RecoveryDispatch::Target {node_id:old,request:original},RecoveryDispatch::Target {node_id:new,request:next})
-        if pending.phase==RecoveryPhase::Complete && old!=new && original==next && now<original.not_after_ms && matches!(original.step,TargetRuntimeStep::Complete(_)))
+        if matches!(pending.phase,RecoveryPhase::Complete|RecoveryPhase::Confirm) && old!=new && original==next && now<original.not_after_ms && matches!(original.step,TargetRuntimeStep::Complete(_)|TargetRuntimeStep::Activate{..}))
 }

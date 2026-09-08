@@ -67,6 +67,7 @@ impl VerifiedRecoveryPhase {
         let limit = match &phase.input {
             RecoveryDispatch::Authority(command) => limit.min(command.not_after_ms),
             RecoveryDispatch::Target { request, .. } => limit.min(request.not_after_ms),
+            RecoveryDispatch::RetireSource(request) => limit.min(request.not_after_ms),
             _ => limit,
         };
         if head.pending_phase != Some(self.record.phase_id)
@@ -327,9 +328,15 @@ impl Database {
         if let Some(id) = operation.pending_phase {
             let pending = recovery::phase(state, operation, id)?;
             if let RecoveryDispatch::Target { node_id, request } = &pending.input
-                && operation.phase == RecoveryPhase::Complete
+                && matches!(
+                    operation.phase,
+                    RecoveryPhase::Complete | RecoveryPhase::Confirm
+                )
                 && now < request.not_after_ms
-                && matches!(request.step, TargetRuntimeStep::Complete(_))
+                && matches!(
+                    request.step,
+                    TargetRuntimeStep::Complete(_) | TargetRuntimeStep::Activate { .. }
+                )
             {
                 let next = operation
                     .voters
@@ -342,6 +349,21 @@ impl Database {
                     node_id: next,
                     request: request.clone(),
                 }));
+            }
+            if let RecoveryDispatch::Authority(command) = &pending.input
+                && operation.phase == RecoveryPhase::Activate
+                && now >= command.not_after_ms
+                && matches!(command.action, AuthorityAction::ActivateCommitted { .. })
+            {
+                return Ok(Some(recovery::activation::authority_command(
+                    operation,
+                    phase_id,
+                    AuthorityAction::StopActivation {
+                        original: command.clone(),
+                    },
+                    now,
+                    expires,
+                )?));
             }
             let fresh_phase = match &pending.input {
                 RecoveryDispatch::Target { request, .. } if now >= request.not_after_ms => {
@@ -356,6 +378,13 @@ impl Database {
                             if operation.phase == RecoveryPhase::Initialize =>
                         {
                             LifecyclePhase::Initialize
+                        }
+                        TargetRuntimeStep::StartActivation { .. }
+                        | TargetRuntimeStep::Activate { .. }
+                        | TargetRuntimeStep::ConfirmActivation(_)
+                            if operation.phase == RecoveryPhase::Confirm =>
+                        {
+                            LifecyclePhase::Activate
                         }
                         _ => {
                             return Err(error(
@@ -394,20 +423,8 @@ impl Database {
             }
         }
         let input = match operation.phase {
-            RecoveryPhase::Prepare | RecoveryPhase::StopTarget => {
-                let action = if operation.phase == RecoveryPhase::Prepare {
-                    AuthorityAction::PrepareTarget {
-                        source_incarnation: operation.request.source_incarnation,
-                        source_epoch: operation.request.source_authority_epoch,
-                        target: recovery::target(&operation.request),
-                    }
-                } else {
-                    AuthorityAction::StopTarget {
-                        source_incarnation: operation.request.source_incarnation,
-                        source_epoch: operation.request.source_authority_epoch,
-                        target: recovery::target(&operation.request),
-                    }
-                };
+            RecoveryPhase::Prepare | RecoveryPhase::StopTarget | RecoveryPhase::FenceSource => {
+                let action = recovery::issuer_action(operation, operation.phase)?;
                 RecoveryDispatch::Authority(Box::new(AuthorityCommand {
                     tenant: operation.request.tenant.clone(),
                     command_id: phase_id,
@@ -494,6 +511,19 @@ impl Database {
                 }
             }
 
+            RecoveryPhase::Activate | RecoveryPhase::Confirm | RecoveryPhase::StopActivation => {
+                recovery::activation::next_dispatch(state, operation, phase_id, now, expires)?
+            }
+            RecoveryPhase::RetireSource => {
+                RecoveryDispatch::RetireSource(recovery::retirement_request(
+                    operation,
+                    now.checked_add(operation.request.phase_timeout_ms)
+                        .ok_or_else(|| {
+                            error(ErrorCode::InvalidArgument, "retirement deadline overflow")
+                        })?
+                        .min(expires),
+                )?)
+            }
             RecoveryPhase::Initialize | RecoveryPhase::Complete => {
                 let kind = if operation.phase == RecoveryPhase::Initialize {
                     LifecyclePhase::Initialize

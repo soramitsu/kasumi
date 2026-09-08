@@ -51,3 +51,5 @@ pub use kasumi_types::{
 
 mod authority_signing;
 pub use authority_signing::*;
+mod control_signer;
+pub use control_signer::*;

@@ -313,7 +313,7 @@ impl TenantEngine {
                 accounting.fits(&next)?,
                 "audit pruning metadata exceeds tenant capacity"
             );
-            self.current.store(Some(Arc::new(Generation {
+            self.publish_generation(Some(Arc::new(Generation {
                 state: next,
                 indexes: previous.indexes.clone(),
                 receipt_expiry: previous.receipt_expiry.clone(),

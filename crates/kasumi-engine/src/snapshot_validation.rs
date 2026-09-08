@@ -65,8 +65,8 @@ impl ValidatedApplicationSnapshot {
             let Record::Archive(id, mut archive) = record else {
                 unreachable!()
             };
-            archive.storage_destination = alias.to_owned();
-            archive.storage_backup_session = Some(backup_id);
+            Arc::make_mut(&mut archive).storage_destination = alias.to_owned();
+            Arc::make_mut(&mut archive).storage_backup_session = Some(backup_id);
             history_bytes = history_bytes
                 .checked_add(history::metadata_entry(&id, &archive)? as u64)
                 .context("restored history catalog size overflow")?;
@@ -84,8 +84,8 @@ impl ValidatedApplicationSnapshot {
                             header.history_archive_bytes = usize::try_from(history_bytes)?
                         }
                         Record::Archive(_, archive) => {
-                            archive.storage_destination = alias.to_owned();
-                            archive.storage_backup_session = Some(backup_id);
+                            Arc::make_mut(archive).storage_destination = alias.to_owned();
+                            Arc::make_mut(archive).storage_backup_session = Some(backup_id);
                         }
                         _ => {}
                     }
@@ -130,13 +130,17 @@ impl ValidatedApplicationSnapshot {
             _ => anyhow::bail!("snapshot collection absent"),
         }
     }
-    pub(crate) fn archived(&self, collection: &str, id: &str) -> anyhow::Result<ArchivedDocument> {
+    pub(crate) fn archived(
+        &self,
+        collection: &str,
+        id: &str,
+    ) -> anyhow::Result<Arc<ArchivedDocument>> {
         match self.index.get(4, collection, id)? {
             Some(Record::Archived(_, _, reference)) => Ok(reference),
             _ => anyhow::bail!("snapshot archived reference absent"),
         }
     }
-    fn archive(&self, id: &str) -> anyhow::Result<RetainedHistoryArchive> {
+    fn archive(&self, id: &str) -> anyhow::Result<Arc<RetainedHistoryArchive>> {
         match self.index.get(11, id, "")? {
             Some(Record::Archive(_, archive)) => Ok(archive),
             _ => anyhow::bail!("snapshot history archive absent"),
@@ -684,8 +688,8 @@ impl ValidatedApplicationSnapshot {
     ) -> anyhow::Result<()> {
         let h = &self.header;
         ensure!(
-            self.index.count(12)? <= h.limits.max_schema_activations as u64
-                && self.index.count(13)? <= h.limits.max_retirements as u64,
+            h.schema_activation_bytes <= h.limits.max_schema_activation_bytes
+                && h.retirement_bytes <= h.limits.max_retirement_bytes,
             "permanent record quota exceeded"
         );
         let mut activation_bytes = 0u64;
@@ -695,7 +699,7 @@ impl ValidatedApplicationSnapshot {
                 unreachable!()
             };
             activation_bytes = activation_bytes
-                .checked_add(schema::validate_snapshot_record(&key, &record, h.revision)? as u64)
+                .checked_add(schema::validate_snapshot_record(&key, &record, h.revision)?)
                 .context("schema activation bytes overflow")?;
             Ok(())
         })?;
@@ -708,7 +712,7 @@ impl ValidatedApplicationSnapshot {
             };
             let (bytes, current) = retirement::validate_snapshot_record(h, &key, &record)?;
             retirement_bytes = retirement_bytes
-                .checked_add(bytes as u64)
+                .checked_add(bytes)
                 .context("retirement byte count overflow")?;
             successes = successes
                 .checked_add(u64::from(current))
@@ -716,8 +720,8 @@ impl ValidatedApplicationSnapshot {
             Ok(())
         })?;
         ensure!(
-            activation_bytes == h.schema_activation_bytes as u64
-                && retirement_bytes == h.retirement_bytes as u64
+            activation_bytes == h.schema_activation_bytes
+                && retirement_bytes == h.retirement_bytes
                 && successes == u64::from(h.retired),
             "permanent record accounting or fence differs"
         );

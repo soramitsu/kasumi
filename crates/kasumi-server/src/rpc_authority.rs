@@ -56,6 +56,38 @@ impl NativeAuthority {
 }
 #[tonic::async_trait]
 impl kasumi_authority_server::KasumiAuthority for NativeAuthority {
+    async fn observe_control_signer(
+        &self,
+        request: Request<AuthorityJsonRequest>,
+    ) -> Result<Response<AuthorityJsonResponse>, Status> {
+        let context = verified(&self.auth, &request).await?;
+        let pin = request
+            .extensions()
+            .get::<crate::tls::AuthenticatedTlsPeer>()
+            .and_then(|peer| peer.certificate_pin())
+            .ok_or_else(|| Status::unauthenticated("actual mTLS Control receiver required"))?;
+        let caller = AuthenticatedNode::from_verified_transport(context.clone(), hex::encode(pin))
+            .map_err(status)?;
+        let body: kasumi_serving::ControlSignerRequest =
+            decode_json(&request.into_inner().request_json).map_err(status)?;
+        let (reply, fence) = self
+            .auth
+            .audit_result(
+                &context,
+                self.authority.observe_control_signer(caller, body).await,
+            )
+            .await
+            .map_err(status)?;
+        let response = AuthorityJsonResponse {
+            response_json: encode_json(&reply).map_err(status)?,
+        };
+        self.auth
+            .audit_result(&context, fence.release().await)
+            .await
+            .map_err(status)?;
+        fence.release().await.map_err(status)?;
+        Ok(Response::new(response))
+    }
     async fn signing_maintenance(
         &self,
         request: Request<AuthorityJsonRequest>,

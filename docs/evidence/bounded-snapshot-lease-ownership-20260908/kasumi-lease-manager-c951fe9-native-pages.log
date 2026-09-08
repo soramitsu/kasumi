@@ -1,0 +1,22 @@
+   Compiling kasumi-types v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-types)
+   Compiling kasumi-serving v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-serving)
+   Compiling kasumi-query v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-query)
+   Compiling kasumi-store v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-store)
+   Compiling kasumi-client v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-client)
+   Compiling kasumi-raft v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-engine)
+   Compiling kasumi-authority v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-authority)
+   Compiling kasumi-server v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-server)
+warning: linker stderr: ld: __eh_frame section too large (max 16MB) to encode dwarf unwind offsets in compact unwind table, performance of exception handling might be affected
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: `kasumi-server` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 49s
+     Running unittests src/lib.rs (/tmp/kasumi-production-streaming-target/debug/deps/kasumi_server-3ef3c426e5743964)
+
+running 1 test
+test api::tests::native_staging_and_coherent_lease_pages_share_exact_state_and_authority ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 82 filtered out; finished in 1.13s
+

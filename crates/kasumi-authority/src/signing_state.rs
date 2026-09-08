@@ -35,6 +35,9 @@ impl Backend {
         let head = &meta.signing;
         head.validate()?;
         match &command.action {
+            AuthorityMaintenanceAction::AuthorizeControlSigner { directive } => {
+                return self.validate_control_signer_directive(meta, directive);
+            }
             AuthorityMaintenanceAction::EnrollSignerVerifier { .. }
             | AuthorityMaintenanceAction::AdmitControlVerifiers { .. } => {
                 return self.validate_roster_transition(meta, command);
@@ -74,6 +77,13 @@ impl Backend {
         additions: &mut Vec<(String, Record)>,
     ) -> Result<()> {
         self.validate_signing_transition(meta, command)?;
+        if matches!(
+            &command.action,
+            AuthorityMaintenanceAction::AuthorizeControlSigner { .. }
+        ) {
+            meta.operational.revision = revision;
+            return Ok(());
+        }
         if matches!(
             &command.action,
             AuthorityMaintenanceAction::EnrollSignerVerifier { .. }
@@ -117,6 +127,7 @@ impl Backend {
         head.validate()
     }
     pub(super) fn validate_signing_snapshot(&self, snapshot: &Snapshot) -> Result<()> {
+        self.validate_control_signer_snapshot(snapshot)?;
         let head = &snapshot.meta.signing;
         head.validate()?;
         ensure!(

@@ -274,7 +274,9 @@ pub(crate) fn publish(
             .ok_or_else(|| {
                 Error::new(ErrorCode::QuotaExceeded, "archive reference size overflow")
             })?;
-        collection.archived_documents.insert(id.clone(), reference);
+        collection
+            .archived_documents
+            .insert(id.clone(), Arc::new(reference));
         collection.documents.remove(&id);
         staged.logical_bytes = staged
             .logical_bytes
@@ -295,7 +297,7 @@ pub(crate) fn publish(
         .ok_or_else(|| Error::new(ErrorCode::QuotaExceeded, "archive catalog byte overflow"))?;
     staged
         .history_archives
-        .insert(manifest.archive_id.clone(), retained);
+        .insert(manifest.archive_id.clone(), Arc::new(retained));
     // Archival changes storage placement, never logical identity or data epoch.
     *state = staged;
     Ok((

@@ -352,6 +352,7 @@ impl Backend {
                         status.phase = AuthorityMaintenancePhase::Draining;
                     }
                     AuthorityMaintenanceAction::EnrollSignerVerifier { .. }
+                    | AuthorityMaintenanceAction::AuthorizeControlSigner { .. }
                     | AuthorityMaintenanceAction::AdmitControlVerifiers { .. }
                     | AuthorityMaintenanceAction::StageSignerGeneration { .. }
                     | AuthorityMaintenanceAction::ActivateSignerGeneration { .. }
@@ -435,6 +436,7 @@ impl Backend {
         let mut next = meta.operational.membership.clone();
         match &command.action {
             AuthorityMaintenanceAction::EnrollSignerVerifier { .. }
+            | AuthorityMaintenanceAction::AuthorizeControlSigner { .. }
             | AuthorityMaintenanceAction::AdmitControlVerifiers { .. }
             | AuthorityMaintenanceAction::StageSignerGeneration { .. }
             | AuthorityMaintenanceAction::ActivateSignerGeneration { .. } => {

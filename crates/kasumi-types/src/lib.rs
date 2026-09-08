@@ -201,8 +201,8 @@ pub struct Limits {
     pub max_documents: u64,
     pub max_collections: usize,
     pub max_schema_bytes: usize,
-    pub max_schema_activations: usize,
-    pub max_retirements: usize,
+    pub max_schema_activation_bytes: u64,
+    pub max_retirement_bytes: u64,
     pub max_policy_grants: usize,
     pub max_logical_bytes: u64,
     pub max_snapshot_bytes: u64,
@@ -228,8 +228,8 @@ impl Default for Limits {
             max_documents: 1_000_000,
             max_collections: 128,
             max_schema_bytes: 8 << 20,
-            max_schema_activations: 4096,
-            max_retirements: 4096,
+            max_schema_activation_bytes: 64 << 20,
+            max_retirement_bytes: 64 << 20,
             max_policy_grants: 4096,
             max_logical_bytes: 1 << 30,
             max_snapshot_bytes: default_snapshot_bytes(),
@@ -285,7 +285,7 @@ pub struct CollectionState {
     // Leaf copy-on-write clones Arc handles, never unrelated JSON bodies.
     pub documents: imbl::OrdMap<String, std::sync::Arc<Document>>,
     #[serde(serialize_with = "serialize_resident_map")]
-    pub archived_documents: imbl::OrdMap<String, ArchivedDocument>,
+    pub archived_documents: imbl::OrdMap<String, std::sync::Arc<ArchivedDocument>>,
     pub archived_document_bytes: usize,
 }
 
@@ -494,14 +494,14 @@ pub struct TenantState {
     pub active_staged_transactions: BTreeSet<String>,
     pub change_feed: ChangeFeedState,
     #[serde(serialize_with = "serialize_resident_map")]
-    pub history_archives: imbl::OrdMap<String, RetainedHistoryArchive>,
+    pub history_archives: imbl::OrdMap<String, std::sync::Arc<RetainedHistoryArchive>>,
     pub history_archive_bytes: usize,
     #[serde(serialize_with = "serialize_resident_map")]
     pub schema_activations: imbl::OrdMap<String, StoredSchemaActivation>,
-    pub schema_activation_bytes: usize,
+    pub schema_activation_bytes: u64,
     #[serde(serialize_with = "serialize_resident_map")]
     pub retirements: imbl::OrdMap<String, StoredRetirement>,
-    pub retirement_bytes: usize,
+    pub retirement_bytes: u64,
     pub audit_retention: AuditRetentionState,
     pub audits: imbl::Vector<AuditEvent>,
 }

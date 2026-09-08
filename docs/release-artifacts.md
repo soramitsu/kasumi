@@ -103,8 +103,13 @@ installed authority group. No installation identity or fixture state is baked in
 
 Record the BuildKit version/image, OCI digest, base package inventory and a full
 image SBOM, then exercise offline initialization, restart and shutdown with the
-exported image before accepting it. The recipe is present; those actual OCI
-build/runtime and platform SBOM gates have not yet passed.
+exported image before accepting it. An initial ARM64 recipe smoke built and ran
+a Docker image using historical `8e90ff2` production binaries, including offline
+initialization, authenticated access, backup verification and restart. That
+source's workspace gate failed. The smoke does not approve those binaries or
+replace an actual final candidate, OCI-layout export and platform SBOM gate.
+Its failures and exact environment are retained in
+`docs/evidence/linux-image-systemd-smoke-20260908`.
 
 ## systemd installation
 
@@ -135,6 +140,12 @@ and private `/var/lib/kasumi-authority/authority.json`. HA data members may use
 the data unit after installing the exact HA configuration at its configured path.
 If an installation uses external archive/key paths, explicitly configure the
 unit's required read/write directories to match those installed resources.
+
+The exact data unit passed an initial native Debian ARM64 smoke with historical
+`8e90ff2` binaries: dedicated-user startup, authenticated requests, TLS reload,
+restart and drained shutdown. Both units passed `systemd-analyze verify`; the
+authority unit still requires actual HA runtime validation. Repeat these checks
+with the final accepted artifacts.
 
 These are candidate artifacts. Complete cross-platform functional validation,
 external-service/recovery/capacity/retention/performance gates and the actual

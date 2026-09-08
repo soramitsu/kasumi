@@ -1,0 +1,11 @@
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 20.00s
+     Running tests/replicated.rs (/tmp/kasumi-production-streaming-target/debug/deps/replicated-f5bc48ca7a1159a4)
+
+running 3 tests
+test deployment_modes_and_live_store_ownership_cannot_be_overridden ... ok
+test replicated_service_preserves_batches_receipts_and_cursor_fences_across_partition_and_restart ... ok
+test replicated_restore_has_identical_genesis_and_requires_quorum_audit_before_activation ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 17.27s
+

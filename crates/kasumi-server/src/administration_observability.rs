@@ -102,6 +102,13 @@ impl Administration {
                             logical_bytes: generation.state.logical_bytes,
                             logical_budget_bytes: generation.state.limits.max_logical_bytes,
                             snapshot_disk_budget_bytes: generation.state.limits.max_snapshot_bytes,
+                            schema_activation_bytes: generation.state.schema_activation_bytes,
+                            schema_activation_budget_bytes: generation
+                                .state
+                                .limits
+                                .max_schema_activation_bytes,
+                            retirement_bytes: generation.state.retirement_bytes,
+                            retirement_budget_bytes: generation.state.limits.max_retirement_bytes,
                         });
                         observation.retention = Some(RetentionObservation {
                             next_sequence: retention.next_sequence,

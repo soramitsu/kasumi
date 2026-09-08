@@ -469,3 +469,79 @@ a read-only quota getter or caller capacity claim cannot close this dependency.
 - Packaging source531d86e test/provenance checks and earlier failures are retained
   in `docs/evidence/release-packaging-20260908`. No final candidate package has
   yet passed end-to-end assembly and deployment.
+
+- `bf9f240` independently authenticates planned source application retirement and
+  custody receipt verification, and dispatches the exact unavailable-source
+  issuer fence. Seven engine lifecycle tests, actual TLS backup/retirement and
+  strict workspace checks pass; final fixture-free check remains pending after
+  the custody split. Evidence: `docs/evidence/control-source-fencing-20260908`.
+  Phase-time retirement deadlines and complete activation/publication remain open.
+
+- `42bf607` adds a pinned native acceptance workflow, exact gate-command
+  verification, host provenance, a dated Debian package snapshot and an OCI
+  recipe that verifies binary hashes and architecture. Sixteen Python tests and
+  native macOS host preflight pass; the corrected workflow passes actionlint.
+  The initial lint failure and source-qualified results are retained in
+  `docs/evidence/candidate-workflow-20260908`. Actual workflow execution, image
+  builds, final candidate assembly and compiler reproducibility remain open.
+
+- `4cc27db` replaces schema activation and retirement lifetime record-count
+  ceilings with exact checked 64-bit byte budgets. Terminal outcome capacity is
+  reserved before publication, source fencing or positive Raft commitment;
+  exhausted identities remain exactly replayable and budgets can expand beyond
+  2 GiB. Twenty-three engine cases and all45Raft tests pass, followed by strict
+  workspace Clippy, fixture-free server checks and formatting. Source-qualified
+  evidence and the initial Clippy fixture failure are retained in
+  `docs/evidence/permanent-history-byte-budgets-20260908`. Resident permanent-map
+  migration, persistent disk admission and native import reservations remain open.
+
+- Recipe `42bf607` built the pinned Linux validation image and passed an initial
+  native ARM64 runtime-image and exact systemd data-unit smoke with historical
+  `8e90ff2` binaries. Offline initialization, native audit/credential access,
+  encrypted backup verification, TLS reload, restart and drained shutdown pass.
+  The original 2 GiB work-admission rejection and same-session success after a
+  clean 4 GiB restart are preserved. Both units pass static verification; the
+  authority service was not run. Evidence:
+  `docs/evidence/linux-image-systemd-smoke-20260908`. These recipe checks do not
+  approve the failed historical workspace source or close final OCI/SBOM,
+  compiler reproducibility, capacity and endurance gates.
+
+- `8c99af9` coordinates permanent issuer activation, exact StopActivation
+  resolution, all-voter fresh startup and signed local confirmations. Planned
+  retirement receives its finite cutoff at the actual source-fencing phase;
+  activation voter comparisons include physical verifier identity. Ten lifecycle
+  and fifteen snapshot tests, two focused regressions, strict workspace and
+  fixture-free checks pass. Evidence:
+  `docs/evidence/control-recovery-activation-20260908`. Actual target processes,
+  route publication and expired original Complete resolution remain open.
+
+- `82a9e3c` publishes exact current-leader Control signer Stage and forward
+  Activation directives to the installed physical verifier. Forty-three
+  authority tests, actual private-admin TLS, strict workspace and fixture-free
+  checks pass. Evidence: `docs/evidence/remote-control-signer-20260908`.
+  Follower authorization, durable global coverage, revocation and issuer drains
+  remain open, including global winner/abort binding of the older issuer-local
+  StopStage path. The remote path rejects StopStage and retirement.
+
+- `c53aeb4` makes live native/MCP benchmark requests read one fresh owner-only
+  credential file snapshot per request and rejects the old environment-token
+  contract. Two regressions and strict benchmark checks pass; evidence is in
+  `docs/evidence/live-benchmark-credentials-20260908`. This prepares external
+  renewal for long runs; it does not close the matrix or endurance gates.
+
+- `c951fe9` integrates exclusive manager ownership of coherent document/ID roots,
+  shared archived payloads, retained-version accounting and bounded selected
+  page values. Committed publication expires over-budget leases synchronously;
+  response fences reject expired snapshots without changing committed writes.
+  All eleven frozen gates pass before and after the permanent-counter merge,
+  including actual native pages and encrypted history backup/restore. Evidence:
+  `docs/evidence/bounded-snapshot-lease-ownership-20260908`. Final integrated
+  release, 3 GiB and sustained resource-pressure gates remain open.
+
+- Frozen native Linux ARM64 `d403c55` is running the complete functional gate set
+  in the newly built pinned image. Toolchain, formatting, Python and patched
+  dependency gates passed at launch capture; workspace and later gates remain
+  in progress. Candidate/repeated assembly is conditional on whole-run success.
+  Launch provenance and the passing combined macOS compile check are in
+  `docs/evidence/frozen-linux-arm64-d403c55-launch-20260908`. This is not a
+  completed functional result or final release acceptance.

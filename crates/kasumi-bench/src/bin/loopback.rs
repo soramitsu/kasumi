@@ -349,22 +349,21 @@ async fn benchmark(
             },
             incarnation: Some(incarnation.to_string()),
         });
-        let token_env = format!("KASUMI_BENCH_ACCESS_{tenant}");
-        oauth.push((
-            token_env.clone(),
-            token(&signing_key, &issuer_url, &audience, &name, incarnation)?,
-        ));
+        let token_file = path.join(format!("access-{tenant}.token"));
+        let access = token(&signing_key, &issuer_url, &audience, &name, incarnation)?;
+        private(&token_file, access.as_bytes())?;
+        oauth.push((token_file, access));
     }
     // Match the local harness's deterministic key sequence rather than repeatedly
     // measuring one hot document per tenant. Credential warmup remains separate.
     for operation in 0..operations.max(tenants).min(10_000) {
         let ordinal = operation.wrapping_mul(7919) % documents;
-        let token_env = &oauth[ordinal % tenants].0;
+        let token_file = &oauth[ordinal % tenants].0;
         let mutation = path.join(format!("body-{ordinal}.json"));
         let mut value = body(ordinal);
         value["version"] = json!(1);
         std::fs::write(&mutation, serde_json::to_vec(&value)?)?;
-        targets.push(json!({"token_env":token_env,"collection":"docs","id":ordinal.to_string(),"query":QueryRequest{collection:"docs".into(),filter:Predicate::Eq{field:"/ordinal".into(),value:json!(ordinal)},sort:Vec::new(),projection:vec!["/ordinal".into()],aggregates:Vec::new(),group_by:Vec::new(),text:None,limit:1000,cursor:None,allow_scan:false},"mutation_body":mutation}));
+        targets.push(json!({"token_file":token_file,"collection":"docs","id":ordinal.to_string(),"query":QueryRequest{collection:"docs".into(),filter:Predicate::Eq{field:"/ordinal".into(),value:json!(ordinal)},sort:Vec::new(),projection:vec!["/ordinal".into()],aggregates:Vec::new(),group_by:Vec::new(),text:None,limit:1000,cursor:None,allow_scan:false},"mutation_body":mutation}));
     }
     config.validate()?;
     let config_path = path.join("node.json");
@@ -546,9 +545,6 @@ async fn benchmark(
         .arg(&network_config)
         .arg(output)
         .arg("--allow-writes");
-    for (name, token) in &oauth {
-        network.env(name, token.as_str());
-    }
     let mut network = Process(Some(
         network
             .spawn()

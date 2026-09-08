@@ -1182,7 +1182,7 @@ fn shared_document_representation_preserves_snapshot_bytes_and_historical_values
         definition(&[]),
         vec![body.clone(), json!({"other":"untouched"})],
     );
-    // A plain ordered representation of the current v1 fields checks canonical
+    // A plain ordered representation of the canonical fields checks canonical
     // map ordering and Arc dereferencing independently of persistent maps.
     #[derive(serde::Serialize)]
     struct OwnedRepresentation<'a> {
@@ -1200,7 +1200,11 @@ fn shared_document_representation_preserves_snapshot_bytes_and_historical_values
             .iter()
             .map(|(id, doc)| (id, doc.as_ref()))
             .collect(),
-        archived_documents: old["docs"].archived_documents.iter().collect(),
+        archived_documents: old["docs"]
+            .archived_documents
+            .iter()
+            .map(|(id, document)| (id, document.as_ref()))
+            .collect(),
         archived_document_bytes: old["docs"].archived_document_bytes,
     };
     let encoded = serde_json::to_vec(&old["docs"]).unwrap();
