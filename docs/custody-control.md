@@ -11,7 +11,7 @@ an application tenant, preventing an application/control namespace collision.
 
 Normal engine open, local and replicated execution, and all restore entry points
 take `Arc<TenantStorageSet>`. Production startup supplies both explicit Transit
-providers through `transit` and `custody_transit`; control databases have the same
+providers through `keys` and `custody_keys`; control databases have the same
 requirement. Existing Rust embeddings create the set before calling an engine
 opener. A raw `TenantStore` remains suitable for independently keyed security
 audit or storage-level use, but it cannot open a serving engine.

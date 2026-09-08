@@ -2,8 +2,8 @@
 //! Requests select exact committed identifiers, never endpoints, keys or paths.
 use crate::{
     runtime::{
-        RuntimeConfig, TlsFiles, TransitSettings, credential_path, origin, parse_certificate_pin,
-        read_bounded,
+        KeyProviderSettings, RuntimeConfig, TlsFiles, credential_path, origin,
+        parse_certificate_pin, read_bounded,
     },
     serving_runtime::AuthorityEndpoint,
 };
@@ -39,14 +39,14 @@ impl TargetRunnerLimits {
 #[serde(deny_unknown_fields)]
 pub struct TargetBackupSource {
     pub destination_alias: String,
-    pub transit: TransitSettings,
+    pub keys: KeyProviderSettings,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TargetTenantTemplate {
     pub authority: String,
-    pub application_transit: TransitSettings,
-    pub custody_transit: TransitSettings,
+    pub application_keys: KeyProviderSettings,
+    pub custody_keys: KeyProviderSettings,
     pub source_backups: BTreeMap<Uuid, TargetBackupSource>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -60,7 +60,7 @@ pub struct TargetRecoveryConfig {
     pub attestation_key: PathBuf,
     pub issuer_admin_bearer_file: BTreeMap<Uuid, String>,
     pub journal_path: PathBuf,
-    pub journal_transit: TransitSettings,
+    pub journal_keys: KeyProviderSettings,
     pub generation_root: PathBuf,
     pub tenants: BTreeMap<String, TargetTenantTemplate>,
     pub limits: TargetRunnerLimits,
@@ -105,15 +105,15 @@ impl TargetRecoveryConfig {
         for pin in &self.control_endpoint.certificate_pins {
             parse_certificate_pin(pin)?;
         }
-        let journal_key = self.journal_transit.validate()?;
+        let journal_key = self.journal_keys.validate()?;
         let mut protected = BTreeSet::from([
-            runtime.control.transit.validate()?,
-            runtime.control.custody_transit.validate()?,
-            runtime.security_audit.transit.validate()?,
+            runtime.control.keys.validate()?,
+            runtime.control.custody_keys.validate()?,
+            runtime.security_audit.keys.validate()?,
         ]);
         for tenant in &runtime.tenants {
-            protected.insert(tenant.transit.validate()?);
-            protected.insert(tenant.custody_transit.validate()?);
+            protected.insert(tenant.keys.validate()?);
+            protected.insert(tenant.custody_keys.validate()?);
         }
         ensure!(
             (1..=10_000).contains(&self.tenants.len()),
@@ -144,7 +144,7 @@ impl TargetRecoveryConfig {
                     .contains_key(&authority.manifest.authority_id),
                 "target issuer admission credential missing"
             );
-            for provider in [&template.application_transit, &template.custody_transit] {
+            for provider in [&template.application_keys, &template.custody_keys] {
                 let key = provider.validate()?;
                 ensure!(
                     key != journal_key && !protected.contains(&key) && target_keys.insert(key),
@@ -164,7 +164,7 @@ impl TargetRecoveryConfig {
                     "target backup source is not installed"
                 );
                 ensure!(
-                    source.transit.validate()? != journal_key,
+                    source.keys.validate()? != journal_key,
                     "source backup cannot use target journal key"
                 );
             }
@@ -172,7 +172,7 @@ impl TargetRecoveryConfig {
         for template in self.tenants.values() {
             for source in template.source_backups.values() {
                 ensure!(
-                    !target_keys.contains(&source.transit.validate()?),
+                    !target_keys.contains(&source.keys.validate()?),
                     "source backup key cannot be reused for a target application or custody domain"
                 );
             }

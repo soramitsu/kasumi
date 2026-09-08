@@ -53,8 +53,10 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
         crate::auth::AuthConfig {
             issuer: "https://identity.example".into(),
             audience: "https://authority.example".into(),
-            jwks_uri: "https://identity.example/keys".into(),
-            jwks_trusted_ca_pem: None,
+            source: crate::auth::AuthKeySource::ExternalOAuth {
+                jwks_uri: "https://identity.example/keys".into(),
+                trusted_ca_pem: None,
+            },
             algorithms: vec![jsonwebtoken::Algorithm::EdDSA],
             access_token_types: BTreeSet::from(["at+jwt".into()]),
         },

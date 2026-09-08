@@ -62,9 +62,7 @@ impl Administration {
             // Retained caller handles still refer to this permanently closed instance.
             previous.database.shutdown().await?;
         }
-        let custody_provider = configured
-            .custody_transit
-            .provider_with_source(self.credential.clone())?;
+        let custody_provider = configured.custody_keys.provider(self.credential.clone())?;
         if kasumi_store::CustodyStore::catalog_installed(&self.node, tenant)? {
             let custody = kasumi_store::CustodyStore::open(
                 self.node.clone(),
@@ -103,9 +101,7 @@ impl Administration {
             kasumi_serving::LeasePurpose::Serving,
         )
         .await?;
-        let provider = configured
-            .transit
-            .provider_with_source(self.credential.clone())?;
+        let provider = configured.keys.provider(self.credential.clone())?;
         let stores = TenantStorageSet::open(
             self.node.clone(),
             tenant.to_owned(),

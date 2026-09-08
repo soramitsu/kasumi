@@ -4,6 +4,9 @@ use kasumi_server::runtime::{NodeRuntime, RuntimeConfig, example_config};
 #[tokio::main]
 async fn main() -> Result<()> {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
+    if kasumi_server::standalone_cli::command(&arguments).await? {
+        return Ok(());
+    }
     match arguments.as_slice() {
         [command] if command == "example-config" => {
             println!("{}", serde_json::to_string_pretty(&example_config())?);
@@ -12,7 +15,7 @@ async fn main() -> Result<()> {
         [command, path] if command == "check-config" => {
             RuntimeConfig::load(path)?;
             println!(
-                "Configuration is structurally valid; credentials and external services were not contacted."
+                "Configuration and installed local keyring identities are valid; external services were not contacted."
             );
             Ok(())
         }
@@ -39,7 +42,7 @@ async fn main() -> Result<()> {
             result
         }
         _ => bail!(
-            "usage: kasumid example-config | check-config <configuration.json> | serve <configuration.json>"
+            "usage: kasumid init --mode standalone <absolute-directory> [--tenant name] | example-config | check-config <configuration.json> | serve <configuration.json> | credential create <control-profile> <request.json> <output-profile> | credential renew|watch <profile> | credential status|revoke <control-profile> <family-uuid> | maintenance rotate-wrapping-keys|rotate-signer|rotate-certificates <configuration.json> | recover-administrator <configuration.json> <new-private-directory> | backup-operator-keys <configuration.json> <new-private-directory>"
         ),
     }
 }

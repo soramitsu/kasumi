@@ -21,6 +21,8 @@ pub use lifecycle::NativeLifecycleControl;
 pub use target::NativeTargetRecovery;
 #[path = "rpc_authority.rs"]
 mod authority;
+#[path = "rpc_credentials.rs"]
+mod credentials;
 #[path = "rpc_retirement.rs"]
 mod retirement;
 pub use authority::NativeAuthority;
@@ -614,6 +616,34 @@ impl NativeAdmin {
 
 #[tonic::async_trait]
 impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
+    async fn create_credential(
+        &self,
+        request: Request<CredentialJsonRequest>,
+    ) -> Result<Response<CredentialJsonResponse>, Status> {
+        self.credential_rpc(request, credentials::CredentialOperation::Create)
+            .await
+    }
+    async fn renew_credential(
+        &self,
+        request: Request<CredentialJsonRequest>,
+    ) -> Result<Response<CredentialJsonResponse>, Status> {
+        self.credential_rpc(request, credentials::CredentialOperation::Renew)
+            .await
+    }
+    async fn revoke_credential(
+        &self,
+        request: Request<CredentialJsonRequest>,
+    ) -> Result<Response<CredentialJsonResponse>, Status> {
+        self.credential_rpc(request, credentials::CredentialOperation::Revoke)
+            .await
+    }
+    async fn credential_status(
+        &self,
+        request: Request<CredentialJsonRequest>,
+    ) -> Result<Response<CredentialJsonResponse>, Status> {
+        self.credential_rpc(request, credentials::CredentialOperation::Status)
+            .await
+    }
     async fn read_custody(
         &self,
         request: Request<RetirementReference>,

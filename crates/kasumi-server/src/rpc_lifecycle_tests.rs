@@ -26,8 +26,10 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
         crate::auth::AuthConfig {
             issuer: "https://identity.example".into(),
             audience: "https://control.example".into(),
-            jwks_uri: "https://identity.example/keys".into(),
-            jwks_trusted_ca_pem: None,
+            source: crate::auth::AuthKeySource::ExternalOAuth {
+                jwks_uri: "https://identity.example/keys".into(),
+                trusted_ca_pem: None,
+            },
             algorithms: vec![jsonwebtoken::Algorithm::EdDSA],
             access_token_types: BTreeSet::from(["at+jwt".into()]),
         },

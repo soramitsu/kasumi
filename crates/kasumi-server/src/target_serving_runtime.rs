@@ -162,9 +162,7 @@ impl TargetRecoveryRuntime {
         // storage. It remains available after ordinary serving expires, without
         // constructing a municipality application provider or data authority.
         *stage = RecoveryStage::Custody;
-        let custody_provider = template
-            .custody_transit
-            .provider_with_source(self.credential.clone())?;
+        let custody_provider = template.custody_keys.provider(self.credential.clone())?;
         g.custody_probe = Some(
             kasumi_store::CustodyStore::open(
                 g.node.as_ref().unwrap().clone(),
@@ -234,11 +232,9 @@ impl TargetRecoveryRuntime {
         *stage = RecoveryStage::ApplicationKeys;
         let access = projection.storage_access(lease.gate().clone())?;
         let app = template
-            .application_transit
-            .provider_with_source(self.credential.clone())?;
-        let custody = template
-            .custody_transit
-            .provider_with_source(self.credential.clone())?;
+            .application_keys
+            .provider(self.credential.clone())?;
+        let custody = template.custody_keys.provider(self.credential.clone())?;
         projection.check(lease.gate())?;
         g.stores = Some(
             TenantStorageSet::open(

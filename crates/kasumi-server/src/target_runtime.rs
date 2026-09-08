@@ -183,9 +183,7 @@ impl TargetRecoveryRuntime {
         let cleanup_key =
             Ed25519KeyPair::from_pkcs8(&key).map_err(|_| anyhow::anyhow!("invalid target key"))?;
         // Only the independent journal KMS provider is constructed at startup.
-        let provider = installed
-            .journal_transit
-            .provider_with_source(credential.clone())?;
+        let provider = installed.journal_keys.provider(credential.clone())?;
         let node = NodeStore::open(&installed.journal_path)?;
         let access = StorageAccess::target_journal(&installed.control_root, &installed.node)?;
         let store = TenantStore::open(
@@ -621,11 +619,9 @@ impl TargetRecoveryRuntime {
         if g.stores.is_none() {
             op.check()?;
             let app = template
-                .application_transit
-                .provider_with_source(self.credential.clone())?;
-            let custody = template
-                .custody_transit
-                .provider_with_source(self.credential.clone())?;
+                .application_keys
+                .provider(self.credential.clone())?;
+            let custody = template.custody_keys.provider(self.credential.clone())?;
             g.stores = Some(
                 op.run(TenantStorageSet::open(
                     g.node.as_ref().unwrap().clone(),
@@ -656,9 +652,7 @@ impl TargetRecoveryRuntime {
                     .get(&source.destination_alias)
                     .context("backup destination missing")?
                     .clone(),
-                keys: source
-                    .transit
-                    .provider_with_source(self.credential.clone())?,
+                keys: source.keys.provider(self.credential.clone())?,
                 timeout_ms: self.installed.limits.operation_timeout_ms,
             };
             let materialized = kasumi_engine::materialize_target_replica(

@@ -88,7 +88,7 @@ fsync and reporting an unknown outcome if access expires after commitment.
 control domain. It inspects wrapped application catalog identity without creating
 an application provider or decrypting application keys. It grants no application
 data authority. Native tenant and control configuration therefore requires a
-separate `custody_transit` setting. Test embeddings can explicitly use
+separate `custody_keys` setting. Test embeddings can explicitly use
 `test_utils::with_custody(existing_application_store, distinct_test_provider)`;
 this feature is unavailable to native configuration.
 

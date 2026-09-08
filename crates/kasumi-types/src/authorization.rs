@@ -17,7 +17,19 @@ enum AuthorizationMetadata {
 #[derive(Clone)]
 enum LiveAuthorization {
     ServiceIdentity,
-    Credential(ElapsedDeadline),
+    Credential {
+        deadline: ElapsedDeadline,
+        liveness: Option<Arc<dyn CredentialLiveness>>,
+    },
+}
+
+/// A trusted verifier may add a live revocation guard. It is never serialized,
+/// and each handoff rechecks it against the original credential family.
+pub trait CredentialLiveness: Send + Sync {
+    fn check(&self) -> Result<()>;
+    fn family_id(&self) -> Option<uuid::Uuid> {
+        None
+    }
 }
 
 /// Trusted embedding applications explicitly choose service identity or supply
@@ -77,15 +89,38 @@ impl RequestAuthorization {
                 expires_at_ms,
                 resource,
             },
-            live: Some(Arc::new(LiveAuthorization::Credential(deadline))),
+            live: Some(Arc::new(LiveAuthorization::Credential {
+                deadline,
+                liveness: None,
+            })),
         })
+    }
+    pub fn from_verified_credential_with_liveness(
+        expires_at_ms: u64,
+        observation: &ClockObservation,
+        resource: CredentialResource,
+        liveness: Arc<dyn CredentialLiveness>,
+    ) -> Result<Self> {
+        liveness.check()?;
+        let mut authorization =
+            Self::from_verified_credential(expires_at_ms, observation, resource)?;
+        let deadline = observation.until(expires_at_ms).map_err(|_| expired())?;
+        authorization.live = Some(Arc::new(LiveAuthorization::Credential {
+            deadline,
+            liveness: Some(liveness),
+        }));
+        Ok(authorization)
     }
     /// Source admission, serialized leader execution and plaintext handoff call
     /// this against the original local proof, not its serialized metadata.
     pub fn check_live(&self) -> Result<()> {
         match self.live.as_deref() {
             Some(LiveAuthorization::ServiceIdentity) => Ok(()),
-            Some(LiveAuthorization::Credential(deadline)) => {
+            Some(LiveAuthorization::Credential { deadline, liveness }) => {
+                deadline.check().map_err(|_| expired())?;
+                if let Some(liveness) = liveness {
+                    liveness.check()?;
+                }
                 deadline.check().map_err(|_| expired())
             }
             None => Err(Error::new(
@@ -119,6 +154,15 @@ impl RequestAuthorization {
         match &self.metadata {
             AuthorizationMetadata::ServiceIdentity {} => None,
             AuthorizationMetadata::Credential { expires_at_ms, .. } => Some(*expires_at_ms),
+        }
+    }
+    pub fn credential_family(&self) -> Option<uuid::Uuid> {
+        match self.live.as_deref() {
+            Some(LiveAuthorization::Credential {
+                liveness: Some(guard),
+                ..
+            }) => guard.family_id(),
+            _ => None,
         }
     }
     pub fn resource(&self) -> Option<&CredentialResource> {

@@ -1398,15 +1398,13 @@ impl Administration {
         // No credentials, local paths, node-specific token env names, or mutable
         // state enter the fingerprint. All immutable policy/schema limits and
         // voter identities must match, including the configured wrapping key.
-        let settings = &configuration.transit;
-        let custody = &configuration.custody_transit;
+        let settings = &configuration.keys;
+        let custody = &configuration.custody_keys;
         let bytes = serde_json::to_vec(&serde_json::json!({
             "format":1,"tenant":tenant,"route":route,"nodes":nodes,
             "initial_policy":configuration.initial_policy,"initial_limits":configuration.initial_limits,
-            "custody_transit":{"endpoint":custody.endpoint,"mount":custody.mount,"key_name":custody.key_name,
-                "namespace":custody.namespace,"derived":custody.derived},
-            "transit":{"endpoint":settings.endpoint,"mount":settings.mount,"key_name":settings.key_name,
-                "namespace":settings.namespace,"derived":settings.derived}
+            "custody_keys":custody.identity_descriptor()?,
+            "keys":settings.identity_descriptor()?
         }))?;
         Ok(format!("provision-v1-{}", hex_digest(&bytes)))
     }

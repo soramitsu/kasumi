@@ -39,16 +39,25 @@ const MAX_JWKS_BYTES: usize = 256 << 10;
 pub struct AuthConfig {
     pub issuer: String,
     pub audience: String,
-    pub jwks_uri: String,
+    pub source: AuthKeySource,
     /// Only configured asymmetric signature algorithms are accepted.
     pub algorithms: Vec<Algorithm>,
     /// Default deployment uses RFC 9068 "at+jwt"; issuer-specific profiles must
     /// configure this explicitly and use a dedicated resource audience.
     pub access_token_types: BTreeSet<String>,
-    /// Optional dedicated trust anchor for a private issuer's HTTPS JWKS. This
-    /// public PEM is configured by the operator, never supplied by a token.
-    #[serde(default)]
-    pub jwks_trusted_ca_pem: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AuthKeySource {
+    #[serde(rename = "external_oauth")]
+    ExternalOAuth {
+        jwks_uri: String,
+        trusted_ca_pem: Option<String>,
+    },
+    Local {
+        signer_file: std::path::PathBuf,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -60,6 +69,8 @@ struct Claims {
     kasumi_resource: kasumi_types::CredentialResource,
     #[serde(default)]
     token_use: Option<String>,
+    #[serde(default)]
+    kasumi_family: Option<uuid::Uuid>,
 }
 
 struct CachedKeys {
@@ -74,6 +85,7 @@ pub struct Authenticator {
     cache: RwLock<Option<CachedKeys>>,
     refresh: tokio::sync::Mutex<()>,
     audit: std::sync::OnceLock<Arc<dyn RequestAuditSink>>,
+    local_credentials: std::sync::OnceLock<Arc<crate::local_auth::LocalCredentials>>,
 }
 
 impl Authenticator {
@@ -82,11 +94,22 @@ impl Authenticator {
     }
 
     fn new_with_clock(config: AuthConfig, clock: Arc<EpochClock>) -> anyhow::Result<Arc<Self>> {
-        for (name, text) in [
-            ("issuer", &config.issuer),
-            ("audience", &config.audience),
-            ("jwks_uri", &config.jwks_uri),
-        ] {
+        let mut urls = vec![("issuer", &config.issuer), ("audience", &config.audience)];
+        match &config.source {
+            AuthKeySource::ExternalOAuth { jwks_uri, .. } => urls.push(("jwks_uri", jwks_uri)),
+            AuthKeySource::Local { signer_file } => {
+                anyhow::ensure!(
+                    signer_file.is_absolute(),
+                    "local signer path must be absolute"
+                );
+                anyhow::ensure!(
+                    config.algorithms == [Algorithm::EdDSA]
+                        && config.access_token_types == BTreeSet::from(["at+jwt".into()]),
+                    "local issuer requires EdDSA access tokens"
+                );
+            }
+        }
+        for (name, text) in urls {
             let url = reqwest::Url::parse(text)?;
             anyhow::ensure!(
                 url.scheme() == "https"
@@ -123,7 +146,11 @@ impl Authenticator {
             .min_tls_version(reqwest::tls::Version::TLS_1_3)
             .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(5));
-        if let Some(pem) = &config.jwks_trusted_ca_pem {
+        if let AuthKeySource::ExternalOAuth {
+            trusted_ca_pem: Some(pem),
+            ..
+        } = &config.source
+        {
             anyhow::ensure!(pem.len() <= 256 << 10, "JWKS CA PEM exceeds limit");
             client = client
                 .tls_built_in_root_certs(false)
@@ -137,11 +164,29 @@ impl Authenticator {
             cache: RwLock::new(None),
             refresh: tokio::sync::Mutex::new(()),
             audit: std::sync::OnceLock::new(),
+            local_credentials: std::sync::OnceLock::new(),
         }))
     }
 
     pub fn config(&self) -> &AuthConfig {
         &self.config
+    }
+
+    pub fn install_local_credentials(
+        &self,
+        credentials: Arc<crate::local_auth::LocalCredentials>,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            matches!(self.config.source, AuthKeySource::Local { .. }),
+            "external OAuth cannot install a local credential issuer"
+        );
+        self.local_credentials
+            .set(credentials)
+            .map_err(|_| anyhow::anyhow!("local credential issuer already installed"))
+    }
+
+    pub(crate) fn local_credentials(&self) -> Result<&Arc<crate::local_auth::LocalCredentials>> {
+        self.local_credentials.get().ok_or_else(unavailable)
     }
 
     /// Must be installed before serving. A missing or failing sink never permits
@@ -231,6 +276,18 @@ impl Authenticator {
     /// Fetched only from operator configuration, never token jku/x5u/issuer input.
     async fn refresh_keys(&self, requested_kid: &str) -> Result<()> {
         let _guard = self.refresh.lock().await;
+        let jwks_uri = match &self.config.source {
+            AuthKeySource::Local { signer_file } => {
+                let keys =
+                    crate::local_auth::trusted_keys(signer_file).map_err(|_| unavailable())?;
+                *self.cache.write().await = Some(CachedKeys {
+                    keys,
+                    fetched: self.clock.elapsed_clock().now(),
+                });
+                return Ok(());
+            }
+            AuthKeySource::ExternalOAuth { jwks_uri, .. } => jwks_uri,
+        };
         {
             let cache = self.cache.read().await;
             if let Some(cache) = cache.as_ref() {
@@ -260,7 +317,7 @@ impl Authenticator {
         }
         let mut response = self
             .client
-            .get(&self.config.jwks_uri)
+            .get(jwks_uri)
             .send()
             .await
             .map_err(|_| unavailable())?
@@ -409,11 +466,33 @@ impl Authenticator {
                 _ => None,
             })
             .collect();
-        let authorization = RequestAuthorization::from_verified_credential(
-            claims.exp.checked_mul(1000).ok_or_else(unauthorized)?,
-            &observation,
-            claims.kasumi_resource,
-        )?;
+        let expires_at = claims.exp.checked_mul(1000).ok_or_else(unauthorized)?;
+        let authorization = match &self.config.source {
+            AuthKeySource::Local { .. } => {
+                let family = claims.kasumi_family.ok_or_else(unauthorized)?;
+                let guard = self
+                    .local_credentials()?
+                    .guard(
+                        family,
+                        &claims.sub,
+                        &claims.tenant,
+                        &claims.scope,
+                        &claims.kasumi_resource,
+                    )
+                    .map_err(|_| unauthorized())?;
+                RequestAuthorization::from_verified_credential_with_liveness(
+                    expires_at,
+                    &observation,
+                    claims.kasumi_resource,
+                    guard,
+                )?
+            }
+            AuthKeySource::ExternalOAuth { .. } => RequestAuthorization::from_verified_credential(
+                expires_at,
+                &observation,
+                claims.kasumi_resource,
+            )?,
+        };
         Ok(RequestContext {
             authorization,
             principal: claims.sub,
@@ -424,7 +503,11 @@ impl Authenticator {
     }
 
     pub fn protected_resource_metadata(&self, mcp_resource: &str) -> serde_json::Value {
-        serde_json::json!({"resource":mcp_resource,"authorization_servers":[self.config.issuer],"scopes_supported":["kasumi:read","kasumi:write"],"bearer_methods_supported":["header"]})
+        let mut metadata = serde_json::json!({"resource":mcp_resource,"scopes_supported":["kasumi:read","kasumi:write"],"bearer_methods_supported":["header"]});
+        if matches!(self.config.source, AuthKeySource::ExternalOAuth { .. }) {
+            metadata["authorization_servers"] = serde_json::json!([self.config.issuer]);
+        }
+        metadata
     }
 }
 
@@ -458,10 +541,12 @@ mod tests {
         AuthConfig {
             issuer: "https://issuer.example".into(),
             audience: "https://kasumi.example/mcp".into(),
-            jwks_uri: "https://issuer.example/keys".into(),
+            source: AuthKeySource::ExternalOAuth {
+                jwks_uri: "https://issuer.example/keys".into(),
+                trusted_ca_pem: None,
+            },
             algorithms: vec![Algorithm::EdDSA],
             access_token_types: BTreeSet::from(["at+jwt".into()]),
-            jwks_trusted_ca_pem: None,
         }
     }
 
@@ -599,10 +684,16 @@ mod tests {
     #[test]
     fn config_rejects_cleartext_credentials_and_symmetric_algorithms() {
         let mut bad = config();
-        bad.jwks_uri = "http://issuer.example/keys".into();
+        bad.source = AuthKeySource::ExternalOAuth {
+            jwks_uri: "http://issuer.example/keys".into(),
+            trusted_ca_pem: None,
+        };
         assert!(Authenticator::new(bad).is_err());
         let mut bad = config();
-        bad.jwks_uri = "https://secret:password@issuer.example/keys".into();
+        bad.source = AuthKeySource::ExternalOAuth {
+            jwks_uri: "https://secret:password@issuer.example/keys".into(),
+            trusted_ca_pem: None,
+        };
         assert!(Authenticator::new(bad).is_err());
         let mut bad = config();
         bad.algorithms = vec![Algorithm::HS256];
