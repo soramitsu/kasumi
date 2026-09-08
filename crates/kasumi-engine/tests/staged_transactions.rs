@@ -1039,7 +1039,6 @@ fn ordered_foreign_scope_rejection_cannot_expire_or_rebind_an_original_upload() 
                 },
             )
             .unwrap();
-        let result: Result<WriteReceipt> = serde_json::from_slice(&result).unwrap();
         assert_eq!(result.unwrap_err().code, ErrorCode::Forbidden);
         let generation = db.generation().unwrap();
         assert_eq!(generation.state.staged_transactions.len(), 1);
