@@ -358,8 +358,9 @@ observation permits only resolution of an already retained local receipt.
 The Rust client's `control_signer_maintenance` requires the independently
 installed manifest when checking the typed response. The response distinguishes
 the permanent source directive, local publication receipt, and current physical
-head. The local receipt is durable but has not yet been collected into a global
-coverage acknowledgment. After global activation, a receiver that missed stage
+head. The local receipt is durable; the separate source coverage operation below
+collects its current physical publication. After global activation, a receiver
+that missed stage
 may still publish the exact original successor and proceed forward. Remote
 `StopStage` and `CompleteRetirement` are rejected; there is no activation rollback.
 
@@ -425,6 +426,10 @@ is a separate required recovery gate. Current history checks reject replacing
 that state with an incomplete snapshot. A checkpoint-bound logical prefix and
 exact replay of later durable positions are still required; passing a manual
 snapshot validation plus ordinary restart does not certify that case.
+Restart before the first Raft snapshot also requires reconstruction from the
+exact original genesis projection. Later durable receipts must remain invisible
+until their original positions replay, while permanent physical stops continue
+to deny admission.
 
 A pending activation that never reached its physical receiver before its original
 deadline currently remains unresolved. Replacing its local UUID or extending the
