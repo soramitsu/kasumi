@@ -243,6 +243,101 @@ impl TenantStore {
     ) -> Result<VerifiedAuditSegment> {
         let _access = AccessGuard(self);
         self.check_access()?;
+        AuditDecoder {
+            tenant: &self.tenant,
+            purpose: self.access.purpose(),
+            provider: self.provider.as_ref(),
+            clock: self.clock.as_ref(),
+        }
+        .decode(bytes, expected, || self.check_access())
+        .await
+    }
+}
+
+/// Verify an application archive from an explicitly selected historical source.
+/// The exact source purpose must come from an authenticated checkpoint/dependency
+/// graph. This verifier grants no source storage access and never substitutes a
+/// current replica or target identity for the identity authenticated in the bytes.
+/// The caller retains its request, policy and response-release fences.
+pub struct HistoricalAuditVerifier<'a> {
+    decoder: AuditDecoder<'a>,
+    access: &'a crate::StorageAccess,
+}
+impl<'a> HistoricalAuditVerifier<'a> {
+    pub fn new(
+        tenant: &'a str,
+        source_purpose: &'a StoragePurpose,
+        provider: &'a dyn crate::KeyProvider,
+        current_access: &'a crate::StorageAccess,
+    ) -> Result<Self> {
+        current_access.validate_tenant(tenant)?;
+        current_access.check()?;
+        match source_purpose {
+            StoragePurpose::Standalone {
+                installation_id,
+                tenant: source_tenant,
+                incarnation,
+            } => ensure!(
+                source_tenant == tenant && !installation_id.is_nil() && !incarnation.is_nil(),
+                "historical audit application identity differs"
+            ),
+            StoragePurpose::Serving {
+                manifest_digest,
+                identity,
+                recovery_checkpoint,
+            } => {
+                kasumi_types::validate_sha256(manifest_digest)?;
+                identity.validate()?;
+                ensure!(identity.tenant == tenant, "historical audit tenant differs");
+                if let Some(checkpoint) = recovery_checkpoint {
+                    checkpoint.validate()?;
+                    ensure!(
+                        checkpoint.tenant == tenant,
+                        "historical audit lineage tenant differs"
+                    );
+                }
+            }
+            #[cfg(any(test, feature = "test-utils"))]
+            StoragePurpose::LocalFixture => (),
+            _ => anyhow::bail!("reserved storage purpose is not application history"),
+        }
+        Ok(Self {
+            decoder: AuditDecoder {
+                tenant,
+                purpose: source_purpose,
+                provider,
+                clock: &kasumi_clock::SystemLeaseClock,
+            },
+            access: current_access,
+        })
+    }
+
+    pub async fn decrypt(
+        &self,
+        bytes: &[u8],
+        expected: &AuditArchiveReference,
+    ) -> Result<VerifiedAuditSegment> {
+        self.access.check()?;
+        self.decoder
+            .decode(bytes, expected, || self.access.check())
+            .await
+    }
+}
+
+struct AuditDecoder<'a> {
+    tenant: &'a str,
+    purpose: &'a StoragePurpose,
+    provider: &'a dyn crate::KeyProvider,
+    clock: &'a dyn kasumi_clock::LeaseClock,
+}
+impl AuditDecoder<'_> {
+    async fn decode(
+        &self,
+        bytes: &[u8],
+        expected: &AuditArchiveReference,
+        check: impl Fn() -> Result<()>,
+    ) -> Result<VerifiedAuditSegment> {
+        check()?;
         expected.validate()?;
         ensure!(
             bytes.len() <= MAX_AUDIT_SEGMENT_BYTES && bytes.len() >= 12 && &bytes[..8] == MAGIC,
@@ -261,9 +356,7 @@ impl TenantStore {
         let encoded = &bytes[12..12 + length];
         let header: Header = serde_json::from_slice(encoded)?;
         ensure!(
-            header.format == 1
-                && header.tenant == self.tenant
-                && &header.purpose == self.access.purpose(),
+            header.format == 1 && header.tenant == self.tenant && &header.purpose == self.purpose,
             "audit archive purpose mismatch"
         );
         ensure!(
@@ -284,11 +377,11 @@ impl TenantStore {
             .context("audit key deadline overflow")?;
         let key = tokio::time::timeout(
             PROVIDER_TIMEOUT,
-            self.provider.unwrap_key(&self.tenant, &header.wrapped_key),
+            self.provider.unwrap_key(self.tenant, &header.wrapped_key),
         )
         .await
         .context("audit archive key authorization timed out")??;
-        self.check_access()?;
+        check()?;
         ensure!(
             self.clock.now() < deadline,
             "audit archive key authorization expired"
@@ -305,7 +398,7 @@ impl TenantStore {
             header.record_count,
             &mut |_, _| Ok(()),
         )?;
-        self.check_access()?;
+        check()?;
         ensure!(
             self.clock.now() < deadline,
             "audit archive key authorization expired before release"
@@ -678,6 +771,166 @@ mod tests {
         assert!(destination.read(&segment.reference.object).await.is_err());
         assert!(destination.publish(&segment).await.is_err());
         assert_eq!(std::fs::read(&unrelated).unwrap(), segment.ciphertext);
+        store.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn historical_source_is_exact_and_does_not_reopen_a_live_generation() {
+        let directory = tempfile::tempdir().unwrap();
+        let keys = Arc::new(LocalKeyProvider::new([31; 32]));
+        let installation = Uuid::new_v4();
+        let source =
+            crate::StorageAccess::standalone(installation, "tenant", Uuid::new_v4()).unwrap();
+        let store = TenantStore::open(
+            NodeStore::open(directory.path().join("source.redb")).unwrap(),
+            "tenant".into(),
+            keys.clone(),
+            source.clone(),
+        )
+        .await
+        .unwrap();
+        let mut builder = AuditSegmentBuilder::new(Uuid::new_v4(), 0, None).unwrap();
+        builder.push(0, b"retained before recovery").unwrap();
+        let segment = store.encrypt_audit_segment(builder).unwrap();
+        store.shutdown().await;
+        // Source shutdown is permanent for its live store. A separately authorized
+        // target can still verify exactly selected historical data and keys.
+        assert!(
+            store
+                .decrypt_audit_segment(&segment.ciphertext, &segment.reference)
+                .await
+                .is_err()
+        );
+        let target =
+            crate::StorageAccess::standalone(installation, "tenant", Uuid::new_v4()).unwrap();
+        let historical =
+            HistoricalAuditVerifier::new("tenant", source.purpose(), keys.as_ref(), &target)
+                .unwrap();
+        let verified = historical
+            .decrypt(&segment.ciphertext, &segment.reference)
+            .await
+            .unwrap();
+        verified
+            .visit(|sequence, bytes| {
+                assert_eq!(sequence, 0);
+                assert_eq!(bytes, b"retained before recovery");
+                Ok(())
+            })
+            .unwrap();
+        assert!(
+            HistoricalAuditVerifier::new("tenant", target.purpose(), keys.as_ref(), &target)
+                .unwrap()
+                .decrypt(&segment.ciphertext, &segment.reference)
+                .await
+                .is_err()
+        );
+        let other =
+            crate::StorageAccess::standalone(Uuid::new_v4(), "tenant", Uuid::new_v4()).unwrap();
+        assert!(
+            HistoricalAuditVerifier::new("tenant", other.purpose(), keys.as_ref(), &target)
+                .unwrap()
+                .decrypt(&segment.ciphertext, &segment.reference)
+                .await
+                .is_err()
+        );
+        assert!(
+            HistoricalAuditVerifier::new("other", source.purpose(), keys.as_ref(), &target)
+                .is_err()
+        );
+        assert!(
+            HistoricalAuditVerifier::new(
+                "tenant",
+                &StoragePurpose::SecurityAudit,
+                keys.as_ref(),
+                &target
+            )
+            .is_err()
+        );
+        keys.revoke();
+        assert!(
+            historical
+                .decrypt(&segment.ciphertext, &segment.reference)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn historical_verification_checks_the_original_clock_and_release_fence() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        struct ExpiringKey {
+            inner: Arc<LocalKeyProvider>,
+            clock: Arc<crate::test_utils::ManualClock>,
+            revoked: Arc<AtomicBool>,
+        }
+        #[async_trait]
+        impl crate::KeyProvider for ExpiringKey {
+            async fn generate_key(&self, _: &str) -> Result<crate::GeneratedKey> {
+                anyhow::bail!("unused")
+            }
+            async fn unwrap_key(&self, tenant: &str, key: &WrappedKey) -> Result<crate::SecretKey> {
+                let key = self.inner.unwrap_key(tenant, key).await?;
+                self.clock.advance(crate::MAX_KEY_LEASE);
+                self.revoked.store(true, Ordering::SeqCst);
+                Ok(key)
+            }
+            async fn rewrap_key(&self, _: &str, _: &WrappedKey) -> Result<WrappedKey> {
+                anyhow::bail!("unused")
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let keys = Arc::new(LocalKeyProvider::new([32; 32]));
+        let access =
+            crate::StorageAccess::standalone(Uuid::new_v4(), "tenant", Uuid::new_v4()).unwrap();
+        let store = TenantStore::open(
+            NodeStore::open(directory.path().join("source.redb")).unwrap(),
+            "tenant".into(),
+            keys.clone(),
+            access.clone(),
+        )
+        .await
+        .unwrap();
+        let mut builder = AuditSegmentBuilder::new(Uuid::new_v4(), 0, None).unwrap();
+        builder.push(0, b"never released").unwrap();
+        let segment = store.encrypt_audit_segment(builder).unwrap();
+        let clock = Arc::new(crate::test_utils::ManualClock::new());
+        let revoked = Arc::new(AtomicBool::new(false));
+        let provider = ExpiringKey {
+            inner: keys,
+            clock: clock.clone(),
+            revoked: revoked.clone(),
+        };
+        let decoder = AuditDecoder {
+            tenant: "tenant",
+            purpose: access.purpose(),
+            provider: &provider,
+            clock: clock.as_ref(),
+        };
+        assert!(
+            decoder
+                .decode(&segment.ciphertext, &segment.reference, || Ok(()))
+                .await
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("expired")
+        );
+        revoked.store(false, Ordering::SeqCst);
+        assert!(
+            decoder
+                .decode(&segment.ciphertext, &segment.reference, || {
+                    ensure!(
+                        !revoked.load(Ordering::SeqCst),
+                        "request revoked during key unwrap"
+                    );
+                    Ok(())
+                })
+                .await
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("request revoked")
+        );
         store.shutdown().await;
     }
 
