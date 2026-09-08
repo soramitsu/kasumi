@@ -83,3 +83,11 @@ gate above and usable installation artifacts.
   focused tests: authenticated counts before release, 8 MiB capacity with u64
   positions, exact durable replay, and symlink/corruption isolation. Automatic
   pruning, replica preservation and runtime wiring are separate unfinished work.
+- `3854f91` integrates installed authority endpoint pools, renewable credential
+  files, TLS reload handles, and target phase adaptation. `80f5d8f` adds original
+  instance closure/drain followed by fresh admission and new storage handles.
+  Both merged workspaces compile; final multi-process fault acceptance remains
+  open, as do operational membership, signer rotation and SDK routing.
+- A dedicated Debian ARM64 Lima VM is provisioned for Linux acceptance. The
+  Rust 1.97.1 validation image is digest-pinned. VM/image provisioning does not
+  close any platform, capacity, performance or endurance gate.

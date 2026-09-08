@@ -31,7 +31,7 @@ provision:
       set -eu
       export DEBIAN_FRONTEND=noninteractive
       apt-get update
-      apt-get install -y --no-install-recommends ca-certificates curl git build-essential clang cmake pkg-config protobuf-compiler python3 python3-venv ripgrep docker.io
+      apt-get install -y --no-install-recommends ca-certificates curl git build-essential clang cmake pkg-config protobuf-compiler python3 python3-venv ripgrep docker.io docker-cli
       systemctl enable --now docker
       install -d -m 0755 /opt/kasumi-acceptance
       dpkg-query -W > /opt/kasumi-acceptance/debian-packages.txt

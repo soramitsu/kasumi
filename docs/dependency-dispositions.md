@@ -10,7 +10,7 @@ until reviewed. No version-only ignore is sufficient for a source patch.
 | RUSTSEC-2025-0167, bitmaps unsound byte access | Vendored validation and removal of mutable byte access. Verify exact input hashes and run both runtime and compile-fail regressions. |
 | RUSTSEC-2026-0253, lru panic safety | Minimal upstream ordering backport to the compatible 0.16.4 API. Verify exact input hashes and panic/eviction regression. |
 | RUSTSEC-2026-0247, bitmaps unmaintained | Kasumi owns the small vendored patch and review surface. Retain MPL source/license and monitor replacement options. This maintenance advisory remains visible. |
-| RUSTSEC-2023-0089, atomic-polyfill unmaintained | Transitive target-conditional package. Verify the dependency is absent from each supported production target's build graph; retain the advisory in all-target lockfile reports. Unsupported embedded targets receive no acceptance claim. |
+| RUSTSEC-2023-0089, atomic-polyfill unmaintained | Disabled postcard's unused default heapless-cas feature. Kasumi uses its allocated encoding API; removing heapless also removes atomic-polyfill from the lockfile. Final platform graphs must confirm continued absence. |
 | RUSTSEC-2025-0134, rustls-pemfile unmaintained | Replaced direct transport use with rustls-pki-types PEM APIs; removed from the integration lockfile. Final platform graphs must confirm its continued absence. |
 
 Patch provenance, original license obligations, and commands are in
