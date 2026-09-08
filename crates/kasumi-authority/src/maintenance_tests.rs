@@ -633,9 +633,10 @@ async fn maintenance_removing_the_leader_resumes_the_same_committed_operation() 
     let command = fixture
         .maintenance_command(AuthorityMaintenanceAction::ReplaceVoters { voters })
         .await;
+    let original_context = fixture.context("operator");
     match former
         .maintenance(
-            fixture.context("operator"),
+            original_context.clone(),
             AuthorityMaintenanceRequest::Start {
                 command: command.clone(),
             },
@@ -648,14 +649,42 @@ async fn maintenance_removing_the_leader_resumes_the_same_committed_operation() 
             ErrorCode::UnknownOutcome | ErrorCode::Unavailable
         )),
     }
-    let successor = fixture.leader().await;
+    // An ambiguous return does not prove the membership phase has completed.
+    // Resolve the same permanent command with its original finite invocation.
+    let completed = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let current = fixture.leader().await;
+            let attempt = current.maintenance(original_context.clone(),
+                AuthorityMaintenanceRequest::Start { command: command.clone() }).await;
+            let result = match attempt {
+                Ok((response, fence)) => fence.release().await.map(|()| response),
+                Err(error) => Err(error),
+            };
+            match result {
+                Ok(AuthorityMaintenanceResponse::Operation { status }) => {
+                    assert_eq!(status.command, command);
+                    if status.phase == AuthorityMaintenancePhase::Completed { break status; }
+                    assert!(!status.phase.terminal(), "replacement has a different terminal outcome");
+                }
+                Ok(_) => panic!("replacement receipt response kind differs"),
+                Err(error) => assert!(matches!(error.code, ErrorCode::UnknownOutcome | ErrorCode::Unavailable), "exact replacement resolution failed: {error}"),
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await.expect("original voter replacement did not resolve");
+    let successor = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            for service in &fixture.services {
+                if service.local_node_id == former.local_node_id { continue; }
+                let metric = service.group.raft().metrics().borrow().clone();
+                if metric.current_leader == Some(metric.id) && service.group.linearizable_barrier().await.is_ok() {
+                    return service.clone();
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await.expect("completed voter replacement did not elect a current successor");
     assert_ne!(successor.local_node_id, former.local_node_id);
-    let completed = fixture
-        .maintenance(AuthorityMaintenanceRequest::Resume {
-            operation_id: command.operation_id,
-        })
-        .await
-        .unwrap();
     assert_eq!(completed.command, command);
     assert_eq!(completed.phase, AuthorityMaintenancePhase::Completed);
     assert_eq!(
