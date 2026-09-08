@@ -22,7 +22,7 @@ struct Fixture {
     nodes: BTreeMap<u64, Arc<Database>>,
     audits: BTreeMap<u64, Arc<kasumi_engine::SecurityAudit>>,
     signer: LifecycleSigner,
-    partition_keys: BTreeMap<String, Ed25519KeyPair>,
+    partition_keys: BTreeMap<String, kasumi_serving::GenerationSigner>,
     installation: LifecycleInstallation,
 }
 fn key() -> Ed25519KeyPair {
@@ -60,7 +60,36 @@ impl Fixture {
                 maximum_lifetime_ms: 1000,
                 drain_ms: 1000,
             };
-            partition_keys.insert(p.key(), signer);
+            let operational =
+                Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new()).unwrap();
+            let operational_key = Ed25519KeyPair::from_pkcs8(operational.as_ref()).unwrap();
+            let identity = SigningGeneration {
+                domain: SigningDomain {
+                    authority_id: p.authority_id,
+                    partition: p.partition,
+                    manifest_sha256: p.manifest_sha256.clone(),
+                    root_public_key: p.signing_public_key.clone(),
+                    retirement_drain_ms: p.drain_ms,
+                },
+                generation: 1,
+                public_key: hex::encode(operational_key.public_key().as_ref()),
+            };
+            let certificate = SigningCertificate {
+                root_signature: hex::encode(
+                    signer
+                        .sign(
+                            &serde_json::to_vec(&("kasumi.signing-certificate.v1", &identity))
+                                .unwrap(),
+                        )
+                        .as_ref(),
+                ),
+                identity,
+            };
+            partition_keys.insert(
+                p.key(),
+                kasumi_serving::GenerationSigner::from_pkcs8(certificate, operational.as_ref())
+                    .unwrap(),
+            );
             partitions.insert(p.key(), p);
         }
         let installation = LifecycleInstallation {
@@ -268,14 +297,9 @@ impl Fixture {
                     observed_term: 2,
                     drain_ms: partition.drain_ms,
                 };
-                let signature = hex::encode(
-                    self.partition_keys[name]
-                        .sign(
-                            &serde_json::to_vec(&("kasumi.control-epoch-drained.v1", &observation))
-                                .unwrap(),
-                        )
-                        .as_ref(),
-                );
+                let signature = self.partition_keys[name]
+                    .sign("kasumi.control-epoch-drained.v1", &observation)
+                    .unwrap();
                 (
                     name.clone(),
                     SignedControlEpochStop {

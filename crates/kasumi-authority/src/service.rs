@@ -72,6 +72,7 @@ impl AuthenticatedNode {
 
 pub struct AuthorityResponseFence {
     authority: Arc<IndependentAuthority>,
+    signer: Arc<AuthoritySigner>,
     context: RequestContext,
     policy_epoch: Option<u64>,
     lease: Option<LeaseRequest>,
@@ -87,6 +88,7 @@ impl AuthorityResponseFence {
     }
     pub fn check(&self) -> Result<()> {
         self.context.authorization.check_live()?;
+        self.signer.check().map_err(unavailable)?;
         self.authority.group.check_access().map_err(unavailable)?;
         self.authority
             .check_installed_configuration()
@@ -186,9 +188,13 @@ impl IndependentAuthority {
             .get(&installation.partition)
             .context("partition absent")?;
         ensure!(
-            signer.public_key() == partition.public_key,
-            "installed signing key differs from authority manifest"
+            signer.certificate().identity.domain
+                == installation
+                    .manifest
+                    .signing_domain(installation.partition)?,
+            "installed operational signer differs from authority installation root"
         );
+        signer.check()?;
         let binding = serde_json::to_vec(&(
             "kasumi.independent-authority.v2",
             &installation,
@@ -375,6 +381,7 @@ impl IndependentAuthority {
     ) -> AuthorityResponseFence {
         AuthorityResponseFence {
             authority: self.clone(),
+            signer: self.signer.clone(),
             context,
             policy_epoch,
             lease,

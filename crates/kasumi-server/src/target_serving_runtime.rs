@@ -215,6 +215,10 @@ impl TargetRecoveryRuntime {
         let authority = &self.config.serving_authorities[&template.authority];
         let lease = RuntimeLease::acquire(
             authority,
+            self.authority_trusts
+                .get(&template.authority)
+                .context("live authority verifier absent")?
+                .clone(),
             self.credential.clone(),
             tenant,
             incarnation,

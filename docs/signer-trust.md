@@ -1,10 +1,12 @@
-# Local signer trust and the remaining rotation integration
+# Installed live signer trust
 
 The local trust component separates historical signature verification from live
-generation acceptance. It is the persistence and fencing foundation for HA
-rotation. The existing authority lease envelopes and runtime coordinator have
-not yet been connected to this component; this document does not claim that HA
-signer rotation is ready to operate.
+generation acceptance. Authority lease, lifecycle lease, receipt, target stop,
+and Control epoch stop envelopes now carry the canonical generation-certified
+signature. Serving and lifecycle admission require a current encrypted local
+verifier owner. Online coordinated signer rotation remains an unfinished release
+gate: the production maintenance callback rejects transitions until the current
+authenticated distributed coordinator is installed.
 
 An installation signing root certifies operational Ed25519 keys for an exact
 authority, partition, manifest digest, generation and retirement interval. The
@@ -76,5 +78,55 @@ exact current durable certificate. A staged key cannot issue, activation fences
 old owners, and reopening a closed trust owner never revives its retained
 signatures. `sign` returns `LiveGenerationSignature`; the adapter retains it
 through encoding and checks it with the original request authorization before
-response release. This guard does not renew a lease or authorize a command, and
-the existing authority transport must still be wired to this new owner.
+response release. `AuthorityResponseFence` captures the exact immutable signer
+owner used by that authority instance and checks it after encoding and the
+current quorum barrier. This guard does not renew a lease or authorize a command.
+Authority instance replacement is required to change its configured operational
+key; there is no implicit key-file reload or fallback to the installation root.
+
+## Runtime installation
+
+The authority manifest partition `public_key` is the installation root's public
+key. Its private key belongs in separate operator backup and is never loaded by
+an authority daemon. The authority configuration uses `operational_signer` with
+an explicit root-certified `certificate` and an absolute private PKCS#8
+`key_file`. The operational key must differ from the root key.
+
+Each authority and data/Control runtime configures `signer_verifier` with:
+
+- `identity`: immutable `installation_id` and this runtime's `node_id`;
+- `database_path`: an absolute path to its separately encrypted metadata file;
+- `keys`: its own installed file or Transit key-provider domain.
+
+Data/Control runtime configuration explicitly sets `signer_verifier: null` only
+when no independent authority manifests are installed. The domain set is the
+exact union of all installed authority manifest partitions. Configured metadata
+and application files and their wrapping domains must differ.
+
+Before first HA startup, write an `InitializeSignerVerifier` JSON input containing
+that `verifier` config and the explicit `initial_certificates` for every domain.
+Run `kasumid initialize-signer-verifier /absolute/path/input.json`. The initializer
+requires generation one, verifies each root certificate, opens exclusive
+owner-only storage and publishes a completion record after every head and
+permanent key binding is durable. The same exact input may be retried. A partial
+initialization can resume only from the exact initial heads; a corrupt or changed
+head is never recreated. Ordinary runtime startup requires the completion record
+and every current head and does not create missing trust.
+
+`AuthorityTrust::install` supplies historical verification only. The trusted
+runtime attaches the complete exact partition set using `with_live_verifiers`.
+An incoming lease cannot bootstrap this set. Each verified lease captures an
+additional signer-generation fence alongside its original elapsed deadline;
+retirement closes retained responses and cannot be bridged by renewing the old
+serving instance. Native fixture construction is available only through the
+explicit `kasumi-serving/test-utils` feature and uses separate root and
+operational keys.
+
+The encrypted regressions cover missing and incomplete installation, exact retry,
+corrupt head rejection, exclusive reopening, wrong identity/domain, staged and
+retired key refusal, old wire-format rejection, original lease deadline expiry,
+and old-owner fencing across restart. The pinned native TLS regression uses
+independently encrypted source and receiver verifier state and checks both
+receiver admission and authority response-release fencing after activation.
+These tests do not certify the remaining distributed activation acknowledgement,
+revocation and retirement-drain coordinator.

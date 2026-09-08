@@ -423,7 +423,7 @@ async fn target_storage_retains_original_phase_and_cannot_install_late_renewal_o
         .unwrap()
         .verify_intent(&signed)
         .unwrap();
-    let trust = AuthorityTrust::install(f.installation.manifest.clone()).unwrap();
+    let trust = f.trust.clone();
     let identity = ServingIdentity {
         tenant: "city".into(),
         incarnation: t.incarnation,

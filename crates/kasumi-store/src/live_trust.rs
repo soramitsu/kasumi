@@ -215,6 +215,22 @@ impl TenantStore {
         persistence.publish(None, &record, None)?;
         self.open_live_signer_trust(verifier, domain, administrator)
     }
+    /// Presence is checked independently from decoding, so an explicit installer
+    /// can resume an absent initial record without treating corrupt state as new.
+    pub fn has_live_signer_trust(
+        self: &Arc<Self>,
+        verifier: &TrustVerifierIdentity,
+        domain: &SigningDomain,
+    ) -> Result<bool> {
+        let persistence = self.trust_persistence(verifier, domain)?;
+        Ok(self
+            .get_bounded(
+                NS,
+                persistence.key.as_bytes(),
+                MAX_SIGNER_TRUST_RECORD_BYTES,
+            )?
+            .is_some())
+    }
     pub fn open_live_signer_trust(
         self: &Arc<Self>,
         verifier: &TrustVerifierIdentity,

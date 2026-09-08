@@ -10,6 +10,10 @@ pub async fn command(arguments: &[String]) -> Result<bool> {
         return Ok(true);
     }
     match arguments {
+        [command, configuration] if command == "initialize-signer-verifier" => {
+            crate::signer_runtime::initialize_from_file(Path::new(configuration)).await?;
+            println!("Signer verifier initialized; installation roots remain operator-held.");
+        }
         [command, action, configuration, input] if command == "local-recovery" => {
             let configuration = Path::new(configuration);
             let status = match action.as_str() {

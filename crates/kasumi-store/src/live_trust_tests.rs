@@ -1,10 +1,11 @@
 use super::*;
 use kasumi_serving::{
-    GenerationSigner, InstallationSigningRoot, LiveGenerationSigner, SignerTrustAction,
-    SignerTrustCommand,
+    AuthorityManifest, AuthorityPartition, AuthorityTrust, GenerationSigner,
+    InstallationSigningRoot, LeaseClaims, LiveGenerationSigner, NodeIdentity, ServingBoot,
+    ServingGate, ServingIdentity, SignedLease, SignerTrustAction, SignerTrustCommand,
 };
 use kasumi_types::{Action, CredentialResource, RequestAuthorization, RequestContext};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 struct Clock(AtomicU64);
@@ -34,6 +35,7 @@ struct Fixture {
     store: Arc<TenantStore>,
     verifier: TrustVerifierIdentity,
     domain: SigningDomain,
+    manifest: AuthorityManifest,
     root: InstallationSigningRoot,
     clock: Arc<Clock>,
     administrator: Arc<Administrator>,
@@ -44,13 +46,20 @@ impl Fixture {
     async fn new() -> Self {
         let directory = tempfile::tempdir().unwrap();
         let root = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
-        let domain = SigningDomain {
+        let manifest = AuthorityManifest {
             authority_id: Uuid::new_v4(),
-            partition: 0,
-            manifest_sha256: "13".repeat(32),
-            root_public_key: hex::encode(root.public_key_raw()),
-            retirement_drain_ms: 1000,
+            partitions: BTreeMap::from([(
+                0,
+                AuthorityPartition {
+                    group: "signing-authority".into(),
+                    public_key: hex::encode(root.public_key_raw()),
+                },
+            )]),
+            lifecycle_controls: BTreeMap::new(),
+            max_lease_ms: 1000,
+            clock_rate_error_ppm: 0,
         };
+        let domain = manifest.signing_domain(0).unwrap();
         let root =
             InstallationSigningRoot::from_pkcs8(domain.clone(), &root.serialize_der()).unwrap();
         let keys: Vec<_> = (0..3)
@@ -94,6 +103,7 @@ impl Fixture {
             store,
             verifier,
             domain,
+            manifest,
             root,
             clock,
             administrator,
@@ -612,4 +622,87 @@ async fn issuance_and_encoded_response_require_the_exact_active_signer_owner() {
     assert!(current.check().is_err());
     f.store.shutdown().await;
     assert!(fresh.sign("lease", &"closed-storage").is_err());
+}
+
+#[tokio::test]
+async fn encrypted_current_generation_fences_lease_admission_and_retained_responses() {
+    let mut f = Fixture::new().await;
+    let owner = f.initialize();
+    let historical = AuthorityTrust::install(f.manifest.clone()).unwrap();
+    let identity = ServingIdentity {
+        tenant: "city".into(),
+        incarnation: Uuid::new_v4(),
+        authority_epoch: 1,
+        node: NodeIdentity {
+            node_id: 1,
+            principal: "data-1".into(),
+            certificate_sha256: "ab".repeat(32),
+        },
+    };
+    // A correctly installed root and root-certified key are historical trust only.
+    assert!(
+        ServingBoot::with_test_clock(historical.clone(), identity.clone(), f.clock.clone())
+            .is_err()
+    );
+    let installed = historical
+        .with_live_verifiers(BTreeMap::from([(0, owner.clone())]))
+        .unwrap();
+    let boot = ServingBoot::with_test_clock(installed, identity.clone(), f.clock.clone()).unwrap();
+    let signed = |generation: usize, attempt: &kasumi_serving::LeaseAttempt| {
+        let claims = LeaseClaims {
+            request: attempt.request().clone(),
+            authority_id: f.manifest.authority_id,
+            partition: 0,
+            authority_term: 1,
+            authority_revision: 1,
+            lifetime_ms: 1000,
+            credential_lifetime_ms: 1000,
+            activation_digest: "cd".repeat(32),
+            recovery_checkpoint: None,
+        };
+        SignedLease {
+            signature: f.signers[generation]
+                .sign("kasumi.serving-lease.v1", &claims)
+                .unwrap(),
+            claims,
+        }
+    };
+    let original = boot.begin_acquisition().unwrap();
+    let wire = signed(0, &original);
+    let lease = original.verify(wire.clone()).unwrap();
+    let gate = ServingGate::new(lease.clone()).unwrap();
+    let response = gate.capture().unwrap();
+    let stage = f.stage(&owner);
+    assert!(original.verify(signed(1, &original)).is_err());
+    original.verify(wire.clone()).unwrap();
+    f.clock.0.store(500, Ordering::SeqCst);
+    let activation = f.activation(&owner, &stage);
+    owner.administer(&f.context(), activation).unwrap();
+    assert!(lease.check().is_err());
+    assert!(response.check().is_err());
+    assert!(original.verify(wire.clone()).is_err());
+    owner
+        .historical()
+        .verify("kasumi.serving-lease.v1", &wire.claims, &wire.signature)
+        .unwrap();
+    let attempt = boot.begin_acquisition().unwrap();
+    // A retired private key cannot mint a new nonce or boot into live admission.
+    assert!(attempt.verify(signed(0, &attempt)).is_err());
+    let next_wire = signed(1, &attempt);
+    let next = attempt.verify(next_wire.clone()).unwrap();
+    assert_eq!(next.remaining().unwrap(), Duration::from_millis(1000));
+    assert!(gate.renew(next.clone()).is_err());
+    let fresh_gate = ServingGate::new(next).unwrap();
+    let mut old_format = serde_json::to_value(next_wire).unwrap();
+    old_format["signature"] = serde_json::Value::String("00".repeat(64));
+    assert!(serde_json::from_value::<SignedLease>(old_format).is_err());
+    f.clock.0.store(1500, Ordering::SeqCst);
+    assert!(fresh_gate.check().is_err());
+    assert!(attempt.verify(signed(1, &attempt)).is_err());
+    f.reopen().await;
+    let reopened = f.open();
+    assert_eq!(reopened.current().unwrap().active.identity.generation, 2);
+    assert!(owner.current().is_err());
+    assert!(response.check().is_err());
+    f.store.shutdown().await;
 }

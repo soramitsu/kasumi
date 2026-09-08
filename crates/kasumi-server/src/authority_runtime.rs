@@ -6,7 +6,7 @@ use crate::{
     rpc::NativeAuthority,
     runtime::{
         KeyProviderSettings, MutualTlsEndpoint, ReplicationConfig, SecurityAuditConfig,
-        file_secret, parse_certificate_pin, read_bounded, read_private_file,
+        file_secret, parse_certificate_pin, read_bounded,
     },
     tls,
 };
@@ -15,7 +15,6 @@ use kasumi_authority::{
     AuthorityBootstrap, AuthorityInstallation, AuthorityNodeSettings, IndependentAuthority,
 };
 use kasumi_engine::SecurityAudit;
-use kasumi_serving::AuthoritySigner;
 use kasumi_store::{NodeStore, StorageAccess, TenantStorageSet, TenantStore};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -39,7 +38,8 @@ pub struct AuthorityRuntimeConfig {
     pub bootstrap: AuthorityBootstrap,
     pub resource_budget_bytes: u64,
     pub database_path: PathBuf,
-    pub signing_key: PathBuf,
+    pub operational_signer: crate::signer_runtime::OperationalSignerConfig,
+    pub signer_verifier: crate::signer_runtime::SignerVerifierConfig,
     pub keys: KeyProviderSettings,
     pub custody_keys: KeyProviderSettings,
     pub security_audit: SecurityAuditConfig,
@@ -90,8 +90,20 @@ impl AuthorityRuntimeConfig {
             "HA authority requires an external credential issuer"
         );
         ensure!(
-            self.database_path.is_absolute() && self.signing_key.is_absolute(),
-            "authority storage and signing key paths must be installed absolute paths"
+            self.database_path.is_absolute(),
+            "authority storage path must be an installed absolute path"
+        );
+        self.signer_verifier.validate()?;
+        self.operational_signer.validate(
+            &self
+                .installation
+                .manifest
+                .signing_domain(self.installation.partition)?,
+        )?;
+        ensure!(
+            self.signer_verifier.identity.node_id == self.replication.node_id
+                && self.signer_verifier.database_path != self.database_path,
+            "authority verifier physical identity differs"
         );
         self.native.validate()?;
         self.replication.validate()?;
@@ -107,10 +119,15 @@ impl AuthorityRuntimeConfig {
             self.keys.validate()?,
             self.custody_keys.validate()?,
             self.security_audit.keys.validate()?,
+            self.signer_verifier.keys.validate()?,
         ];
         ensure!(
-            roots[0] != roots[1] && roots[0] != roots[2] && roots[1] != roots[2],
-            "authority/control/security wrapping roots must be independent"
+            roots
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                == roots.len(),
+            "authority/control/security/signer-trust wrapping roots must be independent"
         );
         self.security_audit.validate()?;
         Ok(())
@@ -119,6 +136,7 @@ impl AuthorityRuntimeConfig {
 pub struct AuthorityRuntime {
     config: AuthorityRuntimeConfig,
     authority: Arc<IndependentAuthority>,
+    signer_verifier: Arc<crate::signer_runtime::InstalledSignerVerifier>,
     stores: Arc<TenantStorageSet>,
     audit: Arc<SecurityAudit>,
     audit_store: Arc<TenantStore>,
@@ -163,10 +181,18 @@ impl AuthorityRuntime {
             peers,
             PeerLimits::default(),
         )?;
-        let signer = Arc::new(AuthoritySigner::from_pkcs8(&read_private_file(
-            &config.signing_key,
-            64 << 10,
-        )?)?);
+        let domain = config
+            .installation
+            .manifest
+            .signing_domain(config.installation.partition)?;
+        let signer_verifier = config
+            .signer_verifier
+            .open(
+                std::collections::BTreeMap::from([(domain.digest()?, domain)]),
+                Arc::new(file_secret),
+            )
+            .await?;
+        let signer = config.operational_signer.open(&signer_verifier)?;
         let native = TcpListener::bind(config.native.listen).await?;
         let cluster = TcpListener::bind(config.replication.listener.listen).await?;
         let node = NodeStore::open(&config.database_path)?;
@@ -245,6 +271,7 @@ impl AuthorityRuntime {
             tls_reload,
             config,
             authority,
+            signer_verifier,
             stores,
             audit,
             audit_store,
@@ -330,6 +357,7 @@ impl AuthorityRuntime {
         self.stores.application().shutdown().await;
         self.stores.custody().store().shutdown().await;
         self.audit_store.shutdown().await;
+        self.signer_verifier.shutdown().await;
         outcome.and(close)
     }
 }

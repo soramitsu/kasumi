@@ -148,7 +148,9 @@ async fn actual_tls_peer_readiness_enrolls_replaces_and_fences_revoked_member() 
         })
         .collect();
     let signer_key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
-    let signer = Arc::new(AuthoritySigner::from_pkcs8(&signer_key.serialize_der()).unwrap());
+    let root =
+        kasumi_serving::test_utils::FixtureSigningRoot::from_pkcs8(&signer_key.serialize_der())
+            .unwrap();
     let installation = AuthorityInstallation {
         partition: 0,
         manifest: AuthorityManifest {
@@ -160,11 +162,15 @@ async fn actual_tls_peer_readiness_enrolls_replaces_and_fences_revoked_member() 
                 0,
                 AuthorityPartition {
                     group: "authority-maintenance".into(),
-                    public_key: signer.public_key(),
+                    public_key: root.public_key(),
                 },
             )]),
         },
     };
+    let signer = root
+        .install(installation.manifest.clone(), 0)
+        .unwrap()
+        .signer;
     let bootstrap = AuthorityBootstrap {
         administrators: BTreeSet::from(["operator".into()]),
         capacity: AuthorityCapacity {

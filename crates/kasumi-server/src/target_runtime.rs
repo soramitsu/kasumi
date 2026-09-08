@@ -149,6 +149,7 @@ pub struct TargetRecoveryRuntime {
     registry: crate::api::DatabaseRegistry,
     serving_monitor: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     config: RuntimeConfig,
+    authority_trusts: BTreeMap<String, AuthorityTrust>,
     installed: TargetRecoveryConfig,
     credential: CredentialSource,
     journal: Arc<TargetJournal>,
@@ -164,8 +165,10 @@ pub struct TargetRecoveryRuntime {
     closing: AtomicBool,
 }
 impl TargetRecoveryRuntime {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn open(
         config: RuntimeConfig,
+        authority_trusts: BTreeMap<String, AuthorityTrust>,
         credential: CredentialSource,
         admission: Arc<NodeAdmission>,
         audit: Arc<SecurityAudit>,
@@ -219,6 +222,7 @@ impl TargetRecoveryRuntime {
             registry,
             serving_monitor: std::sync::Mutex::new(None),
             config,
+            authority_trusts,
             installed,
             credential,
             journal,
@@ -304,6 +308,10 @@ impl TargetRecoveryRuntime {
         let phase = RuntimeTargetPhase::acquire(
             &self.installed,
             authority,
+            self.authority_trusts
+                .get(&template.authority)
+                .context("live phase verifier absent")?
+                .clone(),
             self.credential.clone(),
             self.installed.node.node_id,
             context.clone(),

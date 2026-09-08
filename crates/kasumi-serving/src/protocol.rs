@@ -180,7 +180,7 @@ pub struct LeaseClaims {
 #[serde(deny_unknown_fields)]
 pub struct SignedLease {
     pub claims: LeaseClaims,
-    pub signature: String,
+    pub signature: kasumi_types::GenerationSignature,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -425,7 +425,7 @@ impl AuthorityReceipt {
 #[serde(deny_unknown_fields)]
 pub struct SignedAuthorityReceipt {
     pub receipt: AuthorityReceipt,
-    pub signature: String,
+    pub signature: kasumi_types::GenerationSignature,
 }
 
 /// An accepted issuer intent reference is durable identity, not a live grant.

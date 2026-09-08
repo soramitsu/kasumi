@@ -728,6 +728,7 @@ pub async fn initialize(directory: &Path, tenant: &str) -> Result<InitializedIns
     let mut config = example_config();
     config.mode = DeploymentMode::Standalone;
     config.serving_authorities.clear();
+    config.signer_verifier = None;
     config.replication = None;
     config.database_path = database_path.clone();
     config.backup_destinations = std::collections::BTreeMap::from([(

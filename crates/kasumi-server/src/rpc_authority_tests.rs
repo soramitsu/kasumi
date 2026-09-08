@@ -80,7 +80,6 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
     .unwrap();
     auth.install_audit(audit.clone()).unwrap();
     let signing = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
-    let signer = Arc::new(AuthoritySigner::from_pkcs8(&signing.serialize_der()).unwrap());
     let manifest = AuthorityManifest {
         lifecycle_controls: std::collections::BTreeMap::new(),
         authority_id: uuid::Uuid::new_v4(),
@@ -90,15 +89,60 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
             0,
             AuthorityPartition {
                 group: "independent-authority".into(),
-                public_key: signer.public_key(),
+                public_key: hex::encode(signing.public_key_raw()),
             },
         )]),
     };
+    let domain = manifest.signing_domain(0).unwrap();
+    let root =
+        InstallationSigningRoot::from_pkcs8(domain.clone(), &signing.serialize_der()).unwrap();
+    let operational = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
+    let certificate = root
+        .certify(1, hex::encode(operational.public_key_raw()))
+        .unwrap();
+    let next_key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
+    let next_certificate = root
+        .certify(2, hex::encode(next_key.public_key_raw()))
+        .unwrap();
+    let verifier_installation = uuid::Uuid::new_v4();
+    let mut verifier_stores = Vec::new();
+    let mut live_owners = Vec::new();
+    // Each actual authority process and the client verifier has independently
+    // encrypted trust. This callback is a fixture for the current authenticated
+    // administrator; it is not a distributed maintenance coordinator.
+    for node_id in 1..=4 {
+        let verifier = TrustVerifierIdentity {
+            installation_id: verifier_installation,
+            node_id,
+        };
+        let store = TenantStore::open(
+            NodeStore::open(dir.path().join(format!("verifier-{node_id}.redb"))).unwrap(),
+            verifier.tenant(),
+            Arc::new(LocalKeyProvider::new([node_id as u8 + 100; 32])),
+            StorageAccess::live_signer_trust(verifier.clone()).unwrap(),
+        )
+        .await
+        .unwrap();
+        let owner = store
+            .initialize_live_signer_trust(
+                &verifier,
+                certificate.clone(),
+                Arc::new(CurrentFixtureAdministrator {
+                    authority_id: manifest.authority_id,
+                }),
+            )
+            .unwrap();
+        verifier_stores.push(store);
+        live_owners.push(owner);
+    }
     let installation = AuthorityInstallation {
         manifest: manifest.clone(),
         partition: 0,
     };
-    let trust = AuthorityTrust::install(manifest.clone()).unwrap();
+    let trust = AuthorityTrust::install(manifest.clone())
+        .unwrap()
+        .with_live_verifiers(BTreeMap::from([(0, live_owners[3].clone())]))
+        .unwrap();
     let router = Arc::new(kasumi_raft::InProcessRouter::default());
     let settings = kasumi_authority::AuthorityNodeSettings {
         bootstrap: kasumi_authority::AuthorityBootstrap {
@@ -154,7 +198,14 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
         let service = IndependentAuthority::open_replicated(
             storage.clone(),
             installation.clone(),
-            signer.clone(),
+            Arc::new(AuthoritySigner::new(
+                LiveGenerationSigner::install(
+                    GenerationSigner::from_pkcs8(certificate.clone(), &operational.serialize_der())
+                        .unwrap(),
+                    live_owners[id as usize - 1].clone(),
+                )
+                .unwrap(),
+            )),
             id,
             settings.clone(),
             router.clone(),
@@ -523,6 +574,70 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
         &target
     );
 
+    let attempt = boot.begin_acquisition().unwrap();
+    let fresh = client.acquire_lease(&node_token, &attempt).await.unwrap();
+    let retained = ServingGate::new(fresh).unwrap().capture().unwrap();
+    let node_context = auth
+        .authenticate(&format!("Bearer {node_token}"))
+        .await
+        .unwrap();
+    let (_, source_response) = leader
+        .acquire(
+            kasumi_authority::AuthenticatedNode::from_verified_transport(
+                node_context,
+                boot.identity().node.certificate_sha256.clone(),
+            )
+            .unwrap(),
+            attempt.request().clone(),
+        )
+        .await
+        .unwrap();
+    let maintenance_context = auth
+        .authenticate(&format!("Bearer {}", token("custodian", "kasumi:admin")))
+        .await
+        .unwrap();
+    let transition = |owner: &Arc<LiveSignerTrust>| {
+        let stage = SignerTrustCommand {
+            operation_id: uuid::Uuid::new_v4(),
+            expected_revision: owner.current().unwrap().revision,
+            action: SignerTrustAction::Stage {
+                certificate: next_certificate.clone(),
+            },
+        };
+        owner
+            .administer(&maintenance_context, stage.clone())
+            .unwrap();
+        let activate = SignerTrustCommand {
+            operation_id: uuid::Uuid::new_v4(),
+            expected_revision: owner.current().unwrap().revision,
+            action: SignerTrustAction::Activate {
+                staged_operation_id: stage.operation_id,
+                certificate_sha256: next_certificate.digest().unwrap(),
+            },
+        };
+        owner.administer(&maintenance_context, activate).unwrap();
+    };
+    transition(&live_owners[3]);
+    assert!(
+        retained.check().is_err(),
+        "receiver activation fences retained TLS replies immediately"
+    );
+    assert!(
+        client
+            .acquire_lease(&node_token, &boot.begin_acquisition().unwrap())
+            .await
+            .is_err(),
+        "still-running retired issuer cannot mint a fresh live lease"
+    );
+    for owner in &live_owners[..3] {
+        transition(owner);
+    }
+    assert!(
+        source_response.check().is_err(),
+        "source release retains its exact signing generation"
+    );
+    assert!(source_response.release().await.is_err());
+
     tokio::time::sleep(Duration::from_millis(1100)).await;
     assert!(gate.check_serving().is_err());
     follower_stop.send_replace(true);
@@ -537,4 +652,28 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
         storage.custody().store().shutdown().await;
     }
     audit.shutdown().await;
+    for owner in live_owners {
+        owner.close();
+    }
+    for store in verifier_stores {
+        store.shutdown().await;
+    }
+}
+
+struct CurrentFixtureAdministrator {
+    authority_id: uuid::Uuid,
+}
+impl LiveTrustAdministrator for CurrentFixtureAdministrator {
+    fn authorize(&self, context: &kasumi_types::RequestContext) -> anyhow::Result<()> {
+        context.authorization.check_live()?;
+        context
+            .authorization
+            .require_authority(self.authority_id, 0)?;
+        anyhow::ensure!(
+            context.principal == "custodian"
+                && context.scopes.contains(&kasumi_types::Action::Admin),
+            "current fixture administrator required"
+        );
+        Ok(())
+    }
 }

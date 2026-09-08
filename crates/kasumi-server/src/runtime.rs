@@ -219,6 +219,8 @@ pub struct RuntimeConfig {
     #[serde(deserialize_with = "kasumi_types::require_explicit_option")]
     pub target_recovery: Option<crate::target_runtime_config::TargetRecoveryConfig>,
     pub serving_authorities: BTreeMap<String, crate::serving_runtime::ServingAuthorityConfig>,
+    #[serde(deserialize_with = "kasumi_types::require_explicit_option")]
+    pub signer_verifier: Option<crate::signer_runtime::SignerVerifierConfig>,
     #[serde(default = "default_prepared_limit")]
     pub max_prepared_generations_per_tenant: usize,
     #[serde(default)]
@@ -256,6 +258,18 @@ impl RuntimeConfig {
         self.admission.validate()?;
         if let Some(target) = &self.target_recovery {
             target.validate(self)?;
+        }
+        ensure!(
+            self.serving_authorities.is_empty() == self.signer_verifier.is_none(),
+            "serving authorities require explicit local durable verifier state"
+        );
+        if let Some(verifier) = &self.signer_verifier {
+            verifier.validate()?;
+            ensure!(
+                Some(verifier.identity.node_id) == self.replication.as_ref().map(|r| r.node_id)
+                    && verifier.database_path != self.database_path,
+                "serving verifier physical identity differs"
+            );
         }
         for (name, authority) in &self.serving_authorities {
             kasumi_types::validate_name(name)?;
@@ -300,6 +314,7 @@ impl RuntimeConfig {
         let mut key_refs = BTreeSet::new();
         for transit in std::iter::once(&self.security_audit.keys)
             .chain([&self.control.keys, &self.control.custody_keys])
+            .chain(self.signer_verifier.iter().map(|verifier| &verifier.keys))
             .chain(
                 self.tenants
                     .iter()
@@ -308,7 +323,7 @@ impl RuntimeConfig {
         {
             ensure!(
                 key_refs.insert(transit.validate()?),
-                "application, custody, control, and security domains require distinct Transit wrapping keys"
+                "application, custody, control, security, and signer trust domains require distinct wrapping keys"
             );
         }
         validate_initial_policy(&self.control.initial_policy)?;
@@ -847,6 +862,8 @@ impl ServingTasks {
 
 pub struct NodeRuntime {
     config: RuntimeConfig,
+    signer_verifier: Option<Arc<crate::signer_runtime::InstalledSignerVerifier>>,
+    authority_trusts: BTreeMap<String, kasumi_serving::AuthorityTrust>,
     registry: DatabaseRegistry,
     tenants: Vec<OpenedTenant>,
     custody_sources: Vec<OpenedCustody>,
@@ -884,6 +901,31 @@ impl NodeRuntime {
         config.validate()?;
         let standalone_lock = crate::standalone::claim(&config)?;
         let credential = Arc::new(credential);
+        let signer_verifier = if let Some(verifier) = &config.signer_verifier {
+            let mut domains = BTreeMap::new();
+            for authority in config.serving_authorities.values() {
+                for partition in authority.manifest.partitions.keys() {
+                    let domain = authority.manifest.signing_domain(*partition)?;
+                    domains.insert(domain.digest()?, domain);
+                }
+            }
+            Some(verifier.open(domains, credential.clone()).await?)
+        } else {
+            None
+        };
+        let authority_trusts = config
+            .serving_authorities
+            .iter()
+            .map(|(alias, configured)| {
+                Ok((
+                    alias.clone(),
+                    signer_verifier
+                        .as_ref()
+                        .context("local signer verifier absent")?
+                        .trust(configured.manifest.clone())?,
+                ))
+            })
+            .collect::<Result<BTreeMap<_, _>>>()?;
         let admission = kasumi_engine::admission::NodeAdmission::new(config.admission.clone())?;
         let lifecycle_signer = config
             .control
@@ -1011,6 +1053,8 @@ impl NodeRuntime {
         let mut runtime = Self {
             _standalone_lock: standalone_lock,
             config: config.clone(),
+            signer_verifier,
+            authority_trusts,
             registry: registry.clone(),
             tenants: Vec::new(),
             custody_sources: Vec::new(),
@@ -1076,7 +1120,7 @@ impl NodeRuntime {
                     #[cfg(any(test, feature = "test-utils"))]
                     crate::serving_runtime::TenantServingConfig::LocalFixture => tenant.incarnation.as_deref().map(uuid::Uuid::parse_str).transpose()?.unwrap_or_else(uuid::Uuid::new_v4),
                 };
-                let access = crate::serving_runtime::acquire_tenant_access(&config, credential.clone(), &tenant.tenant, incarnation, kasumi_serving::LeasePurpose::Serving).await;
+                let access = crate::serving_runtime::acquire_tenant_access(&config, &runtime.authority_trusts, credential.clone(), &tenant.tenant, incarnation, kasumi_serving::LeasePurpose::Serving).await;
                 let (storage_access, lease) = match access {
                     Ok(access) => access,
                     Err(_) => {
@@ -1143,10 +1187,11 @@ impl NodeRuntime {
                 (tenant.tenant.clone(), factory)
             }).collect();
             if config.target_recovery.is_some() {
-                runtime.target_recovery=Some(crate::target_runtime::TargetRecoveryRuntime::open(config.clone(),credential.clone(),admission.clone(),runtime.audit.clone(),runtime.cluster.clone().context("target requires installed cluster")?,destinations.clone(),registry.clone()).await?);
+                runtime.target_recovery=Some(crate::target_runtime::TargetRecoveryRuntime::open(config.clone(),runtime.authority_trusts.clone(),credential.clone(),admission.clone(),runtime.audit.clone(),runtime.cluster.clone().context("target requires installed cluster")?,destinations.clone(),registry.clone()).await?);
             }
             let administration = crate::administration::Administration::new(
                 config.clone(),
+                runtime.authority_trusts.clone(),
                 node.clone(),
                 registry.clone(),
                 runtime.control.database.clone(),
@@ -1631,6 +1676,9 @@ impl NodeRuntime {
             }
         }
         self.audit.shutdown().await;
+        if let Some(verifier) = &self.signer_verifier {
+            verifier.shutdown().await;
+        }
         self.closed = true;
         failure.map_or(Ok(()), Err)
     }
@@ -1772,6 +1820,14 @@ pub fn example_config() -> RuntimeConfig {
         strict_read_audit: false,
     };
     RuntimeConfig {
+        signer_verifier: Some(crate::signer_runtime::SignerVerifierConfig {
+            identity: kasumi_serving::TrustVerifierIdentity {
+                installation_id: uuid::Uuid::from_u128(7),
+                node_id: 1,
+            },
+            database_path: PathBuf::from("/var/lib/kasumi/verifier/trust.redb"),
+            keys: transit("signer-trust", "SIGNER_TRUST_TOKEN"),
+        }),
         target_recovery: None,
         serving_authorities: BTreeMap::from([(
             "storage-fence".into(),
@@ -1942,6 +1998,7 @@ fn fixture_config() -> RuntimeConfig {
     config.replication = None;
     config.control.incarnation = None;
     config.serving_authorities.clear();
+    config.signer_verifier = None;
     for tenant in &mut config.tenants {
         tenant.serving = crate::serving_runtime::TenantServingConfig::LocalFixture;
         tenant.incarnation = None;

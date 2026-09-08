@@ -202,7 +202,7 @@ async fn control_epoch_stop_preserves_exact_identity_replay_and_restarts_full_dr
         .verify_intent(&signed)
         .unwrap();
     let boot = LifecycleBoot::with_clock(
-        AuthorityTrust::install(f.installation.manifest.clone()).unwrap(),
+        f.trust.clone(),
         nodes().first().unwrap().clone(),
         f.clock.clone(),
     )
@@ -384,7 +384,7 @@ async fn lifecycle_original_deadline_survives_queued_acceptance_delayed_reply_an
     drop(service);
     let (service, _) = accepted_on_current_leader(&f, request(&signed)).await;
     let boot = LifecycleBoot::with_clock(
-        AuthorityTrust::install(f.installation.manifest.clone()).unwrap(),
+        f.trust.clone(),
         nodes().first().unwrap().clone(),
         f.clock.clone(),
     )
@@ -494,12 +494,35 @@ async fn lifecycle_byte_exhaustion_preserves_reserved_epoch_stop_and_exact_snaps
         }
     });
     assert!(service.backend.restore(&mut modified.as_slice()).is_err());
-    let retained = service
-        .read_lifecycle_receipt(f.context("operator"), stop.reference())
-        .await
-        .unwrap()
-        .0
-        .unwrap();
+    let context = f.context("operator");
+    let reference = stop.reference();
+    // Snapshot validation can span an election under the concurrent workspace
+    // suite. Read the same permanent receipt through the current leader using
+    // the original credential, rather than requiring the earlier leader to stay.
+    let retained = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            match f
+                .leader()
+                .await
+                .read_lifecycle_receipt(context.clone(), reference.clone())
+                .await
+            {
+                Ok((Some(receipt), fence)) => {
+                    fence.check().unwrap();
+                    break receipt;
+                }
+                Err(error) if error.code == ErrorCode::Unavailable => {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                other => panic!(
+                    "exact retained lifecycle receipt unavailable: {:?}",
+                    other.err()
+                ),
+            }
+        }
+    })
+    .await
+    .unwrap();
     assert_eq!(retained.receipt.original_principal, "operator");
     f.close().await;
 }

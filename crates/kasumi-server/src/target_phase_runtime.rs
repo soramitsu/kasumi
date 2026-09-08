@@ -47,6 +47,7 @@ impl RuntimeTargetPhase {
     pub(crate) async fn acquire(
         configured: &super::target_runtime_config::TargetRecoveryConfig,
         authority: &ServingAuthorityConfig,
+        trust: AuthorityTrust,
         credential: CredentialSource,
         node_id: u64,
         original_context: RequestContext,
@@ -66,12 +67,12 @@ impl RuntimeTargetPhase {
         );
         authority.validate()?;
         let control_connection = configured.control_connection()?;
-        let trust = ControlTrust::install(configured.control_root.clone())?;
+        let control_trust = ControlTrust::install(configured.control_root.clone())?;
         let mut control = admission
             .run(async {
                 Ok(tokio::time::timeout(
                     Duration::from_secs(5),
-                    KasumiLifecycleClient::connect(&control_connection, trust),
+                    KasumiLifecycleClient::connect(&control_connection, control_trust),
                 )
                 .await??)
             })
@@ -131,7 +132,10 @@ impl RuntimeTargetPhase {
                 ))
             })
             .collect::<Result<_>>()?;
-        let trust = AuthorityTrust::install(authority.manifest.clone())?;
+        ensure!(
+            trust.manifest() == &authority.manifest,
+            "installed live phase verifier differs"
+        );
         let path = authority.bearer_file.clone();
         let source = credential.clone();
         let mut issuer =
@@ -155,7 +159,7 @@ impl RuntimeTargetPhase {
                     .await?)
             })
             .await?;
-        let boot = LifecycleBoot::new(trust, node)?;
+        let boot = LifecycleBoot::new(trust.clone(), node)?;
         // Anchored before credential acquisition and dispatch; retries construct
         // distinct attempts, never reset the deadline of an earlier response.
         let attempt = boot.begin(&original)?;
@@ -180,6 +184,7 @@ impl RuntimeTargetPhase {
                 admission
                     .run(RuntimeLease::acquire(
                         authority,
+                        trust,
                         credential.clone(),
                         &intent.request.tenant,
                         intent.request.target_incarnation,

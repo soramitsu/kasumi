@@ -1848,6 +1848,7 @@ name: "docs".into(),
         config.control.initial_policy = policy;
         let manager = Administration::new(
             config,
+            BTreeMap::new(),
             node,
             fixture.registry.clone(),
             control.clone(),
