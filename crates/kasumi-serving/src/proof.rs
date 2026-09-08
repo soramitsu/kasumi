@@ -79,6 +79,15 @@ pub struct AuthorityTrust {
     live: std::collections::BTreeMap<u16, Arc<LiveSignerTrust>>,
 }
 impl AuthorityTrust {
+    /// Bind local background ownership to this exact installed partition owner.
+    pub fn start_background_work(
+        &self,
+        partition: u16,
+        install: impl FnOnce() -> Arc<dyn crate::LiveTrustBackgroundWork>,
+    ) -> Result<()> {
+        self.require_live_partition(partition)?
+            .start_background_work(install)
+    }
     pub fn install(manifest: AuthorityManifest) -> Result<Self> {
         manifest.validate()?;
         let digest = manifest.digest()?;

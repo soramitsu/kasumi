@@ -13,7 +13,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     path::PathBuf,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
@@ -117,22 +117,44 @@ pub(crate) struct RuntimeLease {
     gate: Arc<ServingGate>,
     boot: ServingBoot,
     client: AsyncMutex<KasumiAuthorityPool>,
-    renewal: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    renewal: Arc<crate::runtime_worker::RuntimeWorker>,
     serving: AtomicBool,
 }
 impl Drop for RuntimeLease {
     fn drop(&mut self) {
         self.gate.close();
-        if let Ok(handle) = self.renewal.get_mut()
-            && let Some(handle) = handle.take()
-        {
-            handle.abort();
-        }
+        self.renewal.abort();
     }
 }
 impl RuntimeLease {
+    #[cfg(test)]
+    pub(crate) fn paused_renewal(
+        boot: ServingBoot,
+        client: KasumiAuthorityPool,
+        gate: Arc<ServingGate>,
+    ) -> Result<(Arc<Self>, Arc<crate::runtime_worker::WorkerPause>)> {
+        let runtime = Arc::new(Self {
+            gate,
+            boot,
+            client: AsyncMutex::new(client),
+            renewal: Default::default(),
+            serving: AtomicBool::new(true),
+        });
+        let pause = runtime.renewal.pause_next_upgrade();
+        Self::start_renewal(&runtime)?;
+        Ok((runtime, pause))
+    }
     pub(crate) fn gate(&self) -> &Arc<ServingGate> {
         &self.gate
+    }
+    pub(crate) async fn shutdown(&self) -> Result<()> {
+        self.close();
+        self.renewal.drain().await?;
+        Ok(())
+    }
+    pub(crate) fn close(&self) {
+        self.gate.close();
+        self.renewal.close();
     }
     pub(crate) async fn acquire(
         config: &ServingAuthorityConfig,
@@ -207,43 +229,66 @@ impl RuntimeLease {
             gate,
             boot,
             client: AsyncMutex::new(client),
-            renewal: Mutex::new(None),
+            renewal: Default::default(),
             serving: AtomicBool::new(purpose == LeasePurpose::Serving),
         });
-        let weak = Arc::downgrade(&runtime);
-        let task = tokio::spawn(async move {
-            let mut failed = false;
-            loop {
-                let delay = {
-                    let Some(runtime) = weak.upgrade() else { break };
-                    let Ok(remaining) = runtime.gate.remaining() else {
-                        break;
-                    };
-                    if failed {
-                        (remaining / 4).min(Duration::from_millis(100))
-                    } else {
-                        remaining / 3
-                    }
-                };
-                tokio::time::sleep(delay).await;
-                let Some(runtime) = weak.upgrade() else { break };
-                let Ok(remaining) = runtime.gate.remaining() else {
-                    break;
-                };
-                failed = !matches!(
-                    tokio::time::timeout(remaining, runtime.renew()).await,
-                    Ok(Ok(()))
-                );
-                if runtime.gate.check().is_err() {
-                    break;
-                }
-            }
-        });
-        *runtime
-            .renewal
-            .lock()
-            .map_err(|_| anyhow::anyhow!("renewal registration poisoned"))? = Some(task);
+        Self::start_renewal(&runtime)?;
         Ok(runtime)
+    }
+    fn start_renewal(runtime: &Arc<Self>) -> Result<()> {
+        let weak = Arc::downgrade(runtime);
+        let wake = runtime.renewal.wake();
+        let partition = runtime
+            .boot
+            .authority()
+            .manifest()
+            .partition(&runtime.boot.identity().tenant)?;
+        runtime
+            .boot
+            .authority()
+            .start_background_work(partition, || {
+                let task = tokio::spawn(async move {
+                    let mut failed = false;
+                    loop {
+                        let delay = {
+                            let Some(runtime) = weak.upgrade() else { break };
+                            if runtime.renewal.is_closed() {
+                                break;
+                            }
+                            let Ok(remaining) = runtime.gate.remaining() else {
+                                break;
+                            };
+                            if failed {
+                                (remaining / 4).min(Duration::from_millis(100))
+                            } else {
+                                remaining / 3
+                            }
+                        };
+                        tokio::select! {
+                            _ = wake.notified() => {},
+                            _ = tokio::time::sleep(delay) => {},
+                        }
+                        let Some(runtime) = weak.upgrade() else { break };
+                        #[cfg(test)]
+                        runtime.renewal.after_upgrade().await;
+                        if runtime.renewal.is_closed() {
+                            break;
+                        }
+                        let Ok(remaining) = runtime.gate.remaining() else {
+                            break;
+                        };
+                        failed = !matches!(
+                            tokio::time::timeout(remaining, runtime.renew()).await,
+                            Ok(Ok(()))
+                        );
+                        if runtime.gate.check().is_err() {
+                            break;
+                        }
+                    }
+                });
+                runtime.renewal.register(task);
+                runtime.renewal.clone()
+            })
     }
     async fn renew(&self) -> Result<()> {
         // Mode changes and acquisitions share one gate, so a queued preparation

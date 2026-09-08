@@ -21,11 +21,11 @@ impl TargetReplica {
     pub fn database(&self) -> &Arc<Database> {
         &self.database
     }
-    pub async fn close(mut self) -> anyhow::Result<()> {
+    pub async fn close(&mut self) -> anyhow::Result<()> {
         self.invocation.gate().close();
-        let result = self.database.shutdown().await;
+        self.database.shutdown().await?;
         self.registration.take();
-        result
+        Ok(())
     }
     fn check(&self, operation: &TargetOperation, phase: LifecyclePhase) -> anyhow::Result<()> {
         operation.check()?;

@@ -1998,6 +1998,9 @@ impl Administration {
                     source_incarnation: incarnation.clone(),
                 },
             )?;
+            if let Some(lease) = &source.lease {
+                lease.shutdown().await?;
+            }
             let store = source.database.detach_retired_custody().await?;
             let group = format!("{tenant}/{incarnation}");
             if let Some(network) = &self.cluster {
@@ -2123,7 +2126,15 @@ impl Administration {
             .values()
             .cloned()
             .collect::<Vec<_>>();
+        for tenant in &generations {
+            if let Some(lease) = &tenant.lease {
+                lease.close();
+            }
+        }
         for tenant in generations {
+            if let Some(lease) = &tenant.lease {
+                let _ = lease.shutdown().await;
+            }
             let _ = tenant.database.shutdown().await;
         }
         let custody = self

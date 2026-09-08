@@ -205,6 +205,9 @@ impl InstalledSignerVerifier {
         for owner in self.owners.values() {
             owner.close();
         }
+        for owner in self.owners.values() {
+            owner.drain_background_work().await;
+        }
         self.store.shutdown().await;
     }
 }

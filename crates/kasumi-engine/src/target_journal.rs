@@ -86,6 +86,12 @@ pub struct TargetJournal {
     mutation: Mutex<()>,
 }
 impl TargetJournal {
+    /// The installed runner must first close and drain its operations. Retained
+    /// journal handles remain sealed after this store's own workers are joined.
+    pub async fn shutdown(&self) {
+        self.store.shutdown().await;
+    }
+
     pub fn open(
         store: Arc<TenantStore>,
         installed: TargetJournalInstallation,

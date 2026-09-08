@@ -865,6 +865,7 @@ pub struct NodeRuntime {
     config: RuntimeConfig,
     signer_verifier: Option<Arc<crate::signer_runtime::InstalledSignerVerifier>>,
     authority_trusts: BTreeMap<String, kasumi_serving::AuthorityTrust>,
+    serving_leases: Vec<Arc<crate::serving_runtime::RuntimeLease>>,
     registry: DatabaseRegistry,
     tenants: Vec<OpenedTenant>,
     custody_sources: Vec<OpenedCustody>,
@@ -1062,6 +1063,7 @@ impl NodeRuntime {
             config: config.clone(),
             signer_verifier,
             authority_trusts,
+            serving_leases: Vec::new(),
             registry: registry.clone(),
             tenants: Vec::new(),
             custody_sources: Vec::new(),
@@ -1136,6 +1138,11 @@ impl NodeRuntime {
                         continue;
                     }
                 };
+                if let Some(lease) = &lease {
+                    // Retain even a partially opened tenant's worker until the
+                    // runtime's error/shutdown path drains its actual owner.
+                    runtime.serving_leases.push(lease.clone());
+                }
                 // The application provider is constructed only after the closed
                 // control route is excluded and an issuer capability is live.
                 let provider = tenant.keys.provider(credential.clone())?;
@@ -1660,9 +1667,7 @@ impl NodeRuntime {
             self.telemetry
                 .set_lifecycle(crate::observability::Lifecycle::Draining);
         }
-        if let Some(target) = self.target_recovery.take() {
-            target.shutdown().await?;
-        }
+        crate::target_runtime::shutdown_target(&mut self.target_recovery).await?;
         if self.closed {
             return Ok(());
         }
@@ -1671,6 +1676,14 @@ impl NodeRuntime {
             .record(lifecycle(SecurityEventKind::NodeStopping))
             .await;
         let mut failure = audit.err();
+        for lease in &self.serving_leases {
+            lease.close();
+        }
+        for lease in &self.serving_leases {
+            if let Err(error) = lease.shutdown().await {
+                failure.get_or_insert(error);
+            }
+        }
         if let Some(manager) = &self.administration {
             manager.shutdown().await;
         }

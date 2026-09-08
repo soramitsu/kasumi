@@ -32,6 +32,9 @@ const MAX_CALLS: u32 = 64;
 type GenerationKey = (String, Uuid);
 #[path = "target_serving_runtime.rs"]
 mod serving;
+#[cfg(test)]
+#[path = "target_runtime_shutdown_tests.rs"]
+mod shutdown_tests;
 #[derive(Default)]
 struct Generation {
     custody: Option<(GenerationKey, Arc<kasumi_engine::RetiredCustody>)>,
@@ -59,29 +62,41 @@ impl Generation {
             registry.detach_target_custody(&key.0, &key.1.to_string(), custody)?;
         }
         if let Some(lease) = &self.lease {
-            lease.gate().close();
+            lease.close();
         }
         if let Some(phase) = &self.phase {
-            phase.scope().close();
+            phase.close();
         }
         if let Some(group) = &self.registered_group {
             cluster.unregister_group(group)?;
             self.registered_group = None;
         }
-        if let Some((_, custody)) = self.custody.take() {
+        if let Some((_, custody)) = &self.custody {
             custody.shutdown().await?;
         }
-        if let Some(probe) = self.custody_probe.take() {
+        self.custody.take();
+        if let Some(probe) = &self.custody_probe {
             probe.store().shutdown().await;
         }
-        if let Some(serving) = self.serving.take() {
+        self.custody_probe.take();
+        if let Some(serving) = &mut self.serving {
             serving.close().await?;
         }
-        if let Some(replica) = self.replica.take() {
+        self.serving.take();
+        if let Some(replica) = &mut self.replica {
             replica.close().await?;
         }
-        if let Some(phase) = self.phase.take() {
-            phase.scope().drain().await;
+        self.replica.take();
+        if let Some(phase) = &self.phase {
+            phase.shutdown().await?;
+        }
+        self.phase.take();
+        if let Some(lease) = &self.lease {
+            lease.shutdown().await?;
+        }
+        if let Some(stores) = &self.stores {
+            stores.application().shutdown().await;
+            stores.custody().store().shutdown().await;
         }
         self.stores.take();
         self.lease.take();
@@ -147,7 +162,8 @@ impl TargetRuntimeReply {
 pub struct TargetRecoveryRuntime {
     recovery_health: std::sync::Mutex<serving::RecoveryHealth>,
     registry: crate::api::DatabaseRegistry,
-    serving_monitor: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    serving_monitor: crate::runtime_worker::RuntimeWorker,
+    shutdown_gate: Mutex<()>,
     config: RuntimeConfig,
     authority_trusts: BTreeMap<String, AuthorityTrust>,
     installed: TargetRecoveryConfig,
@@ -163,6 +179,14 @@ pub struct TargetRecoveryRuntime {
     generations: Mutex<BTreeMap<GenerationKey, Arc<Mutex<Generation>>>>,
     calls: Arc<Semaphore>,
     closing: AtomicBool,
+}
+/// Keep the outer owner reachable across cancellation of its recursive drain.
+pub(crate) async fn shutdown_target(owner: &mut Option<Arc<TargetRecoveryRuntime>>) -> Result<()> {
+    if let Some(target) = owner.as_ref() {
+        target.shutdown().await?;
+    }
+    owner.take();
+    Ok(())
 }
 impl TargetRecoveryRuntime {
     #[allow(clippy::too_many_arguments)]
@@ -223,7 +247,8 @@ impl TargetRecoveryRuntime {
         let runtime = Arc::new(Self {
             recovery_health: std::sync::Mutex::new(serving::RecoveryHealth::new()),
             registry,
-            serving_monitor: std::sync::Mutex::new(None),
+            serving_monitor: Default::default(),
+            shutdown_gate: Mutex::new(()),
             config,
             authority_trusts,
             installed,
@@ -417,6 +442,7 @@ impl TargetRecoveryRuntime {
             })
             .cloned();
         let phase = if let Some(old) = continuing {
+            phase.shutdown().await?;
             drop(phase);
             old
         } else {
@@ -969,15 +995,9 @@ impl TargetRecoveryRuntime {
         Ok(SignedLocalTargetCleanup { fact, signature })
     }
     pub async fn shutdown(&self) -> Result<()> {
+        let _shutdown = self.shutdown_gate.lock().await;
         self.closing.store(true, Ordering::Release);
-        let monitor = self
-            .serving_monitor
-            .lock()
-            .map_err(|_| anyhow::anyhow!("target monitor poisoned"))?
-            .take();
-        if let Some(monitor) = monitor {
-            monitor.await?;
-        }
+        self.serving_monitor.drain().await?;
         let targets = self
             .generations
             .lock()
@@ -989,7 +1009,7 @@ impl TargetRecoveryRuntime {
             if let Ok(g) = target.try_lock()
                 && let Some(p) = &g.phase
             {
-                p.scope().close();
+                p.close();
             }
         }
         let _all = self.calls.clone().acquire_many_owned(MAX_CALLS).await?;
@@ -1000,6 +1020,7 @@ impl TargetRecoveryRuntime {
                 .close(&self.cluster, &self.registry)
                 .await?;
         }
+        self.journal.shutdown().await;
         Ok(())
     }
 }

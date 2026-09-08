@@ -47,7 +47,7 @@ impl Administration {
                 return self.initialize_original_if_ready(tenant, previous).await;
             }
             if let Some(lease) = &previous.lease {
-                lease.gate().close();
+                lease.shutdown().await?;
             }
             self.registry
                 .detach_target_generation(tenant, incarnation, &previous.database)?;

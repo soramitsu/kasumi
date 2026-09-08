@@ -1,5 +1,6 @@
 use super::*;
 use kasumi_store::FileKeyProvider;
+use std::future::Future;
 use uuid::Uuid;
 
 struct Fixture {
@@ -76,6 +77,154 @@ impl Fixture {
             )
             .await
     }
+    fn paused_lease(
+        &self,
+        installed: &InstalledSignerVerifier,
+    ) -> (
+        Arc<crate::serving_runtime::RuntimeLease>,
+        Arc<crate::runtime_worker::WorkerPause>,
+    ) {
+        let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
+        let certificate = rcgen::CertificateParams::new(vec!["localhost".into()])
+            .unwrap()
+            .self_signed(&key)
+            .unwrap();
+        let pem = certificate.pem().into_bytes();
+        let tls =
+            kasumi_transport::TlsIdentity::from_pem(&pem, key.serialize_pem().as_bytes()).unwrap();
+        let trust = installed.trust(self.manifest.clone()).unwrap();
+        let boot = ServingBoot::with_test_clock(
+            trust.clone(),
+            ServingIdentity {
+                tenant: "city".into(),
+                incarnation: Uuid::new_v4(),
+                authority_epoch: 1,
+                node: NodeIdentity {
+                    node_id: 1,
+                    verifier: self.input.verifier.identity.clone(),
+                    principal: "data-1".into(),
+                    certificate_sha256: hex::encode(tls.certificate_pin()),
+                },
+            },
+            Arc::new(kasumi_store::test_utils::ManualClock::new()),
+        )
+        .unwrap();
+        let attempt = boot.begin_acquisition().unwrap();
+        let signed = self
+            .operational
+            .open(installed)
+            .unwrap()
+            .sign_lease(kasumi_serving::LeaseClaims {
+                request: attempt.request().clone(),
+                authority_id: self.manifest.authority_id,
+                partition: 0,
+                authority_term: 1,
+                authority_revision: 1,
+                lifetime_ms: 1000,
+                credential_lifetime_ms: 1000,
+                activation_digest: "ab".repeat(32),
+                recovery_checkpoint: None,
+            })
+            .unwrap();
+        let gate = kasumi_serving::ServingGate::new(attempt.verify(signed).unwrap()).unwrap();
+        let client = kasumi_client::KasumiAuthorityPool::new(
+            BTreeMap::from([(
+                1,
+                kasumi_client::KasumiClientConfig {
+                    endpoint: "https://localhost:9".into(),
+                    server_certificate_pins: std::collections::BTreeSet::from([
+                        tls.certificate_pin()
+                    ]),
+                    identity: tls,
+                    trusted_ca_pem: pem,
+                },
+            )]),
+            trust,
+            Arc::new(|| Ok(zeroize::Zeroizing::new("fixture".into()))),
+        )
+        .unwrap();
+        crate::serving_runtime::RuntimeLease::paused_renewal(boot, client, gate).unwrap()
+    }
+}
+
+#[tokio::test]
+async fn renewal_shutdown_keeps_its_handle_through_cancelled_join_and_verifier_reopen() {
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        let f = Fixture::new();
+        f.input.initialize().await.unwrap();
+        let installed = f.open().await.unwrap();
+        let (lease, pause) = f.paused_lease(&installed);
+        let weak_lease = Arc::downgrade(&lease);
+        pause.entered.notified().await;
+        let mut first = Box::pin(lease.shutdown());
+        std::future::poll_fn(|cx| {
+            assert!(first.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        drop(first);
+        assert!(lease.gate().check().is_err());
+        let mut retry = Box::pin(lease.shutdown());
+        std::future::poll_fn(|cx| {
+            assert!(retry.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        pause.release.notify_one();
+        retry.await.unwrap();
+        drop(lease);
+        assert!(weak_lease.upgrade().is_none());
+        installed.shutdown().await;
+        drop(installed);
+        let reopened = f.open().await.unwrap();
+        reopened.shutdown().await;
+    })
+    .await
+    .expect("shutdown ownership fixture timed out");
+}
+
+#[tokio::test]
+async fn verifier_shutdown_joins_renewal_after_setup_owner_is_dropped() {
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        let f = Fixture::new();
+        f.input.initialize().await.unwrap();
+        let installed = f.open().await.unwrap();
+        let (lease, pause) = f.paused_lease(&installed);
+        let weak_lease = Arc::downgrade(&lease);
+        pause.entered.notified().await;
+        drop(lease); // A failed or cancelled setup no longer owns this lease.
+        assert!(weak_lease.upgrade().is_some());
+        let mut first = Box::pin(installed.shutdown());
+        std::future::poll_fn(|cx| {
+            assert!(first.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        drop(first);
+        let owner = installed
+            .owner(&f.manifest.signing_domain(0).unwrap())
+            .unwrap();
+        assert!(
+            owner
+                .start_background_work(|| panic!("closed verifier spawned a late worker"))
+                .is_err()
+        );
+        drop(owner);
+        let mut retry = Box::pin(installed.shutdown());
+        std::future::poll_fn(|cx| {
+            assert!(retry.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        pause.release.notify_one();
+        retry.await;
+        assert!(weak_lease.upgrade().is_none());
+        drop(installed);
+        let reopened = f.open().await.unwrap();
+        reopened.shutdown().await;
+    })
+    .await
+    .expect("shutdown ownership fixture timed out");
 }
 
 #[tokio::test]
