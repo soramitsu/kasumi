@@ -44,8 +44,10 @@ def main():
         translated = result.stdout.strip() == "1"
         if translated:
             errors.append("translated execution cannot satisfy the native host gate")
-    if memory is None or memory < 8 << 30:
-        errors.append("functional acceptance requires at least 8 GiB memory")
+    # The kernel reserves part of a provisioned 8 GiB Linux VM. Record the exact
+    # OS-visible value and require at least 7 GiB usable physical capacity.
+    if memory is None or memory < 7 << 30:
+        errors.append("functional acceptance requires at least 7 GiB OS-visible memory")
     versions = {}
     for name in ("git", "cc", "cmake", "rustup", "docker"):
         executable = shutil.which(name)
