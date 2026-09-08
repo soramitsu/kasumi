@@ -91,7 +91,11 @@ integration; the final integrated source must then pass the complete gates above
    semantics and response ownership through cancellation. Enforce caller byte,
    depth and node limits before the corresponding owned DTO allocation, and
    preserve member routing and the original deadline. Document SDK-accounted
-   capacity separately from transport buffers and process RSS.
+   capacity separately from transport buffers and process RSS. Preserve literal
+   document keys throughout native, MCP, durable command and snapshot decoding:
+   the locked JSON dependency can interpret its private number/raw-value marker
+   keys as internal representations. The source audit below identifies these
+   paths; a bounded literal SDK parser alone does not fix server ingress.
 5. Complete signer coverage and exact authority reopen, then install prepared
    target completion reservations, terminal resolution and linked Control
    successors. An absent Complete remains unknown until the exact durable
@@ -122,6 +126,13 @@ gate above and usable installation artifacts.
 
 ## Current verified increments
 
+- A read-only audit of the locked JSON decoder and the actual historical Linux
+  production feature inventory identifies literal-key reinterpretation in
+  native and MCP requests. Canonical snapshot and history integrity checks reject
+  changed values; document validation still runs after request decoding. The
+  source-derived counterexamples have not yet been reproduced by execution and
+  no correction is integrated. Exact source/dependency hashes and affected fields
+  are retained in `docs/evidence/literal-json-source-audit-20260909`.
 - `7200732` integrates the preserved target runner with schema admission. The
   merged workspace compiles; composed recovery process acceptance is still open.
 - `f2e64af` vendors the minimal bitmaps/lru fixes. All 107 upstream unit/doctests
