@@ -14,6 +14,8 @@ pub struct LifecycleRuntimeConfig {
     pub command_id: Uuid,
     pub installation: LifecycleInstallation,
     pub signing_key: PathBuf,
+    #[serde(deserialize_with = "kasumi_types::require_explicit_option")]
+    pub recovery: Option<crate::recovery_runtime::RecoveryRuntimeConfig>,
 }
 impl LifecycleRuntimeConfig {
     pub fn validate(&self, mode: DeploymentMode, incarnation: Option<&str>) -> Result<()> {

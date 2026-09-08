@@ -61,6 +61,7 @@ fn coordinator() -> TenantState {
         source_mode: RecoverySourceMode::SourceUnavailable,
         installation_sha256: staged_digest(&installation).unwrap().0,
         expected_policy_epoch: 1,
+        authority_policy_epoch: 1,
         authority_partition: partition.key(),
         dispatch_configuration_sha256: "9a".repeat(32),
         target_nodes: (1..=3)
@@ -78,9 +79,9 @@ fn coordinator() -> TenantState {
             })
             .collect(),
         materialization: TargetMaterializationInput {
+            source_purpose_sha256: "78".repeat(32),
             destination_alias: "backup".into(),
             backup_id: checkpoint.backup_id,
-            source_purpose_sha256: "78".repeat(32),
             target_incarnation: target,
             voters: (1..=3)
                 .map(|id| {
@@ -112,6 +113,8 @@ fn coordinator() -> TenantState {
         pending_phase: None,
         last_phase: None,
         issuer_preparation: None,
+        current_intent: None,
+        materialization_intent: None,
         initialization: None,
         completion: None,
         retirement: None,

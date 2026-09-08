@@ -32,6 +32,7 @@ pub struct RecoveryStart {
     pub source_mode: RecoverySourceMode,
     pub installation_sha256: String,
     pub expected_policy_epoch: u64,
+    pub authority_policy_epoch: u64,
     pub authority_partition: String,
     /// Exact installed endpoints, trust, and independently bound credential
     /// sources are selected by this digest, never supplied as request URLs.
@@ -43,7 +44,10 @@ pub struct RecoveryStart {
 }
 impl RecoveryStart {
     pub fn validate(&self) -> Result<()> {
-        require_recovery(!self.operation_id.is_nil(), "nil recovery operation")?;
+        require_recovery(
+            !self.operation_id.is_nil() && self.authority_policy_epoch > 0,
+            "invalid recovery operation or issuer policy epoch",
+        )?;
         validate_sha256(&self.source_purpose_sha256)?;
         validate_sha256(&self.dispatch_configuration_sha256)?;
         require_recovery(
@@ -162,6 +166,10 @@ pub struct RecoveryRecord {
     pub last_phase: Option<Uuid>,
     #[serde(deserialize_with = "crate::require_explicit_option")]
     pub issuer_preparation: Option<Uuid>,
+    #[serde(deserialize_with = "crate::require_explicit_option")]
+    pub current_intent: Option<Uuid>,
+    #[serde(deserialize_with = "crate::require_explicit_option")]
+    pub materialization_intent: Option<Uuid>,
     #[serde(deserialize_with = "crate::require_explicit_option")]
     pub initialization: Option<Uuid>,
     #[serde(deserialize_with = "crate::require_explicit_option")]
@@ -358,4 +366,28 @@ fn bounded_recovery<T: Serialize>(value: &T, limit: usize) -> Result<()> {
         staged_digest(value)?.1 <= limit,
         "recovery record exceeds its work limit",
     )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryStatusRequest {
+    pub operation_id: Uuid,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryResume {
+    pub operation_id: Uuid,
+    pub max_steps: u16,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryStop {
+    pub operation_id: Uuid,
+    pub command_id: Uuid,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryPhaseRequest {
+    pub operation_id: Uuid,
+    pub phase_id: Uuid,
 }

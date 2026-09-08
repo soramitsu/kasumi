@@ -177,7 +177,7 @@ impl Database {
             .authorize(context, None, Action::Admin)
             .map_err(unknown)
     }
-    async fn lifecycle_barrier(&self, context: &RequestContext) -> Result<u64> {
+    pub(super) async fn lifecycle_barrier(&self, context: &RequestContext) -> Result<u64> {
         context.authorization.check_live()?;
         self.access()?;
         self.engine.authorize(context, None, Action::Admin)?;
@@ -206,7 +206,7 @@ impl Database {
         self.engine.authorize(context, None, Action::Admin)?;
         Ok(metrics.current_term)
     }
-    fn lifecycle_now(&self) -> Result<u64> {
+    pub(super) fn lifecycle_now(&self) -> Result<u64> {
         self.command_clock
             .lock()
             .map_err(|_| {
@@ -217,7 +217,7 @@ impl Database {
             })?
             .now_ms()
     }
-    async fn control_observation_audit(
+    pub(super) async fn control_observation_audit(
         &self,
         context: &RequestContext,
         id: Uuid,

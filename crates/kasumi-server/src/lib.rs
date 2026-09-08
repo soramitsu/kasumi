@@ -14,6 +14,8 @@ pub mod local_recovery;
 pub mod logging;
 pub mod mcp;
 mod observability;
+mod recovery_cli;
+pub mod recovery_runtime;
 pub mod rpc;
 pub mod runtime;
 pub mod serving_runtime;

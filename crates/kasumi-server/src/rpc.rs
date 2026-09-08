@@ -15,6 +15,9 @@ pub use kasumi_client::proto;
 use proto::*;
 #[path = "rpc_lifecycle.rs"]
 mod lifecycle;
+#[path = "rpc_recovery.rs"]
+mod recovery;
+pub use recovery::NativeRecoveryControl;
 #[path = "rpc_target.rs"]
 mod target;
 pub use lifecycle::NativeLifecycleControl;
@@ -38,6 +41,9 @@ mod authority_tests;
 #[cfg(test)]
 #[path = "rpc_lifecycle_tests.rs"]
 mod lifecycle_tests;
+#[cfg(test)]
+#[path = "rpc_recovery_tests.rs"]
+mod recovery_tests;
 
 #[derive(Clone)]
 pub struct NativeData {

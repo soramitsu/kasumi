@@ -9,6 +9,8 @@ use uuid::Uuid;
 pub struct TargetRuntimeRequest {
     pub tenant: String,
     pub command_id: Uuid,
+    /// Absolute original dispatch cap, retained across endpoint retries.
+    pub not_after_ms: u64,
     pub step: TargetRuntimeStep,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,7 +34,9 @@ impl TargetRuntimeRequest {
     pub fn validate(&self) -> Result<()> {
         validate_name(&self.tenant)?;
         ensure!(
-            !self.command_id.is_nil() && serde_json::to_vec(self)?.len() <= 256 << 10,
+            !self.command_id.is_nil()
+                && self.not_after_ms > 0
+                && serde_json::to_vec(self)?.len() <= 256 << 10,
             "target runtime request exceeds bounds"
         );
         match &self.step {
