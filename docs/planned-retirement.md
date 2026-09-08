@@ -53,7 +53,15 @@ Quorum, authority or response uncertainty produces no stopped proof. Callers mus
 
 `not_after_ms` is an inclusive trusted leader execution-admission deadline, sampled after the serialized gate and closure preparation. A committed outcome remains recoverable after that original action deadline. Fresh credential authorization has its separate exclusive expiry and original suspend-aware monotonic fence; cloning, queueing or readback cannot extend it. Expiry before proposal admits no command. An effect whose acknowledgement expires remains committed and returns UnknownOutcome rather than a fabricated rollback.
 
-Permanent outcomes consume required `Limits.max_retirements` (default 4096, maximum 100,000) and exact snapshot byte accounting. They do not expire or enter application history archives. Identity quota is checked before backup I/O and again in ordered execution. Required audit/outcome storage must fit before any fence is published.
+Permanent outcomes consume required `Limits.max_retirement_bytes` (positive u64,
+default 64 MiB) and exact snapshot accounting. There is no lifetime record-count
+ceiling. They do not expire or enter application history archives. Before backup
+I/O and again before ordered commitment, a new identity reserves its key/value
+at full-width future revision/clock/policy fields plus bounded error-outcome
+headroom. Only exact terminal bytes remain charged. Required audit and snapshot
+capacity must also fit before any fence is published. Increasing the byte budget
+allows further identities; reducing it below retained bytes is refused. The
+former count field is rejected.
 
 After retirement, all application commands, policy/limits and `Suspend(false)` remain sealed. The independently keyed closed custody reducer can rotate only its current global administrators and separate bounded metadata budgets; see [the custody contract](custody-control.md). It cannot reopen data or modify the original retirement binding. Native recovery can release current-authority retirement proofs without constructing the old application provider. Independent serving-lease authority remains required; this custody path does not issue serving permission.
 

@@ -313,17 +313,17 @@ impl TenantEngine {
             retired: state.retired,
             pending_restore: state.pending_restore.is_some(),
             existing_identity,
-            retirement_count: state.retirements.len(),
             retirement_bytes: state.retirement_bytes,
-            max_retirements: state.limits.max_retirements,
+            max_retirement_bytes: state.limits.max_retirement_bytes,
             audit_hot_bytes: state.audit_retention.hot_bytes,
             max_audit_hot_bytes: state.limits.audit_retention.hot_bytes,
-            snapshot_bytes: generation.snapshot_bytes()?,
+            snapshot_bytes: generation.snapshot_bytes()? as u64,
             max_snapshot_bytes: state.limits.max_snapshot_bytes,
             staged_outcome_headroom: state
                 .active_staged_transactions
                 .len()
-                .saturating_mul(STAGED_OUTCOME_HEADROOM),
+                .saturating_mul(STAGED_OUTCOME_HEADROOM)
+                as u64,
         })
     }
     /// A tenant bootstrap is trusted control-plane input, identical on all replicas.
@@ -1513,12 +1513,12 @@ fn apply_operation(
             authorize_state(state, &command.context, None, Action::Admin)?;
             validate_limits(limits)?;
             staging::validate_new_limits(state, limits)?;
-            if state.schema_activations.len() > limits.max_schema_activations
-                || state.retirements.len() > limits.max_retirements
+            if state.schema_activation_bytes > limits.max_schema_activation_bytes
+                || state.retirement_bytes > limits.max_retirement_bytes
             {
                 return Err(Error::new(
                     ErrorCode::QuotaExceeded,
-                    "new quota excludes permanent schema activations",
+                    "new byte budget excludes retained permanent outcomes",
                 ));
             }
             validate_policy(&state.policy, limits)?;
@@ -1985,10 +1985,8 @@ fn validate_limits(limits: &Limits) -> Result<()> {
         || limits.max_cursors == 0
         || limits.max_collections == 0
         || limits.max_schema_bytes == 0
-        || limits.max_retirements == 0
-        || limits.max_retirements > 100_000
-        || limits.max_schema_activations == 0
-        || limits.max_schema_activations > 100_000
+        || limits.max_retirement_bytes == 0
+        || limits.max_schema_activation_bytes == 0
         || limits.max_policy_grants == 0
     {
         return Err(Error::new(

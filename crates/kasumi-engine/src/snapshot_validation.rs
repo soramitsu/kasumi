@@ -684,8 +684,8 @@ impl ValidatedApplicationSnapshot {
     ) -> anyhow::Result<()> {
         let h = &self.header;
         ensure!(
-            self.index.count(12)? <= h.limits.max_schema_activations as u64
-                && self.index.count(13)? <= h.limits.max_retirements as u64,
+            h.schema_activation_bytes <= h.limits.max_schema_activation_bytes
+                && h.retirement_bytes <= h.limits.max_retirement_bytes,
             "permanent record quota exceeded"
         );
         let mut activation_bytes = 0u64;
@@ -695,7 +695,7 @@ impl ValidatedApplicationSnapshot {
                 unreachable!()
             };
             activation_bytes = activation_bytes
-                .checked_add(schema::validate_snapshot_record(&key, &record, h.revision)? as u64)
+                .checked_add(schema::validate_snapshot_record(&key, &record, h.revision)?)
                 .context("schema activation bytes overflow")?;
             Ok(())
         })?;
@@ -708,7 +708,7 @@ impl ValidatedApplicationSnapshot {
             };
             let (bytes, current) = retirement::validate_snapshot_record(h, &key, &record)?;
             retirement_bytes = retirement_bytes
-                .checked_add(bytes as u64)
+                .checked_add(bytes)
                 .context("retirement byte count overflow")?;
             successes = successes
                 .checked_add(u64::from(current))
@@ -716,8 +716,8 @@ impl ValidatedApplicationSnapshot {
             Ok(())
         })?;
         ensure!(
-            activation_bytes == h.schema_activation_bytes as u64
-                && retirement_bytes == h.retirement_bytes as u64
+            activation_bytes == h.schema_activation_bytes
+                && retirement_bytes == h.retirement_bytes
                 && successes == u64::from(h.retired),
             "permanent record accounting or fence differs"
         );

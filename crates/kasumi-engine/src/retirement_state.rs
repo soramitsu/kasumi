@@ -61,10 +61,15 @@ pub(crate) fn admit(
             "source already permanently retired",
         ));
     }
-    if state.retirements.len() >= state.limits.max_retirements {
+    let required = StoredRetirement::reservation_bytes(&context.principal, request)?;
+    if state
+        .retirement_bytes
+        .checked_add(required)
+        .is_none_or(|n| n > state.limits.max_retirement_bytes)
+    {
         return Err(Error::new(
             ErrorCode::QuotaExceeded,
-            "permanent retirement quota exhausted",
+            "permanent retirement byte budget exhausted",
         ));
     }
     Ok(None)
@@ -88,11 +93,7 @@ pub(super) fn apply(
     }
     let reference = request.request.reference()?;
     let outcome = decision(state, command, request, previous_revision, revision);
-    if let Ok(receipt) = &outcome {
-        state.retired = true;
-        state.suspended = true;
-        state.policy_epoch = receipt.policy_epoch;
-    }
+    let policy_epoch = outcome.as_ref().ok().map(|receipt| receipt.policy_epoch);
     let result = outcome.clone().map(|receipt| WriteReceipt {
         revision: receipt.revision,
         versions: BTreeMap::new(),
@@ -108,6 +109,11 @@ pub(super) fn apply(
             outcome,
         },
     )?;
+    if let Some(epoch) = policy_epoch {
+        state.retired = true;
+        state.suspended = true;
+        state.policy_epoch = epoch;
+    }
     Ok((result, false))
 }
 
@@ -198,12 +204,8 @@ fn decision(
     Ok(receipt)
 }
 
-fn entry_bytes(key: &str, record: &StoredRetirement) -> Result<usize> {
-    let value_bytes = encoded_len(record)?;
-    encoded_len(&key)?
-        .checked_add(1)
-        .and_then(|n| n.checked_add(value_bytes))
-        .ok_or_else(|| Error::new(ErrorCode::Corruption, "retirement accounting overflow"))
+fn entry_bytes(key: &str, record: &StoredRetirement) -> Result<u64> {
+    record.entry_bytes(key)
 }
 pub(super) fn store(state: &mut TenantState, key: String, record: StoredRetirement) -> Result<()> {
     let old = state
@@ -213,11 +215,18 @@ pub(super) fn store(state: &mut TenantState, key: String, record: StoredRetireme
         .transpose()?
         .unwrap_or(0);
     let new = entry_bytes(&key, &record)?;
-    state.retirement_bytes = state
+    let bytes = state
         .retirement_bytes
         .checked_sub(old)
         .and_then(|n| n.checked_add(new))
         .ok_or_else(|| Error::new(ErrorCode::Corruption, "retirement accounting mismatch"))?;
+    if bytes > state.limits.max_retirement_bytes {
+        return Err(Error::new(
+            ErrorCode::QuotaExceeded,
+            "permanent retirement byte budget exhausted",
+        ));
+    }
+    state.retirement_bytes = bytes;
     state.retirements.insert(key, record);
     Ok(())
 }
@@ -248,13 +257,13 @@ pub(super) fn reject_budget(
 }
 
 pub(super) fn validate_restored(state: &TenantState) -> Result<()> {
-    if state.retirements.len() > state.limits.max_retirements {
+    if state.retirement_bytes > state.limits.max_retirement_bytes {
         return Err(Error::new(
             ErrorCode::Corruption,
             "retirement record quota exceeded",
         ));
     }
-    let mut bytes = 0usize;
+    let mut bytes = 0u64;
     let mut current_successes = 0usize;
     for (key, record) in &state.retirements {
         let (size, current) = validate_snapshot_record(state, key, record)?;
@@ -276,7 +285,7 @@ pub(super) fn validate_snapshot_record(
     state: &TenantState,
     key: &str,
     record: &StoredRetirement,
-) -> Result<(usize, bool)> {
+) -> Result<(u64, bool)> {
     let mut current_success = false;
     let reference = record.request.reference()?;
     if identity(&reference)? != *key
