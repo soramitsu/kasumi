@@ -3,6 +3,8 @@
 
 mod command;
 mod control;
+#[cfg(test)]
+mod custody_capacity_tests;
 mod custody_command;
 mod custody_group;
 mod custody_machine;
