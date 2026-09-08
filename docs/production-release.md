@@ -310,3 +310,11 @@ reservation for final concurrent document/index/journal/audit headroom. The
 resource-budget milestone must define server-accounted consumption, original
 attempt/service binding, recovery/release and permanent outcome resolution;
 a read-only quota getter or caller capacity claim cannot close this dependency.
+
+- The immutable `7732c06` macOS functional attempt completed with a **failed**
+  workspace gate. Four targets reported fixture governor/lifecycle rejection
+  failures; raw output and all source/executable hashes are retained in
+  `docs/evidence/frozen-functional-7732c06-20260908`. Formatting, Python, patched
+  dependencies, strict workspace Clippy, fixture-free production graph and all
+  production binaries passed. Later focused fixes are integrated, but a new
+  full integration run is required; the failed attempt is never treated as pass.
