@@ -122,6 +122,22 @@ impl ServingGate {
         }
         Ok(())
     }
+    /// Read renewal headroom from the verified deadline, including the shorter
+    /// credential lifetime. Failure permanently closes this exact generation.
+    pub fn remaining(&self) -> Result<std::time::Duration> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("serving gate poisoned"))?;
+        if !state.closed {
+            if let Ok(remaining) = state.lease.remaining() {
+                return Ok(remaining);
+            }
+        }
+        state.closed = true;
+        self.closed.send_replace(true);
+        anyhow::bail!("serving generation fenced or expired")
+    }
     pub fn renew(&self, lease: VerifiedLease) -> Result<()> {
         let mut state = self
             .state

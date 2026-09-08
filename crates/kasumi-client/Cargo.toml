@@ -5,6 +5,8 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+tokio.workspace = true
+url = "2"
 uuid.workspace = true
 anyhow.workspace = true
 kasumi-types.workspace = true

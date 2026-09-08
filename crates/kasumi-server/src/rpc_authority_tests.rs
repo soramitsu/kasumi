@@ -163,8 +163,9 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
         },
     )
     .unwrap();
-    let routes = tonic::service::Routes::new(NativeAuthority::new(leader.clone(), auth).service())
-        .into_axum_router();
+    let routes =
+        tonic::service::Routes::new(NativeAuthority::new(leader.clone(), auth.clone()).service())
+            .into_axum_router();
     let (stop, stopped) = tokio::sync::watch::channel(false);
     let serving = tokio::spawn(crate::tls::serve_tls(
         socket,
@@ -250,6 +251,85 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
             .await
             .is_err()
     );
+    let follower = services
+        .iter()
+        .find(|service| !Arc::ptr_eq(service, &leader))
+        .unwrap()
+        .clone();
+    let follower_socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let follower_endpoint = format!(
+        "https://localhost:{}",
+        follower_socket.local_addr().unwrap().port()
+    );
+    let follower_tls = kasumi_transport::server_config(
+        &server_identity,
+        ClientAuthentication::Required {
+            trusted_ca_pem: ca.as_bytes(),
+        },
+    )
+    .unwrap();
+    let (follower_stop, follower_stopped) = tokio::sync::watch::channel(false);
+    let follower_task = tokio::spawn(crate::tls::serve_tls(
+        follower_socket,
+        follower_tls,
+        tonic::service::Routes::new(NativeAuthority::new(follower, auth.clone()).service())
+            .into_axum_router(),
+        crate::tls::ListenerLimits::default(),
+        audit.clone(),
+        follower_stopped,
+    ));
+    // An unreachable installed member cannot prevent discovery or acquisition
+    // from the approved live member, and no retry regenerates a lease attempt.
+    let unused = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let absent_endpoint = format!("https://localhost:{}", unused.local_addr().unwrap().port());
+    drop(unused);
+    let mut absent = config.clone();
+    absent.endpoint = absent_endpoint;
+    let mut follower_config = config.clone();
+    follower_config.endpoint = follower_endpoint;
+    let current_credential = Arc::new(std::sync::RwLock::new(node_token.clone()));
+    let source = current_credential.clone();
+    let mut pool = kasumi_client::KasumiAuthorityPool::new(
+        BTreeMap::from([(1, follower_config), (2, absent), (3, config.clone())]),
+        trust.clone(),
+        Arc::new(move || Ok(zeroize::Zeroizing::new(source.read().unwrap().clone()))),
+    )
+    .unwrap();
+    let discovered = pool
+        .discover_lease(&discovery, Duration::from_secs(2))
+        .await
+        .unwrap();
+    assert_eq!(&discovered, boot.identity());
+    let original = boot.begin_acquisition().unwrap();
+    let acquired = pool
+        .acquire_lease(&original, Duration::from_secs(1))
+        .await
+        .unwrap();
+    assert!(acquired.remaining().unwrap() <= Duration::from_secs(1));
+    *current_credential.write().unwrap() = admin.clone();
+    assert_eq!(
+        pool.execute(&command, Duration::from_secs(2))
+            .await
+            .unwrap()
+            .receipt
+            .command,
+        command
+    );
+    *current_credential.write().unwrap() = "invalid".into();
+    assert!(
+        pool.discover_lease(&discovery, Duration::from_secs(2))
+            .await
+            .is_err()
+    );
+    *current_credential.write().unwrap() = node_token.clone();
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    assert!(
+        pool.acquire_lease(&original, Duration::from_secs(1))
+            .await
+            .is_err()
+    );
+    assert!(acquired.remaining().is_err());
+
     let other_config = KasumiClientConfig {
         endpoint,
         identity: identities.remove(0),
@@ -339,6 +419,8 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
 
     tokio::time::sleep(Duration::from_millis(1100)).await;
     assert!(gate.check_serving().is_err());
+    follower_stop.send_replace(true);
+    follower_task.await.unwrap().unwrap();
     stop.send_replace(true);
     serving.await.unwrap().unwrap();
     for service in services {

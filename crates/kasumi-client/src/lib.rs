@@ -15,6 +15,8 @@ use tonic::{Request, transport::Channel};
 mod lifecycle;
 pub use lifecycle::KasumiLifecycleClient;
 mod authority;
+mod authority_pool;
+pub use authority_pool::KasumiAuthorityPool;
 mod restore_lineage_proof;
 mod retirement_proof;
 pub use authority::KasumiAuthorityClient;
@@ -46,6 +48,7 @@ pub enum ClientError {
 
 /// Operator-selected connection identity and trust. Deliberately not Debug or
 /// serializable: it owns private key material. Bearer tokens are request-local.
+#[derive(Clone)]
 pub struct KasumiClientConfig {
     pub endpoint: String,
     pub identity: TlsIdentity,

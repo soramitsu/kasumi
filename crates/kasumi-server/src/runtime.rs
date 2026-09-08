@@ -1630,10 +1630,13 @@ pub fn example_config() -> RuntimeConfig {
                 },
                 endpoints: BTreeMap::from([(
                     0,
-                    crate::serving_runtime::AuthorityEndpoint {
-                        endpoint: "https://authority.example:9544".into(),
-                        certificate_pins: BTreeSet::from(["02".repeat(32)]),
-                    },
+                    BTreeMap::from([(
+                        1,
+                        crate::serving_runtime::AuthorityEndpoint {
+                            endpoint: "https://authority.example:9544".into(),
+                            certificate_pins: BTreeSet::from(["02".repeat(32)]),
+                        },
+                    )]),
                 )]),
                 tls: TlsFiles {
                     certificate: "/etc/kasumi/node-authority.pem".into(),
