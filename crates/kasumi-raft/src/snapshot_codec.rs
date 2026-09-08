@@ -36,6 +36,9 @@ fn frame(writer: &mut dyn Write, tag: u8, bytes: &[u8], digest: &mut Sha256) -> 
 }
 impl SnapshotEnvelope {
     pub(crate) fn encode(&self, limit: u64) -> Result<SnapshotImage> {
+        self.encode_records(limit, true)
+    }
+    fn encode_records(&self, limit: u64, check_metadata: bool) -> Result<SnapshotImage> {
         SnapshotImage::capture(limit, |writer| {
             let header = serde_json::to_vec(&Header {
                 version: self.version,
@@ -53,7 +56,9 @@ impl SnapshotEnvelope {
             frame(writer, METADATA, &header, &mut digest)?;
             let (mut commands, mut audit) = (0u64, 0u64);
             if let Some(retirement) = &self.retirement {
-                retirement.validate(&self.meta)?;
+                if check_metadata {
+                    retirement.validate(&self.meta)?;
+                }
                 retirement.verified_records()?.visit(|tag, bytes| {
                     let (tag, count) = if tag == 1 {
                         (COMMAND, &mut commands)
@@ -221,4 +226,25 @@ impl SnapshotEnvelope {
             backend: SnapshotImage::freeze(spool)?,
         })
     }
+}
+
+/// Deliberately malformed metadata for receiver-validation tests. Production
+/// capture always validates metadata; this helper retains the original private
+/// record owner so serialization cannot accidentally erase the test's history.
+#[cfg(test)]
+pub(crate) fn unvalidated_snapshot(
+    changed: &SnapshotEnvelope,
+    original: &SnapshotEnvelope,
+    limit: u64,
+) -> Result<openraft::Snapshot<crate::TypeConfig>> {
+    let mut changed = changed.clone();
+    if let Some(retirement) = &mut changed.retirement {
+        retirement.records = original.retirement.as_ref().and_then(|r| r.records.clone());
+    }
+    Ok(openraft::Snapshot {
+        meta: changed.meta.clone(),
+        snapshot: Box::new(crate::SnapshotBuffer::from_image(
+            changed.encode_records(limit, false)?,
+        )),
+    })
 }
