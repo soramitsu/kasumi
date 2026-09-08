@@ -23,7 +23,6 @@ use std::{
     sync::{Arc, RwLock},
 };
 use uuid::Uuid;
-use zeroize::Zeroizing;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -37,9 +36,7 @@ pub enum DestinationConfig {
         region: String,
         bucket: String,
         prefix: String,
-        access_key_env: String,
-        secret_key_env: String,
-        session_token_env: Option<String>,
+        credentials_file: PathBuf,
         ca_certificate: Option<PathBuf>,
         max_bytes: usize,
     },
@@ -64,9 +61,7 @@ impl DestinationConfig {
                 region,
                 bucket,
                 prefix,
-                access_key_env,
-                secret_key_env,
-                session_token_env,
+                credentials_file,
                 ca_certificate,
                 max_bytes,
             } => {
@@ -81,16 +76,10 @@ impl DestinationConfig {
                     prefix.is_empty() || crate::runtime::valid_transit_path(prefix),
                     "invalid S3 prefix"
                 );
-                for name in [
-                    Some(access_key_env),
-                    Some(secret_key_env),
-                    session_token_env.as_ref(),
-                ]
-                .into_iter()
-                .flatten()
-                {
-                    crate::runtime::environment_name(name)?;
-                }
+                ensure!(
+                    credentials_file.is_absolute(),
+                    "S3 credential file must be absolute"
+                );
                 if let Some(path) = ca_certificate {
                     ensure!(path.is_absolute(), "S3 CA path must be absolute");
                 }
@@ -99,10 +88,7 @@ impl DestinationConfig {
         }
         Ok(())
     }
-    pub(crate) fn open(
-        &self,
-        credential: &impl Fn(&str) -> Result<Zeroizing<String>>,
-    ) -> Result<Arc<dyn BackupDestination>> {
+    pub(crate) fn open(&self) -> Result<Arc<dyn BackupDestination>> {
         self.validate()?;
         Ok(match self {
             Self::Filesystem {
@@ -114,9 +100,7 @@ impl DestinationConfig {
                 region,
                 bucket,
                 prefix,
-                access_key_env,
-                secret_key_env,
-                session_token_env,
+                credentials_file,
                 ca_certificate,
                 max_bytes,
             } => Arc::new(S3BackupDestination::new(S3BackupConfig {
@@ -124,12 +108,9 @@ impl DestinationConfig {
                 region: region.clone(),
                 bucket: bucket.clone(),
                 prefix: prefix.clone(),
-                access_key_id: credential(access_key_env)?.to_string(),
-                secret_access_key: credential(secret_key_env)?.to_string(),
-                session_token: session_token_env
-                    .as_ref()
-                    .map(|key| credential(key).map(|value| value.to_string()))
-                    .transpose()?,
+                credential: Arc::new(kasumi_transport::credentials::FileCredentialSource::new(
+                    credentials_file,
+                )?),
                 ca_pem: ca_certificate
                     .as_ref()
                     .map(|path| crate::runtime::read_bounded(path, 1 << 20))

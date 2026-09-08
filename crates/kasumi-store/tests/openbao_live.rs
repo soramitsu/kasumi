@@ -150,7 +150,10 @@ async fn actual_openbao_transit_roundtrip_rotation_backups_and_warm_revocation()
             endpoint: endpoint.clone(),
             mount: "transit".into(),
             key_name: key_name.into(),
-            token: service_token.clone(),
+            credential: {
+                let token = service_token.clone();
+                Arc::new(move || Ok(zeroize::Zeroizing::new(token.clone())))
+            },
             namespace: None,
             ca_pem: Some(ca.clone()),
             derived,

@@ -1,6 +1,6 @@
 //! Installed source-to-authority connections and bounded renewal. Remote data
 //! requests cannot choose an issuer, credential, endpoint, epoch or boot nonce.
-use crate::runtime::{TlsFiles, environment_name, origin, parse_certificate_pin, read_bounded};
+use crate::runtime::{TlsFiles, credential_path, origin, parse_certificate_pin, read_bounded};
 use anyhow::{Context, Result, ensure};
 use kasumi_client::{KasumiAuthorityClient, KasumiClientConfig};
 use kasumi_serving::{
@@ -36,7 +36,7 @@ pub struct ServingAuthorityConfig {
     pub endpoints: BTreeMap<u16, AuthorityEndpoint>,
     pub tls: TlsFiles,
     pub server_ca: PathBuf,
-    pub bearer_env: String,
+    pub bearer_file: String,
     pub principal: String,
 }
 impl ServingAuthorityConfig {
@@ -48,7 +48,7 @@ impl ServingAuthorityConfig {
             "authority server CA must be an installed absolute path"
         );
         kasumi_types::validate_name(&self.principal)?;
-        environment_name(&self.bearer_env)?;
+        credential_path(&self.bearer_file)?;
         ensure!(
             self.endpoints.keys().eq(self.manifest.partitions.keys()),
             "authority endpoints differ from installed partition map"
@@ -81,7 +81,7 @@ pub(crate) struct RuntimeLease {
     boot: ServingBoot,
     client: AsyncMutex<KasumiAuthorityClient>,
     credential: CredentialSource,
-    bearer_env: String,
+    bearer_file: String,
     renewal: Mutex<Option<tokio::task::JoinHandle<()>>>,
     serving: AtomicBool,
 }
@@ -135,7 +135,7 @@ impl RuntimeLease {
         )
         .await
         .context("authority connection timed out")??;
-        let bearer = credential(&config.bearer_env)?;
+        let bearer = credential(&config.bearer_file)?;
         let identity = tokio::time::timeout(
             Duration::from_secs(5),
             client.discover_lease(&bearer, &discovery),
@@ -149,7 +149,7 @@ impl RuntimeLease {
         // Sample before dispatch, including credential acquisition time. No
         // redirect/retry can re-anchor this exact request's local authority.
         let attempt = boot.begin_acquisition()?;
-        let bearer = credential(&config.bearer_env)?;
+        let bearer = credential(&config.bearer_file)?;
         let lease = tokio::time::timeout(
             Duration::from_millis(config.manifest.max_lease_ms.min(5000)),
             client.acquire_lease(&bearer, &attempt),
@@ -162,7 +162,7 @@ impl RuntimeLease {
             boot,
             client: AsyncMutex::new(client),
             credential,
-            bearer_env: config.bearer_env.clone(),
+            bearer_file: config.bearer_file.clone(),
             renewal: Mutex::new(None),
             serving: AtomicBool::new(purpose == LeasePurpose::Serving),
         });
@@ -206,7 +206,7 @@ impl RuntimeLease {
             self.boot.clone()
         };
         let attempt = boot.begin_acquisition()?;
-        let bearer = (self.credential)(&self.bearer_env)?;
+        let bearer = (self.credential)(&self.bearer_file)?;
         let lease = client.acquire_lease(&bearer, &attempt).await?;
         self.gate.renew(lease)
     }
@@ -220,7 +220,7 @@ impl RuntimeLease {
                 return self.gate.check_serving();
             }
             let attempt = self.boot.clone().for_serving().begin_acquisition()?;
-            let bearer = (self.credential)(&self.bearer_env)?;
+            let bearer = (self.credential)(&self.bearer_file)?;
             let lease = client.acquire_lease(&bearer, &attempt).await?;
             self.gate.promote_prepared(lease)?;
             self.serving.store(true, Ordering::Release);

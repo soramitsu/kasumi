@@ -1820,9 +1820,11 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.20",
+ "tokio",
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
+ "url",
  "uuid",
 ]
 
@@ -1974,6 +1976,7 @@ dependencies = [
  "hyper-util",
  "kasumi-clock",
  "kasumi-serving",
+ "kasumi-transport",
  "kasumi-types",
  "libc",
  "parking_lot",
@@ -1999,14 +2002,17 @@ dependencies = [
  "anyhow",
  "http",
  "hyper-util",
+ "libc",
  "rustls",
  "rustls-pemfile",
  "sha2",
+ "tempfile",
  "tokio",
  "tokio-rustls",
  "tonic",
  "tower",
  "url",
+ "zeroize",
 ]
 
 [[package]]
