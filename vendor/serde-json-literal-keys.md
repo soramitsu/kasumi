@@ -1,8 +1,12 @@
 # Literal JSON object keys in serde_json 1.0.151
 
-This is a source-only patch disposition. The new Rust regressions, Cargo resolver
-check, upstream suites, strict workspace checks and production builds have not
-run at this checkpoint. It is not release acceptance evidence.
+This follow-up is a source-only patch disposition. On the preceding `8f4cf74`
+checkpoint, dependency resolution and the complete default upstream suite passed;
+the number-only suite failed an owned tagged-enum regression. The exact failure
+was then reproduced on the pristine published crate with only the test added.
+No Rust tests, resolver check or production build have run on this corrected
+source. Raw-only and combined feature suites remain unrun. This is not release
+acceptance evidence.
 
 ## Published base and exact change
 
@@ -56,6 +60,30 @@ deserializers can intentionally synthesize bytes and are not an authentication
 boundary. Serializers, numeric lexemes, `RawValue` capture, and JSON wire bytes
 are unchanged. Literal keys are not rejected or renamed.
 
+## Generic 128-bit number dispatch
+
+The owned/ref `Number::deserialize_any` implementation tried `visit_u128` and
+`visit_i128` after its 64-bit cases. Serde 1.0.229's `Content` has no 128-bit
+variants. Thus a genuine number can succeed through direct JSON parsing but fail
+when a typed tagged enum is decoded from an already parsed `Value`. The retained
+test fails with `18446744073709551616000000000000001` at its owned tagged
+`from_value` assertion. Both the marker-patched source and verified pristine
+1.0.151 reproduce that same failure; it is not a reason to remove the assertion.
+
+The correction leaves the 64-bit cases intact and sends every larger integer to
+the exact synthetic-number map. Only decimal/exponent lexemes may take the
+existing round-tripping `f64` shortcut. This restriction matters for integers
+such as `100000000000000000000`: dropping only the 128-bit callbacks would let
+that integer fall through to `f64` and change its stored numeric lexeme. Explicit
+`deserialize_u128` and `deserialize_i128` still parse the exact number string,
+including their original sign and overflow rejection.
+
+The new source tests retain the original failure and add both sides of the
+64-bit and signed/unsigned 128-bit boundaries, larger arbitrary integers, and
+integer values representable as floating point. They compare direct, owned,
+borrowed, tagged, and untagged decoding, and exercise explicit typed 128-bit
+success and overflow. Those additional checks have not run on this follow-up.
+
 ## Exact consumer review
 
 The root and published upstream test lockfiles both select `serde`/`serde_core`
@@ -67,7 +95,7 @@ package, not an assertion about other releases.
 | serde_json JSON lexer | `src/de.rs`, `MapKey::deserialize_any`, emits `visit_str` or `visit_borrowed_str` after parsing key escapes. No input byte key exists. |
 | serde 1.0.229 enum buffering | `src/private/de.rs`, `ContentVisitor`, `ContentDeserializer`, `ContentRefDeserializer`, and `TagOrContentVisitor` preserve byte/string variants. `deserialize_str` and `deserialize_identifier` do not coerce stored bytes to strings. No serde patch is needed. |
 | serde_core 1.0.229 visitor defaults | Borrowed/owned byte visitors delegate to `visit_bytes`. `String` and borrowed `str` visitors accept valid UTF-8 bytes; ordinary map-key consumers remain usable with synthetic internal maps. |
-| serde_json `Value` owned and borrowed deserializers | Literal map keys use their string deserializers; genuine `Number` delegates to its synthetic number deserializer. `RawValue`'s explicit newtype request creates the raw capture map. All three use the patched discriminator. |
+| serde_json `Value` owned and borrowed deserializers | Literal map keys use their string deserializers. Genuine large integers use the corrected synthetic number path rather than unsupported 128-bit `Content` callbacks. `RawValue`'s explicit newtype request creates the raw capture map. All three use the patched discriminator. |
 | serde_path_to_error 0.1.20 | `src/de.rs` visitor and key wrappers preserve byte callbacks; no private-token comparison was found. |
 | rmcp 3.2.0 | `transport/common/server_side_http.rs::expect_json` parses the body into `ClientJsonRpcMessage` before Kasumi tool dispatch. Generic arguments contain `Value`; patching the common dependency reaches this earliest parse. |
 | jsonschema 0.52.1 | Its private-number token use is a `SerializeStruct` helper, not a decode visitor; the serializer path is unchanged. |
@@ -81,6 +109,14 @@ used `arbitrary_precision`. The marker behavior predates the SDK parser changes.
 That checkpoint failed a workspace restart test; the feature inventory is not
 evidence of an accepted release. Final feature graphs must be checked again,
 particularly if numeric dependency features change.
+
+This internal protocol correction is coherent only when the decoder and `Value`
+come from the same corrected crate. A stock serde_json decoder can emit a
+synthetic string-marker map to a separately patched `Value` visitor, which then
+correctly treats that string as a literal key. Cargo root patches are not
+inherited by applications consuming published SDK crates. Consequently the
+global server correction does not replace the SDK-owned bounded literal parser,
+and it is not a claim of universal compatibility with external Serde decoders.
 
 ## Kasumi boundary coverage and pending gates
 

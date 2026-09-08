@@ -13,7 +13,30 @@
 @@ -484 +484 @@
 -                if s == TOKEN {
 +                if s == TOKEN.as_bytes() {
-@@ -690 +690,3 @@
+@@ -557,10 +557,12 @@
+-            } else if let Some(u) = self.as_u128() {
+-                return visitor.visit_u128(u);
+-            } else if let Some(i) = self.as_i128() {
+-                return visitor.visit_i128(i);
+-            } else if let Some(f) = self.as_f64() {
+-                if zmij::Buffer::new().format_finite(f) == self.n || f.to_string() == self.n {
+-                    return visitor.visit_f64(f);
+-                }
+-            }
+-
++            } else if self.n.contains(['.', 'e', 'E']) {
++                if let Some(f) = self.as_f64() {
++                    if zmij::Buffer::new().format_finite(f) == self.n || f.to_string() == self.n {
++                        return visitor.visit_f64(f);
++                    }
++                }
++            }
++
++            // Serde's enum Content buffer has no i128/u128 variants. Keep
++            // larger integers on the same exact map path used by the JSON
++            // parser, including integer lexemes also representable as f64.
++            // Explicit deserialize_i128/u128 requests still parse directly.
+@@ -690 +692,3 @@
 -        visitor.visit_borrowed_str(TOKEN)
 +        // JSON object keys are strings. Keep this synthetic marker on a
 +        // separate Serde data-model channel, including through enum buffering.
@@ -76,7 +99,7 @@
 +            _ => Err(de::Error::invalid_type(Unexpected::Bytes(s), &self)),
 --- /dev/null
 +++ b/tests/literal_keys.rs
-@@ -0,0 +1,163 @@
+@@ -0,0 +1,249 @@
 +use serde::{Deserialize, Serialize};
 +use serde_json::{Map, Value};
 +
@@ -167,9 +190,27 @@
 +#[cfg(feature = "arbitrary_precision")]
 +#[test]
 +fn genuine_numbers_survive_direct_owned_borrowed_and_tagged_paths() {
++    #[derive(Debug, Deserialize, PartialEq)]
++    #[serde(untagged)]
++    enum Untagged {
++        Number(serde_json::Number),
++        Tagged(Tagged),
++    }
 +    for text in [
 +        "18446744073709551616000000000000001",
 +        "90071992547409931234567890.123456789",
++        "18446744073709551615",                     // u64::MAX
++        "18446744073709551616",                     // u64::MAX + 1
++        "100000000000000000000", // Also representable as f64; retain integer lexeme.
++        "170141183460469231731687303715884105727", // i128::MAX
++        "170141183460469231731687303715884105728", // i128::MAX + 1
++        "340282366920938463463374607431768211455", // u128::MAX
++        "340282366920938463463374607431768211456", // u128::MAX + 1
++        "-9223372036854775808",  // i64::MIN
++        "-9223372036854775809",  // i64::MIN - 1
++        "-100000000000000000000", // Negative integer also representable as f64.
++        "-170141183460469231731687303715884105728", // i128::MIN
++        "-170141183460469231731687303715884105729", // i128::MIN - 1
 +    ] {
 +        let number: serde_json::Number = text.parse().unwrap();
 +        let expected = Value::Number(number.clone());
@@ -183,6 +224,18 @@
 +            expected
 +        );
 +        assert_eq!(Value::deserialize(&expected).unwrap(), expected);
++        assert_eq!(
++            serde_json::from_str::<Untagged>(text).unwrap(),
++            Untagged::Number(number.clone())
++        );
++        assert_eq!(
++            serde_json::from_value::<Untagged>(expected.clone()).unwrap(),
++            Untagged::Number(number.clone())
++        );
++        assert_eq!(
++            Untagged::deserialize(&expected).unwrap(),
++            Untagged::Number(number)
++        );
 +        let tagged = Tagged::Put { body: expected };
 +        let encoded = serde_json::to_vec(&tagged).unwrap();
 +        assert_eq!(serde_json::from_slice::<Tagged>(&encoded).unwrap(), tagged);
@@ -192,6 +245,62 @@
 +            tagged
 +        );
 +        assert_eq!(Tagged::deserialize(&value).unwrap(), tagged);
++        let untagged = Untagged::Tagged(tagged);
++        assert_eq!(
++            serde_json::from_slice::<Untagged>(&encoded).unwrap(),
++            untagged
++        );
++        assert_eq!(
++            serde_json::from_value::<Untagged>(value.clone()).unwrap(),
++            untagged
++        );
++        assert_eq!(Untagged::deserialize(&value).unwrap(), untagged);
++    }
++}
++
++#[cfg(feature = "arbitrary_precision")]
++#[test]
++fn explicit_128_bit_integer_requests_remain_exact_and_reject_overflow() {
++    for expected in [0u128, u64::MAX as u128, u64::MAX as u128 + 1, u128::MAX] {
++        let text = expected.to_string();
++        let value = Value::Number(text.parse().unwrap());
++        assert_eq!(serde_json::from_str::<u128>(&text).unwrap(), expected);
++        assert_eq!(
++            serde_json::from_value::<u128>(value.clone()).unwrap(),
++            expected
++        );
++        assert_eq!(u128::deserialize(&value).unwrap(), expected);
++    }
++    for expected in [
++        i128::MIN,
++        i64::MIN as i128 - 1,
++        i64::MIN as i128,
++        0,
++        i128::MAX,
++    ] {
++        let text = expected.to_string();
++        let value = Value::Number(text.parse().unwrap());
++        assert_eq!(serde_json::from_str::<i128>(&text).unwrap(), expected);
++        assert_eq!(
++            serde_json::from_value::<i128>(value.clone()).unwrap(),
++            expected
++        );
++        assert_eq!(i128::deserialize(&value).unwrap(), expected);
++    }
++    for text in ["-1", "340282366920938463463374607431768211456"] {
++        let value = Value::Number(text.parse().unwrap());
++        assert!(serde_json::from_str::<u128>(text).is_err());
++        assert!(serde_json::from_value::<u128>(value.clone()).is_err());
++        assert!(u128::deserialize(&value).is_err());
++    }
++    for text in [
++        "-170141183460469231731687303715884105729",
++        "170141183460469231731687303715884105728",
++    ] {
++        let value = Value::Number(text.parse().unwrap());
++        assert!(serde_json::from_str::<i128>(text).is_err());
++        assert!(serde_json::from_value::<i128>(value.clone()).is_err());
++        assert!(i128::deserialize(&value).is_err());
 +    }
 +}
 +

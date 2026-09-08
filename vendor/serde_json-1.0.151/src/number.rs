@@ -554,16 +554,18 @@ macro_rules! deserialize_any {
                 return visitor.visit_u64(u);
             } else if let Some(i) = self.as_i64() {
                 return visitor.visit_i64(i);
-            } else if let Some(u) = self.as_u128() {
-                return visitor.visit_u128(u);
-            } else if let Some(i) = self.as_i128() {
-                return visitor.visit_i128(i);
-            } else if let Some(f) = self.as_f64() {
-                if zmij::Buffer::new().format_finite(f) == self.n || f.to_string() == self.n {
-                    return visitor.visit_f64(f);
+            } else if self.n.contains(['.', 'e', 'E']) {
+                if let Some(f) = self.as_f64() {
+                    if zmij::Buffer::new().format_finite(f) == self.n || f.to_string() == self.n {
+                        return visitor.visit_f64(f);
+                    }
                 }
             }
 
+            // Serde's enum Content buffer has no i128/u128 variants. Keep
+            // larger integers on the same exact map path used by the JSON
+            // parser, including integer lexemes also representable as f64.
+            // Explicit deserialize_i128/u128 requests still parse directly.
             visitor.visit_map(NumberDeserializer {
                 number: Some(self.$($num_string)*),
             })

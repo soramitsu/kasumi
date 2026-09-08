@@ -38,6 +38,8 @@ Serde byte channel; JSON string keys remain strings. This corrects native,
 durable, and MCP `Value` decoding without banning document keys or changing
 JSON output. See [the patch disposition](serde-json-literal-keys.md) for the
 published checksum, reviewed consumers, exact scope, and pending validation.
+The generic number deserializer also retains larger integers on that exact map
+path through Serde enum buffering; explicit typed 128-bit requests stay exact.
 Both upstream MIT and Apache-2.0 licenses remain in the vendored directory.
 
 ## Verification
