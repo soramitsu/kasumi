@@ -7,6 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+anyhow.workspace = true
 kasumi-clock.workspace = true
 uuid.workspace = true
 sha2.workspace = true
@@ -14,6 +15,3 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 imbl = { version = "=7.0.1", features = ["serde"] }
-
-[dev-dependencies]
-anyhow.workspace = true

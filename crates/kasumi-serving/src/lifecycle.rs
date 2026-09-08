@@ -17,49 +17,6 @@ pub enum LifecycleAuthorityRequest {
     AcceptIntent(Box<SignedControlIntent>),
     StopEpoch(Box<SignedControlChange>),
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(
-    tag = "kind",
-    content = "intent_id",
-    rename_all = "snake_case",
-    deny_unknown_fields
-)]
-pub enum LifecycleAuthorityIdentity {
-    Intent(Uuid),
-    EpochStop,
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct LifecycleAuthorityReference {
-    pub control_incarnation: Uuid,
-    pub control_policy_epoch: u64,
-    pub identity: LifecycleAuthorityIdentity,
-}
-impl LifecycleAuthorityReference {
-    pub fn validate(&self) -> Result<()> {
-        ensure!(
-            !self.control_incarnation.is_nil(),
-            "nil issuer control reference"
-        );
-        if let LifecycleAuthorityIdentity::Intent(id) = self.identity {
-            ensure!(!id.is_nil(), "nil control intent reference");
-        }
-        Ok(())
-    }
-    pub fn key(&self) -> Result<String> {
-        self.validate()?;
-        Ok(match self.identity {
-            LifecycleAuthorityIdentity::Intent(id) => format!(
-                "lc/i/{}/{}/{id}",
-                self.control_incarnation, self.control_policy_epoch
-            ),
-            LifecycleAuthorityIdentity::EpochStop => format!(
-                "lc/e/{}/{}",
-                self.control_incarnation, self.control_policy_epoch
-            ),
-        })
-    }
-}
 impl LifecycleAuthorityRequest {
     pub fn reference(&self) -> LifecycleAuthorityReference {
         match self {
@@ -217,21 +174,6 @@ impl AuthorityManifest {
             }
         }
         Ok(())
-    }
-}
-impl LifecycleAuthorityReference {
-    pub fn epoch_stop(&self) -> Self {
-        Self {
-            identity: LifecycleAuthorityIdentity::EpochStop,
-            ..self.clone()
-        }
-    }
-    pub fn epoch_key(&self) -> Result<String> {
-        self.validate()?;
-        Ok(format!(
-            "lc/a/{}/{}",
-            self.control_incarnation, self.control_policy_epoch
-        ))
     }
 }
 impl LifecycleAuthorityReceipt {
