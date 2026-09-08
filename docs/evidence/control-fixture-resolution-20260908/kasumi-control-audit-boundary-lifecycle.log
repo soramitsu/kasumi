@@ -1,0 +1,27 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.60s
+     Running tests/lifecycle.rs (/tmp/kasumi-production-standalone-target/debug/deps/lifecycle-11aab87d84f8fd79)
+
+running 7 tests
+test control_rejects_unfinishable_byte_budget_and_substituted_authenticated_history ... ok
+test control_completion_audit_reservation_survives_denials_and_current_admin_status_recovery ... ok
+test fresh_control_materialization_requires_exact_retained_original_after_expiry_and_reopen ... ok
+test recovery_control::recovery_expired_target_requires_fresh_control_admission_and_fences_revoked_observations ... ok
+test replicated_control_change_pins_all_partitions_freezes_issuance_and_recovers_self_revocation ... ok
+test recovery_control::recovery_journal_persists_before_dispatch_rejects_substitution_and_recovers_ambiguous_control_commit ... FAILED
+test replicated_control_intent_is_exact_original_expiry_bound_current_quorum_and_permanent_after_reopen ... ok
+
+failures:
+
+---- recovery_control::recovery_journal_persists_before_dispatch_rejects_substitution_and_recovers_ambiguous_control_commit stdout ----
+
+thread 'recovery_control::recovery_journal_persists_before_dispatch_rejects_substitution_and_recovers_ambiguous_control_commit' (20660939) panicked at crates/kasumi-engine/tests/common/recovery_control.rs:584:6:
+called `Result::unwrap()` on an `Err` value: Error { code: UnknownOutcome, message: "recovery effect may be committed; resolve its exact permanent operation and phase" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    recovery_control::recovery_journal_persists_before_dispatch_rejects_substitution_and_recovers_ambiguous_control_commit
+
+test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 33.94s
+
+error: test failed, to rerun pass `-p kasumi-engine --test lifecycle`

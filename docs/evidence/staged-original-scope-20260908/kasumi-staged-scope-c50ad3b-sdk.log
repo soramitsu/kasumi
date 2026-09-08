@@ -1,0 +1,10 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.42s
+     Running unittests src/lib.rs (/tmp/kasumi-production-streaming-target/debug/deps/kasumi_client-816752ab2dc63cbf)
+
+running 3 tests
+test authority_pool::tests::authorization_and_proof_errors_are_not_failover_signals ... ok
+test security_audit::tests::rejects_historical_restart_holes_empty_progress_and_oversize ... ok
+test staged_status::tests::rejects_foreign_status_scope_and_missing_original_identity ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

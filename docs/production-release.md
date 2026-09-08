@@ -418,7 +418,7 @@ a read-only quota getter or caller capacity claim cannot close this dependency.
 - The frozen functional runner now includes a separate workspace documentation
   test gate. On `8e90ff2` macOS, eleven documentation tests pass; evidence is in
   `docs/evidence/workspace-doctests-20260908`. Native Linux ARM64 full functional
-  validation of that exact source is in progress and is not a recorded pass.
+  validation of that exact source finished failed, as recorded below.
 
 - `f401a09` publishes restore state in an owned blocking worker that retains the
   original finite invocation, bootstrap lock, source/target stores and workspace
@@ -438,3 +438,34 @@ a read-only quota getter or caller capacity claim cannot close this dependency.
   These are development checks. Actual end-to-end candidate production assembly,
   OS/OCI SBOMs, OCI images, reproducible compiler builds and release acceptance
   remain open. Procedures are in `docs/release-artifacts.md`.
+
+- Frozen Linux ARM64 `8e90ff2` finished with499workspace passes, three failures
+  and two ignored tests. All other gates passed, including doctests, strict
+  Clippy and production builds (1110.499seconds). Raw source/binary-bound evidence
+  is in `docs/evidence/frozen-linux-arm64-functional-8e90ff2-20260908`. This failed
+  historical attempt cannot be promoted by later fixture fixes.
+- `cabebf8` completes current target-voter materialization, initialization and
+  signed completion orchestration. Evidence is in
+  `docs/evidence/control-recovery-quorum-20260908`; source fencing, activation and
+  publication remain later work. Exact audit/recovery fixture corrections and
+  their unavailable historical binary hashes are recorded separately in
+  `docs/evidence/control-fixture-resolution-20260908`.
+- `c50ad3b` binds every staged operation to the immutable original resource and
+  principal. Native two-principal/renewal, restored lineage, SDK, ordered stop,
+  replication and encrypted backup gates pass. Evidence and failed earlier
+  attempts: `docs/evidence/staged-original-scope-20260908`. The additional exact
+  append fixture and its unresolved earlier status failure are preserved in
+  `docs/evidence/history-exact-append-20260908`.
+- `49c9338` requires exact partition credential-file coverage and preserves one
+  credential snapshot across each original endpoint attempt. Configuration and
+  actual native/authority TLS gates pass. Evidence:
+  `docs/evidence/partition-credentials-20260908`. The separate restart Fence
+  fixture resolution is in `docs/evidence/restart-fence-resolution-20260908`.
+- `42c018e` adds an owned current Control quorum observation, permanently closed
+  on failed/canceled checks or release. Three encrypted quorum tests and scoped
+  strict/production checks pass. Evidence:
+  `docs/evidence/current-control-fence-20260908`. Fresh physical registry binding,
+  remote acknowledgments and full rotation retirement remain required.
+- Packaging source531d86e test/provenance checks and earlier failures are retained
+  in `docs/evidence/release-packaging-20260908`. No final candidate package has
+  yet passed end-to-end assembly and deployment.

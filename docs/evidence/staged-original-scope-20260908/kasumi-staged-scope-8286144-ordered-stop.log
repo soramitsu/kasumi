@@ -1,0 +1,13 @@
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 24.89s
+     Running unittests src/lib.rs (/tmp/kasumi-production-streaming-target/debug/deps/kasumi_engine-4b4e80d3850c1c4e)
+
+running 5 tests
+test service::tests::queued_stop_checks_authority_after_an_earlier_ordered_write ... ok
+test service::tests::guarded_stop_queued_deadline_and_cancellation_leave_only_actual_durable_outcomes ... ok
+test service::tests::retained_stop_response_fence_expires_without_changing_permanent_outcome ... ok
+test service::tests::queued_stop_credential_expiry_never_accepts_missing_identity ... ok
+test service::tests::accepted_stop_release_failure_is_unknown_and_reopen_recovers_exact_tombstone ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 62 filtered out; finished in 2.55s
+

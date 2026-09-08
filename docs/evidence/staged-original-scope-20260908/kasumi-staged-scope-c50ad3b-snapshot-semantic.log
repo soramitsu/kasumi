@@ -1,0 +1,11 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.30s
+     Running unittests src/lib.rs (/tmp/kasumi-production-streaming-target/debug/deps/kasumi_engine-4b4e80d3850c1c4e)
+
+running 4 tests
+test state::snapshot_validation::tests::indexing_never_returns_a_proof_after_cancellation_or_corrupt_footer ... ok
+test state::snapshot_validation::tests::indexed_validation_matches_full_restore_and_canonical_closure ... ok
+test state::snapshot_validation::tests::indexed_verification_keeps_all_staging_on_the_image_owner_until_drain ... ok
+test state::snapshot_validation::tests::authenticated_semantic_substitutions_fail_both_validation_paths ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 63 filtered out; finished in 10.69s
+

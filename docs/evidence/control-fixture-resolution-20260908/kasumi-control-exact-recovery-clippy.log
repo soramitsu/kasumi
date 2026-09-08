@@ -1,0 +1,12 @@
+    Checking kasumi-engine v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-engine)
+error: this expression creates a reference which is immediately dereferenced by the compiler
+    --> crates/kasumi-engine/tests/common/recovery_control.rs:1090:9
+     |
+1090 |         &f,
+     |         ^^ help: change this to: `f`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_borrow
+     = note: `-D clippy::needless-borrow` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::needless_borrow)]`
+
+error: could not compile `kasumi-engine` (test "lifecycle") due to 1 previous error

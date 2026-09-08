@@ -1,0 +1,3 @@
+    Checking kasumi-raft v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-raft)
+    Checking kasumi-engine v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-engine)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 24.34s

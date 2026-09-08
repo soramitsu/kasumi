@@ -1,0 +1,69 @@
+{
+  "source": "8fca3e66aae6edb74434fdd9138a0797533337c8",
+  "tree": "3a282745cd128dc9b5541bd54d5bff827a440556",
+  "lockfile_sha256": "9f29f1383152d5ddf05b5b07955ca8b2766e1e06e2cd03ce77040d14f9371559",
+  "target": "/tmp/kasumi-production-streaming-target",
+  "gates": [
+    {
+      "name": "history-backup",
+      "command": [
+        "cargo",
+        "+1.97.1",
+        "test",
+        "-p",
+        "kasumi-engine",
+        "--all-features",
+        "--test",
+        "history",
+        "chunked_full_backup_restores_cold_history",
+        "-j2"
+      ],
+      "exit": 0,
+      "seconds": 142.468,
+      "log": "/tmp/kasumi-staged-scope-8fca3e6-history-backup.log",
+      "log_sha256": "f692343ebe0ecedfba8c850a0c3d26143ab59e81903824a77c35ad5ae045c6db",
+      "executables": {
+        "/tmp/kasumi-production-streaming-target/debug/deps/history-a85e510e86b0d181": "0020023d591d069c4948536107303167e4bbc299775d6f3e20ff5bb4e048ed14"
+      },
+      "selected_no_tests": false
+    },
+    {
+      "name": "clippy",
+      "command": [
+        "cargo",
+        "+1.97.1",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "-j2",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit": 0,
+      "seconds": 4.659,
+      "log": "/tmp/kasumi-staged-scope-8fca3e6-clippy.log",
+      "log_sha256": "efca6c06d7cdd53707c689a000425a2423eef32918e6c3a65238ea1b1920cef3",
+      "executables": {},
+      "selected_no_tests": false
+    },
+    {
+      "name": "format",
+      "command": [
+        "cargo",
+        "+1.97.1",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit": 0,
+      "seconds": 1.331,
+      "log": "/tmp/kasumi-staged-scope-8fca3e6-format.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "executables": {},
+      "selected_no_tests": false
+    }
+  ]
+}

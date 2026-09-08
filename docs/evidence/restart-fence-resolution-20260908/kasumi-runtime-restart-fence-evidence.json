@@ -1,0 +1,53 @@
+{
+  "source": "c1b930837f4a551e8d88984ecd172eac146f84f1",
+  "base": "49c9338448063805989b3fcae8388aa00e8e4388",
+  "worktree_clean": true,
+  "host": "macOS-26.6.2-arm64-arm-64bit",
+  "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-apple-darwin\nrelease: 1.97.1\nLLVM version: 22.1.6",
+  "lockfile": {
+    "path": "/tmp/kasumi-production-runtime/Cargo.lock",
+    "size": 119474,
+    "sha256": "9f29f1383152d5ddf05b5b07955ca8b2766e1e06e2cd03ce77040d14f9371559"
+  },
+  "checks": {
+    "restart_regression": {
+      "result": "passed",
+      "log": {
+        "path": "/tmp/kasumi-runtime-restart-fence-test.log",
+        "size": 1182,
+        "sha256": "9dd6b4e5390aec741d54020244ecae720997724f3debd419d087ed80d55b12e1"
+      }
+    },
+    "strict_authority_clippy": {
+      "result": "passed",
+      "log": {
+        "path": "/tmp/kasumi-runtime-restart-fence-clippy.log",
+        "size": 743,
+        "sha256": "1c9a21b987a808dc5b8d1423e1b559fe2cb2bc72aab2a63ef812cde3cd0e1065"
+      }
+    },
+    "format_and_diff": {
+      "result": "passed",
+      "log": {
+        "path": "/tmp/kasumi-runtime-restart-fence-format.log",
+        "size": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    }
+  },
+  "original_failure": {
+    "source": "8e90ff2",
+    "host": "Linux ARM64 frozen acceptance VM",
+    "log": "/opt/kasumi-acceptance/8e90ff2-functional-arm64/run/workspace.log",
+    "failure": "authority tests.rs:974 second Fence after encrypted restart returned UnknownOutcome; original full run remains failed; root retains original log and executable"
+  },
+  "disposition": "Fixture-only: resolve the second Fence using the original command identity, body, RequestContext and finite authorization until a current response fence releases. No production code, timeout, command deadline or clock changed.",
+  "limitations": [
+    "One focused macOS ARM64 regression and scoped strict lint are not a replacement for the failed frozen Linux full workspace gate."
+  ],
+  "executable": {
+    "path": "/tmp/kasumi-production-runtime-target/debug/deps/kasumi_authority-481ba410417b8d16",
+    "size": 175011536,
+    "sha256": "c7a91859f62261f6086c643549162483dd4652a9f8d78dcf136f4df45e0537f2"
+  }
+}
