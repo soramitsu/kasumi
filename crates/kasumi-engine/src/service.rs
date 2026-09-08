@@ -2072,8 +2072,12 @@ mod tests {
         )
         .await
         .unwrap();
-        let audit = SecurityAudit::open(audit_store, kasumi_types::AuditRetentionBudget::default())
-            .unwrap();
+        let audit = SecurityAudit::open(
+            audit_store,
+            kasumi_types::AuditRetentionBudget::default(),
+            crate::admission::NodeAdmission::new(Default::default()).unwrap(),
+        )
+        .unwrap();
         let context = RequestContext {
             authorization: kasumi_types::RequestAuthorization::service_identity(),
             tenant: "deadline".into(),

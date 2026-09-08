@@ -47,6 +47,7 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
     let audit = kasumi_engine::SecurityAudit::open(
         audit_store.clone(),
         kasumi_types::AuditRetentionBudget::default(),
+        kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
     )
     .unwrap();
     auth.install_audit(audit.clone()).unwrap();

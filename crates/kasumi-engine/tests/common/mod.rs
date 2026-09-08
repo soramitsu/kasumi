@@ -12,7 +12,12 @@ pub async fn security_audit(node: Arc<NodeStore>) -> Arc<SecurityAudit> {
     )
     .await
     .unwrap();
-    SecurityAudit::open(store, kasumi_types::AuditRetentionBudget::default()).unwrap()
+    SecurityAudit::open(
+        store,
+        kasumi_types::AuditRetentionBudget::default(),
+        kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+    )
+    .unwrap()
 }
 
 #[allow(dead_code)]

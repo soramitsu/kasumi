@@ -131,15 +131,14 @@ impl AuditWork {
 impl SecurityAudit {
     /// The default archive is beneath the durable data directory. Embedded
     /// backends without a directory must install an explicit durable destination.
-    pub fn open(store: Arc<TenantStore>, budget: AuditRetentionBudget) -> Result<Arc<Self>> {
+    pub fn open(
+        store: Arc<TenantStore>,
+        budget: AuditRetentionBudget,
+        admission: Arc<crate::admission::NodeAdmission>,
+    ) -> Result<Arc<Self>> {
         let root = store.durable_directory()?.join("audit-archives");
         let destination = Arc::new(kasumi_store::FilesystemAuditArchive::open(root)?);
-        Self::open_with_archive(
-            store,
-            budget,
-            destination,
-            crate::admission::NodeAdmission::process_default(),
-        )
+        Self::open_with_archive(store, budget, destination, admission)
     }
 
     pub fn open_with_archive(
@@ -416,9 +415,12 @@ mod tests {
                 TenantStore::open_fixture(node.clone(), SECURITY_TENANT.into(), provider.clone())
                     .await
                     .unwrap();
-            let audit =
-                SecurityAudit::open(store.clone(), kasumi_types::AuditRetentionBudget::default())
-                    .unwrap();
+            let audit = SecurityAudit::open(
+                store.clone(),
+                kasumi_types::AuditRetentionBudget::default(),
+                crate::admission::NodeAdmission::new(Default::default()).unwrap(),
+            )
+            .unwrap();
             let (entered, started) = tokio::sync::oneshot::channel();
             let (release, paused) = std::sync::mpsc::sync_channel(1);
             let blocker = tokio::task::spawn_blocking(move || {
@@ -439,9 +441,12 @@ mod tests {
             // Reopening must find that clone's live inner writer and drain it.
             let writer = Arc::downgrade(&audit.writer);
             drop(audit);
-            let audit =
-                SecurityAudit::open(store.clone(), kasumi_types::AuditRetentionBudget::default())
-                    .unwrap();
+            let audit = SecurityAudit::open(
+                store.clone(),
+                kasumi_types::AuditRetentionBudget::default(),
+                crate::admission::NodeAdmission::new(Default::default()).unwrap(),
+            )
+            .unwrap();
             assert!(Arc::ptr_eq(&writer.upgrade().unwrap(), &audit.writer));
 
             let mut shutdown = Box::pin(audit.shutdown());
@@ -503,12 +508,18 @@ mod tests {
             TenantStore::open_fixture(node.clone(), SECURITY_TENANT.into(), provider.clone())
                 .await
                 .unwrap();
-        let first =
-            SecurityAudit::open(store.clone(), kasumi_types::AuditRetentionBudget::default())
-                .unwrap();
-        let second =
-            SecurityAudit::open(store.clone(), kasumi_types::AuditRetentionBudget::default())
-                .unwrap();
+        let first = SecurityAudit::open(
+            store.clone(),
+            kasumi_types::AuditRetentionBudget::default(),
+            crate::admission::NodeAdmission::new(Default::default()).unwrap(),
+        )
+        .unwrap();
+        let second = SecurityAudit::open(
+            store.clone(),
+            kasumi_types::AuditRetentionBudget::default(),
+            crate::admission::NodeAdmission::new(Default::default()).unwrap(),
+        )
+        .unwrap();
         assert!(Arc::ptr_eq(&first.writer, &second.writer));
         assert!(
             SecurityAudit::open(
@@ -516,7 +527,8 @@ mod tests {
                 kasumi_types::AuditRetentionBudget {
                     hot_bytes: 65 << 20,
                     ..Default::default()
-                }
+                },
+                crate::admission::NodeAdmission::new(Default::default()).unwrap()
             )
             .is_err()
         );
@@ -530,9 +542,12 @@ mod tests {
         let retained = (*first).clone();
         drop(first);
         drop(second);
-        let third =
-            SecurityAudit::open(store.clone(), kasumi_types::AuditRetentionBudget::default())
-                .unwrap();
+        let third = SecurityAudit::open(
+            store.clone(),
+            kasumi_types::AuditRetentionBudget::default(),
+            crate::admission::NodeAdmission::new(Default::default()).unwrap(),
+        )
+        .unwrap();
         assert!(Arc::ptr_eq(&retained.writer, &third.writer));
         let mut other = event();
         other.request_id = "third-denial".into();

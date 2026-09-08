@@ -101,3 +101,20 @@ gate above and usable installation artifacts.
   run after those failures. Raw logs and executable/source hashes are preserved
   in `docs/evidence/integration-b3fd5bd-20260908`. The failures remain open until
   the corrected integrated source passes them.
+
+- `f598722` and `3e64543` add service-audit archive-before-prune maintenance,
+  durable uncertain-publication recovery, snapshot-bound export cursors and
+  drained maintenance accounting. Tenant replicated archival remains unfinished.
+- `daef351` integrates authenticated backup-session storage and scoped cleanup;
+  engine session orchestration is still being integrated. Its frozen parallel
+  library run passed 58 store tests (one live-provider test ignored), but failed
+  2 authority, 12 engine and 13 server tests. Raw output and executable hashes are
+  retained in `docs/evidence/integration-daef351-20260908`. The run exposed audit
+  reservations incorrectly shared across independent fixture nodes.
+- `9878677` keeps historical audit verification bound to its exact authenticated
+  source purpose and freshly authorized wrapping key. Seven archive tests and
+  strict store lint passed; the original live-store access rules remain enforced.
+- `8a62c55` is now integrated with the stopped standalone recovery coordinator.
+  Its branch tests exercised real TLS backups, phase restart, target activation,
+  permanent stops, substituted-file refusal and active-generation maintenance.
+  Final combined-source and source-unavailable HA recovery acceptance remain open.
