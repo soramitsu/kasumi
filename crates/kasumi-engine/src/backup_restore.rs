@@ -34,6 +34,12 @@ pub(super) struct PreparedState {
     _materialization: Arc<crate::admission::Reservation>,
 }
 
+impl PreparedState {
+    pub(super) fn publication_workspace(&self) -> Arc<crate::admission::Reservation> {
+        self._materialization.clone()
+    }
+}
+
 impl VerifiedBackup {
     pub(super) async fn into_genesis(
         self,

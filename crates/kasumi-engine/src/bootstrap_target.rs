@@ -250,6 +250,7 @@ async fn materialize_origin(
     operation.check()?;
     let stores = targets.clone();
     let binding = serde_json::to_vec(&("replicated", &bootstrap))?;
+    let publication_workspace = restored.publication_workspace();
     let bytes = restored.bytes;
     let expected = restored.sha256.clone();
     let authorization = TargetPublication {
@@ -258,25 +259,25 @@ async fn materialize_origin(
         deadline: operation.deadline,
     };
     operation
-        .run(
-            operation
-                .deadline
-                .blocking(_workspace, Some(operation.work.clone()), move || {
-                    authorization.check()?;
-                    bind_deployment(&stores, &binding)?;
-                    authorization.check()?;
-                    if stores
-                        .application()
-                        .get_bounded(NS, b"manifest", 64 << 10)?
-                        .is_some()
-                    {
-                        verify_persisted_digest(&stores, &expected)?;
-                    } else {
-                        persist_target(&stores, &bytes, &authorization)?;
-                    }
-                    authorization.check()
-                }),
-        )
+        .run(operation.deadline.blocking(
+            publication_workspace,
+            Some(operation.work.clone()),
+            move || {
+                authorization.check()?;
+                bind_deployment(&stores, &binding)?;
+                authorization.check()?;
+                if stores
+                    .application()
+                    .get_bounded(NS, b"manifest", 64 << 10)?
+                    .is_some()
+                {
+                    verify_persisted_digest(&stores, &expected)?;
+                } else {
+                    persist_target(&stores, &bytes, &authorization)?;
+                }
+                authorization.check()
+            },
+        ))
         .await?;
     let proof = VerifiedTargetMaterialization {
         stores: targets.clone(),
