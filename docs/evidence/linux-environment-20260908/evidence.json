@@ -1,0 +1,30 @@
+{
+  "kind": "build environment preparation; no release acceptance claim",
+  "arm64_validation_image": "sha256:217fb658c8d1733e976fe179e7c8e0bfad2d364d40dc6d6bef6171afaa015fb8",
+  "x86_64_rust_image": "sha256:408fe88047cef61a2087653b0c5255fa51c0f2d6d94ddedd7a2562a9b91a46f6",
+  "diagnostics": {
+    "qemu_user_10.0.11": "pinned Rust compiler segmentation fault",
+    "rosetta": "pinned x86_64 Rust 1.97.1 version probe passes",
+    "plain_mode": "disables Rosetta; changed own VM to explicit no mounts and all-interface all-protocol port-forward ignore",
+    "arm64_build": "f8e9618 production compilation launched; not yet accepted"
+  },
+  "development_source_archive_sha256": "e75a3349f0d042e9cb87ead7122d8d83152b8f0ca4d539dbbe7e94eb40067bc9",
+  "logs": [
+    {
+      "file": "logs/kasumi-production-linux-x86-emulation-provision.log",
+      "sha256": "5d41297c095fda5fcf82b70abb422206e1d7ad3facfa83a9b4f86a06beb79829"
+    },
+    {
+      "file": "logs/kasumi-production-linux-x86-rust-probe.log",
+      "sha256": "7bab33f726498af8c4b4d53c800c8c9c2d671e046e6d7d827d25f43d2ef07510"
+    },
+    {
+      "file": "logs/kasumi-production-rosetta-configuration.log",
+      "sha256": "4b8f813292a77fd4fcc084b7f1f76877153fa5d413d55db17f66bd9864f04e9d"
+    },
+    {
+      "file": "logs/kasumi-production-linux-x86-rosetta-rust-probe.log",
+      "sha256": "b2bdf493bcf6d1dc55181a0efc2774b6d9cf7bf5c8dcc5bed592c994b2ad38c4"
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+Unable to find image 'rust:1.97.1-bookworm@sha256:408fe88047cef61a2087653b0c5255fa51c0f2d6d94ddedd7a2562a9b91a46f6' locally
+docker.io/library/rust@sha256:408fe88047cef61a2087653b0c5255fa51c0f2d6d94ddedd7a2562a9b91a46f6: Pulling from library/rust
+3af9207d3799: Pulling fs layer
+6b02178232c4: Pulling fs layer
+c5a4625b5331: Pulling fs layer
+d32ed818f20f: Pulling fs layer
+a6c1a23a6280: Pulling fs layer
+d32ed818f20f: Waiting
+a6c1a23a6280: Waiting
+6b02178232c4: Verifying Checksum
+6b02178232c4: Download complete
+3af9207d3799: Verifying Checksum
+3af9207d3799: Download complete
+c5a4625b5331: Verifying Checksum
+c5a4625b5331: Download complete
+d32ed818f20f: Verifying Checksum
+d32ed818f20f: Download complete
+3af9207d3799: Pull complete
+6b02178232c4: Pull complete
+a6c1a23a6280: Verifying Checksum
+a6c1a23a6280: Download complete
+c5a4625b5331: Pull complete
+d32ed818f20f: Pull complete
+a6c1a23a6280: Pull complete
+Digest: sha256:408fe88047cef61a2087653b0c5255fa51c0f2d6d94ddedd7a2562a9b91a46f6
+Status: Downloaded newer image for rust@sha256:408fe88047cef61a2087653b0c5255fa51c0f2d6d94ddedd7a2562a9b91a46f6
+qemu: uncaught target signal 11 (Segmentation fault) - core dumped

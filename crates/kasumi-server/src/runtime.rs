@@ -162,47 +162,29 @@ pub struct SecurityAuditConfig {
     pub keys: KeyProviderSettings,
     pub retention: kasumi_types::AuditRetentionBudget,
     #[serde(default)]
-    pub archive: Option<crate::administration::DestinationConfig>,
+    pub archive: Option<crate::audit_destination::AuditDestinationConfig>,
 }
 
 impl SecurityAuditConfig {
+    pub(crate) fn validate(&self) -> Result<()> {
+        self.retention.validate()?;
+        if let Some(archive) = &self.archive {
+            archive.validate()?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn open(
         &self,
         store: Arc<kasumi_store::TenantStore>,
         admission: Arc<kasumi_engine::admission::NodeAdmission>,
     ) -> Result<Arc<SecurityAudit>> {
-        use crate::administration::DestinationConfig;
-        let archive: Arc<dyn kasumi_store::AuditArchiveDestination> = match &self.archive {
+        self.validate()?;
+        let archive = match &self.archive {
             None => Arc::new(kasumi_store::FilesystemAuditArchive::open(
                 store.durable_directory()?.join("audit-archives"),
-            )?),
-            Some(DestinationConfig::Filesystem { directory, .. }) => {
-                Arc::new(kasumi_store::FilesystemAuditArchive::open(directory)?)
-            }
-            Some(DestinationConfig::S3 {
-                endpoint,
-                region,
-                bucket,
-                prefix,
-                credentials_file,
-                ca_certificate,
-                ..
-            }) => Arc::new(kasumi_store::S3AuditArchive::new(Arc::new(
-                kasumi_store::S3BackupDestination::new(kasumi_store::S3BackupConfig {
-                    endpoint: endpoint.clone(),
-                    region: region.clone(),
-                    bucket: bucket.clone(),
-                    prefix: prefix.clone(),
-                    credential: Arc::new(kasumi_transport::credentials::FileCredentialSource::new(
-                        credentials_file,
-                    )?),
-                    ca_pem: ca_certificate
-                        .as_ref()
-                        .map(|path| read_bounded(path, 1 << 20))
-                        .transpose()?,
-                    max_bytes: kasumi_types::MAX_AUDIT_SEGMENT_BYTES,
-                })?,
-            ))),
+            )?) as Arc<dyn kasumi_store::AuditArchiveDestination>,
+            Some(config) => config.open()?,
         };
         SecurityAudit::open_with_archive(store, self.retention.clone(), archive, admission)
     }
@@ -314,10 +296,7 @@ impl RuntimeConfig {
                 && self.tenants.len() <= 10_000,
             "configure 1–10000 tenants"
         );
-        self.security_audit.retention.validate()?;
-        if let Some(archive) = &self.security_audit.archive {
-            archive.validate()?;
-        }
+        self.security_audit.validate()?;
         let mut key_refs = BTreeSet::new();
         for transit in std::iter::once(&self.security_audit.keys)
             .chain([&self.control.keys, &self.control.custody_keys])
