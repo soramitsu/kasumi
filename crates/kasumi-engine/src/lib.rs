@@ -50,8 +50,10 @@ pub use security_audit::{
 pub use service::{
     CustodyResponseFence, Database, ResponseFence, RetiredCustody, RetirementResponseFence,
 };
-pub use state::{Generation, TenantEngine};
+pub use state::{Generation, PreparedSnapshotRestore, TenantEngine};
 mod change_feed_state;
+#[cfg(any(test, feature = "test-utils"))]
+pub mod test_utils;
 
 /// Adapters retain one of these fences through final response encoding.
 pub trait EncodedResponseFence {

@@ -1,4 +1,5 @@
 //! Guarded stop behavior against actual encrypted Kasumi execution and restart.
+use kasumi_engine::test_utils::SnapshotFixture;
 mod common;
 use kasumi_engine::{Database, SecurityAudit};
 use kasumi_store::{NodeStore, TenantStorageSet, test_utils::LocalKeyProvider};
@@ -556,7 +557,7 @@ async fn retained_snapshot_quota_rejects_missing_stop_without_leaving_partial_id
     assert!(generation.state.active_staged_transactions.is_empty());
     assert_eq!(
         db.engine().snapshot_bytes().unwrap() as u64,
-        db.engine().snapshot().unwrap().len()
+        db.engine().fixture_snapshot().unwrap().len()
     );
     drop(generation);
     close(db, audit).await;

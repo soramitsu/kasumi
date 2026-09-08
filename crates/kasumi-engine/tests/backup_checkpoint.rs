@@ -1,3 +1,4 @@
+use kasumi_engine::test_utils::SnapshotFixture;
 mod common;
 use kasumi_engine::{Database, SecurityAudit};
 use kasumi_store::{
@@ -149,7 +150,7 @@ async fn checkpoint_binds_actual_generation_complete_graph_keys_and_encrypted_re
         .unwrap();
     fixture.store.rotate_data_key().await.unwrap();
     let second = fixture.write("second").await;
-    let snapshot = fixture.db.engine().snapshot().unwrap();
+    let snapshot = fixture.db.engine().fixture_snapshot().unwrap();
     let state = fixture.db.engine().generation().unwrap();
     let revision = state.state.revision;
     let incarnation = state.state.incarnation.clone();
@@ -1083,4 +1084,85 @@ async fn archived_audit_backup_is_self_contained_and_source_unavailable_restore_
         .unwrap();
     restored.shutdown().await.unwrap();
     target_audit.shutdown().await;
+    drop(restored);
+    drop(target);
+    drop(target_audit);
+    let cache_path = target_directory
+        .path()
+        .join("tenant-audit-archives")
+        .join(format!("{}.audit", head.object.object_id));
+    std::fs::remove_file(&cache_path).unwrap();
+    let node = NodeStore::open(target_directory.path().join("target.redb")).unwrap();
+    let reopened_audit = common::security_audit(node.clone()).await;
+    let reopened_store = TenantStore::open_fixture(
+        node,
+        "checkpoint".into(),
+        Arc::new(LocalKeyProvider::new([0xD8; 32])),
+    )
+    .await
+    .unwrap();
+    let reopened_domains = kasumi_store::test_utils::with_custody(
+        reopened_store.clone(),
+        Arc::new(LocalKeyProvider::new([241; 32])),
+    )
+    .await
+    .unwrap();
+    assert!(
+        kasumi_engine::open_local(
+            reopened_domains.clone(),
+            policy(),
+            Limits::default(),
+            reopened_audit.clone()
+        )
+        .await
+        .is_err(),
+        "missing original bootstrap dependency must prevent serving after restart"
+    );
+    reopened_store
+        .tenant_audit_archive()
+        .unwrap()
+        .cache()
+        .publish_blocking(&kasumi_store::PreparedAuditSegment {
+            reference: head.clone(),
+            ciphertext,
+        })
+        .unwrap();
+    let reopened = kasumi_engine::open_local(
+        reopened_domains,
+        policy(),
+        Limits::default(),
+        reopened_audit.clone(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        reopened
+            .engine()
+            .generation()
+            .unwrap()
+            .state
+            .audit_retention
+            .archive_head,
+        retained.archive_head
+    );
+    let portable = reopened
+        .engine()
+        .snapshot(
+            kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+            60_000,
+        )
+        .await
+        .unwrap();
+    let prepared = reopened
+        .engine()
+        .prepare_snapshot_restore(
+            portable,
+            kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+            60_000,
+        )
+        .await
+        .unwrap();
+    assert_eq!(prepared.incarnation(), target_incarnation.to_string());
+    reopened.shutdown().await.unwrap();
+    reopened_audit.shutdown().await;
 }

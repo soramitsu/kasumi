@@ -103,6 +103,7 @@ struct AuditWriter {
     maintenance: tokio::sync::Mutex<()>,
     wake: Arc<tokio::sync::Notify>,
     workspace: Mutex<Option<crate::admission::Reservation>>,
+    admission: Arc<crate::admission::NodeAdmission>,
     work: Arc<WorkFence>,
 }
 
@@ -184,10 +185,15 @@ impl SecurityAudit {
             wake: Arc::new(tokio::sync::Notify::new()),
             work: Arc::new(WorkFence::default()),
             workspace: Mutex::new(Some(workspace)),
+            admission,
         });
         writers.insert(identity, Arc::downgrade(&writer));
         retention::start_worker(&runtime, Arc::downgrade(&writer));
         Ok(Arc::new(Self { writer }))
+    }
+
+    pub(crate) fn admission(&self) -> &Arc<crate::admission::NodeAdmission> {
+        &self.writer.admission
     }
 
     /// The caller owns the separately keyed store's configuration and lifecycle.

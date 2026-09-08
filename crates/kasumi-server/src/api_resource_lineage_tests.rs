@@ -1,3 +1,4 @@
+use kasumi_engine::test_utils::SnapshotFixture;
 #[tokio::test]
 async fn native_resources_and_two_restore_hops_preserve_immutable_issuer_facts() {
     use kasumi_types::{CollectionWriteMode, Mutation, MutationBatch, Precondition};
@@ -154,9 +155,9 @@ async fn native_resources_and_two_restore_hops_preserve_immutable_issuer_facts()
             .administer(embedded, Operation::Suspend(false))
             .await
             .unwrap();
-        let snapshot = restored.engine().snapshot().unwrap();
+        let snapshot = restored.engine().fixture_snapshot().unwrap();
         let mut substituted: kasumi_types::TenantState =
-            kasumi_engine::TenantEngine::decode_snapshot_state(&snapshot).unwrap();
+            kasumi_engine::test_utils::decode_snapshot_candidate(&snapshot).unwrap();
         substituted.restore_lineage[0].checkpoint.resident_sha256 =
             if substituted.restore_lineage[0].checkpoint.resident_sha256 == "0".repeat(64) {
                 "1".repeat(64)
@@ -177,14 +178,14 @@ async fn native_resources_and_two_restore_hops_preserve_immutable_issuer_facts()
         assert!(
             restored
                 .engine()
-                .restore(
-                    &kasumi_engine::TenantEngine::encode_snapshot_state(&substituted, 64 << 20)
+                .fixture_restore(
+                    &kasumi_engine::test_utils::encode_snapshot_candidate(&substituted, 64 << 20)
                         .unwrap()
                 )
                 .is_err(),
             "shape-valid immutable history substitution must be rejected"
         );
-        assert_eq!(restored.engine().snapshot().unwrap(), snapshot);
+        assert_eq!(restored.engine().fixture_snapshot().unwrap(), snapshot);
         restored.shutdown().await.unwrap();
         drop(restored);
         drop(stores);
@@ -213,7 +214,7 @@ async fn native_resources_and_two_restore_hops_preserve_immutable_issuer_facts()
         )
         .await
         .unwrap();
-        assert_eq!(restored.engine().snapshot().unwrap(), snapshot);
+        assert_eq!(restored.engine().fixture_snapshot().unwrap(), snapshot);
 
         let registry = DatabaseRegistry::default();
         registry.insert(restored.clone()).unwrap();

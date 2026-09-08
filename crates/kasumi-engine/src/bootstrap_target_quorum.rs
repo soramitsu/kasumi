@@ -176,6 +176,7 @@ pub async fn open_target_replica(
         )?);
         let material = stores.clone();
         let authority = owned.invocation().clone();
+        let verification = owned.clone();
         let input_copy = input.quorum().clone();
         let requested_input = input.clone();
         let (engine, bootstrap) = owned
@@ -278,6 +279,7 @@ pub async fn open_target_replica(
                         }
                         drop(generation);
                         engine.install_storage_access(material.application())?;
+                        engine.verify_bootstrap_dependencies_checked(|| verification.check())?;
                         authority.check_target(material.application(), phase)?;
                         Ok((engine, bootstrap))
                     }),

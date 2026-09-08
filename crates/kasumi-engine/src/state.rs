@@ -1,5 +1,7 @@
 #[path = "custody_snapshot.rs"]
 mod custody_snapshot;
+#[path = "snapshot_api.rs"]
+mod snapshot_api;
 #[path = "snapshot_bundle.rs"]
 mod snapshot_bundle;
 use crate::accounting::{SnapshotAccounting, encoded_len};
@@ -7,6 +9,7 @@ use arc_swap::ArcSwapOption;
 use kasumi_query::{QueryIndexes, check_unique, validate_collection, validate_document};
 use kasumi_types::*;
 use sha2::{Digest, Sha256};
+pub use snapshot_api::PreparedSnapshotRestore;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 #[path = "history_state.rs"]
@@ -886,24 +889,6 @@ impl TenantEngine {
         )))
     }
 
-    /// Decode canonical records without publishing state. Callers must still
-    /// validate logical invariants before installing this untrusted candidate.
-    pub fn decode_snapshot_state(bytes: &kasumi_store::SnapshotImage) -> Result<TenantState> {
-        crate::snapshot_codec::read(&mut bytes.reader())
-            .map_err(|e| Error::new(ErrorCode::Corruption, e.to_string()))
-    }
-    /// Encode an unvalidated candidate in encrypted staging. Callers choose the
-    /// aggregate disk workspace bound; logical quotas are checked on restore.
-    pub fn encode_snapshot_state(
-        state: &TenantState,
-        max_bytes: u64,
-    ) -> Result<kasumi_store::SnapshotImage> {
-        kasumi_store::SnapshotImage::capture(max_bytes, |writer| {
-            crate::snapshot_codec::write(state, writer)
-        })
-        .map_err(|e| Error::new(ErrorCode::Corruption, e.to_string()))
-    }
-
     pub(crate) fn write_generation(
         generation: &Generation,
         writer: &mut dyn std::io::Write,
@@ -918,7 +903,7 @@ impl TenantEngine {
             .map_err(|_| Error::new(ErrorCode::Corruption, "snapshot encoding failed"))
     }
 
-    pub fn snapshot(&self) -> Result<kasumi_store::SnapshotImage> {
+    pub(crate) fn logical_snapshot(&self) -> Result<kasumi_store::SnapshotImage> {
         let generation = self.generation()?;
         kasumi_store::SnapshotImage::capture(generation.state.limits.max_snapshot_bytes, |writer| {
             Ok(Self::write_generation(&generation, writer)?)
@@ -931,7 +916,8 @@ impl TenantEngine {
         generation.snapshot_accounting.bytes(&generation.state)
     }
 
-    pub fn restore(&self, bytes: &kasumi_store::SnapshotImage) -> Result<()> {
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) fn restore_candidate(&self, bytes: &kasumi_store::SnapshotImage) -> Result<()> {
         let _guard = self
             .apply_lock
             .lock()
@@ -2133,12 +2119,13 @@ mod restore_budget_tests {
             .unwrap()
             .unwrap();
         let mut source = engine.generation().unwrap().state.clone();
-        source.limits.max_snapshot_bytes = TenantEngine::encode_snapshot_state(&source, 64 << 20)
-            .unwrap()
-            .len() as u64
-            + 20;
-        let bytes = TenantEngine::encode_snapshot_state(&source, 64 << 20).unwrap();
-        engine.restore(&bytes).unwrap(); // Source itself is a valid recoverable snapshot.
+        source.limits.max_snapshot_bytes =
+            crate::test_utils::encode_snapshot_candidate(&source, 64 << 20)
+                .unwrap()
+                .len() as u64
+                + 20;
+        let bytes = crate::test_utils::encode_snapshot_candidate(&source, 64 << 20).unwrap();
+        engine.restore_candidate(&bytes).unwrap(); // Source itself is a valid recoverable snapshot.
         let outcome = TenantEngine::restored_bootstrap(
             &bytes,
             "tenant",
@@ -2155,6 +2142,6 @@ mod restore_budget_tests {
             None,
         );
         assert_eq!(outcome.unwrap_err().code, ErrorCode::QuotaExceeded);
-        assert_eq!(engine.snapshot().unwrap(), bytes);
+        assert_eq!(engine.logical_snapshot().unwrap(), bytes);
     }
 }
