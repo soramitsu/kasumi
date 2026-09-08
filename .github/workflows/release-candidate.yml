@@ -54,21 +54,45 @@ jobs:
           docker image inspect "$image" > "$KASUMI_RUN/build-image.json"
           docker run --rm --network none "$image" dpkg-query -W \
             > "$KASUMI_RUN/build-packages.txt"
-          docker run --rm --init \
+          container=$(docker create --init --name "$KASUMI_RUN_NAME" \
+            --cpus 2 --memory 15g --memory-swap 15g \
             --env PYTHONDONTWRITEBYTECODE=1 \
+            --env KASUMI_TARGET="$KASUMI_TARGET" \
             --env GIT_CONFIG_COUNT=1 --env GIT_CONFIG_KEY_0=safe.directory \
             --env GIT_CONFIG_VALUE_0=/workspace \
             --volume "$GITHUB_WORKSPACE:/workspace:ro" \
             --volume "$KASUMI_RUN:/evidence" "$image" bash -euc '
+              python3 /workspace/scripts/release_host.py \
+                --output /evidence/container-host.json --target "$KASUMI_TARGET"
               python3 /workspace/scripts/release_gate.py --repository /workspace \
                 --output /evidence/run --jobs 2 \
-                --execution-description "Native Linux acceptance host; host.json and build-image.json record the environment"
+                --execution-description "Native Linux acceptance host; two CPUs and 15 GiB container ceiling; host.json, container-host.json, container-created.json and build-image.json record the environment"
               python3 /evidence/run/source/scripts/package_release.py \
                 --evidence /evidence/run --output /evidence/candidate
               python3 /evidence/run/source/scripts/package_release.py \
                 --evidence /evidence/run --output /evidence/repeated-assembly
               cmp /evidence/candidate/SHA256SUMS /evidence/repeated-assembly/SHA256SUMS
-            ' > "$KASUMI_RUN/runner.log" 2>&1
+            ')
+          # Keep actual resource settings, exit state and OOM status even when
+          # a gate fails or this shell is interrupted. Stop only this container.
+          finish_container() {
+            result=$?
+            trap - EXIT INT TERM
+            if ! docker stop --time 30 "$container" > "$KASUMI_RUN/container-stop.log" 2>&1; then
+              if test "$result" = 0; then result=1; fi
+            fi
+            if ! docker inspect "$container" > "$KASUMI_RUN/container-terminal.json"; then
+              if test "$result" = 0; then result=1; fi
+            fi
+            exit "$result"
+          }
+          trap finish_container EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+          docker inspect "$container" > "$KASUMI_RUN/container-created.json"
+          docker start --attach "$container" > "$KASUMI_RUN/runner.log" 2>&1
+          test "$(docker inspect --format '{{.State.Running}}' "$container")" = false
+          test "$(docker inspect --format '{{.State.ExitCode}}' "$container")" = 0
       - name: macOS frozen gates and development candidate
         if: runner.os == 'macOS'
         shell: bash
