@@ -15,7 +15,7 @@ async fn signer_directive_is_ordered_exact_finite_and_preserved_in_encrypted_sna
     assert!(matches!(&accepted.status().command.action,
         AuthorityMaintenanceAction::AuthorizeSignerTrust { command: actual, .. } if **actual == command));
     // This is permission for dispatch, not an observation of a local stop.
-    service.signer.check().unwrap();
+    service.request_signer().unwrap().check().unwrap();
     assert_eq!(service.commit_signer_directive(&context, &verifier, &domain, &command).await.unwrap().status(), accepted.status());
     let mut changed = command.clone();
     changed.not_after_ms -= 1;
@@ -67,4 +67,23 @@ async fn signer_directive_is_ordered_exact_finite_and_preserved_in_encrypted_sna
     assert!(current.commit_signer_directive(&context, &current_verifier, &domain, &expired).await.is_err());
     assert!(current.backend.maintenance_status(expired.operation_id).unwrap().is_none());
     f.close().await;
+}
+
+#[tokio::test]
+async fn signer_replacement_requires_current_authorization_and_exact_live_owner() {
+    let fixture = Fixture::new().await;
+    let authority = fixture.leader().await;
+    let selected = authority.request_signer().unwrap();
+    let authorization = authority.authorize_signer_maintenance(fixture.context("operator")).await.unwrap();
+    let physical = selected.verifier_identity().unwrap();
+    let copied = fixture.signing.for_verifier(physical).unwrap();
+    assert_eq!(selected.certificate(), copied.signer.certificate());
+    assert!(authority.replace_operational_signer(authorization.clone(), copied.signer).await.is_err());
+    assert!(Arc::ptr_eq(&selected, &authority.request_signer().unwrap()));
+    authority.replace_operational_signer(authorization.clone(), selected.clone()).await.unwrap();
+    // A new invocation cannot make an expired administrative fence current.
+    fixture.clock.0.store(1_000_000, Ordering::SeqCst);
+    assert!(authority.replace_operational_signer(authorization, selected.clone()).await.is_err());
+    assert!(Arc::ptr_eq(&selected, &authority.request_signer().unwrap()));
+    fixture.close().await;
 }

@@ -593,7 +593,7 @@ async fn maintenance_resource_acknowledgement_survives_lost_reply_before_admissi
     let result = IndependentAuthority::open_with_clock(
         fixture.stores[0].clone(),
         fixture.installation.clone(),
-        member.signer.clone(),
+        member.request_signer().unwrap(),
         1,
         smaller,
         fixture.router.clone(),
@@ -685,6 +685,6 @@ async fn authority_signer_cannot_substitute_another_physical_verifier_with_the_s
         1, fixture.settings.clone(), fixture.router.clone(), Config::default(), fixture.epoch.clone(),
     ).await;
     assert!(result.err().unwrap().to_string().contains("physical verifier"));
-    fixture.services[0].signer.check().unwrap();
+    fixture.services[0].request_signer().unwrap().check().unwrap();
     fixture.close().await;
 }

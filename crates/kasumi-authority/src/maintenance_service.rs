@@ -115,6 +115,7 @@ impl IndependentAuthority {
             )
         })?;
         let permit = self.permit()?;
+        let signer = self.request_signer()?;
         let term = self.barrier(&context).await?;
         let epoch = self.backend.authorize_admin(&context)?;
         match request {
@@ -125,7 +126,7 @@ impl IndependentAuthority {
                     .map_err(unavailable)?;
                 return Ok((
                     AuthorityMaintenanceResponse::Configuration { configuration },
-                    self.fence(context, Some(epoch), None, term),
+                    self.fence(signer.clone(), context, Some(epoch), None, term),
                 ));
             }
             AuthorityMaintenanceRequest::Status { operation_id } => {
@@ -141,7 +142,7 @@ impl IndependentAuthority {
                     })?;
                 return Ok((
                     AuthorityMaintenanceResponse::Operation { status },
-                    self.fence(context, Some(epoch), None, term),
+                    self.fence(signer.clone(), context, Some(epoch), None, term),
                 ));
             }
             _ => {}
@@ -151,7 +152,7 @@ impl IndependentAuthority {
         // exact phase journal precedes every external membership operation.
         let job = tokio::spawn(async move {
             let _permit = permit;
-            service.maintenance_owned(context, request).await
+            service.maintenance_owned(signer, context, request).await
         });
         tokio::time::timeout(Duration::from_secs(35), job)
             .await
@@ -160,6 +161,7 @@ impl IndependentAuthority {
     }
     async fn maintenance_owned(
         self: Arc<Self>,
+        signer: Arc<AuthoritySigner>,
         context: RequestContext,
         request: AuthorityMaintenanceRequest,
     ) -> Result<(AuthorityMaintenanceResponse, AuthorityResponseFence)> {
@@ -205,7 +207,9 @@ impl IndependentAuthority {
                             MaintenanceTransition::Stop { operation_id: id },
                         )
                         .await?;
-                    return self.release_maintenance(context, stopped, term).await;
+                    return self
+                        .release_maintenance(signer.clone(), context, stopped, term)
+                        .await;
                 }
                 status
             }
@@ -325,7 +329,8 @@ impl IndependentAuthority {
                     .await?;
             }
         }
-        self.release_maintenance(context, status, term).await
+        self.release_maintenance(signer.clone(), context, status, term)
+            .await
     }
     fn validate_installed_maintenance(&self, command: &AuthorityMaintenanceCommand) -> Result<()> {
         match &command.action {
@@ -374,6 +379,7 @@ impl IndependentAuthority {
     }
     async fn release_maintenance(
         self: &Arc<Self>,
+        signer: Arc<AuthoritySigner>,
         context: RequestContext,
         status: AuthorityMaintenanceStatus,
         term: u64,
@@ -384,7 +390,7 @@ impl IndependentAuthority {
             ));
         }
         let epoch = self.backend.authorize_admin(&context)?;
-        let fence = self.fence(context, Some(epoch), None, term);
+        let fence = self.fence(signer.clone(), context, Some(epoch), None, term);
         fence.check()?;
         Ok((AuthorityMaintenanceResponse::Operation { status }, fence))
     }
