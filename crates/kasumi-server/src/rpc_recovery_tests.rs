@@ -103,7 +103,7 @@ pub(super) async fn exercise(f: Fixture<'_>) {
     };
     let mut request = RecoveryStart {
         operation_id: Uuid::new_v4(),
-        tenant: "city".into(),
+        tenant: "recovery-city".into(),
         source_incarnation: Uuid::new_v4(),
         source_authority_epoch: 1,
         target_incarnation: Uuid::new_v4(),
@@ -135,6 +135,7 @@ pub(super) async fn exercise(f: Fixture<'_>) {
         },
         phase_timeout_ms: 20_000,
     };
+    request.checkpoint.tenant = request.tenant.clone();
     request.checkpoint.source_incarnation = request.source_incarnation.to_string();
     request.materialization.target_incarnation = request.target_incarnation;
     let route = RecoveryRoute {
@@ -229,15 +230,15 @@ pub(super) async fn exercise(f: Fixture<'_>) {
                 .collect(),
         },
     };
-    assert!(!matches!(
-        authority
-            .execute(f.issuer_admin, &enrollment)
-            .await
-            .unwrap()
-            .receipt
-            .outcome,
-        AuthorityOutcome::Rejected { .. }
-    ));
+    let enrolled = authority
+        .execute(f.issuer_admin, &enrollment)
+        .await
+        .unwrap();
+    assert!(
+        !matches!(enrolled.receipt.outcome, AuthorityOutcome::Rejected { .. }),
+        "{:?}",
+        enrolled.receipt.outcome
+    );
     let mut client = kasumi_client::KasumiRecoveryClient::connect(&config)
         .await
         .unwrap();
