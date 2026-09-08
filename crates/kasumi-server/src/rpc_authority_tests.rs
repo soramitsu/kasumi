@@ -557,7 +557,7 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
         trusted_ca_pem: ca.as_bytes().to_vec(),
         server_certificate_pins: BTreeSet::from([server_pin]),
     };
-    let mut other = KasumiAuthorityClient::connect(&other_config, trust)
+    let mut other = KasumiAuthorityClient::connect(&other_config, trust.clone())
         .await
         .unwrap();
     assert!(other.discover_lease(&node_token, &discovery).await.is_err());
@@ -913,6 +913,45 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
             .revision,
         3
     );
+
+    // The trusted runtime may replace only the key for this exact durable
+    // owner. Requests already holding source_response retain their old signer.
+    let replacement_context = auth
+        .authenticate(&format!("Bearer {}", token("successor", "kasumi:admin")))
+        .await
+        .unwrap();
+    let replacement_authorization = leader
+        .authorize_signer_maintenance(replacement_context)
+        .await
+        .unwrap();
+    let replacement = Arc::new(AuthoritySigner::new(
+        LiveGenerationSigner::install(
+            GenerationSigner::from_pkcs8(next_certificate.clone(), &next_key.serialize_der())
+                .unwrap(),
+            live_owners[leader.raft_group().raft().metrics().borrow().id as usize - 1].clone(),
+        )
+        .unwrap(),
+    ));
+    leader
+        .replace_operational_signer(replacement_authorization, replacement)
+        .await
+        .unwrap();
+    assert!(
+        source_response.check().is_err(),
+        "replacing a key cannot re-sign an already encoded response"
+    );
+    assert!(source_response.release().await.is_err());
+    assert!(retained.check().is_err());
+    let fresh_boot = ServingBoot::new(trust.clone(), boot.identity().clone()).unwrap();
+    let fresh_attempt = fresh_boot.begin_acquisition().unwrap();
+    let fresh_lease = client
+        .acquire_lease(&node_token, &fresh_attempt)
+        .await
+        .unwrap();
+    ServingGate::new(fresh_lease)
+        .unwrap()
+        .check_serving()
+        .unwrap();
 
     tokio::time::sleep(Duration::from_millis(1100)).await;
     assert!(gate.check_serving().is_err());

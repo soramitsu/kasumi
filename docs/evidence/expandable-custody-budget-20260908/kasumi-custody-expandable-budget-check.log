@@ -1,0 +1,26 @@
+    Checking h2 v0.4.19
+    Checking tower v0.5.3
+    Checking kasumi-types v0.1.0 (/private/tmp/kasumi-production-custody-tables/crates/kasumi-types)
+    Checking hyper v1.11.1
+    Checking hyper-util v0.1.20
+    Checking hyper-timeout v0.5.2
+    Checking axum v0.8.9
+    Checking kasumi-serving v0.1.0 (/private/tmp/kasumi-production-custody-tables/crates/kasumi-serving)
+    Checking tonic v0.14.6
+    Checking kasumi-transport v0.1.0 (/private/tmp/kasumi-production-custody-tables/crates/kasumi-transport)
+    Checking hyper-rustls v0.27.9
+    Checking tower-http v0.6.11
+    Checking reqwest v0.12.28
+    Checking openraft v0.9.25
+    Checking kasumi-store v0.1.0 (/private/tmp/kasumi-production-custody-tables/crates/kasumi-store)
+    Checking kasumi-query v0.1.0 (/private/tmp/kasumi-production-custody-tables/crates/kasumi-query)
+    Checking kasumi-raft v0.1.0 (/private/tmp/kasumi-production-custody-tables/crates/kasumi-raft)
+    Checking tonic-prost v0.14.6
+   Compiling kasumi-client v0.1.0 (/private/tmp/kasumi-production-custody-tables/crates/kasumi-client)
+    Checking rmcp v3.2.0
+    Checking kasumi-engine v0.1.0 (/private/tmp/kasumi-production-custody-tables/crates/kasumi-engine)
+    Checking kasumi-authority v0.1.0 (/private/tmp/kasumi-production-custody-tables/crates/kasumi-authority)
+    Checking kasumi-server v0.1.0 (/private/tmp/kasumi-production-custody-tables/crates/kasumi-server)
+    Checking kasumi-bench v0.1.0 (/private/tmp/kasumi-production-custody-tables/crates/kasumi-bench)
+    Checking kasumi-clock v0.1.0 (/private/tmp/kasumi-production-custody-tables/crates/kasumi-clock)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 31s

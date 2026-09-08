@@ -1,0 +1,126 @@
+{
+  "captured_at_utc": "2026-09-08T08:41:00.977079+00:00",
+  "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-apple-darwin\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+  "worktree": "/tmp/kasumi-production-runtime",
+  "note": "Hashes captured before building the in-progress signer-slot changes. Checkpoints0735672 and d190465 differ only by the lifecycle integration fixture correction. Core tests and all-target compile began during the identity edit; final same library sources are in0735672. Authority/TLS ran after0735672; store/initializer and production checks ran after the fixture-only d190465 change. No final integration or release certification is claimed.",
+  "gates": [
+    {
+      "gate": "authority-tests",
+      "source_commit": "073567224dbfbc51858611f602c313d78d89e33c",
+      "log": "kasumi-runtime-verifier-binding-authority-tests.log",
+      "log_sha256": "c48602b01f5e65607a069d063a287d49528dd8744e05c6091d70507f910f9982",
+      "binaries": [
+        {
+          "path": "/tmp/kasumi-production-runtime-target/debug/deps/kasumi_authority-4dc8c28d94b8f3ab",
+          "sha256": "b8e62764e0f2a0ff25f6817ccb5b083eb91b45c4e02bf3ce121fe9a6aa5848e4",
+          "bytes": 165233936
+        }
+      ],
+      "results": [
+        "test result: ok. 36 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 60.57s"
+      ]
+    },
+    {
+      "gate": "core-tests",
+      "source_commit": "073567224dbfbc51858611f602c313d78d89e33c",
+      "log": "kasumi-runtime-verifier-binding-core-tests.log",
+      "log_sha256": "6787ef84fb6c14f091ad2407a108a16cbd45d357fc3c096b2df4905dca31ee0e",
+      "binaries": [
+        {
+          "path": "/tmp/kasumi-production-runtime-target/debug/deps/kasumi_serving-46f0dfe06d461f71",
+          "sha256": "9b43a992a71d663bf158554ca2076c47bdd7b9a7644ace357366d896aa20e236",
+          "bytes": 3747248
+        },
+        {
+          "path": "/tmp/kasumi-production-runtime-target/debug/deps/kasumi_types-cda936da1998def9",
+          "sha256": "5a6c09615cb2b7ba1840eb6281b878de9528ca0f113f51d3bf021c68d9ddd8da",
+          "bytes": 5676352
+        }
+      ],
+      "results": [
+        "test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s",
+        "test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s"
+      ]
+    },
+    {
+      "gate": "tls-tests",
+      "source_commit": "073567224dbfbc51858611f602c313d78d89e33c",
+      "log": "kasumi-runtime-verifier-binding-tls-tests.log",
+      "log_sha256": "5d3debfcb2364c0fe0e0bfd48a9398e0454692f345bfeebdd599a95acce6ceea",
+      "binaries": [
+        {
+          "path": "/tmp/kasumi-production-runtime-target/debug/deps/kasumi_server-836de15f40a715c9",
+          "sha256": "6493b40510cad61d0ee05e8a6fee448cfa5953e8bd11c78eafeeba46f3a59529",
+          "bytes": 272633392
+        }
+      ],
+      "results": [
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 74 filtered out; finished in 18.34s"
+      ]
+    },
+    {
+      "gate": "store-tests",
+      "source_commit": "d1904655bfe1bb679d5df7cb58106cef117d6c7b",
+      "log": "kasumi-runtime-verifier-binding-store-tests.log",
+      "log_sha256": "d7a689cff8a3f67ca0d2766fb8d3d1557898a2a0d5f72c4c0ec900c1bb0046fe",
+      "binaries": [
+        {
+          "path": "/tmp/kasumi-production-runtime-target/debug/deps/kasumi_store-b1d52c9fe50b99e9",
+          "sha256": "104496d5e2bc2ccf8187c5d14a9297fc021468b3115f76a0849d7cc0e63cd123",
+          "bytes": 41823808
+        }
+      ],
+      "results": [
+        "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 63 filtered out; finished in 0.75s"
+      ]
+    },
+    {
+      "gate": "initializer-tests",
+      "source_commit": "d1904655bfe1bb679d5df7cb58106cef117d6c7b",
+      "log": "kasumi-runtime-verifier-binding-initializer-tests.log",
+      "log_sha256": "1f784982873f9596e1830e490b28d25f1f2ddcf0cf65af7b5ae745da0057b46a",
+      "binaries": [
+        {
+          "path": "/tmp/kasumi-production-runtime-target/debug/deps/kasumi_server-836de15f40a715c9",
+          "sha256": "6493b40510cad61d0ee05e8a6fee448cfa5953e8bd11c78eafeeba46f3a59529",
+          "bytes": 272633392
+        }
+      ],
+      "results": [
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 76 filtered out; finished in 1.52s"
+      ]
+    },
+    {
+      "gate": "clippy",
+      "source_commit": "d1904655bfe1bb679d5df7cb58106cef117d6c7b",
+      "log": "kasumi-runtime-verifier-binding-clippy.log",
+      "log_sha256": "1ef036878fd1812190fb8d4e62638075ae4db59515e62c5840ca2088a712045a",
+      "binaries": [],
+      "results": []
+    },
+    {
+      "gate": "production",
+      "source_commit": "d1904655bfe1bb679d5df7cb58106cef117d6c7b",
+      "log": "kasumi-runtime-verifier-binding-production.log",
+      "log_sha256": "3a58aa55c2785b4c1277b302382f21122a05de80352f03532301d6750268ea38",
+      "binaries": [],
+      "results": []
+    },
+    {
+      "gate": "lifecycle-exact-rejection",
+      "source_commit": "d1904655bfe1bb679d5df7cb58106cef117d6c7b",
+      "log": "kasumi-runtime-lifecycle-exact-rejection.log",
+      "log_sha256": "1db2a16c40aef7063053f8cf9179729da288f6c7abf4ce5a4e1b0650d369149d",
+      "binaries": [
+        {
+          "path": "/tmp/kasumi-production-runtime-target/debug/deps/lifecycle-704ebe8897459472",
+          "sha256": "b391537e033149e78f154031e8d89750edd0743902c12976db4e756cb610fe9b",
+          "bytes": 146842200
+        }
+      ],
+      "results": [
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 20.52s"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+    Checking kasumi-raft v0.1.0 (/private/tmp/kasumi-production-custody-tables/crates/kasumi-raft)
+    Checking kasumi-engine v0.1.0 (/private/tmp/kasumi-production-custody-tables/crates/kasumi-engine)
+    Checking kasumi-authority v0.1.0 (/private/tmp/kasumi-production-custody-tables/crates/kasumi-authority)
+    Checking kasumi-server v0.1.0 (/private/tmp/kasumi-production-custody-tables/crates/kasumi-server)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 51.92s

@@ -288,3 +288,52 @@ gate above and usable installation artifacts.
   and strict Raft Clippy passed. Evidence and the corrected initial hostile-test
   failure are in `docs/evidence/custody-stream-format-20260908`. Fixed custody
   lifetime quotas and the closed transport budget remain the next storage work.
+
+- `0735672` binds enrolled data/Control nodes and authority members to exact
+  physical verifier identities; installations require the matching verifier
+  roster. Authority tests passed 36, serving/types 18, TLS tests five, stored
+  trust seven and initializer tests three, with strict workspace Clippy and
+  production checks. `d190465` fixes the finite lifecycle fixture by resolving
+  an ambiguous original completion against fresh quorum state before retrying
+  the unchanged command; all four lifecycle tests pass with unchanged deadlines.
+  Bound evidence is in `docs/evidence/physical-verifier-bindings-20260908`.
+
+## Native resource reservation dependency
+
+The financial integration consumer requires an ordered, durable reservation for
+an exact finite prefix whose derived upper demand is 80,563 new documents and
+2,558,574,592 canonical serialized bytes (up to 19,843 chunks, 128 profiles and
+156 segments). These numbers exclude framing, index, journal and audit overhead
+and are not capacity measurements. Existing staged admission reserves uploaded
+chunk bytes; `NativeAdmission` is an invocation fence. Neither is a durable
+reservation for final concurrent document/index/journal/audit headroom. The
+resource-budget milestone must define server-accounted consumption, original
+attempt/service binding, recovery/release and permanent outcome resolution;
+a read-only quota getter or caller capacity claim cannot close this dependency.
+
+- The immutable `7732c06` macOS functional attempt completed with a **failed**
+  workspace gate. Four targets reported fixture governor/lifecycle rejection
+  failures; raw output and all source/executable hashes are retained in
+  `docs/evidence/frozen-functional-7732c06-20260908`. Formatting, Python, patched
+  dependencies, strict workspace Clippy, fixture-free production graph and all
+  production binaries passed. Later focused fixes are integrated, but a new
+  full integration run is required; the failed attempt is never treated as pass.
+
+- `ab9b203` removes fixed custody command/audit lifetime ceilings and the 1 MiB
+  hard state ceiling. A checked 64-bit durable byte budget defaults to 64 MiB;
+  `SetLimits` can expand exhausted capacity without discarding history. Closed
+  transfer uses explicit installed `CustodyRaftConfig` capacity. At `b65e0b4`,
+  custody tests passed 26, including 4,200 identities/8,400 audit records and an
+  encrypted snapshot exceeding the old 2 MiB limit, atomic publication, reopen,
+  exact replay and changed-input rejection. Three engine custody tests passed;
+  final affected strict Clippy and production checks passed after removing one
+  obsolete test struct update. Evidence and initial fixture/lint failures are in
+  `docs/evidence/expandable-custody-budget-20260908`. Shared node disk admission
+  and other permanent administrative tables still remain unfinished.
+- `2eba1e3` makes every authority request capture one immutable signer instance.
+  Installing the already activated replacement requires current administrative
+  authority and the same live trust owner. Old response fences remain sealed.
+  Authority tests passed 37, actual TLS replacement/old-response rejection passed,
+  and strict workspace Clippy/production checks passed. Bound evidence is in
+  `docs/evidence/immutable-authority-signers-20260908`; native key-file reload and
+  coordinated global rotation remain separate unfinished work.

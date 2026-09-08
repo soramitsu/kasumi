@@ -1,0 +1,18 @@
+    Blocking waiting for file lock on build directory
+   Compiling kasumi-types v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-types)
+   Compiling kasumi-serving v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-serving)
+   Compiling kasumi-store v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 33s
+     Running unittests src/lib.rs (/tmp/kasumi-production-runtime-target/debug/deps/kasumi_store-b1d52c9fe50b99e9)
+
+running 7 tests
+test live_trust::tests::encrypted_current_generation_fences_lease_admission_and_retained_responses ... ok
+test live_trust::tests::uncertain_activation_closes_old_owner_and_exact_receipt_recovers_from_encrypted_state ... ok
+test live_trust::tests::encrypted_restart_and_clock_regression_restart_the_complete_retirement_drain ... ok
+test live_trust::tests::issuance_and_encoded_response_require_the_exact_active_signer_owner ... ok
+test live_trust::tests::exact_live_generation_rejects_historical_and_reused_key_forgery ... ok
+test live_trust::tests::stopped_stage_and_new_admin_requests_preserve_original_identity_and_reject_format_fallback ... ok
+test live_trust::tests::complete_file_reopen_retains_exact_trust_and_permanent_key_bindings ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 63 filtered out; finished in 0.75s
+

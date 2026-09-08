@@ -1,0 +1,10 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.35s
+     Running unittests src/lib.rs (/tmp/kasumi-production-runtime-target/debug/deps/kasumi_server-836de15f40a715c9)
+
+running 3 tests
+test signer_runtime::tests::initialization_rejects_noninitial_and_mismatched_domains_without_publishing ... ok
+test signer_runtime::tests::explicit_encrypted_verifier_initialization_never_bootstraps_runtime_trust ... ok
+test signer_runtime::tests::partial_initializer_resumes_only_exact_initial_heads_and_rejects_corruption ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 76 filtered out; finished in 1.52s
+

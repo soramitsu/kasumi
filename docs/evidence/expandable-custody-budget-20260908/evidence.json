@@ -1,0 +1,55 @@
+{
+  "source": "b65e0b43fd678f0b90c1ad339cee1e449f693f2f",
+  "source_tree": "41fff762989fad4b74228d6368eac8efae1b8b97",
+  "lockfile_sha256": "a4a3883969dc9486548a1aea841ecf45c482c99e4ea1e0d47b56f6c52b2afa08",
+  "gates": [
+    {
+      "name": "fixed-tests",
+      "log": "kasumi-custody-expandable-budget-fixed-tests.log",
+      "log_sha256": "6396bdd4ad1dea519eda2132ae855ff819a3de8c401db178f5a9dda190a50fde",
+      "test_executable": "/tmp/kasumi-production-root-target/debug/deps/kasumi_raft-36014a94c98e9cab",
+      "test_executable_sha256": "f9370d85d4d5484c554fac99a575e4accfa9f204eff7d89e3592aade5ad7a0dd",
+      "results": [
+        "ok. 26 passed; 0 failed; 0 ignored; 0 measured; 18 filtered out; finished in 67.29s"
+      ]
+    },
+    {
+      "name": "engine-tests",
+      "log": "kasumi-custody-expandable-budget-engine-tests.log",
+      "log_sha256": "6f8ec989155dc19ff2b05192e9a90b6a623357e6af8493f4b51a0024c67fe9a5",
+      "test_executable": "/tmp/kasumi-production-root-target/debug/deps/kasumi_engine-d954104df0323488",
+      "test_executable_sha256": "e132c8601143047e32f2d680133d79d8bcbb83208ec50731b2404778984dd9ca",
+      "results": [
+        "ok. 3 passed; 0 failed; 0 ignored; 0 measured; 56 filtered out; finished in 9.35s"
+      ]
+    }
+  ],
+  "remaining_gates": [
+    {
+      "log": "kasumi-custody-expandable-budget-check.log",
+      "sha256": "b44519c129b50e1f2481748720a74e48d26fdf0437a4c414f1c347e8585e857d"
+    },
+    {
+      "log": "kasumi-custody-expandable-budget-tests.log",
+      "sha256": "13837f30ebbb416148b29a70690d956e91ac92254aa9945b28718c07c810a644"
+    },
+    {
+      "log": "kasumi-custody-expandable-budget-clippy.log",
+      "sha256": "9e4ea81f2b289a0cc8b752fadb4c207d21c1d8ec8e91dbe8fcaab1dc70cb3fcd"
+    },
+    {
+      "log": "kasumi-custody-expandable-budget-fixed-clippy.log",
+      "sha256": "d090cf87a49729c5ae5354f77fa9625de63433ba024f4273881c68a9c4302408"
+    },
+    {
+      "log": "kasumi-custody-expandable-budget-production.log",
+      "sha256": "6263ad4b4ed03a8945cf848a74412d8993aff414f9fca1688e59ea07bcbe1db8"
+    }
+  ],
+  "final_lint_production_source": "ab9b20315af5e5630c4ca4aab78a69c2fea4d96f",
+  "initial_failures": [
+    "3517523 capacity fixture used a non-membership predecessor; real recovery correctly rejected it. b65e0b4 supplies committed membership and runs heavy work on owned blocking workers.",
+    "b65e0b4 strict Clippy rejected a test-only struct update after all count fields were removed. ab9b203 removes that no-op."
+  ],
+  "scope": "Focused macOS ARM64 storage fixture: 4200 permanent command identities,8400 audit records,canonical snapshot greater than2MiB,encrypted publication,reopen,exact replay and changed-input rejection. No real3GiB tenant,native HA backup,shared disk governor,performance or endurance certification."
+}

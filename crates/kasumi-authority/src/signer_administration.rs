@@ -49,6 +49,40 @@ impl AuthorityAdministrativeFence {
     }
 }
 impl IndependentAuthority {
+    /// Reload only a key already accepted by this exact durable verifier owner.
+    /// Existing requests retain their original signer Arc and never consult the
+    /// replacement slot during signing or response release.
+    pub async fn replace_operational_signer(
+        self: &Arc<Self>,
+        authorization: Arc<AuthorityAdministrativeFence>,
+        signer: Arc<AuthoritySigner>,
+    ) -> Result<()> {
+        if !Arc::ptr_eq(self, &authorization.authority) {
+            return Err(Error::new(
+                ErrorCode::Forbidden,
+                "signer replacement authority differs",
+            ));
+        }
+        authorization.release().await?;
+        {
+            let mut current = self.signer.write().map_err(unavailable)?;
+            if !current.same_verifier_owner(&signer)
+                || signer.certificate().identity.domain != authorization.signing_domain()?
+                || self.settings.installed_members[&self.local_node_id].verifier
+                    != signer.verifier_identity().map_err(unavailable)?
+            {
+                return Err(Error::new(
+                    ErrorCode::Forbidden,
+                    "signer replacement must retain the exact installed live verifier owner",
+                ));
+            }
+            authorization.check()?;
+            signer.check().map_err(unavailable)?;
+            *current = signer.clone();
+        }
+        authorization.release().await.map_err(unknown)?;
+        signer.check().map_err(unknown)
+    }
     pub async fn authorize_signer_maintenance(
         self: &Arc<Self>,
         context: RequestContext,

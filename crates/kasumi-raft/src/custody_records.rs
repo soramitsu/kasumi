@@ -26,7 +26,10 @@ pub(crate) struct Builder {
 impl Builder {
     pub(crate) fn new(head: CustodyHead) -> Result<Self> {
         head.validate()?;
-        let disk = (head.policy.limits.max_state_bytes as u64)
+        let disk = head
+            .policy
+            .limits
+            .max_state_bytes
             .checked_mul(8)
             .and_then(|n| n.checked_add(64 << 20))
             .context("custody staging quota overflow")?;

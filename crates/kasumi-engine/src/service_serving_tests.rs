@@ -302,25 +302,98 @@ async fn serving_expiry_suppresses_long_backup_verification_and_post_publication
         entered: tokio::sync::Notify::new(),
         release: tokio::sync::Notify::new(),
     };
-    let verify = db.verify_backup_checkpoint(fixture.context.clone(), &paused, proof.backup_id());
-    let expire = async {
-        paused.entered.notified().await;
-        fixture.clock.0.store(1000, Ordering::SeqCst);
-        paused.release.notify_one();
+    let result = expire_paused_backup(
+        db.verify_backup_checkpoint(fixture.context.clone(), &paused, proof.backup_id()),
+        &paused, &fixture.clock, 1000,
+    ).await;
+    let result = match result {
+        Ok((true, result)) => result,
+        other => {
+            drop(db);
+            fixture.drain().await;
+            panic!("verification pause failed: {other:?}");
+        }
     };
-    let (result, ()) = tokio::join!(verify, expire);
     assert!(result.is_err());
     drop(db);
     fixture.reopen().await;
-    let db = fixture.leader().await;
-    let create = db.backup_checkpoint(fixture.context.clone(), &paused, uuid::Uuid::new_v4());
-    let expire = async {
-        paused.entered.notified().await;
-        fixture.clock.0.store(2000, Ordering::SeqCst);
-        paused.release.notify_one();
-    };
-    let (result, ()) = tokio::join!(create, expire);
-    assert_eq!(result.unwrap_err().code, ErrorCode::UnknownOutcome);
-    drop(db);
+    let mut expired = false;
+    for _ in 0..3 {
+        let db = fixture.leader().await;
+        let session_id = uuid::Uuid::new_v4();
+        let result = expire_paused_backup(
+            db.backup_checkpoint(fixture.context.clone(), &paused, session_id),
+            &paused, &fixture.clock, 2000,
+        ).await;
+        match result {
+            Ok((true, result)) => {
+                assert_eq!(result.unwrap_err().code, ErrorCode::UnknownOutcome);
+                expired = true;
+                break;
+            }
+            Ok((false, Err(error))) if error.code == ErrorCode::UnknownOutcome => {
+                // An election can interrupt the pre-upload audit proposal. Settle
+                // that exact admitted session before attempting another capture.
+                // This fixture gives replicas independent wrapping keys, so its
+                // original publisher must regain leadership to audit the abort.
+                db.work.drain().await;
+                db.install_archive_destination("expiry-abort".into(), paused.inner.clone()).unwrap();
+                let mut aborted = false;
+                for _ in 0..3 {
+                    db.group.raft().trigger().elect().await.unwrap();
+                    tokio::time::timeout(Duration::from_secs(10), async {
+                        while db.barrier().await.is_err() {
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                        }
+                    }).await.unwrap();
+                    let session = db.backup_session(&fixture.context, paused.inner.as_ref(), session_id)
+                        .await.unwrap().expect("admitted session must remain visible");
+                    if matches!(session.outcome(), Some(BackupSessionOutcome::Aborted { .. })) {
+                        aborted = true;
+                        break;
+                    }
+                    assert!(session.outcome().is_none(), "unexpired attempt unexpectedly completed");
+                    let _outcome = db.abort_backup_session(fixture.context.clone(), AbortBackupSession {
+                        destination: "expiry-abort".into(), session_id,
+                        reason: "settle interrupted expiry fixture preparation".into(),
+                    }).await;
+                    let session = db.backup_session(&fixture.context, paused.inner.as_ref(), session_id)
+                        .await.unwrap().expect("abort must retain its session tombstone");
+                    if matches!(session.outcome(), Some(BackupSessionOutcome::Aborted { .. })) {
+                        aborted = true;
+                        break;
+                    }
+                }
+                assert!(aborted, "original backup session did not reach permanent abort");
+            }
+            other => {
+                drop(db);
+                fixture.drain().await;
+                panic!("creation pause failed: {other:?}");
+            }
+        }
+    }
     fixture.drain().await;
+    assert!(expired, "elections repeatedly prevented the controlled expiry attempt");
+}
+
+// A failed operation must not leave the companion pause waiter pending forever.
+// Returning drops the request future; the caller drains its owned workers before
+// reporting any diagnostic. Serving expiry and capacity are unchanged.
+async fn expire_paused_backup<T: std::fmt::Debug>(
+    operation: impl std::future::Future<Output = Result<T>>,
+    paused: &CredentialPausedDestination,
+    clock: &CredentialClock,
+    expires_at: u64,
+) -> std::result::Result<(bool, Result<T>), String> {
+    let mut operation = Box::pin(operation);
+    tokio::select! {
+        result = &mut operation => return Ok((false, result)),
+        _ = paused.entered.notified() => {},
+        _ = tokio::time::sleep(Duration::from_secs(10)) => return Err("operation never reached paused dependency read".into()),
+    }
+    clock.0.store(expires_at, Ordering::SeqCst);
+    paused.release.notify_one();
+    tokio::time::timeout(Duration::from_secs(10), operation)
+        .await.map(|result| (true, result)).map_err(|_| "operation did not exit after serving expiry".into())
 }

@@ -1,0 +1,43 @@
+   Compiling tracing-core v0.1.36
+   Compiling kasumi-types v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-types)
+   Compiling tracing v0.1.44
+   Compiling h2 v0.4.19
+   Compiling hyper v1.11.1
+   Compiling hyper-util v0.1.20
+   Compiling tower v0.5.3
+   Compiling axum-core v0.5.6
+   Compiling hyper-timeout v0.5.2
+   Compiling kasumi-serving v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-serving)
+   Compiling axum v0.8.9
+   Compiling hyper-rustls v0.27.9
+   Compiling tower-http v0.6.11
+   Compiling tonic v0.14.6
+   Compiling reqwest v0.12.28
+   Compiling kasumi-transport v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-transport)
+   Compiling tracing-futures v0.2.5
+   Compiling openraft v0.9.25
+   Compiling kasumi-store v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-store)
+   Compiling kasumi-raft v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-raft)
+   Compiling tonic-prost v0.14.6
+   Compiling kasumi-query v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-query)
+   Compiling sharded-slab v0.1.7
+   Compiling tracing-serde v0.2.0
+   Compiling thread_local v1.1.10
+   Compiling rmcp v3.2.0
+   Compiling tracing-subscriber v0.3.23
+   Compiling kasumi-client v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-client)
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-engine)
+   Compiling kasumi-authority v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-authority)
+   Compiling kasumi-server v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3m 59s
+     Running unittests src/lib.rs (/tmp/kasumi-production-runtime-target/debug/deps/kasumi_server-836de15f40a715c9)
+
+running 5 tests
+test target_runtime::outcome_tests::timed_out_waiter_keeps_actual_worker_admission_owned_until_completion ... ok
+test cluster::maintenance_tests::actual_tls_peer_readiness_enrolls_replaces_and_fences_revoked_member ... ok
+test runtime::observability_tests::protected_observability_tls_reports_actual_state_and_fences_release ... ok
+test rpc::lifecycle_tests::pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong_resource_and_partition ... ok
+test rpc::authority_tests::actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_recovery ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 74 filtered out; finished in 18.34s
+

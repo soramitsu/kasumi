@@ -16,7 +16,6 @@ use std::sync::{
 };
 
 pub(crate) const CLOSED_SNAPSHOT: &str = "raft.custody-snapshot";
-pub(crate) const MAX_CLOSED_SNAPSHOT_BYTES: u64 = 2 << 20;
 
 fn err(error: impl std::fmt::Display) -> StorageError<u64> {
     StorageIOError::write(&std::io::Error::other(error.to_string())).into()
@@ -57,7 +56,11 @@ pub(crate) fn capture(custody: &CustodyStore) -> Result<SnapshotEnvelope> {
     })
 }
 
-pub(crate) fn publish(custody: &CustodyStore, snapshot: &SnapshotEnvelope) -> Result<()> {
+pub(crate) fn publish(
+    custody: &CustodyStore,
+    snapshot: &SnapshotEnvelope,
+    limit: u64,
+) -> Result<()> {
     crate::custody_snapshot_storage::check_format(custody)?;
     ensure!(
         snapshot.kind == SnapshotKind::Custody
@@ -70,10 +73,9 @@ pub(crate) fn publish(custody: &CustodyStore, snapshot: &SnapshotEnvelope) -> Re
         .as_ref()
         .context("closed snapshot lacks retirement")?;
     retirement.validate(&snapshot.meta)?;
-    let bytes = snapshot.encode(MAX_CLOSED_SNAPSHOT_BYTES)?;
+    let bytes = snapshot.encode(limit)?;
     let digest = bytes.sha256().to_owned();
-    let (chunks, manifest) =
-        crate::custody_snapshot_storage::stage(&bytes, MAX_CLOSED_SNAPSHOT_BYTES)?;
+    let (chunks, manifest) = crate::custody_snapshot_storage::stage(&bytes, limit)?;
     let backend_digest = crate::command::sha256(&[]);
     let mut install = crate::snapshot_custody::installation_writes(
         custody,
@@ -104,13 +106,14 @@ pub(crate) fn publish(custody: &CustodyStore, snapshot: &SnapshotEnvelope) -> Re
         .replace_namespaces(&replacements, &install.writes)
 }
 
-pub(crate) fn load_snapshot(custody: &CustodyStore) -> Result<Option<SnapshotEnvelope>> {
-    let Some(bytes) =
-        crate::custody_snapshot_storage::load_image(custody, MAX_CLOSED_SNAPSHOT_BYTES)?
-    else {
+pub(crate) fn load_snapshot(
+    custody: &CustodyStore,
+    limit: u64,
+) -> Result<Option<SnapshotEnvelope>> {
+    let Some(bytes) = crate::custody_snapshot_storage::load_image(custody, limit)? else {
         return Ok(None);
     };
-    let snapshot = SnapshotEnvelope::decode(&mut bytes.reader(), MAX_CLOSED_SNAPSHOT_BYTES)?;
+    let snapshot = SnapshotEnvelope::decode(&mut bytes.reader(), limit)?;
     ensure!(
         snapshot.kind == SnapshotKind::Custody
             && snapshot.version == 1
@@ -142,6 +145,7 @@ pub(crate) fn load_snapshot(custody: &CustodyStore) -> Result<Option<SnapshotEnv
 #[derive(Clone)]
 pub(crate) struct CustodyMachine {
     custody: StorageHandle<CustodyStore>,
+    snapshot_limit: u64,
     control_gate: Arc<Mutex<()>>,
     failed: Arc<AtomicBool>,
     // Keep the same ownership claim alive even after public handles disappear.
@@ -152,6 +156,7 @@ impl CustodyMachine {
         custody: Arc<CustodyStore>,
         lease: Arc<StorageLease>,
         ownership: Arc<AtomicBool>,
+        snapshot_limit: u64,
     ) -> Result<Self> {
         let control_gate = crate::storage::control_gate(&custody)?;
         let store = custody.clone();
@@ -163,11 +168,12 @@ impl CustodyMachine {
             control::custody_head(&store)?;
             // This atomically records the latest durable closed state as a
             // snapshot before OpenRaft is allowed to purge its covered log prefix.
-            publish(&store, &capture(&store)?)
+            publish(&store, &capture(&store)?, snapshot_limit)
         })
         .await??;
         Ok(Self {
             custody: StorageHandle::new(custody, Some(lease)),
+            snapshot_limit,
             control_gate,
             failed: Arc::new(AtomicBool::new(false)),
             _ownership: ownership,
@@ -196,7 +202,7 @@ impl RaftSnapshotBuilder<TypeConfig> for CustodySnapshotBuilder {
                 .lock()
                 .map_err(|_| anyhow::anyhow!("control gate poisoned"))?;
             machine.custody.store().check_access()?;
-            if let Some(current) = load_snapshot(&machine.custody)?
+            if let Some(current) = load_snapshot(&machine.custody, machine.snapshot_limit)?
                 && current.meta.last_log_id.map(|id| id.index)
                     >= snapshot.meta.last_log_id.map(|id| id.index)
             {
@@ -213,10 +219,10 @@ impl RaftSnapshotBuilder<TypeConfig> for CustodySnapshotBuilder {
                         snapshot.retirement.as_ref(),
                     )?;
                 }
-                return as_snapshot(&current, MAX_CLOSED_SNAPSHOT_BYTES);
+                return as_snapshot(&current, machine.snapshot_limit);
             }
-            publish(&machine.custody, &snapshot)?;
-            as_snapshot(&snapshot, MAX_CLOSED_SNAPSHOT_BYTES)
+            publish(&machine.custody, &snapshot, machine.snapshot_limit)?;
+            as_snapshot(&snapshot, machine.snapshot_limit)
         })
         .await
         .map_err(|error| self.machine.failure(error))?
@@ -316,7 +322,7 @@ impl RaftStateMachine<TypeConfig> for CustodyMachine {
     async fn begin_receiving_snapshot(&mut self) -> Result<Box<SnapshotBuffer>, StorageError<u64>> {
         self.custody.store().check_access().map_err(err)?;
         Ok(Box::new(
-            SnapshotBuffer::new(MAX_CLOSED_SNAPSHOT_BYTES).map_err(err)?,
+            SnapshotBuffer::new(self.snapshot_limit).map_err(err)?,
         ))
     }
     async fn install_snapshot(
@@ -328,12 +334,11 @@ impl RaftStateMachine<TypeConfig> for CustodyMachine {
         let machine = self.clone();
         tokio::task::spawn_blocking(move || -> Result<()> {
             ensure!(
-                snapshot.len() <= MAX_CLOSED_SNAPSHOT_BYTES,
+                snapshot.len() <= machine.snapshot_limit,
                 "closed snapshot byte budget exceeded"
             );
             let image = snapshot.into_image()?;
-            let envelope =
-                SnapshotEnvelope::decode(&mut image.reader(), MAX_CLOSED_SNAPSHOT_BYTES)?;
+            let envelope = SnapshotEnvelope::decode(&mut image.reader(), machine.snapshot_limit)?;
             ensure!(envelope.meta == meta, "closed snapshot metadata differs");
             let _gate = machine
                 .control_gate
@@ -344,7 +349,7 @@ impl RaftStateMachine<TypeConfig> for CustodyMachine {
                 meta.last_log_id.map(|id| id.index) >= previous.map(|id| id.index),
                 "closed snapshot reverts applied state"
             );
-            publish(&machine.custody, &envelope)
+            publish(&machine.custody, &envelope, machine.snapshot_limit)
         })
         .await
         .map_err(|error| self.failure(error))?
@@ -355,12 +360,13 @@ impl RaftStateMachine<TypeConfig> for CustodyMachine {
     ) -> Result<Option<Snapshot<TypeConfig>>, StorageError<u64>> {
         let custody = self.custody.clone();
         let gate = self.control_gate.clone();
+        let limit = self.snapshot_limit;
         tokio::task::spawn_blocking(move || {
             let _gate = gate
                 .lock()
                 .map_err(|_| anyhow::anyhow!("control gate poisoned"))?;
-            load_snapshot(&custody)?
-                .map(|snapshot| as_snapshot(&snapshot, MAX_CLOSED_SNAPSHOT_BYTES))
+            load_snapshot(&custody, limit)?
+                .map(|snapshot| as_snapshot(&snapshot, limit))
                 .transpose()
         })
         .await
@@ -372,6 +378,13 @@ impl RaftStateMachine<TypeConfig> for CustodyMachine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    const MAX_CLOSED_SNAPSHOT_BYTES: u64 = 64 << 20;
+    fn publish(custody: &CustodyStore, snapshot: &SnapshotEnvelope) -> Result<()> {
+        super::publish(custody, snapshot, MAX_CLOSED_SNAPSHOT_BYTES)
+    }
+    fn load_snapshot(custody: &CustodyStore) -> Result<Option<SnapshotEnvelope>> {
+        super::load_snapshot(custody, MAX_CLOSED_SNAPSHOT_BYTES)
+    }
     use crate::control::tests::{fixture, group, id, retirement_entry, seed};
     use kasumi_store::test_utils::FaultBackend;
     use kasumi_types::{CustodyAction, CustodyReceipt, CustodyRequest, RetireSourceRequest};
@@ -481,7 +494,7 @@ mod tests {
             group(),
             domains.custody().clone(),
             router.clone(),
-            crate::Config::default(),
+            crate::CustodyRaftConfig::default(),
         )
         .await?;
         router.register(group(), 1, instance.raft().clone());
@@ -542,7 +555,7 @@ mod tests {
                 group(),
                 domains.custody().clone(),
                 router.clone(),
-                crate::Config::default(),
+                crate::CustodyRaftConfig::default(),
             )
             .await?;
             router.register(group(), node, instance.raft().clone());
