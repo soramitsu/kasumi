@@ -723,9 +723,9 @@ impl ServingTasks {
     async fn shutdown(&mut self) -> Result<()> {
         self.data_stop.send_replace(true);
         self.cluster_stop.send_replace(true);
-        // Reconciliation must stop before taking the final generation inventory.
-        // It has no nested listener tasks, so aborting and joining it is safe.
-        self.maintenance.abort_all();
+        // Reconciliation may be rebuilding an admitted tenant and own Raft or
+        // storage workers. Signal its loop and join the current operation before
+        // taking the final generation inventory; cancellation could detach work.
         let mut failure = None;
         while let Some(result) = self.maintenance.join_next().await {
             match result {
@@ -1013,6 +1013,7 @@ impl NodeRuntime {
             }
             let administration = crate::administration::Administration::new(
                 config.clone(),
+                node.clone(),
                 registry.clone(),
                 runtime.control.database.clone(),
                 runtime.audit.clone(),
@@ -1251,7 +1252,7 @@ impl NodeRuntime {
         }
         if let Some(manager) = self.administration.clone() {
             let mut stop = tasks.data_stop.subscribe();
-            tasks.maintenance.spawn(async move { loop { tokio::select! { _=stop.changed()=>return Ok(()), _=tokio::time::sleep(Duration::from_millis(250))=>{ manager.reconcile().await?; } } } });
+            tasks.maintenance.spawn(async move { loop { tokio::select! { _=stop.changed()=>return Ok(()), _=tokio::time::sleep(Duration::from_millis(250))=>{ if manager.reconcile().await.is_err() { tracing::warn!("serving reconciliation unavailable; will retry"); } } } } });
         }
         let result = if *shutdown.borrow() {
             Ok(())
@@ -2228,11 +2229,13 @@ mod lifecycle_tests {
             let mut tasks = ServingTasks::new();
             if !startup {
                 let owner = node.clone();
+                let mut maintenance_stop = tasks.data_stop.subscribe();
                 let (started, running) = tokio::sync::oneshot::channel();
                 tasks.maintenance.spawn(async move {
                     let _owner = owner;
                     let _ = started.send(());
-                    std::future::pending::<Result<()>>().await
+                    let _ = maintenance_stop.changed().await;
+                    Ok(())
                 });
                 running.await.unwrap();
             }

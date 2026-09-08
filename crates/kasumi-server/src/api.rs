@@ -1799,13 +1799,10 @@ name: "docs".into(),
             strict_read_audit: true,
         };
         let provider = Arc::new(LocalKeyProvider::new([61; 32]));
-        let store = TenantStore::open_fixture(
-            NodeStore::open(fixture._dir.path().join("control.redb")).unwrap(),
-            tenant.into(),
-            provider.clone(),
-        )
-        .await
-        .unwrap();
+        let node = NodeStore::open(fixture._dir.path().join("control.redb")).unwrap();
+        let store = TenantStore::open_fixture(node.clone(), tenant.into(), provider.clone())
+            .await
+            .unwrap();
         let limits = Limits {
             max_audit_records: 1,
             ..Limits::default()
@@ -1832,6 +1829,7 @@ name: "docs".into(),
         config.control.initial_policy = policy;
         let manager = Administration::new(
             config,
+            node,
             fixture.registry.clone(),
             control.clone(),
             fixture.audit.clone(),

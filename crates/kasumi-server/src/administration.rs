@@ -209,8 +209,12 @@ pub(crate) struct GenerationDescriptor {
 pub(crate) type ProviderFactory =
     Arc<dyn Fn() -> Result<(Arc<dyn KeyProvider>, Arc<dyn KeyProvider>)> + Send + Sync>;
 
+#[path = "original_serving_runtime.rs"]
+mod original_serving_runtime;
+
 pub struct Administration {
     pub(crate) config: RuntimeConfig,
+    node: Arc<NodeStore>,
     registry: DatabaseRegistry,
     control: Arc<Database>,
     control_context: RequestContext,
@@ -398,6 +402,7 @@ impl Administration {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         config: RuntimeConfig,
+        node: Arc<NodeStore>,
         registry: DatabaseRegistry,
         control: Arc<Database>,
         audit: Arc<SecurityAudit>,
@@ -428,6 +433,7 @@ impl Administration {
         let control_context = crate::runtime::configured_control_context(&config.control)?;
         Ok(Arc::new(Self {
             config,
+            node,
             registry,
             control,
             control_context,
@@ -2009,9 +2015,22 @@ impl Administration {
 
     pub(crate) async fn reconcile(&self) -> Result<()> {
         let _guard = self.gate.lock().await;
-        self.close_retired_generations().await?;
+        if self.close_retired_generations().await.is_err() {
+            tracing::warn!("retired generation reconciliation remains unavailable");
+        }
         let topology = self.committed_topology()?;
         for (tenant, route) in topology.tenants {
+            if self
+                .recover_original(&tenant, &route.incarnation)
+                .await
+                .is_err()
+            {
+                tracing::warn!(
+                    tenant,
+                    "original tenant remains closed pending fresh admission"
+                );
+                continue;
+            }
             let custody_context = RequestContext {
                 tenant: tenant.clone(),
                 ..self.control_context.clone()
