@@ -224,6 +224,11 @@ mod tests {
                 let current = engine.generation().unwrap();
                 if current.state.audit_retention.archive_segments > 0
                     && current.state.audit_retention.hot_bytes <= 64 << 10
+                    && database
+                        .audit_maintenance_status()
+                        .unwrap()
+                        .committed_segments
+                        > 0
                 {
                     break;
                 }

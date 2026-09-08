@@ -589,9 +589,41 @@ async fn control_completion_audit_reservation_survives_denials_and_current_admin
     .await
     .unwrap();
     assert_eq!(db.engine().generation().unwrap().state.audits.len(), 2);
+    // Use two bounded large records to bring the real byte budget near full.
+    // The following denied lifecycle commands exercise the reserved remainder
+    // without making this capacity test depend on hundreds of elections.
+    for number in 0..2 {
+        let context = f.context("owner");
+        let now = kasumi_clock::EpochClock::system()
+            .unwrap()
+            .now_ms()
+            .unwrap();
+        let command = Command {
+            context: context.clone(),
+            timestamp_ms: now,
+            operation: Operation::Audit(AuditEvent {
+                event_id: format!("{number}:{}", "x".repeat(60_000)),
+                principal: context.principal,
+                action: "read".into(),
+                request_id: context.request_id,
+                timestamp_ms: now,
+                data_revision: None,
+                outcome: "authorized_release".into(),
+                collection: None,
+            }),
+        };
+        let bytes = db
+            .raft_group()
+            .write(serde_json::to_vec(&command).unwrap())
+            .await
+            .unwrap();
+        serde_json::from_slice::<Result<WriteReceipt>>(&bytes)
+            .unwrap()
+            .unwrap();
+    }
     // Fill the byte budget with denied attempts. Completion reserves the full
     // worst-case record even when the original administrative request was short.
-    let mut retained = 2;
+    let mut retained = 4;
     for attempt in 0..2000 {
         assert!(
             db.lifecycle_control(
@@ -608,7 +640,7 @@ async fn control_completion_audit_reservation_survives_denials_and_current_admin
         retained = count;
         assert!(attempt < 1999, "completion byte budget did not fill");
     }
-    assert!(retained > 2);
+    assert!(retained > 4);
     for _ in 0..3 {
         assert!(
             db.lifecycle_control(
