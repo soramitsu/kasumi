@@ -70,3 +70,11 @@ and authority envelopes to share them without a dependency cycle. Crypto remains
 in `kasumi-serving`; import `SigningCertificateVerification` for certificate
 verification and its authenticated digest. Decoding these records alone grants
 no live trust, and this placement adds no alternate or legacy decoder.
+
+`LiveGenerationSigner` binds an installed operational key to this verifier's
+exact current durable certificate. A staged key cannot issue, activation fences
+old owners, and reopening a closed trust owner never revives its retained
+signatures. `sign` returns `LiveGenerationSignature`; the adapter retains it
+through encoding and checks it with the original request authorization before
+response release. This guard does not renew a lease or authorize a command, and
+the existing authority transport must still be wired to this new owner.
