@@ -9,6 +9,7 @@ impl IndependentAuthority {
         reference: TargetStopReference,
     ) -> Result<(SignedTargetStop, AuthorityResponseFence)> {
         let _permit = self.permit()?;
+        let signer = self.request_signer()?;
         reference
             .validate()
             .map_err(|_| Error::new(ErrorCode::InvalidArgument, "invalid target stop reference"))?;
@@ -24,7 +25,7 @@ impl IndependentAuthority {
         if self.barrier(&context).await? != term {
             return Err(unavailable("target drain term changed"));
         }
-        let fence = self.fence(context, Some(epoch), None, term);
+        let fence = self.fence(signer.clone(), context, Some(epoch), None, term);
         fence.check()?;
         let current = self
             .backend
@@ -45,10 +46,7 @@ impl IndependentAuthority {
                 .drain_ms()
                 .map_err(unavailable)?,
         };
-        let signed = self
-            .signer
-            .sign_target_stop(observation)
-            .map_err(unavailable)?;
+        let signed = signer.sign_target_stop(observation).map_err(unavailable)?;
         fence.check()?;
         Ok((signed, fence))
     }

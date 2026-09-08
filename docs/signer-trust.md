@@ -83,8 +83,13 @@ through encoding and checks it with the original request authorization before
 response release. `AuthorityResponseFence` captures the exact immutable signer
 owner used by that authority instance and checks it after encoding and the
 current quorum barrier. This guard does not renew a lease or authorize a command.
-Authority instance replacement is required to change its configured operational
-key; there is no implicit key-file reload or fallback to the installation root.
+The authority selects one immutable signer for each request before awaited work.
+The trusted runtime can explicitly replace its operational key under a current
+administrative fence after activation. The replacement must use the exact same
+live verifier owner, not a copied store with an equal public identity. Existing
+requests retain their old signer and response fences. There is no implicit
+key-file reload or fallback to the installation root; native key-source reload
+and the distributed rotation coordinator still need operational wiring.
 
 ## Runtime installation
 

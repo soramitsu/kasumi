@@ -8,6 +8,7 @@ impl IndependentAuthority {
         request: LifecycleAuthorityRequest,
     ) -> Result<(SignedLifecycleAuthorityReceipt, AuthorityResponseFence)> {
         let permit = self.permit()?;
+        let signer = self.request_signer()?;
         self.installation()
             .manifest
             .verify_lifecycle_request(self.installation().partition, &request)
@@ -22,7 +23,9 @@ impl IndependentAuthority {
         let service = self.clone();
         let job = tokio::spawn(async move {
             let _permit = permit;
-            service.execute_lifecycle_owned(context, request).await
+            service
+                .execute_lifecycle_owned(signer, context, request)
+                .await
         });
         tokio::time::timeout(Duration::from_secs(5), job)
             .await
@@ -31,6 +34,7 @@ impl IndependentAuthority {
     }
     async fn execute_lifecycle_owned(
         self: Arc<Self>,
+        signer: Arc<AuthoritySigner>,
         context: RequestContext,
         request: LifecycleAuthorityRequest,
     ) -> Result<(SignedLifecycleAuthorityReceipt, AuthorityResponseFence)> {
@@ -54,7 +58,7 @@ impl IndependentAuthority {
                 ));
             }
             return self
-                .release_lifecycle(context, retained, epoch, term, false)
+                .release_lifecycle(signer.clone(), context, retained, epoch, term, false)
                 .await;
         }
         let admitted_at_ms = self.clock.now_ms().map_err(unavailable)?;
@@ -76,11 +80,12 @@ impl IndependentAuthority {
             .await?;
         let receipt: Result<LifecycleAuthorityReceipt> =
             serde_json::from_slice(&bytes).map_err(unknown)?;
-        self.release_lifecycle(context, receipt?, epoch, term, true)
+        self.release_lifecycle(signer.clone(), context, receipt?, epoch, term, true)
             .await
     }
     async fn release_lifecycle(
         self: &Arc<Self>,
+        signer: Arc<AuthoritySigner>,
         context: RequestContext,
         receipt: LifecycleAuthorityReceipt,
         epoch: u64,
@@ -91,10 +96,9 @@ impl IndependentAuthority {
             if self.barrier(&context).await? != term {
                 return Err(unavailable("control receipt release term changed"));
             }
-            let fence = self.fence(context, Some(epoch), None, term);
+            let fence = self.fence(signer.clone(), context, Some(epoch), None, term);
             fence.check()?;
-            let signed = self
-                .signer
+            let signed = signer
                 .sign_lifecycle_receipt(receipt)
                 .map_err(unavailable)?;
             fence.check()?;
@@ -116,6 +120,7 @@ impl IndependentAuthority {
         AuthorityResponseFence,
     )> {
         let _permit = self.permit()?;
+        let signer = self.request_signer()?;
         reference.validate().map_err(unavailable)?;
         let term = self.barrier(&context).await?;
         let epoch = self.backend.authorize_admin(&context)?;
@@ -123,13 +128,9 @@ impl IndependentAuthority {
             .backend
             .lifecycle_receipt(&reference)
             .map_err(unavailable)?
-            .map(|value| {
-                self.signer
-                    .sign_lifecycle_receipt(value)
-                    .map_err(unavailable)
-            })
+            .map(|value| signer.sign_lifecycle_receipt(value).map_err(unavailable))
             .transpose()?;
-        let fence = self.fence(context, Some(epoch), None, term);
+        let fence = self.fence(signer.clone(), context, Some(epoch), None, term);
         fence.release().await?;
         Ok((receipt, fence))
     }
@@ -139,6 +140,7 @@ impl IndependentAuthority {
         reference: LifecycleAuthorityReference,
     ) -> Result<(SignedControlEpochStop, AuthorityResponseFence)> {
         let _permit = self.permit()?;
+        let signer = self.request_signer()?;
         reference.validate().map_err(unavailable)?;
         if !matches!(reference.identity, LifecycleAuthorityIdentity::EpochStop) {
             return Err(Error::new(
@@ -158,7 +160,7 @@ impl IndependentAuthority {
         };
         let witness = format!("control/{}", receipt.request_sha256);
         self.require_drain(&witness, term)?;
-        let fence = self.fence(context, Some(epoch), None, term);
+        let fence = self.fence(signer.clone(), context, Some(epoch), None, term);
         fence.release().await?;
         self.require_drain(&witness, term)?;
         let observation = ControlEpochStopObservation {
@@ -173,8 +175,7 @@ impl IndependentAuthority {
                 .drain_ms()
                 .map_err(unavailable)?,
         };
-        let signed = self
-            .signer
+        let signed = signer
             .sign_control_epoch_stop(observation)
             .map_err(unavailable)?;
         fence.check()?;
@@ -186,6 +187,7 @@ impl IndependentAuthority {
         request: LifecycleLeaseRequest,
     ) -> Result<(SignedLifecycleLease, AuthorityResponseFence)> {
         let _permit = self.permit()?;
+        let signer = self.request_signer()?;
         request
             .validate()
             .map_err(|_| Error::new(ErrorCode::InvalidArgument, "invalid lifecycle acquisition"))?;
@@ -234,8 +236,7 @@ impl IndependentAuthority {
             )
         })?;
         let max = self.installation().manifest.max_lease_ms;
-        let signed = self
-            .signer
+        let signed = signer
             .sign_lifecycle_lease(LifecycleLeaseClaims {
                 request: request.clone(),
                 commitment: material.commitment,
@@ -248,7 +249,7 @@ impl IndependentAuthority {
                 credential_lifetime_ms: max.min(remaining),
             })
             .map_err(unavailable)?;
-        let mut fence = self.fence(context, None, None, term);
+        let mut fence = self.fence(signer.clone(), context, None, None, term);
         fence.lifecycle_lease = Some(request);
         fence.release().await?;
         Ok((signed, fence))

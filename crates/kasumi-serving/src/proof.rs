@@ -19,6 +19,9 @@ impl AuthoritySigner {
     pub fn verifier_identity(&self) -> Result<TrustVerifierIdentity> {
         self.0.verifier_identity()
     }
+    pub fn same_verifier_owner(&self, other: &Self) -> bool {
+        self.0.same_verifier_owner(&other.0)
+    }
     pub fn check(&self) -> Result<()> {
         self.0.check()
     }
