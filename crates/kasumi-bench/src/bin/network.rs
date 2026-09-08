@@ -1,9 +1,9 @@
-//! Live TLS endpoint measurements. Credentials are read from named environment
-//! variables and are never included in the report. Writes require --allow-writes.
+//! Live TLS endpoint measurements. Each request reads a fresh private credential
+//! file snapshot; secrets are never reported. Writes require --allow-writes.
 use anyhow::{Context, Result, ensure};
 use kasumi_bench::{Measurement, Samples};
 use kasumi_server::rpc::proto;
-use kasumi_transport::{TlsIdentity, grpc_channel};
+use kasumi_transport::{TlsIdentity, credentials::FileCredentialSource, grpc_channel};
 use kasumi_types::{Mutation, MutationBatch, Precondition, QueryRequest};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -42,7 +42,7 @@ struct CaseConfig {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TargetConfig {
-    token_env: String,
+    token_file: PathBuf,
     collection: String,
     id: String,
     query: Option<QueryRequest>,
@@ -51,11 +51,17 @@ struct TargetConfig {
     mutation_body: Option<PathBuf>,
 }
 struct Target {
-    authorization: Zeroizing<String>,
+    credentials: FileCredentialSource,
     collection: String,
     id: String,
     query: Option<QueryRequest>,
     mutation_body: Option<Value>,
+}
+impl Target {
+    fn authorization(&self) -> Result<Zeroizing<String>> {
+        let token = kasumi_transport::credentials::token(&self.credentials)?;
+        Ok(Zeroizing::new(format!("Bearer {}", token.as_str())))
+    }
 }
 #[derive(Clone, Serialize)]
 struct CaseReport {
@@ -128,8 +134,8 @@ fn validate(config: &CaseConfig) -> Result<()> {
         kasumi_types::validate_name(&target.collection)?;
         kasumi_types::validate_name(&target.id)?;
         ensure!(
-            !target.token_env.is_empty(),
-            "token environment variable missing"
+            !target.token_file.as_os_str().is_empty(),
+            "credential file path missing"
         );
     }
     Ok(())
@@ -312,11 +318,11 @@ impl Client {
     }
 }
 fn authenticated<T>(value: T, target: &Target) -> Result<tonic::Request<T>> {
+    let authorization = target.authorization()?;
     let mut request = tonic::Request::new(value);
     request.metadata_mut().insert(
         "authorization",
-        target
-            .authorization
+        authorization
             .as_str()
             .parse()
             .map_err(|_| anyhow::anyhow!("invalid bearer token header"))?,
@@ -334,9 +340,10 @@ async fn mcp(
     name: &str,
     arguments: Value,
 ) -> Result<Value> {
+    let authorization = target.authorization()?;
     let mut response = http
         .post(endpoint)
-        .header("authorization", target.authorization.as_str())
+        .header("authorization", authorization.as_str())
         .header("accept", "application/json, text/event-stream")
         .header("mcp-protocol-version", "2026-07-28")
         .header("mcp-method", "tools/call")
@@ -391,22 +398,14 @@ async fn run(
     let credentials = config
         .targets
         .iter()
-        .map(|target| target.token_env.as_str())
+        .map(|target| resolve(root, &target.token_file))
         .collect::<BTreeSet<_>>()
         .len();
     let targets = config
         .targets
         .iter()
         .map(|target| -> Result<Target> {
-            let token = Zeroizing::new(
-                std::env::var(&target.token_env)
-                    .context("configured token environment variable is missing")?,
-            );
-            ensure!(
-                !token.is_empty() && !token.starts_with("Bearer "),
-                "token variable must contain a raw access token"
-            );
-            let authorization = Zeroizing::new(format!("Bearer {}", token.as_str()));
+            let credentials = FileCredentialSource::new(resolve(root, &target.token_file))?;
             let mutation_body = if allow_writes {
                 target
                     .mutation_body
@@ -421,7 +420,7 @@ async fn run(
                 None
             };
             Ok(Target {
-                authorization,
+                credentials,
                 collection: target.collection.clone(),
                 id: target.id.clone(),
                 query: target.query.clone(),
@@ -448,8 +447,8 @@ async fn run(
     checkpoint(&result)?;
     let start = Instant::now();
     let mut warmed = BTreeSet::new();
-    for target in &targets {
-        if warmed.insert(Sha256::digest(target.authorization.as_bytes())) {
+    for (configuration, target) in config.targets.iter().zip(&targets) {
+        if warmed.insert(resolve(root, &configuration.token_file)) {
             client.get(target).await?;
         }
     }
@@ -530,7 +529,10 @@ async fn main() -> Result<()> {
     ensure!(!config.cases.is_empty(), "at least one case required");
     let mut report=Report{format:1,created_unix_ms:SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),os:std::env::consts::OS.into(),architecture:std::env::consts::ARCH.into(),build_profile:if cfg!(debug_assertions){"debug"}else{"release"}.into(),executable_sha256:hex::encode(Sha256::digest(std::fs::read(std::env::current_exe()?)?)),logical_cpus:std::thread::available_parallelism().ok().map(usize::from),evidence_status:"Preliminary development measurement; repeat on quiet host with stable server/client source".into(),notes:vec!["Real authenticated TLS 1.3 network requests. Native RPC additionally requires mTLS and pins the server certificate against the configured CA.".into(),"Credentials and document/query values are omitted from this report. Credential count is configured token sources, not a claim of verified distinct tenants.".into(),"Connections and one warmup point read per credential are excluded from measured API latency. Requests are sequential and no automatic retries are attempted.".into(),"Server replication, KMS, hardware, and audit configuration must be disclosed separately for comparison; this client does not infer their guarantees.".into(),"Writes occur only with --allow-writes and a replacement body on every dedicated target. Query measurements consume all historical pages.".into()],cases:Vec::new(),failures:Vec::new()};
     save(&output, &report)?;
-    let root = config_path.parent().unwrap_or(Path::new("."));
+    let config_path = std::fs::canonicalize(config_path)?;
+    let root = config_path
+        .parent()
+        .context("configuration parent missing")?;
     for case in config.cases {
         eprintln!("running network case {}", case.name);
         let name = case.name.clone();
@@ -570,4 +572,59 @@ async fn main() -> Result<()> {
         "network benchmark completed with recorded failures"
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{io::Write, os::unix::fs::PermissionsExt};
+
+    fn publish(path: &Path, value: &[u8]) {
+        let mut file = tempfile::NamedTempFile::new_in(path.parent().unwrap()).unwrap();
+        file.as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o600))
+            .unwrap();
+        file.write_all(value).unwrap();
+        file.as_file().sync_all().unwrap();
+        file.persist(path).unwrap();
+    }
+
+    #[test]
+    fn renewal_changes_the_next_request_and_invalid_replacement_never_uses_old_token() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("credential");
+        let target = Target {
+            credentials: FileCredentialSource::new(&path).unwrap(),
+            collection: "documents".into(),
+            id: "one".into(),
+            query: None,
+            mutation_body: None,
+        };
+        publish(&path, b"first-token\n");
+        let original = authenticated((), &target).unwrap();
+        let timeout = original.metadata().get("grpc-timeout").unwrap().clone();
+        publish(&path, b"renewed-token\r\n");
+        let next = authenticated((), &target).unwrap();
+        assert_eq!(
+            original.metadata().get("authorization").unwrap(),
+            "Bearer first-token"
+        );
+        assert_eq!(
+            next.metadata().get("authorization").unwrap(),
+            "Bearer renewed-token"
+        );
+        assert_eq!(original.metadata().get("grpc-timeout").unwrap(), &timeout);
+        publish(&path, b"bad\nheader");
+        assert!(authenticated((), &target).is_err());
+        std::fs::remove_file(path).unwrap();
+        assert!(target.authorization().is_err());
+    }
+
+    #[test]
+    fn environment_credential_configuration_is_unsupported() {
+        let old = json!({"token_env":"OLD_TOKEN","collection":"documents","id":"one"});
+        assert!(serde_json::from_value::<TargetConfig>(old).is_err());
+        let current = json!({"token_file":"credential","collection":"documents","id":"one"});
+        assert!(serde_json::from_value::<TargetConfig>(current).is_ok());
+    }
 }

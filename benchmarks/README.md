@@ -142,10 +142,16 @@ The independent endpoint runner can also use operator-provided test services:
 
 An example config is [network.example.json](network.example.json). It accepts
 only HTTPS, requires native client certificates and a server certificate SHA256
-pin, and reads access tokens from named environment variables. Tokens, document
-bodies and query values never enter reports. Connection setup and one warmup
-read per credential are reported separately. Every request authenticates; tokens are
-not refreshed by this harness. Configure sufficient lifetime for the experiment.
+pin, and reads a fresh private `token_file` for every request. Relative paths are
+resolved beneath the configuration file's directory. Files must be owner-only
+regular files owned by the current user; publish replacements by atomic rename.
+Missing or malformed replacements fail the request without reusing an older
+token. Environment-token configuration is unsupported. Run the installed
+credential renewal watcher separately for long experiments. Renewal changes
+subsequent requests and does not modify an existing request's deadline.
+Tokens, document bodies and query values never enter reports. Connection setup
+and one warmup read per configured credential source are reported separately;
+measured request latency includes the fresh credential-file read.
 
 Reads are the default. Dedicated benchmark targets can specify exact JSON
 replacement files using `mutation_body`; adding `--allow-writes` then enables
