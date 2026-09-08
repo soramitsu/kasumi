@@ -380,24 +380,23 @@ impl TenantStore {
                 existing.access.purpose() == access.purpose(),
                 "existing storage purpose differs"
             );
-            // A new boot cannot replace a live handle's original capability.
-            if let (Some(old), Some(new)) = (existing.access.serving_gate(), access.serving_gate())
-            {
-                ensure!(
-                    Arc::ptr_eq(old, new),
-                    "live store belongs to another serving capability"
-                );
+            if existing.shutdown_requested.load(Ordering::Acquire) {
+                // Join any cancellation-interrupted shutdown before publishing a
+                // distinct store. Retained old handles stay permanently sealed.
+                existing.shutdown().await;
+            } else {
+                // A new boot cannot replace a live handle's original capability.
+                if let (Some(old), Some(new)) =
+                    (existing.access.serving_gate(), access.serving_gate())
+                {
+                    ensure!(
+                        Arc::ptr_eq(old, new),
+                        "live store belongs to another serving capability"
+                    );
+                }
+                existing.check_access()?;
+                return Ok(existing);
             }
-            match (existing.access.lifecycle_gate(), access.lifecycle_gate()) {
-                (Some(old), Some(new)) => ensure!(
-                    Arc::ptr_eq(old, new),
-                    "live store belongs to another lifecycle invocation"
-                ),
-                (None, None) => {}
-                _ => bail!("live store lifecycle purpose differs"),
-            }
-            existing.check_access()?;
-            return Ok(existing);
         }
         let catalog = if let Some(catalog) = node.catalog(&tenant)? {
             ensure!(

@@ -909,3 +909,48 @@ async fn bounded_encrypted_reads_reject_payload_before_plaintext_allocation() {
     );
     store.shutdown().await;
 }
+
+#[tokio::test]
+async fn completed_shutdown_allows_distinct_store_without_reviving_retained_handles() {
+    let (_directory, original, provider, clock) = fixture().await;
+    original
+        .write_batch(&[WriteOp::Put {
+            namespace: "docs".into(),
+            key: b"retained".to_vec(),
+            value: b"durable".to_vec(),
+        }])
+        .unwrap();
+    let retained = original.clone();
+    original.seal();
+    assert!(
+        TenantStore::open_fixture_with_clock(
+            original.node.clone(),
+            original.tenant.clone(),
+            provider.clone(),
+            clock.clone()
+        )
+        .await
+        .is_err()
+    );
+    original.shutdown().await;
+    let fresh = TenantStore::open_fixture_with_clock(
+        original.node.clone(),
+        original.tenant.clone(),
+        provider,
+        clock,
+    )
+    .await
+    .unwrap();
+    assert!(!Arc::ptr_eq(&fresh, &original));
+    assert_eq!(
+        fresh.get("docs", b"retained").unwrap(),
+        Some(b"durable".to_vec())
+    );
+    assert!(retained.get("docs", b"retained").is_err());
+    original.shutdown().await;
+    assert_eq!(
+        fresh.get("docs", b"retained").unwrap(),
+        Some(b"durable".to_vec())
+    );
+    fresh.shutdown().await;
+}
