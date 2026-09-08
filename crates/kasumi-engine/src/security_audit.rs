@@ -102,6 +102,9 @@ struct AuditWriter {
     destination: Arc<dyn kasumi_store::AuditArchiveDestination>,
     maintenance: tokio::sync::Mutex<()>,
     wake: Arc<tokio::sync::Notify>,
+    worker: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    #[cfg(test)]
+    worker_pause: Mutex<Option<Arc<retention::WorkerPause>>>,
     workspace: Mutex<Option<crate::admission::Reservation>>,
     admission: Arc<crate::admission::NodeAdmission>,
     work: Arc<WorkFence>,
@@ -185,12 +188,24 @@ impl SecurityAudit {
             destination,
             maintenance: tokio::sync::Mutex::new(()),
             wake: Arc::new(tokio::sync::Notify::new()),
+            worker: tokio::sync::Mutex::new(None),
+            #[cfg(test)]
+            worker_pause: Mutex::new(None),
             work: Arc::new(WorkFence::default()),
             workspace: Mutex::new(Some(workspace)),
             admission,
         });
+        // Register the worker before another open can observe this owner.
+        // Its strong upgrade can precede WorkFence admission, so the work
+        // counter alone cannot prove that its final storage owner has drained.
+        {
+            let mut worker = writer
+                .worker
+                .try_lock()
+                .map_err(|_| anyhow::anyhow!("new audit worker ownership unavailable"))?;
+            *worker = Some(retention::start_worker(&runtime, Arc::downgrade(&writer)));
+        }
         writers.insert(identity, Arc::downgrade(&writer));
-        retention::start_worker(&runtime, Arc::downgrade(&writer));
         Ok(Arc::new(Self { writer }))
     }
 
@@ -380,6 +395,17 @@ impl SecurityAudit {
     /// Cancellation leaves the fence closed and permits a later call to finish.
     pub async fn shutdown(&self) {
         self.writer.work.seal();
+        self.writer.wake.notify_one();
+        {
+            let mut worker = self.writer.worker.lock().await;
+            if let Some(task) = worker.as_mut() {
+                // Keep the handle in place across await: cancellation must not
+                // detach the worker or allow a repeated shutdown to skip it.
+                // Do not abort an admitted archive publication.
+                let _ = task.await;
+                worker.take();
+            }
+        }
         self.writer.work.drain().await;
         self.writer.store.shutdown().await;
         // Retained closed handles cannot perform more work. Release the node's
@@ -415,6 +441,77 @@ mod tests {
             request_id: "cancelled-denial".into(),
             outcome: SecurityOutcome::Denied,
         }
+    }
+
+    #[tokio::test]
+    async fn archive_worker_before_registration_is_joined_through_cancelled_shutdown_and_reopen() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("worker-security.redb");
+        let node = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
+        let weak_node = Arc::downgrade(&node);
+        let provider = Arc::new(LocalKeyProvider::new([89; 32]));
+        let store =
+            TenantStore::open_fixture(node.clone(), SECURITY_TENANT.into(), provider.clone())
+                .await
+                .unwrap();
+        let admission = crate::admission::NodeAdmission::new(Default::default()).unwrap();
+        let audit =
+            SecurityAudit::open(store.clone(), AuditRetentionBudget::default(), admission).unwrap();
+        audit.record_sync(event()).unwrap();
+        let pause = Arc::new(retention::WorkerPause::default());
+        *audit.writer.worker_pause.lock().unwrap() = Some(pause.clone());
+        // This current-thread fixture installs its gate before the new worker
+        // can first run. Pause after its strong upgrade and before registration.
+        pause.entered.notified().await;
+        assert!(Arc::strong_count(&audit.writer) >= 2);
+        audit.writer.work.drain().await;
+        // Drain key monitors first to isolate the missing worker ownership from
+        // unrelated asynchronous store shutdown. No timing sleep drives this race.
+        store.shutdown().await;
+
+        let mut shutdown = Box::pin(audit.shutdown());
+        std::future::poll_fn(|cx| {
+            assert!(
+                shutdown.as_mut().poll(cx).is_pending(),
+                "zero registered work cannot release the paused archive worker"
+            );
+            Poll::Ready(())
+        })
+        .await;
+        drop(shutdown);
+        let mut repeated = Box::pin(audit.shutdown());
+        std::future::poll_fn(|cx| {
+            assert!(
+                repeated.as_mut().poll(cx).is_pending(),
+                "cancelled shutdown must retain the same worker join"
+            );
+            Poll::Ready(())
+        })
+        .await;
+        pause.release.notify_one();
+        repeated.await;
+        assert!(audit.writer.worker.lock().await.is_none());
+        drop(audit);
+        drop(store);
+        drop(node);
+        assert!(weak_node.upgrade().is_none());
+
+        let reopened = TenantStore::open_fixture(
+            NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap(),
+            SECURITY_TENANT.into(),
+            provider,
+        )
+        .await
+        .unwrap();
+        assert_eq!(reopened.scan("security.audit").unwrap().len(), 1);
+        assert_eq!(
+            retention::Head::open(&reopened, &audit_destination(&reopened))
+                .unwrap()
+                .position
+                .next_sequence,
+            1
+        );
+        reopened.shutdown().await;
     }
 
     #[test]
