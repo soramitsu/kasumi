@@ -85,14 +85,13 @@ impl Expected {
                 if !expected_incarnation(&outer.incarnation, call) {
                     return Err(invalid("invalid snapshot incarnation"));
                 }
-                if let Some(lease) = lease {
-                    if outer.revision != lease.revision
+                if let Some(lease) = lease
+                    && (outer.revision != lease.revision
                         || outer.incarnation != lease.incarnation
                         || outer.policy_epoch != lease.policy_epoch
-                        || outer.schema_epoch != lease.schema_epoch
-                    {
-                        return Err(invalid("snapshot page changed its original generation"));
-                    }
+                        || outer.schema_epoch != lease.schema_epoch)
+                {
+                    return Err(invalid("snapshot page changed its original generation"));
                 }
                 let documents = array(outer.documents, points.len())?;
                 if documents.len() != points.len() {
@@ -186,12 +185,12 @@ impl Expected {
                     }
                     previous = document.id;
                 }
-                if let Some(next) = outer.next_after_id {
-                    if rows.is_empty() || next != previous {
-                        return Err(invalid(
-                            "snapshot scan continuation is not its last returned ID",
-                        ));
-                    }
+                if let Some(next) = outer.next_after_id
+                    && (rows.is_empty() || next != previous)
+                {
+                    return Err(invalid(
+                        "snapshot scan continuation is not its last returned ID",
+                    ));
                 }
             }
         }

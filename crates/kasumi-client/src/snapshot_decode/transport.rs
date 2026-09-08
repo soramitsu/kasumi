@@ -3,7 +3,7 @@
 use super::resources::{Call, invalid};
 use crate::{ClientError, proto};
 use bytes::{Buf, Bytes};
-use http_body::{Body as _, Frame};
+use http_body::Frame;
 use std::{
     future::Future,
     pin::Pin,
@@ -360,6 +360,7 @@ pub(super) async fn receive(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use http_body::Body as _;
     #[test]
     fn framing_rejects_declared_size_compression_and_second_message_before_forwarding() {
         let mut framing = Framing::default();
