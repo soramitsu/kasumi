@@ -521,6 +521,7 @@ pub(crate) async fn verify(
                 },
             )
             .await?;
+    let state = Arc::new(state);
     reader.authorize_state(state.metadata()).await?;
     anyhow::ensure!(
         state.metadata().tenant == manifest.tenant
@@ -528,12 +529,18 @@ pub(crate) async fn verify(
             && state.metadata().revision == manifest.revision,
         "full backup state identity differs"
     );
+    anyhow::ensure!(
+        state.metadata().lifecycle_control.is_none()
+            && state.metadata().recovery_control.is_empty(),
+        "Control state cannot be an application backup"
+    );
     state.authorize_source(&source_purpose, &source_purpose)?;
     for archive in state.records(11, None)? {
         let crate::snapshot_codec::Record::Archive(_, archive) = archive? else {
             unreachable!()
         };
 
+        let archive = Arc::new(archive);
         reader.check_access().await?;
         let contents = reader
             .object(
@@ -563,48 +570,78 @@ pub(crate) async fn verify(
                     true,
                 )
                 .await?;
-            anyhow::ensure!(
-                contents.source_purpose == history_purpose
-                    && contents.snapshot.len() == chunk.plaintext_bytes
-                    && hex::encode(Sha256::digest(&contents.snapshot)) == chunk.plaintext_sha256,
-                "full backup history chunk plaintext differs"
-            );
             key_catalogs.add(&contents.key_catalog_sha256)?;
-            let body: HistoryArchiveChunk = serde_json::from_slice(&contents.snapshot)?;
-            anyhow::ensure!(
-                body.archive_id == archive.manifest.archive_id
-                    && body.collection == archive.manifest.collection
-                    && body.source_incarnation == archive.manifest.source_incarnation
-                    && body.index == index
-                    && body.documents.len() == chunk.document_count
-                    && body
-                        .documents
-                        .first()
-                        .is_some_and(|doc| doc.id == chunk.first_id)
-                    && body
-                        .documents
-                        .last()
-                        .is_some_and(|doc| doc.id == chunk.last_id)
-                    && body
-                        .documents
-                        .windows(2)
-                        .all(|pair| pair[0].id < pair[1].id),
-                "full backup history chunk identity differs"
-            );
-            let collection = state.collection(&archive.manifest.collection)?;
-            for doc in &body.documents {
-                let reference = state.archived(&archive.manifest.collection, &doc.id)?;
-                anyhow::ensure!(
-                    reference.archive_id == archive.manifest.archive_id
-                        && reference.chunk_index == index
-                        && reference.version == doc.version
-                        && reference.document_sha256 == staged_digest(doc)?.0
-                        && reference.document_bytes == crate::accounting::encoded_len(doc)?
-                        && reference.indexed_fields
-                            == crate::state::history::index_fields(&collection.definition, doc),
-                    "full backup archived document differs from retained metadata"
-                );
-            }
+            let semantic_state = state.clone();
+            let semantic_archive = archive.clone();
+            let semantic_purpose = history_purpose.clone();
+            let semantic_cancellation = reader.cancellation();
+            let semantic_work = ownership.clone();
+            deadline
+                .blocking(reservation.clone(), ownership.clone(), move || {
+                    let check = || -> anyhow::Result<()> {
+                        deadline.check()?;
+                        if let Some(token) = &semantic_cancellation {
+                            token.check()?;
+                        }
+                        if let Some(work) = &semantic_work {
+                            work.check()?;
+                        }
+                        Ok(())
+                    };
+                    check()?;
+                    let chunk = &semantic_archive.manifest.chunks[index];
+                    let archive = semantic_archive.as_ref();
+                    anyhow::ensure!(
+                        contents.source_purpose == semantic_purpose
+                            && contents.snapshot.len() == chunk.plaintext_bytes
+                            && hex::encode(Sha256::digest(&contents.snapshot))
+                                == chunk.plaintext_sha256,
+                        "full backup history chunk plaintext differs"
+                    );
+                    let body: HistoryArchiveChunk = serde_json::from_slice(&contents.snapshot)?;
+                    anyhow::ensure!(
+                        body.archive_id == archive.manifest.archive_id
+                            && body.collection == archive.manifest.collection
+                            && body.source_incarnation == archive.manifest.source_incarnation
+                            && body.index == index
+                            && body.documents.len() == chunk.document_count
+                            && body
+                                .documents
+                                .first()
+                                .is_some_and(|doc| doc.id == chunk.first_id)
+                            && body
+                                .documents
+                                .last()
+                                .is_some_and(|doc| doc.id == chunk.last_id)
+                            && body
+                                .documents
+                                .windows(2)
+                                .all(|pair| pair[0].id < pair[1].id),
+                        "full backup history chunk identity differs"
+                    );
+                    let collection = semantic_state.collection(&archive.manifest.collection)?;
+                    for doc in &body.documents {
+                        check()?;
+                        let reference =
+                            semantic_state.archived(&archive.manifest.collection, &doc.id)?;
+                        anyhow::ensure!(
+                            reference.archive_id == archive.manifest.archive_id
+                                && reference.chunk_index == index
+                                && reference.version == doc.version
+                                && reference.document_sha256 == staged_digest(doc)?.0
+                                && reference.document_bytes == crate::accounting::encoded_len(doc)?
+                                && reference.indexed_fields
+                                    == crate::state::history::index_fields(
+                                        &collection.definition,
+                                        doc
+                                    ),
+                            "full backup archived document differs from retained metadata"
+                        );
+                    }
+                    check()?;
+                    Ok(())
+                })
+                .await?;
         }
     }
     let retention = &state.metadata().audit_retention;
@@ -670,7 +707,9 @@ pub(crate) async fn verify(
     checkpoint.validate()?;
     Ok(VerifiedBackup {
         source_purpose,
-        state,
+        state: Arc::try_unwrap(state).map_err(|_| {
+            anyhow::anyhow!("backup semantic worker retained state after completion")
+        })?,
         bytes,
         checkpoint,
         _reservation: reservation,

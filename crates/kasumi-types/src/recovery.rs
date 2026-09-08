@@ -144,7 +144,7 @@ pub struct RecoveryVoterProgress {
 
 /// The bounded head holds only point references. Complete signed inputs and
 /// outcomes remain in separate immutable phase records across later retries.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecoveryRecord {
     pub request: RecoveryStart,
@@ -192,7 +192,7 @@ pub struct RecoveryRouteChange {
 /// One exact remote command or local replicated transition, frozen before any
 /// dispatch. Credential bytes are absent; the installed credential source is
 /// resolved independently for the selected resource at invocation time.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     content = "input",
@@ -211,7 +211,7 @@ pub enum RecoveryDispatch {
     PublishRoute(RecoveryRouteChange),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     content = "outcome",
@@ -226,7 +226,7 @@ pub enum RecoveryDispatchOutcome {
     RoutePublished { revision: u64 },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecoveryPhaseRecord {
     pub operation_id: Uuid,
@@ -316,7 +316,7 @@ impl RecoveryRecord {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecoveryControlState {
     pub operations: imbl::OrdMap<String, RecoveryRecord>,
@@ -330,7 +330,7 @@ impl RecoveryControlState {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     content = "request",

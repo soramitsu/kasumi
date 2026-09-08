@@ -16,6 +16,9 @@ pub(crate) struct SnapshotAccounting {
     archives: usize,
     activations: usize,
     retirements: usize,
+    recovery_operations: usize,
+    recovery_phases: usize,
+    recovery_targets: usize,
 }
 pub(crate) fn encoded_len(value: &impl Serialize) -> Result<usize> {
     struct Counter(usize);
@@ -84,6 +87,39 @@ fn feed(key: u64, value: &std::sync::Arc<ChangeCommit>) -> Result<usize> {
 fn optional<T>(value: Option<&T>, size: impl FnOnce(&T) -> Result<usize>) -> Result<usize> {
     value.map(size).transpose().map(|size| size.unwrap_or(0))
 }
+fn map_changes<V: Clone + PartialEq>(
+    total: &mut usize,
+    previous: &imbl::OrdMap<String, V>,
+    next: &imbl::OrdMap<String, V>,
+    size: impl Fn(&str, &V) -> Result<usize>,
+) -> Result<()> {
+    for difference in previous.diff(next) {
+        use imbl::ordmap::DiffItem;
+        match difference {
+            DiffItem::Add(key, value) => change(total, 0, size(key, value)?)?,
+            DiffItem::Remove(key, value) => change(total, size(key, value)?, 0)?,
+            DiffItem::Update {
+                old: (old_key, old),
+                new: (new_key, new),
+            } => {
+                change(total, size(old_key, old)?, size(new_key, new)?)?;
+            }
+        }
+    }
+    Ok(())
+}
+fn recovery_operation(key: &str, value: &RecoveryRecord) -> Result<usize> {
+    record(&Record::RecoveryOperation(
+        key.into(),
+        Box::new(value.clone()),
+    ))
+}
+fn recovery_phase(key: &str, value: &RecoveryPhaseRecord) -> Result<usize> {
+    record(&Record::RecoveryPhase(key.into(), Box::new(value.clone())))
+}
+fn recovery_target(key: &str, value: &uuid::Uuid) -> Result<usize> {
+    record(&Record::RecoveryTarget(key.into(), *value))
+}
 impl SnapshotAccounting {
     pub fn rebuild(state: &TenantState) -> Result<Self> {
         let mut result = Self::default();
@@ -137,6 +173,24 @@ impl SnapshotAccounting {
             change(&mut result.feed, 0, feed(*i, commit)?)?;
         }
         result.other(state)?;
+        map_changes(
+            &mut result.recovery_operations,
+            &Default::default(),
+            &state.recovery_control.operations,
+            recovery_operation,
+        )?;
+        map_changes(
+            &mut result.recovery_phases,
+            &Default::default(),
+            &state.recovery_control.phases,
+            recovery_phase,
+        )?;
+        map_changes(
+            &mut result.recovery_targets,
+            &Default::default(),
+            &state.recovery_control.targets,
+            recovery_target,
+        )?;
         Ok(result)
     }
     fn other(&mut self, state: &TenantState) -> Result<()> {
@@ -296,6 +350,24 @@ impl SnapshotAccounting {
         {
             result.other(next)?;
         }
+        map_changes(
+            &mut result.recovery_operations,
+            &previous.recovery_control.operations,
+            &next.recovery_control.operations,
+            recovery_operation,
+        )?;
+        map_changes(
+            &mut result.recovery_phases,
+            &previous.recovery_control.phases,
+            &next.recovery_control.phases,
+            recovery_phase,
+        )?;
+        map_changes(
+            &mut result.recovery_targets,
+            &previous.recovery_control.targets,
+            &next.recovery_control.targets,
+            recovery_target,
+        )?;
         Ok(result)
     }
     pub fn bytes(&self, state: &TenantState) -> Result<usize> {
@@ -359,6 +431,9 @@ impl SnapshotAccounting {
             self.archives,
             self.activations,
             self.retirements,
+            self.recovery_operations,
+            self.recovery_phases,
+            self.recovery_targets,
         ] {
             change(&mut total, 0, size)?;
         }
