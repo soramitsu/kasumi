@@ -816,7 +816,12 @@ fn persist_snapshot(
     limit: u64,
     snapshot: &SnapshotEnvelope,
 ) -> Result<()> {
-    let pending = stage_snapshot(domains, &SnapshotImage::from_bytes(bytes)?, limit, snapshot)?;
+    let pending = stage_snapshot(
+        domains,
+        &SnapshotImage::from_bytes(domains.application().scratch_disk(), bytes)?,
+        limit,
+        snapshot,
+    )?;
     publish_snapshot(domains, pending, snapshot)?;
     cleanup_snapshots(domains.application(), limit)
 }
@@ -939,7 +944,7 @@ pub struct SnapshotBuilder {
 fn load_snapshot(store: &TenantStore, limit: u64) -> Result<Option<SnapshotEnvelope>> {
     load_manifest(store, b"current", limit)?
         .map(|manifest| {
-            let mut spool = EncryptedSpool::new(limit)?;
+            let mut spool = EncryptedSpool::new(store.scratch_disk(), limit)?;
             for index in 0..manifest.chunks {
                 let data = store
                     .get(SNAPSHOT, &chunk_key(&manifest, index))?
@@ -954,7 +959,7 @@ fn load_snapshot(store: &TenantStore, limit: u64) -> Result<Option<SnapshotEnvel
                 image.len() == manifest.bytes && image.sha256() == manifest.sha256,
                 "snapshot content digest differs"
             );
-            SnapshotEnvelope::decode(&mut image.reader(), limit)
+            SnapshotEnvelope::decode(image.disk(), &mut image.reader(), limit)
         })
         .transpose()
 }
@@ -1002,7 +1007,9 @@ impl RaftSnapshotBuilder<TypeConfig> for SnapshotBuilder {
                 version: 1,
                 kind: SnapshotKind::Application,
                 meta: captured.meta.clone(),
-                backend: SnapshotImage::capture(limit, |writer| captured.backend.write(writer))?,
+                backend: SnapshotImage::capture(store.scratch_disk(), limit, |writer| {
+                    captured.backend.write(writer)
+                })?,
                 retirement: captured.retirement.clone(),
             };
             let snapshot = as_snapshot(&captured, limit)?;
@@ -1160,7 +1167,8 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
     async fn begin_receiving_snapshot(&mut self) -> Result<Box<SnapshotBuffer>, StorageError<u64>> {
         self.store.check_access().map_err(err)?;
         Ok(Box::new(
-            SnapshotBuffer::new(self.limits.max_snapshot_bytes).map_err(err)?,
+            SnapshotBuffer::new(self.store.scratch_disk(), self.limits.max_snapshot_bytes)
+                .map_err(err)?,
         ))
     }
 
@@ -1181,6 +1189,7 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
             // crypto, validation and materialization off the async runtime.
             let snapshot = snapshot.into_image()?;
             let envelope = SnapshotEnvelope::decode(
+                snapshot.disk(),
                 &mut snapshot.reader(),
                 machine.limits.max_snapshot_bytes,
             )?;

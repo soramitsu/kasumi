@@ -296,7 +296,7 @@ mod lifecycle_tests {
     async fn accept_io_failure_drains_active_tls_request_before_releasing_node() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("accept-error.redb");
-        let node = NodeStore::open(&path).unwrap();
+        let node = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
         let weak = Arc::downgrade(&node);
         let rcgen::CertifiedKey { cert, signing_key } =
             rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
@@ -385,7 +385,7 @@ mod lifecycle_tests {
             "completed before listener returned"
         );
         assert!(weak.upgrade().is_none());
-        drop(NodeStore::open(&path).unwrap());
+        drop(NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap());
     }
 
     struct RecordingAudit(tokio::sync::mpsc::UnboundedSender<TlsHandshakeEvent>);

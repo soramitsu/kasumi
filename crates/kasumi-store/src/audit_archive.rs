@@ -795,7 +795,7 @@ mod tests {
 
     async fn store(directory: &Path) -> Arc<TenantStore> {
         TenantStore::open_fixture(
-            NodeStore::open(directory.join("audit.redb")).unwrap(),
+            NodeStore::open(directory.join("audit.redb"), crate::ScratchDisk::fixture()).unwrap(),
             "__kasumi_security".into(),
             Arc::new(LocalKeyProvider::new([73; 32])),
         )
@@ -1020,7 +1020,11 @@ mod tests {
         let source =
             crate::StorageAccess::standalone(installation, "tenant", Uuid::new_v4()).unwrap();
         let store = TenantStore::open(
-            NodeStore::open(directory.path().join("source.redb")).unwrap(),
+            NodeStore::open(
+                directory.path().join("source.redb"),
+                crate::ScratchDisk::fixture(),
+            )
+            .unwrap(),
             "tenant".into(),
             keys.clone(),
             source.clone(),
@@ -1101,7 +1105,11 @@ mod tests {
         let access =
             crate::StorageAccess::standalone(Uuid::new_v4(), "tenant", Uuid::new_v4()).unwrap();
         let store = TenantStore::open(
-            NodeStore::open(directory.path().join("source.redb")).unwrap(),
+            NodeStore::open(
+                directory.path().join("source.redb"),
+                crate::ScratchDisk::fixture(),
+            )
+            .unwrap(),
             "tenant".into(),
             keys.clone(),
             access.clone(),
@@ -1181,7 +1189,11 @@ mod tests {
         let access =
             crate::StorageAccess::standalone(Uuid::new_v4(), "tenant", Uuid::new_v4()).unwrap();
         let store = TenantStore::open(
-            NodeStore::open(directory.path().join("source.redb")).unwrap(),
+            NodeStore::open(
+                directory.path().join("source.redb"),
+                crate::ScratchDisk::fixture(),
+            )
+            .unwrap(),
             "tenant".into(),
             keys.clone(),
             access.clone(),

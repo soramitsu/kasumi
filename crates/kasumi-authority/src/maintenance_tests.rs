@@ -40,7 +40,7 @@ impl Fixture {
         let mut settings = self.settings.clone();
         settings.resource_budget_bytes = resource_budget_bytes;
         let stores = TenantStorageSet::open(
-            NodeStore::open(self._dir.path().join("authority-4.redb")).unwrap(),
+            NodeStore::open(self._dir.path().join("authority-4.redb"), kasumi_store::ScratchDisk::fixture()).unwrap(),
             self.installation.tenant(),
             Arc::new(LocalKeyProvider::new([4; 32])),
             Arc::new(LocalKeyProvider::new([14; 32])),

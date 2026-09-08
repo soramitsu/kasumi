@@ -57,7 +57,11 @@ fn request() -> QueryRequest {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn snapshot_pages_overlap_atomic_writers_and_current_policy_revocation() {
     let directory = tempfile::tempdir().unwrap();
-    let node = NodeStore::open(directory.path().join("node.redb")).unwrap();
+    let node = NodeStore::open(
+        directory.path().join("node.redb"),
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
     let audit = common::security_audit(node.clone()).await;
     let store = TenantStore::open_fixture(
         node,

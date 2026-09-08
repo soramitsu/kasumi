@@ -133,6 +133,7 @@ impl Administration {
             };
         Ok(LocalObservation {
             admission: self.admission.snapshot(),
+            scratch_disk: self.node.scratch_disk().snapshot(),
             expected_groups,
             groups,
             stores,

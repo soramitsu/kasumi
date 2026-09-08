@@ -547,7 +547,7 @@ fn text_and_structured_indexes_publish_together_after_existing_documents_validat
 }
 
 async fn open(path: &std::path::Path) -> (Arc<Database>, Arc<SecurityAudit>) {
-    let node = NodeStore::open(path).unwrap();
+    let node = NodeStore::open(path, kasumi_store::ScratchDisk::fixture()).unwrap();
     let audit = common::security_audit(node.clone()).await;
     let store = TenantStore::open_fixture(
         node,
@@ -667,7 +667,11 @@ async fn encrypted_restart_and_full_restore_preserve_permanent_activation_receip
     drop(db);
     drop(audit);
 
-    let node = NodeStore::open(root.path().join("restored.redb")).unwrap();
+    let node = NodeStore::open(
+        root.path().join("restored.redb"),
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
     let audit = common::security_audit(node.clone()).await;
     let provider = Arc::new(LocalKeyProvider::new([0xF1; 32]));
     let target = TenantStore::open_fixture(node, "schema".into(), provider.clone())

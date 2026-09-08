@@ -39,6 +39,7 @@ impl SignerVerifierConfig {
         &self,
         credential: CredentialSource,
         initialize: bool,
+        scratch_disk: Arc<kasumi_store::ScratchDisk>,
     ) -> Result<Arc<TenantStore>> {
         self.validate()?;
         private_files::check_directory(
@@ -47,9 +48,9 @@ impl SignerVerifierConfig {
                 .context("verifier directory missing")?,
         )?;
         let node = if initialize {
-            NodeStore::open(&self.database_path)?
+            NodeStore::open(&self.database_path, scratch_disk.clone())?
         } else {
-            NodeStore::open_existing(&self.database_path)?
+            NodeStore::open_existing(&self.database_path, scratch_disk.clone())?
         };
         let provider = self.keys.provider(credential)?;
         let access = StorageAccess::live_signer_trust(self.identity.clone())?;
@@ -63,12 +64,13 @@ impl SignerVerifierConfig {
         &self,
         domains: BTreeMap<String, SigningDomain>,
         credential: CredentialSource,
+        scratch_disk: Arc<kasumi_store::ScratchDisk>,
     ) -> Result<Arc<InstalledSignerVerifier>> {
         ensure!(
             self.database_path.is_file(),
             "signer verifier must be explicitly initialized before runtime startup"
         );
-        let store = self.store(credential, false).await?;
+        let store = self.store(credential, false, scratch_disk).await?;
         let administrator = Arc::new(ScopedSignerAdministrator::default());
         let result = (|| -> Result<BTreeMap<String, Arc<LiveSignerTrust>>> {
             let installed: VerifierInstallation = serde_json::from_slice(
@@ -235,12 +237,14 @@ impl VerifierInstallation {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InitializeSignerVerifier {
+    pub scratch_disk: kasumi_store::ScratchDiskConfig,
     pub verifier: SignerVerifierConfig,
     pub initial_certificates: Vec<SigningCertificate>,
 }
 impl InitializeSignerVerifier {
     pub async fn initialize(&self) -> Result<()> {
         self.verifier.validate()?;
+        self.scratch_disk.validate()?;
         ensure!(
             !self.initial_certificates.is_empty() && self.initial_certificates.len() <= 1024,
             "verifier requires a bounded explicit domain set"
@@ -273,7 +277,14 @@ impl InitializeSignerVerifier {
         if !parent.exists() {
             private_files::create_directory(parent)?;
         }
-        let store = self.verifier.store(Arc::new(file_secret), true).await?;
+        let store = self
+            .verifier
+            .store(
+                Arc::new(file_secret),
+                true,
+                kasumi_store::ScratchDisk::open(self.scratch_disk.clone())?,
+            )
+            .await?;
         let result = (|| -> Result<()> {
             if let Some(previous) = store.get_bounded(NS, b"installation", 256 << 10)? {
                 ensure!(

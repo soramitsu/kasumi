@@ -1,10 +1,10 @@
 //! Temporary point-addressed staging. Database pages, including keys and indexes,
 //! are encrypted in an anonymous spool; only a bounded page cache is resident.
-use crate::EncryptedSpool;
+use crate::{EncryptedSpool, ScratchDisk};
 use anyhow::{Result, ensure};
 use redb::{ReadableDatabase, ReadableTable, StorageBackend, TableDefinition};
 use std::io::{self, Read, Seek, SeekFrom, Write};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 const TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("staged");
 #[derive(Debug)]
 struct Backend(Mutex<EncryptedSpool>);
@@ -33,11 +33,13 @@ pub struct EncryptedTable {
     database: redb::Database,
 }
 impl EncryptedTable {
-    pub fn new(max_disk_bytes: u64) -> Result<Self> {
+    pub fn new(disk: &Arc<ScratchDisk>, max_disk_bytes: u64) -> Result<Self> {
         let mut builder = redb::Database::builder();
         builder.set_cache_size(8 << 20);
-        let database = builder
-            .create_with_backend(Backend(Mutex::new(EncryptedSpool::new(max_disk_bytes)?)))?;
+        let database = builder.create_with_backend(Backend(Mutex::new(EncryptedSpool::new(
+            disk,
+            max_disk_bytes,
+        )?)))?;
         let tx = database.begin_write()?;
         tx.open_table(TABLE)?;
         tx.commit()?;

@@ -10,6 +10,24 @@ target/release/kasumid serve /var/lib/kasumi/kasumi.json
 
 Initialization creates private directories and files, an exclusive installation identity, independent application/custody/Control/security wrapping keyrings, an Ed25519 issuer, TLS identities, and two client profiles. Listeners default to loopback: MCP on 9443, native data on 9444, and native administration on 9445. Change listener addresses and the MCP public URL in the generated configuration before starting if different ports are required.
 
+The generated configuration includes a required `scratch_disk` object with an
+absolute private `directory` at `data/scratch`, `max_bytes` of 68719476736
+(64 GiB), and `min_free_bytes` of 268435456 (256 MiB). Configure these values for
+the installation's workload and disk. The parent directory must exist. All
+snapshot transfer, backup verification, restore staging and temporary point
+indexes share this one owner, including auxiliary trust stores and replacement
+generations. Images and background workers retain their charges until they
+actually drain. Encrypted physical extents count toward the aggregate budget;
+per-operation format and request bounds still apply. These are resource settings,
+not a fixed aggregate backup-format ceiling. Reopening the same live scratch
+directory with different budgets is rejected.
+
+The scratch governor also checks fresh filesystem free space while reserving
+outstanding writes across scratch owners on that filesystem. It does not reserve
+persistent database, index, WAL, backup destination or archive space. External
+processes can consume disk after a check, so storage failures remain possible.
+Protected health and metrics expose the scratch charges and filesystem sample.
+
 The native endpoints require TLS 1.3, a client certificate issued by the installed CA, an exact installed server certificate pin, and a bearer token. `profiles/default.json` names the database credential; `profiles/control.json` names the separate Control administrator credential. Each token is bound to one explicit incarnation and purpose. A Control token cannot access the document API.
 
 MCP accepts preconfigured local bearer tokens over TLS. Supply `Authorization: Bearer <token from profiles/default.token>` and the current MCP protocol headers. Its protected-resource metadata does not advertise an OAuth authorization server. An actual external OAuth deployment uses the separate `auth.source.kind = "external_oauth"` configuration variant.

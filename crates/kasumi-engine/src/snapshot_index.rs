@@ -24,7 +24,7 @@ impl StagedSnapshot {
         mut check: impl FnMut() -> Result<()>,
     ) -> Result<Self> {
         check()?;
-        let index = EncryptedTable::new(max_index_disk_bytes)?;
+        let index = EncryptedTable::new(image.disk(), max_index_disk_bytes)?;
         let mut counts = [0u64; KINDS];
         let mut spans = [None; KINDS];
         let mut previous_change_item = None;

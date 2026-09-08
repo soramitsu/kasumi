@@ -58,7 +58,7 @@ fn vote(source: u64) -> serde_json::Value {
 
 async fn store(path: &std::path::Path) -> Result<Arc<TenantStore>> {
     TenantStore::open_fixture(
-        NodeStore::open(path)?,
+        NodeStore::open(path, kasumi_store::ScratchDisk::fixture())?,
         "tenant-a".into(),
         Arc::new(LocalKeyProvider::new([13; 32])),
     )

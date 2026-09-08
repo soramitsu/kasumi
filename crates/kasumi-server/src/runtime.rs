@@ -233,6 +233,7 @@ pub struct RuntimeConfig {
     pub format: u32,
     pub mode: DeploymentMode,
     pub database_path: PathBuf,
+    pub scratch_disk: kasumi_store::ScratchDiskConfig,
     pub auth: AuthConfig,
     pub mcp: McpEndpoint,
     pub native: MutualTlsEndpoint,
@@ -259,6 +260,7 @@ impl RuntimeConfig {
         ensure!(self.format == 1, "unsupported runtime configuration format");
         absolute(&self.database_path)?;
         self.admission.validate()?;
+        self.scratch_disk.validate()?;
         for (tenant, archive) in &self.tenant_audit_archives {
             kasumi_types::validate_name(tenant)?;
             ensure!(
@@ -896,6 +898,7 @@ impl NodeRuntime {
     ) -> Result<Self> {
         config.validate()?;
         let standalone_lock = crate::standalone::claim(&config)?;
+        let scratch_disk = kasumi_store::ScratchDisk::open(config.scratch_disk.clone())?;
         let credential = Arc::new(credential);
         let signer_verifier = if let Some(verifier) = &config.signer_verifier {
             let mut domains = BTreeMap::new();
@@ -905,7 +908,11 @@ impl NodeRuntime {
                     domains.insert(domain.digest()?, domain);
                 }
             }
-            Some(verifier.open(domains, credential.clone()).await?)
+            Some(
+                verifier
+                    .open(domains, credential.clone(), scratch_disk.clone())
+                    .await?,
+            )
         } else {
             None
         };
@@ -992,7 +999,7 @@ impl NodeRuntime {
         } else {
             (None, None)
         };
-        let node = NodeStore::open(&config.database_path)?;
+        let node = NodeStore::open(&config.database_path, scratch_disk.clone())?;
         let security_store = TenantStore::open(
             node.clone(),
             SECURITY_TENANT.into(),
@@ -1087,7 +1094,7 @@ impl NodeRuntime {
                 let tenant_node = match &active {
                     Some(active) => {
                         tenant.incarnation = Some(active.incarnation.to_string());
-                        NodeStore::open(active.directory.join("node.redb"))?
+                        NodeStore::open(active.directory.join("node.redb"), scratch_disk.clone())?
                     }
                     None => node.clone(),
                 };
@@ -1828,6 +1835,11 @@ pub fn example_config() -> RuntimeConfig {
         strict_read_audit: false,
     };
     RuntimeConfig {
+        scratch_disk: kasumi_store::ScratchDiskConfig {
+            directory: "/var/lib/kasumi/scratch".into(),
+            max_bytes: 64 << 30,
+            min_free_bytes: 256 << 20,
+        },
         tenant_audit_archives: BTreeMap::new(),
         signer_verifier: Some(crate::signer_runtime::SignerVerifierConfig {
             identity: kasumi_serving::TrustVerifierIdentity {
@@ -2138,7 +2150,7 @@ mod tests {
     async fn service_audit_survives_reopen_and_tenant_sealing_and_fails_closed_at_quota() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("node.redb");
-        let node = NodeStore::open(&path).unwrap();
+        let node = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
         let keys = Arc::new(LocalKeyProvider::new([33; 32]));
         let clock = Arc::new(ManualClock::new());
         let service = TenantStore::open_fixture_with_clock(
@@ -2190,7 +2202,7 @@ mod tests {
         drop(service);
         drop(tenant);
         let service = TenantStore::open_fixture_with_clock(
-            NodeStore::open(&path).unwrap(),
+            NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap(),
             SECURITY_TENANT.into(),
             keys,
             clock,
@@ -2440,7 +2452,7 @@ mod lifecycle_tests {
         for startup in [true, false] {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("listener.redb");
-            let node = NodeStore::open(&path).unwrap();
+            let node = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
             let weak = Arc::downgrade(&node);
             let (files, pem) = certificate_files(directory.path());
             let socket = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2528,7 +2540,7 @@ mod lifecycle_tests {
                 "listener or request retained the node after drain"
             );
             // No delay or lock retry after the same drain used by every serve exit.
-            drop(NodeStore::open(&path).unwrap());
+            drop(NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap());
         }
     }
 
@@ -2903,6 +2915,7 @@ mod lifecycle_tests {
         ));
         let mut config = fixture_config();
         config.database_path = dir.path().join("node.redb");
+        config.scratch_disk.directory = dir.path().join("scratch");
         config.mcp.tls = files.clone();
         config.native.tls = files.clone();
         config.admin.tls = files.clone();
@@ -3358,6 +3371,7 @@ mod lifecycle_tests {
             let mut config = fixture_config();
             config.mode = DeploymentMode::Replicated;
             config.database_path = dir.path().join(format!("node{node}.redb"));
+            config.scratch_disk.directory = dir.path().join(format!("scratch-{node}"));
             config.mcp.tls = files[node].clone();
             config.native.tls = files[node].clone();
             config.admin.tls = files[node].clone();

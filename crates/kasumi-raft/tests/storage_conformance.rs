@@ -105,7 +105,7 @@ async fn snapshot_survives_reopen_and_failed_apply_makes_replica_unavailable() -
 async fn snapshot_buffer_caps_total_size_and_sparse_seeks() -> Result<()> {
     use std::io::SeekFrom;
     use tokio::io::{AsyncSeekExt, AsyncWriteExt};
-    let mut buffer = SnapshotBuffer::new(16)?;
+    let mut buffer = SnapshotBuffer::new(&kasumi_store::ScratchDisk::fixture(), 16)?;
     buffer.write_all(b"12345678").await?;
     assert!(buffer.seek(SeekFrom::Start(15)).await.is_err());
     buffer.write_all(b"1234567").await?;
@@ -114,7 +114,9 @@ async fn snapshot_buffer_caps_total_size_and_sparse_seeks() -> Result<()> {
     assert_eq!(buffer.len(), 16);
     assert!(buffer.seek(SeekFrom::Start(17)).await.is_err());
     assert!(buffer.seek(SeekFrom::Current(i64::MIN)).await.is_err());
-    assert!(SnapshotBuffer::from_bytes(vec![0; 17], 16).is_err());
+    assert!(
+        SnapshotBuffer::from_bytes(&kasumi_store::ScratchDisk::fixture(), vec![0; 17], 16).is_err()
+    );
     Ok(())
 }
 
@@ -127,7 +129,7 @@ async fn committed_log_replay_survives_every_append_and_commit_io_failure() -> R
     use openraft::storage::StorageHelper;
     async fn open(disk: FaultBackend) -> Result<Arc<kasumi_store::TenantStorageSet>> {
         let application = TenantStore::open_fixture_with_clock(
-            NodeStore::open_with_backend(disk)?,
+            NodeStore::open_with_backend(disk, kasumi_store::ScratchDisk::fixture())?,
             "log-crash".into(),
             Arc::new(LocalKeyProvider::new([4; 32])),
             Arc::new(ManualClock::new()),

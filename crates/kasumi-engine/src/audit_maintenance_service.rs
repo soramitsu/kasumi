@@ -118,7 +118,11 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn encrypted_worker_drains_hot_history_when_ordinary_capacity_is_full() {
         let directory = tempfile::tempdir().unwrap();
-        let node = NodeStore::open(directory.path().join("node.redb")).unwrap();
+        let node = NodeStore::open(
+            directory.path().join("node.redb"),
+            kasumi_store::ScratchDisk::fixture(),
+        )
+        .unwrap();
         let admission = NodeAdmission::new(crate::admission::AdmissionConfig {
             max_inflight_bytes: Some(512 << 20),
             ..Default::default()

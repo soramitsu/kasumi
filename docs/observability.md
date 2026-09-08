@@ -116,3 +116,14 @@ DEBUG/TRACE events that can contain command bodies. `RUST_LOG` does not expand
 this logging policy. Provider errors are represented by static operational events;
 use the protected audit/maintenance interfaces for exact outcomes. Persist and
 rotate daemon logs using the host's service manager.
+
+Scratch storage observations are available only through the same protected
+routes. Health JSON includes `scratch_disk`; Prometheus exposes
+`kasumi_scratch_disk_max_bytes`, `kasumi_scratch_disk_min_free_bytes`,
+`kasumi_scratch_disk_charged_bytes`, `kasumi_scratch_disk_live_files`,
+`kasumi_scratch_disk_filesystem_pending_bytes`, and the optional fresh
+`kasumi_scratch_disk_filesystem_available_bytes` sample. Charged bytes include
+rounded encrypted spool extents and staging tables retained by active images or
+workers. Filesystem pending bytes include promises by other scratch owners on
+the same filesystem in this process. Persistent database/WAL/index and archive
+capacity is outside this temporary-workspace governor.

@@ -157,6 +157,9 @@ struct RestoreReader<'a> {
     session: kasumi_store::VerifiedBackupSession,
 }
 impl BackupReader for RestoreReader<'_> {
+    fn scratch_disk(&self) -> &Arc<kasumi_store::ScratchDisk> {
+        self.target.scratch_disk()
+    }
     fn session_key_catalog(&self) -> &str {
         self.session.key_catalog_sha256()
     }

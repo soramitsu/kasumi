@@ -246,3 +246,10 @@ current authenticated acknowledgments or permanent revocations, and the full
 issuer drain before global retirement can complete. Global stage abort and
 retirement completion are not exposed yet. These prerequisites are required
 before the release can claim complete distributed signer rotation.
+
+The authority runtime and signer-verifier initialization request require an
+explicit `scratch_disk` object: `directory` (absolute private leaf beneath an
+existing parent), `max_bytes`, and `min_free_bytes`. Use the same installed
+runtime scratch configuration when initializing its separate verifier store.
+Runtime opening passes the shared node owner to both stores; it does not create
+an independent per-request or per-verifier allowance.

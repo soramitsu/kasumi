@@ -13,7 +13,11 @@ use std::{collections::BTreeSet, sync::Arc};
 #[tokio::test]
 async fn pressure_rejects_new_proposals_and_queries_but_committed_raft_work_still_applies() {
     let directory = tempfile::tempdir().unwrap();
-    let node = NodeStore::open(directory.path().join("node.redb")).unwrap();
+    let node = NodeStore::open(
+        directory.path().join("node.redb"),
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
     let audit = common::security_audit(node.clone()).await;
     let store = TenantStore::open_fixture(
         node,
@@ -147,7 +151,11 @@ async fn pressure_rejects_new_proposals_and_queries_but_committed_raft_work_stil
 #[tokio::test]
 async fn explicit_local_bootstrap_reads_the_complete_committed_generation() {
     let directory = tempfile::tempdir().unwrap();
-    let node = NodeStore::open(directory.path().join("local.redb")).unwrap();
+    let node = NodeStore::open(
+        directory.path().join("local.redb"),
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
     let audit = common::security_audit(node.clone()).await;
     let store = TenantStore::open_fixture(
         node,

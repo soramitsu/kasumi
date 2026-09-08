@@ -136,7 +136,7 @@ impl ServingFixture {
                 .unwrap();
             let gate = kasumi_serving::ServingGate::new(lease).unwrap();
             let node =
-                NodeStore::open(self.directory.path().join(format!("node-{id}.redb"))).unwrap();
+                NodeStore::open(self.directory.path().join(format!("node-{id}.redb")), kasumi_store::ScratchDisk::fixture()).unwrap();
             let audit_store = TenantStore::open(
                 node.clone(),
                 crate::SECURITY_TENANT.into(),

@@ -168,6 +168,7 @@ impl GroupObservation {
 }
 pub(crate) struct LocalObservation {
     pub admission: AdmissionSnapshot,
+    pub scratch_disk: kasumi_store::ScratchDiskSnapshot,
     pub expected_groups: usize,
     pub groups: Vec<GroupObservation>,
     pub stores: Vec<Arc<TenantStore>>,
@@ -184,6 +185,7 @@ struct Observation {
     lifecycle: Lifecycle,
     ready: bool,
     admission: AdmissionSnapshot,
+    scratch_disk: kasumi_store::ScratchDiskSnapshot,
     expected_groups: usize,
     unexamined_groups: usize,
     groups: Vec<GroupObservation>,
@@ -350,6 +352,7 @@ impl Service {
             lifecycle,
             ready,
             admission: observed.admission,
+            scratch_disk: observed.scratch_disk,
             expected_groups: observed.expected_groups,
             unexamined_groups,
             groups: observed.groups,
@@ -472,6 +475,23 @@ impl Observation {
             "admission_sample_usable",
             u8::from(self.admission.sample_usable)
         );
+        gauge!("scratch_disk_max_bytes", self.scratch_disk.max_bytes);
+        gauge!(
+            "scratch_disk_min_free_bytes",
+            self.scratch_disk.min_free_bytes
+        );
+        gauge!(
+            "scratch_disk_charged_bytes",
+            self.scratch_disk.charged_bytes
+        );
+        gauge!("scratch_disk_live_files", self.scratch_disk.live_files);
+        gauge!(
+            "scratch_disk_filesystem_pending_bytes",
+            self.scratch_disk.filesystem_pending_bytes
+        );
+        if let Some(available) = self.scratch_disk.filesystem_available_bytes {
+            gauge!("scratch_disk_filesystem_available_bytes", available);
+        }
         gauge!("admission_reserved_bytes", self.admission.reserved_bytes);
         gauge!(
             "admission_inflight_operations",

@@ -63,7 +63,11 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
         keys,
     )
     .await;
-    let audit_node = NodeStore::open(dir.path().join("audit.redb")).unwrap();
+    let audit_node = NodeStore::open(
+        dir.path().join("audit.redb"),
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
     let audit_store = TenantStore::open(
         audit_node,
         kasumi_engine::SECURITY_TENANT.into(),
@@ -151,6 +155,11 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
                 keys: crate::runtime::KeyProviderSettings::File { path: keys },
             };
             InitializeSignerVerifier {
+                scratch_disk: kasumi_store::ScratchDiskConfig {
+                    directory: directory.join("scratch"),
+                    max_bytes: 64 << 30,
+                    min_free_bytes: 256 << 20,
+                },
                 verifier: config.clone(),
                 initial_certificates: vec![certificate.clone()],
             }
@@ -161,6 +170,12 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
                 .open(
                     BTreeMap::from([(domain.digest().unwrap(), domain.clone())]),
                     Arc::new(crate::runtime::file_secret),
+                    kasumi_store::ScratchDisk::open(kasumi_store::ScratchDiskConfig {
+                        directory: directory.join("scratch"),
+                        max_bytes: 64 << 30,
+                        min_free_bytes: 256 << 20,
+                    })
+                    .unwrap(),
                 )
                 .await
                 .unwrap();
@@ -169,7 +184,11 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
             continue;
         }
         let store = TenantStore::open(
-            NodeStore::open(dir.path().join(format!("verifier-{node_id}.redb"))).unwrap(),
+            NodeStore::open(
+                dir.path().join(format!("verifier-{node_id}.redb")),
+                kasumi_store::ScratchDisk::fixture(),
+            )
+            .unwrap(),
             verifier.tenant(),
             Arc::new(LocalKeyProvider::new([node_id as u8 + 100; 32])),
             StorageAccess::live_signer_trust(verifier.clone()).unwrap(),
@@ -247,7 +266,11 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
     let mut services = Vec::new();
     let mut stores = Vec::new();
     for id in 1..=3 {
-        let node = NodeStore::open(dir.path().join(format!("authority-{id}.redb"))).unwrap();
+        let node = NodeStore::open(
+            dir.path().join(format!("authority-{id}.redb")),
+            kasumi_store::ScratchDisk::fixture(),
+        )
+        .unwrap();
         let storage = TenantStorageSet::open(
             node,
             installation.tenant(),

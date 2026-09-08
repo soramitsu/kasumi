@@ -1,6 +1,6 @@
 //! Seekable scratch storage. Only independently authenticated ciphertext reaches
 //! the temporary file; the random key dies with the final spool owner.
-use crate::{SecretKey, decrypt, encrypt};
+use crate::{ScratchDisk, SecretKey, decrypt, encrypt};
 use sha2::{Digest, Sha256};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::sync::{Arc, Mutex};
@@ -11,6 +11,8 @@ const SLOT: u64 = BLOCK as u64 + 40;
 
 pub struct EncryptedSpool {
     file: std::fs::File,
+    // Field order closes the anonymous file before releasing its disk charge.
+    charge: crate::scratch_disk::Charge,
     key: SecretKey,
     id: [u8; 16],
     length: u64,
@@ -33,11 +35,18 @@ impl std::fmt::Debug for EncryptedSpool {
 }
 
 impl EncryptedSpool {
-    pub fn new(limit: u64) -> io::Result<Self> {
+    pub fn new(disk: &Arc<ScratchDisk>, limit: u64) -> io::Result<Self> {
+        if Self::offset(limit.div_ceil(BLOCK as u64))? > i64::MAX as u64 {
+            return Err(io::Error::other(
+                "spool limit exceeds supported file offsets",
+            ));
+        }
+        let (file, charge) = disk.file()?;
         // Unnamed temporary files have owner-only permissions and cannot be
         // reopened after a crash. No key or pathname is persisted.
         Ok(Self {
-            file: tempfile::tempfile()?,
+            file,
+            charge,
             key: SecretKey::random().map_err(io::Error::other)?,
             id: *uuid::Uuid::new_v4().as_bytes(),
             length: 0,
@@ -48,6 +57,9 @@ impl EncryptedSpool {
             dirty: false,
             append_digest: Some(Sha256::new()),
         })
+    }
+    pub fn disk(&self) -> &Arc<ScratchDisk> {
+        self.charge.disk()
     }
     pub fn len(&self) -> u64 {
         self.length
@@ -75,9 +87,10 @@ impl EncryptedSpool {
         } else if length < self.length {
             self.flush_block()?;
             self.cached_index = None;
+            let physical = Self::offset(length.div_ceil(BLOCK as u64))?;
+            self.file.set_len(physical)?;
             self.length = length;
-            self.file
-                .set_len(Self::offset(length.div_ceil(BLOCK as u64))?)?;
+            self.charge.shrink(&self.file, physical)?;
             if !length.is_multiple_of(BLOCK as u64) {
                 self.block(length / BLOCK as u64)?;
                 self.cached[(length % BLOCK as u64) as usize..].fill(0);
@@ -105,6 +118,7 @@ impl EncryptedSpool {
                 encrypt(&self.key, &self.cached, &self.aad(index)).map_err(io::Error::other)?;
             self.file.seek(SeekFrom::Start(Self::offset(index)?))?;
             self.file.write_all(&ciphertext)?;
+            self.charge.observe(&self.file)?;
             self.dirty = false;
         }
         Ok(())
@@ -167,6 +181,9 @@ impl Write for EncryptedSpool {
         self.block(index)?;
         let offset = (self.position % BLOCK as u64) as usize;
         let count = bytes.len().min(BLOCK - offset);
+        let end = self.length.max(self.position + count as u64);
+        self.charge
+            .grow(Self::offset(end.div_ceil(BLOCK as u64))?)?;
         self.cached[offset..offset + count].copy_from_slice(&bytes[..count]);
         if self.position == self.length {
             if let Some(digest) = &mut self.append_digest {
@@ -203,6 +220,7 @@ impl Seek for EncryptedSpool {
 /// Digest and length are computed only after the producer completes successfully.
 #[derive(Clone, Debug)]
 pub struct SnapshotImage {
+    disk: Arc<ScratchDisk>,
     spool: Arc<Mutex<EncryptedSpool>>,
     length: u64,
     sha256: String,
@@ -214,16 +232,22 @@ impl PartialEq for SnapshotImage {
 }
 impl Eq for SnapshotImage {}
 impl SnapshotImage {
+    pub fn disk(&self) -> &Arc<ScratchDisk> {
+        &self.disk
+    }
     pub fn capture(
+        disk: &Arc<ScratchDisk>,
         limit: u64,
         write: impl FnOnce(&mut dyn Write) -> anyhow::Result<()>,
     ) -> anyhow::Result<Self> {
-        let mut spool = EncryptedSpool::new(limit)?;
+        let mut spool = EncryptedSpool::new(disk, limit)?;
         write(&mut spool)?;
         Self::freeze(spool)
     }
-    pub fn from_bytes(bytes: &[u8]) -> anyhow::Result<Self> {
-        Self::capture(bytes.len() as u64, |writer| Ok(writer.write_all(bytes)?))
+    pub fn from_bytes(disk: &Arc<ScratchDisk>, bytes: &[u8]) -> anyhow::Result<Self> {
+        Self::capture(disk, bytes.len() as u64, |writer| {
+            Ok(writer.write_all(bytes)?)
+        })
     }
     pub fn freeze(mut spool: EncryptedSpool) -> anyhow::Result<Self> {
         spool.flush()?;
@@ -244,6 +268,7 @@ impl SnapshotImage {
         };
         let length = spool.len();
         Ok(Self {
+            disk: spool.disk().clone(),
             spool: Arc::new(Mutex::new(spool)),
             length,
             sha256: hex::encode(digest.finalize()),
@@ -314,7 +339,7 @@ mod tests {
     use super::*;
     #[test]
     fn encrypted_spool_seek_overwrite_and_bounds() {
-        let mut spool = EncryptedSpool::new((BLOCK * 3) as u64).unwrap();
+        let mut spool = EncryptedSpool::new(&ScratchDisk::fixture(), (BLOCK * 3) as u64).unwrap();
         let data: Vec<_> = (0..BLOCK * 2 + 31).map(|i| (i % 251) as u8).collect();
         spool.write_all(&data).unwrap();
         spool.seek(SeekFrom::Start(BLOCK as u64 - 5)).unwrap();
@@ -335,7 +360,7 @@ mod tests {
     }
     #[test]
     fn corrupted_or_reordered_blocks_fail_authentication() {
-        let mut spool = EncryptedSpool::new((BLOCK * 3) as u64).unwrap();
+        let mut spool = EncryptedSpool::new(&ScratchDisk::fixture(), (BLOCK * 3) as u64).unwrap();
         spool.write_all(&vec![7; BLOCK * 2]).unwrap();
         spool.flush().unwrap();
         spool.file.rewind().unwrap();

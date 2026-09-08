@@ -309,7 +309,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let keys = Arc::new(LocalKeyProvider::new([71; 32]));
         let store = TenantStore::open_fixture(
-            NodeStore::open(dir.path().join("node")).unwrap(),
+            NodeStore::open(dir.path().join("node"), crate::ScratchDisk::fixture()).unwrap(),
             "tenant".into(),
             keys.clone(),
         )
@@ -650,7 +650,7 @@ mod tests {
         let installation = Uuid::new_v4();
         let access = StorageAccess::standalone(installation, "tenant", source_incarnation).unwrap();
         let store = TenantStore::open(
-            NodeStore::open(dir.path().join("source")).unwrap(),
+            NodeStore::open(dir.path().join("source"), crate::ScratchDisk::fixture()).unwrap(),
             "tenant".into(),
             keys.clone(),
             access.clone(),

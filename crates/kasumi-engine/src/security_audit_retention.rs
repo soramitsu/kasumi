@@ -565,7 +565,7 @@ mod tests {
         };
         let admission = crate::admission::NodeAdmission::new(Default::default()).unwrap();
         let store = TenantStore::open_fixture(
-            NodeStore::open(&path).unwrap(),
+            NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap(),
             SECURITY_TENANT.into(),
             provider.clone(),
         )
@@ -596,7 +596,7 @@ mod tests {
         drop(store);
 
         let store = TenantStore::open_fixture(
-            NodeStore::open(&path).unwrap(),
+            NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap(),
             SECURITY_TENANT.into(),
             provider,
         )

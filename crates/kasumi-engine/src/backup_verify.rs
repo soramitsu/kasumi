@@ -61,6 +61,7 @@ impl VerificationWork {
 }
 
 pub(crate) trait BackupReader: Sync {
+    fn scratch_disk(&self) -> &Arc<kasumi_store::ScratchDisk>;
     fn tenant(&self) -> &str;
     fn session_key_catalog(&self) -> &str;
     fn work_registration(&self) -> Option<Arc<VerificationWork>>;
@@ -387,7 +388,7 @@ pub(crate) async fn verify(
         .page_count
         .checked_mul((PAGE_BYTES + 8) as u64)
         .ok_or_else(|| anyhow::anyhow!("backup page count overflow"))?;
-    let mut pages = kasumi_store::EncryptedSpool::new(page_budget)?;
+    let mut pages = kasumi_store::EncryptedSpool::new(reader.scratch_disk(), page_budget)?;
     let mut reference = Some(manifest.last_page.clone());
     for expected in (0..manifest.page_count).rev() {
         reader.check_access().await?;
@@ -426,7 +427,10 @@ pub(crate) async fn verify(
     let mut spool = if capture.is_some() {
         None
     } else {
-        Some(kasumi_store::EncryptedSpool::new(manifest.resident_bytes)?)
+        Some(kasumi_store::EncryptedSpool::new(
+            reader.scratch_disk(),
+            manifest.resident_bytes,
+        )?)
     };
     let mut resident_bytes = 0u64;
     let mut digest = Sha256::new();

@@ -24,7 +24,10 @@ pub(crate) struct Builder {
     history_bytes: u64,
 }
 impl Builder {
-    pub(crate) fn new(head: CustodyHead) -> Result<Self> {
+    pub(crate) fn new(
+        scratch_disk: &Arc<kasumi_store::ScratchDisk>,
+        head: CustodyHead,
+    ) -> Result<Self> {
         head.validate()?;
         let disk = head
             .policy
@@ -36,8 +39,8 @@ impl Builder {
         Ok(Self {
             records: Records {
                 head,
-                commands: EncryptedTable::new(disk)?,
-                audit: EncryptedTable::new(disk)?,
+                commands: EncryptedTable::new(scratch_disk, disk)?,
+                audit: EncryptedTable::new(scratch_disk, disk)?,
                 sha256: String::new(),
             },
             commands: 0,
@@ -201,7 +204,7 @@ impl Records {
                 .get(crate::control::META, HEAD, HEAD_BYTES)?
                 .context("custody point table head absent")?,
         )?;
-        let mut builder = Builder::new(head)?;
+        let mut builder = Builder::new(store.scratch_disk(), head)?;
         view.visit(COMMANDS, RECORD_BYTES, |key, bytes| {
             let receipt: CustodyReceipt = serde_json::from_slice(bytes)?;
             ensure!(
@@ -225,7 +228,10 @@ impl Records {
     }
     #[cfg(test)]
     pub(crate) fn from_state(state: &CustodyState) -> Result<Arc<Self>> {
-        let mut builder = Builder::new(CustodyHead::from_state(state)?)?;
+        let mut builder = Builder::new(
+            &kasumi_store::ScratchDisk::fixture(),
+            CustodyHead::from_state(state)?,
+        )?;
         for receipt in state.commands.values() {
             builder.command(&serde_json::to_vec(receipt)?)?;
         }

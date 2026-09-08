@@ -161,7 +161,8 @@ fn coordinator() -> TenantState {
 }
 
 fn image(state: &TenantState) -> kasumi_store::SnapshotImage {
-    let mut spool = kasumi_store::EncryptedSpool::new(16 << 20).unwrap();
+    let mut spool =
+        kasumi_store::EncryptedSpool::new(&kasumi_store::ScratchDisk::fixture(), 16 << 20).unwrap();
     write(state, &mut spool).unwrap();
     kasumi_store::SnapshotImage::freeze(spool).unwrap()
 }

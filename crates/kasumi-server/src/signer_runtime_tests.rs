@@ -41,6 +41,11 @@ impl Fixture {
         private_files::create(&key_file, &key.serialize_der()).unwrap();
         Self {
             input: InitializeSignerVerifier {
+                scratch_disk: kasumi_store::ScratchDiskConfig {
+                    directory: directory.path().join("scratch"),
+                    max_bytes: 64 << 30,
+                    min_free_bytes: 256 << 20,
+                },
                 verifier: SignerVerifierConfig {
                     identity: TrustVerifierIdentity {
                         installation_id: Uuid::new_v4(),
@@ -67,6 +72,7 @@ impl Fixture {
             .open(
                 BTreeMap::from([(domain.digest()?, domain)]),
                 Arc::new(file_secret),
+                kasumi_store::ScratchDisk::open(self.input.scratch_disk.clone())?,
             )
             .await
     }
@@ -136,7 +142,11 @@ async fn partial_initializer_resumes_only_exact_initial_heads_and_rejects_corrup
     let store = f
         .input
         .verifier
-        .store(Arc::new(file_secret), true)
+        .store(
+            Arc::new(file_secret),
+            true,
+            kasumi_store::ScratchDisk::fixture(),
+        )
         .await
         .unwrap();
     store
@@ -156,7 +166,11 @@ async fn partial_initializer_resumes_only_exact_initial_heads_and_rejects_corrup
     let store = f
         .input
         .verifier
-        .store(Arc::new(file_secret), true)
+        .store(
+            Arc::new(file_secret),
+            true,
+            kasumi_store::ScratchDisk::fixture(),
+        )
         .await
         .unwrap();
     let digest = f.manifest.signing_domain(0).unwrap().digest().unwrap();
@@ -175,7 +189,11 @@ async fn partial_initializer_resumes_only_exact_initial_heads_and_rejects_corrup
     let store = f
         .input
         .verifier
-        .store(Arc::new(file_secret), true)
+        .store(
+            Arc::new(file_secret),
+            true,
+            kasumi_store::ScratchDisk::fixture(),
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -208,7 +226,11 @@ async fn initialization_rejects_noninitial_and_mismatched_domains_without_publis
     assert!(
         f.input
             .verifier
-            .open(BTreeMap::new(), Arc::new(file_secret))
+            .open(
+                BTreeMap::new(),
+                Arc::new(file_secret),
+                kasumi_store::ScratchDisk::fixture()
+            )
             .await
             .is_err()
     );
@@ -218,7 +240,8 @@ async fn initialization_rejects_noninitial_and_mismatched_domains_without_publis
         other_identity
             .open(
                 BTreeMap::from([(domain.digest().unwrap(), domain)]),
-                Arc::new(file_secret)
+                Arc::new(file_secret),
+                kasumi_store::ScratchDisk::fixture()
             )
             .await
             .is_err()
