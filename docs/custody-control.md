@@ -150,16 +150,24 @@ A successful self-revocation or expired acknowledgement returns `UnknownOutcome`
 a newly authorized custodian resolves the exact identity. Application policy,
 limits, collections and original retirement binding are permanently frozen.
 
-Custody has independent `CustodyLimits`: initial 1,024 command identities, 2,048
-audits and 1 MiB resident metadata; hard ceilings are 4,096 identities, 8,192 audits
-and 1 MiB. Every accepted mutation and exact replay consumes a bounded custody audit.
-Policy/limit changes include their own receipt and audit in candidate accounting
-before publication. A current custodian can expand a full configured budget:
-a pure expansion is admitted against its proposed complete limits, including its
-own records. No history is discarded. The hard ceilings still define a finite
-administrative lifetime; an archive/maintenance facility for that terminal limit
-is not implemented by this tranche. The immutable application receipt store is
-neither pruned nor used for these budgets.
+Custody has an independent `CustodyLimits.max_state_bytes` durable budget,
+initially 64 MiB, expressed as a checked 64-bit count. It accounts for canonical
+policy, permanent receipts and audit records. There is no fixed lifetime command
+or audit count ceiling. Every accepted mutation and exact replay adds a bounded
+custody audit record; policy and limit changes include their own permanent records
+before publication. A current custodian can raise an exhausted byte budget with
+`SetLimits`, preserving every existing identity and exact outcome. Limits that
+cannot be represented safely by storage/staging arithmetic are rejected.
+
+Receipts and audit entries live in encrypted point-addressed tables. Snapshot
+metadata contains a bounded policy head and history digest; typed records stream
+through encrypted indexes and closed snapshots publish chunks atomically with
+the applied position. Runtime custody transfer uses the installed tenant's
+`initial_limits.max_snapshot_bytes` (Control uses its own matching setting).
+Embedded callers supply `CustodyRaftConfig` with an explicit `RaftLimits` budget.
+Configured disk capacity must cover retained state and snapshot maintenance.
+Per-file staging maxima are checked, but shared node temporary-disk admission
+remains unfinished and is not certified by these focused tests.
 
 Proof and status observations do not create permanent mutation identities or
 consume the custody mutation budget. Their exact source/reference/revision and
@@ -169,7 +177,7 @@ if it cannot persist; its configured capacity can be raised through its installe
 lifecycle without municipal key access. Both read and mutation release repeat the
 existing quorum barrier after audit completion, then enforce the original live
 credential and current policy fence. A stalled audit cannot release authority
-from a now-isolated old leader. Closed snapshots are bounded at 2 MiB. Bounded storage reads
+from a now-isolated old leader. Closed snapshots enforce their installed transfer byte budget. Bounded storage reads
 reject excessive ciphertext before plaintext allocation, and sequential control
 recovery has finite identity/header work budgets.
 

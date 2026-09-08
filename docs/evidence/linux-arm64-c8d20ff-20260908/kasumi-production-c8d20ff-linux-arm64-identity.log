@@ -1,0 +1,12 @@
+bbf26728b6440e48ec2028c57f1247b01f08fb9d0f8e689d24b0277ff8e16cca  /opt/kasumi-acceptance/c8d20ff-binaries/kasumid
+565a00ab673862e43149e0f125031a005bd2565b9ef22140b2ad6869ece6cf50  /opt/kasumi-acceptance/c8d20ff-binaries/kasumictl
+7fc0913fee3a4dcb8214b7f37d62cd4dd970ba4e54d45eb1148752773ce070b7  /opt/kasumi-acceptance/c8d20ff-binaries/kasumi-authority
+a4a3883969dc9486548a1aea841ecf45c482c99e4ea1e0d47b56f6c52b2afa08  /opt/kasumi-acceptance/c8d20ff/Cargo.lock
+a31592c6db4eae0668e737ef7dacb2440cfac06b7382c6c0f2d6b4f95c645acb  /tmp/kasumi-production-c8d20ff-source.tar
+rustc 1.97.1 (8bab26f4f 2026-07-14)
+binary: rustc
+commit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452
+commit-date: 2026-07-14
+host: aarch64-unknown-linux-gnu
+release: 1.97.1
+LLVM version: 22.1.6

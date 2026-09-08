@@ -6,7 +6,7 @@ struct ServingFixture {
     databases: Vec<Arc<Database>>,
     audits: Vec<Arc<SecurityAudit>>,
     signer: Arc<kasumi_serving::AuthoritySigner>,
-    trust: kasumi_serving::AuthorityTrust,
+    signing: kasumi_serving::test_utils::FixtureAuthority,
     manifest: kasumi_serving::AuthorityManifest,
     bootstrap: crate::ReplicatedBootstrap,
     clock: Arc<CredentialClock>,
@@ -33,8 +33,7 @@ impl ServingFixture {
             )]),
         };
         let signing = root.install(manifest.clone(), 0).unwrap();
-        let signer = signing.signer;
-        let trust = signing.trust;
+        let signer = signing.signer.clone();
         let context = RequestContext {
             tenant: "serving-expiry".into(),
             principal: "owner".into(),
@@ -70,7 +69,7 @@ impl ServingFixture {
             databases: vec![],
             audits: vec![],
             signer,
-            trust,
+            signing,
             manifest,
             bootstrap,
             clock: Arc::new(CredentialClock(std::sync::atomic::AtomicU64::new(0))),
@@ -102,13 +101,14 @@ impl ServingFixture {
         let group = format!("{}/{}", self.context.tenant, self.bootstrap.incarnation);
         for id in 1..=3 {
             let boot = kasumi_serving::ServingBoot::with_test_clock(
-                self.trust.clone(),
+                self.signing.for_verifier(kasumi_serving::test_utils::fixture_verifier(id)).unwrap().trust,
                 kasumi_serving::ServingIdentity {
                     tenant: self.context.tenant.clone(),
                     incarnation: uuid::Uuid::parse_str(&self.bootstrap.incarnation).unwrap(),
                     authority_epoch: 1,
                     node: kasumi_serving::NodeIdentity {
                         node_id: id,
+            verifier: kasumi_serving::test_utils::fixture_verifier(id),
                         principal: format!("node-{id}"),
                         certificate_sha256: format!("{id:064x}"),
                     },

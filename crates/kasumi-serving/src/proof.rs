@@ -16,6 +16,12 @@ impl AuthoritySigner {
     pub fn certificate(&self) -> &SigningCertificate {
         self.0.certificate()
     }
+    pub fn verifier_identity(&self) -> Result<TrustVerifierIdentity> {
+        self.0.verifier_identity()
+    }
+    pub fn same_verifier_owner(&self, other: &Self) -> bool {
+        self.0.same_verifier_owner(&other.0)
+    }
     pub fn check(&self) -> Result<()> {
         self.0.check()
     }
@@ -92,15 +98,37 @@ impl AuthorityTrust {
             live.keys().eq(self.manifest.partitions.keys()),
             "exact complete local signer verifier set required"
         );
+        let mut verifier = None;
         for (partition, owner) in &live {
+            let current = owner.current()?;
             ensure!(
-                owner.current()?.active.identity.domain
-                    == self.manifest.signing_domain(*partition)?,
+                current.active.identity.domain == self.manifest.signing_domain(*partition)?,
                 "live verifier belongs to another installation"
             );
+            ensure!(
+                verifier
+                    .as_ref()
+                    .is_none_or(|identity| *identity == current.verifier),
+                "authority partitions cannot mix physical verifier installations"
+            );
+            verifier = Some(current.verifier);
         }
         self.live = live;
         Ok(self)
+    }
+    pub fn verifier_identity(&self) -> Result<TrustVerifierIdentity> {
+        let mut identity = None;
+        for partition in self.manifest.partitions.keys() {
+            let current = self.require_live_partition(*partition)?.current()?.verifier;
+            ensure!(
+                identity
+                    .as_ref()
+                    .is_none_or(|identity| *identity == current),
+                "live physical verifier identity changed"
+            );
+            identity = Some(current);
+        }
+        identity.context("current durable verifier identity unavailable")
     }
     pub(crate) fn require_live_partition(&self, partition: u16) -> Result<&Arc<LiveSignerTrust>> {
         let owner = self
@@ -241,6 +269,10 @@ impl ServingBoot {
         clock: Arc<dyn LeaseClock>,
     ) -> Result<Self> {
         identity.validate()?;
+        ensure!(
+            identity.node.verifier == trust.verifier_identity()?,
+            "serving boot physical verifier differs from installed live owner"
+        );
         trust.require_live_partition(trust.manifest.partition(&identity.tenant)?)?;
         let initial = clock.now();
         Ok(Self {

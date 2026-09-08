@@ -1,7 +1,7 @@
 //! Permanent custody identities use encrypted point records. The applied cursor,
 //! small policy head, new receipt and audit entry publish in one transaction.
-//! Snapshot transport still materializes the bounded logical capsule; this module
-//! removes history-sized reads, clones and writes from ordinary custody commands.
+//! Both ordinary commands and canonical snapshots use bounded point records;
+//! retained history does not require an aggregate plaintext allocation.
 use crate::custody_state::{CustodyAudit, CustodyState};
 use anyhow::{Context, Result, ensure};
 use kasumi_store::{TenantStore, WriteOp};
@@ -11,21 +11,21 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 pub(crate) const HEAD: &[u8] = b"custody_point_tables";
-const COMMANDS: &str = "raft.custody-commands";
-const AUDIT: &str = "raft.custody-audit";
+pub(crate) const COMMANDS: &str = "raft.custody-commands";
+pub(crate) const AUDIT: &str = "raft.custody-audit";
 // A policy can contain two independently bounded 1,024-member administrator
 // sets (current and immutable origin). Keep the existing control-record bound.
-const HEAD_BYTES: usize = 2 << 20;
-const RECORD_BYTES: usize = 64 << 10;
+pub(crate) const HEAD_BYTES: usize = 2 << 20;
+pub(crate) const RECORD_BYTES: usize = 64 << 10;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CustodyHead {
     version: u32,
     pub(crate) policy: CustodyState,
-    commands: u64,
-    audit: u64,
-    history_bytes: u64,
+    pub(crate) commands: u64,
+    pub(crate) audit: u64,
+    pub(crate) history_bytes: u64,
 }
 
 fn policy(state: &CustodyState) -> CustodyState {
@@ -67,7 +67,7 @@ fn encoded_len(value: &impl Serialize) -> kasumi_types::Result<u64> {
     serde_json::to_writer(&mut counter, value).map_err(|_| encoding_error())?;
     Ok(counter.0)
 }
-fn command_bytes(receipt: &CustodyReceipt) -> kasumi_types::Result<u64> {
+pub(crate) fn command_bytes(receipt: &CustodyReceipt) -> kasumi_types::Result<u64> {
     encoded_len(&BTreeMap::from([(&receipt.command_id, receipt)]))?
         .checked_sub(2)
         .ok_or_else(encoding_error)
@@ -121,10 +121,7 @@ impl CustodyHead {
         let total = encoded_len(&self.policy)?
             .checked_add(self.history_bytes)
             .ok_or_else(quota_error)?;
-        if self.commands > self.policy.limits.max_commands as u64
-            || self.audit > self.policy.limits.max_audit_records as u64
-            || total > self.policy.limits.max_state_bytes as u64
-        {
+        if total > self.policy.limits.max_state_bytes {
             return Err(quota_error());
         }
         Ok(())
@@ -243,6 +240,7 @@ pub(crate) fn transition_writes(
 /// Snapshot capture uses one encrypted database root, including its exact head.
 /// The aggregate materialization here remains a release gap until the custody
 /// snapshot transport is replaced by typed streaming records.
+#[cfg(test)]
 pub(crate) fn snapshot(store: &Arc<TenantStore>) -> Result<CustodyState> {
     let view = store.read_view()?;
     let head: CustodyHead = serde_json::from_slice(
@@ -297,14 +295,12 @@ pub(crate) fn snapshot(store: &Arc<TenantStore>) -> Result<CustodyState> {
     Ok(state)
 }
 
-/// Existing snapshot callers commit this complete replacement with the matching
-/// applied position. No staged point record is visible before that transaction.
-pub(crate) fn installation_writes(
+pub(crate) fn prepare_replacement(
     store: &TenantStore,
-    state: &CustodyState,
-) -> Result<Vec<WriteOp>> {
-    let head = CustodyHead::from_state(state)?;
-    let mut writes = Vec::new();
+    replacement: Arc<crate::custody_records::Records>,
+) -> Result<Arc<crate::custody_records::Records>> {
+    // A newer snapshot cannot discard or substitute a committed permanent
+    // identity. The publication gate is held while this installed prefix is read.
     let previous = store
         .get_bounded(crate::control::META, HEAD, HEAD_BYTES)?
         .map(|bytes| serde_json::from_slice::<CustodyHead>(&bytes))
@@ -312,20 +308,20 @@ pub(crate) fn installation_writes(
     if let Some(previous) = &previous {
         previous.validate()?;
     }
-    for (namespace, expected) in [
-        (COMMANDS, previous.as_ref().map_or(0, |head| head.commands)),
-        (AUDIT, previous.as_ref().map_or(0, |head| head.audit)),
-    ] {
+    for ((namespace, incoming), expected) in replacement.namespaces().into_iter().zip([
+        previous.as_ref().map_or(0, |head| head.commands),
+        previous.as_ref().map_or(0, |head| head.audit),
+    ]) {
         let mut count = 0u64;
-        store.visit(namespace, RECORD_BYTES, |key, _| {
+        store.visit(namespace, RECORD_BYTES, |key, bytes| {
             count = count
                 .checked_add(1)
                 .context("custody record count overflow")?;
             ensure!(count <= expected, "unowned custody point record");
-            writes.push(WriteOp::Delete {
-                namespace: namespace.into(),
-                key: key.to_vec(),
-            });
+            ensure!(
+                incoming.get(key)?.as_deref() == Some(bytes),
+                "snapshot would erase or replace permanent custody history"
+            );
             Ok(())
         })?;
         ensure!(
@@ -333,22 +329,5 @@ pub(crate) fn installation_writes(
             "custody replacement source record missing"
         );
     }
-    for receipt in state.commands.values() {
-        let bytes = serde_json::to_vec(receipt)?;
-        ensure!(
-            bytes.len() <= RECORD_BYTES,
-            "custody receipt exceeds record bound"
-        );
-        writes.push(WriteOp::put(COMMANDS, receipt.command_id.as_bytes(), bytes));
-    }
-    for (index, event) in state.audit.iter().enumerate() {
-        let bytes = serde_json::to_vec(event)?;
-        ensure!(
-            bytes.len() <= RECORD_BYTES,
-            "custody audit exceeds record bound"
-        );
-        writes.push(WriteOp::put(AUDIT, (index as u64).to_be_bytes(), bytes));
-    }
-    writes.push(head.write()?);
-    Ok(writes)
+    Ok(replacement)
 }

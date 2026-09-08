@@ -129,6 +129,7 @@ impl RuntimeLease {
             purpose,
             node: NodeIdentity {
                 node_id,
+                verifier: trust.verifier_identity()?,
                 principal: config.principal.clone(),
                 certificate_sha256: hex::encode(tls.certificate_pin()),
             },

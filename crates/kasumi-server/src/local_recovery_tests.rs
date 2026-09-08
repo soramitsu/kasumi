@@ -284,6 +284,21 @@ async fn local_stop_persists_identity_before_cleanup_and_rejects_unrelated_files
     let mut journal = record(operator.store(), request.operation_id).unwrap();
     operator.step(&mut journal).await.unwrap();
     let target = journal.target_directory.clone();
+    // Verified materialization can stage an archive before its bootstrap
+    // commits. Ownership comes from this generation's journal, not the
+    // historical source identity inside the ciphertext.
+    let mut builder = kasumi_store::AuditSegmentBuilder::new(Uuid::new_v4(), 0, None).unwrap();
+    assert!(builder.push(0, b"historical source record").unwrap());
+    let segment = operator.store().encrypt_audit_segment(builder).unwrap();
+    let cache = operator.observed_archives(&journal).unwrap();
+    cache.publish_blocking(&segment).unwrap();
+    cache.publish_blocking(&segment).unwrap();
+    let shared =
+        kasumi_store::FilesystemAuditArchive::open(root.path().join("shared-archives")).unwrap();
+    shared.publish_blocking(&segment).unwrap();
+    let cache_directory = target.join("tenant-audit-archives");
+    let archive = cache_directory.join(format!("{}.audit", segment.reference.object.object_id));
+    drop(cache);
     operator.audit.shutdown().await;
     drop(operator);
     let unrelated = target.join("unrelated.txt");
@@ -309,10 +324,46 @@ async fn local_stop_persists_identity_before_cleanup_and_rejects_unrelated_files
     );
     std::fs::remove_file(&database).unwrap();
     std::fs::rename(preserved, &database).unwrap();
+    let original_cache = root.path().join("preserved-cache");
+    std::fs::rename(&cache_directory, &original_cache).unwrap();
+    private_files::create_directory(&cache_directory).unwrap();
+    let unrelated_archive = cache_directory.join("unrelated.txt");
+    private_files::create(&unrelated_archive, b"must remain").unwrap();
+    assert!(resume(&configuration, request.operation_id).await.is_err());
+    assert_eq!(std::fs::read(&unrelated_archive).unwrap(), b"must remain");
+    std::fs::remove_file(&unrelated_archive).unwrap();
+    std::fs::remove_dir(&cache_directory).unwrap();
+    std::fs::rename(original_cache, &cache_directory).unwrap();
+    let original_archive = root.path().join("preserved.audit");
+    std::fs::rename(&archive, &original_archive).unwrap();
+    private_files::create(&archive, &segment.ciphertext).unwrap();
+    assert!(resume(&configuration, request.operation_id).await.is_err());
+    assert_eq!(std::fs::read(&archive).unwrap(), segment.ciphertext);
+    std::fs::remove_file(&archive).unwrap();
+    std::fs::rename(original_archive, &archive).unwrap();
     let stopped = resume(&configuration, request.operation_id).await.unwrap();
     assert_eq!(stopped.phase, LocalRecoveryPhase::Stopped);
     assert!(stopped.cleanup_evidence.is_some());
     assert!(!target.exists());
+    assert_eq!(
+        shared.read_blocking(&segment.reference.object).unwrap(),
+        segment.ciphertext
+    );
+    let operator = Operator::open(&configuration).await.unwrap();
+    let ownership_key = [
+        request.operation_id.as_bytes().as_slice(),
+        segment.reference.object.object_id.as_bytes().as_slice(),
+    ]
+    .concat();
+    assert!(
+        operator
+            .store()
+            .get("standalone-recovery-archive-objects", &ownership_key)
+            .unwrap()
+            .is_some()
+    );
+    operator.audit.shutdown().await;
+    drop(operator);
     assert_eq!(
         stop(&configuration, request.operation_id)
             .await

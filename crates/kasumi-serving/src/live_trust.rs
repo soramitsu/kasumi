@@ -14,24 +14,7 @@ use uuid::Uuid;
 
 pub const MAX_SIGNER_TRUST_RECORD_BYTES: usize = 32 << 10;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TrustVerifierIdentity {
-    pub installation_id: Uuid,
-    pub node_id: u64,
-}
-impl TrustVerifierIdentity {
-    pub fn validate(&self) -> Result<()> {
-        ensure!(
-            !self.installation_id.is_nil() && self.node_id > 0,
-            "invalid local verifier identity"
-        );
-        Ok(())
-    }
-    pub fn tenant(&self) -> String {
-        format!("kasumi.trust.{}.{}", self.installation_id, self.node_id)
-    }
-}
+pub use kasumi_types::TrustVerifierIdentity;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -136,11 +119,16 @@ pub enum SignerTrustAction {
 pub struct SignerTrustCommand {
     pub operation_id: Uuid,
     pub expected_revision: u64,
+    /// Latest first-effect admission. Exact replay preserves this original bound.
+    pub not_after_ms: u64,
     pub action: SignerTrustAction,
 }
 impl SignerTrustCommand {
     pub fn digest(&self) -> Result<String> {
-        ensure!(!self.operation_id.is_nil(), "nil signer trust operation");
+        ensure!(
+            !self.operation_id.is_nil() && self.not_after_ms > 0,
+            "signer operation identity and admission deadline required"
+        );
         ensure!(
             serde_json::to_vec(self)?.len() <= MAX_SIGNER_TRUST_RECORD_BYTES,
             "signer trust command exceeds bounded record size"

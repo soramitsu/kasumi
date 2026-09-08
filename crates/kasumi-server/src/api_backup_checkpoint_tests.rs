@@ -360,7 +360,7 @@ async fn native_backup_proof_is_admin_only_configured_and_verified_through_secur
         node_id,
         group.clone(),
         peer_router.clone(),
-        kasumi_raft::Config::default(),
+        kasumi_raft::CustodyRaftConfig::default(),
         kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
         fixture.audit.clone(),
     )

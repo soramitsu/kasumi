@@ -155,8 +155,72 @@ pub struct FileIdentity {
     device: u64,
     inode: u64,
 }
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DirectoryIdentity {
+    device: u64,
+    inode: u64,
+}
+pub fn directory_identity(path: &Path) -> Result<DirectoryIdentity> {
+    let directory = options().read(true).open(path)?;
+    let metadata = directory.metadata()?;
+    ensure!(metadata.is_dir(), "physical binding requires a directory");
+    check_permissions(&metadata)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Ok(DirectoryIdentity {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
+    }
+    #[cfg(not(unix))]
+    anyhow::bail!("physical directory identity requires Unix storage")
+}
+
+/// Publish a durably prepared inode without replacement or a transient second
+/// hard link. Both names must belong to the same private directory. There is no
+/// copy/delete fallback on a filesystem lacking exclusive rename support.
+pub fn rename_exclusive(source: &Path, destination: &Path) -> Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    ensure!(
+        source.parent() == destination.parent(),
+        "exclusive publication crosses directories"
+    );
+    check_directory(source.parent().context("publication directory missing")?)?;
+    let source_name = std::ffi::CString::new(source.as_os_str().as_bytes())?;
+    let destination_name = std::ffi::CString::new(destination.as_os_str().as_bytes())?;
+    // CString retains both NUL-terminated paths through this single syscall.
+    #[cfg(target_os = "linux")]
+    let result = unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            source_name.as_ptr(),
+            libc::AT_FDCWD,
+            destination_name.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    #[cfg(target_os = "macos")]
+    let result = unsafe {
+        libc::renamex_np(
+            source_name.as_ptr(),
+            destination_name.as_ptr(),
+            libc::RENAME_EXCL,
+        )
+    };
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    compile_error!("exclusive prepared publication requires supported Unix storage");
+    if result != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    sync_parent(destination)
+}
 pub fn file_identity(path: &Path) -> Result<FileIdentity> {
     let file = options().read(true).open(path)?;
+    descriptor_identity(&file)
+}
+pub fn descriptor_identity(file: &File) -> Result<FileIdentity> {
     let metadata = file.metadata()?;
     ensure!(
         metadata.is_file(),
@@ -177,6 +241,12 @@ pub fn file_identity(path: &Path) -> Result<FileIdentity> {
     }
     #[cfg(not(unix))]
     anyhow::bail!("physical file identity requires Unix storage")
+}
+
+pub fn open_read(path: &Path) -> Result<File> {
+    let file = options().read(true).open(path)?;
+    descriptor_identity(&file)?;
+    Ok(file)
 }
 
 /// Hold this guard throughout a read-modify-write transaction or the complete

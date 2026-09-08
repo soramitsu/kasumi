@@ -45,6 +45,7 @@ impl ControlFixture {
                         n.node_id,
                         LifecycleNode {
                             node_id: n.node_id,
+                            verifier: n.verifier.clone(),
                             principal: n.principal.clone(),
                             certificate_sha256: n.certificate_sha256.clone(),
                             attestation_public_key: format!("{:064x}", n.node_id + 100),

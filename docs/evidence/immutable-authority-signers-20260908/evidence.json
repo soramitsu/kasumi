@@ -1,0 +1,54 @@
+{
+  "source_commit": "2eba1e351ec848cb15d3346db1d6cc72aab1cffc",
+  "source_dirty": "",
+  "lockfile_sha256": "a4a3883969dc9486548a1aea841ecf45c482c99e4ea1e0d47b56f6c52b2afa08",
+  "captured_at_utc": "2026-09-08T08:51:41.780630+00:00",
+  "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-apple-darwin\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+  "scope": "Trusted authority runtime signer replacement primitive; native key-file reload, remote acknowledgments and global rotation remain unfinished. Scoped gates only; not final release certification.",
+  "gates": [
+    {
+      "gate": "authority-tests",
+      "log": "kasumi-runtime-signer-slot-authority-tests.log",
+      "log_sha256": "1aab0634d92fe5e0dc5034359d6fcb07d49d11c9cee349a72b09a854579c6475",
+      "binaries": [
+        {
+          "path": "/tmp/kasumi-production-runtime-target/debug/deps/kasumi_authority-4dc8c28d94b8f3ab",
+          "sha256": "cb1f1e8905b9940da75d71f95e8734b8dc62f3255330e92218b437e0a0cfef9f",
+          "bytes": 165287728
+        }
+      ],
+      "results": [
+        "test result: ok. 37 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 48.78s"
+      ]
+    },
+    {
+      "gate": "tls-tests",
+      "log": "kasumi-runtime-signer-slot-tls-tests.log",
+      "log_sha256": "ff16d98736610d7ed4e0c5afabfb6422eb6af4921823261763a4010dc11e1bfa",
+      "binaries": [
+        {
+          "path": "/tmp/kasumi-production-runtime-target/debug/deps/kasumi_server-836de15f40a715c9",
+          "sha256": "ead8260b294fe3f9090e10943bdd564a8c300b619de4ff4251b251195e6439ed",
+          "bytes": 272660368
+        }
+      ],
+      "results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 78 filtered out; finished in 13.25s"
+      ]
+    },
+    {
+      "gate": "clippy",
+      "log": "kasumi-runtime-signer-slot-clippy.log",
+      "log_sha256": "6b0ec77db06078b1523c4bf081e8f23c9f6439bcd88def43e9480a5343373d66",
+      "binaries": [],
+      "results": []
+    },
+    {
+      "gate": "production",
+      "log": "kasumi-runtime-signer-slot-production.log",
+      "log_sha256": "61c27d62b5fb13a047caf76c1cb6e432fd0245ed3085c83bbbc1229858807666",
+      "binaries": [],
+      "results": []
+    }
+  ]
+}

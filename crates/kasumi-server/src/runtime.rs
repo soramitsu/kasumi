@@ -4358,6 +4358,17 @@ pub(crate) async fn open_retired_source(
     audit: Arc<SecurityAudit>,
     admission: Arc<kasumi_engine::admission::NodeAdmission>,
 ) -> Result<Arc<kasumi_engine::RetiredCustody>> {
+    let snapshot_limit = if store.binding().tenant() == CONTROL_TENANT {
+        config.control.initial_limits.max_snapshot_bytes
+    } else {
+        config
+            .tenants
+            .iter()
+            .find(|tenant| tenant.tenant == store.binding().tenant())
+            .context("retired source lacks installed capacity settings")?
+            .initial_limits
+            .max_snapshot_bytes
+    };
     let control = kasumi_raft::ControlLog::installed(store.clone())?
         .context("installed custody consensus absent")?;
     let group = control.group().to_owned();
@@ -4381,7 +4392,12 @@ pub(crate) async fn open_retired_source(
             id,
             group.clone(),
             network.clone(),
-            kasumi_raft::server_config(),
+            kasumi_raft::CustodyRaftConfig {
+                raft: kasumi_raft::server_config(),
+                limits: kasumi_raft::RaftLimits {
+                    max_snapshot_bytes: snapshot_limit,
+                },
+            },
             admission,
             audit,
         )
@@ -4410,7 +4426,12 @@ pub(crate) async fn open_retired_source(
             id,
             group.clone(),
             router.clone(),
-            kasumi_raft::Config::default(),
+            kasumi_raft::CustodyRaftConfig {
+                raft: kasumi_raft::Config::default(),
+                limits: kasumi_raft::RaftLimits {
+                    max_snapshot_bytes: snapshot_limit,
+                },
+            },
             admission,
             audit,
         )

@@ -1,0 +1,41 @@
+{
+  "source": "25588740ed8d1ee41c18fcd595d6207f40fa4c39",
+  "source_tree": "f371a797a89e2c44c15d5e94a948112abfa6cfbf",
+  "lockfile_sha256": "a4a3883969dc9486548a1aea841ecf45c482c99e4ea1e0d47b56f6c52b2afa08",
+  "final_test_executable_sha256": "d6ac3d796b1a4be4da48f8fd7ba94c1ef6f51fd4e03a88b366174b77edc82017",
+  "checks": [
+    {
+      "log": "kasumi-custody-stream-codec-initial-check.log",
+      "sha256": "6790cea04c54993d2af22393cf1600104e6db926c058d9632e40e986b6ec6525",
+      "results": []
+    },
+    {
+      "log": "kasumi-custody-stream-codec-initial-tests.log",
+      "sha256": "346b80c0f5fc92056d6a5a6f6f7daae2f3f10d6d7f7844e2c58ba542e6b7eba6",
+      "results": [
+        "FAILED. 21 passed; 2 failed; 0 ignored; 0 measured; 18 filtered out; finished in 21.53s"
+      ]
+    },
+    {
+      "log": "kasumi-custody-stream-codec-fixed-tests.log",
+      "sha256": "58b904353131eb4e07a537703c27416db29ba3559e672419d79466271e848090",
+      "results": [
+        "ok. 41 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 146.47s"
+      ]
+    },
+    {
+      "log": "kasumi-custody-stream-format-tests.log",
+      "sha256": "91c03a0734a50ae5f52b80987ef37de9591e5fbc329f00655b1b48dd7bdf9a7a",
+      "results": [
+        "ok. 25 passed; 0 failed; 0 ignored; 0 measured; 18 filtered out; finished in 51.05s"
+      ]
+    },
+    {
+      "log": "kasumi-custody-stream-final-clippy.log",
+      "sha256": "1e05fceec21d906d89516a9420ee32b019c4308dd00e9461443bb891381bbd8f",
+      "results": []
+    }
+  ],
+  "prior_failure": "b67a0b3: hostile fixtures tried to encode metadata rejected by the new writer or lost their private record owner through JSON. Explicit test-only hostile transport construction now exercises the receiver without changing production validation.",
+  "scope": "Focused macOS ARM64: full Raft library41/41 at36c01f8; final custody25/25 plus strict Raft Clippy at2558874. Custody byte/count quotas, configured closed transfer capacity and shared temporary-disk admission remain unfinished; not final release acceptance."
+}

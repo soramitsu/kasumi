@@ -93,28 +93,8 @@ impl CustodyState {
                 "custody command identity differs",
             ));
         }
-        // A pure expansion can recover a full configured budget. Its exact
-        // candidate still includes this operation's own receipt and audit and
-        // cannot exceed the immutable hard ceilings or discard any history.
-        let expansion = if prior.is_none()
-            && request.expected_policy_epoch == self.policy_epoch
-            && admitted_at_ms <= request.not_after_ms
-            && let CustodyAction::SetLimits(limits) = &request.action
-            && limits.max_commands >= self.limits.max_commands
-            && limits.max_audit_records >= self.limits.max_audit_records
-            && limits.max_state_bytes >= self.limits.max_state_bytes
-        {
-            Some(limits)
-        } else {
-            None
-        };
-        let admission_limits = expansion.unwrap_or(&self.limits);
-        if prior.is_none() && self.commands.len() >= admission_limits.max_commands {
-            return Err(Error::new(
-                ErrorCode::QuotaExceeded,
-                "permanent custody command budget exhausted",
-            ));
-        }
+        // Candidate accounting below includes the new exact receipt and audit.
+        // A limit increase can recover a full budget without discarding history.
         let mut next = self.clone();
         next.revision = revision;
         let receipt = if let Some(prior) = prior {
@@ -185,14 +165,6 @@ impl CustodyState {
                 "custody state position differs",
             ));
         }
-        if self.commands.len() > self.limits.max_commands
-            || self.audit.len() > self.limits.max_audit_records
-        {
-            return Err(Error::new(
-                ErrorCode::QuotaExceeded,
-                "custody metadata count budget exhausted",
-            ));
-        }
         for (identity, receipt) in &self.commands {
             receipt.validate()?;
             if identity != &receipt.command_id
@@ -226,12 +198,12 @@ impl CustodyState {
             }
             previous = event.revision;
         }
-        struct Budget(usize);
+        struct Budget(u64);
         impl std::io::Write for Budget {
             fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
                 self.0 = self
                     .0
-                    .checked_sub(bytes.len())
+                    .checked_sub(bytes.len() as u64)
                     .ok_or_else(|| std::io::Error::other("custody metadata budget exhausted"))?;
                 Ok(bytes.len())
             }
@@ -354,26 +326,37 @@ mod tests {
         assert_eq!(changed.administrators, state.administrators);
     }
     #[test]
-    fn exhausted_command_audit_and_byte_budgets_publish_no_partial_policy() {
+    fn exhausted_byte_budget_publishes_no_partial_policy() {
         let state = state();
         let request = request(
             &state,
             "quota",
             CustodyAction::SetLimits(CustodyLimits {
-                max_commands: 1,
-                max_audit_records: 1,
                 max_state_bytes: 4096,
             }),
         );
-        let (changed, _) = state.apply(&context("owner"), &request, 100, 2).unwrap();
+        let (mut changed, _) = state.apply(&context("owner"), &request, 100, 2).unwrap();
+        let mut revision = 3;
+        while let Ok((next, _)) = changed.apply(&context("owner"), &request, 100, revision) {
+            changed = next;
+            revision += 1;
+        }
         let before = changed.clone();
         let rotate = self::request(
             &changed,
             "rotate",
             CustodyAction::ReplaceAdministrators(BTreeSet::from(["new-owner".into()])),
         );
-        assert!(changed.apply(&context("owner"), &rotate, 100, 3).is_err());
-        assert!(changed.apply(&context("owner"), &request, 100, 3).is_err());
+        assert!(
+            changed
+                .apply(&context("owner"), &rotate, 100, revision)
+                .is_err()
+        );
+        assert!(
+            changed
+                .apply(&context("owner"), &request, 100, revision)
+                .is_err()
+        );
         assert_eq!(before, changed);
         let oversized = self::request(
             &state,
@@ -411,12 +394,10 @@ mod tests {
         assert!(state.authorize(&wrong).is_err());
     }
     #[test]
-    fn full_count_and_byte_budgets_expand_without_discarding_retained_history() {
+    fn full_byte_budget_expands_without_discarding_retained_history() {
         let original = state();
         let mut bounded = original.clone();
         bounded.limits = CustodyLimits {
-            max_commands: 1,
-            max_audit_records: 1,
             max_state_bytes: 4096,
         };
         let first = request(
@@ -425,22 +406,28 @@ mod tests {
             CustodyAction::SetLimits(bounded.limits.clone()),
         );
         let (mut full, first_receipt) = bounded.apply(&context("owner"), &first, 100, 2).unwrap();
-        // Fill both count bounds; the expansion includes its own receipt/audit.
-        full.limits.max_state_bytes = 4096;
+        let mut revision = 3;
+        while let Ok((next, _)) = full.apply(&context("owner"), &first, 100, revision) {
+            full = next;
+            revision += 1;
+        }
         let expansion = request(
             &full,
             "expand",
             CustodyAction::SetLimits(CustodyLimits {
-                max_commands: 3,
-                max_audit_records: 3,
                 max_state_bytes: 8192,
             }),
         );
-        assert!(full.apply(&context("revoked"), &expansion, 100, 3).is_err());
-        let (expanded, receipt) = full.apply(&context("owner"), &expansion, 100, 3).unwrap();
+        assert!(
+            full.apply(&context("revoked"), &expansion, 100, revision)
+                .is_err()
+        );
+        let (expanded, receipt) = full
+            .apply(&context("owner"), &expansion, 100, revision)
+            .unwrap();
         receipt.outcome.unwrap();
         assert_eq!(expanded.commands["first"], first_receipt);
-        assert_eq!(expanded.audit[..1], full.audit[..]);
+        assert_eq!(expanded.audit[..full.audit.len()], full.audit[..]);
         let mut byte_full = original.clone();
         let mut revision = 2;
         while serde_json::to_vec(&byte_full).unwrap().len() < 4096 {
@@ -455,7 +442,8 @@ mod tests {
                 .0;
             revision += 1;
         }
-        byte_full.limits.max_state_bytes = serde_json::to_vec(&byte_full).unwrap().len() + 16;
+        byte_full.limits.max_state_bytes =
+            serde_json::to_vec(&byte_full).unwrap().len() as u64 + 16;
         byte_full.validate().unwrap();
         let old_byte_cap = byte_full.limits.max_state_bytes;
         let large = request(
@@ -477,7 +465,6 @@ mod tests {
             "grow-bytes",
             CustodyAction::SetLimits(CustodyLimits {
                 max_state_bytes: 32768,
-                ..byte_full.limits.clone()
             }),
         );
         let (expanded, receipt) = byte_full
@@ -485,7 +472,7 @@ mod tests {
             .unwrap();
         receipt.outcome.unwrap();
         assert!(
-            serde_json::to_vec(&expanded).unwrap().len() > old_byte_cap,
+            serde_json::to_vec(&expanded).unwrap().len() as u64 > old_byte_cap,
             "the expansion's own records exceed the previous byte cap"
         );
         let large = request(&expanded, "large", large.action);
@@ -500,8 +487,6 @@ mod tests {
         use crate::custody_tables::CustodyHead;
         let mut state = state();
         state.limits = CustodyLimits {
-            max_commands: 8,
-            max_audit_records: 12,
             max_state_bytes: 8192,
         };
         let mut head = CustodyHead::from_state(&state).unwrap();
@@ -512,8 +497,6 @@ mod tests {
                     &state,
                     &format!("expand-{iteration}"),
                     CustodyAction::SetLimits(CustodyLimits {
-                        max_commands: state.limits.max_commands * 2,
-                        max_audit_records: state.limits.max_audit_records * 2,
                         max_state_bytes: (state.limits.max_state_bytes * 2).min(1 << 20),
                     }),
                 )

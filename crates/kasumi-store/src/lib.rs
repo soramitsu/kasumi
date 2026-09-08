@@ -9,9 +9,9 @@
 mod archive_objects;
 mod audit_archive;
 pub use audit_archive::{
-    AuditArchiveDestination, AuditSegmentBuilder, FilesystemAuditArchive, HistoricalAuditVerifier,
-    InspectedAuditDependency, PreparedAuditSegment, S3AuditArchive, TenantAuditPlacement,
-    VerifiedAuditSegment,
+    AuditArchiveDestination, AuditArchivePublicationObserver, AuditSegmentBuilder,
+    FilesystemAuditArchive, HistoricalAuditVerifier, InspectedAuditDependency,
+    PreparedAuditSegment, S3AuditArchive, TenantAuditPlacement, VerifiedAuditSegment,
 };
 mod backup;
 mod backup_sessions;

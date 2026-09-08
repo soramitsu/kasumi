@@ -18,6 +18,8 @@ const GENERATIONS: &str = "standalone-recovery-generations";
 const ACTIVE: &str = "standalone-recovery-active";
 const INSTALLATION: &str = "standalone-recovery-installation";
 const MAX_RECORD: usize = 2 << 20;
+#[path = "local_recovery_archives.rs"]
+mod archives;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -107,6 +109,8 @@ struct Journal {
     database_path: PathBuf,
     target_directory: PathBuf,
     database_file: Option<private_files::FileIdentity>,
+    #[serde(deserialize_with = "kasumi_types::require_explicit_option")]
+    archive_directory: Option<private_files::DirectoryIdentity>,
     source_provider: serde_json::Value,
     application_provider: serde_json::Value,
     custody_provider: serde_json::Value,
@@ -164,7 +168,7 @@ fn record(store: &TenantStore, operation: Uuid) -> Result<Journal> {
             .context("local recovery operation is unknown")?,
     )?;
     ensure!(
-        journal.format == 1 && journal.status.request.operation_id == operation,
+        journal.format == 2 && journal.status.request.operation_id == operation,
         "unsupported or substituted local recovery record"
     );
     Ok(journal)
@@ -458,11 +462,12 @@ pub async fn start(
             "target generation directory already exists"
         );
         let journal = Journal {
-            format: 1,
+            format: 2,
             installation_id: installation_id(&operator.config, &request.tenant)?,
             database_path: operator.config.database_path.clone(),
             target_directory,
             database_file: None,
+            archive_directory: None,
             source_provider: request.source_keys.identity_descriptor()?,
             application_provider: tenant.keys.identity_descriptor()?,
             custody_provider: tenant.custody_keys.identity_descriptor()?,
@@ -543,6 +548,9 @@ pub async fn resume(configuration: &Path, operation: Uuid) -> Result<LocalRecove
                     .event(&journal, kasumi_engine::SecurityOutcome::Failed)
                     .await;
                 return Err(error);
+            }
+            if journal.status.phase == LocalRecoveryPhase::Stopping {
+                tokio::task::yield_now().await;
             }
         }
         Ok(journal.status)
@@ -664,7 +672,8 @@ impl Operator {
                 ),
             ])?;
         }
-        check_database_file(journal)
+        check_database_file(journal)?;
+        self.prepare_archives(journal)
     }
     fn prepare_directory(&self, journal: &Journal) -> Result<()> {
         let parent = journal
@@ -750,6 +759,10 @@ impl Operator {
             )?,
         )
         .await?;
+        self.config.install_tenant_audit_archive(
+            stores.application(),
+            Some(self.observed_archives(journal)?),
+        )?;
         let initialized = stores
             .application()
             .get("engine.bootstrap", b"manifest")?
@@ -758,8 +771,7 @@ impl Operator {
             materialize || initialized,
             "materialized target bootstrap is missing"
         );
-        let admission =
-            kasumi_engine::admission::NodeAdmission::new(self.config.admission.clone())?;
+        let admission = self.audit.admission().clone();
         let database = if initialized {
             kasumi_engine::open_local_with_incarnation(
                 stores.clone(),
@@ -964,21 +976,23 @@ impl Operator {
             if marker.try_exists()? {
                 check_binding(journal)?;
             }
-            let mut entries = Vec::with_capacity(2);
+            let mut entries = Vec::with_capacity(3);
             for entry in std::fs::read_dir(&journal.target_directory)? {
                 ensure!(
-                    entries.len() < 2,
+                    entries.len() < 3,
                     "cleanup refuses unexpected target entries"
                 );
                 entries.push(entry?);
             }
             for entry in &entries {
                 ensure!(
-                    entry.file_type()?.is_file()
+                    (entry.file_type()?.is_file()
                         && matches!(
                             entry.file_name().to_str(),
                             Some("binding.json" | "node.redb")
-                        ),
+                        ))
+                        || (entry.file_type()?.is_dir()
+                            && entry.file_name() == "tenant-audit-archives"),
                     "cleanup refuses an unrelated or linked target entry"
                 );
             }
@@ -987,7 +1001,7 @@ impl Operator {
                 "nonempty target generation has lost its ownership binding"
             );
             let database = journal.target_directory.join("node.redb");
-            if database.try_exists()? {
+            let ownership = if database.try_exists()? {
                 if journal.database_file.is_some() {
                     check_database_file(journal)?;
                 } else {
@@ -995,11 +1009,18 @@ impl Operator {
                 }
                 // This uses the same exclusive inode lock as redb. Existing
                 // workers must drain before the owned directory entry is deleted.
-                let ownership = private_files::ExclusiveLock::acquire(&database)?;
+                Some(private_files::ExclusiveLock::acquire(&database)?)
+            } else {
+                None
+            };
+            if !self.cleanup_archives(journal)? {
+                return Ok(());
+            }
+            if database.try_exists()? {
                 std::fs::remove_file(&database)?;
                 private_files::sync_parent(&database)?;
-                drop(ownership);
             }
+            drop(ownership);
             if marker.try_exists()? {
                 std::fs::remove_file(&marker)?;
                 private_files::sync_parent(&marker)?;
@@ -1009,9 +1030,11 @@ impl Operator {
         }
         journal.status.cleanup_evidence = Some(
             kasumi_types::staged_digest(&(
-                "kasumi.local-cleanup.v1",
+                "kasumi.local-cleanup.v2",
                 &binding(journal),
                 &journal.target_directory,
+                &journal.database_file,
+                &journal.archive_directory,
             ))?
             .0,
         );

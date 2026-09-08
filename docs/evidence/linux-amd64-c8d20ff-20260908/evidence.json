@@ -1,0 +1,43 @@
+{
+  "source": "c8d20ffef7f9b5c05f6e4223a1ac4add4526aa76",
+  "source_archive_sha256": "a31592c6db4eae0668e737ef7dacb2440cfac06b7382c6c0f2d6b4f95c645acb",
+  "lockfile_sha256": "a4a3883969dc9486548a1aea841ecf45c482c99e4ea1e0d47b56f6c52b2afa08",
+  "validation_image": "sha256:41fffba56cf2582cee7c6d896cbe511f47fce676bde5c3d3f9e9142758ecfca7",
+  "command": [
+    "cargo",
+    "build",
+    "--locked",
+    "--release",
+    "-j",
+    "2",
+    "-p",
+    "kasumi-server",
+    "--bins",
+    "--no-default-features"
+  ],
+  "duration": "25m56s",
+  "executables_sha256": {
+    "kasumi-authority": "187d681690f17a8a9c4266df51ee8cf49dc255c51003c8aeda43125d267da8e3",
+    "kasumictl": "30c3151a6f14ea3690129315fdab6a0e2fa7c165a02ab9e5dce9d05094abef63",
+    "kasumid": "26cf6fe5277f64517a413f6f9bc3481bb559792fd0c071a6bd4fde591ca00bd4"
+  },
+  "preserved_vm_directory": "/opt/kasumi-acceptance/c8d20ff-amd64-binaries",
+  "logs": {
+    "build": {
+      "log": "kasumi-production-c8d20ff-linux-amd64-build.log",
+      "sha256": "f18b0038af87b47d18bd13cb60e578b1bbffaa0de275c5819da42b27c98f1a44",
+      "exit_code": 0
+    },
+    "identity": {
+      "log": "kasumi-production-c8d20ff-linux-amd64-identity.log",
+      "sha256": "81a36c842e383e0e1ac169474c5bf9f412012a455d1cc037b43fbf5e20f4df0e",
+      "exit_code": 0
+    },
+    "production-features": {
+      "log": "kasumi-production-c8d20ff-linux-amd64-production-features.log",
+      "sha256": "ccd33eb30b58d7845bc9d9a11f09c3b5176ffd95d0101e5b392e985c9fb363e7",
+      "exit_code": 0
+    }
+  },
+  "scope": "Intermediate production build only; source predates later integration. Linux x86-64 containers use Rosetta translation in a dedicated Debian ARM64 VM, not native performance evidence. Final production release acceptance remains open."
+}

@@ -132,7 +132,7 @@ impl AuthorityResponseFence {
 pub struct IndependentAuthority {
     group: RaftGroup,
     backend: Arc<Backend>,
-    signer: Arc<AuthoritySigner>,
+    signer: std::sync::RwLock<Arc<AuthoritySigner>>,
     clock: Arc<EpochClock>,
     elapsed: Arc<dyn LeaseClock>,
     proposal: tokio::sync::Mutex<()>,
@@ -181,6 +181,10 @@ impl IndependentAuthority {
     ) -> anyhow::Result<Arc<Self>> {
         installation.validate()?;
         settings.validate(node_id)?;
+        ensure!(
+            settings.installed_members[&node_id].verifier == signer.verifier_identity()?,
+            "operational signer physical verifier differs from installed authority member"
+        );
         let voters = settings.bootstrap.voters();
         let partition = installation
             .manifest
@@ -271,7 +275,7 @@ impl IndependentAuthority {
         Ok(Arc::new(Self {
             group,
             backend,
-            signer,
+            signer: std::sync::RwLock::new(signer),
             elapsed: clock.elapsed_clock(),
             clock,
             proposal: tokio::sync::Mutex::new(()),
@@ -372,8 +376,15 @@ impl IndependentAuthority {
         }
         Ok(())
     }
+    fn request_signer(&self) -> Result<Arc<AuthoritySigner>> {
+        // Capture identity only. An admitted administrative effect can commit
+        // while its old signer is sealed; signing and release then return an
+        // unknown outcome for exact recovery through current administration.
+        Ok(self.signer.read().map_err(unavailable)?.clone())
+    }
     fn fence(
         self: &Arc<Self>,
+        signer: Arc<AuthoritySigner>,
         context: RequestContext,
         policy_epoch: Option<u64>,
         lease: Option<LeaseRequest>,
@@ -381,7 +392,7 @@ impl IndependentAuthority {
     ) -> AuthorityResponseFence {
         AuthorityResponseFence {
             authority: self.clone(),
-            signer: self.signer.clone(),
+            signer,
             context,
             policy_epoch,
             lease,
@@ -395,6 +406,7 @@ impl IndependentAuthority {
         request: LeaseDiscovery,
     ) -> Result<(ServingIdentity, AuthorityResponseFence)> {
         let _permit = self.permit()?;
+        let signer = self.request_signer()?;
         request
             .validate()
             .map_err(|_| Error::new(ErrorCode::InvalidArgument, "invalid lease discovery"))?;
@@ -433,7 +445,7 @@ impl IndependentAuthority {
         if self.barrier(&context).await? != term {
             return Err(unavailable("discovery term changed"));
         }
-        let fence = self.fence(context, None, Some(observation), term);
+        let fence = self.fence(signer.clone(), context, None, Some(observation), term);
         fence.check()?;
         Ok((identity, fence))
     }
@@ -443,6 +455,7 @@ impl IndependentAuthority {
         request: LeaseRequest,
     ) -> Result<(SignedLease, AuthorityResponseFence)> {
         let _permit = self.permit()?;
+        let signer = self.request_signer()?;
         request
             .validate()
             .map_err(|_| Error::new(ErrorCode::InvalidArgument, "invalid lease request"))?;
@@ -479,8 +492,7 @@ impl IndependentAuthority {
             .and_then(|expiry| expiry.checked_sub(now))
             .filter(|value| *value > 0)
             .ok_or_else(|| Error::new(ErrorCode::Unauthorized, "lease credential expired"))?;
-        let signed = self
-            .signer
+        let signed = signer
             .sign_lease(LeaseClaims {
                 request: request.clone(),
                 authority_id: self.installation().manifest.authority_id,
@@ -496,7 +508,7 @@ impl IndependentAuthority {
         if self.barrier(&context).await? != term {
             return Err(unavailable("lease term changed"));
         }
-        let fence = self.fence(context, None, Some(request), term);
+        let fence = self.fence(signer.clone(), context, None, Some(request), term);
         fence.check()?;
         Ok((signed, fence))
     }
@@ -508,6 +520,7 @@ impl IndependentAuthority {
         command_id: Uuid,
     ) -> Result<(Option<SignedAuthorityReceipt>, AuthorityResponseFence)> {
         let _permit = self.permit()?;
+        let signer = self.request_signer()?;
         self.route(tenant)?;
         let term = self.barrier(&context).await?;
         let epoch = self.backend.authorize_admin(&context)?;
@@ -515,12 +528,12 @@ impl IndependentAuthority {
             .backend
             .receipt(tenant, command_id)
             .map_err(unavailable)?
-            .map(|receipt| self.signer.sign_receipt(receipt).map_err(unavailable))
+            .map(|receipt| signer.sign_receipt(receipt).map_err(unavailable))
             .transpose()?;
         if self.barrier(&context).await? != term {
             return Err(unavailable("receipt term changed"));
         }
-        let fence = self.fence(context, Some(epoch), None, term);
+        let fence = self.fence(signer.clone(), context, Some(epoch), None, term);
         fence.check()?;
         Ok((receipt, fence))
     }
@@ -530,6 +543,7 @@ impl IndependentAuthority {
         command: AuthorityCommand,
     ) -> Result<(SignedAuthorityReceipt, AuthorityResponseFence)> {
         let permit = self.permit()?;
+        let signer = self.request_signer()?;
         command
             .validate()
             .map_err(|_| Error::new(ErrorCode::InvalidArgument, "invalid authority command"))?;
@@ -541,7 +555,7 @@ impl IndependentAuthority {
         let service = self.clone();
         let job = tokio::spawn(async move {
             let _permit = permit;
-            service.execute_owned(context, command).await
+            service.execute_owned(signer, context, command).await
         });
         tokio::time::timeout(Duration::from_secs(5), job)
             .await
@@ -550,6 +564,7 @@ impl IndependentAuthority {
     }
     async fn execute_owned(
         self: Arc<Self>,
+        signer: Arc<AuthoritySigner>,
         context: RequestContext,
         command: AuthorityCommand,
     ) -> Result<(SignedAuthorityReceipt, AuthorityResponseFence)> {
@@ -567,7 +582,9 @@ impl IndependentAuthority {
                     "permanent command identity differs",
                 ));
             }
-            return self.release(context, retained, epoch, term, false).await;
+            return self
+                .release(signer.clone(), context, retained, epoch, term, false)
+                .await;
         }
         let drained_fence = match &command.action {
             AuthorityAction::Activate {
@@ -630,7 +647,8 @@ impl IndependentAuthority {
             )
             .await?;
         let receipt: Result<AuthorityReceipt> = serde_json::from_slice(&bytes).map_err(unknown)?;
-        self.release(context, receipt?, epoch, term, true).await
+        self.release(signer.clone(), context, receipt?, epoch, term, true)
+            .await
     }
     fn require_drain(&self, digest: &str, term: u64) -> Result<()> {
         let mut drains = self.drains.lock().map_err(unavailable)?;
@@ -654,6 +672,7 @@ impl IndependentAuthority {
     }
     async fn release(
         self: &Arc<Self>,
+        signer: Arc<AuthoritySigner>,
         context: RequestContext,
         receipt: AuthorityReceipt,
         epoch: u64,
@@ -664,9 +683,9 @@ impl IndependentAuthority {
             if self.barrier(&context).await? != term {
                 return Err(unavailable("authority response term changed"));
             }
-            let fence = self.fence(context, Some(epoch), None, term);
+            let fence = self.fence(signer.clone(), context, Some(epoch), None, term);
             fence.check()?;
-            let signed = self.signer.sign_receipt(receipt).map_err(unavailable)?;
+            let signed = signer.sign_receipt(receipt).map_err(unavailable)?;
             fence.check()?;
             Ok((signed, fence))
         }
@@ -734,3 +753,7 @@ fn require_drain_witness(
     }
     Ok(())
 }
+
+#[path = "signer_administration.rs"]
+mod signer_administration;
+pub use signer_administration::{AuthorityAdministrativeFence, CommittedSignerDirective};

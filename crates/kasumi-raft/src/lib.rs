@@ -3,9 +3,13 @@
 
 mod command;
 mod control;
+#[cfg(test)]
+mod custody_capacity_tests;
 mod custody_command;
 mod custody_group;
 mod custody_machine;
+mod custody_records;
+mod custody_snapshot_storage;
 mod custody_state;
 mod custody_tables;
 mod domains;
@@ -25,7 +29,7 @@ pub use command::{
 };
 pub use control::{AppliedEntryContext, CommittedRetirementSeed, ControlLog};
 pub use custody_command::{CustodyCommand, MAX_CUSTODY_COMMAND_BYTES};
-pub use custody_group::{CustodyRaftGroup, CustodyView};
+pub use custody_group::{CustodyRaftConfig, CustodyRaftGroup, CustodyView};
 use kasumi_store::TenantStorageSet;
 use lifetime::StorageDrain;
 pub use network::{

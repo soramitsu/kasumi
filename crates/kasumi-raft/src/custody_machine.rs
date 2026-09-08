@@ -16,7 +16,6 @@ use std::sync::{
 };
 
 pub(crate) const CLOSED_SNAPSHOT: &str = "raft.custody-snapshot";
-pub(crate) const MAX_CLOSED_SNAPSHOT_BYTES: u64 = 2 << 20;
 
 fn err(error: impl std::fmt::Display) -> StorageError<u64> {
     StorageIOError::write(&std::io::Error::other(error.to_string())).into()
@@ -34,7 +33,7 @@ pub(crate) fn applied(custody: &CustodyStore) -> Result<AppliedState> {
 }
 
 pub(crate) fn capture(custody: &CustodyStore) -> Result<SnapshotEnvelope> {
-    let state = control::custody_state(custody)?;
+    let state = control::custody_head(custody)?.policy;
     let (last_log_id, last_membership) = applied(custody)?;
     let committed = control::committed_coverage(custody.store())?
         .context("closed snapshot lacks committed coverage")?;
@@ -57,7 +56,12 @@ pub(crate) fn capture(custody: &CustodyStore) -> Result<SnapshotEnvelope> {
     })
 }
 
-pub(crate) fn publish(custody: &CustodyStore, snapshot: &SnapshotEnvelope) -> Result<()> {
+pub(crate) fn publish(
+    custody: &CustodyStore,
+    snapshot: &SnapshotEnvelope,
+    limit: u64,
+) -> Result<()> {
+    crate::custody_snapshot_storage::check_format(custody)?;
     ensure!(
         snapshot.kind == SnapshotKind::Custody
             && snapshot.version == 1
@@ -69,23 +73,18 @@ pub(crate) fn publish(custody: &CustodyStore, snapshot: &SnapshotEnvelope) -> Re
         .as_ref()
         .context("closed snapshot lacks retirement")?;
     retirement.validate(&snapshot.meta)?;
-    let bytes = snapshot
-        .encode(MAX_CLOSED_SNAPSHOT_BYTES)?
-        .read_bounded(MAX_CLOSED_SNAPSHOT_BYTES as usize)?;
-    ensure!(
-        bytes.len() as u64 <= MAX_CLOSED_SNAPSHOT_BYTES,
-        "closed snapshot byte budget exceeded"
-    );
-    let digest = crate::command::sha256(&bytes);
+    let bytes = snapshot.encode(limit)?;
+    let digest = bytes.sha256().to_owned();
+    let (chunks, manifest) = crate::custody_snapshot_storage::stage(&bytes, limit)?;
     let backend_digest = crate::command::sha256(&[]);
-    let mut writes = crate::snapshot_custody::installation_writes(
+    let mut install = crate::snapshot_custody::installation_writes(
         custody,
         &snapshot.meta,
         Some(retirement),
         &backend_digest,
         &digest,
     )?;
-    writes.push(WriteOp::put(
+    install.writes.push(WriteOp::put(
         META,
         b"snapshot_coverage",
         serde_json::to_vec(&SnapshotCoverage {
@@ -96,24 +95,25 @@ pub(crate) fn publish(custody: &CustodyStore, snapshot: &SnapshotEnvelope) -> Re
             meta: snapshot.meta.clone(),
         })?,
     ));
-    writes.push(WriteOp::put(CLOSED_SNAPSHOT, b"current", bytes));
-    custody.store().write_batch(&writes)
+    install.writes.push(manifest);
+    let mut replacements = install
+        .records
+        .as_ref()
+        .map_or_else(Vec::new, |records| records.namespaces().to_vec());
+    replacements.push((CLOSED_SNAPSHOT, &chunks));
+    custody
+        .store()
+        .replace_namespaces(&replacements, &install.writes)
 }
 
-pub(crate) fn load_snapshot(custody: &CustodyStore) -> Result<Option<SnapshotEnvelope>> {
-    let Some(bytes) = custody.store().get_bounded(
-        CLOSED_SNAPSHOT,
-        b"current",
-        MAX_CLOSED_SNAPSHOT_BYTES as usize,
-    )?
-    else {
+pub(crate) fn load_snapshot(
+    custody: &CustodyStore,
+    limit: u64,
+) -> Result<Option<SnapshotEnvelope>> {
+    let Some(bytes) = crate::custody_snapshot_storage::load_image(custody, limit)? else {
         return Ok(None);
     };
-    ensure!(
-        bytes.len() as u64 <= MAX_CLOSED_SNAPSHOT_BYTES,
-        "closed snapshot byte budget exceeded"
-    );
-    let snapshot = SnapshotEnvelope::decode(&mut bytes.as_slice(), MAX_CLOSED_SNAPSHOT_BYTES)?;
+    let snapshot = SnapshotEnvelope::decode(&mut bytes.reader(), limit)?;
     ensure!(
         snapshot.kind == SnapshotKind::Custody
             && snapshot.version == 1
@@ -125,7 +125,7 @@ pub(crate) fn load_snapshot(custody: &CustodyStore) -> Result<Option<SnapshotEnv
     ensure!(
         coverage.kind == SnapshotKind::Custody
             && coverage.meta == snapshot.meta
-            && coverage.snapshot_sha256 == crate::command::sha256(&bytes)
+            && coverage.snapshot_sha256 == bytes.sha256()
             && coverage.backend_sha256 == crate::command::sha256(&[]),
         "closed snapshot control coverage differs"
     );
@@ -145,6 +145,7 @@ pub(crate) fn load_snapshot(custody: &CustodyStore) -> Result<Option<SnapshotEnv
 #[derive(Clone)]
 pub(crate) struct CustodyMachine {
     custody: StorageHandle<CustodyStore>,
+    snapshot_limit: u64,
     control_gate: Arc<Mutex<()>>,
     failed: Arc<AtomicBool>,
     // Keep the same ownership claim alive even after public handles disappear.
@@ -155,6 +156,7 @@ impl CustodyMachine {
         custody: Arc<CustodyStore>,
         lease: Arc<StorageLease>,
         ownership: Arc<AtomicBool>,
+        snapshot_limit: u64,
     ) -> Result<Self> {
         let control_gate = crate::storage::control_gate(&custody)?;
         let store = custody.clone();
@@ -163,14 +165,15 @@ impl CustodyMachine {
             let _gate = gate
                 .lock()
                 .map_err(|_| anyhow::anyhow!("control gate poisoned"))?;
-            control::custody_state(&store)?;
+            control::custody_head(&store)?;
             // This atomically records the latest durable closed state as a
             // snapshot before OpenRaft is allowed to purge its covered log prefix.
-            publish(&store, &capture(&store)?)
+            publish(&store, &capture(&store)?, snapshot_limit)
         })
         .await??;
         Ok(Self {
             custody: StorageHandle::new(custody, Some(lease)),
+            snapshot_limit,
             control_gate,
             failed: Arc::new(AtomicBool::new(false)),
             _ownership: ownership,
@@ -199,7 +202,7 @@ impl RaftSnapshotBuilder<TypeConfig> for CustodySnapshotBuilder {
                 .lock()
                 .map_err(|_| anyhow::anyhow!("control gate poisoned"))?;
             machine.custody.store().check_access()?;
-            if let Some(current) = load_snapshot(&machine.custody)?
+            if let Some(current) = load_snapshot(&machine.custody, machine.snapshot_limit)?
                 && current.meta.last_log_id.map(|id| id.index)
                     >= snapshot.meta.last_log_id.map(|id| id.index)
             {
@@ -216,10 +219,10 @@ impl RaftSnapshotBuilder<TypeConfig> for CustodySnapshotBuilder {
                         snapshot.retirement.as_ref(),
                     )?;
                 }
-                return as_snapshot(&current, MAX_CLOSED_SNAPSHOT_BYTES);
+                return as_snapshot(&current, machine.snapshot_limit);
             }
-            publish(&machine.custody, &snapshot)?;
-            as_snapshot(&snapshot, MAX_CLOSED_SNAPSHOT_BYTES)
+            publish(&machine.custody, &snapshot, machine.snapshot_limit)?;
+            as_snapshot(&snapshot, machine.snapshot_limit)
         })
         .await
         .map_err(|error| self.machine.failure(error))?
@@ -319,7 +322,7 @@ impl RaftStateMachine<TypeConfig> for CustodyMachine {
     async fn begin_receiving_snapshot(&mut self) -> Result<Box<SnapshotBuffer>, StorageError<u64>> {
         self.custody.store().check_access().map_err(err)?;
         Ok(Box::new(
-            SnapshotBuffer::new(MAX_CLOSED_SNAPSHOT_BYTES).map_err(err)?,
+            SnapshotBuffer::new(self.snapshot_limit).map_err(err)?,
         ))
     }
     async fn install_snapshot(
@@ -331,12 +334,11 @@ impl RaftStateMachine<TypeConfig> for CustodyMachine {
         let machine = self.clone();
         tokio::task::spawn_blocking(move || -> Result<()> {
             ensure!(
-                snapshot.len() <= MAX_CLOSED_SNAPSHOT_BYTES,
+                snapshot.len() <= machine.snapshot_limit,
                 "closed snapshot byte budget exceeded"
             );
             let image = snapshot.into_image()?;
-            let envelope =
-                SnapshotEnvelope::decode(&mut image.reader(), MAX_CLOSED_SNAPSHOT_BYTES)?;
+            let envelope = SnapshotEnvelope::decode(&mut image.reader(), machine.snapshot_limit)?;
             ensure!(envelope.meta == meta, "closed snapshot metadata differs");
             let _gate = machine
                 .control_gate
@@ -347,7 +349,7 @@ impl RaftStateMachine<TypeConfig> for CustodyMachine {
                 meta.last_log_id.map(|id| id.index) >= previous.map(|id| id.index),
                 "closed snapshot reverts applied state"
             );
-            publish(&machine.custody, &envelope)
+            publish(&machine.custody, &envelope, machine.snapshot_limit)
         })
         .await
         .map_err(|error| self.failure(error))?
@@ -357,9 +359,14 @@ impl RaftStateMachine<TypeConfig> for CustodyMachine {
         &mut self,
     ) -> Result<Option<Snapshot<TypeConfig>>, StorageError<u64>> {
         let custody = self.custody.clone();
+        let gate = self.control_gate.clone();
+        let limit = self.snapshot_limit;
         tokio::task::spawn_blocking(move || {
-            load_snapshot(&custody)?
-                .map(|snapshot| as_snapshot(&snapshot, MAX_CLOSED_SNAPSHOT_BYTES))
+            let _gate = gate
+                .lock()
+                .map_err(|_| anyhow::anyhow!("control gate poisoned"))?;
+            load_snapshot(&custody, limit)?
+                .map(|snapshot| as_snapshot(&snapshot, limit))
                 .transpose()
         })
         .await
@@ -371,6 +378,13 @@ impl RaftStateMachine<TypeConfig> for CustodyMachine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    const MAX_CLOSED_SNAPSHOT_BYTES: u64 = 64 << 20;
+    fn publish(custody: &CustodyStore, snapshot: &SnapshotEnvelope) -> Result<()> {
+        super::publish(custody, snapshot, MAX_CLOSED_SNAPSHOT_BYTES)
+    }
+    fn load_snapshot(custody: &CustodyStore) -> Result<Option<SnapshotEnvelope>> {
+        super::load_snapshot(custody, MAX_CLOSED_SNAPSHOT_BYTES)
+    }
     use crate::control::tests::{fixture, group, id, retirement_entry, seed};
     use kasumi_store::test_utils::FaultBackend;
     use kasumi_types::{CustodyAction, CustodyReceipt, CustodyRequest, RetireSourceRequest};
@@ -436,12 +450,29 @@ mod tests {
             .as_mut()
             .unwrap()
             .custody
+            .policy
             .administrators = BTreeSet::from(["substituted".into()]);
         assert!(publish(domains.custody(), &malicious).is_err());
         assert_eq!(control::custody_state(domains.custody())?, before);
         let legitimate = capture(domains.custody())?;
         publish(domains.custody(), &legitimate)?;
         publish(domains.custody(), &capture(domains.custody())?)?;
+        assert_eq!(control::custody_state(domains.custody())?, before);
+        let mut later = capture(domains.custody())?;
+        later.meta.last_log_id = Some(id(3));
+        let mut substituted = before.clone();
+        substituted.commands.get_mut("rotate").unwrap().principal = "substituted".into();
+        substituted.audit[0].principal = "substituted".into();
+        let records = crate::custody_records::Records::from_state(&substituted)?;
+        let retirement = later.retirement.as_mut().unwrap();
+        retirement.custody = records.head.clone();
+        retirement.history_sha256 = records.sha256().into();
+        retirement.records = Some(records);
+        let error = publish(domains.custody(), &later).unwrap_err();
+        assert!(
+            error.to_string().contains("permanent custody history"),
+            "{error}"
+        );
         assert_eq!(control::custody_state(domains.custody())?, before);
         Ok(())
     }
@@ -463,7 +494,7 @@ mod tests {
             group(),
             domains.custody().clone(),
             router.clone(),
-            crate::Config::default(),
+            crate::CustodyRaftConfig::default(),
         )
         .await?;
         router.register(group(), 1, instance.raft().clone());
@@ -524,7 +555,7 @@ mod tests {
                 group(),
                 domains.custody().clone(),
                 router.clone(),
-                crate::Config::default(),
+                crate::CustodyRaftConfig::default(),
             )
             .await?;
             router.register(group(), node, instance.raft().clone());
@@ -625,6 +656,190 @@ mod tests {
                     crate::custody_tables::receipt(reopened.custody().store(), "rotate")?,
                     complete.commands.get("rotate").cloned()
                 );
+            }
+        }
+        Ok(())
+    }
+    #[tokio::test]
+    async fn closed_snapshot_rejects_prior_format_without_rewriting_permanent_storage() -> Result<()>
+    {
+        let (domains, _, _, mut log) = fixture(FaultBackend::new()).await?;
+        log.blocking_append([membership(), retirement_entry()?])
+            .await?;
+        log.save_committed(Some(id(1))).await?;
+        assert!(crate::ControlLog::open(domains.custody().clone(), 1, group())?.recover_retired()?);
+        let original: AppliedCursor = load(domains.custody().store(), META, b"applied")?.unwrap();
+        domains.custody().store().write_batch(&[WriteOp::put(
+            CLOSED_SNAPSHOT,
+            b"current",
+            b"KASUMIS2",
+        )])?;
+        let error = publish(domains.custody(), &capture(domains.custody())?).unwrap_err();
+        assert!(
+            error.to_string().contains("unsupported closed snapshot"),
+            "{error}"
+        );
+        assert!(load_snapshot(domains.custody()).is_err());
+        assert_eq!(
+            load::<AppliedCursor>(domains.custody().store(), META, b"applied")?,
+            Some(original)
+        );
+        assert_eq!(
+            domains.custody().store().get(CLOSED_SNAPSHOT, b"current")?,
+            Some(b"KASUMIS2".to_vec())
+        );
+        Ok(())
+    }
+    #[tokio::test]
+    async fn canonical_custody_stream_authenticates_counts_digest_and_record_order() -> Result<()> {
+        use sha2::{Digest, Sha256};
+        let (domains, _, _, mut log) = fixture(FaultBackend::new()).await?;
+        log.blocking_append([membership(), retirement_entry()?])
+            .await?;
+        log.save_committed(Some(id(1))).await?;
+        assert!(crate::ControlLog::open(domains.custody().clone(), 1, group())?.recover_retired()?);
+        let command = rotation(
+            &control::custody_head(domains.custody())?
+                .policy
+                .origin
+                .request,
+        );
+        log.blocking_append([Entry {
+            log_id: id(2),
+            payload: EntryPayload::Normal(crate::RaftCommand::custody(&command)?),
+        }])
+        .await?;
+        log.save_committed(Some(id(2))).await?;
+        let (_, membership) = applied(domains.custody())?;
+        control::apply_custody(
+            domains.custody(),
+            &AppliedEntryContext {
+                log_id: id(2),
+                previous: Some(id(1)),
+                membership,
+                retirement_seed: None,
+                command_sha256: crate::command::sha256(&command.encoded()?),
+            },
+            &command,
+        )?;
+        let snapshot = capture(domains.custody())?;
+        let bytes = snapshot
+            .encode(MAX_CLOSED_SNAPSHOT_BYTES)?
+            .read_bounded(MAX_CLOSED_SNAPSHOT_BYTES as usize)?;
+        let decoded = SnapshotEnvelope::decode(&mut bytes.as_slice(), MAX_CLOSED_SNAPSHOT_BYTES)?;
+        assert_eq!(
+            decoded.retirement.as_ref().unwrap().history_sha256,
+            snapshot.retirement.as_ref().unwrap().history_sha256
+        );
+        assert!(
+            decoded
+                .retirement
+                .as_ref()
+                .unwrap()
+                .verified_records()
+                .is_ok()
+        );
+        let footer = bytes.len() - 65;
+        let metadata_size = u64::from_be_bytes(bytes[9..17].try_into()?) as usize;
+        let command_start = 17 + metadata_size;
+        let command_size =
+            u64::from_be_bytes(bytes[command_start + 1..command_start + 9].try_into()?) as usize;
+        assert_eq!(bytes[command_start], 2);
+        for case in 0..6 {
+            let mut bad = bytes.clone();
+            match case {
+                0 => bad[..8].copy_from_slice(b"KASUMIS2"),
+                1 => bad[footer + 17..footer + 25].copy_from_slice(&0u64.to_be_bytes()),
+                2 => bad[footer + 33] ^= 1,
+                3 => bad.push(0),
+                4 => {
+                    // Remove a whole command and recalculate the outer digest.
+                    // The semantic head must still reject the missing identity.
+                    bad.drain(command_start..command_start + 9 + command_size);
+                    let footer = bad.len() - 65;
+                    bad[footer + 17..footer + 25].copy_from_slice(&0u64.to_be_bytes());
+                    let digest = Sha256::digest(&bad[..footer]);
+                    bad[footer + 33..].copy_from_slice(&digest);
+                }
+                5 => {
+                    // A re-authenticated custody record cannot change its type.
+                    bad[command_start] = 3;
+                    let digest = Sha256::digest(&bad[..footer]);
+                    bad[footer + 33..].copy_from_slice(&digest);
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                SnapshotEnvelope::decode(&mut bad.as_slice(), MAX_CLOSED_SNAPSHOT_BYTES).is_err(),
+                "accepted corruption {case}"
+            );
+        }
+        Ok(())
+    }
+    #[tokio::test]
+    async fn streamed_custody_tables_and_snapshot_coverage_publish_at_one_crash_boundary()
+    -> Result<()> {
+        let disk = FaultBackend::new();
+        let (domains, _, _, mut log) = fixture(disk.clone()).await?;
+        log.blocking_append([membership(), retirement_entry()?])
+            .await?;
+        log.save_committed(Some(id(1))).await?;
+        assert!(crate::ControlLog::open(domains.custody().clone(), 1, group())?.recover_retired()?);
+        let command = rotation(&control::custody_state(domains.custody())?.origin.request);
+        log.blocking_append([Entry {
+            log_id: id(2),
+            payload: EntryPayload::Normal(crate::RaftCommand::custody(&command)?),
+        }])
+        .await?;
+        log.save_committed(Some(id(2))).await?;
+        let (_, membership) = applied(domains.custody())?;
+        control::apply_custody(
+            domains.custody(),
+            &AppliedEntryContext {
+                log_id: id(2),
+                previous: Some(id(1)),
+                membership,
+                retirement_seed: None,
+                command_sha256: crate::command::sha256(&command.encoded()?),
+            },
+            &command,
+        )?;
+        let original = control::custody_state(domains.custody())?;
+        let baseline = disk.crash();
+        drop(log);
+        drop(domains);
+        let measure = baseline.crash();
+        let (domains, _, _, _) = fixture(measure.clone()).await?;
+        let snapshot = capture(domains.custody())?;
+        let start = measure.operations();
+        publish(domains.custody(), &snapshot)?;
+        let operations = measure.operations() - start;
+        assert!(operations > 0);
+        drop(domains);
+        for failure in 0..=operations {
+            let disk = baseline.crash();
+            let (domains, _, _, _) = fixture(disk.clone()).await?;
+            let snapshot = capture(domains.custody())?;
+            disk.fail_after(failure);
+            let result = publish(domains.custody(), &snapshot);
+            let crash = disk.crash();
+            disk.disarm();
+            drop(domains);
+            let (reopened, _, _, _) = fixture(crash).await?;
+            assert_eq!(
+                control::custody_state(reopened.custody())?,
+                original,
+                "table torn at {failure}"
+            );
+            let installed = load_snapshot(reopened.custody())?;
+            let cursor: AppliedCursor =
+                load(reopened.custody().store(), META, b"applied")?.unwrap();
+            if let Some(installed) = installed {
+                assert_eq!(installed.meta, snapshot.meta);
+                assert!(matches!(cursor, AppliedCursor::Snapshot { .. }));
+            } else {
+                assert!(result.is_err(), "successful snapshot absent at {failure}");
+                assert!(matches!(cursor, AppliedCursor::Entry(_)));
             }
         }
         Ok(())

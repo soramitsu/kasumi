@@ -1,0 +1,34 @@
+    Blocking waiting for file lock on build directory
+   Compiling kasumi-types v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-types)
+   Compiling kasumi-serving v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-serving)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 49.25s
+     Running unittests src/lib.rs (/tmp/kasumi-production-runtime-target/debug/deps/kasumi_serving-46f0dfe06d461f71)
+
+running 8 tests
+test tests::immutable_drain_covers_slowest_client_against_fastest_issuer ... ok
+test tests::physical_verifier_substitution_cannot_reopen_a_serving_or_lifecycle_boot ... ok
+test tests::delayed_renewal_cannot_bridge_an_unobserved_expired_interval ... ok
+test tests::suspend_and_elapsed_rollback_close_all_clones_and_cannot_be_reanchored ... ok
+test tests::continuous_fresh_renewal_preserves_work_without_reanchoring_old_response ... ok
+test tests::remaining_lease_time_uses_verified_shorter_credential_deadline ... ok
+test tests::delayed_response_retry_clone_and_reinstallation_never_extend_original_attempt ... ok
+test tests::boot_incarnation_epoch_peer_issuer_and_signature_substitution_are_rejected ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running unittests src/lib.rs (/tmp/kasumi-production-runtime-target/debug/deps/kasumi_types-cda936da1998def9)
+
+running 10 tests
+test audit::tests::limits_reject_removed_count_ceiling_and_missing_format_fields ... ok
+test authorization::tests::invalid_credentials_and_a_regressing_elapsed_clock_fail_closed ... ok
+test authorization::tests::credential_clone_cannot_renew_expiry_and_serialization_cannot_mint_live_authority ... ok
+test canonical_keys::tests::tagged_json_keys_are_canonical_and_duplicates_cannot_change_identity ... ok
+test lifecycle::wire_tests::lifecycle_status_requires_explicit_nullable_outcome ... ok
+test tests::denial_audit_marker_is_request_local_and_never_wire_controlled ... ok
+test tests::exact_number_wire_round_trip ... ok
+test tests::remote_mutation_fields_are_closed ... ok
+test tests::error_messages_bound_utf8_and_recovered_receipt_allocations ... ok
+test restore_lineage::tests::closed_lineage_rejects_substitution_discontinuity_and_resource_overflow ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+

@@ -50,7 +50,7 @@ async fn reopen_custody(
         id,
         group.clone(),
         router.clone(),
-        kasumi_raft::Config::default(),
+        kasumi_raft::CustodyRaftConfig::default(),
         audit.admission().clone(),
         audit,
     )

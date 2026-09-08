@@ -794,12 +794,19 @@ fn publish_snapshot(
         &coverage.backend_sha256,
         &coverage.snapshot_sha256,
     )?;
-    custody.push(put(
+    custody.writes.push(put(
         META,
         b"snapshot_coverage",
         serde_json::to_vec(&coverage)?,
     ));
-    domains.write_batch(&pending.application, &custody)
+    let replacements = custody.records.as_ref().map(|records| records.namespaces());
+    domains.write_batch_replacing_custody(
+        &pending.application,
+        &custody.writes,
+        replacements
+            .as_ref()
+            .map_or(&[], |namespaces| namespaces.as_slice()),
+    )
 }
 
 #[cfg(test)]
@@ -1208,7 +1215,11 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
                 // opens the same group using custody storage only.
                 machine.failed.store(true, Ordering::Release);
                 machine.backend.close_application();
-                crate::custody_machine::publish(machine.domains.custody(), &envelope)?;
+                crate::custody_machine::publish(
+                    machine.domains.custody(),
+                    &envelope,
+                    machine.limits.max_snapshot_bytes,
+                )?;
                 state.log_id = envelope.meta.last_log_id;
                 state.membership = envelope.meta.last_membership;
                 return Ok(());

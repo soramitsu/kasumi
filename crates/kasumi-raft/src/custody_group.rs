@@ -9,6 +9,13 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
+/// Operational capacity is installed separately from immutable retirement data.
+#[derive(Clone, Debug, Default)]
+pub struct CustodyRaftConfig {
+    pub raft: Config,
+    pub limits: crate::RaftLimits,
+}
+
 /// A validated local observation. It is not fresh quorum authority and cannot
 /// construct an engine/native verified retirement proof by deserialization.
 pub struct CustodyView(pub(crate) crate::custody_state::CustodyState);
@@ -52,10 +59,16 @@ impl CustodyRaftGroup {
         group: String,
         custody: Arc<CustodyStore>,
         transport: Arc<dyn RaftTransport>,
-        mut config: Config,
+        config: CustodyRaftConfig,
     ) -> Result<Self> {
-        config.cluster_name = group.clone();
-        let config = Arc::new(config.validate()?);
+        let limits = config.limits;
+        ensure!(
+            limits.max_snapshot_bytes >= 4 << 20,
+            "custody snapshot budget is too small for bounded control records"
+        );
+        let mut raft_config = config.raft;
+        raft_config.cluster_name = group.clone();
+        let config = Arc::new(raft_config.validate()?);
         let ownership = crate::claim_custody(&custody)?;
         let control = ControlLog::open(custody.clone(), id, group.clone())?;
         ensure!(
@@ -67,12 +80,13 @@ impl CustodyRaftGroup {
             custody.clone(),
             lease.clone(),
             ownership.clone(),
+            limits.max_snapshot_bytes,
         )
         .await?;
         let machine_failed = machine.failure_flag();
         let mut log = crate::LogStore::open_custody(custody.clone(), id, lease.clone()).await?;
         log.bind_group(group.clone()).await?;
-        let saved = crate::custody_machine::load_snapshot(&custody)?
+        let saved = crate::custody_machine::load_snapshot(&custody, limits.max_snapshot_bytes)?
             .context("closed startup snapshot absent")?;
         let floor = saved
             .meta

@@ -165,7 +165,11 @@ async fn same_position_cannot_substitute_matching_backend_and_custody_policy() -
             StateMachine::open(domains.clone(), Arc::new(ClosedBackend::default())).await?;
         assert!(
             machine
-                .install_snapshot(&changed.meta, as_snapshot(&changed, 1 << 20)?.snapshot)
+                .install_snapshot(
+                    &changed.meta,
+                    crate::snapshot_codec::unvalidated_snapshot(&changed, &original, 1 << 20)?
+                        .snapshot
+                )
                 .await
                 .is_err()
         );
@@ -272,7 +276,11 @@ async fn snapshot_rejects_missing_substituted_stale_and_payload_custody_before_p
         }
         assert!(
             machine
-                .install_snapshot(&changed.meta, as_snapshot(&changed, 1 << 20)?.snapshot)
+                .install_snapshot(
+                    &changed.meta,
+                    crate::snapshot_codec::unvalidated_snapshot(&changed, &original, 1 << 20)?
+                        .snapshot
+                )
                 .await
                 .is_err(),
             "accepted substituted case {case}"
