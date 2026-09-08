@@ -1,0 +1,386 @@
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#proc-macro2@1.0.107","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/proc-macro2-1.0.107/Cargo.toml","target":{"kind":["custom-build"],"crate_types":["bin"],"name":"build-script-build","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/proc-macro2-1.0.107/build.rs","edition":"2021","doc":false,"doctest":false,"test":false},"profile":{"opt_level":"0","debuginfo":0,"debug_assertions":true,"overflow_checks":true,"test":false},"features":["default","proc-macro"],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/build/proc-macro2-1d2170055ad15d80/build-script-build"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#serde_core@1.0.229","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_core-1.0.229/Cargo.toml","target":{"kind":["custom-build"],"crate_types":["bin"],"name":"build-script-build","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_core-1.0.229/build.rs","edition":"2021","doc":false,"doctest":false,"test":false},"profile":{"opt_level":"0","debuginfo":0,"debug_assertions":true,"overflow_checks":true,"test":false},"features":["alloc","result","std"],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/build/serde_core-5a369f58a3e869b2/build-script-build"],"executable":null,"fresh":true}
+{"reason":"build-script-executed","package_id":"registry+https://github.com/rust-lang/crates.io-index#serde_core@1.0.229","linked_libs":[],"linked_paths":[],"cfgs":[],"env":[],"out_dir":"/tmp/kasumi-literal-json-validation-target/debug/build/serde_core-42d388f65b9a6f8e/out"}
+{"reason":"build-script-executed","package_id":"registry+https://github.com/rust-lang/crates.io-index#proc-macro2@1.0.107","linked_libs":[],"linked_paths":[],"cfgs":["wrap_proc_macro","proc_macro_span_location","proc_macro_span_file"],"env":[],"out_dir":"/tmp/kasumi-literal-json-validation-target/debug/build/proc-macro2-71809a82786d9efc/out"}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#unicode-ident@1.0.24","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-ident-1.0.24/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"unicode_ident","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-ident-1.0.24/src/lib.rs","edition":"2021","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":0,"debug_assertions":true,"overflow_checks":true,"test":false},"features":[],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/libunicode_ident-ebe82e1472193bf3.rlib","/tmp/kasumi-literal-json-validation-target/debug/deps/libunicode_ident-ebe82e1472193bf3.rmeta"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#memchr@2.8.3","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/memchr-2.8.3/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"memchr","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/memchr-2.8.3/src/lib.rs","edition":"2021","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":false},"features":["alloc","std"],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/libmemchr-a915c919029f2036.rlib","/tmp/kasumi-literal-json-validation-target/debug/deps/libmemchr-a915c919029f2036.rmeta"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#quote@1.0.47","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/quote-1.0.47/Cargo.toml","target":{"kind":["custom-build"],"crate_types":["bin"],"name":"build-script-build","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/quote-1.0.47/build.rs","edition":"2021","doc":false,"doctest":false,"test":false},"profile":{"opt_level":"0","debuginfo":0,"debug_assertions":true,"overflow_checks":true,"test":false},"features":["default","proc-macro"],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/build/quote-b6acb3ddedc82e37/build-script-build"],"executable":null,"fresh":true}
+{"reason":"build-script-executed","package_id":"registry+https://github.com/rust-lang/crates.io-index#quote@1.0.47","linked_libs":[],"linked_paths":[],"cfgs":[],"env":[],"out_dir":"/tmp/kasumi-literal-json-validation-target/debug/build/quote-c280fb0dfa72d897/out"}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#proc-macro2@1.0.107","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/proc-macro2-1.0.107/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"proc_macro2","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/proc-macro2-1.0.107/src/lib.rs","edition":"2021","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":0,"debug_assertions":true,"overflow_checks":true,"test":false},"features":["default","proc-macro"],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/libproc_macro2-55815e1867ec6ee3.rlib","/tmp/kasumi-literal-json-validation-target/debug/deps/libproc_macro2-55815e1867ec6ee3.rmeta"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#serde_core@1.0.229","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_core-1.0.229/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"serde_core","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_core-1.0.229/src/lib.rs","edition":"2021","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":false},"features":["alloc","result","std"],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/libserde_core-05a4970e22d2f860.rlib","/tmp/kasumi-literal-json-validation-target/debug/deps/libserde_core-05a4970e22d2f860.rmeta"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#quote@1.0.47","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/quote-1.0.47/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"quote","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/quote-1.0.47/src/lib.rs","edition":"2021","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":0,"debug_assertions":true,"overflow_checks":true,"test":false},"features":["default","proc-macro"],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/libquote-04564932a2509d90.rlib","/tmp/kasumi-literal-json-validation-target/debug/deps/libquote-04564932a2509d90.rmeta"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#shlex@2.0.1","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/shlex-2.0.1/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"shlex","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/shlex-2.0.1/src/lib.rs","edition":"2018","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":0,"debug_assertions":true,"overflow_checks":true,"test":false},"features":["default","std"],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/libshlex-9b4946ebe4fcfa5c.rlib","/tmp/kasumi-literal-json-validation-target/debug/deps/libshlex-9b4946ebe4fcfa5c.rmeta"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#object@0.37.3","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/object-0.37.3/Cargo.toml","target":{"kind":["custom-build"],"crate_types":["bin"],"name":"build-script-build","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/object-0.37.3/build.rs","edition":"2018","doc":false,"doctest":false,"test":false},"profile":{"opt_level":"0","debuginfo":0,"debug_assertions":true,"overflow_checks":true,"test":false},"features":["archive","coff","elf","macho","pe","read","read_core","std","unaligned","xcoff"],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/build/object-8d14a02877599ed7/build-script-build"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#find-msvc-tools@0.1.9","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/find-msvc-tools-0.1.9/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"find_msvc_tools","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/find-msvc-tools-0.1.9/src/lib.rs","edition":"2018","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":0,"debug_assertions":true,"overflow_checks":true,"test":false},"features":[],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/libfind_msvc_tools-1ca8c1877fee2a48.rlib","/tmp/kasumi-literal-json-validation-target/debug/deps/libfind_msvc_tools-1ca8c1877fee2a48.rmeta"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#cc@1.3.0","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cc-1.3.0/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"cc","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cc-1.3.0/src/lib.rs","edition":"2018","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":0,"debug_assertions":true,"overflow_checks":true,"test":false},"features":[],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/libcc-d75c4db0494656ff.rlib","/tmp/kasumi-literal-json-validation-target/debug/deps/libcc-d75c4db0494656ff.rmeta"],"executable":null,"fresh":true}
+{"reason":"build-script-executed","package_id":"registry+https://github.com/rust-lang/crates.io-index#object@0.37.3","linked_libs":[],"linked_paths":[],"cfgs":["core_error"],"env":[],"out_dir":"/tmp/kasumi-literal-json-validation-target/debug/build/object-6201f3401f7887be/out"}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#object@0.37.3","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/object-0.37.3/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"object","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/object-0.37.3/src/lib.rs","edition":"2018","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":0,"debug_assertions":true,"overflow_checks":true,"test":false},"features":["archive","coff","elf","macho","pe","read","read_core","std","unaligned","xcoff"],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/libobject-03f4b2df2f8e926c.rlib","/tmp/kasumi-literal-json-validation-target/debug/deps/libobject-03f4b2df2f8e926c.rmeta"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#ar_archive_writer@0.5.2","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ar_archive_writer-0.5.2/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"ar_archive_writer","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ar_archive_writer-0.5.2/src/lib.rs","edition":"2024","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":0,"debug_assertions":true,"overflow_checks":true,"test":false},"features":[],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/libar_archive_writer-34f35d0eecf9a968.rlib","/tmp/kasumi-literal-json-validation-target/debug/deps/libar_archive_writer-34f35d0eecf9a968.rmeta"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#syn@3.0.2","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/syn-3.0.2/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"syn","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/syn-3.0.2/src/lib.rs","edition":"2021","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":0,"debug_assertions":true,"overflow_checks":true,"test":false},"features":["clone-impls","default","derive","parsing","printing","proc-macro"],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/libsyn-9aa9a44eb974d10c.rlib","/tmp/kasumi-literal-json-validation-target/debug/deps/libsyn-9aa9a44eb974d10c.rmeta"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#zmij@1.0.23","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zmij-1.0.23/Cargo.toml","target":{"kind":["custom-build"],"crate_types":["bin"],"name":"build-script-build","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zmij-1.0.23/build.rs","edition":"2021","doc":false,"doctest":false,"test":false},"profile":{"opt_level":"0","debuginfo":0,"debug_assertions":true,"overflow_checks":true,"test":false},"features":[],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/build/zmij-fe6fdbeb265cfe25/build-script-build"],"executable":null,"fresh":true}
+{"reason":"build-script-executed","package_id":"registry+https://github.com/rust-lang/crates.io-index#zmij@1.0.23","linked_libs":[],"linked_paths":[],"cfgs":[],"env":[],"out_dir":"/tmp/kasumi-literal-json-validation-target/debug/build/zmij-dc8f1b9bf9421f63/out"}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#psm@0.1.31","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/psm-0.1.31/Cargo.toml","target":{"kind":["custom-build"],"crate_types":["bin"],"name":"build-script-build","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/psm-0.1.31/build.rs","edition":"2021","doc":false,"doctest":false,"test":false},"profile":{"opt_level":"0","debuginfo":0,"debug_assertions":true,"overflow_checks":true,"test":false},"features":[],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/build/psm-bf50112dbc473350/build-script-build"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#libc@0.2.186","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libc-0.2.186/Cargo.toml","target":{"kind":["custom-build"],"crate_types":["bin"],"name":"build-script-build","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libc-0.2.186/build.rs","edition":"2021","doc":false,"doctest":false,"test":false},"profile":{"opt_level":"0","debuginfo":0,"debug_assertions":true,"overflow_checks":true,"test":false},"features":["default","std"],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/build/libc-9c5b591ec713ba1f/build-script-build"],"executable":null,"fresh":true}
+{"reason":"build-script-executed","package_id":"registry+https://github.com/rust-lang/crates.io-index#libc@0.2.186","linked_libs":[],"linked_paths":[],"cfgs":["freebsd12"],"env":[],"out_dir":"/tmp/kasumi-literal-json-validation-target/debug/build/libc-2794a6ce343eddcd/out"}
+{"reason":"build-script-executed","package_id":"registry+https://github.com/rust-lang/crates.io-index#psm@0.1.31","linked_libs":["static=psm_s"],"linked_paths":["native=/tmp/kasumi-literal-json-validation-target/debug/build/psm-abb3e0d6a6447149/out"],"cfgs":["asm","link_asm","switchable_stack"],"env":[],"out_dir":"/tmp/kasumi-literal-json-validation-target/debug/build/psm-abb3e0d6a6447149/out"}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#zmij@1.0.23","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zmij-1.0.23/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"zmij","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zmij-1.0.23/src/lib.rs","edition":"2021","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":false},"features":[],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/libzmij-d781fcf90565b839.rlib","/tmp/kasumi-literal-json-validation-target/debug/deps/libzmij-d781fcf90565b839.rmeta"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#stacker@0.1.24","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/stacker-0.1.24/Cargo.toml","target":{"kind":["custom-build"],"crate_types":["bin"],"name":"build-script-build","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/stacker-0.1.24/build.rs","edition":"2021","doc":false,"doctest":false,"test":false},"profile":{"opt_level":"0","debuginfo":0,"debug_assertions":true,"overflow_checks":true,"test":false},"features":[],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/build/stacker-71e1851d04a81590/build-script-build"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#itoa@1.0.18","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/itoa-1.0.18/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"itoa","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/itoa-1.0.18/src/lib.rs","edition":"2021","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":false},"features":[],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/libitoa-026cf0f37cb458ff.rlib","/tmp/kasumi-literal-json-validation-target/debug/deps/libitoa-026cf0f37cb458ff.rmeta"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#winnow@1.0.4","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/winnow-1.0.4/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"winnow","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/winnow-1.0.4/src/lib.rs","edition":"2021","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":false},"features":[],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/libwinnow-b473288e91c1b148.rlib","/tmp/kasumi-literal-json-validation-target/debug/deps/libwinnow-b473288e91c1b148.rmeta"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/Cargo.toml","target":{"kind":["custom-build"],"crate_types":["bin"],"name":"build-script-build","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/build.rs","edition":"2021","doc":false,"doctest":false,"test":false},"profile":{"opt_level":"0","debuginfo":0,"debug_assertions":true,"overflow_checks":true,"test":false},"features":["default","derive","serde_derive","std"],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/build/serde-1cc8b9bce0c2ef93/build-script-build"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.150","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_json-1.0.150/Cargo.toml","target":{"kind":["custom-build"],"crate_types":["bin"],"name":"build-script-build","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_json-1.0.150/build.rs","edition":"2021","doc":false,"doctest":false,"test":false},"profile":{"opt_level":"0","debuginfo":0,"debug_assertions":true,"overflow_checks":true,"test":false},"features":["default","std"],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/build/serde_json-c92adb976ee2750f/build-script-build"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#target-triple@1.0.1","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/target-triple-1.0.1/Cargo.toml","target":{"kind":["custom-build"],"crate_types":["bin"],"name":"build-script-build","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/target-triple-1.0.1/build.rs","edition":"2021","doc":false,"doctest":false,"test":false},"profile":{"opt_level":"0","debuginfo":0,"debug_assertions":true,"overflow_checks":true,"test":false},"features":[],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/build/target-triple-be184dd41241fab6/build-script-build"],"executable":null,"fresh":true}
+{"reason":"build-script-executed","package_id":"registry+https://github.com/rust-lang/crates.io-index#target-triple@1.0.1","linked_libs":[],"linked_paths":[],"cfgs":[],"env":[],"out_dir":"/tmp/kasumi-literal-json-validation-target/debug/build/target-triple-0f5a92d5e09b5430/out"}
+{"reason":"build-script-executed","package_id":"registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.150","linked_libs":[],"linked_paths":[],"cfgs":["fast_arithmetic=\"64\""],"env":[],"out_dir":"/tmp/kasumi-literal-json-validation-target/debug/build/serde_json-f4b88bd76965e687/out"}
+{"reason":"build-script-executed","package_id":"registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229","linked_libs":[],"linked_paths":[],"cfgs":["if_docsrs_then_no_serde_core"],"env":[],"out_dir":"/tmp/kasumi-literal-json-validation-target/debug/build/serde-a1e019cbddd356a2/out"}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#toml_parser@1.1.2+spec-1.1.0","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml_parser-1.1.2+spec-1.1.0/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"toml_parser","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml_parser-1.1.2+spec-1.1.0/src/lib.rs","edition":"2024","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":false},"features":["alloc","std"],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/libtoml_parser-8324df94e9318d8a.rlib","/tmp/kasumi-literal-json-validation-target/debug/deps/libtoml_parser-8324df94e9318d8a.rmeta"],"executable":null,"fresh":true}
+{"reason":"build-script-executed","package_id":"registry+https://github.com/rust-lang/crates.io-index#stacker@0.1.24","linked_libs":[],"linked_paths":[],"cfgs":[],"env":[],"out_dir":"/tmp/kasumi-literal-json-validation-target/debug/build/stacker-2521330cd938e232/out"}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#psm@0.1.31","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/psm-0.1.31/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"psm","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/psm-0.1.31/src/lib.rs","edition":"2021","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":false},"features":[],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/libpsm-059b6206f02ceb8d.rlib","/tmp/kasumi-literal-json-validation-target/debug/deps/libpsm-059b6206f02ceb8d.rmeta"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#libc@0.2.186","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libc-0.2.186/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"libc","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libc-0.2.186/src/lib.rs","edition":"2021","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":false},"features":["default","std"],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/liblibc-259df0b9de2373d4.rlib","/tmp/kasumi-literal-json-validation-target/debug/deps/liblibc-259df0b9de2373d4.rmeta"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#serde_derive@1.0.229","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_derive-1.0.229/Cargo.toml","target":{"kind":["proc-macro"],"crate_types":["proc-macro"],"name":"serde_derive","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_derive-1.0.229/src/lib.rs","edition":"2021","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":0,"debug_assertions":true,"overflow_checks":true,"test":false},"features":["default"],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/libserde_derive-7f14849b11c1c553.dylib"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#toml_datetime@1.1.1+spec-1.1.0","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml_datetime-1.1.1+spec-1.1.0/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"toml_datetime","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml_datetime-1.1.1+spec-1.1.0/src/lib.rs","edition":"2024","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":false},"features":["alloc","serde","std"],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/libtoml_datetime-8b800f8d38492f8a.rlib","/tmp/kasumi-literal-json-validation-target/debug/deps/libtoml_datetime-8b800f8d38492f8a.rmeta"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#serde_spanned@1.1.1","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_spanned-1.1.1/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"serde_spanned","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_spanned-1.1.1/src/lib.rs","edition":"2024","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":false},"features":["alloc","serde","std"],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/libserde_spanned-a4e4085a0f8903e7.rlib","/tmp/kasumi-literal-json-validation-target/debug/deps/libserde_spanned-a4e4085a0f8903e7.rmeta"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#toml_writer@1.1.2+spec-1.1.0","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml_writer-1.1.2+spec-1.1.0/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"toml_writer","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml_writer-1.1.2+spec-1.1.0/src/lib.rs","edition":"2024","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":false},"features":["alloc","std"],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/libtoml_writer-11e765777f2ea143.rlib","/tmp/kasumi-literal-json-validation-target/debug/deps/libtoml_writer-11e765777f2ea143.rmeta"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#ref-cast@1.0.26","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ref-cast-1.0.26/Cargo.toml","target":{"kind":["custom-build"],"crate_types":["bin"],"name":"build-script-build","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ref-cast-1.0.26/build.rs","edition":"2021","doc":false,"doctest":false,"test":false},"profile":{"opt_level":"0","debuginfo":0,"debug_assertions":true,"overflow_checks":true,"test":false},"features":[],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/build/ref-cast-096795b2a4b48118/build-script-build"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#cfg-if@1.0.4","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cfg-if-1.0.4/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"cfg_if","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cfg-if-1.0.4/src/lib.rs","edition":"2018","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":false},"features":[],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/libcfg_if-dd44da4100d549b3.rlib","/tmp/kasumi-literal-json-validation-target/debug/deps/libcfg_if-dd44da4100d549b3.rmeta"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#rustversion@1.0.23","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustversion-1.0.23/Cargo.toml","target":{"kind":["custom-build"],"crate_types":["bin"],"name":"build-script-build","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustversion-1.0.23/build/build.rs","edition":"2018","doc":false,"doctest":false,"test":false},"profile":{"opt_level":"0","debuginfo":0,"debug_assertions":true,"overflow_checks":true,"test":false},"features":[],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/build/rustversion-d9e46cdb99f6b513/build-script-build"],"executable":null,"fresh":true}
+   Compiling serde_json v1.0.151 (/private/tmp/kasumi-literal-json-number-content/vendor/serde_json-1.0.151)
+{"reason":"compiler-artifact","package_id":"path+file:///private/tmp/kasumi-literal-json-number-content/vendor/serde_json-1.0.151#serde_json@1.0.151","manifest_path":"/private/tmp/kasumi-literal-json-number-content/vendor/serde_json-1.0.151/Cargo.toml","target":{"kind":["custom-build"],"crate_types":["bin"],"name":"build-script-build","src_path":"/private/tmp/kasumi-literal-json-number-content/vendor/serde_json-1.0.151/build.rs","edition":"2021","doc":false,"doctest":false,"test":false},"profile":{"opt_level":"0","debuginfo":0,"debug_assertions":true,"overflow_checks":true,"test":false},"features":["arbitrary_precision","default","std"],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/build/serde_json-fbe303bd2a2f7ffb/build-script-build"],"executable":null,"fresh":false}
+{"reason":"build-script-executed","package_id":"path+file:///private/tmp/kasumi-literal-json-number-content/vendor/serde_json-1.0.151#serde_json@1.0.151","linked_libs":[],"linked_paths":[],"cfgs":["fast_arithmetic=\"64\""],"env":[],"out_dir":"/tmp/kasumi-literal-json-validation-target/debug/build/serde_json-d6bfa2268c9b3a54/out"}
+{"reason":"build-script-executed","package_id":"registry+https://github.com/rust-lang/crates.io-index#rustversion@1.0.23","linked_libs":[],"linked_paths":[],"cfgs":[],"env":[],"out_dir":"/tmp/kasumi-literal-json-validation-target/debug/build/rustversion-c42f4fb3ad97c6ee/out"}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#stacker@0.1.24","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/stacker-0.1.24/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"stacker","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/stacker-0.1.24/src/lib.rs","edition":"2021","doc":true,"doctest":false,"test":false},"profile":{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":false},"features":[],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/libstacker-301957527bc5c6e5.rlib","/tmp/kasumi-literal-json-validation-target/debug/deps/libstacker-301957527bc5c6e5.rmeta"],"executable":null,"fresh":true}
+{"reason":"build-script-executed","package_id":"registry+https://github.com/rust-lang/crates.io-index#ref-cast@1.0.26","linked_libs":[],"linked_paths":[],"cfgs":[],"env":[],"out_dir":"/tmp/kasumi-literal-json-validation-target/debug/build/ref-cast-c884f25d59b51473/out"}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#toml@1.1.3+spec-1.1.0","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml-1.1.3+spec-1.1.0/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"toml","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml-1.1.3+spec-1.1.0/src/lib.rs","edition":"2024","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":false},"features":["default","display","parse","serde","std"],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/libtoml-0913ba7a9b4688de.rlib","/tmp/kasumi-literal-json-validation-target/debug/deps/libtoml-0913ba7a9b4688de.rmeta"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"serde","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs","edition":"2021","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":false},"features":["default","derive","serde_derive","std"],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/libserde-dfc6aaf36e6b5476.rlib","/tmp/kasumi-literal-json-validation-target/debug/deps/libserde-dfc6aaf36e6b5476.rmeta"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.150","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_json-1.0.150/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"serde_json","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_json-1.0.150/src/lib.rs","edition":"2021","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":false},"features":["default","std"],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/libserde_json-5e74074fadbd431a.rlib","/tmp/kasumi-literal-json-validation-target/debug/deps/libserde_json-5e74074fadbd431a.rmeta"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#target-triple@1.0.1","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/target-triple-1.0.1/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"target_triple","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/target-triple-1.0.1/src/lib.rs","edition":"2021","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":false},"features":[],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/libtarget_triple-8e166c4f9957d600.rlib","/tmp/kasumi-literal-json-validation-target/debug/deps/libtarget_triple-8e166c4f9957d600.rmeta"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#ref-cast-impl@1.0.26","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ref-cast-impl-1.0.26/Cargo.toml","target":{"kind":["proc-macro"],"crate_types":["proc-macro"],"name":"ref_cast_impl","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ref-cast-impl-1.0.26/src/lib.rs","edition":"2021","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":0,"debug_assertions":true,"overflow_checks":true,"test":false},"features":[],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/libref_cast_impl-d51976d02ce6a4d4.dylib"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#syn@2.0.119","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/syn-2.0.119/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"syn","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/syn-2.0.119/src/lib.rs","edition":"2021","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":0,"debug_assertions":true,"overflow_checks":true,"test":false},"features":["clone-impls","default","derive","parsing","printing","proc-macro"],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/libsyn-20f2d7353ae35065.rlib","/tmp/kasumi-literal-json-validation-target/debug/deps/libsyn-20f2d7353ae35065.rmeta"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#termcolor@1.4.1","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/termcolor-1.4.1/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"termcolor","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/termcolor-1.4.1/src/lib.rs","edition":"2018","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":false},"features":[],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/libtermcolor-e8b4e5afc14334d2.rlib","/tmp/kasumi-literal-json-validation-target/debug/deps/libtermcolor-e8b4e5afc14334d2.rmeta"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#dissimilar@1.0.11","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/dissimilar-1.0.11/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"dissimilar","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/dissimilar-1.0.11/src/lib.rs","edition":"2021","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":false},"features":[],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/libdissimilar-19606f13e24ae55b.rlib","/tmp/kasumi-literal-json-validation-target/debug/deps/libdissimilar-19606f13e24ae55b.rmeta"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#glob@0.3.3","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/glob-0.3.3/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"glob","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/glob-0.3.3/src/lib.rs","edition":"2015","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":false},"features":[],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/libglob-55b42a7b2285a159.rlib","/tmp/kasumi-literal-json-validation-target/debug/deps/libglob-55b42a7b2285a159.rmeta"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#trybuild@1.0.118","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/trybuild-1.0.118/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"trybuild","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/trybuild-1.0.118/src/lib.rs","edition":"2024","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":false},"features":["diff"],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/libtrybuild-65a5ae7d75460f8a.rlib","/tmp/kasumi-literal-json-validation-target/debug/deps/libtrybuild-65a5ae7d75460f8a.rmeta"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#automod@1.0.17","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/automod-1.0.17/Cargo.toml","target":{"kind":["proc-macro"],"crate_types":["proc-macro"],"name":"automod","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/automod-1.0.17/src/lib.rs","edition":"2021","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":0,"debug_assertions":true,"overflow_checks":true,"test":false},"features":[],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/libautomod-90cd3b157b137482.dylib"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#ref-cast@1.0.26","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ref-cast-1.0.26/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"ref_cast","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ref-cast-1.0.26/src/lib.rs","edition":"2021","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":false},"features":[],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/libref_cast-296084b46658aaf8.rlib","/tmp/kasumi-literal-json-validation-target/debug/deps/libref_cast-296084b46658aaf8.rmeta"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#serde_stacker@0.1.14","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_stacker-0.1.14/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"serde_stacker","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_stacker-0.1.14/src/lib.rs","edition":"2021","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":false},"features":[],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/libserde_stacker-681d1b4b7f021081.rlib","/tmp/kasumi-literal-json-validation-target/debug/deps/libserde_stacker-681d1b4b7f021081.rmeta"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#rustversion@1.0.23","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustversion-1.0.23/Cargo.toml","target":{"kind":["proc-macro"],"crate_types":["proc-macro"],"name":"rustversion","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustversion-1.0.23/src/lib.rs","edition":"2018","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":0,"debug_assertions":true,"overflow_checks":true,"test":false},"features":[],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/librustversion-11414c534d2812fb.dylib"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#serde_bytes@0.11.19","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_bytes-0.11.19/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"serde_bytes","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_bytes-0.11.19/src/lib.rs","edition":"2018","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":false},"features":["default","std"],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/libserde_bytes-40f8c6a64da8fe5d.rlib","/tmp/kasumi-literal-json-validation-target/debug/deps/libserde_bytes-40f8c6a64da8fe5d.rmeta"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#indoc@2.0.7","manifest_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/indoc-2.0.7/Cargo.toml","target":{"kind":["proc-macro"],"crate_types":["proc-macro"],"name":"indoc","src_path":"/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/indoc-2.0.7/src/lib.rs","edition":"2021","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":0,"debug_assertions":true,"overflow_checks":true,"test":false},"features":[],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/libindoc-5cf14d7c4694647a.dylib"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"path+file:///private/tmp/kasumi-literal-json-number-content/vendor/serde_json-1.0.151#serde_json@1.0.151","manifest_path":"/private/tmp/kasumi-literal-json-number-content/vendor/serde_json-1.0.151/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"serde_json","src_path":"/private/tmp/kasumi-literal-json-number-content/vendor/serde_json-1.0.151/src/lib.rs","edition":"2021","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":false},"features":["arbitrary_precision","default","std"],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/libserde_json-c112149a3841f4a8.rlib","/tmp/kasumi-literal-json-validation-target/debug/deps/libserde_json-c112149a3841f4a8.rmeta"],"executable":null,"fresh":false}
+{"reason":"compiler-artifact","package_id":"path+file:///private/tmp/kasumi-literal-json-number-content/vendor/serde_json-1.0.151#serde_json@1.0.151","manifest_path":"/private/tmp/kasumi-literal-json-number-content/vendor/serde_json-1.0.151/Cargo.toml","target":{"kind":["test"],"crate_types":["bin"],"name":"compiletest","src_path":"/private/tmp/kasumi-literal-json-number-content/vendor/serde_json-1.0.151/tests/compiletest.rs","edition":"2021","doc":false,"doctest":false,"test":true},"profile":{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":true},"features":["arbitrary_precision","default","std"],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/compiletest-259235d0baff08e4"],"executable":"/tmp/kasumi-literal-json-validation-target/debug/deps/compiletest-259235d0baff08e4","fresh":false}
+{"reason":"compiler-artifact","package_id":"path+file:///private/tmp/kasumi-literal-json-number-content/vendor/serde_json-1.0.151#serde_json@1.0.151","manifest_path":"/private/tmp/kasumi-literal-json-number-content/vendor/serde_json-1.0.151/Cargo.toml","target":{"kind":["test"],"crate_types":["bin"],"name":"debug","src_path":"/private/tmp/kasumi-literal-json-number-content/vendor/serde_json-1.0.151/tests/debug.rs","edition":"2021","doc":false,"doctest":false,"test":true},"profile":{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":true},"features":["arbitrary_precision","default","std"],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/debug-3b1d79152b2b499c"],"executable":"/tmp/kasumi-literal-json-validation-target/debug/deps/debug-3b1d79152b2b499c","fresh":false}
+{"reason":"compiler-artifact","package_id":"path+file:///private/tmp/kasumi-literal-json-number-content/vendor/serde_json-1.0.151#serde_json@1.0.151","manifest_path":"/private/tmp/kasumi-literal-json-number-content/vendor/serde_json-1.0.151/Cargo.toml","target":{"kind":["test"],"crate_types":["bin"],"name":"test","src_path":"/private/tmp/kasumi-literal-json-number-content/vendor/serde_json-1.0.151/tests/test.rs","edition":"2021","doc":false,"doctest":false,"test":true},"profile":{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":true},"features":["arbitrary_precision","default","std"],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/test-5b38577e7a98914f"],"executable":"/tmp/kasumi-literal-json-validation-target/debug/deps/test-5b38577e7a98914f","fresh":false}
+{"reason":"compiler-artifact","package_id":"path+file:///private/tmp/kasumi-literal-json-number-content/vendor/serde_json-1.0.151#serde_json@1.0.151","manifest_path":"/private/tmp/kasumi-literal-json-number-content/vendor/serde_json-1.0.151/Cargo.toml","target":{"kind":["test"],"crate_types":["bin"],"name":"map","src_path":"/private/tmp/kasumi-literal-json-number-content/vendor/serde_json-1.0.151/tests/map.rs","edition":"2021","doc":false,"doctest":false,"test":true},"profile":{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":true},"features":["arbitrary_precision","default","std"],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/map-468b66a322505d03"],"executable":"/tmp/kasumi-literal-json-validation-target/debug/deps/map-468b66a322505d03","fresh":false}
+{"reason":"compiler-artifact","package_id":"path+file:///private/tmp/kasumi-literal-json-number-content/vendor/serde_json-1.0.151#serde_json@1.0.151","manifest_path":"/private/tmp/kasumi-literal-json-number-content/vendor/serde_json-1.0.151/Cargo.toml","target":{"kind":["test"],"crate_types":["bin"],"name":"regression","src_path":"/private/tmp/kasumi-literal-json-number-content/vendor/serde_json-1.0.151/tests/regression.rs","edition":"2021","doc":false,"doctest":false,"test":true},"profile":{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":true},"features":["arbitrary_precision","default","std"],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/regression-d5373c929add1170"],"executable":"/tmp/kasumi-literal-json-validation-target/debug/deps/regression-d5373c929add1170","fresh":false}
+{"reason":"compiler-artifact","package_id":"path+file:///private/tmp/kasumi-literal-json-number-content/vendor/serde_json-1.0.151#serde_json@1.0.151","manifest_path":"/private/tmp/kasumi-literal-json-number-content/vendor/serde_json-1.0.151/Cargo.toml","target":{"kind":["test"],"crate_types":["bin"],"name":"literal_keys","src_path":"/private/tmp/kasumi-literal-json-number-content/vendor/serde_json-1.0.151/tests/literal_keys.rs","edition":"2021","doc":false,"doctest":false,"test":true},"profile":{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":true},"features":["arbitrary_precision","default","std"],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/literal_keys-63057e816eeb668e"],"executable":"/tmp/kasumi-literal-json-validation-target/debug/deps/literal_keys-63057e816eeb668e","fresh":false}
+{"reason":"compiler-artifact","package_id":"path+file:///private/tmp/kasumi-literal-json-number-content/vendor/serde_json-1.0.151#serde_json@1.0.151","manifest_path":"/private/tmp/kasumi-literal-json-number-content/vendor/serde_json-1.0.151/Cargo.toml","target":{"kind":["test"],"crate_types":["bin"],"name":"stream","src_path":"/private/tmp/kasumi-literal-json-number-content/vendor/serde_json-1.0.151/tests/stream.rs","edition":"2021","doc":false,"doctest":false,"test":true},"profile":{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":true},"features":["arbitrary_precision","default","std"],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/stream-ccbc22c03537094a"],"executable":"/tmp/kasumi-literal-json-validation-target/debug/deps/stream-ccbc22c03537094a","fresh":false}
+{"reason":"compiler-artifact","package_id":"path+file:///private/tmp/kasumi-literal-json-number-content/vendor/serde_json-1.0.151#serde_json@1.0.151","manifest_path":"/private/tmp/kasumi-literal-json-number-content/vendor/serde_json-1.0.151/Cargo.toml","target":{"kind":["test"],"crate_types":["bin"],"name":"lexical","src_path":"/private/tmp/kasumi-literal-json-number-content/vendor/serde_json-1.0.151/tests/lexical.rs","edition":"2021","doc":false,"doctest":false,"test":true},"profile":{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":true},"features":["arbitrary_precision","default","std"],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/lexical-fc8f5175f3a4b8a7"],"executable":"/tmp/kasumi-literal-json-validation-target/debug/deps/lexical-fc8f5175f3a4b8a7","fresh":false}
+{"reason":"compiler-artifact","package_id":"path+file:///private/tmp/kasumi-literal-json-number-content/vendor/serde_json-1.0.151#serde_json@1.0.151","manifest_path":"/private/tmp/kasumi-literal-json-number-content/vendor/serde_json-1.0.151/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"serde_json","src_path":"/private/tmp/kasumi-literal-json-number-content/vendor/serde_json-1.0.151/src/lib.rs","edition":"2021","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":true},"features":["arbitrary_precision","default","std"],"filenames":["/tmp/kasumi-literal-json-validation-target/debug/deps/serde_json-91ce5ffada670560"],"executable":"/tmp/kasumi-literal-json-validation-target/debug/deps/serde_json-91ce5ffada670560","fresh":false}
+{"reason":"build-finished","success":true}
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 15.64s
+     Running unittests src/lib.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/serde_json-91ce5ffada670560)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/compiletest.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/compiletest-259235d0baff08e4)
+
+running 1 test
+test ui ... ignored, requires nightly
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/debug.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/debug-3b1d79152b2b499c)
+
+running 9 tests
+test error ... ok
+test indented ... ok
+test number ... ok
+test value_array ... ok
+test value_bool ... ok
+test value_null ... ok
+test value_number ... ok
+test value_object ... ok
+test value_string ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/lexical.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/lexical-fc8f5175f3a4b8a7)
+
+running 35 tests
+test algorithm::double_fast_path_test ... ok
+test algorithm::float_fast_path_test ... ok
+test algorithm::moderate_path_test ... ok
+test exponent::mantissa_exponent_test ... ok
+test exponent::scientific_exponent_test ... ok
+test float::from_float ... ok
+test float::imul_test ... ok
+test float::mul_test ... ok
+test float::normalize_test ... ok
+test float::round_to_f32_test ... ok
+test float::round_to_f64_test ... ok
+test float::to_f32_test ... ok
+test float::to_f64_test ... ok
+test math::bit_length_test ... ok
+test math::compare_test ... ok
+test math::hi64_test ... ok
+test math::iadd_small_test ... ok
+test math::imul_small_test ... ok
+test math::shl_test ... ok
+test num::as_primitive_test ... ok
+test num::float_test ... ok
+test num::integer_test ... ok
+test num::number_test ... ok
+test parse::parse_f32_test ... ok
+test parse::parse_f64_test ... ok
+test rounding::avoid_overflow_test ... ok
+test rounding::internal_n_mask_test ... ok
+test rounding::lower_n_halfway_test ... ok
+test rounding::lower_n_mask_test ... ok
+test rounding::nth_bit_test ... ok
+test rounding::round_downward_test ... ok
+test rounding::round_nearest_test ... ok
+test rounding::round_nearest_tie_even_test ... ok
+test rounding::round_to_float_test ... ok
+test rounding::round_to_native_test ... ok
+
+test result: ok. 35 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/literal_keys.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/literal_keys-63057e816eeb668e)
+
+running 7 tests
+test a_literal_string_does_not_start_another_json_parser ... ok
+test every_string_marker_is_literal_including_escapes_and_invalid_inner_json ... ok
+test explicit_128_bit_integer_requests_remain_exact_and_reject_overflow ... ok
+test genuine_numbers_survive_direct_owned_borrowed_and_tagged_paths ... ok
+test marker_order_never_changes_object_meaning ... ok
+test tagged_content_preserves_the_string_and_byte_key_distinction ... ok
+test typed_number_rejects_a_literal_marker_object_even_in_untagged_buffering ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/map.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/map-468b66a322505d03)
+
+running 3 tests
+test test_append ... ok
+test test_preserve_order ... ok
+test test_retain ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/regression.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/regression-d5373c929add1170)
+
+running 6 tests
+test regression::issue1004::test ... ok
+test regression::issue520::test ... ok
+test regression::issue795::test ... ok
+test regression::issue845::test ... ok
+test regression::issue953::test ... ok
+test regression::issue979::test ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/stream.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/stream-ccbc22c03537094a)
+
+running 11 tests
+test test_error ... ok
+test test_json_stream_empty ... ok
+test test_json_stream_invalid_literal ... ok
+test test_json_stream_invalid_number ... ok
+test test_json_stream_newlines ... ok
+test test_json_stream_primitive ... ok
+test test_json_stream_trailing_whitespaces ... ok
+test test_json_stream_truncated ... ok
+test test_json_stream_truncated_decimal ... ok
+test test_json_stream_truncated_exponent ... ok
+test test_json_stream_truncated_negative ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/test.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/test-5b38577e7a98914f)
+
+running 76 tests
+test hash_positive_and_negative_zero ... ok
+test issue_220 ... ok
+test null_invalid_type ... ok
+test test_boolean_key ... ok
+test test_borrow ... ok
+test test_borrow_in_map_key ... ok
+test test_borrowed_key ... ok
+test test_byte_buf_de ... ok
+test test_byte_buf_de_invalid_surrogates ... ok
+test test_byte_buf_de_multiple ... ok
+test test_byte_buf_de_surrogate_pair ... ok
+test test_byte_buf_ser ... ok
+test test_bytes_ser ... ok
+test test_category ... ok
+test test_control_character_search ... ok
+test test_deny_non_finite_f32_key ... ok
+test test_deny_non_finite_f64_key ... ok
+test test_deserialize_from_stream ... ok
+test test_deserialize_number_to_untagged_enum ... ok
+test test_effectively_string_keys ... ok
+test test_encode_nonfinite_float_yields_null ... ok
+test test_float_key ... ok
+test test_integer128 ... ok
+test test_integer128_key ... ok
+test test_integer128_to_value ... ok
+test test_integer_key ... ok
+test test_into_io_error ... ok
+test test_json_macro ... ok
+test test_json_pointer ... ok
+test test_json_pointer_mut ... ok
+test test_malicious_number ... ok
+test test_missing_nonoption_field ... ok
+test test_missing_option_field ... ok
+test test_missing_renamed_field ... ok
+test test_multiline_errors ... ok
+test test_parse_bool ... ok
+test test_parse_char ... ok
+test test_parse_enum ... ok
+test test_parse_enum_errors ... ok
+test test_parse_f64 ... ok
+test test_parse_i64 ... ok
+test test_parse_list ... ok
+test test_parse_negative_zero ... ok
+test test_parse_null ... ok
+test test_parse_number ... ok
+test test_parse_number_errors ... ok
+test test_parse_object ... ok
+test test_parse_option ... ok
+test test_parse_string ... ok
+test test_parse_struct ... ok
+test test_parse_trailing_whitespace ... ok
+test test_parse_u64 ... ok
+test test_partialeq_bool ... ok
+test test_partialeq_number ... ok
+test test_partialeq_string ... ok
+test test_roundtrip_f32 ... ok
+test test_serialize_char ... ok
+test test_serialize_map_with_no_len ... ok
+test test_serialize_rejects_adt_keys ... ok
+test test_serialize_seq_with_no_len ... ok
+test test_stack_overflow ... ok
+test test_value_as_f64 ... ok
+test test_value_into_deserializer ... ok
+test test_write_bool ... ok
+test test_write_char ... ok
+test test_write_enum ... ok
+test test_write_f64 ... ok
+test test_write_i64 ... ok
+test test_write_list ... ok
+test test_write_newtype_struct ... ok
+test test_write_null ... ok
+test test_write_object ... ok
+test test_write_option ... ok
+test test_write_str ... ok
+test test_write_tuple ... ok
+test test_write_u64 ... ok
+
+test result: ok. 76 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+   Doc-tests serde_json
+
+running 98 tests
+test src/de.rs - de::&'_mutDeserializer<R>::deserialize_bytes (line 1599) ... ok
+test src/de.rs - de::&'_mutDeserializer<R>::deserialize_bytes (line 1620) ... ok
+test src/de.rs - de::StreamDeserializer (line 2348) ... ok
+test src/de.rs - de::StreamDeserializer<'de,R,T>::byte_offset (line 2398) ... ok
+test src/de.rs - de::from_reader (line 2545) ... ok
+test src/de.rs - de::from_reader (line 2581) ... ok
+test src/de.rs - de::from_slice (line 2636) ... ok
+test src/de.rs - de::from_str (line 2678) ... ok
+test src/error.rs - error::Error::io_error_kind (line 119) ... ok
+test src/error.rs - error::io::Error::from (line 195) ... ok
+test src/lib.rs - (line 120) ... ok
+test src/lib.rs - (line 182) ... ok
+test src/lib.rs - (line 211) ... ok
+test src/lib.rs - (line 242) ... ok
+test src/lib.rs - (line 43) ... ok
+test src/lib.rs - (line 62) ... ok
+test src/macros.rs - macros::json (line 26) ... ok
+test src/macros.rs - macros::json (line 3) ... ok
+test src/macros.rs - macros::json (line 43) ... ok
+test src/map.rs - map::Entry<'a>::and_modify (line 715) ... ok
+test src/map.rs - map::Entry<'a>::key (line 655) ... ok
+test src/map.rs - map::Entry<'a>::or_insert (line 671) ... ok
+test src/map.rs - map::Entry<'a>::or_insert_with (line 692) ... ok
+test src/map.rs - map::Map<String,Value> (line 437) ... ok
+test src/map.rs - map::Map<String,Value> (line 465) ... ok
+test src/map.rs - map::OccupiedEntry<'a>::get (line 822) ... ok
+test src/map.rs - map::OccupiedEntry<'a>::get_mut (line 846) ... ok
+test src/map.rs - map::OccupiedEntry<'a>::insert (line 899) ... ok
+test src/map.rs - map::OccupiedEntry<'a>::into_mut (line 872) ... ok
+test src/map.rs - map::OccupiedEntry<'a>::key (line 798) ... ok
+test src/map.rs - map::OccupiedEntry<'a>::remove (line 930) ... ok
+test src/map.rs - map::OccupiedEntry<'a>::remove_entry (line 991) ... ok
+test src/map.rs - map::VacantEntry<'a>::insert (line 773) ... ok
+test src/map.rs - map::VacantEntry<'a>::key (line 751) ... ok
+test src/number.rs - number::Number::as_str (line 292) ... ok
+test src/number.rs - number::Number::from_f64 (line 176) ... ok
+test src/number.rs - number::Number::from_i128 (line 230) ... ok
+test src/number.rs - number::Number::from_u128 (line 259) ... ok
+test src/value/from.rs - value::from::Value::from (line 101) ... ok
+test src/value/from.rs - value::from::Value::from (line 117) ... ok
+test src/value/from.rs - value::from::Value::from (line 125) ... ok
+test src/value/from.rs - value::from::Value::from (line 142) ... ok
+test src/value/from.rs - value::from::Value::from (line 158) ... ok
+test src/value/from.rs - value::from::Value::from (line 175) ... ok
+test src/value/from.rs - value::from::Value::from (line 197) ... ok
+test src/value/from.rs - value::from::Value::from (line 263) ... ok
+test src/value/from.rs - value::from::Value::from (line 36) ... ok
+test src/value/from.rs - value::from::Value::from (line 53) ... ok
+test src/value/from.rs - value::from::Value::from (line 69) ... ok
+test src/value/from.rs - value::from::Value::from (line 85) ... ok
+test src/value/from.rs - value::from::Value::from_iter (line 213) ... ok
+test src/value/from.rs - value::from::Value::from_iter (line 220) ... ok
+test src/value/from.rs - value::from::Value::from_iter (line 227) ... ok
+test src/value/from.rs - value::from::Value::from_iter (line 243) ... ok
+test src/value/index.rs - value::index::Index (line 24) ... ok
+test src/value/index.rs - value::index::Value::index (line 197) ... ok
+test src/value/index.rs - value::index::Value::index_mut (line 236) ... ok
+test src/value/mod.rs - value (line 37) ... ok
+test src/value/mod.rs - value (line 61) ... ok
+test src/value/mod.rs - value (line 8) ... ok
+test src/value/mod.rs - value::Value (line 898) ... ok
+test src/value/mod.rs - value::Value::Array (line 155) ... ok
+test src/value/mod.rs - value::Value::Bool (line 128) ... ok
+test src/value/mod.rs - value::Value::Null (line 119) ... ok
+test src/value/mod.rs - value::Value::Number (line 137) ... ok
+test src/value/mod.rs - value::Value::Object (line 170) ... ok
+test src/value/mod.rs - value::Value::String (line 146) ... ok
+test src/value/mod.rs - value::Value::as_array (line 414) ... ok
+test src/value/mod.rs - value::Value::as_array_mut (line 435) ... ok
+test src/value/mod.rs - value::Value::as_bool (line 698) ... ok
+test src/value/mod.rs - value::Value::as_f64 (line 660) ... ok
+test src/value/mod.rs - value::Value::as_i64 (line 621) ... ok
+test src/value/mod.rs - value::Value::as_null (line 736) ... ok
+test src/value/mod.rs - value::Value::as_number (line 521) ... ok
+test src/value/mod.rs - value::Value::as_object (line 355) ... ok
+test src/value/mod.rs - value::Value::as_object_mut (line 376) ... ok
+test src/value/mod.rs - value::Value::as_str (line 472) ... ok
+test src/value/mod.rs - value::Value::as_u64 (line 641) ... ok
+test src/value/mod.rs - value::Value::fmt (line 200) ... ok
+test src/value/mod.rs - value::Value::get (line 276) ... ok
+test src/value/mod.rs - value::Value::get (line 292) ... ok
+test src/value/mod.rs - value::Value::get_mut (line 318) ... ok
+test src/value/mod.rs - value::Value::is_array (line 397) ... ok
+test src/value/mod.rs - value::Value::is_boolean (line 681) ... ok
+test src/value/mod.rs - value::Value::is_f64 (line 600) ... ok
+test src/value/mod.rs - value::Value::is_i64 (line 546) ... ok
+test src/value/mod.rs - value::Value::is_null (line 720) ... ok
+test src/value/mod.rs - value::Value::is_number (line 501) ... ok
+test src/value/mod.rs - value::Value::is_object (line 337) ... ok
+test src/value/mod.rs - value::Value::is_string (line 455) ... ok
+test src/value/mod.rs - value::Value::is_u64 (line 572) ... ok
+test src/value/mod.rs - value::Value::pointer (line 767) ... ok
+test src/value/mod.rs - value::Value::pointer_mut (line 812) ... ok
+test src/value/mod.rs - value::Value::take (line 854) ... ok
+test src/value/mod.rs - value::from_value (line 1006) ... ok
+test src/value/mod.rs - value::to_value (line 945) ... ok
+test src/value/mod.rs - value::to_value (line 982) ... ok
+test src/value/ser.rs - value::ser::Serializer (line 47) ... ok
+
+test result: ok. 98 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 47.78s
+

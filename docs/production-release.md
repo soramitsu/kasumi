@@ -126,6 +126,14 @@ gate above and usable installation artifacts.
 
 ## Current verified increments
 
+- JSON correction `13fbbc1` passes exact vendored-input checks and all four
+  complete upstream suites: default 239, number 245, raw 257 and combined 265
+  tests passed, with one unchanged nightly-only UI ignore in each. Original
+  failures remain retained in `docs/evidence/literal-json-upstream-20260909`.
+  It is combined with the corrected shutdown/receipt and SDK snapshot work only
+  in validation branch `eb1f31e`; combined Kasumi and production gates remain
+  unrun. Broader SDK literal decoding and canonical input helpers are separately
+  under source review, including external-consumer behavior without root patches.
 - Prepared JSON dependency patch `8f4cf74` passed exact resolver/hash checks and
   the default upstream suite (239 tests passed, one upstream test ignored), then
   failed an added large-number tagged-value regression in its number-only suite.
@@ -141,7 +149,8 @@ gate above and usable installation artifacts.
   `docs/evidence/sdk-snapshot-small-20260909`. Native endpoints, MCP, combined
   workspace and production builds did not run. The SDK is combined with the
   corrected shutdown fixture in validation branch `f93414e`, not accepted into
-  the release implementation. The JSON dependency correction remains separate.
+  the release implementation. The subsequent `eb1f31e` validation integration includes the corrected JSON
+  dependency; it has not run combined gates.
 - Frozen shutdown/receipt checkpoint `711b32d` passed one verifier-worker and
   five security-audit tests, then failed its new tenant-audit shutdown fixture
   because that tenant had no administrator. The other tenant maintenance test

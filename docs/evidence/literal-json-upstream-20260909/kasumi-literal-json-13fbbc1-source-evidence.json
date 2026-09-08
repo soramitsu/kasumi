@@ -1,0 +1,53 @@
+{
+  "schema": 1,
+  "scope": "Source-only correction after exact pristine reproduction; no changed-source Rust validation",
+  "created_at": "2026-09-08T16:14:55.524599+00:00",
+  "source": "13fbbc162d2a428bde502a334beb3ebab9aa59d9",
+  "tree": "e2df23893ddb726c9c0373a638a4a42e1e5550fb",
+  "base": "8f4cf744248f54ca416c965e708ad9d0b6074930",
+  "worktree": "/private/tmp/kasumi-literal-json-number-content",
+  "root_lock_sha256": "dd3c9d643a2fcb270147fc6bde72e2c6a5afab505d8f61a7525f0e5ba1fecaa5",
+  "root_lock_unchanged": true,
+  "vendor_lock_sha256": "3dc87740936e57d7be685ad20618aaa3ec8d931085e54381d196a2ec8faa919f",
+  "published_crate_sha256": "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14",
+  "checks": {
+    "vendored_file_hashes_and_tracking": "passed",
+    "full_patch_replay_from_published_archive": "passed",
+    "direct_rustfmt_1_97_1_check": "passed",
+    "git_diff_check": "passed"
+  },
+  "failed_preceding_patch_cohort": {
+    "path": "/tmp/kasumi-literal-json-validation-8f4cf74/evidence.json",
+    "sha256": "7500327542997a160d0c6608cebb79fbfd1885344299d3082800e0014a276e0b"
+  },
+  "failed_pristine_reproduction": {
+    "path": "/tmp/kasumi-literal-json-pristine-baseline/evidence.json",
+    "sha256": "8cd37d4539b4e92284c6c85b2171fe3ad5b559f69d7e3d23d03f8f39251edf33"
+  },
+  "changed_source_files": {
+    "docs/dependency-dispositions.md": "f5a27ae04aebf6b367f967145cb9642f7d7b486ffe228ff65aa54c150795bf60",
+    "vendor/README.md": "575ec148ea4ce96995012ca88bfe5ee3a4b108f63c1b49ec809ba67094dfe070",
+    "vendor/patch-manifest.json": "dde53ba923497c386fc203a6965bb3e7a2c4a2dc5c47f7342c9c32b0730dc29d",
+    "vendor/serde-json-literal-keys.md": "5cff2e596183d42a9ba27441cbf1f0ce626a1022ba5c60010042e12a162df105",
+    "vendor/serde_json-1.0.151-literal-keys.patch": "4f83538c955c49fbaca8f80f6df7139f7125bd191c8f33eaa567624ed4257a0a",
+    "vendor/serde_json-1.0.151/src/number.rs": "a5597b7bb12425a00d91ba7538ef13ed08d7a962c84762d17f41d013aac2be67",
+    "vendor/serde_json-1.0.151/tests/literal_keys.rs": "e5d01cf3a471951783e282f632277056eb497ffa54fdfdc97cc3a6a62f4b0e55"
+  },
+  "no_changed_source_cargo_or_native_execution": true,
+  "pending": [
+    "Authorized changed-source dependency resolver/hash check",
+    "Default/number/raw/combined full upstream suites",
+    "Kasumi parser boundary regressions and final integration checks"
+  ],
+  "limitations": [
+    "No external stock-versus-patched Serde protocol interoperability claim",
+    "No change to separately required SDK-owned literal byte boundaries",
+    "No preallocation budget or production-readiness claim"
+  ],
+  "independent_review": {
+    "reviewer": "root",
+    "source": "13fbbc162d2a428bde502a334beb3ebab9aa59d9",
+    "scope": "Read-only numeric delta: generic >64-bit synthetic map, decimal/exponent-only float shortcut, typed128 methods and boundary regressions",
+    "finding": "No actionable defect; execution remains required"
+  }
+}
