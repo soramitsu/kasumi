@@ -4,6 +4,9 @@ use kasumi_store::{
     test_utils::{FaultBackend, LocalKeyProvider, ManualClock},
 };
 
+#[path = "worker_failure_tests.rs"]
+mod worker_failure_tests;
+
 struct PreparedFixtureRestore<'a> {
     retirement: Option<crate::RetiredSnapshotState>,
     commit: Box<dyn FnOnce() -> Result<()> + 'a>,
