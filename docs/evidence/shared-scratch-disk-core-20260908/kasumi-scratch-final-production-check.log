@@ -1,0 +1,3 @@
+    Blocking waiting for file lock on package cache
+    Checking kasumi-store v0.1.0 (/private/tmp/kasumi-production-custody-tables/crates/kasumi-store)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.38s

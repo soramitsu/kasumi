@@ -1,0 +1,19 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.88s
+     Running tests/backup_checkpoint.rs (/tmp/kasumi-production-streaming-target/debug/deps/backup_checkpoint-0be93bcfb8732918)
+
+running 11 tests
+test aborted_session_cleanup_is_bounded_and_catches_late_uploads ... ok
+test shutdown_cancels_pending_checkpoint_read_and_releases_database_work ... ok
+test abort_resolves_published_root_before_considering_cleanup ... ok
+test missing_corrupt_resident_or_cold_dependency_and_history_subset_never_yield_proof ... ok
+test verification_requires_current_global_admin_and_rechecks_policy_during_readback ... ok
+test durable_session_resolves_lost_ack_and_never_reclaims_completed_graph ... ok
+test local_restore_binds_exact_source_purpose_even_without_cold_archives ... ok
+test restore_hands_off_verified_workspace_with_production_and_destination_reserves ... ok
+test checkpoint_binds_actual_generation_complete_graph_keys_and_encrypted_restart ... ok
+test archived_audit_backup_is_self_contained_and_source_unavailable_restore_preserves_exact_chain ... ok
+test captured_and_historical_backup_verification_fit_fixed_production_workspace has been running for over 60 seconds
+test captured_and_historical_backup_verification_fit_fixed_production_workspace ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 204.46s
+

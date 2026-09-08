@@ -1,0 +1,153 @@
+{
+  "source": "b002771c4a0aeb5847b8192033628cd072ef5540",
+  "tree": "d545a0e68a6d11dafda9cae0c7870b7b4a053660",
+  "lockfile_sha256": "a4a3883969dc9486548a1aea841ecf45c482c99e4ea1e0d47b56f6c52b2afa08",
+  "target": "/tmp/kasumi-production-streaming-target",
+  "gates": [
+    {
+      "name": "handoff-unit",
+      "command": [
+        "cargo",
+        "+1.97.1",
+        "test",
+        "-p",
+        "kasumi-engine",
+        "--all-features",
+        "--lib",
+        "workspace_handoff",
+        "-j2"
+      ],
+      "exit": 0,
+      "seconds": 43.526,
+      "log": "/tmp/kasumi-streaming-scratch-b002771-handoff-unit.log",
+      "log_sha256": "f55a3f660e30484fff62f5ab36bda627dee62b7cb1b71fc35a6454a0b3c676a8",
+      "executables": {
+        "/tmp/kasumi-production-streaming-target/debug/deps/kasumi_engine-e86d7e092c5bb129": "e07f9415d315a9d5655b1fcdd5e6a422d55bcd4e7f79bf0da0cffdd9aa97295a"
+      },
+      "selected_no_tests": false
+    },
+    {
+      "name": "replicated-runtime",
+      "command": [
+        "cargo",
+        "+1.97.1",
+        "test",
+        "-p",
+        "kasumi-server",
+        "--all-features",
+        "--lib",
+        "three_runtime_nodes_replicate_with_control_quorum_over_audited_pinned_mtls",
+        "-j2"
+      ],
+      "exit": 0,
+      "seconds": 148.35,
+      "log": "/tmp/kasumi-streaming-scratch-b002771-replicated-runtime.log",
+      "log_sha256": "2d6ba1a27876022266f141201644ee037d478b8230fa60dc44221ea6758c4262",
+      "executables": {
+        "/tmp/kasumi-production-streaming-target/debug/deps/kasumi_server-3ef3c426e5743964": "6f88aa3a2090d5db77a47c476380423f113c06628a5394c31b104198f5717d46"
+      },
+      "selected_no_tests": false
+    },
+    {
+      "name": "handoff-backups",
+      "command": [
+        "cargo",
+        "+1.97.1",
+        "test",
+        "-p",
+        "kasumi-engine",
+        "--all-features",
+        "--test",
+        "backup_checkpoint",
+        "-j2"
+      ],
+      "exit": 0,
+      "seconds": 207.281,
+      "log": "/tmp/kasumi-streaming-scratch-b002771-handoff-backups.log",
+      "log_sha256": "4fffefd3dd64b2e2442a4087c5a0e34e7119301c0bbb6353a828e3f59efdcdd5",
+      "executables": {
+        "/tmp/kasumi-production-streaming-target/debug/deps/backup_checkpoint-0be93bcfb8732918": "89d8dabe30b6ba1cbc083cbea50e92a0f008f545ab4a8b4007868ccd498f167e"
+      },
+      "selected_no_tests": false
+    },
+    {
+      "name": "restore-expiry",
+      "command": [
+        "cargo",
+        "+1.97.1",
+        "test",
+        "-p",
+        "kasumi-engine",
+        "--all-features",
+        "--lib",
+        "backup_restore::tests",
+        "-j2"
+      ],
+      "exit": 0,
+      "seconds": 1.908,
+      "log": "/tmp/kasumi-streaming-scratch-b002771-restore-expiry.log",
+      "log_sha256": "f3f1968618b81b7339a71112caf35e1668202fc6c4f483c22d01cff4c129b9f0",
+      "executables": {
+        "/tmp/kasumi-production-streaming-target/debug/deps/kasumi_engine-e86d7e092c5bb129": "e07f9415d315a9d5655b1fcdd5e6a422d55bcd4e7f79bf0da0cffdd9aa97295a"
+      },
+      "selected_no_tests": false
+    },
+    {
+      "name": "handoff-clippy",
+      "command": [
+        "cargo",
+        "+1.97.1",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "-j2",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit": 0,
+      "seconds": 37.572,
+      "log": "/tmp/kasumi-streaming-scratch-b002771-handoff-clippy.log",
+      "log_sha256": "9e1e912cb3b6fbaac6abb780bcc3c12e0f04bbf6f11bd6faf0a98bfd0a158612",
+      "executables": {},
+      "selected_no_tests": false
+    },
+    {
+      "name": "handoff-production",
+      "command": [
+        "cargo",
+        "+1.97.1",
+        "check",
+        "-p",
+        "kasumi-server",
+        "--bins",
+        "--no-default-features",
+        "-j2"
+      ],
+      "exit": 0,
+      "seconds": 27.505,
+      "log": "/tmp/kasumi-streaming-scratch-b002771-handoff-production.log",
+      "log_sha256": "6c6dc00ab2af7318c6de7f4fbc4550f473921c8a0d08f112cb85ceab309ed79d",
+      "executables": {},
+      "selected_no_tests": false
+    },
+    {
+      "name": "handoff-format",
+      "command": [
+        "cargo",
+        "+1.97.1",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit": 0,
+      "seconds": 2.278,
+      "log": "/tmp/kasumi-streaming-scratch-b002771-handoff-format.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "executables": {},
+      "selected_no_tests": false
+    }
+  ]
+}

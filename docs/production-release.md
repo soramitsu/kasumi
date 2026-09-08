@@ -392,3 +392,18 @@ a read-only quota getter or caller capacity claim cannot close this dependency.
   `docs/evidence/exact-voter-replacement-20260908` and
   `docs/evidence/restore-worker-drain-20260908`. These do not replace the failed
   frozen Linux workspace gate.
+
+- `9f870cd` and `cc7fbeb` provide explicit shared installed scratch disk admission
+  for encrypted spools and derived indexes. Core store tests passed 79; integrated
+  store tests passed 80, Raft 44, snapshot filters 15, backups ten and corrected
+  standalone/recovery/signer filters eight. Strict workspace and fixture-free
+  checks passed; combined `42b9fba` workspace check passed. Evidence is in
+  `docs/evidence/shared-scratch-disk-core-20260908` and
+  `docs/evidence/shared-scratch-disk-callers-20260908`, including failed and
+  zero-test attempts. Persistent disk/native reservations remain unfinished.
+- `b002771` hands off restore workspace after actual index drain and retains it
+  through target publication, resolving the default 512 MiB overlap without
+  raising budgets. Actual encrypted restore/reopen, eleven backups and the real
+  three-runtime TLS fixture pass, as do strict workspace and production checks.
+  Evidence is in `docs/evidence/restore-reservation-handoff-20260908`; fresh
+  Linux integration, owned blocking publication and 3 GiB gates remain open.

@@ -1,0 +1,11 @@
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-engine)
+   Compiling kasumi-server v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 14s
+     Running unittests src/lib.rs (/tmp/kasumi-production-streaming-target/debug/deps/kasumi_server-3ef3c426e5743964)
+
+running 1 test
+test runtime::lifecycle_tests::three_runtime_nodes_replicate_with_control_quorum_over_audited_pinned_mtls has been running for over 60 seconds
+test runtime::lifecycle_tests::three_runtime_nodes_replicate_with_control_quorum_over_audited_pinned_mtls ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 79 filtered out; finished in 69.56s
+
