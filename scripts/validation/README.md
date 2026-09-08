@@ -11,7 +11,11 @@ limactl start --tty=false --name=kasumi-production-arm64 scripts/validation/lima
 limactl shell kasumi-production-arm64 uname -a
 ```
 
-The initial 8 GiB/2 CPU allocation supports compilation and functional tests.
+The current 16 GiB/2 CPU allocation is intended for compilation and functional
+tests. The earlier 8 GiB VM with a 7 GiB container limit suffered a kernel-confirmed
+OOM kill while linking the complete `d403c55` debug workspace. Retain that failed
+run; do not retry by changing its frozen evidence. Preflight now checks effective
+memory, including visible cgroup limits, before admitting the next run.
 Capacity and HA endurance runs must use an explicit, recorded resource allocation
 large enough for their three resident copies and maintenance reserve. The default
 is not a claim that a 3 GiB three-voter capacity run fits in 8 GiB of node RAM.

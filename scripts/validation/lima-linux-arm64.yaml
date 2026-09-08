@@ -17,7 +17,7 @@ images:
     arch: aarch64
     digest: "sha512:8543d795f2fde630eb66c492f245a8c1da19dedc636e0a8e7b3d0f95920e1a05aa911ef2d82d177d41cc53ced5fccbd2a3945d07fa5e15018914c4d864bb07ed"
 cpus: 2
-memory: "8GiB"
+memory: "16GiB"
 disk: "200GiB"
 mounts: []
 ssh:

@@ -56,12 +56,18 @@ actual second-build comparison.
 
 `.github/workflows/release-candidate.yml` is manually dispatched against reviewed
 source on dedicated ephemeral self-hosted runners. Provision `kasumi-acceptance`
-runners for Linux X64, Linux ARM64 and macOS ARM64 with at least 8 GiB RAM and
+runners for Linux X64, Linux ARM64 and macOS ARM64 with at least 16 GiB RAM and
 64 GiB free workspace disk, Python 3.11+, Git and the native platform build tools.
 Linux needs Docker; macOS needs rustup, Xcode command-line tools and CMake.
 The labels identify operator-provisioned hosts; adding this workflow does not
 provision them or establish a passing run. Keep production identities and data
 off these acceptance hosts.
+
+Preflight checks at least 15 GiB of effective memory after kernel reservations
+and visible Linux cgroup ceilings. The previous 7 GiB container limit killed a
+debug test linker in the frozen `d403c55` run. Larger source tests therefore
+require the updated 16 GiB reference allocation; this is a build-host requirement,
+not a minimum memory claim for every deployed database workload.
 
 The workflow freezes the checked-out commit, records host/image/package identity,
 and runs the full functional gate set with two Cargo jobs. Linux uses the pinned
