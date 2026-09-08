@@ -699,24 +699,8 @@ pub(crate) fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 pub(crate) fn read_private_file(path: &Path, limit: usize) -> Result<Zeroizing<Vec<u8>>> {
-    let file = std::fs::File::open(path)
-        .with_context(|| format!("opening private key {}", path.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        ensure!(
-            file.metadata()?.permissions().mode() & 0o077 == 0,
-            "private key must not be readable or writable by group/other users"
-        );
-    }
-    ensure!(
-        file.metadata()?.len() <= limit as u64,
-        "private key file exceeds byte limit"
-    );
-    let mut bytes = Zeroizing::new(Vec::new());
-    file.take(limit as u64 + 1).read_to_end(&mut bytes)?;
-    ensure!(bytes.len() <= limit, "private key file exceeds byte limit");
-    Ok(bytes)
+    kasumi_store::private_files::read(path, limit)
+        .with_context(|| format!("opening private key {}", path.display()))
 }
 
 pub fn parse_certificate_pin(value: &str) -> Result<CertificatePin> {
@@ -2242,6 +2226,13 @@ mod tests {
             &*read_private_file(&path, 1024).unwrap(),
             b"test private material"
         );
+        assert!(read_private_file(&path, 4).is_err());
+        let link = dir.path().join("linked-key.pem");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        assert!(read_private_file(&link, 1024).is_err());
+        let directory = dir.path().join("directory-key.pem");
+        kasumi_store::private_files::create_directory(&directory).unwrap();
+        assert!(read_private_file(&directory, 1024).is_err());
     }
 
     #[test]
