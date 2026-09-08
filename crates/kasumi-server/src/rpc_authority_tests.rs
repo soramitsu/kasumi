@@ -887,7 +887,7 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
             action: AuthorityMaintenanceAction::EnrollSignerVerifier {
                 enrollment: kasumi_serving::SignerVerifierEnrollment {
                     endpoint: if verifier == local_identity {
-                        format!("{endpoint}/")
+                        format!("{}/", config.endpoint)
                     } else {
                         format!("https://verifier-admin-{index}.test/")
                     },
