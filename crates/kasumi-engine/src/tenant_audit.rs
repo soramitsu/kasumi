@@ -314,6 +314,7 @@ impl TenantEngine {
                 "audit pruning metadata exceeds tenant capacity"
             );
             self.publish_generation(Some(Arc::new(Generation {
+                terminals: previous.terminals.clone(),
                 state: next,
                 indexes: previous.indexes.clone(),
                 receipt_expiry: previous.receipt_expiry.clone(),

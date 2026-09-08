@@ -439,7 +439,7 @@ impl ValidatedApplicationSnapshot {
         })?;
         let mut active = 0u64;
         let mut reserved = 0u64;
-        let mut permanent_bytes = 0u64;
+        let mut permanent_bytes = h.staged_terminal_head.encoded_bytes;
         let mut terminal_reserved = 0u64;
         self.index.visit(6, |record| {
             check()?;
@@ -448,7 +448,9 @@ impl ValidatedApplicationSnapshot {
             };
             let counts = get::<staging::SnapshotChunks>(&self.lineage, &("stage", &key))?
                 .unwrap_or_default();
-            let uploading = staging::validate_snapshot_record(&key, &stage, h, &counts)?;
+            let proof_state = self.staging_lineage(&stage.scope.incarnation, None)?;
+            let uploading = staging::validate_snapshot_record(&key, &stage, &proof_state, &counts)?;
+            ensure!(uploading, "resident staged record is terminal");
             let charge = staging::permanent_charge(&key, &stage)?;
             permanent_bytes = permanent_bytes
                 .checked_add(charge.0)
@@ -471,6 +473,19 @@ impl ValidatedApplicationSnapshot {
             }
             Ok(())
         })?;
+        let mut terminal_head = StagedTerminalHead::empty(&h.tenant, &h.staged_terminal_head.origin_incarnation)?;
+        ensure!(terminal_head.origin_incarnation == h.incarnation || self.lineage_source(&terminal_head.origin_incarnation)?.is_some(), "terminal origin is outside verified lineage");
+        self.index.visit(21, |record| {
+            check()?;
+            let Record::Terminal(row) = record else { unreachable!() };
+            let proof_state = self.staging_lineage(&row.stage.scope.incarnation, Some(&row.applied.incarnation))?;
+            row.validate(&proof_state)?;
+            ensure!(self.index.get(6, &row.key, "")?.is_none(), "identity is both uploading and terminal");
+            insert(&self.lineage, &("terminal-key", &row.key), &row.ordinal)?;
+            crate::staged_terminal::advance(&mut terminal_head, &row)?;
+            Ok(())
+        })?;
+        ensure!(terminal_head == h.staged_terminal_head && terminal_head.count == self.index.count(21)?, "terminal snapshot chain/count/bytes differ");
         ensure!(
             active == self.index.count(8)?
                 && reserved <= h.limits.atomic.max_reserved_staging_bytes as u64
@@ -479,6 +494,17 @@ impl ValidatedApplicationSnapshot {
             "staged reservation or active count differs"
         );
         Ok(())
+    }
+    /// Only the original subject and applying incarnation are needed for one
+    /// row. Both links come from the already verified encrypted lineage index.
+    fn staging_lineage(&self, subject: &str, applied: Option<&str>) -> anyhow::Result<TenantState> {
+        let mut state = self.header.as_ref().clone();
+        for incarnation in [Some(subject), applied].into_iter().flatten() {
+            if incarnation != state.incarnation && !state.restore_lineage.iter().any(|link| link.checkpoint.source_incarnation == incarnation) {
+                state.restore_lineage.push(self.lineage_source(incarnation)?.context("staged incarnation is outside verified lineage")?);
+            }
+        }
+        Ok(state)
     }
     fn validate_change_feed(
         &self,
@@ -1028,7 +1054,7 @@ mod tests {
     }
     fn image(state: &TenantState) -> SnapshotImage {
         SnapshotImage::capture(&kasumi_store::ScratchDisk::fixture(), 128 << 20, |writer| {
-            crate::snapshot_codec::write(state, writer)
+            crate::snapshot_codec::write(state, &crate::staged_terminal::View::empty(&state.tenant, &state.staged_terminal_head.origin_incarnation)?, writer)
         })
         .unwrap()
     }

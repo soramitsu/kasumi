@@ -9,9 +9,9 @@ use std::{
     sync::Arc,
 };
 
-const MAGIC: &[u8; 8] = b"KASUMIT2";
+const MAGIC: &[u8; 8] = b"KASUMIT3";
 const MAX_RECORD: usize = 32 << 20;
-pub(crate) const RECORD_KINDS: u8 = 21;
+pub(crate) const RECORD_KINDS: u8 = 22;
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type", content = "value", deny_unknown_fields)]
@@ -37,6 +37,7 @@ pub(crate) enum Record {
     RecoveryOperation(String, Box<RecoveryRecord>),
     RecoveryPhase(String, Box<RecoveryPhaseRecord>),
     RecoveryTarget(String, uuid::Uuid),
+    Terminal(Box<crate::staged_terminal::Row>),
 }
 impl Record {
     pub(crate) fn order(&self) -> (u8, String, String) {
@@ -62,6 +63,7 @@ impl Record {
             Self::RecoveryOperation(k, _) => (18, k.clone(), String::new()),
             Self::RecoveryPhase(k, _) => (19, k.clone(), String::new()),
             Self::RecoveryTarget(k, _) => (20, k.clone(), String::new()),
+            Self::Terminal(row) => (21, format!("{:020}", row.ordinal), String::new()),
         }
     }
 }
@@ -390,13 +392,16 @@ impl<'a> Encoder<'a> {
         Ok(())
     }
 }
-pub(crate) fn write(state: &TenantState, writer: &mut dyn Write) -> anyhow::Result<()> {
+pub(crate) fn write(state: &TenantState, terminals: &crate::staged_terminal::View, writer: &mut dyn Write) -> anyhow::Result<()> {
+    anyhow::ensure!(terminals.head() == &state.staged_terminal_head, "snapshot terminal owner differs");
+    terminals.check_head(&state.tenant)?;
     let mut encoder = Encoder::new(writer)?;
-    for kind in 0..RECORD_KINDS {
+    for kind in 0..21 {
         for record in records(state, kind, None)? {
             encoder.record(record?)?;
         }
     }
+    for row in terminals.records() { encoder.record(Record::Terminal(Box::new(row?)))?; }
     encoder.finish()
 }
 
@@ -513,6 +518,10 @@ pub(crate) fn visit(
             Record::Stage(_, stage) => {
                 anyhow::ensure!(stage.chunks.is_empty(), "stage contains embedded chunks")
             }
+            Record::Terminal(row) => anyhow::ensure!(
+                row.ordinal > 0 && !row.stage.is_active() && row.stage.chunks.is_empty(),
+                "invalid terminal staged record"
+            ),
             Record::Change(_, commit) => anyhow::ensure!(
                 commit.records.is_empty(),
                 "change commit contains embedded records"
@@ -568,14 +577,26 @@ fn decode_record(bytes: &[u8]) -> anyhow::Result<Record> {
     Ok(record)
 }
 
-pub(crate) fn read(reader: &mut dyn Read) -> anyhow::Result<TenantState> {
+#[derive(Clone)]
+pub(crate) struct Decoded {
+    pub(crate) state: TenantState,
+    pub(crate) terminals: crate::staged_terminal::View,
+}
+pub(crate) fn read(disk: &Arc<kasumi_store::ScratchDisk>, reader: &mut dyn Read) -> anyhow::Result<Decoded> {
     let mut state: Option<TenantState> = None;
+    let mut terminals: Option<crate::staged_terminal::Builder> = None;
     visit(reader, |_, record| {
         if let Record::Header(header) = record {
             anyhow::ensure!(
                 state.is_none() && empty_records(&header),
                 "snapshot header contains embedded records"
             );
+            if header.staged_terminal_head.count > 0 {
+                terminals = Some(crate::staged_terminal::Builder::new(
+                    disk, crate::staged_terminal::scratch_limit(header.limits.max_snapshot_bytes)?,
+                    &header.tenant, &header.staged_terminal_head.origin_incarnation,
+                )?);
+            }
             state = Some(*header);
             return Ok(());
         }
@@ -618,7 +639,7 @@ pub(crate) fn read(reader: &mut dyn Read) -> anyhow::Result<TenantState> {
                 state.receipts.insert(k, receipt);
             }
             Record::Stage(k, stage) => {
-                anyhow::ensure!(stage.chunks.is_empty(), "stage contains embedded chunks");
+                anyhow::ensure!(stage.is_active() && stage.chunks.is_empty(), "resident stage must be an active upload header");
                 state.staged_transactions.insert(k, stage);
             }
             Record::StageChunk(k, i, chunk) => {
@@ -711,6 +732,10 @@ pub(crate) fn read(reader: &mut dyn Read) -> anyhow::Result<TenantState> {
                 );
                 state.recovery_control.targets.insert(key, operation);
             }
+            Record::Terminal(row) => {
+                anyhow::ensure!(!state.staged_transactions.contains_key(&row.key), "staged identity is both active and terminal");
+                terminals.as_mut().ok_or_else(|| anyhow::anyhow!("terminal stream header missing"))?.push(&row, state)?;
+            }
             Record::ControlChange(id, change) => {
                 state
                     .lifecycle_control
@@ -722,12 +747,27 @@ pub(crate) fn read(reader: &mut dyn Read) -> anyhow::Result<TenantState> {
         }
         Ok(())
     })?;
-    state.ok_or_else(|| anyhow::anyhow!("snapshot metadata absent"))
+    let state = state.ok_or_else(|| anyhow::anyhow!("snapshot metadata absent"))?;
+    let terminals = match terminals {
+        Some(builder) => builder.finish(&state.staged_terminal_head)?,
+        None => {
+            let empty = crate::staged_terminal::View::empty(&state.tenant, &state.staged_terminal_head.origin_incarnation)?;
+            anyhow::ensure!(empty.head() == &state.staged_terminal_head, "empty terminal descriptor differs");
+            empty
+        }
+    };
+    Ok(Decoded { state, terminals })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn write(state: &TenantState, writer: &mut dyn Write) -> anyhow::Result<()> {
+        super::write(state, &crate::staged_terminal::View::empty(&state.tenant, &state.incarnation)?, writer)
+    }
+    fn read(reader: &mut dyn Read) -> anyhow::Result<TenantState> {
+        Ok(super::read(&kasumi_store::ScratchDisk::fixture(), reader)?.state)
+    }
     pub(super) fn state() -> TenantState {
         crate::TenantEngine::new(
             "tenant".into(),

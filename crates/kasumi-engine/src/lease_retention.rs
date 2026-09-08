@@ -737,6 +737,7 @@ impl LeaseManager {
                     return Ok(SelectedSnapshot {
                         handle: root.handle.clone(),
                         generation: Arc::new(Generation {
+                            terminals: root.generation.terminals.clone(),
                             state,
                             indexes: Arc::new(QueryIndexes::default()),
                             receipt_expiry: Default::default(),
@@ -820,6 +821,7 @@ impl LeaseManager {
         Ok(SelectedSnapshot {
             handle: root.handle.clone(),
             generation: Arc::new(Generation {
+                terminals: root.generation.terminals.clone(),
                 state,
                 indexes: Arc::new(QueryIndexes::default()),
                 receipt_expiry: Default::default(),

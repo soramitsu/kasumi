@@ -896,7 +896,11 @@ impl StateMachine {
             if let Some(snapshot) = load_snapshot(&captured, limit)? {
                 validate_snapshot_coverage(&captured_domains, &snapshot, limit)?;
                 ensure!(snapshot.version == 1, "unsupported raft snapshot version");
-                let prepared = target.prepare_restore(&mut snapshot.backend.reader())?;
+                let context = crate::SnapshotRestoreContext {
+                    mode: crate::SnapshotRestoreMode::Reopen,
+                    backend_sha256: snapshot.backend.sha256().into(), meta: snapshot.meta.clone(),
+                };
+                let prepared = target.prepare_restore(&context, &mut snapshot.backend.reader())?;
                 crate::snapshot_custody::check_backend(
                     &snapshot.meta,
                     snapshot.retirement.as_ref(),
@@ -1014,17 +1018,22 @@ impl RaftSnapshotBuilder<TypeConfig> for SnapshotBuilder {
                 }
                 return as_snapshot(&current, limit);
             }
+            let logical = captured;
             let captured = SnapshotEnvelope {
                 version: 1,
                 kind: SnapshotKind::Application,
-                meta: captured.meta.clone(),
+                meta: logical.meta.clone(),
                 backend: SnapshotImage::capture(store.scratch_disk(), limit, |writer| {
-                    captured.backend.write(writer)
+                    logical.backend.write(writer)
                 })?,
-                retirement: captured.retirement.clone(),
+                retirement: logical.retirement.clone(),
             };
             let snapshot = as_snapshot(&captured, limit)?;
-            let pending = stage_snapshot(&domains, &snapshot.snapshot.image()?, limit, &captured)?;
+            let mut pending = stage_snapshot(&domains, &snapshot.snapshot.image()?, limit, &captured)?;
+            pending.application.extend(logical.backend.checkpoint_writes(&crate::SnapshotRestoreContext {
+                mode: crate::SnapshotRestoreMode::Install,
+                backend_sha256: captured.backend.sha256().into(), meta: captured.meta.clone(),
+            })?);
             let publication = applied
                 .lock()
                 .map_err(|_| anyhow::anyhow!("applied publication lock poisoned"))?;
@@ -1244,7 +1253,11 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
                 state.membership = envelope.meta.last_membership;
                 return Ok(());
             }
-            let prepared = machine.backend.prepare_restore(&mut envelope.backend.reader())?;
+            let context = crate::SnapshotRestoreContext {
+                mode: crate::SnapshotRestoreMode::Install,
+                backend_sha256: envelope.backend.sha256().into(), meta: envelope.meta.clone(),
+            };
+            let prepared = machine.backend.prepare_restore(&context, &mut envelope.backend.reader())?;
             crate::snapshot_custody::check_backend(&meta, envelope.retirement.as_ref(), prepared.retirement())?;
             // Durably install encrypted chunks and their manifest, then atomically publish backend state.
             // A crash between these steps recovers the new snapshot on restart.

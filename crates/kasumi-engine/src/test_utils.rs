@@ -19,13 +19,39 @@ impl SnapshotFixture for TenantEngine {
         self.restore_candidate(candidate)
     }
 }
-pub fn encode_snapshot_candidate(state: &TenantState, max_bytes: u64) -> Result<SnapshotImage> {
-    SnapshotImage::capture(&kasumi_store::ScratchDisk::fixture(), max_bytes, |writer| {
-        crate::snapshot_codec::write(state, writer)
-    })
-    .map_err(|error| Error::new(ErrorCode::Corruption, error.to_string()))
+pub trait SnapshotFixtureState {
+    fn write_fixture(&self, writer: &mut dyn std::io::Write) -> anyhow::Result<()>;
 }
-pub fn decode_snapshot_candidate(candidate: &SnapshotImage) -> Result<TenantState> {
-    crate::snapshot_codec::read(&mut candidate.reader())
+impl SnapshotFixtureState for TenantState {
+    fn write_fixture(&self, writer: &mut dyn std::io::Write) -> anyhow::Result<()> {
+        let empty = crate::staged_terminal::View::empty(&self.tenant, &self.staged_terminal_head.origin_incarnation)?;
+        crate::snapshot_codec::write(self, &empty, writer)
+    }
+}
+impl SnapshotFixtureState for crate::Generation {
+    fn write_fixture(&self, writer: &mut dyn std::io::Write) -> anyhow::Result<()> {
+        crate::snapshot_codec::write(&self.state, &self.terminals, writer)
+    }
+}
+#[derive(Clone)]
+pub struct SnapshotCandidate(crate::snapshot_codec::Decoded);
+impl std::ops::Deref for SnapshotCandidate {
+    type Target = TenantState;
+    fn deref(&self) -> &TenantState { &self.0.state }
+}
+impl std::ops::DerefMut for SnapshotCandidate {
+    fn deref_mut(&mut self) -> &mut TenantState { &mut self.0.state }
+}
+impl SnapshotFixtureState for SnapshotCandidate {
+    fn write_fixture(&self, writer: &mut dyn std::io::Write) -> anyhow::Result<()> {
+        crate::snapshot_codec::write(&self.0.state, &self.0.terminals, writer)
+    }
+}
+pub fn encode_snapshot_candidate(state: &impl SnapshotFixtureState, max_bytes: u64) -> Result<SnapshotImage> {
+    SnapshotImage::capture(&kasumi_store::ScratchDisk::fixture(), max_bytes, |writer| state.write_fixture(writer))
+        .map_err(|error| Error::new(ErrorCode::Corruption, error.to_string()))
+}
+pub fn decode_snapshot_candidate(candidate: &SnapshotImage) -> Result<SnapshotCandidate> {
+    crate::snapshot_codec::read(candidate.disk(), &mut candidate.reader()).map(SnapshotCandidate)
         .map_err(|error| Error::new(ErrorCode::Corruption, error.to_string()))
 }

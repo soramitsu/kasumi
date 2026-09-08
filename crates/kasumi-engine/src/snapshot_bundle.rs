@@ -452,7 +452,7 @@ pub(super) fn read(engine: &TenantEngine, reader: &mut dyn Read) -> Result<Gener
         short: false,
         ended: false,
     };
-    let generation = engine.prepare_snapshot_reader(&mut logical)?;
+    let generation = engine.prepare_snapshot_reader(store.scratch_disk(), &mut logical)?;
     ensure!(logical.ended, "logical snapshot end missing");
     authorize_root(&generation.state, &source, store.storage_access().purpose())?;
     let retention = &generation.state.audit_retention;
@@ -596,7 +596,7 @@ mod tests {
         state.audit_retention.archive_head = references.last().cloned();
         engine
             .current
-            .store(Some(Arc::new(engine.prepare_state(state).unwrap())));
+            .store(Some(Arc::new(engine.prepare_state(state, engine.generation().unwrap().terminals.clone()).unwrap())));
         references
     }
     async fn capture(engine: Arc<TenantEngine>) -> Result<Vec<u8>> {
@@ -731,13 +731,13 @@ mod tests {
         state.audit_retention.archive_bytes += 1;
         source
             .current
-            .store(Some(Arc::new(source.prepare_state(state).unwrap())));
+            .store(Some(Arc::new(source.prepare_state(state, source.generation().unwrap().terminals.clone()).unwrap())));
         assert!(capture(source.clone()).await.is_err());
         let mut state = source.generation().unwrap().state.clone();
         state.audit_retention.archive_bytes -= 1;
         source
             .current
-            .store(Some(Arc::new(source.prepare_state(state).unwrap())));
+            .store(Some(Arc::new(source.prepare_state(state, source.generation().unwrap().terminals.clone()).unwrap())));
         // The source cache directory is fixed to this private installation.
         let cache = source_store
             .durable_directory()

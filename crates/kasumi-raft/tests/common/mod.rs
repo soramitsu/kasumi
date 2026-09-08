@@ -77,7 +77,7 @@ impl StateMachineBackend for Backend {
         serde_json::from_reader::<_, BTreeMap<u64, Vec<u8>>>(bytes)?;
         Ok(None)
     }
-    fn prepare_restore<'a>(&'a self, bytes: &mut dyn std::io::Read) -> Result<Box<dyn kasumi_raft::PreparedStateMachineRestore + 'a>> {
+    fn prepare_restore<'a>(&'a self, _context: &kasumi_raft::SnapshotRestoreContext, bytes: &mut dyn std::io::Read) -> Result<Box<dyn kasumi_raft::PreparedStateMachineRestore + 'a>> {
         let restored = serde_json::from_reader(bytes)?;
         Ok(Box::new(PreparedBackend { backend: self, restored }))
     }

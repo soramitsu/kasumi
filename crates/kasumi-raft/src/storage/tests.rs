@@ -115,7 +115,7 @@ impl StateMachineBackend for BytesBackend {
         ensure!(captured != b"invalid", "invalid application snapshot");
         Ok(None)
     }
-    fn prepare_restore<'a>(&'a self, bytes: &mut dyn std::io::Read) -> Result<Box<dyn crate::PreparedStateMachineRestore + 'a>> {
+    fn prepare_restore<'a>(&'a self, _context: &crate::SnapshotRestoreContext, bytes: &mut dyn std::io::Read) -> Result<Box<dyn crate::PreparedStateMachineRestore + 'a>> {
         let mut captured = Vec::new();
         bytes.read_to_end(&mut captured)?;
         self.validate_snapshot(&mut captured.as_slice())?;
@@ -179,7 +179,7 @@ async fn applied_metadata_does_not_block_runtime_while_snapshot_capture_holds_st
         ) -> Result<Option<crate::RetiredSnapshotState>> {
             Ok(None)
         }
-        fn prepare_restore<'a>(&'a self, _: &mut dyn std::io::Read) -> Result<Box<dyn crate::PreparedStateMachineRestore + 'a>> {
+        fn prepare_restore<'a>(&'a self, _context: &crate::SnapshotRestoreContext, _: &mut dyn std::io::Read) -> Result<Box<dyn crate::PreparedStateMachineRestore + 'a>> {
             Ok(Box::new(PreparedFixtureRestore { retirement: None, commit: Box::new(|| Ok(())) }))
         }
     }
@@ -514,7 +514,7 @@ async fn snapshot_materialization_releases_applied_lock_and_keeps_captured_root(
         ) -> Result<Option<crate::RetiredSnapshotState>> {
             Ok(None)
         }
-        fn prepare_restore<'a>(&'a self, _: &mut dyn Read) -> Result<Box<dyn crate::PreparedStateMachineRestore + 'a>> {
+        fn prepare_restore<'a>(&'a self, _context: &crate::SnapshotRestoreContext, _: &mut dyn Read) -> Result<Box<dyn crate::PreparedStateMachineRestore + 'a>> {
             Ok(Box::new(PreparedFixtureRestore { retirement: None, commit: Box::new(|| Ok(())) }))
         }
     }

@@ -89,6 +89,7 @@ fn install(engine: &TenantEngine, state: TenantState) {
     let indexes = Arc::new(QueryIndexes::build(&state.collections).unwrap());
     let snapshot_accounting = SnapshotAccounting::rebuild(&state).unwrap();
     engine.publish_generation(Some(Arc::new(Generation {
+        terminals: engine.generation().unwrap().terminals.clone(),
         state,
         indexes,
         receipt_expiry: Default::default(),

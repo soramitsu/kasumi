@@ -37,6 +37,7 @@ pub mod control;
 pub mod security_audit;
 mod service;
 mod snapshot_codec;
+mod staged_terminal;
 mod snapshot_index;
 mod state;
 pub use bootstrap::{

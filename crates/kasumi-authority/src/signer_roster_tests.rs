@@ -372,14 +372,14 @@ async fn signer_roster_covers_control_and_prepared_targets_and_freezes_exact_adm
                 serde_json::json!("00".repeat(32));
         }
     });
-    assert!(current.backend.prepare_restore(&mut changed.as_slice()).is_err());
+    assert!(current.backend.prepare_restore(&crate::state::restore_test_context(&changed), &mut changed.as_slice()).is_err());
     let changed = crate::state::snapshot::rewrite_for_test(&snapshot, |frame| {
         if frame["type"] == "Entry" && frame["value"][1]["kind"] == "Verifier" {
             frame["value"][1]["record"]["enrollment"]["endpoint"] =
                 serde_json::json!("https://alias.test/");
         }
     });
-    assert!(current.backend.prepare_restore(&mut changed.as_slice()).is_err());
+    assert!(current.backend.prepare_restore(&crate::state::restore_test_context(&changed), &mut changed.as_slice()).is_err());
     drop(queued_lease);
     drop(current);
     drop(service);

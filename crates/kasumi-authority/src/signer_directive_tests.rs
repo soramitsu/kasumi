@@ -116,7 +116,7 @@ async fn signer_directive_is_ordered_exact_finite_and_preserved_in_encrypted_sna
             record["command_sha256"] = serde_json::json!(command.digest().unwrap());
         }
     });
-    assert!(current.backend.prepare_restore(&mut corrupted.as_slice()).is_err());
+    assert!(current.backend.prepare_restore(&crate::state::restore_test_context(&corrupted), &mut corrupted.as_slice()).is_err());
     let substituted = crate::state::snapshot::rewrite_for_test(&snapshot, |value| {
         if value["type"] == "Entry" && value["value"][0] == key {
             let record = &mut value["value"][1]["record"];
@@ -125,7 +125,7 @@ async fn signer_directive_is_ordered_exact_finite_and_preserved_in_encrypted_sna
             record["command_sha256"] = serde_json::json!(command.digest().unwrap());
         }
     });
-    assert!(current.backend.prepare_restore(&mut substituted.as_slice()).is_err());
+    assert!(current.backend.prepare_restore(&crate::state::restore_test_context(&substituted), &mut substituted.as_slice()).is_err());
 
     assert_eq!(current.signer_directive(&context, &verifier, &domain, command.operation_id).await.unwrap().unwrap(), *accepted.status());
     let activation_key = format!("maintenance/{}", activation.operation_id);
@@ -137,7 +137,7 @@ async fn signer_directive_is_ordered_exact_finite_and_preserved_in_encrypted_sna
             record["command_sha256"] = serde_json::json!(command.digest().unwrap());
         }
     });
-    assert!(current.backend.prepare_restore(&mut wrong_winner.as_slice()).is_err());
+    assert!(current.backend.prepare_restore(&crate::state::restore_test_context(&wrong_winner), &mut wrong_winner.as_slice()).is_err());
     let exact_permission = activated.status().clone();
     service.shutdown().await.unwrap();
     assert!(accepted.check().is_err(), "a closed source owner cannot authorize publication during reopen");
@@ -292,11 +292,11 @@ async fn replicated_signer_head_fences_unchanged_local_keys_and_rejects_snapshot
     let rollback = crate::state::snapshot::rewrite_for_test(&snapshot, |value| {
         if value["type"] == "Meta" { value["value"]["signing"] = serde_json::to_value(&initial.current).unwrap(); }
     });
-    assert!(service.backend.prepare_restore(&mut rollback.as_slice()).is_err());
+    assert!(service.backend.prepare_restore(&crate::state::restore_test_context(&rollback), &mut rollback.as_slice()).is_err());
     let retired = crate::state::snapshot::rewrite_for_test(&snapshot, |value| {
         if value["type"] == "Meta" { value["value"]["signing"]["retirement"] = serde_json::Value::Null; }
     });
-    assert!(service.backend.prepare_restore(&mut retired.as_slice()).is_err());
+    assert!(service.backend.prepare_restore(&crate::state::restore_test_context(&retired), &mut retired.as_slice()).is_err());
     let mut legacy_head = serde_json::to_value(&activated.current).unwrap();
     legacy_head.as_object_mut().unwrap().remove("initial");
     assert!(serde_json::from_value::<AuthoritySigningHead>(legacy_head).is_err());

@@ -615,7 +615,7 @@ async fn open_local_inner(
         }
     };
     if let Some(expected) = incarnation {
-        let state = crate::snapshot_codec::read(&mut bytes.reader())?;
+        let state = crate::snapshot_codec::read(bytes.disk(), &mut bytes.reader())?.state;
         anyhow::ensure!(
             state.incarnation == expected.to_string(),
             "local incarnation differs from installed identity"

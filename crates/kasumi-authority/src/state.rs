@@ -942,6 +942,7 @@ impl StateMachineBackend for Backend {
     }
     fn prepare_restore<'a>(
         &'a self,
+        _context: &kasumi_raft::SnapshotRestoreContext,
         bytes: &mut dyn std::io::Read,
     ) -> Result<Box<dyn kasumi_raft::PreparedStateMachineRestore + 'a>> {
         let guard = self.mutation.lock()
@@ -1244,3 +1245,15 @@ mod control_signer_state;
 mod issuer_signer_state;
 #[path = "signer_roster.rs"]
 mod signer_roster;
+
+#[cfg(test)]
+pub(crate) fn restore_test_context(bytes: &[u8]) -> kasumi_raft::SnapshotRestoreContext {
+    use sha2::Digest;
+    kasumi_raft::SnapshotRestoreContext {
+        mode: kasumi_raft::SnapshotRestoreMode::Install,
+        backend_sha256: hex::encode(sha2::Sha256::digest(bytes)),
+        meta: kasumi_raft::SnapshotMeta {
+            last_log_id: None, last_membership: Default::default(), snapshot_id: "negative-fixture".into(),
+        },
+    }
+}

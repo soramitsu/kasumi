@@ -125,7 +125,7 @@ fn digest_records(
     use crate::snapshot_codec::Record;
     let state = view.metadata();
     let mut digest = Sha256::new();
-    record(&mut digest, &"kasumi.retirement-closure.v2", &mut check)?;
+    record(&mut digest, &"kasumi.retirement-closure.v3", &mut check)?;
     record(
         &mut digest,
         &(
@@ -228,6 +228,9 @@ fn digest_records(
         }
         record(&mut digest, &("category-end", kind, count), &mut check)?;
     }
+    // The verified immutable chain commits every original terminal identity,
+    // applied binding and outcome without rereading permanent rows on closure.
+    record(&mut digest, &("terminal-stage-history", &state.staged_terminal_head), &mut check)?;
     // Full feed metadata accompanies its independently emitted commit/items.
     record(
         &mut digest,
