@@ -6,6 +6,7 @@ mod control;
 mod custody_command;
 mod custody_group;
 mod custody_machine;
+mod custody_records;
 mod custody_state;
 mod custody_tables;
 mod domains;

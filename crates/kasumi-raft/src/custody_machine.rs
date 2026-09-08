@@ -34,7 +34,7 @@ pub(crate) fn applied(custody: &CustodyStore) -> Result<AppliedState> {
 }
 
 pub(crate) fn capture(custody: &CustodyStore) -> Result<SnapshotEnvelope> {
-    let state = control::custody_state(custody)?;
+    let state = control::custody_head(custody)?.policy;
     let (last_log_id, last_membership) = applied(custody)?;
     let committed = control::committed_coverage(custody.store())?
         .context("closed snapshot lacks committed coverage")?;
@@ -171,7 +171,7 @@ impl CustodyMachine {
             let _gate = gate
                 .lock()
                 .map_err(|_| anyhow::anyhow!("control gate poisoned"))?;
-            control::custody_state(&store)?;
+            control::custody_head(&store)?;
             // This atomically records the latest durable closed state as a
             // snapshot before OpenRaft is allowed to purge its covered log prefix.
             publish(&store, &capture(&store)?)
@@ -444,6 +444,7 @@ mod tests {
             .as_mut()
             .unwrap()
             .custody
+            .policy
             .administrators = BTreeSet::from(["substituted".into()]);
         assert!(publish(domains.custody(), &malicious).is_err());
         assert_eq!(control::custody_state(domains.custody())?, before);
@@ -453,15 +454,14 @@ mod tests {
         assert_eq!(control::custody_state(domains.custody())?, before);
         let mut later = capture(domains.custody())?;
         later.meta.last_log_id = Some(id(3));
-        later
-            .retirement
-            .as_mut()
-            .unwrap()
-            .custody
-            .commands
-            .get_mut("rotate")
-            .unwrap()
-            .principal = "substituted".into();
+        let mut substituted = before.clone();
+        substituted.commands.get_mut("rotate").unwrap().principal = "substituted".into();
+        substituted.audit[0].principal = "substituted".into();
+        let records = crate::custody_records::Records::from_state(&substituted)?;
+        let retirement = later.retirement.as_mut().unwrap();
+        retirement.custody = records.head.clone();
+        retirement.history_sha256 = records.sha256().into();
+        retirement.records = Some(records);
         let error = publish(domains.custody(), &later).unwrap_err();
         assert!(
             error.to_string().contains("permanent custody history"),

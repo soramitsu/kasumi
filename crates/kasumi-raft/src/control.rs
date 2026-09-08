@@ -254,7 +254,8 @@ impl ControlLog {
             .lock()
             .map_err(|_| anyhow::anyhow!("control gate poisoned"))?;
         if retired_boundary(&self.custody)?.is_some() {
-            custody_state(&self.custody)?;
+            custody_head(&self.custody)?;
+            crate::custody_records::Records::capture(self.custody.store())?;
             return Ok(true);
         }
         let store = self.custody.store();
@@ -640,6 +641,7 @@ pub(crate) fn persist_applied(
     domains.write_batch(&[], &writes)
 }
 
+#[cfg(test)]
 pub(crate) fn custody_state(custody: &CustodyStore) -> Result<crate::custody_state::CustodyState> {
     let boundary = retired_boundary(custody)?.context("source is not proven retired")?;
     let state = crate::custody_tables::snapshot(custody.store())?;
