@@ -70,10 +70,25 @@ async fn main() -> Result<()> {
     }
     let [flag, path, operation, rest @ ..] = arguments.as_slice() else {
         bail!(
-            "usage: kasumictl --config <client.json> activate-schema|read-schema|schema-status|create-collection|replace-collection|set-policy|set-limits <operation.json>, or suspend|resume, or manage <command.json>"
+            "usage: kasumictl --config <client.json> activate-schema|read-schema|schema-status|create-collection|replace-collection|set-policy|set-limits <operation.json>, or suspend|resume, or manage <command.json>, or authority-maintenance <request.json>"
         );
     };
     ensure!(flag == "--config", "first argument must be --config");
+    if operation == "authority-maintenance" {
+        let [file] = rest else {
+            bail!("authority-maintenance requires one typed request JSON file");
+        };
+        let request: kasumi_serving::AuthorityMaintenanceRequest =
+            serde_json::from_slice(&read_json(file)?)?;
+        request.validate()?;
+        let mut client =
+            kasumi_server::authority_client::AuthorityClientConfig::load(path)?.pool()?;
+        let response = client
+            .maintenance(&request, std::time::Duration::from_secs(40))
+            .await?;
+        println!("{}", serde_json::to_string_pretty(&response)?);
+        return Ok(());
+    }
     let payload = match (operation.as_str(), rest) {
         (
             "activate-schema" | "read-schema" | "schema-status" | "create-collection"

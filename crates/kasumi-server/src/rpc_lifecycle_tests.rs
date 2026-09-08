@@ -73,10 +73,6 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
     let issuer_install = kasumi_authority::AuthorityInstallation {
         manifest: manifest.clone(),
         partition: 0,
-        administrators: BTreeSet::from(["operator".into()]),
-        max_tenants: 10,
-        max_receipts: 100,
-        max_state_bytes: 4 << 20,
     };
     let issuer_router = Arc::new(kasumi_raft::InProcessRouter::default());
     let mut issuers = Vec::new();
@@ -95,9 +91,44 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
             issuer_install.clone(),
             issuer_signer.clone(),
             id,
-            (1..=3)
-                .map(|n| (n, kasumi_raft::BasicNode::new(format!("issuer-{n}"))))
-                .collect(),
+            kasumi_authority::AuthorityNodeSettings {
+                bootstrap: kasumi_authority::AuthorityBootstrap {
+                    administrators: BTreeSet::from(["operator".into()]),
+                    capacity: kasumi_serving::AuthorityCapacity {
+                        max_tenants: 10,
+                        max_state_bytes: 4 << 20,
+                        maintenance_reserve_bytes: 1 << 20,
+                    },
+                    membership: kasumi_serving::AuthorityMembership {
+                        voters: BTreeSet::from([1, 2, 3]),
+                        members: (1..=3)
+                            .map(|n| {
+                                (
+                                    n,
+                                    kasumi_serving::AuthorityMember {
+                                        endpoint: format!("https://authority-{n}.test"),
+                                        failure_domain: format!("domain-{n}"),
+                                        certificate_pins: BTreeSet::from([format!("{n:064x}")]),
+                                    },
+                                )
+                            })
+                            .collect(),
+                    },
+                },
+                resource_budget_bytes: 4 << 20,
+                installed_members: (1..=3)
+                    .map(|n| {
+                        (
+                            n,
+                            kasumi_serving::AuthorityMember {
+                                endpoint: format!("https://authority-{n}.test"),
+                                failure_domain: format!("domain-{n}"),
+                                certificate_pins: BTreeSet::from([format!("{n:064x}")]),
+                            },
+                        )
+                    })
+                    .collect(),
+            },
             issuer_router.clone(),
             kasumi_raft::Config {
                 heartbeat_interval: 30,

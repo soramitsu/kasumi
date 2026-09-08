@@ -30,6 +30,7 @@ use kasumi_transport::{
 
 const RPC_PATH: &str = "/internal/raft";
 const RESTORE_PATH: &str = "/internal/restore-readiness";
+const MAINTENANCE_PATH: &str = "/internal/authority-maintenance-readiness";
 const BOOTSTRAP_PATH: &str = "/internal/bootstrap-readiness";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -49,6 +50,25 @@ struct ReadinessRequest {
     group: String,
     source: u64,
     target: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MaintenanceReadinessRequest {
+    group: String,
+    source: u64,
+    target: u64,
+    bootstrap_sha256: String,
+    required_state_bytes: u64,
+    command: kasumi_serving::AuthorityMaintenanceCommand,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MaintenanceReadinessResponse {
+    node_id: u64,
+    bootstrap_sha256: String,
+    required_state_bytes: u64,
+    command_sha256: String,
 }
 
 #[derive(Clone, Debug)]
@@ -89,10 +109,12 @@ struct BootstrapFence {
     sha256: String,
     access: BootstrapAccess,
 }
+type PeerAccessFence = Arc<dyn Fn(u64) -> Result<()> + Send + Sync>;
 struct GroupRoute {
     raft: Raft,
     allowed_peers: BTreeSet<u64>,
     bootstrap: Option<BootstrapFence>,
+    peer_fence: Option<PeerAccessFence>,
 }
 
 pub struct ClusterNetwork {
@@ -106,6 +128,7 @@ pub struct ClusterNetwork {
     limits: PeerLimits,
     audit: OnceLock<Arc<dyn RequestAuditSink>>,
     readiness: OnceLock<std::sync::Weak<dyn RestoreReadinessProvider>>,
+    maintenance: OnceLock<std::sync::Weak<kasumi_authority::IndependentAuthority>>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -221,6 +244,7 @@ impl ClusterNetwork {
             limits,
             audit: OnceLock::new(),
             readiness: OnceLock::new(),
+            maintenance: OnceLock::new(),
         }))
     }
 
@@ -258,6 +282,14 @@ impl ClusterNetwork {
         self.readiness
             .set(provider)
             .map_err(|_| anyhow::anyhow!("restore readiness already installed"))
+    }
+    pub fn install_authority_maintenance(
+        &self,
+        provider: std::sync::Weak<kasumi_authority::IndependentAuthority>,
+    ) -> Result<()> {
+        self.maintenance
+            .set(provider)
+            .map_err(|_| anyhow::anyhow!("authority maintenance provider already installed"))
     }
     pub async fn bootstrap_fingerprint(&self, peer_id: u64, group: &str) -> Result<String> {
         self.authorize(group, peer_id)?;
@@ -395,6 +427,7 @@ impl ClusterNetwork {
                 raft,
                 allowed_peers,
                 bootstrap,
+                peer_fence: None,
             },
         );
         Ok(())
@@ -428,11 +461,27 @@ impl ClusterNetwork {
         Ok(())
     }
 
+    /// Install a durable membership/revocation check in addition to static pins.
+    pub fn install_group_peer_fence(&self, group: &str, fence: PeerAccessFence) -> Result<()> {
+        let mut groups = self
+            .groups
+            .write()
+            .map_err(|_| anyhow::anyhow!("cluster routes unavailable"))?;
+        let route = groups.get_mut(group).context("group is unavailable")?;
+        ensure!(
+            route.peer_fence.is_none(),
+            "group peer fence already installed"
+        );
+        route.peer_fence = Some(fence);
+        Ok(())
+    }
+
     pub fn router(self: &Arc<Self>) -> Router {
         Router::new()
             .route(RPC_PATH, post(receive))
             .route(RESTORE_PATH, post(receive_readiness))
             .route(BOOTSTRAP_PATH, post(receive_bootstrap))
+            .route(MAINTENANCE_PATH, post(receive_maintenance))
             .layer(DefaultBodyLimit::max(self.limits.max_rpc_bytes))
             .layer(middleware::from_fn_with_state(self.clone(), bound_request))
             .with_state(self.clone())
@@ -448,6 +497,9 @@ impl ClusterNetwork {
             route.allowed_peers.contains(&peer),
             "peer is not authorized for this group"
         );
+        if let Some(fence) = &route.peer_fence {
+            fence(peer)?;
+        }
         Ok(route.raft.clone())
     }
 }
@@ -661,3 +713,162 @@ impl RaftTransport for ClusterNetwork {
         serde_json::from_slice(&bytes).context("invalid cluster RPC response")
     }
 }
+
+#[async_trait]
+impl kasumi_authority::AuthorityMaintenanceTransport for ClusterNetwork {
+    async fn check_ready(
+        &self,
+        node_id: u64,
+        bootstrap_sha256: &str,
+        required_state_bytes: u64,
+        command: &kasumi_serving::AuthorityMaintenanceCommand,
+    ) -> Result<()> {
+        let authority = self
+            .maintenance
+            .get()
+            .and_then(|p| p.upgrade())
+            .context("authority maintenance unavailable")?;
+        authority.check_maintenance_ready(bootstrap_sha256, required_state_bytes, command)?;
+        if node_id == self.local_node_id {
+            return Ok(());
+        }
+        let group = &authority.installation().manifest.partitions
+            [&authority.installation().partition]
+            .group;
+        // A prospective learner is not yet operationally admitted. This endpoint
+        // only reserves installed resources; it cannot send Raft messages or grant leases.
+        {
+            let groups = self
+                .groups
+                .read()
+                .map_err(|_| anyhow::anyhow!("cluster routes unavailable"))?;
+            ensure!(
+                groups
+                    .get(group)
+                    .is_some_and(|route| route.allowed_peers.contains(&node_id)),
+                "maintenance peer is not installed"
+            );
+        }
+        let _permit = self
+            .outgoing
+            .clone()
+            .try_acquire_owned()
+            .context("cluster transport busy")?;
+        let peer = self
+            .clients
+            .get(&node_id)
+            .context("maintenance peer is not installed")?;
+        let mut endpoint = peer.endpoint.clone();
+        endpoint.set_path(MAINTENANCE_PATH);
+        let bytes = encode_bounded(
+            &MaintenanceReadinessRequest {
+                group: group.clone(),
+                source: self.local_node_id,
+                target: node_id,
+                bootstrap_sha256: bootstrap_sha256.into(),
+                required_state_bytes,
+                command: command.clone(),
+            },
+            64 << 10,
+        )?;
+        let mut response = peer
+            .client
+            .post(endpoint)
+            .header("content-type", "application/json")
+            .body(bytes)
+            .send()
+            .await
+            .context("authority maintenance peer unavailable")?;
+        ensure!(
+            response.status().is_success(),
+            "authority maintenance peer rejected readiness"
+        );
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await? {
+            ensure!(
+                bytes.len().saturating_add(chunk.len()) <= 4096,
+                "maintenance readiness response too large"
+            );
+            bytes.extend_from_slice(&chunk);
+        }
+        let response: MaintenanceReadinessResponse = serde_json::from_slice(&bytes)?;
+        ensure!(
+            response.node_id == node_id
+                && response.bootstrap_sha256 == bootstrap_sha256
+                && response.required_state_bytes == required_state_bytes
+                && response.command_sha256 == command.digest()?,
+            "maintenance peer response identity differs"
+        );
+        Ok(())
+    }
+}
+async fn receive_maintenance(
+    State(network): State<Arc<ClusterNetwork>>,
+    Extension(peer): Extension<AuthenticatedTlsPeer>,
+    Json(message): Json<MaintenanceReadinessRequest>,
+) -> Response {
+    let Some(audit) = network.audit.get() else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let source = peer
+        .certificate_pin()
+        .and_then(|pin| network.certificate_nodes.get(&pin).copied());
+    if source != Some(message.source)
+        || message.target != network.local_node_id
+        || network.authorize(&message.group, message.source).is_err()
+    {
+        return network.denied(source, &message.group).await;
+    }
+    let Some(authority) = network.maintenance.get().and_then(|p| p.upgrade()) else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let installed = authority.installation();
+    if installed.manifest.partitions[&installed.partition].group != message.group
+        || authority
+            .check_maintenance_ready(
+                &message.bootstrap_sha256,
+                message.required_state_bytes,
+                &message.command,
+            )
+            .is_err()
+    {
+        return network.denied(source, &message.group).await;
+    }
+    if audit
+        .record(RequestAuditEvent {
+            kind: RequestAuditKind::AuthenticationSucceeded,
+            principal: Some(format!("peer:{}", message.source)),
+            tenant: Some(message.group.clone()),
+            request_id: message.command.operation_id.to_string(),
+        })
+        .await
+        .is_err()
+    {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
+    let Ok(command_sha256) = message.command.digest() else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let response = MaintenanceReadinessResponse {
+        node_id: network.local_node_id,
+        bootstrap_sha256: message.bootstrap_sha256.clone(),
+        required_state_bytes: message.required_state_bytes,
+        command_sha256,
+    };
+    if authority
+        .check_maintenance_ready(
+            &message.bootstrap_sha256,
+            message.required_state_bytes,
+            &message.command,
+        )
+        .is_err()
+        || network.authorize(&message.group, message.source).is_err()
+    {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
+    Json(response).into_response()
+}
+
+#[cfg(test)]
+#[path = "authority_maintenance_tls_tests.rs"]
+mod maintenance_tests;

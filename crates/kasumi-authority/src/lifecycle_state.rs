@@ -134,9 +134,9 @@ impl Backend {
                     }
                     None => {
                         let bytes = serde_json::to_vec(&Record::ControlEpoch(candidate))?;
-                        meta.state_bytes += bytes.len() as u64;
-                        meta.lifecycle_epochs += 1;
-                        meta.open_control_epochs += 1;
+                        add_count(&mut meta.state_bytes, u64::try_from(bytes.len())?)?;
+                        add_count(&mut meta.lifecycle_epochs, 1)?;
+                        add_count(&mut meta.open_control_epochs, 1)?;
                         writes.push(WriteOp::put(NS, reference.epoch_key()?.as_bytes(), bytes));
                     }
                     _ => anyhow::bail!("control epoch anchor type differs"),
@@ -178,25 +178,16 @@ impl Backend {
                 "lifecycle receipt exceeds hard bound",
             )));
         }
-        meta.lifecycle_receipts += 1;
-        meta.state_bytes += bytes.len() as u64;
+        add_count(&mut meta.lifecycle_receipts, 1)?;
+        add_count(&mut meta.state_bytes, u64::try_from(bytes.len())?)?;
         if meta
-            .receipts
-            .saturating_add(meta.lifecycle_receipts)
-            .saturating_add(meta.active_fences)
-            .saturating_add(meta.open_control_epochs)
-            > self.installation.max_receipts
-            || meta
-                .state_bytes
-                .saturating_add(
-                    meta.active_fences
-                        .saturating_mul(3 * MAX_RECORD_BYTES as u64),
-                )
-                .saturating_add(
-                    meta.open_control_epochs
-                        .saturating_mul(MAX_RECORD_BYTES as u64),
-                )
-                > self.installation.max_state_bytes
+            .state_bytes
+            .saturating_add(Self::completion_reserve(&meta))
+            > meta
+                .operational
+                .capacity
+                .max_state_bytes
+                .saturating_sub(meta.operational.capacity.maintenance_reserve_bytes)
         {
             return Ok(Err(Error::new(
                 ErrorCode::ResourceExhausted,
@@ -320,7 +311,7 @@ impl Backend {
         snapshot.records.visit(|key, record| {
             match record {
                 Record::Lifecycle(receipt) => {
-                    receipts += 1;
+                    add_count(&mut receipts, 1)?;
                     receipt.validate(&self.installation.manifest, self.installation.partition)?;
                     ensure!(
                         key == receipt.reference.key()?
@@ -359,7 +350,7 @@ impl Backend {
                     }
                 }
                 Record::ControlEpoch(epoch) => {
-                    epochs += 1;
+                    add_count(&mut epochs, 1)?;
                     ensure!(
                         key == epoch.reference.epoch_key()?
                             && epoch.reference == epoch.first_intent.epoch_stop(),
@@ -375,7 +366,7 @@ impl Backend {
                         "control anchor is not an intent"
                     );
                     if !snapshot.records.contains_key(&epoch.reference.key()?)? {
-                        open += 1;
+                        add_count(&mut open, 1)?;
                     }
                 }
                 _ => {}

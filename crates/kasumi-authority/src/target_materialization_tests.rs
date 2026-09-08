@@ -32,7 +32,7 @@ struct MaterialFixture {
 impl MaterialFixture {
     async fn new() -> Self {
         let control = ControlFixture::new();
-        let issuer = control.issuer(100).await;
+        let issuer = control.issuer().await;
         let node = NodeStore::open(issuer._dir.path().join("source.redb")).unwrap();
         let security = audit(node.clone()).await;
         let sourcekey = Arc::new(LocalKeyProvider::new([51; 32]));

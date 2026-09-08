@@ -2,6 +2,7 @@
 pub mod administration;
 pub mod api;
 pub mod auth;
+pub mod authority_client;
 pub mod authority_runtime;
 pub mod cluster;
 pub mod lifecycle_runtime;

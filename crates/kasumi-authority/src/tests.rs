@@ -1,6 +1,6 @@
 use super::*;
 use kasumi_clock::{EpochClock, LeaseClock, WallClock};
-use kasumi_raft::{BasicNode, Config, InProcessRouter};
+use kasumi_raft::{Config, InProcessRouter};
 use kasumi_store::{NodeStore, TenantStorageSet, test_utils::LocalKeyProvider};
 use kasumi_types::{ErrorCode, FullBackupCheckpoint, RequestAuthorization, RequestContext};
 use std::{
@@ -32,21 +32,19 @@ struct Fixture {
     clock: Arc<Clock>,
     epoch: Arc<EpochClock>,
     installation: AuthorityInstallation,
+    settings: AuthorityNodeSettings,
+    readiness: Arc<TestMaintenanceTransport>,
 }
 impl Fixture {
     async fn new() -> Self {
-        Self::with_receipt_limit(1000).await
+        Self::with_controls(BTreeMap::new()).await
     }
-    async fn with_receipt_limit(max_receipts: u64) -> Self {
-        Self::with_controls(max_receipts, BTreeMap::new()).await
-    }
-    async fn with_controls(max_receipts: u64, controls: BTreeMap<Uuid, String>) -> Self {
-        Self::with_control_capacity(max_receipts, controls, 4 << 20).await
+    async fn with_controls(controls: BTreeMap<Uuid, String>) -> Self {
+        Self::with_control_capacity(controls, 4 << 20).await
     }
     async fn with_control_capacity(
-        max_receipts: u64,
         controls: BTreeMap<Uuid, String>,
-        max_state_bytes: u64,
+        ordinary_state_bytes: u64,
     ) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let router = Arc::new(InProcessRouter::default());
@@ -69,16 +67,11 @@ impl Fixture {
         let installation = AuthorityInstallation {
             manifest,
             partition: 0,
-            administrators: BTreeSet::from(["operator".into()]),
-            max_tenants: 100,
-            max_receipts,
-            max_state_bytes,
         };
         let clock = Arc::new(Clock(AtomicU64::new(0)));
         let epoch = Arc::new(EpochClock::new(clock.clone(), Arc::new(Wall)).unwrap());
-        let voters: BTreeMap<_, _> = (1..=3)
-            .map(|id| (id, BasicNode::new(format!("node-{id}"))))
-            .collect();
+        let settings = test_settings(ordinary_state_bytes);
+        let readiness = Arc::new(TestMaintenanceTransport::default());
         let mut services = Vec::new();
         let mut stores = Vec::new();
         for id in 1..=3 {
@@ -101,12 +94,12 @@ impl Fixture {
                 installation.clone(),
                 signer.clone(),
                 id,
-                voters.clone(),
+                settings.clone(),
                 router.clone(),
                 Config {
-                    heartbeat_interval: 30,
-                    election_timeout_min: 100,
-                    election_timeout_max: 180,
+                    heartbeat_interval: 100,
+                    election_timeout_min: 500,
+                    election_timeout_max: 1000,
                     ..Config::default()
                 },
                 epoch.clone(),
@@ -118,6 +111,10 @@ impl Fixture {
                 id,
                 service.raft_group().raft().clone(),
             );
+            readiness.register(id, &service);
+            service
+                .install_maintenance_transport(readiness.clone())
+                .unwrap();
             services.push(service);
             stores.push(store);
         }
@@ -129,13 +126,15 @@ impl Fixture {
             clock,
             epoch,
             installation,
+            settings,
+            readiness,
         };
         fixture.services[0].initialize().await.unwrap();
         fixture.leader().await;
         fixture
     }
     async fn leader(&self) -> Arc<IndependentAuthority> {
-        tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::time::timeout(Duration::from_secs(30), async {
             loop {
                 for service in &self.services {
                     let metrics = service.group.raft().metrics().borrow().clone();
@@ -154,7 +153,7 @@ impl Fixture {
                 "authority leader wait failed: {error}; states: {:?}",
                 self.services
                     .iter()
-                    .map(|s| format!("{:?}", s.group.raft().metrics().borrow().running_state))
+                    .map(|s| format!("{:?}", s.group.raft().metrics().borrow()))
                     .collect::<Vec<_>>()
             )
         })
@@ -222,13 +221,12 @@ impl Fixture {
             store.application().shutdown().await;
             store.custody().store().shutdown().await;
         }
+        let member_ids: Vec<_> = self.services.iter().map(|s| s.local_node_id).collect();
         self.services.clear();
         self.stores.clear();
         self.router = Arc::new(InProcessRouter::default());
-        let voters: BTreeMap<_, _> = (1..=3)
-            .map(|id| (id, BasicNode::new(format!("node-{id}"))))
-            .collect();
-        for id in 1..=3 {
+        self.readiness = Arc::new(TestMaintenanceTransport::default());
+        for id in member_ids {
             let node =
                 NodeStore::open(self._dir.path().join(format!("authority-{id}.redb"))).unwrap();
             let stores = TenantStorageSet::open(
@@ -249,12 +247,12 @@ impl Fixture {
                 self.installation.clone(),
                 signer.clone(),
                 id,
-                voters.clone(),
+                self.settings.clone(),
                 self.router.clone(),
                 Config {
-                    heartbeat_interval: 30,
-                    election_timeout_min: 100,
-                    election_timeout_max: 180,
+                    heartbeat_interval: 100,
+                    election_timeout_min: 500,
+                    election_timeout_max: 1000,
                     ..Config::default()
                 },
                 self.epoch.clone(),
@@ -266,6 +264,10 @@ impl Fixture {
                 id,
                 service.raft_group().raft().clone(),
             );
+            self.readiness.register(id, &service);
+            service
+                .install_maintenance_transport(self.readiness.clone())
+                .unwrap();
             self.services.push(service);
             self.stores.push(stores);
         }
@@ -960,3 +962,66 @@ include!("target_stop_tests.rs");
 
 #[path = "issuer_tests.rs"]
 mod issuer_tests;
+
+fn test_settings(ordinary_state_bytes: u64) -> AuthorityNodeSettings {
+    let installed_members: BTreeMap<_, _> = (1..=4)
+        .map(|id| {
+            (
+                id,
+                AuthorityMember {
+                    endpoint: format!("https://authority-{id}.test"),
+                    failure_domain: format!("domain-{id}"),
+                    certificate_pins: BTreeSet::from([format!("{id:064x}")]),
+                },
+            )
+        })
+        .collect();
+    AuthorityNodeSettings {
+        bootstrap: crate::AuthorityBootstrap {
+            administrators: BTreeSet::from(["operator".into()]),
+            capacity: AuthorityCapacity {
+                max_tenants: 100,
+                max_state_bytes: ordinary_state_bytes + (1 << 20),
+                maintenance_reserve_bytes: 1 << 20,
+            },
+            membership: AuthorityMembership {
+                voters: BTreeSet::from([1, 2, 3]),
+                members: installed_members
+                    .iter()
+                    .filter(|(id, _)| **id <= 3)
+                    .map(|(id, m)| (*id, m.clone()))
+                    .collect(),
+            },
+        },
+        resource_budget_bytes: 64 << 20,
+        installed_members,
+    }
+}
+#[derive(Default)]
+struct TestMaintenanceTransport(
+    std::sync::RwLock<BTreeMap<u64, std::sync::Weak<IndependentAuthority>>>,
+);
+impl TestMaintenanceTransport {
+    fn register(&self, id: u64, service: &Arc<IndependentAuthority>) {
+        self.0.write().unwrap().insert(id, Arc::downgrade(service));
+    }
+}
+#[async_trait::async_trait]
+impl AuthorityMaintenanceTransport for TestMaintenanceTransport {
+    async fn check_ready(
+        &self,
+        id: u64,
+        bootstrap: &str,
+        required_state_bytes: u64,
+        command: &AuthorityMaintenanceCommand,
+    ) -> anyhow::Result<()> {
+        self.0
+            .read()
+            .unwrap()
+            .get(&id)
+            .and_then(|w| w.upgrade())
+            .ok_or_else(|| anyhow::anyhow!("test member offline"))?
+            .check_maintenance_ready(bootstrap, required_state_bytes, command)
+    }
+}
+include!("maintenance_tests.rs");

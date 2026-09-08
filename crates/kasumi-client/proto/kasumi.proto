@@ -28,6 +28,7 @@ service KasumiData {
 // Bind only to an explicitly installed independent authority deployment. This
 // service has no document API and no caller-selected source route or issuer key.
 service KasumiAuthority {
+  rpc Maintenance(AuthorityJsonRequest) returns (AuthorityJsonResponse);
   rpc ExecuteLifecycle(AuthorityJsonRequest) returns (AuthorityJsonResponse);
   rpc ReadLifecycleReceipt(AuthorityJsonRequest) returns (AuthorityJsonResponse);
   rpc VerifyControlStop(AuthorityJsonRequest) returns (AuthorityJsonResponse);

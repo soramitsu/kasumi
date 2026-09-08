@@ -19,11 +19,11 @@ impl ControlFixture {
             key,
         }
     }
-    async fn issuer(&self, max: u64) -> Fixture {
-        Fixture::with_controls(
-            max,
-            BTreeMap::from([(self.root.control_incarnation, self.root.public_key.clone())]),
-        )
+    async fn issuer(&self) -> Fixture {
+        Fixture::with_controls(BTreeMap::from([(
+            self.root.control_incarnation,
+            self.root.public_key.clone(),
+        )]))
         .await
     }
     fn intent(&self, f: &Fixture, t: &RecoveryTarget, expiry: u64) -> SignedControlIntent {
@@ -154,7 +154,7 @@ async fn prepared(f: &Fixture, service: &Arc<IndependentAuthority>) -> RecoveryT
 #[tokio::test]
 async fn control_epoch_stop_preserves_exact_identity_replay_and_restarts_full_drain() {
     let control = ControlFixture::new();
-    let mut f = control.issuer(100).await;
+    let mut f = control.issuer().await;
     let service = f.leader().await;
     let t = prepared(&f, &service).await;
     let signed = control.intent(&f, &t, 1_050_000);
@@ -305,30 +305,42 @@ async fn control_epoch_stop_preserves_exact_identity_replay_and_restarts_full_dr
 #[tokio::test]
 async fn control_stop_before_intent_and_reserved_capacity_defeat_late_publication() {
     let c = ControlFixture::new();
-    let f = c.issuer(2).await;
+    let f = Fixture::with_control_capacity(
+        BTreeMap::from([(c.root.control_incarnation, c.root.public_key.clone())]),
+        (256 << 10) + 16_000,
+    )
+    .await;
     let service = f.leader().await;
     let signed = c.intent(&f, &target(Uuid::new_v4()), 1_050_000);
     service
         .execute_lifecycle(f.context("operator"), request(&signed))
         .await
         .unwrap();
-    let next = c.intent(&f, &target(Uuid::new_v4()), 1_050_000);
-    assert_eq!(
-        service
-            .execute_lifecycle(f.context("operator"), request(&next))
+    let mut exhausted = false;
+    for _ in 0..30 {
+        match service
+            .execute_lifecycle(
+                f.context("operator"),
+                request(&c.intent(&f, &target(Uuid::new_v4()), 1_050_000)),
+            )
             .await
-            .err()
-            .unwrap()
-            .code,
-        ErrorCode::ResourceExhausted
-    );
+        {
+            Ok(_) => {}
+            Err(error) => {
+                assert_eq!(error.code, ErrorCode::ResourceExhausted);
+                exhausted = true;
+                break;
+            }
+        }
+    }
+    assert!(exhausted, "ordinary lifecycle byte budget must exhaust");
     let stop = LifecycleAuthorityRequest::StopEpoch(Box::new(c.stop(&signed)));
     service
         .execute_lifecycle(f.context("operator"), stop)
         .await
         .unwrap();
     f.close().await;
-    let f = c.issuer(20).await;
+    let f = c.issuer().await;
     let service = f.leader().await;
     let signed = c.intent(&f, &target(Uuid::new_v4()), 1_050_000);
     service
@@ -361,7 +373,7 @@ async fn control_stop_before_intent_and_reserved_capacity_defeat_late_publicatio
 async fn lifecycle_original_deadline_survives_queued_acceptance_delayed_reply_and_clock_regression()
 {
     let c = ControlFixture::new();
-    let f = c.issuer(100).await;
+    let f = c.issuer().await;
     let service = f.leader().await;
     let t = prepared(&f, &service).await;
     let signed = c.intent(&f, &t, 1_000_500);
@@ -432,7 +444,6 @@ async fn lifecycle_original_deadline_survives_queued_acceptance_delayed_reply_an
 async fn lifecycle_byte_exhaustion_preserves_reserved_epoch_stop_and_exact_snapshot_history() {
     let c = ControlFixture::new();
     let f = Fixture::with_control_capacity(
-        100,
         BTreeMap::from([(c.root.control_incarnation, c.root.public_key.clone())]),
         (256 << 10) + 16000,
     )

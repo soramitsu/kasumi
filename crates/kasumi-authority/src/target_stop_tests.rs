@@ -279,8 +279,8 @@ async fn target_stop_and_activation_ordering_preserves_committed_winner_and_curr
 }
 
 #[tokio::test]
-async fn target_stop_capacity_and_current_credential_quorum_fences_are_explicit() {
-    let fixture = Fixture::with_receipt_limit(2).await;
+async fn target_stop_history_exceeds_former_record_ceiling_and_current_fences_are_explicit() {
+    let fixture = Fixture::new().await;
     let service = fixture.leader().await;
     let source = fixture.enroll(&service).await;
     let request = fixture.command(AuthorityAction::StopTarget {
@@ -304,23 +304,10 @@ async fn target_stop_capacity_and_current_credential_quorum_fences_are_explicit(
         source_epoch: 1,
         target: target(source),
     });
-    assert_eq!(
-        service
-            .execute(fixture.context("operator"), overflow.clone())
-            .await
-            .err()
-            .unwrap()
-            .code,
-        ErrorCode::ResourceExhausted
-    );
-    assert!(
-        service
-            .receipt(fixture.context("operator"), "city", overflow.command_id)
-            .await
-            .unwrap()
-            .0
-            .is_none()
-    );
+    let third = service.execute(fixture.context("operator"), overflow.clone()).await.unwrap().0.receipt;
+    assert!(matches!(third.outcome, AuthorityOutcome::TargetStopped { .. }));
+    let repeated = service.execute(fixture.context("operator"), overflow.clone()).await.unwrap().0.receipt;
+    assert_eq!(third, repeated);
     assert!(
         service
             .verify_target_stop(fixture.context("operator"), reference.clone())

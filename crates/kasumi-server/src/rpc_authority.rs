@@ -36,6 +36,39 @@ impl NativeAuthority {
 }
 #[tonic::async_trait]
 impl kasumi_authority_server::KasumiAuthority for NativeAuthority {
+    async fn maintenance(
+        &self,
+        request: Request<AuthorityJsonRequest>,
+    ) -> Result<Response<AuthorityJsonResponse>, Status> {
+        let context = verified(&self.auth, &request).await?;
+        request
+            .extensions()
+            .get::<crate::tls::AuthenticatedTlsPeer>()
+            .and_then(|peer| peer.certificate_pin())
+            .ok_or_else(|| {
+                Status::unauthenticated("actual mutually authenticated TLS peer required")
+            })?;
+        let body: kasumi_serving::AuthorityMaintenanceRequest =
+            decode_json(&request.into_inner().request_json).map_err(status)?;
+        let accepted = !matches!(
+            body,
+            kasumi_serving::AuthorityMaintenanceRequest::Status { .. }
+                | kasumi_serving::AuthorityMaintenanceRequest::Configuration
+        );
+        let (reply, fence) = self
+            .auth
+            .audit_result(
+                &context,
+                self.authority.maintenance(context.clone(), body).await,
+            )
+            .await
+            .map_err(status)?;
+        let response = AuthorityJsonResponse {
+            response_json: encode_json(&reply).map_err(status)?,
+        };
+        self.release(&context, fence, response, accepted).await
+    }
+
     async fn execute_lifecycle(
         &self,
         request: Request<AuthorityJsonRequest>,
