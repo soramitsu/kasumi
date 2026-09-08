@@ -537,3 +537,11 @@ a read-only quota getter or caller capacity claim cannot close this dependency.
   including actual native pages and encrypted history backup/restore. Evidence:
   `docs/evidence/bounded-snapshot-lease-ownership-20260908`. Final integrated
   release, 3 GiB and sustained resource-pressure gates remain open.
+
+- Frozen native Linux ARM64 `d403c55` is running the complete functional gate set
+  in the newly built pinned image. Toolchain, formatting, Python and patched
+  dependency gates passed at launch capture; workspace and later gates remain
+  in progress. Candidate/repeated assembly is conditional on whole-run success.
+  Launch provenance and the passing combined macOS compile check are in
+  `docs/evidence/frozen-linux-arm64-d403c55-launch-20260908`. This is not a
+  completed functional result or final release acceptance.
