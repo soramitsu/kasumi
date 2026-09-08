@@ -253,3 +253,10 @@ gate above and usable installation artifacts.
   passed. Source, lockfile, executable and log hashes are retained in
   `docs/evidence/custody-point-tables-20260908`. Custody snapshot materialization
   and existing lifetime count/aggregate limits remain explicit unfinished work.
+
+- `c8d20ff` Linux ARM64 production binaries built successfully in 13m05s with
+  Rust 1.97.1 and no fixture features. Executables are preserved separately from
+  the reusable build directory in the dedicated validation VM. The source,
+  compiler, binary and feature-graph evidence is in
+  `docs/evidence/linux-arm64-c8d20ff-20260908`. This remains an intermediate build;
+  the newer live-backup and custody publication changes need their final gates.

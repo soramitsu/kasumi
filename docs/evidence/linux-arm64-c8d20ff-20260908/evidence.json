@@ -1,0 +1,39 @@
+{
+  "scope": "Intermediate Linux ARM64 production build, not final acceptance",
+  "source": "c8d20ffef7f9b5c05f6e4223a1ac4add4526aa76",
+  "source_archive_sha256": "a31592c6db4eae0668e737ef7dacb2440cfac06b7382c6c0f2d6b4f95c645acb",
+  "lockfile_sha256": "a4a3883969dc9486548a1aea841ecf45c482c99e4ea1e0d47b56f6c52b2afa08",
+  "build_exit_code": 0,
+  "platform": "aarch64-unknown-linux-gnu",
+  "execution": "Native ARM64 compiler in the dedicated Debian13 Lima VM, shared macOS development host",
+  "validation_image": "sha256:217fb658c8d1733e976fe179e7c8e0bfad2d364d40dc6d6bef6171afaa015fb8",
+  "rustc": "1.97.1 (8bab26f4f 2026-07-14)",
+  "command": [
+    "cargo",
+    "build",
+    "--locked",
+    "--release",
+    "-j",
+    "2",
+    "-p",
+    "kasumi-server",
+    "--bins",
+    "--no-default-features"
+  ],
+  "binary_sha256": {
+    "kasumid": "bbf26728b6440e48ec2028c57f1247b01f08fb9d0f8e689d24b0277ff8e16cca",
+    "kasumictl": "565a00ab673862e43149e0f125031a005bd2565b9ef22140b2ad6869ece6cf50",
+    "kasumi-authority": "7fc0913fee3a4dcb8214b7f37d62cd4dd970ba4e54d45eb1148752773ce070b7"
+  },
+  "production_feature_graph_exit_code": 0,
+  "fixture_features_present": false,
+  "limitations": [
+    "Predates the latest live-backup reuse and streamed custody publication changes.",
+    "No current-source runtime smoke, full Linux functional suite, capacity, performance or endurance claim."
+  ],
+  "logs_sha256": {
+    "kasumi-production-c8d20ff-linux-arm64-build.log": "7868c3f2f942d2be8ee407e08b1531ac32ba69fa6e2b5ec62b1fee3b99deeaf1",
+    "kasumi-production-c8d20ff-linux-arm64-identity.log": "cbf19f4b4667c6dce2c4632d4659ff43b314e77390e10489f0938bcd57418674",
+    "kasumi-production-c8d20ff-linux-arm64-production-features.log": "795b8d7d84f400efe9c2f917340a4601b0ac48eee93023ffbdc4e6579727e3b0"
+  }
+}
