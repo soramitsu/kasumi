@@ -398,13 +398,21 @@ impl TenantStore {
                 existing.shutdown().await;
             } else {
                 // A new boot cannot replace a live handle's original capability.
-                if let (Some(old), Some(new)) =
-                    (existing.access.serving_gate(), access.serving_gate())
-                {
-                    ensure!(
+                match (existing.access.serving_gate(), access.serving_gate()) {
+                    (Some(old), Some(new)) => ensure!(
                         Arc::ptr_eq(old, new),
                         "live store belongs to another serving capability"
-                    );
+                    ),
+                    (None, None) => {}
+                    _ => anyhow::bail!("live store serving capability differs"),
+                }
+                match (existing.access.lifecycle_gate(), access.lifecycle_gate()) {
+                    (Some(old), Some(new)) => ensure!(
+                        Arc::ptr_eq(old, new),
+                        "live store belongs to another lifecycle capability"
+                    ),
+                    (None, None) => {}
+                    _ => anyhow::bail!("live store lifecycle capability differs"),
                 }
                 existing.check_access()?;
                 return Ok(existing);
