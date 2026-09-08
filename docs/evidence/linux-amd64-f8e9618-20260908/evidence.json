@@ -1,0 +1,37 @@
+{
+  "kind": "intermediate production build; not final release acceptance",
+  "source": "f8e96181c52db24f92c4f00783e3e6fd13c3e04e",
+  "source_archive_sha256": "e75a3349f0d042e9cb87ead7122d8d83152b8f0ca4d539dbbe7e94eb40067bc9",
+  "lock_sha256": "f7d97206d4d99dd69b3350354a5bb4d673aad5560540a342cb9e465a28a7629a",
+  "validation_image": "sha256:41fffba56cf2582cee7c6d896cbe511f47fce676bde5c3d3f9e9142758ecfca7",
+  "platform": "x86_64-unknown-linux-gnu",
+  "execution": "Rosetta translation in dedicated Debian ARM64 Lima VM; Docker --platform linux/amd64",
+  "rustc": "1.97.1 (8bab26f4f 2026-07-14)",
+  "build_command": "cargo build --locked --release -j2 -p kasumi-server --bins --no-default-features",
+  "build_exit_code": 0,
+  "executable_sha256": {
+    "/target/release/kasumid": "985a1a996a0be1963e6d1df31574b40f3e63df2be3f4c0b099fa8a7b3191fe1d",
+    "/target/release/kasumictl": "c264ab6ddafa38f0c77472425783111a2ae317d856d37830ae29d9ba014bc554",
+    "/target/release/kasumi-authority": "52065943061e06e15bf14f2ec10d91f2bd40376eb01ed84a49ea55e06d2105da"
+  },
+  "production_dependency_graph": "cargo tree --locked --offline -p kasumi-server --no-default-features -e normal,build,features; no test-utils features",
+  "limitations": [
+    "This predates subsequent integration work.",
+    "Translated compilation and executable probes do not establish native Linux x86-64 performance, endurance or process acceptance.",
+    "No final platform/capacity/recovery gate is certified by this build."
+  ],
+  "logs": [
+    {
+      "file": "logs/kasumi-production-f8e9618-linux-amd64-build.log",
+      "sha256": "b4773ec3941f7d53d484c5e9058f8c587f8ca47c329c95b07e9f4bc965ba12b8"
+    },
+    {
+      "file": "logs/kasumi-production-f8e9618-linux-amd64-identities.log",
+      "sha256": "c686eed71da6c8f3ded856a88406a711321dbbc612f1d71af12c790a23daa430"
+    },
+    {
+      "file": "logs/kasumi-production-f8e9618-linux-amd64-production-features.log",
+      "sha256": "a8223722131fbb8a9c736be834bf2e36d621365507ec474348c3302caa875287"
+    }
+  ]
+}

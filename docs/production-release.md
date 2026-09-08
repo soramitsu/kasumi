@@ -166,3 +166,36 @@ gate above and usable installation artifacts.
   executable hashes and failed harness attempts are retained in
   `docs/evidence/linux-arm64-f8e9618-20260908`. These precede current integration
   and do not close final platform, recovery, capacity or endurance gates.
+
+- `2d6c66b` fixes the service-audit restart counter mismatch exposed by the
+  expanded archive graph tests. One canonical persisted retention position owns
+  byte totals, segment counts and drain state; the four focused service-audit
+  fault/restart tests passed. No decoder for the superseded development head is
+  retained.
+- `1a31e35` integrates complete Raft snapshot bundles with verified original audit
+  dependencies, bounded framing and matching retention counters. `c21bcbe`
+  extends the completed backup session graph with the same exact original audit
+  objects and wrapping dependencies. Its branch checkpoint passed all nine
+  backup tests and 54 engine library tests. Public snapshot API replacement and
+  bootstrap-cache verification on every reopen are still being integrated.
+- `8df1234` includes typed backup session CLI commands and exact completion retry
+  journals. Its frozen full workspace run is in progress; it is an intermediate
+  interface snapshot, not a production acceptance claim.
+- `1dd752b` removes the tenant hot audit record-count setting, rejects that old
+  configuration field, and reserves Control completion/retirement by exact byte
+  headroom. The mutation rejection/administrator expansion test passed. The first
+  expanded Control fixture lost its held leader while issuing hundreds of small
+  records; the bounded-record successor still requires its focused rerun. Custody
+  and other permanent-record count ceilings remain separate unfinished work.
+- `4293660` reserves two shared node archive lanes (128 MiB total across tenants)
+  for preparation/proposal and replica application, in addition to the existing
+  64 MiB service-audit workspace. Queued blocking work retains its actual owners,
+  and shutdown drains proposals. Automatic startup is not wired until the public
+  snapshot and bootstrap dependency paths are complete. Focused worker validation
+  is in progress; initial capacity fixtures omitted required observed revisions
+  and their failures are retained.
+- Intermediate Linux x86-64 production binaries at `f8e9618` built successfully
+  using Rust 1.97.1 under Rosetta translation in the isolated Linux VM. The normal
+  and build feature graph excludes fixtures. Source, executable and log hashes
+  are in `docs/evidence/linux-amd64-f8e9618-20260908`. Translation is explicitly
+  not native performance or endurance evidence.
