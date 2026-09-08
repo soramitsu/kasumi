@@ -613,7 +613,29 @@ mod tests {
     }
     async fn restore(engine: Arc<TenantEngine>, bytes: Vec<u8>) -> Result<()> {
         tokio::task::spawn_blocking(move || {
-            StateMachineBackend::restore(engine.as_ref(), &mut bytes.as_slice())
+            // These bundle fixtures remain at genesis (no applied Raft entry).
+            // Exercise prepared validation and atomic namespace publication;
+            // the Raft crate separately tests the joint custody/cursor commit.
+            let store = engine
+                .snapshot_store
+                .get()
+                .context("fixture snapshot storage absent")?;
+            let image = kasumi_store::SnapshotImage::from_bytes(store.scratch_disk(), &bytes)?;
+            let context = kasumi_raft::SnapshotRestoreContext {
+                mode: kasumi_raft::SnapshotRestoreMode::Install,
+                backend_sha256: image.sha256().into(),
+                meta: kasumi_raft::SnapshotMeta {
+                    last_log_id: None,
+                    last_membership: Default::default(),
+                    snapshot_id: uuid::Uuid::new_v4().to_string(),
+                },
+            };
+            let prepared = engine.prepare_restore(&context, &mut image.reader())?;
+            store.replace_namespaces(
+                &prepared.application_replacements(),
+                prepared.application_writes(),
+            )?;
+            prepared.publish()
         })
         .await?
     }

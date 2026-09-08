@@ -6,6 +6,8 @@ fn coordinator() -> TenantState {
     let mut state = super::tests::state();
     state.tenant = crate::control::CONTROL_TENANT.into();
     state.incarnation = Uuid::new_v4().to_string();
+    state.staged_terminal_head =
+        StagedTerminalHead::empty(&state.tenant, &state.incarnation).unwrap();
     state.revision = 3;
     state.policy_epoch = 1;
     let partition = ControlAuthorityPartition {
@@ -167,7 +169,8 @@ fn coordinator() -> TenantState {
 fn image(state: &TenantState) -> kasumi_store::SnapshotImage {
     let mut spool =
         kasumi_store::EncryptedSpool::new(&kasumi_store::ScratchDisk::fixture(), 16 << 20).unwrap();
-    write(state, &mut spool).unwrap();
+    let terminals = crate::staged_terminal::View::empty(&state.tenant, &state.incarnation).unwrap();
+    write(state, &terminals, &mut spool).unwrap();
     kasumi_store::SnapshotImage::freeze(spool).unwrap()
 }
 
@@ -178,12 +181,13 @@ fn canonical_recovery_records_roundtrip_and_point_accounting_match_stream() {
     let before = crate::accounting::SnapshotAccounting::rebuild(&previous).unwrap();
     let source = image(&previous);
     assert_eq!(before.bytes(&previous).unwrap() as u64, source.len());
-    let decoded = read(&mut source.reader()).unwrap();
-    assert_eq!(decoded.recovery_control, previous.recovery_control);
+    let decoded = read(source.disk(), &mut source.reader()).unwrap();
+    assert_eq!(decoded.state.recovery_control, previous.recovery_control);
     let indexed = crate::snapshot_index::StagedSnapshot::new(source, 64 << 20, || Ok(())).unwrap();
-    for kind in 18..RECORD_KINDS {
+    for kind in 18..=20 {
         assert_eq!(indexed.count(kind).unwrap(), 1);
     }
+    assert_eq!(indexed.count(21).unwrap(), 0);
     let mut next = previous.clone();
     next.revision += 1;
     let (_, phase) = next.recovery_control.phases.get_min().unwrap();
@@ -242,10 +246,11 @@ fn application_backup_rejects_control_recovery_and_embedded_or_orphan_records() 
     let mut encoder = Encoder::new(&mut bytes).unwrap();
     encoder.record(Record::Header(Box::new(embedded))).unwrap();
     encoder.finish().unwrap();
-    assert!(read(&mut bytes.as_slice()).is_err());
+    assert!(read(&kasumi_store::ScratchDisk::fixture(), &mut bytes.as_slice()).is_err());
     let mut orphan = state.clone();
     orphan.recovery_control.operations.clear();
-    assert!(read(&mut image(&orphan).reader()).is_err());
+    let orphan = image(&orphan);
+    assert!(read(orphan.disk(), &mut orphan.reader()).is_err());
     let mut wrong_key = state;
     let (_, record) = wrong_key.recovery_control.phases.get_min().unwrap();
     let record = record.clone();
@@ -254,5 +259,6 @@ fn application_backup_rejects_control_recovery_and_embedded_or_orphan_records() 
         .recovery_control
         .phases
         .insert(Uuid::new_v4().to_string(), record);
-    assert!(read(&mut image(&wrong_key).reader()).is_err());
+    let wrong_key = image(&wrong_key);
+    assert!(read(wrong_key.disk(), &mut wrong_key.reader()).is_err());
 }
