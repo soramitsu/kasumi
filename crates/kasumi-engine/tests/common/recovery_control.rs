@@ -516,6 +516,68 @@ async fn recovery_journal_persists_before_dispatch_rejects_substitution_and_reco
             .phase,
         RecoveryPhase::FenceSource
     );
+    let (fence_phase, input) = prepare_next(&f, &db, id).await;
+    let RecoveryDispatch::Authority(command) = &input else {
+        panic!("source-unavailable recovery must use its installed issuer");
+    };
+    assert_eq!(
+        command.action,
+        AuthorityAction::Fence {
+            incarnation: request.source_incarnation,
+            authority_epoch: request.source_authority_epoch,
+        }
+    );
+    let partition = &f.installation.partitions[&request.authority_partition];
+    let mut receipt = AuthorityReceipt {
+        authority_id: partition.authority_id,
+        manifest_digest: partition.manifest_sha256.clone(),
+        partition: partition.partition,
+        command: command.as_ref().clone(),
+        command_digest: command.digest().unwrap(),
+        principal: "issuer-admin".into(),
+        term: 3,
+        revision: 11,
+        admitted_at_ms: command.not_after_ms - 1,
+        outcome: AuthorityOutcome::Fenced {
+            incarnation: Uuid::new_v4(),
+            authority_epoch: request.source_authority_epoch,
+        },
+    };
+    let sign = |receipt: &AuthorityReceipt| SignedAuthorityReceipt {
+        signature: f.partition_keys[&partition.key()]
+            .sign("kasumi.authority-proof.v1", receipt)
+            .unwrap(),
+        receipt: receipt.clone(),
+    };
+    assert!(
+        db.resolve_recovery_dispatch(
+            f.context("owner"),
+            id,
+            fence_phase,
+            RecoveryDispatchOutcome::Authority(Box::new(sign(&receipt)))
+        )
+        .await
+        .is_err()
+    );
+    receipt.outcome = AuthorityOutcome::Fenced {
+        incarnation: request.source_incarnation,
+        authority_epoch: request.source_authority_epoch,
+    };
+    let fenced = resolve_phase(
+        &f,
+        id,
+        fence_phase,
+        RecoveryDispatchOutcome::Authority(Box::new(sign(&receipt))),
+    )
+    .await;
+    assert_eq!(fenced.record().source_fence, Some(fence_phase));
+    assert_eq!(
+        fenced.record().retirement,
+        None,
+        "source-unavailable fencing must never claim planned retirement"
+    );
+    assert_eq!(fenced.record().phase, RecoveryPhase::Activate);
+    drop(fenced);
     snapshot(&db).await;
     let stopped = db
         .recovery_control(

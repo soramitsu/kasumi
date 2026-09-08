@@ -250,7 +250,21 @@ async fn native_backup_proof_is_admin_only_configured_and_verified_through_secur
             .await
             .is_err()
     );
-    let retired = client.retire_source(bearer, &retirement).await.unwrap();
+    let custody_token = fixture.custody_token("person");
+    let custody_bearer = custody_token.strip_prefix("Bearer ").unwrap();
+    let admitted = std::sync::atomic::AtomicBool::new(false);
+    let retired = crate::recovery_runtime::dispatch_planned_retirement(
+        || Ok((config.clone(), zeroize::Zeroizing::new(bearer.to_owned()))),
+        &config, custody_bearer, &retirement, std::time::Duration::from_secs(30),
+        async { admitted.store(true, std::sync::atomic::Ordering::Release); Ok(()) },
+    ).await.unwrap();
+    assert!(admitted.load(std::sync::atomic::Ordering::Acquire));
+    let retained = crate::recovery_runtime::dispatch_planned_retirement(
+        || panic!("accepted retirement must recover without the application credential"),
+        &config, custody_bearer, &retirement, std::time::Duration::from_secs(30),
+        async { panic!("accepted retirement must not dispatch another effect") },
+    ).await.unwrap();
+    assert_eq!(retained.receipt(), retired.receipt());
     assert!(
         client
             .verify_retirement_receipt(bearer, &reference)

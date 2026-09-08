@@ -165,6 +165,7 @@ pub(super) async fn exercise(f: Fixture<'_>) {
             })
             .collect(),
         source: None,
+        source_custody: None,
     };
     request.dispatch_configuration_sha256 = route.digest(&configured).unwrap();
     let mut runtime = crate::runtime::example_config();
