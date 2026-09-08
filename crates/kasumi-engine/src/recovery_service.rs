@@ -326,6 +326,23 @@ impl Database {
         }
         if let Some(id) = operation.pending_phase {
             let pending = recovery::phase(state, operation, id)?;
+            if let RecoveryDispatch::Target { node_id, request } = &pending.input
+                && operation.phase == RecoveryPhase::Complete
+                && now < request.not_after_ms
+                && matches!(request.step, TargetRuntimeStep::Complete(_))
+            {
+                let next = operation
+                    .voters
+                    .keys()
+                    .copied()
+                    .find(|id| id > node_id)
+                    .or_else(|| operation.voters.keys().next().copied())
+                    .ok_or_else(|| error(ErrorCode::Corruption, "recovery voters absent"))?;
+                return Ok(Some(RecoveryDispatch::Target {
+                    node_id: next,
+                    request: request.clone(),
+                }));
+            }
             let fresh_phase = match &pending.input {
                 RecoveryDispatch::Target { request, .. } if now >= request.not_after_ms => {
                     match request.step {
@@ -334,6 +351,12 @@ impl Database {
                             LifecyclePhase::ResumeMaterialize
                         }
                         TargetRuntimeStep::Stop(_) => LifecyclePhase::StopLocal,
+                        TargetRuntimeStep::Start(TargetReplicaInput::Quorum(_))
+                        | TargetRuntimeStep::Initialize(_)
+                            if operation.phase == RecoveryPhase::Initialize =>
+                        {
+                            LifecyclePhase::Initialize
+                        }
                         _ => {
                             return Err(error(
                                 ErrorCode::Conflict,
@@ -471,6 +494,83 @@ impl Database {
                 }
             }
 
+            RecoveryPhase::Initialize | RecoveryPhase::Complete => {
+                let kind = if operation.phase == RecoveryPhase::Initialize {
+                    LifecyclePhase::Initialize
+                } else {
+                    LifecyclePhase::Complete
+                };
+                let current = operation
+                    .current_intent
+                    .map(|id| recovery::intent(state, operation, id))
+                    .transpose()?;
+                match current {
+                    Some(current) if now < current.original_credential_expires_at_ms => {
+                        let quorum = recovery::quorum_input(state, operation)?;
+                        let mut missing = None;
+                        for id in operation.voters.keys() {
+                            if !recovery::started_for(
+                                state,
+                                operation,
+                                *id,
+                                current.request.command_id,
+                            )? {
+                                missing = Some(*id);
+                                break;
+                            }
+                        }
+                        let (node_id, step) = if let Some(id) = missing {
+                            (
+                                id,
+                                TargetRuntimeStep::Start(TargetReplicaInput::Quorum(quorum)),
+                            )
+                        } else {
+                            let first = *operation.voters.keys().next().ok_or_else(|| {
+                                error(ErrorCode::Corruption, "recovery voters absent")
+                            })?;
+                            (
+                                first,
+                                if kind == LifecyclePhase::Initialize {
+                                    TargetRuntimeStep::Initialize(quorum)
+                                } else {
+                                    TargetRuntimeStep::Complete(quorum)
+                                },
+                            )
+                        };
+                        RecoveryDispatch::Target {
+                            node_id,
+                            request: Box::new(TargetRuntimeRequest {
+                                tenant: operation.request.tenant.clone(),
+                                command_id: current.request.command_id,
+                                not_after_ms: now
+                                    .checked_add(operation.request.phase_timeout_ms)
+                                    .ok_or_else(|| {
+                                        error(
+                                            ErrorCode::InvalidArgument,
+                                            "recovery dispatch deadline overflow",
+                                        )
+                                    })?
+                                    .min(expires)
+                                    .min(current.original_credential_expires_at_ms),
+                                step,
+                            }),
+                        }
+                    }
+                    Some(_) if kind == LifecyclePhase::Complete => {
+                        return Err(error(
+                            ErrorCode::Unavailable,
+                            "expired original completion requires fresh exact completion-resolution evidence",
+                        ));
+                    }
+                    _ => RecoveryDispatch::ControlIntent(Box::new(recovery::expected_intent(
+                        state,
+                        operation,
+                        phase_id,
+                        state.policy_epoch,
+                        kind,
+                    )?)),
+                }
+            }
             _ => {
                 return Err(error(
                     ErrorCode::Unavailable,
