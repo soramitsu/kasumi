@@ -94,7 +94,12 @@ impl kasumi_authority::SignerPublicationTransport for InstalledPublicationTransp
                 .collect::<Result<_>>()?,
         };
         // One atomic private-file snapshot belongs to this whole finite attempt.
-        let bearer = file_secret(&receiver.bearer_file)?;
+        let bearer = file_secret(
+            receiver
+                .bearer_file
+                .to_str()
+                .context("signer publication credential path is not UTF-8")?,
+        )?;
         Ok(kasumi_client::CurrentSignerPublication::observe(
             &config,
             &bearer,

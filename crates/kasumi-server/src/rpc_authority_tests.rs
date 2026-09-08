@@ -55,7 +55,11 @@ impl kasumi_authority::SignerPublicationTransport for CoverageTransport {
         &self,
         dispatch: &SignerCoverageDispatch,
     ) -> anyhow::Result<kasumi_client::CurrentSignerPublication> {
-        let bearer = crate::runtime::file_secret(&self.bearer_file)?;
+        let bearer = crate::runtime::file_secret(
+            self.bearer_file
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("fixture credential path is not UTF-8"))?,
+        )?;
         let observation = kasumi_client::CurrentSignerPublication::observe(
             &self.config,
             &bearer,
