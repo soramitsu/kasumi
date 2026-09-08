@@ -597,16 +597,57 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
     .await
     .unwrap();
     for (index, chunk) in chunks.into_iter().enumerate() {
-        db.append_staged_chunk(
-            context(),
-            AppendStagedChunk {
-                transaction: reference.clone(),
-                index,
-                chunk,
-            },
-        )
-        .await
-        .unwrap();
+        let request = AppendStagedChunk {
+            transaction: reference.clone(),
+            index,
+            chunk,
+        };
+        let original_context = context();
+        match db
+            .append_staged_chunk(original_context.clone(), request.clone())
+            .await
+        {
+            Ok(_) => {}
+            Err(error) => {
+                assert_eq!(error.code, ErrorCode::UnknownOutcome);
+                // A caller timeout can leave the original write completing.
+                // Resolve the same manifest/index before retrying its exact
+                // chunk. Neither the upload TTL nor the old worker is renewed.
+                tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                    loop {
+                        match db
+                            .staged_transaction_status(&original_context, &reference)
+                            .await
+                        {
+                            Ok(status) if status.received_chunks.contains(&index) => {
+                                assert_eq!(
+                                    status.transaction.manifest_digest,
+                                    reference.manifest_digest
+                                );
+                                break;
+                            }
+                            Ok(status) => {
+                                assert!(matches!(status.outcome, StagedOutcome::Uploading));
+                                match db
+                                    .append_staged_chunk(original_context.clone(), request.clone())
+                                    .await
+                                {
+                                    Ok(_) => break,
+                                    Err(error) => assert_eq!(error.code, ErrorCode::UnknownOutcome),
+                                }
+                            }
+                            Err(error) => assert!(matches!(
+                                error.code,
+                                ErrorCode::UnknownOutcome | ErrorCode::Unavailable
+                            )),
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                    }
+                })
+                .await
+                .expect("original staged chunk outcome did not resolve");
+            }
+        }
     }
     let original = db
         .finalize_staged_transaction(context(), reference.clone())
