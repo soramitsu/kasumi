@@ -476,3 +476,11 @@ a read-only quota getter or caller capacity claim cannot close this dependency.
   strict workspace checks pass; final fixture-free check remains pending after
   the custody split. Evidence: `docs/evidence/control-source-fencing-20260908`.
   Phase-time retirement deadlines and complete activation/publication remain open.
+
+- `42bf607` adds a pinned native acceptance workflow, exact gate-command
+  verification, host provenance, a dated Debian package snapshot and an OCI
+  recipe that verifies binary hashes and architecture. Sixteen Python tests and
+  native macOS host preflight pass; the corrected workflow passes actionlint.
+  The initial lint failure and source-qualified results are retained in
+  `docs/evidence/candidate-workflow-20260908`. Actual workflow execution, image
+  builds, final candidate assembly and compiler reproducibility remain open.
