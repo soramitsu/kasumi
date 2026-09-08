@@ -278,3 +278,13 @@ gate above and usable installation artifacts.
   Rosetta translation inside the dedicated ARM64 validation VM. Evidence is in
   `docs/evidence/linux-amd64-c8d20ff-20260908`; it is neither native performance
   evidence nor final-source acceptance.
+
+- `2558874` replaces custody history embedded in snapshot metadata with canonical
+  typed receipt/audit records and authenticated terminal counts/digests. Encrypted
+  point indexes validate exact history without a whole-history buffer; closed
+  snapshots publish encrypted chunks atomically with records and the applied
+  cursor. Prior stream/storage formats are rejected before rewriting storage.
+  The preceding full Raft library passed 41 tests; final custody tests passed 25
+  and strict Raft Clippy passed. Evidence and the corrected initial hostile-test
+  failure are in `docs/evidence/custody-stream-format-20260908`. Fixed custody
+  lifetime quotas and the closed transport budget remain the next storage work.

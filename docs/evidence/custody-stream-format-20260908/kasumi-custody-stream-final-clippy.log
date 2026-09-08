@@ -1,0 +1,4 @@
+    Checking kasumi-serving v0.1.0 (/private/tmp/kasumi-production-custody-tables/crates/kasumi-serving)
+    Checking kasumi-store v0.1.0 (/private/tmp/kasumi-production-custody-tables/crates/kasumi-store)
+    Checking kasumi-raft v0.1.0 (/private/tmp/kasumi-production-custody-tables/crates/kasumi-raft)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 21.31s
