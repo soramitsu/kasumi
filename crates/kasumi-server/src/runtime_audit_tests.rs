@@ -180,7 +180,7 @@ async fn audit_native_tls_fixed_history_and_original_authorization_release() {
             .unwrap();
         assert_eq!(page.stream_id, stream);
         assert_eq!(page.through_sequence, end);
-        assert!(serde_json::to_vec(&page).unwrap().len() <= MAX_SECURITY_AUDIT_PAGE_BYTES);
+        assert!(serde_json::to_vec(&*page).unwrap().len() <= MAX_SECURITY_AUDIT_PAGE_BYTES);
         sequences.extend(
             page.records
                 .iter()
