@@ -69,14 +69,10 @@ pub(crate) fn publish(custody: &CustodyStore, snapshot: &SnapshotEnvelope) -> Re
         .as_ref()
         .context("closed snapshot lacks retirement")?;
     retirement.validate(&snapshot.meta)?;
-    let bytes = snapshot
-        .encode(MAX_CLOSED_SNAPSHOT_BYTES)?
-        .read_bounded(MAX_CLOSED_SNAPSHOT_BYTES as usize)?;
-    ensure!(
-        bytes.len() as u64 <= MAX_CLOSED_SNAPSHOT_BYTES,
-        "closed snapshot byte budget exceeded"
-    );
-    let digest = crate::command::sha256(&bytes);
+    let bytes = snapshot.encode(MAX_CLOSED_SNAPSHOT_BYTES)?;
+    let digest = bytes.sha256().to_owned();
+    let (chunks, manifest) =
+        crate::custody_snapshot_storage::stage(&bytes, MAX_CLOSED_SNAPSHOT_BYTES)?;
     let backend_digest = crate::command::sha256(&[]);
     let mut install = crate::snapshot_custody::installation_writes(
         custody,
@@ -96,32 +92,24 @@ pub(crate) fn publish(custody: &CustodyStore, snapshot: &SnapshotEnvelope) -> Re
             meta: snapshot.meta.clone(),
         })?,
     ));
-    install
-        .writes
-        .push(WriteOp::put(CLOSED_SNAPSHOT, b"current", bytes));
-    let replacements = install.records.as_ref().map(|records| records.namespaces());
-    custody.store().replace_namespaces(
-        replacements
-            .as_ref()
-            .map_or(&[], |namespaces| namespaces.as_slice()),
-        &install.writes,
-    )
+    install.writes.push(manifest);
+    let mut replacements = install
+        .records
+        .as_ref()
+        .map_or_else(Vec::new, |records| records.namespaces().to_vec());
+    replacements.push((CLOSED_SNAPSHOT, &chunks));
+    custody
+        .store()
+        .replace_namespaces(&replacements, &install.writes)
 }
 
 pub(crate) fn load_snapshot(custody: &CustodyStore) -> Result<Option<SnapshotEnvelope>> {
-    let Some(bytes) = custody.store().get_bounded(
-        CLOSED_SNAPSHOT,
-        b"current",
-        MAX_CLOSED_SNAPSHOT_BYTES as usize,
-    )?
+    let Some(bytes) =
+        crate::custody_snapshot_storage::load_image(custody, MAX_CLOSED_SNAPSHOT_BYTES)?
     else {
         return Ok(None);
     };
-    ensure!(
-        bytes.len() as u64 <= MAX_CLOSED_SNAPSHOT_BYTES,
-        "closed snapshot byte budget exceeded"
-    );
-    let snapshot = SnapshotEnvelope::decode(&mut bytes.as_slice(), MAX_CLOSED_SNAPSHOT_BYTES)?;
+    let snapshot = SnapshotEnvelope::decode(&mut bytes.reader(), MAX_CLOSED_SNAPSHOT_BYTES)?;
     ensure!(
         snapshot.kind == SnapshotKind::Custody
             && snapshot.version == 1
@@ -133,7 +121,7 @@ pub(crate) fn load_snapshot(custody: &CustodyStore) -> Result<Option<SnapshotEnv
     ensure!(
         coverage.kind == SnapshotKind::Custody
             && coverage.meta == snapshot.meta
-            && coverage.snapshot_sha256 == crate::command::sha256(&bytes)
+            && coverage.snapshot_sha256 == bytes.sha256()
             && coverage.backend_sha256 == crate::command::sha256(&[]),
         "closed snapshot control coverage differs"
     );
@@ -365,7 +353,11 @@ impl RaftStateMachine<TypeConfig> for CustodyMachine {
         &mut self,
     ) -> Result<Option<Snapshot<TypeConfig>>, StorageError<u64>> {
         let custody = self.custody.clone();
+        let gate = self.control_gate.clone();
         tokio::task::spawn_blocking(move || {
+            let _gate = gate
+                .lock()
+                .map_err(|_| anyhow::anyhow!("control gate poisoned"))?;
             load_snapshot(&custody)?
                 .map(|snapshot| as_snapshot(&snapshot, MAX_CLOSED_SNAPSHOT_BYTES))
                 .transpose()
