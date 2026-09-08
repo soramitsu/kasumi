@@ -287,6 +287,7 @@ impl Databases {
             audits.push(SecurityAudit::open(
                 service_store,
                 kasumi_types::AuditRetentionBudget::default(),
+                kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
             )?);
         }
         let provider = Arc::new(LocalKeyProvider::new([0x42; 32]));

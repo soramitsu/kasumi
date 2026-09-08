@@ -50,3 +50,24 @@ Wrapping-key rotation retains previous generations and rewraps installed catalog
 Administrator recovery issues new private profiles for administrators in the current policies. It does not silently replace policy or change existing credential-family outcomes. It requires the installed encryption and signing keys. Run the renewal watcher for recovered profiles before their one-hour lifetime expires.
 
 The `operator` directory contains plaintext wrapping keys, signing keys, and the CA private key. It is separate from ordinary encrypted data backups. The key-backup command creates an owner-only keys-only backup; store it separately on a trusted encrypted host. Retain all generations needed by completed data backups. These facilities protect data against storage disclosure while trusting the host running Kasumi; possession of the operator keys and stopped installation is administrative authority.
+
+# Local data recovery
+
+The generated installation installs the filesystem backup destination `local` beneath `backups`. Create and verify a full backup using the native administrative backup API and retain the exact returned `FullBackupCheckpoint`. Retain the source application wrapping keyring separately. Verification requires every encrypted dependency; a root object alone is not a complete backup.
+
+Stop the installed server before restoring. Prepare a JSON request containing a fresh `operation_id`, `tenant`, `expected_active_incarnation`, a fresh `target_incarnation`, the exact verified `checkpoint`, the exact source `source_purpose`, `source_keys`, `source_principal`, installed `destination`, and `phase_timeout_ms` (1–600000). For standalone backups, `source_purpose` contains `kind: "Standalone"`, the original `installation_id`, `tenant`, and `incarnation`. `source_keys` uses the same file-keyring configuration shape as the source tenant's `keys`. `source_principal` must have administrator authority in the backed-up policy.
+
+```sh
+kasumid local-recovery start /var/lib/kasumi/kasumi.json /secure/restore-request.json
+kasumid local-recovery status /var/lib/kasumi/kasumi.json OPERATION_UUID
+kasumid local-recovery resume /var/lib/kasumi/kasumi.json OPERATION_UUID
+kasumid local-recovery stop /var/lib/kasumi/kasumi.json OPERATION_UUID
+```
+
+`start` durably records the request and runs its phases. Retry with exactly the same operation and inputs, or use `resume` after interruption. Each invocation obtains fresh independently bound source and target authorization from exclusive local operator ownership. No expired source bearer token is required. The encrypted coordinator retains original phase identities and exact inputs and resolves their results on resume.
+
+Materialization writes an isolated `data/generations/<target-incarnation>/node.redb`. Completion precedes the atomic activation decision. Activation permanently retires the former local generation and selects one target; from that point recovery proceeds forward. `stop` is accepted before activation, persists the target's permanent stop, drains storage ownership, and deletes only files bearing the matching generation binding. Unrelated files prevent cleanup and remain untouched. The original `data/node.redb` retains installation, Control, security, and permanent recovery records and is never deleted by this cleanup.
+
+A pending operation prevents the installed server from starting. A finished operation publishes a fresh private database profile in `profiles/recovery-<operation-id>.json`; run its renewal watcher and use it after restarting the same listener. Existing credentials remain bound to their original resource and cannot access the restored incarnation. Key rotation and stopped-instance administrator recovery select the committed active generation. Missing activated storage causes startup to fail instead of recreating an empty database.
+
+Local recovery fences only the exclusively owned installation. It does not attest that an independently running copy or a distributed source quorum has stopped. Distributed recovery requires the Control recovery coordinator and its issuer fencing evidence.

@@ -16,7 +16,8 @@ impl CredentialFixture {
         )
         .await
         .unwrap();
-        let audit = SecurityAudit::open(audit_store, kasumi_types::AuditRetentionBudget::default()).unwrap();
+        let node_admission = NodeAdmission::new(AdmissionConfig::default()).unwrap();
+        let audit = SecurityAudit::open(audit_store, kasumi_types::AuditRetentionBudget::default(), node_admission.clone()).unwrap();
         let context = RequestContext {
             authorization: RequestAuthorization::service_identity(),
             tenant: "credential-expiry".into(),
@@ -48,7 +49,7 @@ impl CredentialFixture {
         )
         .await
         .unwrap();
-        db.install_admission(NodeAdmission::new(AdmissionConfig::default()).unwrap())
+        db.install_admission(node_admission)
             .unwrap();
         db.administer(
             context.clone(),

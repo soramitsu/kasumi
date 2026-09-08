@@ -24,6 +24,9 @@ use crate::{
 };
 use kasumi_clock::{LeaseClock, SystemLeaseClock};
 
+#[path = "backup_sessions_s3.rs"]
+mod sessions_s3;
+
 const FORMAT: u32 = 1;
 pub(crate) const HEADER_LIMIT: usize = 2 * 1024 * 1024;
 pub const MAX_BACKUP_OBJECT_BYTES: usize = 32 * 1024 * 1024;
@@ -52,6 +55,7 @@ pub struct EncryptedBackup {
 pub struct BackupContents {
     pub backup_id: Uuid,
     pub source_tenant: String,
+    pub source_purpose: crate::StoragePurpose,
     pub revision: u64,
     pub snapshot: Zeroizing<Vec<u8>>,
     /// Digests returned only after complete authenticated object/key verification.
@@ -64,6 +68,16 @@ impl TenantStore {
     /// receipts, and policy from one committed generation. No raw Raft identity is
     /// imported by this API. Every resident key version is included as a dependency.
     pub fn encrypt_backup(&self, revision: u64, snapshot: &[u8]) -> Result<EncryptedBackup> {
+        self.encrypt_backup_with_id(Uuid::new_v4(), revision, snapshot)
+    }
+    /// A session's root uses the identity durably chosen before its first upload.
+    pub fn encrypt_backup_with_id(
+        &self,
+        id: Uuid,
+        revision: u64,
+        snapshot: &[u8],
+    ) -> Result<EncryptedBackup> {
+        ensure!(!id.is_nil(), "nil backup object identity");
         let _access = AccessGuard(self);
         self.check_access()?;
         ensure!(
@@ -79,7 +93,7 @@ impl TenantStore {
             .context("backup data key missing")?;
         let manifest = Manifest {
             format: FORMAT,
-            backup_id: Uuid::new_v4(),
+            backup_id: id,
             tenant: self.tenant.clone(),
             revision,
             plaintext_bytes: snapshot.len() as u64,
@@ -99,8 +113,52 @@ impl TenantStore {
 }
 
 impl EncryptedBackup {
+    /// Reuse authenticated historical wrapping dependencies and source purpose
+    /// for a session outcome written by another currently authorized replica.
+    pub(crate) async fn encrypt_related(
+        &self,
+        snapshot: &[u8],
+        provider: Arc<dyn KeyProvider>,
+        access: &crate::StorageAccess,
+    ) -> Result<Self> {
+        ensure!(
+            snapshot.len() <= crate::MAX_SESSION_RECORD_BYTES,
+            "session outcome exceeds limit"
+        );
+        self.decrypt(self.source_tenant(), provider.clone(), access)
+            .await?;
+        let wrapped = self
+            .manifest
+            .catalog
+            .keys
+            .get(&self.manifest.catalog.active)
+            .context("session source key missing")?;
+        let key = tokio::time::timeout(
+            PROVIDER_TIMEOUT,
+            provider.unwrap_key(self.source_tenant(), wrapped),
+        )
+        .await
+        .context("session source key authorization timed out")??;
+        access.check()?;
+        let mut manifest = self.manifest.clone();
+        manifest.backup_id = Uuid::new_v4();
+        manifest.plaintext_bytes = snapshot.len() as u64;
+        let aad = manifest_bytes(&manifest)?;
+        let mut plaintext = Zeroizing::new(Vec::with_capacity(snapshot.len() + 32));
+        plaintext.extend(Sha256::digest(snapshot));
+        plaintext.extend(snapshot);
+        let ciphertext = encrypt(&key, &plaintext, &aad)?;
+        access.check()?;
+        Ok(Self {
+            manifest,
+            ciphertext,
+        })
+    }
     pub fn id(&self) -> Uuid {
         self.manifest.backup_id
+    }
+    pub fn source_purpose(&self) -> &crate::StoragePurpose {
+        &self.manifest.catalog.purpose
     }
     pub fn source_tenant(&self) -> &str {
         &self.manifest.tenant
@@ -244,6 +302,7 @@ impl EncryptedBackup {
         Ok(BackupContents {
             backup_id: self.id(),
             source_tenant: source_tenant.into(),
+            source_purpose: self.source_purpose().clone(),
             revision: self.revision(),
             snapshot: plaintext,
             ciphertext_sha256,
@@ -265,18 +324,53 @@ pub trait BackupDestination: Send + Sync {
     /// Enforce the caller's expected object bound before allocation and while
     /// reading, in addition to the destination's configured maximum.
     async fn get(&self, id: Uuid, max_bytes: usize) -> Result<Vec<u8>>;
+    /// Full-backup sessions require explicit managed storage capabilities.
+    async fn session_put(
+        &self,
+        _session: Uuid,
+        _slot: crate::BackupSessionSlot,
+        _encrypted: Vec<u8>,
+    ) -> Result<()> {
+        anyhow::bail!("backup destination lacks managed session storage")
+    }
+    async fn session_get(
+        &self,
+        _session: Uuid,
+        _slot: crate::BackupSessionSlot,
+        _max_bytes: usize,
+    ) -> Result<Option<Vec<u8>>> {
+        anyhow::bail!("backup destination lacks managed session storage")
+    }
+    async fn session_objects(
+        &self,
+        _aborted: &crate::VerifiedBackupAbort,
+        _limit: usize,
+    ) -> Result<crate::BackupSessionObjectPage> {
+        anyhow::bail!("backup destination lacks managed session reclamation")
+    }
+    async fn session_delete(
+        &self,
+        _aborted: &crate::VerifiedBackupAbort,
+        _objects: &[Uuid],
+    ) -> Result<()> {
+        anyhow::bail!("backup destination lacks managed session reclamation")
+    }
 }
 
 pub struct FilesystemBackupDestination {
     root: PathBuf,
+    sessions: Arc<crate::backup_sessions::filesystem::Directory>,
     max_bytes: usize,
 }
 impl FilesystemBackupDestination {
     pub fn new(root: impl AsRef<Path>, max_bytes: usize) -> Result<Self> {
         ensure!(max_bytes > 0, "backup byte limit must be positive");
         crate::durable_directory(root.as_ref())?;
+        let root = std::fs::canonicalize(root)?;
+        let sessions = Arc::new(crate::backup_sessions::filesystem::Directory::open(&root)?);
         Ok(Self {
-            root: std::fs::canonicalize(root)?,
+            root,
+            sessions,
             max_bytes,
         })
     }
@@ -287,6 +381,52 @@ impl FilesystemBackupDestination {
 
 #[async_trait]
 impl BackupDestination for FilesystemBackupDestination {
+    async fn session_put(
+        &self,
+        session: Uuid,
+        slot: crate::BackupSessionSlot,
+        encrypted: Vec<u8>,
+    ) -> Result<()> {
+        ensure!(
+            encrypted.len() <= self.max_bytes,
+            "backup exceeds destination byte limit"
+        );
+        let root = self.sessions.clone();
+        tokio::task::spawn_blocking(move || root.put(session, slot, &encrypted)).await?
+    }
+    async fn session_get(
+        &self,
+        session: Uuid,
+        slot: crate::BackupSessionSlot,
+        max_bytes: usize,
+    ) -> Result<Option<Vec<u8>>> {
+        let root = self.sessions.clone();
+        let limit = max_bytes.min(self.max_bytes);
+        tokio::task::spawn_blocking(move || root.get(session, slot, limit)).await?
+    }
+    async fn session_objects(
+        &self,
+        aborted: &crate::VerifiedBackupAbort,
+        limit: usize,
+    ) -> Result<crate::BackupSessionObjectPage> {
+        let root = self.sessions.clone();
+        let proof = aborted.clone();
+        tokio::task::spawn_blocking(move || root.list(&proof, limit)).await?
+    }
+    async fn session_delete(
+        &self,
+        aborted: &crate::VerifiedBackupAbort,
+        objects: &[Uuid],
+    ) -> Result<()> {
+        ensure!(
+            objects.len() <= crate::MAX_SESSION_GC_OBJECTS,
+            "backup cleanup exceeds page limit"
+        );
+        let root = self.sessions.clone();
+        let proof = aborted.clone();
+        let objects = objects.to_vec();
+        tokio::task::spawn_blocking(move || root.delete(&proof, &objects)).await?
+    }
     async fn put(&self, id: Uuid, encrypted: Vec<u8>) -> Result<()> {
         ensure!(
             encrypted.len() <= self.max_bytes,
@@ -495,8 +635,9 @@ impl S3BackupDestination {
             })
             .collect::<String>();
         let canonical_request = format!(
-            "{method}\n{}\n\n{canonical_headers}\n{signed_names}\n{payload_hash}",
-            url.path()
+            "{method}\n{}\n{}\n{canonical_headers}\n{signed_names}\n{payload_hash}",
+            url.path(),
+            sessions_s3::canonical_query(url)
         );
         let scope = format!("{date}/{}/s3/aws4_request", self.region);
         let to_sign = format!(
@@ -548,6 +689,36 @@ fn hmac(key: &[u8], bytes: &[u8]) -> [u8; 32] {
 
 #[async_trait]
 impl BackupDestination for S3BackupDestination {
+    async fn session_put(
+        &self,
+        session: Uuid,
+        slot: crate::BackupSessionSlot,
+        encrypted: Vec<u8>,
+    ) -> Result<()> {
+        self.managed_put(session, slot, encrypted).await
+    }
+    async fn session_get(
+        &self,
+        session: Uuid,
+        slot: crate::BackupSessionSlot,
+        max_bytes: usize,
+    ) -> Result<Option<Vec<u8>>> {
+        self.managed_get(session, slot, max_bytes).await
+    }
+    async fn session_objects(
+        &self,
+        aborted: &crate::VerifiedBackupAbort,
+        limit: usize,
+    ) -> Result<crate::BackupSessionObjectPage> {
+        self.managed_list(aborted, limit).await
+    }
+    async fn session_delete(
+        &self,
+        aborted: &crate::VerifiedBackupAbort,
+        objects: &[Uuid],
+    ) -> Result<()> {
+        self.managed_delete(aborted, objects).await
+    }
     async fn put(&self, id: Uuid, encrypted: Vec<u8>) -> Result<()> {
         ensure!(
             encrypted.len() <= self.max_bytes,
@@ -857,7 +1028,7 @@ mod s3_tests {
         let signature_ok = (|| -> Result<bool> {
             let signer = state.signer.lock();
             let signer = signer.as_ref().unwrap();
-            let url = signer.endpoint.join(uri.path())?;
+            let url = signer.endpoint.join(&uri.to_string())?;
             let timestamp = headers["x-amz-date"].to_str()?;
             // The fixture recomputes the signature from actual method/path/body and
             // signed session token, so transport mutation does not pass unnoticed.
@@ -893,6 +1064,38 @@ mod s3_tests {
             }
             values.insert(uri.path().into(), bytes.to_vec());
             StatusCode::OK.into_response()
+        } else if method == Method::GET && uri.query().is_some() {
+            let url = Url::parse(&format!("https://fixture{uri}")).unwrap();
+            let query = url
+                .query_pairs()
+                .collect::<std::collections::BTreeMap<_, _>>();
+            if query.get("list-type").map(|v| v.as_ref()) != Some("2") {
+                return StatusCode::BAD_REQUEST.into_response();
+            }
+            let prefix = query.get("prefix").unwrap();
+            let maximum: usize = query.get("max-keys").unwrap().parse().unwrap();
+            let bucket = format!("{}/", uri.path());
+            let mut keys = values
+                .keys()
+                .filter_map(|key| key.strip_prefix(&bucket))
+                .filter(|key| {
+                    key.starts_with(prefix.as_ref())
+                        && query
+                            .get("start-after")
+                            .is_none_or(|after| *key > after.as_ref())
+                })
+                .collect::<Vec<_>>();
+            keys.sort();
+            let truncated = keys.len() > maximum;
+            keys.truncate(maximum);
+            let records = keys
+                .iter()
+                .map(|key| format!("<Contents><Key>{key}</Key><Size>1</Size></Contents>"))
+                .collect::<String>();
+            format!("<ListBucketResult><Prefix>{prefix}</Prefix>{records}<IsTruncated>{truncated}</IsTruncated></ListBucketResult>").into_response()
+        } else if method == Method::DELETE {
+            values.remove(uri.path());
+            StatusCode::NO_CONTENT.into_response()
         } else if method == Method::GET {
             values
                 .get(uri.path())
@@ -920,6 +1123,129 @@ mod s3_tests {
         };
         *state.signer.lock() = Some(S3BackupDestination::new(make()).unwrap());
         let destination = S3BackupDestination::new(make()).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let keys = Arc::new(crate::test_utils::LocalKeyProvider::new([77; 32]));
+        let store = TenantStore::open_fixture(
+            crate::NodeStore::open(directory.path().join("db")).unwrap(),
+            "tenant".into(),
+            keys.clone(),
+        )
+        .await
+        .unwrap();
+        let session = Uuid::new_v4();
+        let intent = kasumi_types::BackupSessionIntent {
+            session_id: session,
+            tenant: "tenant".into(),
+            source_incarnation: "source".into(),
+            revision: 3,
+            principal: "admin".into(),
+            request_id: "s3-test".into(),
+        };
+        destination
+            .session_put(
+                session,
+                crate::BackupSessionSlot::Intent,
+                store.encrypt_session_record(3, &intent).unwrap(),
+            )
+            .await
+            .unwrap();
+        let pending = crate::verify_backup_session(
+            &destination,
+            session,
+            "tenant",
+            keys.clone(),
+            store.storage_access(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(pending.aborted().is_err());
+        let outcome = kasumi_types::BackupSessionOutcome::Aborted {
+            intent_ciphertext_sha256: pending.intent_ciphertext_sha256().into(),
+            session_id: session,
+            principal: "admin".into(),
+            reason: "stop".into(),
+        };
+        destination
+            .session_put(
+                session,
+                crate::BackupSessionSlot::Outcome,
+                store.encrypt_session_record(3, &outcome).unwrap(),
+            )
+            .await
+            .unwrap();
+        let proof = crate::verify_backup_session(
+            &destination,
+            session,
+            "tenant",
+            keys,
+            store.storage_access(),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .aborted()
+        .unwrap();
+        for id in 1..=3 {
+            destination
+                .session_put(
+                    session,
+                    crate::BackupSessionSlot::Object(Uuid::from_u128(id)),
+                    vec![3],
+                )
+                .await
+                .unwrap();
+        }
+        let page = destination.session_objects(&proof, 2).await.unwrap();
+        assert_eq!(page.objects, vec![Uuid::from_u128(1), Uuid::from_u128(2)]);
+        assert!(page.more);
+        destination
+            .session_delete(&proof, &page.objects)
+            .await
+            .unwrap();
+        destination
+            .session_put(
+                session,
+                crate::BackupSessionSlot::Object(Uuid::from_u128(1)),
+                vec![9],
+            )
+            .await
+            .unwrap();
+        let tail = destination.session_objects(&proof, 2).await.unwrap();
+        assert_eq!(tail.objects, vec![Uuid::from_u128(1), Uuid::from_u128(3)]);
+        destination
+            .session_delete(&proof, &tail.objects)
+            .await
+            .unwrap();
+        destination
+            .session_put(
+                session,
+                crate::BackupSessionSlot::Object(Uuid::from_u128(1)),
+                vec![8],
+            )
+            .await
+            .unwrap();
+        let late = destination.session_objects(&proof, 2).await.unwrap();
+        assert_eq!(late.objects, vec![Uuid::from_u128(1)]);
+        destination
+            .session_delete(&proof, &late.objects)
+            .await
+            .unwrap();
+        assert!(
+            destination
+                .session_objects(&proof, 2)
+                .await
+                .unwrap()
+                .objects
+                .is_empty()
+        );
+        assert!(
+            destination
+                .session_get(session, crate::BackupSessionSlot::Outcome, 1 << 20)
+                .await
+                .unwrap()
+                .is_some()
+        );
         let id = Uuid::new_v4();
         destination
             .put(id, b"encrypted snapshot bytes".to_vec())

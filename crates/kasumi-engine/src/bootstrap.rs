@@ -541,60 +541,42 @@ async fn start_prepared(
     })
 }
 
-/// Restore a verified logical backup into an empty store for the SAME tenant.
-/// Old Raft membership/node identities never cross this boundary. The result is
-/// suspended and must be explicitly activated through its administrative API.
+/// Exact independently authorized source and target for one local materialization.
+/// Callers choose the target incarnation before obtaining its credential. The
+/// source purpose is retained for explicit historical archive authorization.
+pub struct LocalRestoreRequest {
+    pub checkpoint: FullBackupCheckpoint,
+    pub target_incarnation: uuid::Uuid,
+    pub source_context: RequestContext,
+    pub target_context: RequestContext,
+    pub source_purpose: kasumi_store::StoragePurpose,
+}
+
+/// Verify a complete encrypted graph and publish its bounded staged bootstrap
+/// into an empty standalone target. Source and target credentials remain separate
+/// throughout verification, persistence, and the target's mandatory audit.
 pub async fn restore_local(
     source: &RestoreSource,
-    backup_id: uuid::Uuid,
     targets: Arc<TenantStorageSet>,
-    context: RequestContext,
-    security_audit: Arc<SecurityAudit>,
-) -> anyhow::Result<Arc<Database>> {
-    restore_local_with_incarnation(
-        source,
-        backup_id,
-        targets,
-        context,
-        uuid::Uuid::new_v4(),
-        security_audit,
-    )
-    .await
-}
-
-/// The server chooses a fresh incarnation before creating its isolated restore
-/// file. An existing store or the backup's original incarnation is rejected.
-pub async fn restore_local_with_incarnation(
-    source: &RestoreSource,
-    backup_id: uuid::Uuid,
-    targets: Arc<TenantStorageSet>,
-    context: RequestContext,
-    incarnation: uuid::Uuid,
-    security_audit: Arc<SecurityAudit>,
-) -> anyhow::Result<Arc<Database>> {
-    restore_local_with_incarnation_and_admission(
-        source,
-        backup_id,
-        targets,
-        context,
-        incarnation,
-        crate::admission::NodeAdmission::process_default(),
-        security_audit,
-    )
-    .await
-}
-
-/// Install the node's admission governor before the required restore audit.
-#[allow(clippy::too_many_arguments)]
-pub async fn restore_local_with_incarnation_and_admission(
-    source: &RestoreSource,
-    backup_id: uuid::Uuid,
-    targets: Arc<TenantStorageSet>,
-    context: RequestContext,
-    incarnation: uuid::Uuid,
+    request: LocalRestoreRequest,
     admission: Arc<crate::admission::NodeAdmission>,
     security_audit: Arc<SecurityAudit>,
 ) -> anyhow::Result<Arc<Database>> {
+    request.checkpoint.validate()?;
+    let incarnation = request.target_incarnation;
+    let backup_id = request.checkpoint.backup_id;
+    request
+        .source_context
+        .authorization
+        .require_database(&request.checkpoint.source_incarnation)?;
+    request
+        .target_context
+        .authorization
+        .require_database(&incarnation.to_string())?;
+    anyhow::ensure!(
+        !incarnation.is_nil() && incarnation.to_string() != request.checkpoint.source_incarnation,
+        "local restore requires a fresh target incarnation"
+    );
     let target = targets.application().clone();
     anyhow::ensure!(
         target.storage_access().serving_gate().is_none(),
@@ -602,7 +584,8 @@ pub async fn restore_local_with_incarnation_and_admission(
     );
     let deadline = source.deadline()?;
     let _gate = deadline.run(BOOTSTRAP_GATE.lock()).await?;
-    restore_access(&target, &security_audit, &context).await?;
+    let authorization = backup_restore::RestoreAuthorization::Local(&request);
+    authorization.check_access(&target, &security_audit).await?;
     anyhow::ensure!(
         target.get(NS, b"manifest")?.is_none()
             && targets
@@ -613,16 +596,22 @@ pub async fn restore_local_with_incarnation_and_admission(
         "restore target is already initialized"
     );
     let verified = deadline
-        .run(Box::pin(backup_restore::load(
+        .run(Box::pin(backup_restore::load_authorized(
             source,
             backup_id,
             &target,
-            &context,
+            authorization,
             &security_audit,
             &admission,
             deadline,
+            None,
+            None,
         )))
         .await??;
+    anyhow::ensure!(
+        verified.checkpoint == request.checkpoint,
+        "verified local backup differs from exact checkpoint"
+    );
     let source_revision = verified.state.revision;
     let _restore_workspace = verified._reservation.clone();
     let original = &verified.state;
@@ -639,7 +628,9 @@ pub async fn restore_local_with_incarnation_and_admission(
         )
         .await?;
     deadline.check()?;
-    restore_access(&target, &security_audit, &context).await?;
+    backup_restore::RestoreAuthorization::Local(&request)
+        .check_access(&target, &security_audit)
+        .await?;
     bind_deployment(&targets, b"local-v1")?;
     persist_new(&targets, &restored.bytes)?;
     let database =
@@ -649,7 +640,12 @@ pub async fn restore_local_with_incarnation_and_admission(
         source.destination.clone(),
     )?;
     if let Err(error) = database
-        .maintenance_audit(context, "restore", "completed", source_revision)
+        .maintenance_audit(
+            request.target_context,
+            "restore",
+            "started",
+            source_revision,
+        )
         .await
     {
         database.shutdown().await?;

@@ -9,10 +9,15 @@
 mod archive_objects;
 mod audit_archive;
 pub use audit_archive::{
-    AuditArchiveDestination, AuditSegmentBuilder, FilesystemAuditArchive, PreparedAuditSegment,
-    S3AuditArchive, VerifiedAuditSegment,
+    AuditArchiveDestination, AuditSegmentBuilder, FilesystemAuditArchive, HistoricalAuditVerifier,
+    PreparedAuditSegment, S3AuditArchive, VerifiedAuditSegment,
 };
 mod backup;
+mod backup_sessions;
+pub use backup_sessions::{
+    BackupSessionObjectPage, BackupSessionObjects, BackupSessionSlot, MAX_SESSION_GC_OBJECTS,
+    MAX_SESSION_RECORD_BYTES, VerifiedBackupAbort, VerifiedBackupSession, verify_backup_session,
+};
 mod keys;
 mod read_view;
 mod scratch_table;

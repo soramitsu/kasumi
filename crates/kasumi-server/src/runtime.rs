@@ -981,6 +981,12 @@ impl NodeRuntime {
             kasumi_store::StorageAccess::security_audit(),
         )
         .await?;
+        if config.mode == DeploymentMode::Standalone
+            && let Err(error) = crate::local_recovery::require_runtime_ready(&security_store)
+        {
+            security_store.shutdown().await;
+            return Err(error);
+        }
         let audit = config
             .security_audit
             .open(security_store, admission.clone())?;
@@ -1049,10 +1055,21 @@ impl NodeRuntime {
                 descriptor: None,
                 lease: None,
             }];
-            for tenant in &config.tenants {
+            for configured_tenant in &config.tenants {
+                let active = if config.mode == DeploymentMode::Standalone {
+                    crate::local_recovery::active_generation(&config, runtime.audit.store(), &configured_tenant.tenant)?
+                } else { None };
+                let mut tenant = configured_tenant.clone();
+                let tenant_node = match &active {
+                    Some(active) => {
+                        tenant.incarnation = Some(active.incarnation.to_string());
+                        NodeStore::open(active.directory.join("node.redb"))?
+                    }
+                    None => node.clone(),
+                };
                 let custody_provider = tenant.custody_keys.provider(credential.clone())?;
-                if kasumi_store::CustodyStore::catalog_installed(&node, &tenant.tenant)? {
-                    let custody_store = kasumi_store::CustodyStore::open(node.clone(), tenant.tenant.clone(), custody_provider.clone()).await?;
+                if kasumi_store::CustodyStore::catalog_installed(&tenant_node, &tenant.tenant)? {
+                    let custody_store = kasumi_store::CustodyStore::open(tenant_node.clone(), tenant.tenant.clone(), custody_provider.clone()).await?;
                     if let Some(control) = kasumi_raft::ControlLog::installed(custody_store.clone())? {
                         let incarnation = control.group().strip_prefix(&format!("{}/", tenant.tenant)).context("installed source group differs")?.to_owned();
                         if let Some(expected) = &tenant.incarnation { ensure!(*expected == incarnation, "configured source incarnation differs"); }
@@ -1089,7 +1106,7 @@ impl NodeRuntime {
                 // control route is excluded and an issuer capability is live.
                 let provider = tenant.keys.provider(credential.clone())?;
                 let stores = TenantStorageSet::open(
-                    node.clone(),
+                    tenant_node.clone(),
                     tenant.tenant.clone(),
                     provider.clone(),
                     custody_provider.clone(),
@@ -1112,6 +1129,13 @@ impl NodeRuntime {
                     runtime.audit.clone(),
                 )
                 .await?;
+                if let Some(active) = active {
+                    let generation = opened.database.engine().generation()?;
+                    if generation.state.restored_from.as_ref() != Some(&active.checkpoint) || generation.state.pending_restore.is_some() {
+                        opened.database.shutdown().await?;
+                        anyhow::bail!("active standalone generation is incomplete or differs from its committed checkpoint");
+                    }
+                }
                 opened.database.install_admission(admission.clone())?;
                 managed.push(crate::administration::ManagedTenant {
                     database: opened.database.clone(),
@@ -2088,6 +2112,7 @@ mod tests {
         let audit = SecurityAudit::open(
             service.clone(),
             kasumi_types::AuditRetentionBudget::default(),
+            kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
         )
         .unwrap();
         audit
@@ -2127,6 +2152,7 @@ mod tests {
         let audit = SecurityAudit::open(
             service.clone(),
             kasumi_types::AuditRetentionBudget::default(),
+            kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
         )
         .unwrap();
         assert!(

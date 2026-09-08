@@ -1206,7 +1206,6 @@ async fn logical_backup_restores_suspended_with_new_incarnation_and_increasing_r
         .backup_checkpoint(context("owner"), destination.as_ref())
         .await
         .unwrap();
-    let id = checkpoint.backup_id();
     let target_incarnation = uuid::Uuid::new_v4();
     source
         .retire_source(
@@ -1238,22 +1237,25 @@ async fn logical_backup_restores_suspended_with_new_incarnation_and_increasing_r
     let target_store = TenantStore::open_fixture(node, "tenant-a".into(), target_key)
         .await
         .unwrap();
-    let restored = kasumi_engine::restore_local_with_incarnation(
+    let restored = kasumi_engine::restore_local(
         &kasumi_engine::RestoreSource {
             timeout_ms: 300_000,
             destination_alias: "backup".into(),
             destination: destination.clone(),
             keys: source_key.clone(),
         },
-        id,
         kasumi_store::test_utils::with_custody(
             target_store.clone(),
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
         )
         .await
         .unwrap(),
-        context("owner"),
-        target_incarnation,
+        common::local_restore_request(
+            context("owner"),
+            checkpoint.checkpoint(),
+            target_incarnation,
+        ),
+        kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
         target_audit.clone(),
     )
     .await
@@ -1289,20 +1291,25 @@ async fn logical_backup_restores_suspended_with_new_incarnation_and_increasing_r
                 destination: destination.clone(),
                 keys: source_key
             },
-            id,
             kasumi_store::test_utils::with_custody(
                 target_store,
                 std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32]))
             )
             .await
             .unwrap(),
-            context("owner"),
-            target_audit.clone()
+            common::local_restore_request(
+                context("owner"),
+                checkpoint.checkpoint(),
+                uuid::Uuid::new_v4()
+            ),
+            kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+            target_audit.clone(),
         )
         .await
         .is_err(),
         "must not overwrite a serving/restored target"
     );
+    restored.complete_restore(context("owner")).await.unwrap();
     restored
         .administer(context("owner"), Operation::Suspend(false))
         .await

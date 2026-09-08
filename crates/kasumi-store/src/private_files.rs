@@ -16,7 +16,8 @@ pub fn create_directory(path: &Path) -> Result<()> {
     }
     #[cfg(not(unix))]
     anyhow::bail!("owner-only installation requires Unix file permissions");
-    check_directory(path)
+    check_directory(path)?;
+    sync_parent(path)
 }
 
 pub fn check_directory(path: &Path) -> Result<()> {
@@ -120,6 +121,38 @@ pub fn sync_parent(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Physical identity retained by stopped-instance coordinators outside a
+/// reclaimable generation directory. It prevents substitution of another inode.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileIdentity {
+    device: u64,
+    inode: u64,
+}
+pub fn file_identity(path: &Path) -> Result<FileIdentity> {
+    let file = options().read(true).open(path)?;
+    let metadata = file.metadata()?;
+    ensure!(
+        metadata.is_file(),
+        "physical binding requires a regular file"
+    );
+    check_permissions(&metadata)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        ensure!(
+            metadata.nlink() == 1,
+            "physical generation must have one directory entry"
+        );
+        Ok(FileIdentity {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
+    }
+    #[cfg(not(unix))]
+    anyhow::bail!("physical file identity requires Unix storage")
+}
+
 /// Hold this guard throughout a read-modify-write transaction or the complete
 /// lifetime of an offline exclusive operation. The lock inode is never deleted.
 pub struct ExclusiveLock(File);
@@ -127,7 +160,12 @@ impl ExclusiveLock {
     pub fn acquire(path: &Path) -> Result<Self> {
         check_directory(path.parent().context("lock has no parent")?)?;
         let file = options().read(true).write(true).create(true).open(path)?;
-        check_permissions(&file.metadata()?)?;
+        let metadata = file.metadata()?;
+        ensure!(
+            metadata.is_file(),
+            "exclusive ownership requires a regular file"
+        );
+        check_permissions(&metadata)?;
         #[cfg(unix)]
         {
             use std::os::fd::AsRawFd;

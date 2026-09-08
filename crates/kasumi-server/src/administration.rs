@@ -915,6 +915,10 @@ impl Administration {
                 incarnation,
             } => {
                 ensure!(
+                    self.config.mode == crate::runtime::DeploymentMode::Replicated,
+                    "standalone restore requires the stopped-installation local recovery coordinator"
+                );
+                ensure!(
                     !incarnation.is_nil()
                         && source.database.engine().generation()?.state.incarnation
                             != incarnation.to_string(),
@@ -1030,22 +1034,7 @@ impl Administration {
                         prepared.bootstrap_sha256,
                     )
                 } else {
-                    let db = kasumi_engine::restore_local_with_incarnation_and_admission(
-                        &kasumi_engine::RestoreSource {
-                            timeout_ms: 300_000,
-                            destination_alias: destination.clone(),
-                            destination: self.destinations[&destination].clone(),
-                            keys: source.provider.clone(),
-                        },
-                        backup_id,
-                        stores.clone(),
-                        context.clone(),
-                        incarnation,
-                        self.admission.clone(),
-                        self.audit.clone(),
-                    )
-                    .await?;
-                    (db, None, String::new())
+                    anyhow::bail!("replicated restore transport is missing");
                 };
                 let descriptor = GenerationDescriptor {
                     format: 1,

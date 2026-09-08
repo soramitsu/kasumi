@@ -20,18 +20,11 @@ async fn audit(
     )
     .await
     .unwrap();
-    let archive = Arc::new(
-        kasumi_store::FilesystemAuditArchive::open(
-            store.durable_directory().unwrap().join("audit-archives"),
-        )
-        .unwrap(),
-    );
-    // These stores model distinct processes. Their reserved archival work must
-    // use their own node admission rather than a shared test-process budget.
-    kasumi_engine::SecurityAudit::open_with_archive(
+    // These stores model distinct processes. Audit and database on each node
+    // share one admission governor, rather than the test-process fallback.
+    kasumi_engine::SecurityAudit::open(
         store,
         kasumi_types::AuditRetentionBudget::default(),
-        archive,
         admission,
     )
     .unwrap()

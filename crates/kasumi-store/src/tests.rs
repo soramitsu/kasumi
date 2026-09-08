@@ -960,15 +960,21 @@ async fn completed_shutdown_allows_distinct_store_without_reviving_retained_hand
 fn node_files_are_private_nofollow_and_keep_exclusive_database_ownership() {
     use std::os::unix::fs::{PermissionsExt, symlink};
     let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("node.redb");
+    let directory = root.path().join("private");
+    crate::private_files::create_directory(&directory).unwrap();
+    let path = directory.join("node.redb");
     let node = NodeStore::open(&path).unwrap();
     assert_eq!(
         std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
         0o600
     );
     assert!(NodeStore::open(&path).is_err());
+    assert!(crate::private_files::ExclusiveLock::acquire(&path).is_err());
     drop(node);
-    let alias = root.path().join("alias.redb");
+    let cleanup_lock = crate::private_files::ExclusiveLock::acquire(&path).unwrap();
+    assert!(NodeStore::open(&path).is_err());
+    drop(cleanup_lock);
+    let alias = directory.join("alias.redb");
     symlink(&path, &alias).unwrap();
     assert!(NodeStore::open(&alias).is_err());
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
