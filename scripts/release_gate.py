@@ -156,6 +156,8 @@ def functional_gates(jobs):
         ("lru", cargo + ["test", "--manifest-path", "vendor/lru-0.16.4/Cargo.toml"] + locked + encoded),
         ("workspace", cargo + ["test", "--workspace", "--all-features", "--all-targets", "--no-fail-fast"]
          + locked + encoded + ["--", "--test-threads=2"]),
+        ("workspace-docs", cargo + ["test", "--workspace", "--all-features", "--doc", "--no-fail-fast"]
+         + locked + encoded + ["--", "--test-threads=2"]),
         ("clippy", cargo + ["clippy", "--workspace", "--all-features", "--all-targets"]
          + locked + ["--", "-D", "warnings"]),
         ("production-features", cargo + ["tree", "--locked", "-p", "kasumi-server", "--no-default-features",
