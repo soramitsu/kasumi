@@ -60,10 +60,16 @@ def verify_evidence(directory):
     if record.get("schema") != 1 or record.get("status") != "passed" or record.get("toolchain") != TOOLCHAIN:
         raise ValueError("successful pinned functional evidence is required")
     gates = record["gates"]
-    required = {name for name, _ in functional_gates(2)}
+    jobs = record.get("jobs")
+    if type(jobs) is not int or not 1 <= jobs <= 64:
+        raise ValueError("recorded functional concurrency is missing or invalid")
+    expected = dict(functional_gates(jobs))
+    required = set(expected)
     if {g["name"] for g in gates} != required or len(gates) != len(required):
         raise ValueError("functional gate set differs from this packaging contract")
     for gate in gates:
+        if gate["command"] != expected[gate["name"]]:
+            raise ValueError("recorded gate command differs from the pinned contract")
         if gate["exit_code"] != 0 or gate.get("fixture_feature_violation") or gate.get("missing_production_executables"):
             raise ValueError("a functional gate failed")
         verify_file(directory, gate["log"], gate["log_sha256"])
@@ -313,6 +319,10 @@ def main():
     source_archive = args.output / ("kasumi-" + version + "-source.tar.gz")
     normalized_archive(source, source_archive, "kasumi-" + version, epoch)
     paths = [archive, source_archive]
+    with (args.output / "binary-sha256").open("x") as checksums:
+        for name, (_, digest) in sorted(binaries.items()):
+            checksums.write(digest + "  bin/" + name + "\n")
+    (args.output / ".dockerignore").write_text("*\n!package\n!package/**\n!binary-sha256\n")
     with (args.output / "SHA256SUMS").open("x") as checksums:
         for path in paths:
             checksums.write(sha256(path) + "  " + path.name + "\n")

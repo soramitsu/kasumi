@@ -209,6 +209,7 @@ def main():
         "schema": 1, "source_commit": commit, "source_tree": git("rev-parse", commit + "^{tree}"),
         "scope": "functional gates only; not final production release acceptance",
         "execution_description": args.execution_description, "toolchain": TOOLCHAIN,
+        "jobs": args.jobs,
         "python_version": sys.version,
         "python_executable_sha256": sha256(sys.executable),
         "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
