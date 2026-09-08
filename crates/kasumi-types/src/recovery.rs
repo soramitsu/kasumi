@@ -240,6 +240,13 @@ pub enum RecoveryDispatchOutcome {
     RoutePublished {
         revision: u64,
     },
+    RouteRejected {
+        #[serde(deserialize_with = "crate::require_explicit_option")]
+        observed_topology_version: Option<u64>,
+    },
+    RouteSuperseded {
+        replacement_phase: Uuid,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

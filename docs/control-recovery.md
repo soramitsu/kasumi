@@ -35,9 +35,18 @@ every voter starts under a fresh finite activation phase naming that same winner
 The coordinator requires signed local activation evidence from every voter before
 advancing to route publication; startup replies cannot satisfy confirmation.
 
-**Route publication is not yet dispatched by this coordinator.** `resume` returns
-an explicit unavailable error at `publish`. This slice is not a complete disaster
-recovery workflow or a release acceptance result.
+Route publication freezes the exact current topology version and source/target
+incarnations, then commits the topology compare-and-set and permanent phase outcome
+in one Control Raft apply. Approved endpoints, certificate pins and failure domains
+must match the frozen target voters. A stale version produces a permanent rejected
+outcome; a fresh phase can use the current authorized topology. An expired pending
+publication is explicitly superseded by its next finite phase in the same journal.
+Replays return the original result without changing later topology, including after
+restart. `finished` requires the issuer winner, every local confirmation, and this
+atomic publication.
+
+The remaining expired-completion proof path and full process acceptance gates below
+still prevent treating this implementation as a completed release acceptance result.
 
 A pre-activation `stop` permanently retains the stop identity. If an issuer
 activation was dispatched, the coordinator first commits a `stop_activation`
