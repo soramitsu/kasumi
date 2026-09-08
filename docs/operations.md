@@ -38,11 +38,11 @@ Server shutdown drains TLS connections before closing its databases. A caller
 that cancels a shutdown future must await shutdown again to finish cleanup;
 merely requesting Raft core shutdown is insufficient to release storage workers.
 
-redb's file backend calls Rust's `File::sync_data`. In the pinned Rust 1.94.1
+redb's file backend calls Rust's `File::sync_data`. In the pinned Rust 1.97.1
 implementation this uses `fdatasync` on Linux and `F_FULLFSYNC` on Apple targets;
 `sync_all` uses the corresponding full sync. These flush costs belong in durable
 write measurements. They still depend on the filesystem/device honoring them.
-See [the pinned Rust implementation](https://raw.githubusercontent.com/rust-lang/rust/1.94.1/library/std/src/sys/fs/unix.rs).
+See [the pinned Rust implementation](https://raw.githubusercontent.com/rust-lang/rust/1.97.1/library/std/src/sys/fs/unix.rs).
 
 The unit expects `/usr/local/bin/kasumid`, `/etc/kasumi/node.json` and an
 operator-created credential files beneath `/etc/kasumi/credentials`. Keep these

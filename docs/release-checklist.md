@@ -1,140 +1,53 @@
-# Kasumi v1 acceptance checklist
+# First production release acceptance
 
-This is the completed requirement-by-requirement software acceptance audit of
-the agreed v1 plan, finalized on 2026-09-05. Source
-`28aeb80168d3ab02a0eec7bf2a0163a7cb99dbfd74adf596e849de17e1fa3c1d`
-passed 188 workspace entries on each platform, strict lint/formatting, six Python
-checks and real OpenBao/MinIO fixtures. Final storage/security and query/interface
-reviews found no additional uncovered software requirement.
+Kasumi is **not yet certified for production release**. This checklist covers the
+combined credential, Control lifecycle, target recovery, schema admission,
+streaming, standalone, HA maintenance and retention implementation. The precise
+implementation status is tracked in [the active ledger](production-release.md).
 
-The [measured results](../benchmarks/RESULTS.md) cover all fifteen required cases:
-99 workloads, 99,000 successful operations, zero failures and zero unattempted
-operations. Twelve raw/local/replicated/text observations retain run06 provenance;
-the rebuilt embedded executable is byte-identical. Three corrected-network
-observations separately pass full loading, workloads, shutdown and verified
-recovery at 1, 100 and 1,000 tenants. The cohort does not invent a single shared
-source identity or hide earlier failures. Its shared-host, sample-size, filesystem
-activity and physical-placement limitations remain explicit.
+## Required release evidence
 
-`Covered` below means executable coverage for the stated software contract. It
-does not certify arbitrary deployment hardware, a third-party service, or a
-performance target. Test names link to their actual source; the evidence ledger
-identifies which source version was run.
+- [ ] Final Git source and clean input manifest, Rust 1.97.1, configuration hashes,
+  dependency lockfile, vendored patch hashes, and executable hashes agree across
+  every claimed result. Retain failed, interrupted and rejected attempts.
+- [ ] Full workspace, strict Clippy, formatting, Python checks, patched dependency
+  regressions, and production builds without fixture features pass on Linux
+  x86-64, Linux ARM64 and macOS ARM64.
+- [ ] Fresh offline standalone installation exercises native mTLS and MCP access,
+  one-hour local JWT lifecycle, renewal files, live revocation, wrapping/signer/
+  certificate rotation, restart, backup/restore and stopped administrator recovery.
+- [ ] Separate TLS data, Control and authority processes withstand leader loss,
+  outages longer than verified lease lifetime, fresh automatic admission,
+  credential and trust rotation, learner catch-up and voter replacement under load.
+- [ ] Actual encrypted source-unavailable recovery passes every durable phase,
+  crash and cancellation point, exact activation winner, lineage, permanent stop,
+  physical deletion, ownership drain and unrelated-file isolation checks.
+- [ ] A real 3 GiB incompressible tenant passes standalone and HA snapshot,
+  compaction, restart, replacement, filesystem/S3 backup and restore with bounded
+  maintenance memory. Coherent reads use a substantially smaller retention budget.
+- [ ] Audit hot-budget crossings preserve verified immutable contiguous archives;
+  archive failure cannot permit pruning; replicas retain their dependencies.
+  Permanent identities exceed former lifetime ceilings without replay/fencing loss.
+- [ ] Backup completion uncertainty, abort ownership, repeated namespace cleanup
+  and delayed uploads preserve completed backups, archives and permanent tombstones.
+- [ ] The final fifteen-case million-document matrix, concurrency workloads and a
+  genuine 24-hour HA soak pass with zero unexpected errors or integrity mismatches.
+- [ ] Actual OpenBao/MinIO interoperability, protected health/readiness/metrics,
+  structured logging, capacity and failure/backlog measurements are recorded.
+- [ ] Linux binaries, macOS ARM64 development binaries, OCI images, systemd units,
+  source archives, checksums, SBOM, third-party notices and reproducible workflows
+  are usable. Fresh-install examples and maintenance/recovery runbooks match them.
 
-## Evidence ledger
+## Evidence interpretation
 
-| Evidence | Result and scope |
-| --- | --- |
-| [current macOS gate](../benchmarks/results/macos-validation-20260905-listener/evidence.json), [current Linux gate](../benchmarks/results/linux-validation-20260905-listener/evidence.json) | Frozen `28aeb801…` before/after: 188 workspace entries passed on each platform, zero failed, two opt-in tests ignored in the workspace commands; strict all-feature/all-target Clippy, formatting, six Python tests and one separately run actual OpenBao test passed on each platform. |
-| [current actual MinIO](../benchmarks/results/linux-validation-20260905-listener/minio-evidence.json) | Current macOS client passed the pinned Linux MinIO TLS/SigV4/encrypted/create-only fixture with source/binary hashes unchanged. |
-| [TLS-only source proof](../benchmarks/results/listener-startup-20260905/source-change.json), [release build](../benchmarks/results/macos-validation-20260905-listener/release-build.json) | Only `tls.rs` changed from run06; rebuilt embedded benchmark SHA-256 is exactly unchanged. New reset/setup-failure tests verify rejection callback delivery and later TLS success; runtime audit tests separately verify persistence. Genuine accept-error draining still passes. |
-| [network supplement](../benchmarks/results/network-rerun-macos-arm64-20260905-listener/RUN_NOTES.md) | All three corrected-network cases passed at full-size parameters: 30,000 successful operations plus verified recovery. The [final cohort](../benchmarks/results/release-cohort-macos-arm64-20260905-listener/cohort.json) combines these with twelve byte-identical embedded cases; all fifteen outcomes pass. |
-| [sixth matrix](../benchmarks/results/release-matrix-macos-arm64-20260905-06/matrix.json), [final startup failure](../benchmarks/results/release-matrix-macos-arm64-20260905-06/network-1000.json) | All 15 cases attempted; 14 passed. Network-1000 exited before readiness and produced no measured operations. The matching queued-reset TCP error is reproduced; its correction passes fresh full gates. Affected measurements subsequently passed in the linked network supplement. |
-| [macOS common-audit gate](../benchmarks/results/macos-validation-20260905-embedded-audit/evidence.json) | 186 workspace entries passed, zero failed, two opt-in service tests ignored in that command; strict all-target/all-feature Clippy, formatting, six Python tests and one additional actual OpenBao test passed on frozen `a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2`. |
-| [Linux common-audit gate](../benchmarks/results/linux-validation-20260905-embedded-audit/evidence.json) | Same frozen source: 186 workspace entries passed, zero failed, two opt-in service tests ignored; strict all-target/all-feature Clippy, formatting, six Python tests and one additional actual OpenBao test passed. |
-| [common-audit source actual MinIO](../benchmarks/results/linux-validation-20260905-embedded-audit/minio-evidence.json) | Matching macOS test binary passed the actual digest-pinned Linux MinIO TLS/SigV4/create-only/access-denial fixture. Source and binary hashes were unchanged. |
-| Shared embedded audit: [engine regressions](../crates/kasumi-engine/tests/embedded_audit.rs), [writer regressions](../crates/kasumi-engine/src/security_audit.rs), [adapter regressions](../crates/kasumi-server/src/api.rs) | Full current gates include every embedded denial boundary, standalone restore denials before initialization, one durable record across adapters, cancelled queued work, duplicate live writer ownership, and fencing after uncertain persistence. See [investigation](embedded-audit-investigation.md). |
-| [macOS shutdown gate](../benchmarks/results/macos-validation-20260905-shutdown/evidence.json) | 177 workspace test entries passed, zero failed, two opt-in service tests ignored in that command; strict all-target/all-feature Clippy, formatting, five Python tests and one additional actual OpenBao test passed on frozen `fffa308bc84d9ab5d015ec7f7f0c33af9b592d04a49ff0005b5633c4ab58ed33`. |
-| [Linux shutdown gate](../benchmarks/results/linux-validation-20260905-shutdown/evidence.json) | Same frozen source: 177 workspace entries passed, zero failed, two opt-in service tests ignored; strict all-target/all-feature Clippy, formatting, five Python tests and an additional actual Linux OpenBao test passed. |
-| [shutdown-source actual MinIO](../benchmarks/results/linux-validation-20260905-shutdown/minio-evidence.json) | The macOS test binary from the shutdown gate passed the encrypted TLS/SigV4/create-only/access-denial test against the official digest-pinned Linux MinIO container. Source and binary hashes are unchanged; this is not a Linux-client result. |
-| [macOS frozen-source gate](../benchmarks/results/macos-validation-20260905-barrier/evidence.json) | 167 workspace test entries passed, zero failed, two opt-in live tests ignored; all-target/all-feature strict Clippy, formatting and two Python benchmark-driver tests passed with Rust 1.94.1. |
-| [Linux frozen-source gate](../benchmarks/results/linux-validation-20260905-barrier/evidence.json) | Same source fingerprint, 167 workspace entries passed, zero failed, two opt-in live tests ignored; strict Clippy/formatting, two Python driver tests and one additional actual OpenBao test passed in the pinned Linux build environment. See [Linux validation](validation-linux.md). |
-| Python-only disk-guard supplement: [macOS](../benchmarks/results/macos-validation-20260905-barrier/python-guard-evidence.json), [Linux](../benchmarks/results/linux-validation-20260905-barrier/python-guard-evidence.json), [unchanged-source proof](../benchmarks/results/release-matrix-macos-arm64-20260905-02/guard-validation/source-manifest.json) | Three driver tests passed on both platforms after low-disk checks were moved before the competing-host-load override. The exact two-file change produces fingerprint `c55682adadd4c92e499f8a252a6f8fdb496184b4b0f693fe53a6e49195728f58`; 76 other source/configuration files and four release binaries are unchanged. No Rust rebuild or new Rust behavior is claimed. |
-| [actual MinIO evidence](../benchmarks/results/linux-validation-20260905-final/minio-evidence.json) | One explicit live test passed at the earlier 157-entry source: macOS client against an official digest-pinned Linux arm64 MinIO container, TLS 1.3 and SigV4. Adapter/test source was unchanged by the later barrier fixes; this was not repeated under the latest fingerprint and is not a Linux-client result. |
-| [adapter response-loss test](../crates/kasumi-server/src/api.rs), `native_and_mcp_lost_committed_responses_resolve_without_reapplying` | Passed in both final platform gates. An outer interceptor fully dispatches and drains a committed native/MCP response, discards it, and substitutes a delivery failure. Authenticated receipt lookup and an identical retry recover the original result without a second document effect. This models response delivery loss; it does not inject a kernel/TCP failure. |
-| [concurrent pagination test](../crates/kasumi-engine/tests/concurrent_pagination.rs), `snapshot_pages_overlap_atomic_writers_and_current_policy_revocation` | Passed in both final platform gates: 31 concurrent page/write rounds, atomic 32-document writes, historical values and unique rows, plus policy revocation/page racing and post-revocation denial. |
-| [read-barrier tests](../crates/kasumi-raft/tests/read_barrier.rs) and [snapshot scheduling regression](../crates/kasumi-raft/src/storage/tests.rs) | Passed in both final platform gates: fresh quorum rounds recover from a finite stall; a permanent partition exhausts the original five-second deadline without membership reduction; key sealing and a higher term stop release. `applied_metadata_does_not_block_runtime_while_snapshot_capture_holds_state_lock` verifies a Tokio timer progresses while the real snapshot lock is held. See the [investigation](read-barrier-investigation.md) for the observed failure, inferred trigger and bounded fixes. |
-| [first full matrix](../benchmarks/results/release-matrix-macos-arm64-20260905-01/matrix.json), [replicated failure](../benchmarks/results/release-matrix-macos-arm64-20260905-01/replicated-1.json) | **Failed/incomplete**. One-million-document raw and local one-tenant cases completed; the replicated one-tenant balanced workload failed at read operation 8. The driver disclosed permitted competing host load. Do not present this as the completed 15-case matrix. |
-| [second full matrix](../benchmarks/results/release-matrix-macos-arm64-20260905-02/matrix.json), [run qualifications](../benchmarks/results/release-matrix-macos-arm64-20260905-02/RUN_NOTES.md) | **Stopped/incomplete**: raw-1 passed and local-1 partially loaded before interruption; remaining cases did not run. The driver was stopped for a disk-guard ordering defect: allowing competing host activity could bypass the low-disk guard. Correction and targeted validation passed. No completed capacity matrix, repeatability or speedup is claimed. |
-| [third matrix](../benchmarks/results/release-matrix-macos-arm64-20260905-03/matrix.json), [replicated result](../benchmarks/results/release-matrix-macos-arm64-20260905-03/replicated-1.json) | **Stopped/incomplete**, with raw/local/replicated one-tenant cases passed. All six replicated workloads completed 1,000 successful operations without failures, followed by verified recovery in 86.52 seconds. Before starting text-1, the driver reported `[Errno 32] Broken pipe` after its originating tool session ended. This is retained execution failure, not a failed database workload. |
-| [fourth matrix execution](../benchmarks/results/release-matrix-macos-arm64-20260905-04/execution.json), [shutdown investigation](shutdown-investigation.md) | **Stopped/incomplete**. Raw/local one-tenant cases passed. Replicated balanced traffic completed 10 operations before a five-second read-quorum timeout (989 unattempted); five other workloads completed 1,000 each. Reopen then failed because shutdown retained redb ownership. Text was interrupted before corrective edits. Both failures and partial measurements remain visible. |
-| [fifth matrix execution](../benchmarks/results/release-matrix-macos-arm64-20260905-05/execution.json), [stop request](../benchmarks/results/release-matrix-macos-arm64-20260905-05/STOP_REQUEST.json) | **Stopped/incomplete**. Raw/local one-tenant cases passed. All six replicated workloads and verified recovery were checkpointed, but final cleanup was interrupted before changing source to fix confirmed missing embedded denial audits; that case remains unqualified. The terminal wrapper exited -2 and recorded unchanged source before/after. This is an explicit development interruption, not a completed matrix. |
-| Shutdown lifetime regressions: [Raft](../crates/kasumi-raft/tests/shutdown.rs), [engine](../crates/kasumi-engine/tests/shutdown.rs), [runtime](../crates/kasumi-server/src/runtime.rs), [TLS](../crates/kasumi-server/src/tls.rs) | Checks verify paused snapshot/commit and real TLS request ownership, cancelled/concurrent shutdown, abandoned query output, and immediate redb reopen. All are included in both refreshed platform gates. |
+A focused test or development checkpoint closes only its stated scope. A CI file,
+image recipe or pending test is not a passing gate. Earlier branch results cannot
+stand in for final integration results. Functional emulation, shared-host
+measurements and virtual-machine failure tests must state those limitations;
+software acceptance does not establish physical controller or failure-domain
+behavior for an operator's deployment.
 
-The earlier barrier platform gates used source SHA-256
-`a36dd4e69700ea7e20aec5784106c0034f306d50edfec8939ad2b46ba439a63f`,
-unchanged before and after each gate. The combined runs include the barrier,
-snapshot scheduling, concurrent pagination and adapter response-loss regressions.
-Their named passing entries are retained in the linked platform logs. Earlier
-failed runs remain retained alongside final evidence; matrix results must retain
-their own source and executable fingerprints. The Python-only supplement records
-the later `c55682ad…` fingerprint without relabeling the earlier full Rust gates.
-
-## Engine, persistence and consensus
-
-| Agreed requirement | Implementation and executable acceptance evidence | Status |
-| --- | --- | --- |
-| Rust document database; direct collection/id; embedded one-voter and explicit three-voter modes | [engine service](../crates/kasumi-engine/src/service.rs), [bootstrap](../crates/kasumi-engine/src/bootstrap.rs); `deployment_modes_and_live_store_ownership_cannot_be_overridden` in [replicated contracts](../crates/kasumi-engine/tests/replicated.rs). Persisted mode bindings reject cross-mode reopening. | Covered |
-| Immutable tenant generation containing documents, schemas, indexes, readers, versions and receipts; structural sharing and atomic batches | [state](../crates/kasumi-engine/src/state.rs) publishes an ArcSwap generation and persistent maps of shared immutable documents. [engine contracts](../crates/kasumi-engine/tests/contracts.rs): partial-batch rejection, atomic unique-value swaps and historical generations. [query tests](../crates/kasumi-query/src/tests.rs): incremental indexes/readers match rebuilds and preserve old generations. | Covered |
-| OpenRaft exactly 0.9.25; one group per tenant; shared infrastructure; separate control group | [Raft manifest](../crates/kasumi-raft/Cargo.toml), [runtime](../crates/kasumi-server/src/runtime.rs), [control](../crates/kasumi-engine/src/control.rs), [cluster transport](../crates/kasumi-server/src/cluster.rs). Control is never a data/MCP registry route. Initial and restored bootstrap fingerprints bind authenticated traffic to identical immutable state. | Covered |
-| Persist votes/logs before Raft persistence acknowledgment; durable quorum and complete local apply | [Raft storage](../crates/kasumi-raft/src/storage.rs), [redb store](../crates/kasumi-store/src/lib.rs); [upstream storage conformance and injected failures](../crates/kasumi-raft/tests/storage_conformance.rs). redb uses immediate durability and two-phase commits. Failed committed application fences the replica. | Covered |
-| Encrypted authenticated snapshots installed durably before covered-log removal; recovery rebuild before readiness | [snapshot storage tests](../crates/kasumi-raft/src/storage/tests.rs), `snapshot_install_power_loss_at_every_storage_operation_keeps_whole_old_or_new_snapshot`, test every modeled installation fault; [storage conformance](../crates/kasumi-raft/tests/storage_conformance.rs) verifies recovery and failed-application fencing. [Cluster tests](../crates/kasumi-raft/tests/cluster.rs) force snapshot catch-up after purging eligible leaders. Engine recovery rebuilds validated documents/structured/search state before serving. | Covered |
-| Consensus-order current authorization → principal receipt → schema/CAS/unique/logical quotas; cross-collection batches; uncertain outcome explicit | [engine contracts](../crates/kasumi-engine/tests/contracts.rs): `authorization_is_rechecked_before_idempotency_response`, `receipts_survive_snapshot_and_precede_changed_schema_and_cas`, atomic failure and swaps. [server adapter test](../crates/kasumi-server/src/api.rs) verifies discarded-response receipt resolution on both interfaces. Errors retain `UNKNOWN_OUTCOME`. | Covered |
-| Quorum-backed fresh read/query barrier; embedded locally committed capture; isolated former leader cannot return fresh results | [replicated service contracts](../crates/kasumi-engine/tests/replicated.rs), [Raft partition tests](../crates/kasumi-raft/tests/cluster.rs), [admission tests](../crates/kasumi-engine/tests/admission.rs), and the four [read-barrier regressions](../crates/kasumi-raft/tests/read_barrier.rs). Only typed failed quorum rounds retry within the original five seconds; each attempt requires a fresh quorum and local application. Runtime restore deliberately isolates an apparent leader and refuses completion without changing its pending marker. | Covered; all three million-document replicated counts passed in run06 on the byte-identical embedded executable |
-| Three voters in independent domains; no partition fallback; placement/membership/replacement | [control tests](../crates/kasumi-engine/tests/control.rs) reject shared domains, unknown nodes and duplicate identities. [runtime tests](../crates/kasumi-server/src/runtime.rs) use three real TLS listeners, a fourth spare, learner catch-up and final membership `[1,2,4]`; two-voter placement is rejected. | Software covered; actual infrastructure independence is operator validation |
-
-## Validation, query and search contracts
-
-| Agreed requirement | Implementation and executable acceptance evidence | Status |
-| --- | --- | --- |
-| JSON Schema 2020-12; disable remote/file resolution and executable extensions | [query validation/tests](../crates/kasumi-query/src/tests.rs): local references and exact numeric constraints; remote/file retrieval and reference rebasing refusal; bounded non-executable validation. Schema/index replacement is a serialized tenant operation. | Covered |
-| Typed JSON Pointer expressions; Boolean/equality/range/membership; sorting/projection; bounded grouping and count/sum/min/max/avg | [query types](../crates/kasumi-types/src/lib.rs), [query tests](../crates/kasumi-query/src/tests.rs): independent reference evaluator, declared-index/scan admission, candidate/group/response budgets, pointer escaping. | Covered |
-| Missing distinct from null; no implicit coercion or f64 rounding; explicit-scale half-even decimal average | [query tests](../crates/kasumi-query/src/tests.rs): missing/null/empty arrays and groups, more-than-f64 precision for sort/range/sum, positive/negative half-even ties and empty aggregate inputs. [native/MCP tests](../crates/kasumi-server/src/api.rs) preserve the exact large fractional JSON literal. | Covered |
-| RAM Tantivy; versioned Unicode/English/Japanese analyzers including Lindera; ranked terms/phrases/prefix/bounded fuzzy | [query tests](../crates/kasumi-query/src/tests.rs): English stemming versus prefix surface terms, Unicode normalization/ranking, Japanese Lindera phrases/typos, distance and expansion caps. The lockfile pins analyzer dependencies. | Covered |
-| Commit and reload reader before corresponding document publication/ack; incomplete indexes never query | [query tests](../crates/kasumi-query/src/tests.rs): ready published reader, immutable historical readers, incremental update/rebuild equivalence, stale branch refusal. Schema/index activation publishes only a fully materialized generation. | Covered |
-| Initial query is linearizable; later pages are historical; cursor bound to tenant/principal/query/policy/incarnation, 60-second expiry and failover expiration | [service cursor code](../crates/kasumi-engine/src/service.rs), [engine/replicated contracts](../crates/kasumi-engine/tests/replicated.rs) and [concurrent pagination](../crates/kasumi-engine/tests/concurrent_pagination.rs). Fresh access checks run on every page; policy changes/failover fence retained cursors. All are included in both final gates. | Covered |
-
-## Interfaces, authorization and key revocation
-
-| Agreed requirement | Implementation and executable acceptance evidence | Status |
-| --- | --- | --- |
-| One authorized embedded/RPC/MCP layer; exact JSON through Protobuf and MCP | [engine service](../crates/kasumi-engine/src/service.rs), [Protobuf contract](../crates/kasumi-client/proto/kasumi.proto), [native and MCP adapter tests](../crates/kasumi-server/src/api.rs). JSON fields use UTF-8 bytes instead of Protobuf doubles. | Covered |
-| Discovery, point reads, queries, atomic mutation, receipt lookup; separate admin API/CLI | The recorded baseline had five native data methods and five MCP tools; [admin guide](administration.md), [CLI](../crates/kasumi-server/src/bin/kasumictl.rs). Admin covers schema/index definitions, tenant provisioning, policy/limits/suspension, keys, backups/restores and membership. [runtime lifecycle tests](../crates/kasumi-server/src/runtime.rs) execute local and replicated workflows. The additional native `ReadSnapshot` has separate [transaction regression coverage](transactions.md). | Covered for the recorded baseline |
-| MCP 2026-07-28 through official Rust SDK, protected-resource discovery, no legacy mode/token passthrough | [server manifest](../crates/kasumi-server/Cargo.toml) pins official `rmcp`; [adapter tests](../crates/kasumi-server/src/api.rs) cover current stateless discovery/tools, protocol/metadata agreement, configured challenges, forbidden origins and legacy rejection. Peer and key-service clients use their own identities. | Covered |
-| TLS 1.3; mTLS native/admin/services/cluster; user/agent OAuth validation of issuer/audience/signature/expiry/scopes | [auth tests](../crates/kasumi-server/src/auth.rs), [real TLS listener tests](../crates/kasumi-server/tests/tls_listener.rs), [peer transport tests](../crates/kasumi-server/tests/cluster_transport.rs). TLS 1.2, missing/foreign certificates, wrong pins and invalid claims fail closed. | Covered |
-| Default-deny tenant/collection RBAC; server-derived identity; ordered policy changes; no permission from tool descriptions/control metadata | [engine contracts](../crates/kasumi-engine/tests/contracts.rs), [control tests](../crates/kasumi-engine/tests/control.rs), [adapter tests](../crates/kasumi-server/src/api.rs): cross-tenant/scope/admin escalation, reserved-route rejection and private control administration. Control writes recheck current Admin in consensus order. | Covered |
-| Per-tenant BYOK Transit adapter; authenticated envelopes before persistence; fresh nonces independent of log IDs; retained wrapping dependencies | [store tests](../crates/kasumi-store/src/tests.rs), [actual OpenBao test](../crates/kasumi-store/tests/openbao_live.rs), [compatibility](COMPATIBILITY.md). Runtime refuses shared tenant/control/security wrapping-key identities and never uses the local test key provider in network mode. | Covered with real OpenBao; Vault compatibility itself is not a live-Vault claim |
-| Every replica probes actual decrypt authorization every 20 seconds; five-second timeout; max 60-second suspend-aware lease covering all historical versions | [store tests](../crates/kasumi-store/src/tests.rs): fixed start cadence despite slow responses, every retained version, delayed probe cannot extend lease from completion, historical denial, 60-second suspend-aware expiry and idle watchdog. Linux uses boot-time elapsed clock; macOS uses continuous elapsed time. | Covered |
-| Explicit denial seals immediately; expiry blocks admission/release, cancels work, releases resident state and owned keys | [store tests](../crates/kasumi-store/src/tests.rs), [response-release tests](../crates/kasumi-engine/tests/response_release.rs), [query cancellation tests](../crates/kasumi-query/src/tests.rs). Late successes cannot undo sealing. Adapter response fences check after expensive encoding, retaining the original handle/policy epoch. | Covered |
-| Host OS/embedding application trusted; previously returned plaintext cannot be recalled | Documented in [operations](operations.md) and [admission](admission.md). Owned key buffers are zeroized; application-retained documents are outside revocation control. | Explicit trust boundary, not an omitted software guarantee |
-
-## Auditing, recovery and resource limits
-
-| Agreed requirement | Implementation and executable acceptance evidence | Status |
-| --- | --- | --- |
-| Durable mutation/authentication/denial/admin/key/backup/restore audits; strict successful-read audit before result release | [engine contracts](../crates/kasumi-engine/tests/contracts.rs), [adapter tests](../crates/kasumi-server/src/api.rs), [TLS listener tests](../crates/kasumi-server/tests/tls_listener.rs), [runtime lifecycle tests](../crates/kasumi-server/src/runtime.rs). Required audit failure blocks the associated success. Denials remain enforced even when their audit sink fails. | Covered |
-| Audit survives Raft compaction; separately protected service records for sealed tenants; no bodies/query values/tokens; data revision and authorized release, not confirmed receipt | Tenant audit state persists in logical snapshots independently of compacted logs. [service audit tests](../crates/kasumi-server/src/api.rs) inspect real encrypted durable security records and reject unverified identity/payload logging. Strict-read tests tie audit to data revision. | Covered |
-| Encrypted versioned filesystem/S3 backups with documents, schemas/index definitions, receipts, integrity manifests and wrapped-key dependencies | [backup tests](../crates/kasumi-store/src/backup.rs): round-trip, tamper/missing wrapper rejection, size limits and SigV4 vector/TLS fixture; [actual MinIO](../crates/kasumi-store/src/backup/minio_live.rs) verifies compatible service behavior. Filesystem publication synchronizes files and directory entries. | Covered; remote provider hardware durability remains its contract |
-| Restore only to fresh suspended incarnation, verify/rebuild before activation, never overwrite serving tenant | [local backup contract](../crates/kasumi-engine/tests/contracts.rs), [replicated restore](../crates/kasumi-engine/tests/replicated.rs), [runtime lifecycle tests](../crates/kasumi-server/src/runtime.rs). Fresh server-selected paths, empty target, three identical prepared bootstraps, quorum completion audit, terminal old-source retirement and control CAS select the new generation; restart follows the durable route. | Covered |
-| Software crash/I/O failures around persistence/application/snapshot/response; no lost acknowledged write or partial batch | [store fault tests](../crates/kasumi-store/src/tests.rs), [Raft conformance](../crates/kasumi-raft/tests/storage_conformance.rs), actual SIGKILL recovery in [Raft tests](../crates/kasumi-raft/tests/cluster.rs) and [engine contracts](../crates/kasumi-engine/tests/contracts.rs), and new [adapter response-loss test](../crates/kasumi-server/src/api.rs). Expiry during fsync yields uncertain outcome while recovery preserves committed data. | Covered within explicit fault models |
-| Three-node partition/loss/restart/replacement/delay; retry after lost response | [Raft cluster](../crates/kasumi-raft/tests/cluster.rs), [read-barrier tests](../crates/kasumi-raft/tests/read_barrier.rs), [engine replication](../crates/kasumi-engine/tests/replicated.rs), [real pinned peer transport](../crates/kasumi-server/tests/cluster_transport.rs), runtime membership tests, and adapter response-loss test all pass in both final gates. Lost response and partition scenarios are independently controlled tests; they are not a claim of arbitrary simultaneous-fault exploration. | Covered |
-| KMS warm denial/history revocation/delayed replies/suspend-resume/corrupted ciphertext/backup after rotation | [store tests](../crates/kasumi-store/src/tests.rs), [actual OpenBao](../crates/kasumi-store/tests/openbao_live.rs), backup tests. Ciphertext swapping binds record/tenant identity, and a revoked historical wrapper prevents recovery rather than silently skipping data. | Covered |
-| Deterministic logical quotas; physical pressure must not change committed replicated outcomes | [snapshot-budget tests](../crates/kasumi-engine/tests/snapshot_budget.rs) compare exact incremental accounting with canonical serialization. [admission tests](../crates/kasumi-engine/tests/admission.rs) reject new requests under RSS pressure while committed entries still apply. Materialization failure makes that replica unavailable. | Covered |
-| Memory/work bounds for documents, staged indexes/search writers, cursors, audit retention and receipts; no silent eviction/spill | [admission design](admission.md), query work/cancellation tests, snapshot-budget and [key-catalog budget tests](../crates/kasumi-store/src/catalog_budget.rs), runtime staged-generation cap. Admission reservations cover held response encoding; datasets/indexes remain resident. RSS sampling and workspace estimates are not an allocator-level exact physical-memory cap. | Covered with documented estimation limits |
-| Cursor 60 seconds; receipt retention 24 hours included in snapshot | [types defaults](../crates/kasumi-types/src/lib.rs), [engine receipt expiry/recovery contracts](../crates/kasumi-engine/tests/contracts.rs), service cursor tests. Required retained audit/receipt growth consumes deterministic snapshot quota; no automatic audit archival/pruning is claimed. | Covered |
-| Linux production target/macOS development and embedded validation; hardened swap/dump settings | Both platform gates pass; [operations](operations.md) and [systemd template](../deploy/kasumi.service) specify hardening and recovery. Static unit verification ran; no production service was installed. | Software covered; operator must apply deployment settings |
-
-## Release measurements and completion gate
-
-| Agreed requirement | Current evidence | Status |
-| --- | --- | --- |
-| Approximately one million 1 KiB documents total at 1, 100 and 1,000 tenants; read-heavy/balanced and separate indexed text | [final report](../benchmarks/RESULTS.md): all fifteen cases use one million exact 1 KiB documents each, across the required tenant counts and traffic/index modes. The cohort preserves twelve embedded and three corrected-network origins, with binary-equivalence proof. Failed and interrupted attempts remain retained. | Covered |
-| Separately report raw map, actual embedded, authenticated RPC, MCP, local durable and replicated durable paths | [Final report](../benchmarks/RESULTS.md) separates raw, owned/shared embedded, durable local/quorum writes, real TLS/OAuth native RPC and MCP, and indexed text, with each contract stated. | Covered |
-| Throughput, p50/p99, memory overhead, recovery time and tenant-group overhead; reproducible source/binary/workload/host data | [Cohort provenance](../benchmarks/results/release-cohort-macos-arm64-20260905-listener/cohort.json), [capacity view](../benchmarks/results/release-cohort-macos-arm64-20260905-listener/capacity.json) and [report](../benchmarks/RESULTS.md) provide all requested measures and archived reproducible tooling. Host contention, one selected observation per case, p99 sample limits, recovery headroom and non-isolated voter overhead are explicit. | Covered |
-| Treat “50× faster” as a hypothesis; external comparisons disclose comparable guarantees; no invented SLAs | No Redis multiplier or launch SLA is asserted. Earlier map-sharing measurements are explicitly exploratory. No external database comparison has been presented. | Covered reporting constraint |
-| Operational documentation and tested recovery procedures | [operations](operations.md), [administration](administration.md), [admission](admission.md), [compatibility](COMPATIBILITY.md); executable lifecycle tests exercise their state transitions. | Covered |
-
-All agreed software implementation, verification and reporting work is complete.
-The [storage/security audit](final-audit-storage-security.md) and
-[query/interface audit](final-audit-queries-interfaces.md) retain their original
-reviews and final closure supplements. Earlier platform and failed benchmark
-records keep their source fingerprints; the corrected listener passed fresh
-full gates and the complete affected network measurements.
-
-Physical power-cut campaigns on the selected production filesystem/controller,
-actual geographically independent placement and an externally operated key/object
-service are deployment validation. The software relies on honest flush semantics,
-trusted non-Byzantine peers and the configured failure domains. These are explicit
-environmental assumptions, not claims established by loopback integration tests
-or additional unrequested hardware provisioning work. Redis compatibility,
-cross-tenant transactions and intra-tenant sharding remain outside v1.
+The [September 5 acceptance record](historical-acceptance-20260905.md) and its raw
+failures/measurements remain available as historical evidence. They certify only
+their recorded sources and prior scope. Release completion requires every gate
+above and every implementation milestone in the active ledger.
