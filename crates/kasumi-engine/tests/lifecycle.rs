@@ -607,7 +607,7 @@ async fn control_completion_audit_reservation_survives_denials_and_current_admin
                 action: "read".into(),
                 request_id: context.request_id,
                 timestamp_ms: now,
-                data_revision: None,
+                data_revision: Some(db.engine().generation().unwrap().state.revision),
                 outcome: "authorized_release".into(),
                 collection: None,
             }),

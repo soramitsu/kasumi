@@ -200,7 +200,7 @@ mod tests {
                     action: "read".into(),
                     request_id: "read".into(),
                     timestamp_ms: 1_000,
-                    data_revision: None,
+                    data_revision: Some(engine.generation().unwrap().state.revision),
                     outcome: "authorized_release".into(),
                     collection: None,
                 }),
