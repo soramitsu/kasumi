@@ -369,6 +369,12 @@ struct CredentialPausedDestination {
 }
 #[async_trait::async_trait]
 impl BackupDestination for CredentialPausedDestination {
+    async fn session_put(&self, session: uuid::Uuid, slot: kasumi_store::BackupSessionSlot, bytes: Vec<u8>) -> anyhow::Result<()> { kasumi_store::BackupDestination::session_put(self.inner.as_ref(), session, slot, bytes).await }
+    async fn session_get(&self, session: uuid::Uuid, slot: kasumi_store::BackupSessionSlot, limit: usize) -> anyhow::Result<Option<Vec<u8>>> {
+        if matches!(slot, kasumi_store::BackupSessionSlot::Object(_)) { self.entered.notify_one(); self.release.notified().await; }
+        kasumi_store::BackupDestination::session_get(self.inner.as_ref(), session, slot, limit).await
+    }
+
     async fn put(&self, id: uuid::Uuid, bytes: Vec<u8>) -> anyhow::Result<()> {
         self.inner.put(id, bytes).await
     }
@@ -395,7 +401,7 @@ async fn long_backup_verification_and_encoded_read_recheck_original_credential()
     );
     let proof = fixture
         .db
-        .backup_checkpoint(fixture.context.clone(), destination.as_ref())
+        .backup_checkpoint(fixture.context.clone(), destination.as_ref(), uuid::Uuid::new_v4())
         .await
         .unwrap();
     let paused = CredentialPausedDestination {
@@ -425,7 +431,7 @@ async fn long_backup_verification_and_encoded_read_recheck_original_credential()
     let clock = Arc::new(CredentialClock(std::sync::atomic::AtomicU64::new(0)));
     let create = fixture
         .db
-        .backup_checkpoint(fixture.credential(clock.clone()), &paused);
+        .backup_checkpoint(fixture.credential(clock.clone()), &paused, uuid::Uuid::new_v4());
     let advance = async {
         paused.entered.notified().await;
         clock.0.store(1000, Ordering::SeqCst);

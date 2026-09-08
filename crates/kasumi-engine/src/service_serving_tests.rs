@@ -289,7 +289,7 @@ async fn serving_expiry_suppresses_long_backup_verification_and_post_publication
         .unwrap(),
     );
     let proof = db
-        .backup_checkpoint(fixture.context.clone(), destination.as_ref())
+        .backup_checkpoint(fixture.context.clone(), destination.as_ref(), uuid::Uuid::new_v4())
         .await
         .unwrap();
     let paused = CredentialPausedDestination {
@@ -308,7 +308,7 @@ async fn serving_expiry_suppresses_long_backup_verification_and_post_publication
     drop(db);
     fixture.reopen().await;
     let db = fixture.leader().await;
-    let create = db.backup_checkpoint(fixture.context.clone(), &paused);
+    let create = db.backup_checkpoint(fixture.context.clone(), &paused, uuid::Uuid::new_v4());
     let expire = async {
         paused.entered.notified().await;
         fixture.clock.0.store(2000, Ordering::SeqCst);

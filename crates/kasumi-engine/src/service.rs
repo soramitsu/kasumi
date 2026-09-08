@@ -8,6 +8,8 @@ use kasumi_types::*;
 use sha2::{Digest, Sha256};
 #[path = "backup_checkpoints.rs"]
 mod backup_checkpoints;
+#[path = "backup_sessions.rs"]
+mod backup_sessions;
 #[path = "change_feed.rs"]
 mod change_feed;
 #[path = "custody_service.rs"]
@@ -1130,8 +1132,9 @@ impl Database {
         &self,
         context: RequestContext,
         destination: &dyn BackupDestination,
+        session_id: uuid::Uuid,
     ) -> Result<uuid::Uuid> {
-        self.backup_checkpoint(context, destination)
+        self.backup_checkpoint(context, destination, session_id)
             .await
             .map(|proof| proof.backup_id())
     }

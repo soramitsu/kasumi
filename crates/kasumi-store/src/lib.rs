@@ -10,7 +10,8 @@ mod archive_objects;
 mod audit_archive;
 pub use audit_archive::{
     AuditArchiveDestination, AuditSegmentBuilder, FilesystemAuditArchive, HistoricalAuditVerifier,
-    PreparedAuditSegment, S3AuditArchive, VerifiedAuditSegment,
+    InspectedAuditDependency, PreparedAuditSegment, S3AuditArchive, TenantAuditPlacement,
+    VerifiedAuditSegment,
 };
 mod backup;
 mod backup_sessions;
@@ -297,6 +298,7 @@ pub struct TenantStore {
     access_epoch: AtomicU64,
     shutdown_requested: AtomicBool,
     background: AsyncMutex<BackgroundTasks>,
+    audit_placement: Mutex<Option<Arc<TenantAuditPlacement>>>,
     live_trust: Mutex<BTreeMap<String, Weak<kasumi_serving::LiveSignerTrust>>>,
 }
 
@@ -476,6 +478,7 @@ impl TenantStore {
             access_epoch: AtomicU64::new(1),
             shutdown_requested: AtomicBool::new(false),
             background: AsyncMutex::new(BackgroundTasks::default()),
+            audit_placement: Mutex::new(None),
             live_trust: Mutex::new(BTreeMap::new()),
         });
         store.refresh_lease().await?;

@@ -123,12 +123,81 @@ pub struct PreparedAuditSegment {
     pub ciphertext: Vec<u8>,
 }
 
+/// Bounded metadata from an object whose bytes match a selected immutable
+/// archive link. This is not decrypted evidence or authorization: the caller
+/// must authorize its original source purpose against the verified checkpoint
+/// and lineage, then use HistoricalAuditVerifier before accepting plaintext.
+/// No public fields or deserializer can substitute another object afterward.
+pub struct InspectedAuditDependency<'a> {
+    bytes: &'a [u8],
+    header: Header,
+    reference: AuditArchiveReference,
+}
+impl<'a> InspectedAuditDependency<'a> {
+    pub fn from_link(bytes: &'a [u8], expected: &AuditArchiveLink) -> Result<Self> {
+        ensure!(
+            bytes.len() <= MAX_AUDIT_SEGMENT_BYTES && bytes.len() >= 12 && &bytes[..8] == MAGIC,
+            "unsupported audit archive format"
+        );
+        ensure!(
+            hex::encode(Sha256::digest(bytes)) == expected.ciphertext_sha256,
+            "audit archive link digest differs"
+        );
+        let length = u32::from_be_bytes(bytes[8..12].try_into()?) as usize;
+        ensure!(
+            length <= HEADER_LIMIT && length <= bytes.len() - 12,
+            "invalid audit archive header length"
+        );
+        let encoded = &bytes[12..12 + length];
+        let header: Header = serde_json::from_slice(encoded)?;
+        ensure!(header.format == 1, "unsupported audit archive version");
+        ensure!(
+            serde_json::to_vec(&header)? == encoded,
+            "noncanonical audit archive header"
+        );
+        let reference = reference(&header, bytes)?;
+        reference.validate()?;
+        ensure!(
+            reference.object == *expected,
+            "audit archive link identity differs"
+        );
+        ensure!(
+            header.plaintext_bytes <= PAYLOAD_LIMIT as u64,
+            "audit plaintext exceeds limit"
+        );
+        Ok(Self {
+            bytes,
+            header,
+            reference,
+        })
+    }
+    pub fn source_tenant(&self) -> &str {
+        &self.header.tenant
+    }
+    pub fn source_purpose(&self) -> &StoragePurpose {
+        &self.header.purpose
+    }
+    pub fn reference(&self) -> &AuditArchiveReference {
+        &self.reference
+    }
+    pub async fn verify(
+        &self,
+        verifier: &HistoricalAuditVerifier<'_>,
+    ) -> Result<VerifiedAuditSegment> {
+        verifier.decrypt(self.bytes, &self.reference).await
+    }
+}
+
 pub struct VerifiedAuditSegment {
     reference: AuditArchiveReference,
+    source_purpose: StoragePurpose,
     plaintext: Zeroizing<Vec<u8>>,
 }
 
 impl VerifiedAuditSegment {
+    pub fn source_purpose(&self) -> &StoragePurpose {
+        &self.source_purpose
+    }
     pub fn reference(&self) -> &AuditArchiveReference {
         &self.reference
     }
@@ -172,6 +241,27 @@ fn walk_records(
 }
 
 impl TenantStore {
+    /// The engine selects the exact historical source from a verified graph and
+    /// lineage. This retains this store's live fences throughout fresh historical
+    /// key authorization; it cannot open or renew the historical source store.
+    pub async fn verify_historical_audit(
+        &self,
+        dependency: &InspectedAuditDependency<'_>,
+        source_purpose: &StoragePurpose,
+    ) -> Result<VerifiedAuditSegment> {
+        let _access = AccessGuard(self);
+        self.check_access()?;
+        let verifier = HistoricalAuditVerifier::new(
+            &self.tenant,
+            source_purpose,
+            self.provider.as_ref(),
+            &self.access,
+        )?;
+        let verified = dependency.verify(&verifier).await?;
+        self.check_access()?;
+        Ok(verified)
+    }
+
     pub fn encrypt_audit_segment(
         &self,
         builder: AuditSegmentBuilder,
@@ -405,6 +495,7 @@ impl AuditDecoder<'_> {
         );
         Ok(VerifiedAuditSegment {
             reference: expected.clone(),
+            source_purpose: header.purpose,
             plaintext,
         })
     }
@@ -444,6 +535,81 @@ pub trait AuditArchiveDestination: Send + Sync {
     async fn read(&self, link: &AuditArchiveLink) -> Result<Vec<u8>>;
 }
 
+/// Every replica owns a durable ciphertext cache independently of the selected
+/// external destination. Snapshot capture uses only this cache. Placement is a
+/// local installation binding, never replicated from another member's paths.
+pub struct TenantAuditPlacement {
+    cache: Arc<FilesystemAuditArchive>,
+    destination: Arc<dyn AuditArchiveDestination>,
+}
+impl TenantAuditPlacement {
+    pub fn cache(&self) -> &Arc<FilesystemAuditArchive> {
+        &self.cache
+    }
+    pub fn destination_identity(&self) -> String {
+        self.destination.identity()
+    }
+    /// Use in an owned blocking apply worker. Publication uncertainty cannot
+    /// authorize pruning, even if the local cache already contains the object.
+    pub fn preserve_blocking(&self, segment: &PreparedAuditSegment) -> Result<()> {
+        self.cache.publish_blocking(segment)?;
+        if self.cache.identity() != self.destination.identity() {
+            tokio::runtime::Handle::try_current()?.block_on(self.destination.publish(segment))?;
+        }
+        Ok(())
+    }
+}
+impl TenantStore {
+    /// Call before engine replay to install an S3 destination or an explicit
+    /// fixture cache. A persisted destination cannot silently become the default
+    /// filesystem destination after a restart or missing configuration.
+    pub fn install_tenant_audit_archive(
+        &self,
+        cache: Arc<FilesystemAuditArchive>,
+        destination: Arc<dyn AuditArchiveDestination>,
+    ) -> Result<Arc<TenantAuditPlacement>> {
+        self.check_access()?;
+        let mut placement = self.audit_placement.lock();
+        let identity = serde_json::to_vec(&(cache.identity(), destination.identity()))?;
+        ensure!(
+            identity.len() <= 16 << 10,
+            "audit placement identity exceeds limit"
+        );
+        if let Some(existing) = placement.as_ref() {
+            ensure!(
+                existing.cache.identity() == cache.identity()
+                    && existing.destination.identity() == destination.identity(),
+                "live tenant audit placement differs"
+            );
+            return Ok(existing.clone());
+        }
+        const NS: &str = "engine.audit.placement";
+        match self.get(NS, b"identity")? {
+            Some(stored) => ensure!(
+                stored == identity,
+                "installed tenant audit placement differs"
+            ),
+            None => {
+                self.write_batch(&[crate::WriteOp::put(NS, b"identity", identity.as_slice())])?
+            }
+        }
+        self.check_access()?;
+        let installed = Arc::new(TenantAuditPlacement { cache, destination });
+        *placement = Some(installed.clone());
+        Ok(installed)
+    }
+    pub fn tenant_audit_archive(&self) -> Result<Arc<TenantAuditPlacement>> {
+        if let Some(placement) = self.audit_placement.lock().clone() {
+            self.check_access()?;
+            return Ok(placement);
+        }
+        let cache = Arc::new(FilesystemAuditArchive::open(
+            self.durable_directory()?.join("tenant-audit-archives"),
+        )?);
+        self.install_tenant_audit_archive(cache.clone(), cache)
+    }
+}
+
 pub struct FilesystemAuditArchive {
     root: PathBuf,
 }
@@ -466,6 +632,38 @@ impl FilesystemAuditArchive {
         Ok(Self {
             root: std::fs::canonicalize(root)?,
         })
+    }
+
+    /// For an already-owned blocking snapshot/apply worker. One bounded object
+    /// is read and checked without network I/O or a nested async runtime.
+    pub fn read_blocking(&self, link: &AuditArchiveLink) -> Result<Vec<u8>> {
+        read_file(&self.root, link, false)
+    }
+
+    /// Successful return includes file and directory synchronization and an
+    /// exact complete readback. This may be replayed after an uncertain result.
+    pub fn publish_blocking(&self, segment: &PreparedAuditSegment) -> Result<()> {
+        segment.reference.validate()?;
+        ensure!(
+            segment.ciphertext.len() as u64 == segment.reference.ciphertext_bytes
+                && hex::encode(Sha256::digest(&segment.ciphertext))
+                    == segment.reference.object.ciphertext_sha256,
+            "invalid prepared audit segment"
+        );
+        let path = self
+            .root
+            .join(format!("{}.audit", segment.reference.object.object_id));
+        let mut temporary = tempfile::NamedTempFile::new_in(&self.root)?;
+        temporary.write_all(&segment.ciphertext)?;
+        temporary.as_file().sync_all()?;
+        if let Err(error) = temporary.persist_noclobber(path) {
+            ensure!(
+                error.error.kind() == std::io::ErrorKind::AlreadyExists,
+                "audit archive publication failed"
+            );
+        }
+        read_file(&self.root, &segment.reference.object, true)?;
+        Ok(())
     }
 }
 
@@ -509,26 +707,14 @@ impl AuditArchiveDestination for FilesystemAuditArchive {
                     == segment.reference.object.ciphertext_sha256,
             "invalid prepared audit segment"
         );
-        let root = self.root.clone();
-        let link = segment.reference.object.clone();
-        let bytes = segment.ciphertext.clone();
-        tokio::task::spawn_blocking(move || -> Result<()> {
-            let path = root.join(format!("{}.audit", link.object_id));
-            let mut temporary = tempfile::NamedTempFile::new_in(&root)?;
-            temporary.write_all(&bytes)?;
-            temporary.as_file().sync_all()?;
-            if let Err(error) = temporary.persist_noclobber(path) {
-                ensure!(
-                    error.error.kind() == std::io::ErrorKind::AlreadyExists,
-                    "audit archive publication failed"
-                );
-            }
-            // Also resolves a previous rename/fsync uncertainty. Existing data
-            // must match before its file and directory are synchronized again.
-            read_file(&root, &link, true)?;
-            Ok(())
-        })
-        .await?
+        let archive = Self {
+            root: self.root.clone(),
+        };
+        let segment = PreparedAuditSegment {
+            reference: segment.reference.clone(),
+            ciphertext: segment.ciphertext.clone(),
+        };
+        tokio::task::spawn_blocking(move || archive.publish_blocking(&segment)).await?
     }
     async fn read(&self, link: &AuditArchiveLink) -> Result<Vec<u8>> {
         let root = self.root.clone();
@@ -853,6 +1039,66 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn reverse_archive_dependencies_are_bounded_and_require_exact_link_and_source_verification()
+     {
+        let directory = tempfile::tempdir().unwrap();
+        let keys = Arc::new(LocalKeyProvider::new([33; 32]));
+        let access =
+            crate::StorageAccess::standalone(Uuid::new_v4(), "tenant", Uuid::new_v4()).unwrap();
+        let store = TenantStore::open(
+            NodeStore::open(directory.path().join("source.redb")).unwrap(),
+            "tenant".into(),
+            keys.clone(),
+            access.clone(),
+        )
+        .await
+        .unwrap();
+        let stream = Uuid::new_v4();
+        let mut first = AuditSegmentBuilder::new(stream, 0, None).unwrap();
+        first.push(0, b"first").unwrap();
+        let first = store.encrypt_audit_segment(first).unwrap();
+        let mut second =
+            AuditSegmentBuilder::new(stream, 1, Some(first.reference.object.clone())).unwrap();
+        second.push(1, b"second").unwrap();
+        let second = store.encrypt_audit_segment(second).unwrap();
+        let destination = FilesystemAuditArchive::open(directory.path().join("archives")).unwrap();
+        destination.publish(&first).await.unwrap();
+        destination.publish(&second).await.unwrap();
+        let verifier =
+            HistoricalAuditVerifier::new("tenant", access.purpose(), keys.as_ref(), &access)
+                .unwrap();
+        let mut link = Some(second.reference.object.clone());
+        let mut count = 0u64;
+        while let Some(expected) = link.take() {
+            let bytes = destination.read(&expected).await.unwrap();
+            let inspected = InspectedAuditDependency::from_link(&bytes, &expected).unwrap();
+            assert_eq!(inspected.source_tenant(), "tenant");
+            assert_eq!(inspected.source_purpose(), access.purpose());
+            let verified = inspected.verify(&verifier).await.unwrap();
+            assert_eq!(verified.source_purpose(), access.purpose());
+            count += verified.reference().record_count;
+            link = verified.reference().previous.clone();
+        }
+        assert_eq!(count, 2);
+        assert!(
+            InspectedAuditDependency::from_link(&first.ciphertext, &second.reference.object)
+                .is_err()
+        );
+        let mut incorrect = first.reference.object.clone();
+        incorrect.object_id = Uuid::new_v4();
+        assert!(InspectedAuditDependency::from_link(&first.ciphertext, &incorrect).is_err());
+        let mut forged = first.ciphertext.clone();
+        *forged.last_mut().unwrap() ^= 1;
+        let mut forged_link = first.reference.object.clone();
+        forged_link.ciphertext_sha256 = hex::encode(Sha256::digest(&forged));
+        // Even an attacker-controlled selected link only yields inspection;
+        // altered ciphertext cannot cross the authenticated proof boundary.
+        let inspected = InspectedAuditDependency::from_link(&forged, &forged_link).unwrap();
+        assert!(inspected.verify(&verifier).await.is_err());
+        store.shutdown().await;
     }
 
     #[tokio::test]

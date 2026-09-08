@@ -1039,7 +1039,24 @@ async fn shared_get_uses_the_same_audit_and_authorization_and_keeps_historical_v
 async fn strict_empty_discovery_is_audited_and_failed_audit_persistence_blocks_results() {
     let backend = kasumi_store::test_utils::FaultBackend::new();
     let node = NodeStore::open_with_backend(backend.clone()).unwrap();
-    let audit = common::security_audit(node.clone()).await;
+    let audit_directory = tempfile::tempdir().unwrap();
+    let audit_store = TenantStore::open_fixture(
+        node.clone(),
+        kasumi_engine::SECURITY_TENANT.into(),
+        Arc::new(LocalKeyProvider::new([0xA7; 32])),
+    )
+    .await
+    .unwrap();
+    let audit = kasumi_engine::SecurityAudit::open_with_archive(
+        audit_store,
+        kasumi_types::AuditRetentionBudget::default(),
+        Arc::new(
+            kasumi_store::FilesystemAuditArchive::open(audit_directory.path().join("archive"))
+                .unwrap(),
+        ),
+        kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+    )
+    .unwrap();
     let store = TenantStore::open_fixture(
         node,
         "tenant-a".into(),
@@ -1203,7 +1220,7 @@ async fn logical_backup_restores_suspended_with_new_incarnation_and_increasing_r
         .install_archive_destination("backup".into(), destination.clone())
         .unwrap();
     let checkpoint = source
-        .backup_checkpoint(context("owner"), destination.as_ref())
+        .backup_checkpoint(context("owner"), destination.as_ref(), uuid::Uuid::new_v4())
         .await
         .unwrap();
     let target_incarnation = uuid::Uuid::new_v4();

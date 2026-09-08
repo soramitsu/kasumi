@@ -67,8 +67,10 @@ impl VerifiedBackup {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn object(
     source: &RestoreSource,
+    session: &kasumi_store::VerifiedBackupSession,
     target: &TenantStore,
     id: uuid::Uuid,
     max_plaintext: usize,
@@ -78,8 +80,13 @@ async fn object(
     target.check_access()?;
     let encrypted = source
         .destination
-        .get(id, max_plaintext.saturating_add(OBJECT_OVERHEAD))
-        .await?;
+        .session_get(
+            session.intent().session_id,
+            kasumi_store::BackupSessionSlot::Object(id),
+            max_plaintext.saturating_add(OBJECT_OVERHEAD),
+        )
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("backup session dependency missing"))?;
     target.check_access()?;
     if let Some(expected) = expected_ciphertext {
         anyhow::ensure!(
@@ -99,6 +106,10 @@ async fn object(
             target.storage_access(),
         )
         .await?;
+    anyhow::ensure!(
+        target_history_keys || &contents.source_purpose == session.source_purpose(),
+        "backup object source purpose differs from session"
+    );
     target.check_access()?;
     if target_history_keys {
         let verified = target
@@ -121,8 +132,12 @@ struct RestoreReader<'a> {
     token: Option<kasumi_query::QueryCancellation>,
     audit: &'a SecurityAudit,
     bound_checkpoint: Option<FullBackupCheckpoint>,
+    session: kasumi_store::VerifiedBackupSession,
 }
 impl BackupReader for RestoreReader<'_> {
+    fn session_key_catalog(&self) -> &str {
+        self.session.key_catalog_sha256()
+    }
     fn tenant(&self) -> &str {
         self.target.tenant()
     }
@@ -163,6 +178,7 @@ impl BackupReader for RestoreReader<'_> {
         };
         object(
             self.source,
+            &self.session,
             self.target,
             id,
             max_plaintext,
@@ -215,12 +231,41 @@ pub(super) async fn load_authorized(
         );
     }
     let bound_checkpoint = authorization.bound_checkpoint(target, backup_id)?;
+    authorization.check_access(target, audit).await?;
+    let session = deadline
+        .run(kasumi_store::verify_backup_session(
+            source.destination.as_ref(),
+            backup_id,
+            target.tenant(),
+            source.keys.clone(),
+            target.storage_access(),
+        ))
+        .await??
+        .ok_or_else(|| anyhow::anyhow!("backup session missing"))?;
+    if let RestoreAuthorization::Local(request) = &authorization {
+        anyhow::ensure!(
+            session.source_purpose() == &request.source_purpose,
+            "local backup source purpose differs from authorized recovery"
+        );
+    }
+    let completed = match session.outcome() {
+        Some(BackupSessionOutcome::Complete { checkpoint, .. }) => checkpoint.clone(),
+        _ => anyhow::bail!("restore requires a permanently completed backup session"),
+    };
+    anyhow::ensure!(
+        bound_checkpoint
+            .as_ref()
+            .is_none_or(|expected| expected == &completed),
+        "completed session differs from authorized checkpoint"
+    );
+    let bound_checkpoint = Some(completed);
     let reader = RestoreReader {
         source,
         target,
         authorization,
         audit,
         bound_checkpoint,
+        session,
         work,
         token,
     };
@@ -238,6 +283,7 @@ pub(super) async fn load_authorized(
         mut state,
         bytes,
         checkpoint,
+        source_purpose,
         _reservation: reservation,
         _registration: registration,
     } = verified;
@@ -250,6 +296,7 @@ pub(super) async fn load_authorized(
             state.history_archive_bytes = 0;
             for (id, mut archive) in state.history_archives.clone() {
                 archive.storage_destination = alias.clone();
+                archive.storage_backup_session = Some(backup_id);
                 state.history_archive_bytes = state
                     .history_archive_bytes
                     .checked_add(crate::state::history::metadata_entry(&id, &archive)?)
@@ -267,6 +314,7 @@ pub(super) async fn load_authorized(
         .await?;
     reader.check_access().await?;
     Ok(VerifiedBackup {
+        source_purpose,
         state,
         bytes,
         checkpoint,

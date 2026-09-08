@@ -38,6 +38,89 @@ pub enum StoragePurpose {
     #[cfg(any(test, feature = "test-utils"))]
     LocalFixture,
 }
+impl StoragePurpose {
+    /// Fixture purposes cannot be decoded or constructed in production builds.
+    /// This query lets consumers follow the store's feature gate without adding
+    /// a second, independently selectable fixture policy.
+    pub fn is_local_fixture(&self) -> bool {
+        #[cfg(any(test, feature = "test-utils"))]
+        if matches!(self, Self::LocalFixture) {
+            return true;
+        }
+        false
+    }
+    /// Historical provenance equality for the immutable installation and database
+    /// incarnation. The original HA writer and authority epoch remain authenticated
+    /// fields, but do not have to be the current verifier's node or renewable epoch.
+    /// This comparison grants no live storage capability.
+    pub fn same_application_resource(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::Standalone {
+                    installation_id: a,
+                    tenant: at,
+                    incarnation: ai,
+                },
+                Self::Standalone {
+                    installation_id: b,
+                    tenant: bt,
+                    incarnation: bi,
+                },
+            ) => a == b && at == bt && ai == bi,
+            (
+                Self::Serving {
+                    manifest_digest: a,
+                    identity: ai,
+                    ..
+                },
+                Self::Serving {
+                    manifest_digest: b,
+                    identity: bi,
+                    ..
+                },
+            ) => a == b && ai.tenant == bi.tenant && ai.incarnation == bi.incarnation,
+            #[cfg(any(test, feature = "test-utils"))]
+            (Self::LocalFixture, Self::LocalFixture) => true,
+            _ => false,
+        }
+    }
+    /// Validate historical application provenance without granting current access
+    /// or substituting the verifier's node for the original writer.
+    pub fn validate_application_identity(&self, tenant: &str, incarnation: &str) -> Result<()> {
+        let matches = match self {
+            Self::Standalone {
+                installation_id,
+                tenant: source,
+                incarnation: source_incarnation,
+            } => {
+                !installation_id.is_nil()
+                    && !source_incarnation.is_nil()
+                    && source == tenant
+                    && source_incarnation.to_string() == incarnation
+            }
+            Self::Serving {
+                manifest_digest,
+                identity,
+                recovery_checkpoint,
+            } => {
+                kasumi_types::validate_sha256(manifest_digest)?;
+                identity.validate()?;
+                if let Some(checkpoint) = recovery_checkpoint {
+                    checkpoint.validate()?;
+                }
+                identity.tenant == tenant && identity.incarnation.to_string() == incarnation
+            }
+            #[cfg(any(test, feature = "test-utils"))]
+            Self::LocalFixture => true,
+            _ => false,
+        };
+        ensure!(
+            matches,
+            "backup source purpose differs from application identity"
+        );
+        Ok(())
+    }
+}
 /// No deserializer and no optional gate. `Serving` can only be installed using
 /// an opaque cryptographically verified lease gate; reserved control purposes
 /// cannot open municipality namespaces.
