@@ -88,6 +88,7 @@ def run_gate(name, command, source, output, environment):
     started = time.monotonic()
     log = Path(output) / (name + ".log")
     artifacts = {}
+    compiled_packages = {}
     target = (Path(output) / "target").resolve()
     with log.open("wb") as stream:
         process = subprocess.Popen(command, cwd=source, env=environment,
@@ -103,6 +104,14 @@ def run_gate(name, command, source, output, environment):
                     continue
                 if not isinstance(message, dict) or message.get("reason") != "compiler-artifact":
                     continue
+                package_id = message.get("package_id")
+                if package_id:
+                    package = compiled_packages.setdefault(package_id, {"features": [], "targets": []})
+                    package["features"] = sorted(set(package["features"]) | set(message.get("features", [])))
+                    target_record = {field: message.get("target", {}).get(field) for field in
+                                     ("name", "kind", "crate_types")}
+                    if target_record not in package["targets"]:
+                        package["targets"].append(target_record)
                 if message.get("executable"):
                     executable = Path(message["executable"]).resolve()
                     relative = executable.relative_to(target)
@@ -112,13 +121,16 @@ def run_gate(name, command, source, output, environment):
                         "package_id": message.get("package_id"),
                     }
             code = process.wait()
-        except BaseException:
+        except BaseException as error:
             # Cargo can leave compiler/test children alive after its own exit.
             # Stop this gate's entire process group before closing its evidence.
+            cleanup_errors = []
             try:
                 os.killpg(process.pid, signal.SIGTERM)
             except ProcessLookupError:
                 pass
+            except OSError as cleanup_error:
+                cleanup_errors.append("SIGTERM process-group cleanup failed: " + str(cleanup_error))
             try:
                 process.wait(timeout=10)
             except subprocess.TimeoutExpired:
@@ -127,7 +139,11 @@ def run_gate(name, command, source, output, environment):
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+            except OSError as cleanup_error:
+                cleanup_errors.append("SIGKILL process-group cleanup failed: " + str(cleanup_error))
             process.wait()
+            for cleanup_error in cleanup_errors:
+                error.add_note(cleanup_error)
             raise
         finally:
             process.stdout.close()
@@ -140,6 +156,7 @@ def run_gate(name, command, source, output, environment):
         "name": name, "command": command, "exit_code": code,
         "duration_seconds": round(time.monotonic() - started, 3),
         "log": log.name, "log_sha256": sha256(log), "executables": artifacts,
+        "compiled_packages": compiled_packages,
     }
 
 
@@ -232,6 +249,7 @@ def main():
     except BaseException as error:
         record["status"] = "interrupted" if isinstance(error, KeyboardInterrupt) else "failed"
         record["runner_error"] = str(error)
+        record["runner_error_notes"] = getattr(error, "__notes__", [])
         raise
     finally:
         record["finished_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()

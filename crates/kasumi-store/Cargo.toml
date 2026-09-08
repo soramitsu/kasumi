@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "Encrypted durable storage, snapshots and backup objects for Kasumi."
 
 [features]
 test-utils = []

@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "Self-hosted Kasumi database, authority and operator binaries."
 
 [features]
 test-utils = ["kasumi-store/test-utils"]

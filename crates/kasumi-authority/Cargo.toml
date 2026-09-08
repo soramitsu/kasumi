@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "Replicated serving authority and lifecycle maintenance for Kasumi."
 
 [dependencies]
 async-trait.workspace = true
