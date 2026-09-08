@@ -138,6 +138,14 @@ gate above and usable installation artifacts.
   `docs/evidence/redb-capacity-leaf-20260909`. The prototype is outside the
   production dependency graph; persistent disk ownership and safe commit-time
   capacity recovery remain open.
+- Redb prototype successor `2886774` passes all seven focused pre-commit
+  capacity tests, including rollback/reopen, shared allocator state, retained
+  physical charges, genuine I/O failures and commit-time failure fencing. Its
+  exact bounded split geometry fixes the remaining `dad7479` fixture failure.
+  All previous failures and executable hashes remain in
+  `docs/evidence/redb-capacity-leaf-20260909`. Full upstream validation, the
+  database-wide persistent owner and nonallocating commit publication remain
+  unfinished; this prototype is not installed in Kasumi's dependency graph.
 - JSON correction `13fbbc1` passes exact vendored-input checks and all four
   complete upstream suites: default 239, number 245, raw 257 and combined 265
   tests passed, with one unchanged nightly-only UI ignore in each. Original
