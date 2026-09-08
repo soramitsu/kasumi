@@ -1,5 +1,9 @@
 use super::*;
 use crate::{ClientDecodeLimits, ClientResources};
+use kasumi_types::{
+    ChangeEvent, ChangeFeedCursor, ChangeFeedStart, CollectionDefinition, CollectionRetentionClass,
+    CollectionWriteMode, Document, Mutation, Precondition, SchemaChange, SchemaCollection,
+};
 use prost::Message;
 use serde_json::{Value, json};
 use std::{collections::BTreeSet, time::Duration};

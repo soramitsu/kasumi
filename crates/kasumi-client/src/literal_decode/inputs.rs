@@ -8,7 +8,9 @@ use crate::{
         tokens,
     },
 };
-use kasumi_types::*;
+use kasumi_types::{
+    Mutation, MutationBatch, Predicate, QueryRequest, SchemaChange, SchemaChangeSet, StagedChunk,
+};
 use serde_json::value::RawValue;
 
 fn mutation(raw: &RawValue, call: &Call) -> Result<Mutation, ClientError> {
