@@ -34,6 +34,12 @@ pub(super) struct PreparedState {
     _materialization: Arc<crate::admission::Reservation>,
 }
 
+impl PreparedState {
+    pub(super) fn publication_workspace(&self) -> Arc<crate::admission::Reservation> {
+        self._materialization.clone()
+    }
+}
+
 impl VerifiedBackup {
     pub(super) async fn into_genesis(
         self,
@@ -57,7 +63,9 @@ impl VerifiedBackup {
             .checked_mul(3)
             .and_then(|v| v.checked_add(64 << 20))
             .ok_or_else(|| anyhow::anyhow!("restore materialization budget overflow"))?;
-        let materialization = Arc::new(admission.reserve(workspace, None)?);
+        // The completed verifier owns one operation and its bounded indexes.
+        // Its worker transfers that charge only after dropping those indexes.
+        let materialization = self._reservation.clone();
         let retained_materialization = materialization.clone();
         deadline
             .blocking(materialization, self._registration.clone(), move || {
@@ -71,9 +79,10 @@ impl VerifiedBackup {
                     incarnation,
                     self.checkpoint,
                     target_origin,
+                    || retained_materialization.handoff_workspace(&admission, workspace),
                 )?;
-                // Keep the old bounded index charge through its actual drop,
-                // independently of the newly materialized target's charge.
+                // This is still the original reservation identity and work slot.
+                // The prepared result owns it through target publication.
                 drop(self._reservation);
                 deadline.check()?;
                 let engine = Arc::new(engine);

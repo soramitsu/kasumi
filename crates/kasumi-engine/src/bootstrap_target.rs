@@ -231,7 +231,6 @@ async fn materialize_origin(
         kasumi_types::staged_digest(&verified.source_purpose)?.0 == input.source_purpose_sha256,
         "materialization source purpose differs from the authenticated backup root"
     );
-    let _workspace = verified._reservation.clone();
     let bootstrap = ReplicatedBootstrap {
         incarnation: replica.incarnation.to_string(),
         initial_policy: verified.state.metadata().policy.clone(),
@@ -251,6 +250,7 @@ async fn materialize_origin(
     operation.check()?;
     let stores = targets.clone();
     let binding = serde_json::to_vec(&("replicated", &bootstrap))?;
+    let publication_workspace = restored.publication_workspace();
     let bytes = restored.bytes;
     let expected = restored.sha256.clone();
     let authorization = TargetPublication {
@@ -259,25 +259,25 @@ async fn materialize_origin(
         deadline: operation.deadline,
     };
     operation
-        .run(
-            operation
-                .deadline
-                .blocking(_workspace, Some(operation.work.clone()), move || {
-                    authorization.check()?;
-                    bind_deployment(&stores, &binding)?;
-                    authorization.check()?;
-                    if stores
-                        .application()
-                        .get_bounded(NS, b"manifest", 64 << 10)?
-                        .is_some()
-                    {
-                        verify_persisted_digest(&stores, &expected)?;
-                    } else {
-                        persist_target(&stores, &bytes, &authorization)?;
-                    }
-                    authorization.check()
-                }),
-        )
+        .run(operation.deadline.blocking(
+            publication_workspace,
+            Some(operation.work.clone()),
+            move || {
+                authorization.check()?;
+                bind_deployment(&stores, &binding)?;
+                authorization.check()?;
+                if stores
+                    .application()
+                    .get_bounded(NS, b"manifest", 64 << 10)?
+                    .is_some()
+                {
+                    verify_persisted_digest(&stores, &expected)?;
+                } else {
+                    persist_target(&stores, &bytes, &authorization)?;
+                }
+                authorization.check()
+            },
+        ))
         .await?;
     let proof = VerifiedTargetMaterialization {
         stores: targets.clone(),

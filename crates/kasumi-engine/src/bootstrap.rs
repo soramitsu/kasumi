@@ -125,7 +125,6 @@ pub async fn prepare_replicated_restore(
         )))
         .await??;
     let source_revision = verified.state.metadata().revision;
-    let _restore_workspace = verified._reservation.clone();
     let original = verified.state.metadata();
     anyhow::ensure!(
         replica.incarnation.to_string() != original.incarnation,
@@ -730,7 +729,6 @@ pub async fn restore_local(
         "verified local backup differs from exact checkpoint"
     );
     let source_revision = verified.state.metadata().revision;
-    let _restore_workspace = verified._reservation.clone();
     let original = verified.state.metadata();
     anyhow::ensure!(
         !incarnation.is_nil() && incarnation.to_string() != original.incarnation,
