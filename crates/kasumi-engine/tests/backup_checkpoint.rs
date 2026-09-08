@@ -185,7 +185,6 @@ async fn restore_hands_off_verified_workspace_with_production_and_destination_re
 
 #[tokio::test]
 async fn cancelled_restore_publication_keeps_storage_and_workspace_until_write_drains() {
-    use redb::StorageBackend;
     use std::sync::{
         Mutex,
         atomic::{AtomicBool, Ordering},
