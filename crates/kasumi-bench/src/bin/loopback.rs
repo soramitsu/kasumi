@@ -10,7 +10,7 @@ use kasumi_server::{
     auth::AuthConfig,
     mcp::McpConfig,
     rpc::proto,
-    runtime::{TenantConfig, TlsFiles, TransitSettings, example_config},
+    runtime::{KeyProviderSettings, TenantConfig, TlsFiles, TransitSettings, example_config},
     tls::{self, ListenerLimits},
 };
 use kasumi_transport::{ClientAuthentication, TlsIdentity};
@@ -270,7 +270,7 @@ async fn benchmark(
     // This benchmark explicitly exercises the fixture-only local deployment.
     // Its daemon must be built with kasumi-server/test-utils; production builds
     // reject this configuration instead of bypassing the serving authority.
-    config.mode = kasumi_server::runtime::DeploymentMode::Local;
+    config.mode = kasumi_server::runtime::DeploymentMode::Standalone;
     config.replication = None;
     config.control.incarnation = None;
     config.serving_authorities.clear();
@@ -278,10 +278,12 @@ async fn benchmark(
     config.auth = AuthConfig {
         issuer: issuer_url.clone(),
         audience: audience.clone(),
-        jwks_uri: format!("{issuer_url}/keys"),
+        source: kasumi_server::auth::AuthKeySource::ExternalOAuth {
+            jwks_uri: format!("{issuer_url}/keys"),
+            trusted_ca_pem: Some(authority.pem.clone()),
+        },
         algorithms: vec![Algorithm::EdDSA],
         access_token_types: BTreeSet::from(["at+jwt".into()]),
-        jwks_trusted_ca_pem: Some(authority.pem.clone()),
     };
     config.mcp.listen = mcp;
     config.mcp.tls = server.clone();
@@ -292,29 +294,31 @@ async fn benchmark(
     config.admin.listen = admin;
     config.admin.tls = server.clone();
     config.admin.client_ca = ca.clone();
-    let transit = |key: &str, env: &str| TransitSettings {
-        endpoint: bao.endpoint.clone(),
-        mount: "transit".into(),
-        key_name: key.into(),
-        token_file: path.join(env).to_string_lossy().into_owned(),
-        namespace: None,
-        ca_certificate: Some(bao.ca_path.clone()),
-        derived: false,
+    let transit = |key: &str, env: &str| {
+        KeyProviderSettings::Transit(TransitSettings {
+            endpoint: bao.endpoint.clone(),
+            mount: "transit".into(),
+            key_name: key.into(),
+            token_file: path.join(env).to_string_lossy().into_owned(),
+            namespace: None,
+            ca_certificate: Some(bao.ca_path.clone()),
+            derived: false,
+        })
     };
     let mut secrets = Vec::new();
     let control = bao.provision_key("control", false).await?;
     secrets.push(("KASUMI_BENCH_CONTROL".to_owned(), Zeroizing::new(control)));
-    config.control.transit = transit("control", "KASUMI_BENCH_CONTROL");
+    config.control.keys = transit("control", "KASUMI_BENCH_CONTROL");
     let custody_control = bao.provision_key("control-custody", false).await?;
     secrets.push((
         "KASUMI_BENCH_CONTROL_CUSTODY".to_owned(),
         Zeroizing::new(custody_control),
     ));
-    config.control.custody_transit = transit("control-custody", "KASUMI_BENCH_CONTROL_CUSTODY");
+    config.control.custody_keys = transit("control-custody", "KASUMI_BENCH_CONTROL_CUSTODY");
     config.control.initial_policy = policy();
     let security = bao.provision_key("security", false).await?;
     secrets.push(("KASUMI_BENCH_SECURITY".to_owned(), Zeroizing::new(security)));
-    config.security_audit.transit = transit("security", "KASUMI_BENCH_SECURITY");
+    config.security_audit.keys = transit("security", "KASUMI_BENCH_SECURITY");
     config.security_audit.max_records = 2_000_000;
     config.tenants.clear();
     let mut oauth = Vec::new();
@@ -333,8 +337,8 @@ async fn benchmark(
         config.tenants.push(TenantConfig {
             serving: kasumi_server::serving_runtime::TenantServingConfig::LocalFixture,
             tenant: name.clone(),
-            transit: transit(&name, &env),
-            custody_transit: transit(&custody_name, &custody_env),
+            keys: transit(&name, &env),
+            custody_keys: transit(&custody_name, &custody_env),
             initial_policy: policy(),
             initial_limits: Limits {
                 max_documents: count as u64 + 1,

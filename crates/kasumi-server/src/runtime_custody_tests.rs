@@ -35,18 +35,19 @@ async fn retired_runtime_reopens_current_custody_without_constructing_applicatio
     config.admin.listen = admin;
     config.mcp.protocol = McpConfig::new(format!("https://localhost:{}/mcp", mcp.port())).unwrap();
     for transit in [
-        &mut config.control.transit,
-        &mut config.control.custody_transit,
-        &mut config.security_audit.transit,
+        &mut config.control.keys,
+        &mut config.control.custody_keys,
+        &mut config.security_audit.keys,
     ]
     .into_iter()
     .chain(
         config
             .tenants
             .iter_mut()
-            .flat_map(|tenant| [&mut tenant.transit, &mut tenant.custody_transit]),
+            .flat_map(|tenant| [&mut tenant.keys, &mut tenant.custody_keys]),
     ) {
-        transit.endpoint = endpoint.clone();
+        let transit = transit.transit_mut().unwrap();
+            transit.endpoint = endpoint.clone();
         transit.ca_certificate = Some(files.certificate.clone());
     }
     let context = RequestContext {
@@ -125,12 +126,12 @@ async fn retired_runtime_reopens_current_custody_without_constructing_applicatio
         .keys
         .lock()
         .unwrap()
-        .get(&config.tenants[0].transit.key_name)
+        .get(&config.tenants[0].keys.transit_mut().unwrap().key_name)
         .unwrap()
         .clone();
     old_key.revoke();
     let probes = old_key.probe_count();
-    let forbidden_credential = config.tenants[0].transit.token_file.clone();
+    let forbidden_credential = config.tenants[0].keys.transit_mut().unwrap().token_file.clone();
     let mut runtime = NodeRuntime::open_using(config, move |name| {
         anyhow::ensure!(
             name != forbidden_credential,

@@ -69,6 +69,9 @@ impl ServingAuthorityConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TenantServingConfig {
+    Standalone {
+        installation_id: Uuid,
+    },
     Independent {
         authority: String,
     },
@@ -244,6 +247,16 @@ pub(crate) async fn acquire_tenant_access(
         .find(|entry| entry.tenant == tenant)
         .context("tenant serving authority is not installed")?;
     match &configured.serving {
+        TenantServingConfig::Standalone { installation_id } => {
+            ensure!(
+                config.mode == crate::runtime::DeploymentMode::Standalone,
+                "standalone storage requires explicit standalone deployment"
+            );
+            Ok((
+                StorageAccess::standalone(*installation_id, tenant, incarnation)?,
+                None,
+            ))
+        }
         TenantServingConfig::Independent { authority } => {
             let installed = config
                 .serving_authorities

@@ -12,6 +12,7 @@ use serde::Serialize;
 use std::collections::BTreeSet;
 use tonic::{Request, transport::Channel};
 
+mod credentials;
 mod lifecycle;
 pub use lifecycle::KasumiLifecycleClient;
 mod authority;

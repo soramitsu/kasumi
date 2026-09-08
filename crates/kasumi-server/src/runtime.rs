@@ -40,7 +40,7 @@ const MAX_PEM_BYTES: usize = 1 << 20;
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum DeploymentMode {
-    Local,
+    Standalone,
     Replicated,
 }
 
@@ -84,12 +84,52 @@ pub struct TransitSettings {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum KeyProviderSettings {
+    Transit(TransitSettings),
+    File { path: PathBuf },
+}
+impl KeyProviderSettings {
+    pub(crate) fn validate(&self) -> Result<String> {
+        match self {
+            Self::Transit(settings) => settings.validate(),
+            Self::File { path } => Ok(kasumi_store::FileKeyProvider::open(path)?.key_ref().into()),
+        }
+    }
+    pub(crate) fn provider(
+        &self,
+        source: crate::serving_runtime::CredentialSource,
+    ) -> Result<Arc<dyn kasumi_store::KeyProvider>> {
+        match self {
+            Self::Transit(settings) => Ok(settings.provider_with_source(source)?),
+            Self::File { path } => Ok(Arc::new(kasumi_store::FileKeyProvider::open(path)?)),
+        }
+    }
+    pub fn transit_mut(&mut self) -> Result<&mut TransitSettings> {
+        match self {
+            Self::Transit(settings) => Ok(settings),
+            _ => anyhow::bail!("key provider is not Transit"),
+        }
+    }
+    pub(crate) fn identity_descriptor(&self) -> Result<serde_json::Value> {
+        Ok(match self {
+            Self::File { path } => {
+                serde_json::json!({"kind":"file", "identity":kasumi_store::FileKeyProvider::open(path)?.key_ref()})
+            }
+            Self::Transit(settings) => {
+                serde_json::json!({"kind":"transit", "endpoint":settings.endpoint,"mount":settings.mount,"key_name":settings.key_name,"namespace":settings.namespace,"derived":settings.derived})
+            }
+        })
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TenantConfig {
     pub tenant: String,
     pub serving: crate::serving_runtime::TenantServingConfig,
-    pub transit: TransitSettings,
-    pub custody_transit: TransitSettings,
+    pub keys: KeyProviderSettings,
+    pub custody_keys: KeyProviderSettings,
     pub initial_policy: Policy,
     #[serde(default)]
     pub initial_limits: Limits,
@@ -107,8 +147,8 @@ pub struct ControlConfig {
     /// Select an already-authorized operator independently of the immutable genesis policy.
     #[serde(default)]
     pub startup_principal: Option<String>,
-    pub transit: TransitSettings,
-    pub custody_transit: TransitSettings,
+    pub keys: KeyProviderSettings,
+    pub custody_keys: KeyProviderSettings,
     pub initial_policy: Policy,
     #[serde(default)]
     pub initial_limits: Limits,
@@ -119,7 +159,7 @@ pub struct ControlConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SecurityAuditConfig {
-    pub transit: TransitSettings,
+    pub keys: KeyProviderSettings,
     pub max_records: u64,
 }
 
@@ -198,6 +238,11 @@ impl RuntimeConfig {
             destination.validate()?;
         }
         Authenticator::new(self.auth.clone())?;
+        ensure!(
+            !matches!(self.auth.source, crate::auth::AuthKeySource::Local { .. })
+                || self.mode == DeploymentMode::Standalone,
+            "local credential storage requires standalone mode"
+        );
         let mut addresses = BTreeSet::new();
         for address in [self.mcp.listen, self.native.listen, self.admin.listen] {
             ensure!(
@@ -223,12 +268,12 @@ impl RuntimeConfig {
             "security audit retention quota must be positive"
         );
         let mut key_refs = BTreeSet::new();
-        for transit in std::iter::once(&self.security_audit.transit)
-            .chain([&self.control.transit, &self.control.custody_transit])
+        for transit in std::iter::once(&self.security_audit.keys)
+            .chain([&self.control.keys, &self.control.custody_keys])
             .chain(
                 self.tenants
                     .iter()
-                    .flat_map(|tenant| [&tenant.transit, &tenant.custody_transit]),
+                    .flat_map(|tenant| [&tenant.keys, &tenant.custody_keys]),
             )
         {
             ensure!(
@@ -242,8 +287,30 @@ impl RuntimeConfig {
             lifecycle.validate(self.mode, self.control.incarnation.as_deref())?;
         }
         let mut tenants = BTreeSet::new();
+        let mut standalone_installation = None;
         for tenant in &self.tenants {
             match &tenant.serving {
+                crate::serving_runtime::TenantServingConfig::Standalone { installation_id } => {
+                    ensure!(
+                        self.mode == DeploymentMode::Standalone && !installation_id.is_nil(),
+                        "standalone serving requires explicit installation identity and standalone mode"
+                    );
+                    ensure!(
+                        standalone_installation.is_none_or(|id| id == *installation_id),
+                        "standalone tenants belong to different installations"
+                    );
+                    standalone_installation = Some(*installation_id);
+                    ensure!(
+                        !uuid::Uuid::parse_str(
+                            tenant
+                                .incarnation
+                                .as_deref()
+                                .context("standalone incarnation missing")?
+                        )?
+                        .is_nil(),
+                        "standalone incarnation cannot be nil"
+                    );
+                }
                 crate::serving_runtime::TenantServingConfig::Independent { authority } => {
                     ensure!(
                         self.mode == DeploymentMode::Replicated
@@ -277,7 +344,7 @@ impl RuntimeConfig {
             self.control.initial_limits.clone(),
         )?;
         match self.mode {
-            DeploymentMode::Local => {
+            DeploymentMode::Standalone => {
                 ensure!(
                     self.replication.is_none(),
                     "local mode cannot contain replicated bootstrap configuration"
@@ -334,7 +401,7 @@ impl RuntimeConfig {
         limits: &Limits,
         incarnation: Option<&str>,
     ) -> Result<Option<ReplicatedBootstrap>> {
-        if self.mode == DeploymentMode::Local {
+        if self.mode == DeploymentMode::Standalone {
             return Ok(None);
         }
         let replication = self
@@ -762,6 +829,7 @@ pub struct NodeRuntime {
     local_certificate_pin: CertificatePin,
     closed: bool,
     administration: Option<Arc<crate::administration::Administration>>,
+    _standalone_lock: Option<kasumi_store::private_files::ExclusiveLock>,
 }
 
 impl NodeRuntime {
@@ -774,6 +842,7 @@ impl NodeRuntime {
         credential: impl Fn(&str) -> Result<Zeroizing<String>> + Send + Sync + 'static,
     ) -> Result<Self> {
         config.validate()?;
+        let standalone_lock = crate::standalone::claim(&config)?;
         let credential = Arc::new(credential);
         let admission = kasumi_engine::admission::NodeAdmission::new(config.admission.clone())?;
         let lifecycle_signer = config
@@ -803,18 +872,9 @@ impl NodeRuntime {
         let mcp_tls = kasumi_transport::server_config(&mcp_identity, ClientAuthentication::OAuth)?;
         let native_tls = config.native.load()?;
         let admin_tls = config.admin.load()?;
-        let control_provider = config
-            .control
-            .transit
-            .provider_with_source(credential.clone())?;
-        let control_custody_provider = config
-            .control
-            .custody_transit
-            .provider_with_source(credential.clone())?;
-        let security_provider = config
-            .security_audit
-            .transit
-            .provider_with_source(credential.clone())?;
+        let control_provider = config.control.keys.provider(credential.clone())?;
+        let control_custody_provider = config.control.custody_keys.provider(credential.clone())?;
+        let security_provider = config.security_audit.keys.provider(credential.clone())?;
         let mcp_socket = TcpListener::bind(config.mcp.listen).await?;
         let native_socket = TcpListener::bind(config.native.listen).await?;
         let admin_socket = TcpListener::bind(config.admin.listen).await?;
@@ -862,6 +922,14 @@ impl NodeRuntime {
         .await?;
         let audit = SecurityAudit::open(security_store, config.security_audit.max_records)?;
         auth.install_audit(audit.clone())?;
+        if let crate::auth::AuthKeySource::Local { signer_file } = &config.auth.source {
+            auth.install_local_credentials(crate::local_auth::LocalCredentials::open(
+                audit.store().clone(),
+                signer_file.clone(),
+                config.auth.issuer.clone(),
+                config.auth.audience.clone(),
+            )?)?;
+        }
         if let Some(cluster) = &cluster {
             cluster.install_audit(audit.clone())?;
         }
@@ -891,6 +959,7 @@ impl NodeRuntime {
         .await?;
         control.database.install_admission(admission.clone())?;
         let mut runtime = Self {
+            _standalone_lock: standalone_lock,
             config: config.clone(),
             registry: registry.clone(),
             tenants: Vec::new(),
@@ -916,7 +985,7 @@ impl NodeRuntime {
                 lease: None,
             }];
             for tenant in &config.tenants {
-                let custody_provider = tenant.custody_transit.provider_with_source(credential.clone())?;
+                let custody_provider = tenant.custody_keys.provider(credential.clone())?;
                 if kasumi_store::CustodyStore::catalog_installed(&node, &tenant.tenant)? {
                     let custody_store = kasumi_store::CustodyStore::open(node.clone(), tenant.tenant.clone(), custody_provider.clone()).await?;
                     if let Some(control) = kasumi_raft::ControlLog::installed(custody_store.clone())? {
@@ -937,6 +1006,7 @@ impl NodeRuntime {
                     }
                 }
                 let incarnation = match &tenant.serving {
+                    crate::serving_runtime::TenantServingConfig::Standalone { .. } => uuid::Uuid::parse_str(tenant.incarnation.as_deref().context("installed standalone incarnation is required")?)?,
                     crate::serving_runtime::TenantServingConfig::Independent { .. } => uuid::Uuid::parse_str(tenant.incarnation.as_deref().context("installed incarnation is required")?)?,
                     #[cfg(any(test, feature = "test-utils"))]
                     crate::serving_runtime::TenantServingConfig::LocalFixture => tenant.incarnation.as_deref().map(uuid::Uuid::parse_str).transpose()?.unwrap_or_else(uuid::Uuid::new_v4),
@@ -952,7 +1022,7 @@ impl NodeRuntime {
                 };
                 // The application provider is constructed only after the closed
                 // control route is excluded and an issuer capability is live.
-                let provider = tenant.transit.provider_with_source(credential.clone())?;
+                let provider = tenant.keys.provider(credential.clone())?;
                 let stores = TenantStorageSet::open(
                     node.clone(),
                     tenant.tenant.clone(),
@@ -990,12 +1060,12 @@ impl NodeRuntime {
                 runtime.tenants.push(opened);
             }
             let provider_factories = config.tenants.iter().map(|tenant| {
-                let application = tenant.transit.clone();
-                let custody = tenant.custody_transit.clone();
+                let application = tenant.keys.clone();
+                let custody = tenant.custody_keys.clone();
                 let credential = credential.clone();
                 let factory: crate::administration::ProviderFactory = Arc::new(move || {
-                    let application: Arc<dyn kasumi_store::KeyProvider> = application.provider_with_source(credential.clone())?;
-                    let custody: Arc<dyn kasumi_store::KeyProvider> = custody.provider_with_source(credential.clone())?;
+                    let application: Arc<dyn kasumi_store::KeyProvider> = application.provider(credential.clone())?;
+                    let custody: Arc<dyn kasumi_store::KeyProvider> = custody.provider(credential.clone())?;
                     Ok((application, custody))
                 });
                 (tenant.tenant.clone(), factory)
@@ -1594,14 +1664,16 @@ pub fn example_config() -> RuntimeConfig {
         tls: tls(),
         client_ca: "/etc/kasumi/operator-ca.pem".into(),
     };
-    let transit = |key: &str, variable: &str| TransitSettings {
-        endpoint: "https://openbao.example".into(),
-        mount: "transit".into(),
-        key_name: key.into(),
-        token_file: format!("/etc/kasumi/credentials/{variable}"),
-        namespace: None,
-        ca_certificate: None,
-        derived: false,
+    let transit = |key: &str, variable: &str| {
+        KeyProviderSettings::Transit(TransitSettings {
+            endpoint: "https://openbao.example".into(),
+            mount: "transit".into(),
+            key_name: key.into(),
+            token_file: format!("/etc/kasumi/credentials/{variable}"),
+            namespace: None,
+            ca_certificate: None,
+            derived: false,
+        })
     };
     let policy = |principal: &str| Policy {
         grants: vec![Grant {
@@ -1651,10 +1723,12 @@ pub fn example_config() -> RuntimeConfig {
         mode: DeploymentMode::Replicated,
         database_path: "/var/lib/kasumi/node.redb".into(),
         auth: AuthConfig {
-            jwks_trusted_ca_pem: None,
             issuer: "https://identity.example".into(),
             audience: "https://kasumi.example/mcp".into(),
-            jwks_uri: "https://identity.example/.well-known/jwks.json".into(),
+            source: crate::auth::AuthKeySource::ExternalOAuth {
+                jwks_uri: "https://identity.example/.well-known/jwks.json".into(),
+                trusted_ca_pem: None,
+            },
             algorithms: vec![jsonwebtoken::Algorithm::EdDSA],
             access_token_types: BTreeSet::from(["at+jwt".into()]),
         },
@@ -1668,8 +1742,8 @@ pub fn example_config() -> RuntimeConfig {
         control: ControlConfig {
             lifecycle: None,
             startup_principal: None,
-            transit: transit("kasumi-control", "KASUMI_CONTROL_TRANSIT_TOKEN"),
-            custody_transit: transit(
+            keys: transit("kasumi-control", "KASUMI_CONTROL_TRANSIT_TOKEN"),
+            custody_keys: transit(
                 "kasumi-control-custody",
                 "KASUMI_CONTROL_CUSTODY_TRANSIT_TOKEN",
             ),
@@ -1678,7 +1752,7 @@ pub fn example_config() -> RuntimeConfig {
             incarnation: Some(uuid::Uuid::from_u128(2).to_string()),
         },
         security_audit: SecurityAuditConfig {
-            transit: transit("kasumi-node-security", "KASUMI_SECURITY_TRANSIT_TOKEN"),
+            keys: transit("kasumi-node-security", "KASUMI_SECURITY_TRANSIT_TOKEN"),
             max_records: 1_000_000,
         },
         tenants: vec![TenantConfig {
@@ -1686,8 +1760,8 @@ pub fn example_config() -> RuntimeConfig {
             serving: crate::serving_runtime::TenantServingConfig::Independent {
                 authority: "storage-fence".into(),
             },
-            transit: transit("acme-wrapping-key", "KASUMI_ACME_TRANSIT_TOKEN"),
-            custody_transit: transit("acme-custody-key", "KASUMI_ACME_CUSTODY_TRANSIT_TOKEN"),
+            keys: transit("acme-wrapping-key", "KASUMI_ACME_TRANSIT_TOKEN"),
+            custody_keys: transit("acme-custody-key", "KASUMI_ACME_CUSTODY_TRANSIT_TOKEN"),
             initial_policy: policy("acme-admin"),
             initial_limits: Limits::default(),
             incarnation: Some(uuid::Uuid::from_u128(3).to_string()),
@@ -1771,7 +1845,7 @@ impl AdminClientConfig {
 #[cfg(test)]
 fn fixture_config() -> RuntimeConfig {
     let mut config = example_config();
-    config.mode = DeploymentMode::Local;
+    config.mode = DeploymentMode::Standalone;
     config.replication = None;
     config.control.incarnation = None;
     config.serving_authorities.clear();
@@ -1800,16 +1874,16 @@ mod tests {
     #[test]
     fn rejects_shared_wrapping_keys_reserved_tenants_and_ambiguous_listeners() {
         let mut config = fixture_config();
-        config.control.transit = config.tenants[0].transit.clone();
+        config.control.keys = config.tenants[0].keys.clone();
         assert!(config.validate().is_err());
         let mut config = fixture_config();
-        config.tenants[0].custody_transit = config.tenants[0].transit.clone();
+        config.tenants[0].custody_keys = config.tenants[0].keys.clone();
         assert!(config.validate().is_err());
         let mut config = fixture_config();
-        config.control.custody_transit = config.tenants[0].custody_transit.clone();
+        config.control.custody_keys = config.tenants[0].custody_keys.clone();
         assert!(config.validate().is_err());
         let mut config = fixture_config();
-        config.security_audit.transit = config.tenants[0].transit.clone();
+        config.security_audit.keys = config.tenants[0].keys.clone();
         assert!(config.validate().is_err());
         let mut config = fixture_config();
         config.tenants[0].tenant = CONTROL_TENANT.into();
@@ -1828,16 +1902,17 @@ mod tests {
     #[test]
     fn rejects_cleartext_credential_urls_ambient_variable_names_and_missing_administrators() {
         let mut config = fixture_config();
-        config.tenants[0].transit.endpoint = "http://localhost:8200".into();
+        config.tenants[0].keys.transit_mut().unwrap().endpoint = "http://localhost:8200".into();
         assert!(config.validate().is_err());
         let mut config = fixture_config();
-        config.tenants[0].transit.endpoint = "https://user:password@localhost".into();
+        config.tenants[0].keys.transit_mut().unwrap().endpoint =
+            "https://user:password@localhost".into();
         assert!(config.validate().is_err());
         let mut config = fixture_config();
-        config.tenants[0].transit.token_file = "HOME".into();
+        config.tenants[0].keys.transit_mut().unwrap().token_file = "HOME".into();
         assert!(config.validate().is_err());
         let mut config = fixture_config();
-        config.tenants[0].transit.key_name = "../different-key".into();
+        config.tenants[0].keys.transit_mut().unwrap().key_name = "../different-key".into();
         assert!(config.validate().is_err());
         let mut config = fixture_config();
         config.tenants[0].initial_policy = Policy::default();
@@ -1880,7 +1955,7 @@ mod tests {
         config.mode = DeploymentMode::Replicated;
         assert!(config.validate().is_err());
         let mut config = replicated();
-        config.mode = DeploymentMode::Local;
+        config.mode = DeploymentMode::Standalone;
         assert!(config.validate().is_err());
         let mut config = replicated();
         config.replication.as_mut().unwrap().peers.pop();
@@ -2376,8 +2451,8 @@ mod lifecycle_tests {
         let mut next = base.clone();
         next.tenant = tenant.into();
         next.incarnation = Some(incarnation);
-        next.transit.key_name = format!("{tenant}-wrapping-key");
-        next.custody_transit.key_name = format!("{tenant}-custody-key");
+        next.keys.transit_mut().unwrap().key_name = format!("{tenant}-wrapping-key");
+        next.custody_keys.transit_mut().unwrap().key_name = format!("{tenant}-custody-key");
         next.initial_policy.grants = vec![Grant {
             principal: format!("{tenant}-admin"),
             collection: None,
@@ -2661,17 +2736,18 @@ mod lifecycle_tests {
         config.mcp.protocol =
             McpConfig::new(format!("https://localhost:{}/mcp", mcp.port())).unwrap();
         for transit in [
-            &mut config.control.transit,
-            &mut config.control.custody_transit,
-            &mut config.security_audit.transit,
+            &mut config.control.keys,
+            &mut config.control.custody_keys,
+            &mut config.security_audit.keys,
         ]
         .into_iter()
         .chain(
             config
                 .tenants
                 .iter_mut()
-                .flat_map(|tenant| [&mut tenant.transit, &mut tenant.custody_transit]),
+                .flat_map(|tenant| [&mut tenant.keys, &mut tenant.custody_keys]),
         ) {
+            let transit = transit.transit_mut().unwrap();
             transit.endpoint = transit_endpoint.clone();
             transit.ca_certificate = Some(files.certificate.clone());
         }
@@ -3184,19 +3260,21 @@ mod lifecycle_tests {
             });
             config.tenants[0].incarnation = Some(incarnation.clone());
             config.control.incarnation = Some(control_incarnation.clone());
-            config.security_audit.transit.key_name = format!("node{node}-security");
+            config.security_audit.keys.transit_mut().unwrap().key_name =
+                format!("node{node}-security");
             for settings in [
-                &mut config.control.transit,
-                &mut config.control.custody_transit,
-                &mut config.security_audit.transit,
+                &mut config.control.keys,
+                &mut config.control.custody_keys,
+                &mut config.security_audit.keys,
             ]
             .into_iter()
             .chain(
                 config
                     .tenants
                     .iter_mut()
-                    .flat_map(|tenant| [&mut tenant.transit, &mut tenant.custody_transit]),
+                    .flat_map(|tenant| [&mut tenant.keys, &mut tenant.custody_keys]),
             ) {
+                let settings = settings.transit_mut().unwrap();
                 settings.endpoint = kms_endpoint.clone();
                 settings.ca_certificate = Some(mock_files.certificate.clone());
             }

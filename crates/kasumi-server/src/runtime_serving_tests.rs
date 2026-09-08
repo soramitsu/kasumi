@@ -43,17 +43,18 @@ async fn fenced_source_startup_keeps_control_handle_without_constructing_applica
         &files.load().unwrap().certificate_pin(),
     )];
     for setting in [
-        &mut config.control.transit,
-        &mut config.control.custody_transit,
-        &mut config.security_audit.transit,
+        &mut config.control.keys,
+        &mut config.control.custody_keys,
+        &mut config.security_audit.keys,
     ]
     .into_iter()
     .chain(
         config
             .tenants
             .iter_mut()
-            .flat_map(|tenant| [&mut tenant.transit, &mut tenant.custody_transit]),
+            .flat_map(|tenant| [&mut tenant.keys, &mut tenant.custody_keys]),
     ) {
+        let setting = setting.transit_mut().unwrap();
         setting.endpoint = endpoint.clone();
         setting.ca_certificate = Some(files.certificate.clone());
     }
@@ -65,7 +66,7 @@ async fn fenced_source_startup_keeps_control_handle_without_constructing_applica
     authority.server_ca = files.certificate.clone();
     authority.endpoints.get_mut(&0).unwrap().endpoint =
         format!("https://localhost:{}", unavailable_address.port());
-    let application_token = config.tenants[0].transit.token_file.clone();
+    let application_token = config.tenants[0].keys.transit_mut().unwrap().token_file.clone();
     let probes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let observed = probes.clone();
     let mut runtime = NodeRuntime::open_using(config.clone(), move |name| {

@@ -2,8 +2,10 @@
 mod lifecycle;
 pub use lifecycle::*;
 mod authorization;
-pub use authorization::RequestAuthorization;
+pub use authorization::{CredentialLiveness, RequestAuthorization};
 mod credential_resource;
+mod credentials;
+pub use credentials::*;
 mod restore_lineage;
 pub use credential_resource::CredentialResource;
 pub use restore_lineage::*;

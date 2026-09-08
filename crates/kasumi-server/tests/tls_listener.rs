@@ -30,8 +30,10 @@ async fn native_grpc_channel_uses_pinned_tls13_and_http2_with_no_plaintext_fallb
     let auth = Authenticator::new(AuthConfig {
         issuer: "https://issuer.example".into(),
         audience: "https://kasumi.example".into(),
-        jwks_uri: "https://issuer.example/keys".into(),
-        jwks_trusted_ca_pem: None,
+        source: kasumi_server::auth::AuthKeySource::ExternalOAuth {
+            jwks_uri: "https://issuer.example/keys".into(),
+            trusted_ca_pem: None,
+        },
         algorithms: vec![jsonwebtoken::Algorithm::EdDSA],
         access_token_types: BTreeSet::from(["at+jwt".into()]),
     })?;

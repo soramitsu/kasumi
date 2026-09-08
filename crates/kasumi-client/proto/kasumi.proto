@@ -45,6 +45,10 @@ message AuthorityReceiptRequest { string tenant = 1; string command_id = 2; }
 // Bind only to the administrative listener. These methods still enforce the
 // current tenant/collection admin policy in consensus order.
 service KasumiAdmin {
+  rpc CreateCredential(CredentialJsonRequest) returns (CredentialJsonResponse);
+  rpc RenewCredential(CredentialJsonRequest) returns (CredentialJsonResponse);
+  rpc RevokeCredential(CredentialJsonRequest) returns (CredentialJsonResponse);
+  rpc CredentialStatus(CredentialJsonRequest) returns (CredentialJsonResponse);
   rpc ReadCustody(RetirementReference) returns (CustodyStatusResponse);
   rpc ExecuteCustody(CustodyCommandRequest) returns (CustodyReceiptResponse);
   rpc AbortRetirement(RetireSourceRequest) returns (RetirementStatusResponse);
@@ -68,6 +72,8 @@ service KasumiAdmin {
 }
 
 message GetRequest { string collection = 1; string id = 2; }
+message CredentialJsonRequest { bytes request_json = 1; }
+message CredentialJsonResponse { bytes response_json = 1; }
 message Document { string id = 1; uint64 version = 2; bytes body_json = 3; }
 message QueryRequest { bytes query_json = 1; }
 message ReadSnapshotRequest { bytes request_json = 1; }

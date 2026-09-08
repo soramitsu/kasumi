@@ -5,8 +5,8 @@ use crate::{
     cluster::{ClusterNetwork, PeerConfig, PeerLimits},
     rpc::NativeAuthority,
     runtime::{
-        MutualTlsEndpoint, ReplicationConfig, SecurityAuditConfig, TransitSettings, file_secret,
-        parse_certificate_pin, read_bounded, read_private_file,
+        KeyProviderSettings, MutualTlsEndpoint, ReplicationConfig, SecurityAuditConfig,
+        file_secret, parse_certificate_pin, read_bounded, read_private_file,
     },
     tls,
 };
@@ -37,8 +37,8 @@ pub struct AuthorityRuntimeConfig {
     pub installation: AuthorityInstallation,
     pub database_path: PathBuf,
     pub signing_key: PathBuf,
-    pub transit: TransitSettings,
-    pub custody_transit: TransitSettings,
+    pub keys: KeyProviderSettings,
+    pub custody_keys: KeyProviderSettings,
     pub security_audit: SecurityAuditConfig,
     pub auth: AuthConfig,
     pub native: MutualTlsEndpoint,
@@ -67,9 +67,9 @@ impl AuthorityRuntimeConfig {
             "authority listeners collide"
         );
         let roots = [
-            self.transit.validate()?,
-            self.custody_transit.validate()?,
-            self.security_audit.transit.validate()?,
+            self.keys.validate()?,
+            self.custody_keys.validate()?,
+            self.security_audit.keys.validate()?,
         ];
         ensure!(
             roots[0] != roots[1] && roots[0] != roots[2] && roots[1] != roots[2],
@@ -134,10 +134,7 @@ impl AuthorityRuntime {
         let audit_store = TenantStore::open(
             node.clone(),
             kasumi_engine::SECURITY_TENANT.into(),
-            config
-                .security_audit
-                .transit
-                .provider_with_source(Arc::new(file_secret))?,
+            config.security_audit.keys.provider(Arc::new(file_secret))?,
             StorageAccess::security_audit(),
         )
         .await?;
@@ -147,10 +144,8 @@ impl AuthorityRuntime {
         let stores = TenantStorageSet::open(
             node,
             config.installation.tenant(),
-            config.transit.provider_with_source(Arc::new(file_secret))?,
-            config
-                .custody_transit
-                .provider_with_source(Arc::new(file_secret))?,
+            config.keys.provider(Arc::new(file_secret))?,
+            config.custody_keys.provider(Arc::new(file_secret))?,
             StorageAccess::independent_authority(
                 &config.installation.manifest,
                 config.installation.partition,

@@ -331,10 +331,12 @@ mod tests {
                 AuthConfig {
                     issuer: "https://issuer.example".into(),
                     audience: "https://kasumi.example/mcp".into(),
-                    jwks_uri: "https://issuer.example/keys".into(),
+                    source: crate::auth::AuthKeySource::ExternalOAuth {
+                        jwks_uri: "https://issuer.example/keys".into(),
+                        trusted_ca_pem: None,
+                    },
                     algorithms: vec![Algorithm::EdDSA],
                     access_token_types: BTreeSet::from(["at+jwt".into()]),
-                    jwks_trusted_ca_pem: None,
                 },
                 keys,
             )

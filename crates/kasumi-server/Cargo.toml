@@ -42,9 +42,12 @@ http-body-util = "0.1"
 sha2.workspace = true
 hyper = { version = "1", features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["server-auto", "http1", "http2", "tokio", "service"] }
+base64 = "0.22"
+rcgen = { version = "0.14", features = ["x509-parser"] }
+time = "0.3"
 
 [dev-dependencies]
 base64 = "0.22"
-rcgen = "0.14"
+rcgen = { version = "0.14", features = ["x509-parser"] }
 tempfile.workspace = true
 kasumi-store = { workspace = true, features = ["test-utils"] }
