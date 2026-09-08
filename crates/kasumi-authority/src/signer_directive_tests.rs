@@ -3,7 +3,7 @@ async fn signer_directive_is_ordered_exact_finite_and_preserved_in_encrypted_sna
     use kasumi_raft::StateMachineBackend;
     let f = Fixture::new().await;
     let service = f.leader().await;
-    let verifier = TrustVerifierIdentity { installation_id: Uuid::new_v4(), node_id: service.local_node_id };
+    let verifier = f.settings.installed_members[&service.local_node_id].verifier.clone();
     let domain = f.installation.manifest.signing_domain(0).unwrap().digest().unwrap();
     let command = SignerTrustCommand {
         operation_id: Uuid::new_v4(), expected_revision: 0, not_after_ms: 1_050_000,
@@ -47,13 +47,23 @@ async fn signer_directive_is_ordered_exact_finite_and_preserved_in_encrypted_sna
         }
     });
     assert!(current.backend.restore(&mut corrupted.as_slice()).is_err());
+    let substituted = crate::state::snapshot::rewrite_for_test(&snapshot, |value| {
+        if value["type"] == "Entry" && value["value"][0] == key {
+            let record = &mut value["value"][1]["record"];
+            record["command"]["action"]["verifier"]["installation_id"] = serde_json::json!(Uuid::new_v4());
+            let command: AuthorityMaintenanceCommand = serde_json::from_value(record["command"].clone()).unwrap();
+            record["command_sha256"] = serde_json::json!(command.digest().unwrap());
+        }
+    });
+    assert!(current.backend.restore(&mut substituted.as_slice()).is_err());
+
     assert_eq!(current.signer_directive(&context, &verifier, &domain, command.operation_id).await.unwrap().unwrap(), *accepted.status());
     // A fresh identity must not first commit after its immutable admission bound.
     f.clock.0.store(60_000, Ordering::SeqCst);
     let mut expired = command.clone();
     expired.operation_id = Uuid::new_v4();
     let current = f.leader().await;
-    let current_verifier = TrustVerifierIdentity { node_id: current.local_node_id, ..verifier.clone() };
+    let current_verifier = f.settings.installed_members[&current.local_node_id].verifier.clone();
     assert!(current.commit_signer_directive(&context, &current_verifier, &domain, &expired).await.is_err());
     assert!(current.backend.maintenance_status(expired.operation_id).unwrap().is_none());
     f.close().await;

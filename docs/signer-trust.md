@@ -100,6 +100,16 @@ Each authority and data/Control runtime configures `signer_verifier` with:
 - `database_path`: an absolute path to its separately encrypted metadata file;
 - `keys`: its own installed file or Transit key-provider domain.
 
+Every enrolled HA `NodeIdentity`, lifecycle target node and authority member
+contains the exact `verifier` identity. Its node ID must agree with the member's
+node ID. The authority runtime's `installed_verifiers` map supplies these
+identities for its pinned operational peers and must include its own configured
+verifier. A serving or lifecycle boot must use that same physical owner; a copied
+node ID, principal and TLS certificate cannot substitute another metadata
+installation. All partitions attached to one `AuthorityTrust` share one physical
+verifier. These durable bindings are prerequisites for the complete activation
+roster; they do not themselves acknowledge remote activation or retirement.
+
 Data/Control runtime configuration explicitly sets `signer_verifier: null` only
 when no independent authority manifests are installed. The domain set is the
 exact union of all installed authority manifest partitions. Configured metadata

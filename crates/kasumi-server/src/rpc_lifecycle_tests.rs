@@ -76,8 +76,7 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
         clock_rate_error_ppm: 0,
     };
     let issuer_signing = issuer_root.install(manifest.clone(), 0).unwrap();
-    let issuer_signer = issuer_signing.signer;
-    let issuer_trust = issuer_signing.trust;
+    let issuer_trust = issuer_signing.trust.clone();
     let partition = manifest.control_partition(0).unwrap();
     let issuer_install = kasumi_authority::AuthorityInstallation {
         manifest: manifest.clone(),
@@ -98,7 +97,10 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
         let issuer = kasumi_authority::IndependentAuthority::open_replicated(
             stores,
             issuer_install.clone(),
-            issuer_signer.clone(),
+            issuer_signing
+                .for_verifier(kasumi_serving::test_utils::fixture_verifier(id))
+                .unwrap()
+                .signer,
             id,
             kasumi_authority::AuthorityNodeSettings {
                 bootstrap: kasumi_authority::AuthorityBootstrap {
@@ -115,6 +117,7 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
                                 (
                                     n,
                                     kasumi_serving::AuthorityMember {
+                                        verifier: kasumi_serving::test_utils::fixture_verifier(n),
                                         endpoint: format!("https://authority-{n}.test"),
                                         failure_domain: format!("domain-{n}"),
                                         certificate_pins: BTreeSet::from([format!("{n:064x}")]),
@@ -130,6 +133,7 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
                         (
                             n,
                             kasumi_serving::AuthorityMember {
+                                verifier: kasumi_serving::test_utils::fixture_verifier(n),
                                 endpoint: format!("https://authority-{n}.test"),
                                 failure_domain: format!("domain-{n}"),
                                 certificate_pins: BTreeSet::from([format!("{n:064x}")]),
@@ -348,6 +352,7 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
                     id,
                     LifecycleNode {
                         node_id: id,
+                        verifier: kasumi_serving::test_utils::fixture_verifier(id),
                         principal: format!("target-{id}"),
                         attestation_public_key: format!("{:064x}", id + 100),
                         certificate_sha256: if id == 1 {
@@ -419,6 +424,7 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
             .values()
             .map(|n| kasumi_serving::NodeIdentity {
                 node_id: n.node_id,
+                verifier: n.verifier.clone(),
                 principal: n.principal.clone(),
                 certificate_sha256: n.certificate_sha256.clone(),
             })

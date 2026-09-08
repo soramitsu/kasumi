@@ -113,8 +113,12 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
     // administrator; it is not a distributed maintenance coordinator.
     for node_id in 1..=4 {
         let verifier = TrustVerifierIdentity {
-            installation_id: verifier_installation,
-            node_id,
+            installation_id: if node_id == 4 {
+                uuid::Uuid::new_v4()
+            } else {
+                verifier_installation
+            },
+            node_id: if node_id == 4 { 1 } else { node_id },
         };
         if node_id <= 3 {
             use crate::signer_runtime::{InitializeSignerVerifier, SignerVerifierConfig};
@@ -189,6 +193,10 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
                         (
                             n,
                             kasumi_serving::AuthorityMember {
+                                verifier: kasumi_serving::TrustVerifierIdentity {
+                                    installation_id: verifier_installation,
+                                    node_id: n,
+                                },
                                 endpoint: format!("https://authority-{n}.test"),
                                 failure_domain: format!("domain-{n}"),
                                 certificate_pins: BTreeSet::from([format!("{n:064x}")]),
@@ -204,6 +212,10 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
                 (
                     n,
                     kasumi_serving::AuthorityMember {
+                        verifier: kasumi_serving::TrustVerifierIdentity {
+                            installation_id: verifier_installation,
+                            node_id: n,
+                        },
                         endpoint: format!("https://authority-{n}.test"),
                         failure_domain: format!("domain-{n}"),
                         certificate_pins: BTreeSet::from([format!("{n:064x}")]),
@@ -305,6 +317,14 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
         .enumerate()
         .map(|(index, identity)| NodeIdentity {
             node_id: index as u64 + 1,
+            verifier: if index == 0 {
+                trust.verifier_identity().unwrap()
+            } else {
+                kasumi_serving::TrustVerifierIdentity {
+                    installation_id: verifier_installation,
+                    node_id: index as u64 + 1,
+                }
+            },
             principal: format!("node-{}", index + 1),
             certificate_sha256: hex::encode(identity.certificate_pin()),
         })

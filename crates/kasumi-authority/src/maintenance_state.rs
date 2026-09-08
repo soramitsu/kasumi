@@ -426,7 +426,10 @@ impl Backend {
                 domain_sha256,
                 command,
             } => {
-                if !next.members.contains_key(&verifier.node_id)
+                if next
+                    .members
+                    .get(&verifier.node_id)
+                    .is_none_or(|member| member.verifier != *verifier)
                     || self
                         .record(&revoked_key(verifier.node_id))
                         .map_err(unavailable)?
@@ -539,8 +542,8 @@ impl Backend {
                         if status.phase == AuthorityMaintenancePhase::Completed {
                             let domain = self.installation.manifest.signing_domain(self.installation.partition)?;
                             ensure!(*domain_sha256 == domain.digest()?, "signer directive snapshot domain differs");
-                            ensure!(state.membership.members.contains_key(&verifier.node_id)
-                                || matches!(snapshot.records.get(&revoked_key(verifier.node_id))?, Some(Record::RevokedMember(_))), "signer directive member lacks its permanent identity");
+                            ensure!(state.membership.members.get(&verifier.node_id).is_some_and(|member| member.verifier == *verifier)
+                                || matches!(snapshot.records.get(&revoked_key(verifier.node_id))?, Some(Record::RevokedMember(ref record)) if record.member.verifier == *verifier), "signer directive member lacks its permanent physical identity");
                             if let SignerTrustAction::Stage { certificate } = &command.action { certificate.verify(&domain)?; }
                         }
                     }
@@ -555,7 +558,7 @@ impl Backend {
                 }
                 Record::RevokedMember(revoked) => {
                     revoked.member.validate()?;
-                    ensure!(revoked.node_id > 0 && revoked.revision > 0 && revoked.revision <= snapshot.meta.revision
+                    ensure!(revoked.node_id == revoked.member.verifier.node_id && revoked.revision > 0 && revoked.revision <= snapshot.meta.revision
                         && key == revoked_key(revoked.node_id) && !state.membership.members.contains_key(&revoked.node_id),
                         "revoked authority member snapshot identity differs");
                     let Some(Record::Maintenance(status)) = snapshot.records.get(&operation_key(revoked.operation_id))? else {

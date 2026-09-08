@@ -122,6 +122,7 @@ pub enum LifecyclePhase {
 #[serde(deny_unknown_fields)]
 pub struct LifecycleNode {
     pub node_id: u64,
+    pub verifier: crate::TrustVerifierIdentity,
     pub principal: String,
     pub certificate_sha256: String,
     /// Installed target-only Ed25519 attestation identity. Its signer accepts
@@ -131,6 +132,11 @@ pub struct LifecycleNode {
 impl LifecycleNode {
     pub fn validate(&self) -> Result<()> {
         require(self.node_id > 0, "zero lifecycle node")?;
+        self.verifier.validate()?;
+        require(
+            self.verifier.node_id == self.node_id,
+            "lifecycle physical verifier node differs",
+        )?;
         validate_name(&self.principal)?;
         validate_sha256(&self.certificate_sha256)?;
         validate_sha256(&self.attestation_public_key)

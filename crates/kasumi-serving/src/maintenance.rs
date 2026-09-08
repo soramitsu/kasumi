@@ -9,12 +9,14 @@ use uuid::Uuid;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AuthorityMember {
+    pub verifier: crate::TrustVerifierIdentity,
     pub endpoint: String,
     pub failure_domain: String,
     pub certificate_pins: BTreeSet<String>,
 }
 impl AuthorityMember {
     pub fn validate(&self) -> Result<()> {
+        self.verifier.validate()?;
         ensure!(
             self.endpoint.len() <= 2048,
             "authority endpoint exceeds its byte limit"
@@ -93,6 +95,10 @@ impl AuthorityMembership {
         let mut pins = BTreeSet::new();
         for (id, member) in &self.members {
             member.validate()?;
+            ensure!(
+                member.verifier.node_id == *id,
+                "authority physical verifier node differs"
+            );
             ensure!(
                 !self.voters.contains(id) || domains.insert(&member.failure_domain),
                 "authority voters require independent failure domains"

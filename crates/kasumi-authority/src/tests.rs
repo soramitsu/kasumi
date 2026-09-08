@@ -34,9 +34,16 @@ struct Fixture {
     installation: AuthorityInstallation,
     trust: AuthorityTrust,
     settings: AuthorityNodeSettings,
+    signing: kasumi_serving::test_utils::FixtureAuthority,
     readiness: Arc<TestMaintenanceTransport>,
 }
 impl Fixture {
+    fn trust_for(&self, node_id: u64) -> AuthorityTrust {
+        self.signing
+            .for_verifier(kasumi_serving::test_utils::fixture_verifier(node_id))
+            .unwrap()
+            .trust
+    }
     async fn exact_administrative(&self, command: AuthorityCommand) -> AuthorityReceipt {
         let context = self.context("operator");
         tokio::time::timeout(Duration::from_secs(20), async {
@@ -87,8 +94,7 @@ impl Fixture {
             )]),
         };
         let signing = root.install(manifest.clone(), 0).unwrap();
-        let signer = signing.signer;
-        let trust = signing.trust;
+        let trust = signing.trust.clone();
         let installation = AuthorityInstallation {
             manifest,
             partition: 0,
@@ -117,7 +123,10 @@ impl Fixture {
             let service = IndependentAuthority::open_with_clock(
                 store.clone(),
                 installation.clone(),
-                signer.clone(),
+                signing
+                    .for_verifier(kasumi_serving::test_utils::fixture_verifier(id))
+                    .unwrap()
+                    .signer,
                 id,
                 settings.clone(),
                 router.clone(),
@@ -153,6 +162,7 @@ impl Fixture {
             installation,
             trust,
             settings,
+            signing,
             readiness,
         };
         fixture.services[0].initialize().await.unwrap();
@@ -239,7 +249,6 @@ impl Fixture {
         }
     }
     async fn reopen(&mut self) {
-        let signer = self.services[0].signer.clone();
         for service in &self.services {
             service.shutdown().await.unwrap();
         }
@@ -271,7 +280,10 @@ impl Fixture {
             let service = IndependentAuthority::open_with_clock(
                 stores.clone(),
                 self.installation.clone(),
-                signer.clone(),
+                self.signing
+                    .for_verifier(kasumi_serving::test_utils::fixture_verifier(id))
+                    .unwrap()
+                    .signer,
                 id,
                 self.settings.clone(),
                 self.router.clone(),
@@ -304,6 +316,7 @@ fn nodes() -> BTreeSet<NodeIdentity> {
     (1..=3)
         .map(|id| NodeIdentity {
             node_id: id,
+            verifier: kasumi_serving::test_utils::fixture_verifier(id),
             principal: format!("node-{id}"),
             certificate_sha256: format!("{id:064x}"),
         })
@@ -993,6 +1006,7 @@ fn test_settings(ordinary_state_bytes: u64) -> AuthorityNodeSettings {
             (
                 id,
                 AuthorityMember {
+                    verifier: kasumi_serving::test_utils::fixture_verifier(id),
                     endpoint: format!("https://authority-{id}.test"),
                     failure_domain: format!("domain-{id}"),
                     certificate_pins: BTreeSet::from([format!("{id:064x}")]),

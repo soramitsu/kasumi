@@ -69,6 +69,13 @@ impl TargetRecoveryConfig {
     pub(crate) fn validate(&self, runtime: &RuntimeConfig) -> Result<()> {
         self.control_root.validate()?;
         self.node.validate()?;
+        ensure!(
+            runtime
+                .signer_verifier
+                .as_ref()
+                .is_some_and(|verifier| verifier.identity == self.node.verifier),
+            "target physical verifier differs from runtime installation"
+        );
         self.control_tls.validate()?;
         self.limits.validate()?;
         origin(&self.control_endpoint.endpoint)?;

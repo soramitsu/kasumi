@@ -135,6 +135,7 @@ async fn actual_tls_peer_readiness_enrolls_replaces_and_fences_revoked_member() 
             (
                 i as u64 + 1,
                 AuthorityMember {
+                    verifier: kasumi_serving::test_utils::fixture_verifier(i as u64 + 1),
                     endpoint: format!(
                         "https://localhost:{}",
                         listener.local_addr().unwrap().port()
@@ -167,10 +168,7 @@ async fn actual_tls_peer_readiness_enrolls_replaces_and_fences_revoked_member() 
             )]),
         },
     };
-    let signer = root
-        .install(installation.manifest.clone(), 0)
-        .unwrap()
-        .signer;
+    let signing = root.install(installation.manifest.clone(), 0).unwrap();
     let bootstrap = AuthorityBootstrap {
         administrators: BTreeSet::from(["operator".into()]),
         capacity: AuthorityCapacity {
@@ -223,7 +221,10 @@ async fn actual_tls_peer_readiness_enrolls_replaces_and_fences_revoked_member() 
         let service = IndependentAuthority::open_replicated(
             store.clone(),
             installation.clone(),
-            signer.clone(),
+            signing
+                .for_verifier(kasumi_serving::test_utils::fixture_verifier(id))
+                .unwrap()
+                .signer,
             id,
             AuthorityNodeSettings {
                 bootstrap: bootstrap.clone(),

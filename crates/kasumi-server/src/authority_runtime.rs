@@ -40,6 +40,8 @@ pub struct AuthorityRuntimeConfig {
     pub database_path: PathBuf,
     pub operational_signer: crate::signer_runtime::OperationalSignerConfig,
     pub signer_verifier: crate::signer_runtime::SignerVerifierConfig,
+    #[serde(deserialize_with = "kasumi_types::deserialize_u64_map")]
+    pub installed_verifiers: std::collections::BTreeMap<u64, kasumi_serving::TrustVerifierIdentity>,
     pub keys: KeyProviderSettings,
     pub custody_keys: KeyProviderSettings,
     pub security_audit: SecurityAuditConfig,
@@ -53,8 +55,8 @@ impl AuthorityRuntimeConfig {
         config.validate()?;
         Ok(config)
     }
-    fn node_settings(&self) -> AuthorityNodeSettings {
-        AuthorityNodeSettings {
+    fn node_settings(&self) -> Result<AuthorityNodeSettings> {
+        Ok(AuthorityNodeSettings {
             bootstrap: self.bootstrap.clone(),
             resource_budget_bytes: self.resource_budget_bytes,
             installed_members: self
@@ -62,9 +64,14 @@ impl AuthorityRuntimeConfig {
                 .peers
                 .iter()
                 .map(|peer| {
-                    (
+                    Ok((
                         peer.node_id,
                         kasumi_serving::AuthorityMember {
+                            verifier: self
+                                .installed_verifiers
+                                .get(&peer.node_id)
+                                .context("authority member physical verifier is not installed")?
+                                .clone(),
                             endpoint: peer.endpoint.clone(),
                             failure_domain: peer.failure_domain.clone(),
                             certificate_pins: peer
@@ -73,14 +80,20 @@ impl AuthorityRuntimeConfig {
                                 .map(|pin| pin.to_ascii_lowercase())
                                 .collect(),
                         },
-                    )
+                    ))
                 })
-                .collect(),
-        }
+                .collect::<Result<_>>()?,
+        })
     }
     pub fn validate(&self) -> Result<()> {
         self.installation.validate()?;
-        self.node_settings().validate(self.replication.node_id)?;
+        self.node_settings()?.validate(self.replication.node_id)?;
+        ensure!(
+            self.installed_verifiers.len() == self.replication.peers.len()
+                && self.installed_verifiers.get(&self.replication.node_id)
+                    == Some(&self.signer_verifier.identity),
+            "authority member verifier roster differs from installed physical identity"
+        );
         Authenticator::new(self.auth.clone())?;
         ensure!(
             matches!(
@@ -225,7 +238,7 @@ impl AuthorityRuntime {
             config.installation.clone(),
             signer,
             config.replication.node_id,
-            config.node_settings(),
+            config.node_settings()?,
             network.clone(),
             kasumi_raft::server_config(),
         )
