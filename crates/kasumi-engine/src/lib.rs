@@ -12,6 +12,8 @@ pub use retirement_proof::{
 };
 pub use retirement_source::InstalledRetirementSource;
 mod accounting;
+mod audit_source;
+pub use audit_source::authorize_audit_source;
 pub mod admission;
 mod backup_format;
 mod backup_proof;

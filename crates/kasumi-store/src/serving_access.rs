@@ -35,6 +35,18 @@ pub enum StoragePurpose {
     #[cfg(any(test, feature = "test-utils"))]
     LocalFixture,
 }
+impl StoragePurpose {
+    /// Fixture purposes cannot be decoded or constructed in production builds.
+    /// This query lets consumers follow the store's feature gate without adding
+    /// a second, independently selectable fixture policy.
+    pub fn is_local_fixture(&self) -> bool {
+        #[cfg(any(test, feature = "test-utils"))]
+        if matches!(self, Self::LocalFixture) {
+            return true;
+        }
+        false
+    }
+}
 /// No deserializer and no optional gate. `Serving` can only be installed using
 /// an opaque cryptographically verified lease gate; reserved control purposes
 /// cannot open municipality namespaces.

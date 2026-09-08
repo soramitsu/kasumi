@@ -558,6 +558,38 @@ impl FilesystemAuditArchive {
             root: std::fs::canonicalize(root)?,
         })
     }
+
+    /// For an already-owned blocking snapshot/apply worker. One bounded object
+    /// is read and checked without network I/O or a nested async runtime.
+    pub fn read_blocking(&self, link: &AuditArchiveLink) -> Result<Vec<u8>> {
+        read_file(&self.root, link, false)
+    }
+
+    /// Successful return includes file and directory synchronization and an
+    /// exact complete readback. This may be replayed after an uncertain result.
+    pub fn publish_blocking(&self, segment: &PreparedAuditSegment) -> Result<()> {
+        segment.reference.validate()?;
+        ensure!(
+            segment.ciphertext.len() as u64 == segment.reference.ciphertext_bytes
+                && hex::encode(Sha256::digest(&segment.ciphertext))
+                    == segment.reference.object.ciphertext_sha256,
+            "invalid prepared audit segment"
+        );
+        let path = self
+            .root
+            .join(format!("{}.audit", segment.reference.object.object_id));
+        let mut temporary = tempfile::NamedTempFile::new_in(&self.root)?;
+        temporary.write_all(&segment.ciphertext)?;
+        temporary.as_file().sync_all()?;
+        if let Err(error) = temporary.persist_noclobber(path) {
+            ensure!(
+                error.error.kind() == std::io::ErrorKind::AlreadyExists,
+                "audit archive publication failed"
+            );
+        }
+        read_file(&self.root, &segment.reference.object, true)?;
+        Ok(())
+    }
 }
 
 fn read_file(root: &Path, link: &AuditArchiveLink, durable: bool) -> Result<Vec<u8>> {
@@ -600,26 +632,14 @@ impl AuditArchiveDestination for FilesystemAuditArchive {
                     == segment.reference.object.ciphertext_sha256,
             "invalid prepared audit segment"
         );
-        let root = self.root.clone();
-        let link = segment.reference.object.clone();
-        let bytes = segment.ciphertext.clone();
-        tokio::task::spawn_blocking(move || -> Result<()> {
-            let path = root.join(format!("{}.audit", link.object_id));
-            let mut temporary = tempfile::NamedTempFile::new_in(&root)?;
-            temporary.write_all(&bytes)?;
-            temporary.as_file().sync_all()?;
-            if let Err(error) = temporary.persist_noclobber(path) {
-                ensure!(
-                    error.error.kind() == std::io::ErrorKind::AlreadyExists,
-                    "audit archive publication failed"
-                );
-            }
-            // Also resolves a previous rename/fsync uncertainty. Existing data
-            // must match before its file and directory are synchronized again.
-            read_file(&root, &link, true)?;
-            Ok(())
-        })
-        .await?
+        let archive = Self {
+            root: self.root.clone(),
+        };
+        let segment = PreparedAuditSegment {
+            reference: segment.reference.clone(),
+            ciphertext: segment.ciphertext.clone(),
+        };
+        tokio::task::spawn_blocking(move || archive.publish_blocking(&segment)).await?
     }
     async fn read(&self, link: &AuditArchiveLink) -> Result<Vec<u8>> {
         let root = self.root.clone();
