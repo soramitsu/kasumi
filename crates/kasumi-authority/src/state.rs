@@ -600,7 +600,11 @@ impl Backend {
                     Record::Preparation(_) => add_count(&mut meta.preparations, 1)?,
                     Record::Incarnation(_) => add_count(&mut meta.incarnations, 1)?,
                     Record::TargetStop(_) => add_count(&mut meta.target_stops, 1)?,
-                    Record::SignerRoster(_)
+                    Record::CoverageDispatch(_)
+                    | Record::CoverageAcknowledgment(_)
+                    | Record::CoverageBinding(_)
+                    | Record::CoveragePermission(_)
+                    | Record::SignerRoster(_)
                     | Record::Verifier(_)
                     | Record::ControlVerifier(_)
                     | Record::Lifecycle(_)
