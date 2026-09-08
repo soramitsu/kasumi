@@ -25,6 +25,8 @@ mod history_reads;
 pub use custody_service::{CustodyResponseFence, RetiredCustody};
 #[path = "lifecycle_service.rs"]
 pub(crate) mod lifecycle_service;
+#[path = "recovery_service.rs"]
+pub(crate) mod recovery_service;
 #[path = "restore_lineage_service.rs"]
 mod restore_lineage_service;
 #[path = "retirement_service.rs"]

@@ -249,9 +249,10 @@ impl TargetRecoveryRuntime {
         bearer: Zeroizing<String>,
         request: TargetRuntimeRequest,
     ) -> Result<TargetRuntimeReply> {
-        let admission = TargetRequestAdmission::capture(
+        let admission = TargetRequestAdmission::capture_until(
             context.clone(),
             self.installed.limits.operation_timeout_ms,
+            request.not_after_ms,
         )?;
         context
             .authorization

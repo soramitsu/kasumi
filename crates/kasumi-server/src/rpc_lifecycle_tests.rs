@@ -72,7 +72,10 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
                 public_key: issuer_root.public_key(),
             },
         )]),
-        max_lease_ms: 1000,
+        // This fixture hosts six Raft nodes plus native TLS on one process.
+        // Leave enough real elapsed lifetime for quorum observations under CI
+        // scheduling pressure; the issuer's complete drain is still exercised.
+        max_lease_ms: 5000,
         clock_rate_error_ppm: 0,
     };
     let issuer_signing = issuer_root.install(manifest.clone(), 0).unwrap();
@@ -267,7 +270,7 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
     )
     .unwrap();
     let routes = tonic::service::Routes::new(
-        NativeLifecycleControl::new(leader.clone(), signer, auth.clone())
+        NativeLifecycleControl::new(leader.clone(), signer.clone(), auth.clone())
             .unwrap()
             .service(),
     )
@@ -514,6 +517,22 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
             .await
             .is_err()
     );
+    super::recovery_tests::exercise(super::recovery_tests::Fixture {
+        directory: directory.path(),
+        control: leader.clone(),
+        signer,
+        auth: auth.clone(),
+        audit: audit.clone(),
+        issuer: issuer.clone(),
+        trust: issuer_trust.clone(),
+        installation: installation.clone(),
+        template: intent.clone(),
+        control_admin: &admin,
+        wrong_resource: &data,
+        readonly: &readonly,
+        issuer_admin: &authority_admin,
+    })
+    .await;
     let change = BeginControlPolicyChange {
         command_id: Uuid::new_v4(),
         expected_policy_epoch: epoch,
@@ -595,7 +614,7 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
             .await
             .is_err()
     );
-    tokio::time::sleep(Duration::from_millis(1100)).await;
+    tokio::time::sleep(Duration::from_millis(5100)).await;
     assert!(lease.check().is_err());
     let stopped_proof = authority_client
         .verify_control_stop(&authority_admin, &change_proof.observation().stop)

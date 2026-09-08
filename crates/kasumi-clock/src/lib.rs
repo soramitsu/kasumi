@@ -102,6 +102,28 @@ pub struct ElapsedDeadline {
     deadline: Duration,
 }
 impl ElapsedDeadline {
+    /// Shorten this proof without replacing its original elapsed anchor. The
+    /// child has its own expiry state; reaching its earlier limit cannot seal
+    /// a parent invocation that is still valid.
+    pub fn shortened_by(&self, amount: Duration) -> anyhow::Result<Self> {
+        self.check()?;
+        let deadline = self
+            .deadline
+            .checked_sub(amount)
+            .ok_or_else(|| anyhow::anyhow!("deadline reduction underflow"))?;
+        let last_seen = *self
+            .last_seen
+            .lock()
+            .map_err(|_| anyhow::anyhow!("elapsed deadline poisoned"))?;
+        let child = Self {
+            clock: self.clock.clone(),
+            acquired: self.acquired,
+            last_seen: std::sync::Arc::new(std::sync::Mutex::new(last_seen)),
+            deadline,
+        };
+        child.check()?;
+        Ok(child)
+    }
     pub fn check(&self) -> anyhow::Result<()> {
         let mut last = self
             .last_seen

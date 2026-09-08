@@ -171,3 +171,13 @@ service KasumiTargetRecovery {
 }
 message TargetRuntimeRequest { bytes request_json = 1; }
 message TargetRuntimeResponse { bytes response_json = 1; }
+
+// Closed Control coordinator. Remote callers cannot submit internal phase
+// preparations or fabricated dispatch outcomes.
+service KasumiRecoveryControl {
+  rpc Start(ControlJsonRequest) returns (ControlJsonResponse);
+  rpc Status(ControlJsonRequest) returns (ControlJsonResponse);
+  rpc Resume(ControlJsonRequest) returns (ControlJsonResponse);
+  rpc Stop(ControlJsonRequest) returns (ControlJsonResponse);
+  rpc ReadPhase(ControlJsonRequest) returns (ControlJsonResponse);
+}

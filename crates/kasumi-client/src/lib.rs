@@ -16,6 +16,8 @@ use tonic::{Request, transport::Channel};
 mod credentials;
 mod security_audit;
 pub use security_audit::VerifiedSecurityAuditArchive;
+mod recovery;
+pub use recovery::KasumiRecoveryClient;
 mod lifecycle;
 pub use lifecycle::KasumiLifecycleClient;
 mod authority;

@@ -1044,3 +1044,6 @@ async fn control_rejects_unfinishable_byte_budget_and_substituted_authenticated_
     drop(db);
     f.close().await;
 }
+
+#[path = "common/recovery_control.rs"]
+mod recovery_control;
