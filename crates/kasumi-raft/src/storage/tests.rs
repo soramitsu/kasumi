@@ -4,6 +4,17 @@ use kasumi_store::{
     test_utils::{FaultBackend, LocalKeyProvider, ManualClock},
 };
 
+struct PreparedFixtureRestore<'a> {
+    retirement: Option<crate::RetiredSnapshotState>,
+    commit: Box<dyn FnOnce() -> Result<()> + 'a>,
+}
+impl crate::PreparedStateMachineRestore for PreparedFixtureRestore<'_> {
+    fn retirement(&self) -> Option<crate::RetiredSnapshotState> { self.retirement.clone() }
+    fn application_replacements(&self) -> Vec<(&str, &kasumi_store::EncryptedTable)> { vec![] }
+    fn application_writes(&self) -> &[kasumi_store::WriteOp] { &[] }
+    fn publish(self: Box<Self>) -> Result<()> { (self.commit)() }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancelled_log_future_retains_drain_lease_until_blocking_persistence_finishes() -> Result<()>
 {
@@ -104,12 +115,14 @@ impl StateMachineBackend for BytesBackend {
         ensure!(captured != b"invalid", "invalid application snapshot");
         Ok(None)
     }
-    fn restore(&self, bytes: &mut dyn std::io::Read) -> Result<()> {
+    fn prepare_restore<'a>(&'a self, bytes: &mut dyn std::io::Read) -> Result<Box<dyn crate::PreparedStateMachineRestore + 'a>> {
         let mut captured = Vec::new();
         bytes.read_to_end(&mut captured)?;
         self.validate_snapshot(&mut captured.as_slice())?;
-        *self.0.lock().unwrap() = captured;
-        Ok(())
+        Ok(Box::new(PreparedFixtureRestore { retirement: None, commit: Box::new(move || {
+            *self.0.lock().unwrap() = captured;
+            Ok(())
+        }) }))
     }
 }
 
@@ -166,8 +179,8 @@ async fn applied_metadata_does_not_block_runtime_while_snapshot_capture_holds_st
         ) -> Result<Option<crate::RetiredSnapshotState>> {
             Ok(None)
         }
-        fn restore(&self, _: &mut dyn std::io::Read) -> Result<()> {
-            Ok(())
+        fn prepare_restore<'a>(&'a self, _: &mut dyn std::io::Read) -> Result<Box<dyn crate::PreparedStateMachineRestore + 'a>> {
+            Ok(Box::new(PreparedFixtureRestore { retirement: None, commit: Box::new(|| Ok(())) }))
         }
     }
     let (entered, ready) = tokio::sync::oneshot::channel();
@@ -501,8 +514,8 @@ async fn snapshot_materialization_releases_applied_lock_and_keeps_captured_root(
         ) -> Result<Option<crate::RetiredSnapshotState>> {
             Ok(None)
         }
-        fn restore(&self, _: &mut dyn Read) -> Result<()> {
-            Ok(())
+        fn prepare_restore<'a>(&'a self, _: &mut dyn Read) -> Result<Box<dyn crate::PreparedStateMachineRestore + 'a>> {
+            Ok(Box::new(PreparedFixtureRestore { retirement: None, commit: Box::new(|| Ok(())) }))
         }
     }
     let (entered, ready) = tokio::sync::oneshot::channel();

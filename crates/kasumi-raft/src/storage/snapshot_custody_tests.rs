@@ -81,9 +81,12 @@ impl StateMachineBackend for ClosedBackend {
         }
         Ok(Some(serde_json::from_slice(&captured)?))
     }
-    fn restore(&self, bytes: &mut dyn std::io::Read) -> Result<()> {
-        *self.0.lock().unwrap() = self.validate_snapshot(bytes)?;
-        Ok(())
+    fn prepare_restore<'a>(&'a self, bytes: &mut dyn std::io::Read) -> Result<Box<dyn crate::PreparedStateMachineRestore + 'a>> {
+        let retirement = self.validate_snapshot(bytes)?;
+        Ok(Box::new(PreparedFixtureRestore { retirement: retirement.clone(), commit: Box::new(move || {
+            *self.0.lock().unwrap() = retirement;
+            Ok(())
+        }) }))
     }
 }
 

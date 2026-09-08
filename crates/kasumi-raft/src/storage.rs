@@ -785,6 +785,7 @@ fn publish_snapshot(
     domains: &TenantStorageSet,
     pending: PendingSnapshot,
     snapshot: &SnapshotEnvelope,
+    backend: Option<&dyn crate::PreparedStateMachineRestore>,
 ) -> Result<()> {
     let coverage = pending.coverage;
     let mut custody = crate::snapshot_custody::installation_writes(
@@ -800,9 +801,15 @@ fn publish_snapshot(
         serde_json::to_vec(&coverage)?,
     ));
     let replacements = custody.records.as_ref().map(|records| records.namespaces());
-    domains.write_batch_replacing_custody(
-        &pending.application,
+    let mut application = pending.application;
+    if let Some(backend) = backend {
+        application.extend_from_slice(backend.application_writes());
+    }
+    let application_replacements = backend.map_or_else(Vec::new, |b| b.application_replacements());
+    domains.write_batch_replacing(
+        &application,
         &custody.writes,
+        &application_replacements,
         replacements
             .as_ref()
             .map_or(&[], |namespaces| namespaces.as_slice()),
@@ -822,7 +829,7 @@ fn persist_snapshot(
         limit,
         snapshot,
     )?;
-    publish_snapshot(domains, pending, snapshot)?;
+    publish_snapshot(domains, pending, snapshot, None)?;
     cleanup_snapshots(domains.application(), limit)
 }
 
@@ -889,13 +896,17 @@ impl StateMachine {
             if let Some(snapshot) = load_snapshot(&captured, limit)? {
                 validate_snapshot_coverage(&captured_domains, &snapshot, limit)?;
                 ensure!(snapshot.version == 1, "unsupported raft snapshot version");
-                let actual = target.validate_snapshot(&mut snapshot.backend.reader())?;
+                let prepared = target.prepare_restore(&mut snapshot.backend.reader())?;
                 crate::snapshot_custody::check_backend(
                     &snapshot.meta,
                     snapshot.retirement.as_ref(),
-                    actual,
+                    prepared.retirement(),
                 )?;
-                target.restore(&mut snapshot.backend.reader())?;
+                captured_domains.write_batch_replacing(
+                    prepared.application_writes(), &[],
+                    &prepared.application_replacements(), &[],
+                )?;
+                prepared.publish()?;
                 Ok(AppliedState {
                     log_id: snapshot.meta.last_log_id,
                     membership: snapshot.meta.last_membership,
@@ -1020,7 +1031,7 @@ impl RaftSnapshotBuilder<TypeConfig> for SnapshotBuilder {
             let control_publication = control
                 .lock()
                 .map_err(|_| anyhow::anyhow!("control publication lock poisoned"))?;
-            publish_snapshot(&domains, pending, &captured)?;
+            publish_snapshot(&domains, pending, &captured, None)?;
             drop(control_publication);
             drop(publication);
             cleanup_snapshots(&store, limit)?;
@@ -1233,10 +1244,8 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
                 state.membership = envelope.meta.last_membership;
                 return Ok(());
             }
-            let actual = machine
-                .backend
-                .validate_snapshot(&mut envelope.backend.reader())?;
-            crate::snapshot_custody::check_backend(&meta, envelope.retirement.as_ref(), actual)?;
+            let prepared = machine.backend.prepare_restore(&mut envelope.backend.reader())?;
+            crate::snapshot_custody::check_backend(&meta, envelope.retirement.as_ref(), prepared.retirement())?;
             // Durably install encrypted chunks and their manifest, then atomically publish backend state.
             // A crash between these steps recovers the new snapshot on restart.
             let pending = stage_snapshot(
@@ -1250,10 +1259,10 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
                     .control_gate
                     .lock()
                     .map_err(|_| anyhow::anyhow!("control publication lock poisoned"))?;
-                publish_snapshot(&machine.domains, pending, &envelope)?;
+                publish_snapshot(&machine.domains, pending, &envelope, Some(prepared.as_ref()))?;
             }
             cleanup_snapshots(&machine.store, machine.limits.max_snapshot_bytes)?;
-            machine.backend.restore(&mut envelope.backend.reader())?;
+            prepared.publish()?;
             state.log_id = envelope.meta.last_log_id;
             state.membership = envelope.meta.last_membership;
             Ok(())

@@ -940,20 +940,35 @@ impl StateMachineBackend for Backend {
         self.decode_snapshot(bytes)?;
         Ok(None)
     }
-    fn restore(&self, bytes: &mut dyn std::io::Read) -> Result<()> {
-        let _lock = self
-            .mutation
-            .lock()
+    fn prepare_restore<'a>(
+        &'a self,
+        bytes: &mut dyn std::io::Read,
+    ) -> Result<Box<dyn kasumi_raft::PreparedStateMachineRestore + 'a>> {
+        let guard = self.mutation.lock()
             .map_err(|_| anyhow::anyhow!("authority state poisoned"))?;
         let snapshot = self.decode_snapshot(bytes)?;
         self.validate_lifecycle_history(&snapshot)?;
         self.validate_roster_history(&snapshot)?;
-        snapshot.records.publish(&self.store)
+        Ok(Box::new(PreparedAuthorityRestore { backend: self, snapshot, _mutation_guard: guard }))
     }
     fn close_application(&self) {
         self.store.seal();
     }
 }
+struct PreparedAuthorityRestore<'a> {
+    backend: &'a Backend,
+    snapshot: Snapshot,
+    _mutation_guard: std::sync::MutexGuard<'a, ()>,
+}
+impl kasumi_raft::PreparedStateMachineRestore for PreparedAuthorityRestore<'_> {
+    fn retirement(&self) -> Option<RetiredSnapshotState> { None }
+    fn application_replacements(&self) -> Vec<(&str, &kasumi_store::EncryptedTable)> {
+        self.snapshot.records.replacements()
+    }
+    fn application_writes(&self) -> &[kasumi_store::WriteOp] { &[] }
+    fn publish(self: Box<Self>) -> Result<()> { self.backend.store.check_access() }
+}
+
 impl Backend {
     fn decode_snapshot(&self, bytes: &mut dyn std::io::Read) -> Result<Snapshot> {
         let snapshot =

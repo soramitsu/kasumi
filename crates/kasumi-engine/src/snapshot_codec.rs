@@ -281,6 +281,7 @@ pub(crate) fn metadata(state: &TenantState) -> TenantState {
         active_staged_transactions: Default::default(),
         permanent_staged_bytes: state.permanent_staged_bytes,
         reserved_staged_terminal_bytes: state.reserved_staged_terminal_bytes,
+        staged_terminal_head: state.staged_terminal_head.clone(),
         change_feed: ChangeFeedState {
             next_sequence: state.change_feed.next_sequence,
             event_count: state.change_feed.event_count,

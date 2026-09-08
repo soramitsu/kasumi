@@ -180,13 +180,33 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
         let generation = snapshot_bundle::read(self, bytes)?;
         custody_snapshot::retired(&generation.state).map_err(Into::into)
     }
-    fn restore(&self, bytes: &mut dyn std::io::Read) -> anyhow::Result<()> {
-        let _guard = self
-            .apply_lock
-            .lock()
+    fn prepare_restore<'a>(
+        &'a self,
+        bytes: &mut dyn std::io::Read,
+    ) -> anyhow::Result<Box<dyn kasumi_raft::PreparedStateMachineRestore + 'a>> {
+        let guard = self.apply_lock.lock()
             .map_err(|_| anyhow::anyhow!("tenant apply lock poisoned"))?;
         let generation = snapshot_bundle::read(self, bytes)?;
-        self.leases.replace(&self.current, Arc::new(generation));
+        let retirement = custody_snapshot::retired(&generation.state)?;
+        Ok(Box::new(PreparedTenantRestore { engine: self, generation, retirement, _apply_guard: guard }))
+    }
+
+}
+
+struct PreparedTenantRestore<'a> {
+    engine: &'a TenantEngine,
+    generation: Generation,
+    retirement: Option<kasumi_raft::RetiredSnapshotState>,
+    _apply_guard: std::sync::MutexGuard<'a, ()>,
+}
+impl kasumi_raft::PreparedStateMachineRestore for PreparedTenantRestore<'_> {
+    fn retirement(&self) -> Option<kasumi_raft::RetiredSnapshotState> { self.retirement.clone() }
+    fn application_replacements(&self) -> Vec<(&str, &kasumi_store::EncryptedTable)> { vec![] }
+    fn application_writes(&self) -> &[kasumi_store::WriteOp] { &[] }
+    fn publish(self: Box<Self>) -> anyhow::Result<()> {
+        let Self { engine, generation, _apply_guard, .. } = *self;
+        engine.snapshot_store.get().ok_or_else(|| anyhow::anyhow!("snapshot storage not installed"))?.check_access()?;
+        engine.leases.replace(&engine.current, Arc::new(generation));
         Ok(())
     }
 }
@@ -365,6 +385,7 @@ impl TenantEngine {
             active_staged_transactions: BTreeSet::new(),
             permanent_staged_bytes: 0,
             reserved_staged_terminal_bytes: 0,
+            staged_terminal_head: StagedTerminalHead::empty(&tenant, &incarnation)?,
             change_feed: ChangeFeedState::empty(),
             history_archives: imbl::OrdMap::new(),
             history_archive_bytes: 0,

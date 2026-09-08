@@ -113,6 +113,18 @@ impl CapturedSnapshot {
 /// Only the Raft adapter may call mutation methods after the group starts.
 /// `apply` must publish the complete command atomically; business errors belong in
 /// its returned bytes. `restore` must validate before atomically replacing state.
+/// Validated backend state held unpublished while Raft durably installs its
+/// encrypted tables and the matching snapshot/applied cursor. The borrowed
+/// lifetime keeps the backend's mutation lock and tracked storage owner alive.
+pub trait PreparedStateMachineRestore {
+    fn retirement(&self) -> Option<RetiredSnapshotState>;
+    fn application_replacements(&self) -> Vec<(&str, &kasumi_store::EncryptedTable)>;
+    fn application_writes(&self) -> &[kasumi_store::WriteOp];
+    /// Called only after durable publication succeeds. A release failure seals
+    /// the replica; restart must recover the already committed snapshot exactly.
+    fn publish(self: Box<Self>) -> Result<()>;
+}
+
 pub trait StateMachineBackend: Send + Sync + 'static {
     fn apply(&self, position: &AppliedEntryContext, command: &[u8]) -> Result<AppliedResponse>;
     fn capture_snapshot(&self) -> Result<CapturedSnapshot>;
@@ -128,7 +140,10 @@ pub trait StateMachineBackend: Send + Sync + 'static {
         &self,
         bytes: &mut dyn std::io::Read,
     ) -> Result<Option<RetiredSnapshotState>>;
-    fn restore(&self, bytes: &mut dyn std::io::Read) -> Result<()>;
+    fn prepare_restore<'a>(
+        &'a self,
+        bytes: &mut dyn std::io::Read,
+    ) -> Result<Box<dyn PreparedStateMachineRestore + 'a>>;
     /// Irreversibly evict resident application material before publishing an
     /// installed closed custody snapshot. This cannot grant data access.
     fn close_application(&self);
@@ -169,8 +184,11 @@ impl StateMachineBackend for OwnedBackend {
     ) -> Result<Option<RetiredSnapshotState>> {
         self.inner.validate_snapshot(bytes)
     }
-    fn restore(&self, bytes: &mut dyn std::io::Read) -> Result<()> {
-        self.inner.restore(bytes)
+    fn prepare_restore<'a>(
+        &'a self,
+        bytes: &mut dyn std::io::Read,
+    ) -> Result<Box<dyn PreparedStateMachineRestore + 'a>> {
+        self.inner.prepare_restore(bytes)
     }
 }
 
