@@ -131,6 +131,9 @@ pub struct AuditRetentionState {
     pub next_sequence: u64,
     pub pruned_before: u64,
     pub hot_bytes: u64,
+    pub archive_bytes: u64,
+    pub archive_segments: u64,
+    pub draining: bool,
     pub archive_head: Option<AuditArchiveReference>,
 }
 
@@ -141,6 +144,9 @@ impl AuditRetentionState {
             next_sequence: 0,
             pruned_before: 0,
             hot_bytes: 0,
+            archive_bytes: 0,
+            archive_segments: 0,
+            draining: false,
             archive_head: None,
         }
     }
@@ -160,11 +166,18 @@ impl AuditRetentionState {
                 head.validate()?;
                 if head.stream_id != self.stream_id
                     || head.object.next_sequence != self.pruned_before
+                    || self.archive_segments == 0
+                    || self.archive_bytes < head.ciphertext_bytes
                 {
                     return Err(invalid());
                 }
             }
-            None if self.pruned_before != 0 => return Err(invalid()),
+            None if self.pruned_before != 0
+                || self.archive_bytes != 0
+                || self.archive_segments != 0 =>
+            {
+                return Err(invalid());
+            }
             None => {}
         }
         Ok(())

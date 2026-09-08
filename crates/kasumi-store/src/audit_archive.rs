@@ -535,6 +535,81 @@ pub trait AuditArchiveDestination: Send + Sync {
     async fn read(&self, link: &AuditArchiveLink) -> Result<Vec<u8>>;
 }
 
+/// Every replica owns a durable ciphertext cache independently of the selected
+/// external destination. Snapshot capture uses only this cache. Placement is a
+/// local installation binding, never replicated from another member's paths.
+pub struct TenantAuditPlacement {
+    cache: Arc<FilesystemAuditArchive>,
+    destination: Arc<dyn AuditArchiveDestination>,
+}
+impl TenantAuditPlacement {
+    pub fn cache(&self) -> &Arc<FilesystemAuditArchive> {
+        &self.cache
+    }
+    pub fn destination_identity(&self) -> String {
+        self.destination.identity()
+    }
+    /// Use in an owned blocking apply worker. Publication uncertainty cannot
+    /// authorize pruning, even if the local cache already contains the object.
+    pub fn preserve_blocking(&self, segment: &PreparedAuditSegment) -> Result<()> {
+        self.cache.publish_blocking(segment)?;
+        if self.cache.identity() != self.destination.identity() {
+            tokio::runtime::Handle::try_current()?.block_on(self.destination.publish(segment))?;
+        }
+        Ok(())
+    }
+}
+impl TenantStore {
+    /// Call before engine replay to install an S3 destination or an explicit
+    /// fixture cache. A persisted destination cannot silently become the default
+    /// filesystem destination after a restart or missing configuration.
+    pub fn install_tenant_audit_archive(
+        &self,
+        cache: Arc<FilesystemAuditArchive>,
+        destination: Arc<dyn AuditArchiveDestination>,
+    ) -> Result<Arc<TenantAuditPlacement>> {
+        self.check_access()?;
+        let mut placement = self.audit_placement.lock();
+        let identity = serde_json::to_vec(&(cache.identity(), destination.identity()))?;
+        ensure!(
+            identity.len() <= 16 << 10,
+            "audit placement identity exceeds limit"
+        );
+        if let Some(existing) = placement.as_ref() {
+            ensure!(
+                existing.cache.identity() == cache.identity()
+                    && existing.destination.identity() == destination.identity(),
+                "live tenant audit placement differs"
+            );
+            return Ok(existing.clone());
+        }
+        const NS: &str = "engine.audit.placement";
+        match self.get(NS, b"identity")? {
+            Some(stored) => ensure!(
+                stored == identity,
+                "installed tenant audit placement differs"
+            ),
+            None => {
+                self.write_batch(&[crate::WriteOp::put(NS, b"identity", identity.as_slice())])?
+            }
+        }
+        self.check_access()?;
+        let installed = Arc::new(TenantAuditPlacement { cache, destination });
+        *placement = Some(installed.clone());
+        Ok(installed)
+    }
+    pub fn tenant_audit_archive(&self) -> Result<Arc<TenantAuditPlacement>> {
+        if let Some(placement) = self.audit_placement.lock().clone() {
+            self.check_access()?;
+            return Ok(placement);
+        }
+        let cache = Arc::new(FilesystemAuditArchive::open(
+            self.durable_directory()?.join("tenant-audit-archives"),
+        )?);
+        self.install_tenant_audit_archive(cache.clone(), cache)
+    }
+}
+
 pub struct FilesystemAuditArchive {
     root: PathBuf,
 }

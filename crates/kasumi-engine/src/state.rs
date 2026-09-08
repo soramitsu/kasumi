@@ -19,6 +19,8 @@ pub(crate) mod schema;
 pub(crate) mod staging;
 #[path = "target_state.rs"]
 pub(crate) mod target;
+#[path = "tenant_audit.rs"]
+pub(crate) mod tenant_audit;
 
 pub struct Generation {
     pub state: TenantState,
@@ -89,6 +91,9 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
     ) -> anyhow::Result<kasumi_raft::AppliedResponse> {
         if bytes.starts_with(target::PREFIX) {
             return self.apply_target(position, bytes);
+        }
+        if bytes.starts_with(tenant_audit::PREFIX) {
+            return self.apply_audit_prune(position, bytes);
         }
         let command: Command = serde_json::from_slice(bytes)?;
         anyhow::ensure!(
@@ -212,6 +217,13 @@ impl TenantEngine {
             .check_access()
             .map_err(|_| Error::new(ErrorCode::Sealed, "storage serving authority unavailable"))?;
         let access = store.storage_access().clone();
+        // A missing S3 installation must fail before replay, never switch a
+        // committed pruning transition to a filesystem-only policy.
+        if !access.purpose().is_local_fixture() || store.durable_directory().is_ok() {
+            store.tenant_audit_archive().map_err(|_| {
+                Error::new(ErrorCode::Unavailable, "tenant audit placement unavailable")
+            })?;
+        }
         if let Some(gate) = access.serving_gate() {
             let generation = self.generation()?;
             if gate.identity().tenant != generation.state.tenant
@@ -688,6 +700,21 @@ impl TenantEngine {
                 },
             )?;
         }
+        if next.audit_retention.hot_bytes > next.limits.audit_retention.hot_bytes {
+            let mut rejected = previous.state.clone();
+            rejected.revision = revision;
+            self.current.store(Some(Arc::new(Generation {
+                state: rejected,
+                indexes: previous.indexes.clone(),
+                receipt_expiry: previous.receipt_expiry.clone(),
+                snapshot_accounting: previous.snapshot_accounting.clone(),
+                _read_reservations: vec![],
+            })));
+            return Ok(Err(Error::new(
+                ErrorCode::AuditUnavailable,
+                "hot audit byte budget exhausted",
+            )));
+        }
         let changed = if changed_documents {
             operation_changes(&previous.state, &command)?
         } else {
@@ -835,6 +862,7 @@ impl TenantEngine {
                 &staged_changes(&previous.state, command)?,
             )?;
             if rejected.audits.len() <= rejected.limits.max_audit_records
+                && rejected.audit_retention.hot_bytes <= rejected.limits.audit_retention.hot_bytes
                 && accounting.fits(&rejected)?
                 && lifecycle::completion_fits(&rejected)?
             {
@@ -1456,6 +1484,8 @@ fn apply_operation(
                 || state.receipts.len() > limits.max_receipts
                 || state.history_archives.len() > limits.history.max_archive_segments
                 || state.audits.len().saturating_add(1) > limits.max_audit_records
+                || state.audit_retention.hot_bytes > limits.audit_retention.hot_bytes
+                || state.audit_retention.archive_bytes > limits.audit_retention.archive_bytes
             {
                 return Err(Error::new(
                     ErrorCode::QuotaExceeded,
@@ -1842,6 +1872,7 @@ fn document_path(collection: &str, id: &str) -> String {
 }
 
 fn validate_limits(limits: &Limits) -> Result<()> {
+    limits.audit_retention.validate()?;
     if limits.history.max_feed_events == 0
         || limits.history.max_feed_events > 1_000_000
         || limits.history.max_feed_bytes == 0
@@ -2001,6 +2032,14 @@ pub(crate) fn append_audit(state: &mut TenantState, event: AuditEvent) -> Result
 }
 fn validate_audits(state: &TenantState) -> Result<()> {
     state.audit_retention.validate()?;
+    if state.audit_retention.hot_bytes > state.limits.audit_retention.hot_bytes
+        || state.audit_retention.archive_bytes > state.limits.audit_retention.archive_bytes
+    {
+        return Err(Error::new(
+            ErrorCode::Corruption,
+            "audit history exceeds configured byte budgets",
+        ));
+    }
     let hot = state.audits.iter().try_fold(0u64, |total, event| {
         let bytes = encoded_len(event)?;
         if bytes > MAX_AUDIT_EVENT_BYTES {

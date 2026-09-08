@@ -1050,7 +1050,10 @@ async fn strict_empty_discovery_is_audited_and_failed_audit_persistence_blocks_r
     let audit = kasumi_engine::SecurityAudit::open_with_archive(
         audit_store,
         kasumi_types::AuditRetentionBudget::default(),
-        Arc::new(kasumi_store::FilesystemAuditArchive::open(audit_directory.path()).unwrap()),
+        Arc::new(
+            kasumi_store::FilesystemAuditArchive::open(audit_directory.path().join("archive"))
+                .unwrap(),
+        ),
         kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
     )
     .unwrap();
