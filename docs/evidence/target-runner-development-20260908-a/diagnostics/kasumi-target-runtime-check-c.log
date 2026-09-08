@@ -1,0 +1,11 @@
+error: failed to load manifest for workspace member `/private/tmp/kasumi-target-runner/crates/kasumi-server`
+referenced by workspace at `/private/tmp/kasumi-target-runner/Cargo.toml`
+
+Caused by:
+  failed to parse manifest at `/private/tmp/kasumi-target-runner/crates/kasumi-server/Cargo.toml`
+
+Caused by:
+  error inheriting `ring` from workspace root manifest's `workspace.dependencies.ring`
+
+Caused by:
+  `dependency.ring` was not found in `workspace.dependencies`

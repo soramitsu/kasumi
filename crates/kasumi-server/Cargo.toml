@@ -10,6 +10,7 @@ repository.workspace = true
 test-utils = ["kasumi-store/test-utils"]
 
 [dependencies]
+ring = "0.17"
 kasumi-clock.workspace = true
 kasumi-authority.workspace = true
 kasumi-serving.workspace = true

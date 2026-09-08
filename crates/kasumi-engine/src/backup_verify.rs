@@ -12,8 +12,39 @@ use std::{collections::BTreeSet, future::Future, sync::Arc};
 pub(crate) struct VerificationWork {
     _permit: tokio::sync::OwnedSemaphorePermit,
     _registration: WorkRegistration,
+    target: Option<(
+        Arc<crate::TargetLifecycleInvocation>,
+        kasumi_query::QueryCancellation,
+        Arc<crate::TargetRequestAdmission>,
+    )>,
 }
 impl VerificationWork {
+    pub(crate) fn for_target(
+        registration: WorkRegistration,
+        permit: tokio::sync::OwnedSemaphorePermit,
+        target: Arc<crate::TargetLifecycleInvocation>,
+        token: kasumi_query::QueryCancellation,
+        admission: Arc<crate::TargetRequestAdmission>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            _permit: permit,
+            _registration: registration,
+            target: Some((target, token, admission)),
+        })
+    }
+    pub(crate) fn check(&self) -> Result<()> {
+        if let Some((target, token, admission)) = &self.target {
+            admission.check()?;
+            token.check()?;
+            target.check()?;
+        }
+        Ok(())
+    }
+    pub(crate) fn binds(&self, target: &crate::TargetLifecycleInvocation) -> bool {
+        self.target
+            .as_ref()
+            .is_some_and(|(actual, _, _)| Arc::ptr_eq(actual.gate(), target.gate()))
+    }
     pub fn new(
         registration: WorkRegistration,
         permit: tokio::sync::OwnedSemaphorePermit,
@@ -21,6 +52,7 @@ impl VerificationWork {
         Arc::new(Self {
             _permit: permit,
             _registration: registration,
+            target: None,
         })
     }
 }
@@ -96,8 +128,14 @@ impl VerificationDeadline {
                 };
                 let value = (|| {
                     self.check()?;
+                    if let Some(work) = &resources._registration {
+                        work.check()?;
+                    }
                     let result = work()?;
                     self.check()?;
+                    if let Some(work) = &resources._registration {
+                        work.check()?;
+                    }
                     Ok(result)
                 })();
                 Output {

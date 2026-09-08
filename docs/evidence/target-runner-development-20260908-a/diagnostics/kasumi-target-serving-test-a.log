@@ -1,0 +1,19 @@
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-engine)
+   Compiling kasumi-authority v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-authority)
+error[E0277]: `std::result::Result<(), kasumi_types::Error>` is not a future
+    --> crates/kasumi-authority/src/target_materialization_tests.rs:1008:19
+     |
+1008 |     fence.check().await.unwrap();
+     |                   ^^^^^ `std::result::Result<(), kasumi_types::Error>` is not a future
+     |
+     = help: the trait `std::future::Future` is not implemented for `std::result::Result<(), kasumi_types::Error>`
+     = note: std::result::Result<(), kasumi_types::Error> must be a future or must implement `IntoFuture` to be awaited
+     = note: required for `std::result::Result<(), kasumi_types::Error>` to implement `IntoFuture`
+help: remove the `.await`
+     |
+1008 -     fence.check().await.unwrap();
+1008 +     fence.check().unwrap();
+     |
+
+For more information about this error, try `rustc --explain E0277`.
+error: could not compile `kasumi-authority` (lib test) due to 1 previous error

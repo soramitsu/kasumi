@@ -1,0 +1,10 @@
+    Checking kasumi-types v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-types)
+    Checking kasumi-serving v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-serving)
+    Checking kasumi-store v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-store)
+    Checking kasumi-raft v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-raft)
+    Checking kasumi-query v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-query)
+    Checking kasumi-engine v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-engine)
+    Checking kasumi-authority v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-authority)
+    Checking kasumi-client v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-client)
+    Checking kasumi-server v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-server)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 07s

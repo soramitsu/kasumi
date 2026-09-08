@@ -1,0 +1,361 @@
+//! Concrete installed Control and issuer channels. No caller-supplied signed DTO
+//! can stand in for the current Control quorum observation used here.
+use crate::{
+    runtime::{parse_certificate_pin, read_bounded},
+    serving_runtime::{CredentialSource, RuntimeLease, ServingAuthorityConfig},
+};
+use anyhow::{Context, Result, ensure};
+use kasumi_client::{KasumiAuthorityClient, KasumiClientConfig, KasumiLifecycleClient};
+use kasumi_engine::{
+    TargetLifecycleInvocation, TargetOperation, TargetOperationScope, TargetRequestAdmission,
+};
+use kasumi_serving::{
+    AuthorityTrust, ControlTrust, LifecycleBoot, LifecycleGate, NodeIdentity, VerifiedControlIntent,
+};
+use kasumi_types::{Action, LifecyclePhase, RequestContext};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+use tokio::sync::Mutex as AsyncMutex;
+use uuid::Uuid;
+use zeroize::Zeroizing;
+
+pub(crate) struct RuntimeTargetPhase {
+    scope: Arc<TargetOperationScope>,
+    serving: Option<Arc<RuntimeLease>>,
+    control: AsyncMutex<KasumiLifecycleClient>,
+    original: VerifiedControlIntent,
+    control_bearer: Zeroizing<String>,
+    authority: AsyncMutex<KasumiAuthorityClient>,
+    boot: LifecycleBoot,
+    credential: CredentialSource,
+    bearer_env: String,
+    admin_bearer_env: String,
+    renewal: Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
+impl Drop for RuntimeTargetPhase {
+    fn drop(&mut self) {
+        self.scope.close();
+        if let Ok(handle) = self.renewal.get_mut()
+            && let Some(handle) = handle.take()
+        {
+            handle.abort();
+        }
+    }
+}
+impl RuntimeTargetPhase {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn acquire(
+        configured: &super::target_runtime_config::TargetRecoveryConfig,
+        authority: &ServingAuthorityConfig,
+        credential: CredentialSource,
+        node_id: u64,
+        original_context: RequestContext,
+        original_bearer: Zeroizing<String>,
+        command_id: Uuid,
+        admission: &TargetRequestAdmission,
+    ) -> Result<Arc<Self>> {
+        admission.require_context(&original_context)?;
+        original_context.authorization.check_live()?;
+        original_context
+            .authorization
+            .require_control(&configured.control_root.control_incarnation.to_string())?;
+        ensure!(
+            original_context.tenant == "__kasumi_control"
+                && original_context.scopes.contains(&Action::Admin),
+            "current installed Control Admin required"
+        );
+        authority.validate()?;
+        let control_connection = configured.control_connection()?;
+        let trust = ControlTrust::install(configured.control_root.clone())?;
+        let mut control = admission
+            .run(async {
+                Ok(tokio::time::timeout(
+                    Duration::from_secs(5),
+                    KasumiLifecycleClient::connect(&control_connection, trust),
+                )
+                .await??)
+            })
+            .await?;
+        let original = admission
+            .run(async { Ok(control.observe_intent(&original_bearer, command_id).await?) })
+            .await?;
+        let intent = &original.observation().intent;
+        ensure!(
+            intent.original_principal == original_context.principal,
+            "current invocation differs from original phase actor"
+        );
+        let partition = authority.manifest.partition(&intent.request.tenant)?;
+        ensure!(
+            authority.manifest.control_partition(partition)?
+                == original.observation().authority_partition
+                && authority
+                    .manifest
+                    .lifecycle_controls
+                    .get(&intent.control_incarnation)
+                    == Some(&configured.control_root.public_key),
+            "phase belongs to another installed issuer"
+        );
+        let endpoint = &authority.endpoints[&partition];
+        let tls = authority.tls.load()?;
+        let node = NodeIdentity {
+            node_id,
+            principal: authority.principal.clone(),
+            certificate_sha256: hex::encode(tls.certificate_pin()),
+        };
+        let committed_node = intent
+            .request
+            .target_nodes
+            .get(&node_id)
+            .context("target node not approved")?;
+        ensure!(
+            configured.node == node
+                && committed_node.principal == node.principal
+                && committed_node.certificate_sha256 == node.certificate_sha256,
+            "actual target TLS identity differs from committed placement"
+        );
+        let connection = KasumiClientConfig {
+            endpoint: endpoint.endpoint.clone(),
+            identity: tls,
+            trusted_ca_pem: read_bounded(&authority.server_ca, 1 << 20)?,
+            server_certificate_pins: endpoint
+                .certificate_pins
+                .iter()
+                .map(|p| parse_certificate_pin(p))
+                .collect::<Result<_>>()?,
+        };
+        let trust = AuthorityTrust::install(authority.manifest.clone())?;
+        let mut issuer = admission
+            .run(async {
+                Ok(tokio::time::timeout(
+                    Duration::from_secs(5),
+                    KasumiAuthorityClient::connect(&connection, trust.clone()),
+                )
+                .await??)
+            })
+            .await?;
+        let accepted = kasumi_serving::LifecycleAuthorityRequest::AcceptIntent(Box::new(
+            original.signed().clone(),
+        ));
+        let admin_env = configured
+            .issuer_admin_bearer_env
+            .get(&authority.manifest.authority_id)
+            .context("installed issuer control-admission credential missing")?;
+        let bearer = credential(admin_env)?;
+        admission
+            .run(async { Ok(issuer.execute_lifecycle(&bearer, &accepted).await?) })
+            .await?;
+        let boot = LifecycleBoot::new(trust, node)?;
+        // Anchored before credential acquisition and dispatch; retries construct
+        // distinct attempts, never reset the deadline of an earlier response.
+        let attempt = boot.begin(&original)?;
+        let bearer = credential(&authority.bearer_env)?;
+        let lease = admission
+            .run(async { Ok(issuer.acquire_lifecycle(&bearer, &attempt).await?) })
+            .await?;
+        let purpose = lease.signed().claims.application_purpose;
+        let gate = LifecycleGate::new(original_context, lease)?;
+        let scope = TargetOperationScope::new(TargetLifecycleInvocation::from_verified(gate)?)?;
+        let serving = if intent.request.phase == LifecyclePhase::StopLocal {
+            None
+        } else {
+            let purpose = purpose.context("issuer phase has no application role")?;
+            Some(
+                admission
+                    .run(RuntimeLease::acquire(
+                        authority,
+                        credential.clone(),
+                        &intent.request.tenant,
+                        intent.request.target_incarnation,
+                        node_id,
+                        purpose,
+                    ))
+                    .await?,
+            )
+        };
+        let runtime = Arc::new(Self {
+            scope,
+            serving,
+            control: AsyncMutex::new(control),
+            original,
+            control_bearer: original_bearer,
+            authority: AsyncMutex::new(issuer),
+            boot,
+            credential,
+            bearer_env: authority.bearer_env.clone(),
+            admin_bearer_env: admin_env.clone(),
+            renewal: Mutex::new(None),
+        });
+        admission.run(runtime.check_current()).await?;
+        let interval = Duration::from_millis((authority.manifest.max_lease_ms / 3).max(10));
+        let weak = Arc::downgrade(&runtime);
+        let worker = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(interval).await;
+                let Some(runtime) = weak.upgrade() else { break };
+                if !matches!(
+                    tokio::time::timeout(interval, runtime.renew()).await,
+                    Ok(Ok(()))
+                ) || runtime.scope.invocation().check().is_err()
+                {
+                    runtime.scope.close();
+                    break;
+                }
+            }
+        });
+        *runtime
+            .renewal
+            .lock()
+            .map_err(|_| anyhow::anyhow!("target renewal poisoned"))? = Some(worker);
+        admission.check()?;
+        Ok(runtime)
+    }
+    pub(crate) fn scope(&self) -> &Arc<TargetOperationScope> {
+        &self.scope
+    }
+    pub(crate) fn original(&self) -> &VerifiedControlIntent {
+        &self.original
+    }
+    pub(crate) fn access(&self) -> Result<kasumi_store::StorageAccess> {
+        self.scope.invocation().check()?;
+        kasumi_store::StorageAccess::target_phase(
+            self.serving
+                .as_ref()
+                .context("cleanup cannot open target payload")?
+                .gate()
+                .clone(),
+            self.scope.invocation().gate().clone(),
+        )
+    }
+    /// This live check uses the exact installed Control route and original
+    /// credential, not a historical signature or a renewable node lease alone.
+    pub(crate) async fn check_current(&self) -> Result<()> {
+        self.scope.invocation().check()?;
+        let mut control = self.control.lock().await;
+        let fresh = control
+            .observe_intent(
+                &self.control_bearer,
+                self.original.observation().intent.request.command_id,
+            )
+            .await?;
+        ensure!(
+            fresh.observation().intent == self.original.observation().intent
+                && fresh.observation().root == self.original.observation().root
+                && fresh.observation().authority_partition
+                    == self.original.observation().authority_partition,
+            "current Control phase differs"
+        );
+        self.scope.invocation().check()?;
+        Ok(())
+    }
+    pub(crate) async fn check_request(
+        &self,
+        admission: &TargetRequestAdmission,
+        context: &RequestContext,
+        bearer: &str,
+    ) -> Result<()> {
+        admission.require_context(context)?;
+        context.authorization.require_control(
+            &self
+                .original
+                .observation()
+                .root
+                .control_incarnation
+                .to_string(),
+        )?;
+        ensure!(
+            context.principal == self.original.observation().intent.original_principal
+                && context.tenant == "__kasumi_control"
+                && context.scopes.contains(&Action::Admin),
+            "current request actor or resource differs"
+        );
+        admission.run(self.check_current()).await?;
+        admission.run(self.observe_with(bearer)).await?;
+        admission.check()?;
+        Ok(())
+    }
+    pub(crate) async fn check_operation(
+        &self,
+        operation: &TargetOperation,
+        bearer: &str,
+    ) -> Result<()> {
+        operation.check()?;
+        ensure!(
+            Arc::ptr_eq(
+                operation.invocation().gate(),
+                self.scope.invocation().gate()
+            ),
+            "operation belongs to another target phase"
+        );
+        operation.run(self.check_current()).await?;
+        operation.run(self.observe_with(bearer)).await?;
+        operation.check()
+    }
+    async fn observe_with(&self, bearer: &str) -> Result<()> {
+        let mut control = self.control.lock().await;
+        let fresh = control
+            .observe_intent(
+                bearer,
+                self.original.observation().intent.request.command_id,
+            )
+            .await?;
+        ensure!(
+            fresh.observation().intent == self.original.observation().intent
+                && fresh.observation().root == self.original.observation().root
+                && fresh.observation().authority_partition
+                    == self.original.observation().authority_partition,
+            "fresh request Control observation differs"
+        );
+        Ok(())
+    }
+    pub(crate) async fn activation_receipt(
+        &self,
+        id: Uuid,
+    ) -> Result<kasumi_serving::SignedAuthorityReceipt> {
+        self.scope.invocation().check()?;
+        let bearer = (self.credential)(&self.admin_bearer_env)?;
+        let mut issuer = self.authority.lock().await;
+        let signed = issuer
+            .receipt(
+                &bearer,
+                &self.original.observation().intent.request.tenant,
+                id,
+            )
+            .await?
+            .context("issuer activation outcome not retained")?;
+        self.scope
+            .invocation()
+            .gate()
+            .current()?
+            .authority()
+            .verify_activation(signed.clone())?;
+        self.scope.invocation().check()?;
+        Ok(signed)
+    }
+    pub(crate) async fn target_stop(
+        &self,
+        operation: &TargetOperation,
+        reference: &kasumi_serving::TargetStopReference,
+    ) -> Result<kasumi_serving::VerifiedTargetStop> {
+        operation.check()?;
+        let proof = operation
+            .run(async {
+                let bearer = (self.credential)(&self.admin_bearer_env)?;
+                let mut issuer = self.authority.lock().await;
+                Ok(issuer.verify_target_stop(&bearer, reference).await?)
+            })
+            .await?;
+        operation.check()?;
+        Ok(proof)
+    }
+    async fn renew(&self) -> Result<()> {
+        self.check_current().await?;
+        let mut issuer = self.authority.lock().await;
+        let attempt = self.boot.begin(&self.original)?;
+        let bearer = (self.credential)(&self.bearer_env)?;
+        let lease = issuer.acquire_lifecycle(&bearer, &attempt).await?;
+        self.scope.invocation().gate().renew(lease)?;
+        Ok(())
+    }
+}

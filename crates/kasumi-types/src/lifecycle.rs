@@ -113,6 +113,8 @@ pub enum LifecyclePhase {
     Initialize,
     Complete,
     Activate,
+    /// Fresh control authority to inspect committed target facts only.
+    InspectTarget,
     StopLocal,
 }
 
@@ -122,12 +124,16 @@ pub struct LifecycleNode {
     pub node_id: u64,
     pub principal: String,
     pub certificate_sha256: String,
+    /// Installed target-only Ed25519 attestation identity. Its signer accepts
+    /// only actual native materialization/current-quorum completion proofs.
+    pub attestation_public_key: String,
 }
 impl LifecycleNode {
     pub fn validate(&self) -> Result<()> {
         require(self.node_id > 0, "zero lifecycle node")?;
         validate_name(&self.principal)?;
-        validate_sha256(&self.certificate_sha256)
+        validate_sha256(&self.certificate_sha256)?;
+        validate_sha256(&self.attestation_public_key)
     }
 }
 
@@ -145,6 +151,7 @@ pub struct CommitLifecycleIntent {
     pub source_authority_epoch: u64,
     pub target_incarnation: Uuid,
     pub checkpoint: FullBackupCheckpoint,
+    #[serde(deserialize_with = "crate::deserialize_u64_map")]
     pub target_nodes: BTreeMap<u64, LifecycleNode>,
     pub phase: LifecyclePhase,
     pub phase_input_sha256: String,
@@ -178,10 +185,12 @@ impl CommitLifecycleIntent {
             "lifecycle target requires 3..9 nodes",
         )?;
         let mut credentials = BTreeSet::new();
+        let mut attestation_keys = BTreeSet::new();
         for (id, node) in &self.target_nodes {
             node.validate()?;
             require(
                 *id == node.node_id
+                    && attestation_keys.insert(&node.attestation_public_key)
                     && credentials.insert((&node.principal, &node.certificate_sha256)),
                 "duplicate lifecycle node credential",
             )?;

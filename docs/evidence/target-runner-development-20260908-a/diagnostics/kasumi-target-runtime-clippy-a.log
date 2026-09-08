@@ -1,0 +1,50 @@
+    Checking kasumi-types v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-types)
+    Checking kasumi-serving v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-serving)
+error: large size difference between variants
+  --> crates/kasumi-serving/src/target_runtime_protocol.rs:16:1
+   |
+16 | / pub enum TargetRuntimeStep {
+17 | |     Materialize(TargetMaterializationInput),
+   | |     --------------------------------------- the second-largest variant contains at least 80 bytes
+18 | |     Start(TargetReplicaInput),
+19 | |     Initialize(TargetQuorumInput),
+...  |
+25 | |     Inspect(TargetInspectionInput),
+   | |     ------------------------------ the largest variant contains at least 480 bytes
+26 | |     Stop(TargetStopReference),
+27 | | }
+   | |_^ the entire enum is at least 480 bytes
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#large_enum_variant
+   = note: `-D clippy::large-enum-variant` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::large_enum_variant)]`
+help: consider boxing the large fields or introducing indirection in some other way to reduce the total size of the enum
+   |
+25 -     Inspect(TargetInspectionInput),
+25 +     Inspect(Box<TargetInspectionInput>),
+   |
+
+error: large size difference between variants
+  --> crates/kasumi-serving/src/target_runtime_protocol.rs:75:1
+   |
+75 | / pub enum TargetRuntimeOutcome {
+76 | |     Materialized(SignedTargetMaterialization),
+77 | |     /// Local Raft owner exists under the live exact phase. This is not a
+78 | |     /// completion or membership proof and cannot authorize issuer activation.
+...  |
+86 | |     Activated(SignedTargetActivation),
+   | |     --------------------------------- the second-largest variant contains at least 1592 bytes
+87 | |     Inspected(SignedTargetInspection),
+   | |     --------------------------------- the largest variant contains at least 2504 bytes
+88 | |     Stopped(SignedLocalTargetCleanup),
+89 | | }
+   | |_^ the entire enum is at least 2504 bytes
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#large_enum_variant
+help: consider boxing the large fields or introducing indirection in some other way to reduce the total size of the enum
+   |
+87 -     Inspected(SignedTargetInspection),
+87 +     Inspected(Box<SignedTargetInspection>),
+   |
+
+error: could not compile `kasumi-serving` (lib) due to 2 previous errors

@@ -21,6 +21,7 @@ uuid.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+kasumi-engine.workspace = true
 ring = "0.17"
 kasumi-serving = { workspace = true, features = ["test-utils"] }
 tempfile.workspace = true

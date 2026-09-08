@@ -252,6 +252,14 @@ pub enum AuthorityAction {
         fence_digest: String,
         target: RecoveryTarget,
     },
+    /// Activation under an installed committed Control phase. The immutable
+    /// reference is part of the permanent command identity.
+    ActivateCommitted {
+        fence_id: Uuid,
+        fence_digest: String,
+        target: RecoveryTarget,
+        control: CommittedActivation,
+    },
     /// Exact original activation identity is permanently stopped if unaccepted.
     /// A previously committed activation remains the original successful result.
     StopActivation {
@@ -308,6 +316,12 @@ impl AuthorityCommand {
                 fence_id,
                 fence_digest,
                 target,
+            }
+            | AuthorityAction::ActivateCommitted {
+                fence_id,
+                fence_digest,
+                target,
+                ..
             } => {
                 ensure!(!fence_id.is_nil(), "nil fence identity");
                 validate_sha256(fence_digest)?;
@@ -316,8 +330,11 @@ impl AuthorityCommand {
             }
             AuthorityAction::StopActivation { original } => {
                 ensure!(
-                    matches!(original.action, AuthorityAction::Activate { .. })
-                        && original.tenant == self.tenant
+                    matches!(
+                        original.action,
+                        AuthorityAction::Activate { .. }
+                            | AuthorityAction::ActivateCommitted { .. }
+                    ) && original.tenant == self.tenant
                         && original.command_id != self.command_id,
                     "invalid original activation stop"
                 );
@@ -332,6 +349,9 @@ impl AuthorityCommand {
                     validate_name(principal)?;
                 }
             }
+        }
+        if let AuthorityAction::ActivateCommitted { control, .. } = &self.action {
+            control.validate()?;
         }
         Ok(())
     }
@@ -351,6 +371,8 @@ pub struct AuthorityReceipt {
     pub principal: String,
     pub term: u64,
     pub revision: u64,
+    /// Actual trusted ordered admission, never a caller supplied timestamp.
+    pub admitted_at_ms: u64,
     pub outcome: AuthorityOutcome,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -404,4 +426,58 @@ impl AuthorityReceipt {
 pub struct SignedAuthorityReceipt {
     pub receipt: AuthorityReceipt,
     pub signature: String,
+}
+
+/// An accepted issuer intent reference is durable identity, not a live grant.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CommittedActivation {
+    pub completion: Box<kasumi_types::SignedTargetCompletion>,
+    pub reference: crate::LifecycleAuthorityReference,
+    pub intent_sha256: String,
+}
+impl CommittedActivation {
+    pub fn validate(&self) -> Result<()> {
+        self.completion.observation.validate()?;
+        validate_sha256(
+            &self
+                .completion
+                .observation
+                .fact
+                .origin
+                .authority_manifest_sha256,
+        )?;
+        self.reference.validate()?;
+        ensure!(
+            matches!(
+                self.reference.identity,
+                crate::LifecycleAuthorityIdentity::Intent(_)
+            ),
+            "activation requires an exact intent identity"
+        );
+        validate_sha256(&self.intent_sha256)?;
+        Ok(())
+    }
+}
+/// Stable exact phase input. The accepted Control intent names this digest;
+/// issuer invocation credentials and fresh observations cannot change it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActivateTargetInput {
+    pub completion_sha256: String,
+    pub fence_id: Uuid,
+    pub fence_digest: String,
+    pub target: RecoveryTarget,
+}
+impl ActivateTargetInput {
+    pub fn digest(&self) -> Result<String> {
+        validate_sha256(&self.completion_sha256)?;
+        ensure!(!self.fence_id.is_nil(), "nil activation source fence");
+        validate_sha256(&self.fence_digest)?;
+        self.target.validate(
+            &self.target.checkpoint.tenant,
+            Uuid::parse_str(&self.target.checkpoint.source_incarnation)?,
+        )?;
+        digest(&("kasumi.activate-target-input.v1", self))
+    }
 }

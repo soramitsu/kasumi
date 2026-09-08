@@ -1,0 +1,3 @@
+   Compiling kasumi-client v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-client)
+    Checking kasumi-server v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-server)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 40.40s

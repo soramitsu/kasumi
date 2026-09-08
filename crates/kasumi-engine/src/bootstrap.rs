@@ -15,6 +15,16 @@ use std::{
 #[path = "backup_restore.rs"]
 mod backup_restore;
 pub use backup_restore::RestoreSource;
+#[path = "bootstrap_target.rs"]
+mod target;
+pub use target::{
+    MaterializedTargetReplica, TargetMaterializationConfig, VerifiedTargetMaterialization,
+    materialize_target_replica,
+};
+
+#[path = "bootstrap_target_quorum.rs"]
+mod target_quorum;
+pub use target_quorum::{TargetReplica, TargetReplicaConfig, open_target_replica};
 
 const NS: &str = "engine.bootstrap";
 const CHUNK: usize = 4 << 20;
@@ -131,6 +141,7 @@ pub async fn prepare_replicated_restore(
             deadline,
             target.tenant().into(),
             bootstrap.incarnation.clone(),
+            None,
         )
         .await?;
     deadline.check()?;
@@ -230,6 +241,10 @@ pub async fn open_replicated(
     security_audit: Arc<SecurityAudit>,
 ) -> anyhow::Result<Arc<Database>> {
     let store = stores.application().clone();
+    anyhow::ensure!(
+        store.storage_access().lifecycle_gate().is_none(),
+        "closed target runner required for lifecycle storage"
+    );
     bootstrap.validate()?;
     if let Some(gate) = store.storage_access().serving_gate() {
         anyhow::ensure!(
@@ -282,6 +297,10 @@ pub async fn initialize_replicated(
     bootstrap: &ReplicatedBootstrap,
 ) -> anyhow::Result<()> {
     bootstrap.validate()?;
+    anyhow::ensure!(
+        database.store().storage_access().lifecycle_gate().is_none(),
+        "closed target initialization required"
+    );
     let binding = serde_json::to_vec(&("replicated", bootstrap))?;
     anyhow::ensure!(
         database
@@ -605,7 +624,12 @@ pub async fn restore_local_with_incarnation_and_admission(
         "restore requires a fresh database incarnation"
     );
     let restored = verified
-        .into_genesis(deadline, target.tenant().into(), incarnation.to_string())
+        .into_genesis(
+            deadline,
+            target.tenant().into(),
+            incarnation.to_string(),
+            None,
+        )
         .await?;
     deadline.check()?;
     restore_access(&target, &security_audit, &context).await?;
@@ -699,3 +723,6 @@ pub fn recovery_workspace_bytes(stores: &TenantStorageSet) -> anyhow::Result<u64
         .saturating_mul(4)
         .saturating_add(4 << 20))
 }
+
+#[path = "bootstrap_target_serving.rs"]
+pub(crate) mod target_serving;

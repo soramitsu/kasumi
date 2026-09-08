@@ -1,0 +1,19 @@
+   Compiling kasumi-types v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-types)
+   Compiling kasumi-serving v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-serving)
+   Compiling kasumi-store v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-store)
+   Compiling kasumi-client v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-client)
+   Compiling kasumi-raft v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-raft)
+   Compiling kasumi-transport v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-transport)
+   Compiling kasumi-query v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-query)
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-engine)
+   Compiling kasumi-authority v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-authority)
+   Compiling kasumi-server v0.1.0 (/private/tmp/kasumi-target-runner/crates/kasumi-server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3m 59s
+     Running unittests src/lib.rs (/tmp/kasumi-custody-substrate-target/debug/deps/kasumi_server-587c04ce44de259b)
+
+running 2 tests
+test target_runtime::outcome_tests::panic_and_abort_after_dispatch_are_unknown_but_inner_rejection_is_preserved ... ok
+test target_runtime::outcome_tests::timed_out_waiter_keeps_actual_worker_admission_owned_until_completion ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 56 filtered out; finished in 0.08s
+

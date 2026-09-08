@@ -244,6 +244,7 @@ impl IndependentAuthority {
                 partition: self.installation().partition,
                 authority_term: term,
                 authority_revision: material.revision,
+                application_purpose: material.application_purpose,
                 lifetime_ms: max,
                 credential_lifetime_ms: max.min(remaining),
             })
