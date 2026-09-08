@@ -35,6 +35,7 @@ pub mod control;
 pub mod security_audit;
 mod service;
 mod snapshot_codec;
+mod snapshot_index;
 mod state;
 pub use bootstrap::{
     LocalRestoreRequest, MaterializedTargetReplica, PreparedReplicaRestore, ReplicaPlacement,
@@ -42,6 +43,7 @@ pub use bootstrap::{
     TargetReplica, TargetReplicaConfig, VerifiedTargetMaterialization, initialize_replicated,
     materialize_target_replica, open_local, open_local_with_incarnation, open_replicated,
     open_target_replica, prepare_replicated_restore, recovery_workspace_bytes, restore_local,
+    resume_target_materialization,
 };
 pub use security_audit::{
     SECURITY_TENANT, SecurityAudit, SecurityEvent, SecurityEventKind, SecurityOutcome,

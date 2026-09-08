@@ -586,87 +586,125 @@ pub(super) fn changes(stage: &StagedTransaction) -> BTreeMap<String, BTreeSet<St
     changes
 }
 
-pub(super) fn validate_restored(state: &TenantState) -> Result<()> {
-    validate_budget(state, &state.limits)?;
+/// Counters for independently bounded chunks, shared by resident and indexed
+/// restore validation. No staged payload needs to remain resident between chunks.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+pub(super) struct SnapshotChunks {
+    stored: usize,
+    payload: usize,
+    operations: usize,
+    assertions: usize,
+    chunks: usize,
+}
+impl SnapshotChunks {
+    pub(super) fn add(
+        &mut self,
+        index: usize,
+        chunk: &StagedChunk,
+        stage: &StagedTransaction,
+        limits: &Limits,
+    ) -> Result<()> {
+        validate_chunk(chunk, limits)?;
+        let (digest, bytes) = staged_digest(chunk)?;
+        if stage.manifest.chunk_digests.get(index) != Some(&digest) {
+            return Err(Error::new(
+                ErrorCode::Corruption,
+                "restored staged chunk mismatch",
+            ));
+        }
+        let entry = encoded_len(&index.to_string())?
+            .checked_add(1)
+            .and_then(|n| n.checked_add(bytes))
+            .ok_or_else(|| Error::new(ErrorCode::Corruption, "staged accounting overflow"))?;
+        for (count, increment) in [
+            (&mut self.stored, entry),
+            (&mut self.payload, bytes),
+            (&mut self.operations, chunk.operations.len()),
+            (&mut self.assertions, chunk.read_set.len()),
+            (&mut self.chunks, 1),
+        ] {
+            *count = count
+                .checked_add(increment)
+                .ok_or_else(|| Error::new(ErrorCode::Corruption, "staged accounting overflow"))?;
+        }
+        Ok(())
+    }
+}
+
+pub(super) fn validate_snapshot_record(
+    key: &str,
+    stage: &StagedTransaction,
+    revision: u64,
+    chunks: &SnapshotChunks,
+) -> Result<bool> {
     // Permanent terminal identities describe historic requests. Lower limits
     // apply to future/active work and cannot invalidate those durable outcomes.
-    let historical_limits = historical_limits();
-    let mut active = BTreeSet::new();
-    for (key, stage) in &state.staged_transactions {
-        validate_manifest(&stage.manifest, &historical_limits)?;
-        if identity(&stage.principal, &stage.transaction_id)? != *key
-            || staged_digest(&stage.manifest)?.0 != stage.manifest_digest
-            || stage.ttl_ms == 0
-            || stage.ttl_ms > 86_400_000
-            || stage
-                .expires_at_ms
-                .is_some_and(|expires| expires < stage.ttl_ms)
-            || (stage.expires_at_ms.is_none()
-                && !matches!(stage.outcome, StagedOutcome::Aborted { .. }))
-        {
-            return Err(Error::new(
-                ErrorCode::Corruption,
-                "invalid staged identity or expiry",
-            ));
-        }
-        let mut stored = 0usize;
-        let mut payload = 0usize;
-        let mut operations = 0usize;
-        let mut assertions = 0usize;
-        for (index, chunk) in &stage.chunks {
-            validate_chunk(chunk, &state.limits)?;
-            let (digest, bytes) = staged_digest(chunk)?;
-            if stage.manifest.chunk_digests.get(*index) != Some(&digest) {
+    validate_manifest(&stage.manifest, &historical_limits())?;
+    if identity(&stage.principal, &stage.transaction_id)? != key
+        || staged_digest(&stage.manifest)?.0 != stage.manifest_digest
+        || stage.ttl_ms == 0
+        || stage.ttl_ms > 86_400_000
+        || stage
+            .expires_at_ms
+            .is_some_and(|expires| expires < stage.ttl_ms)
+        || (stage.expires_at_ms.is_none()
+            && !matches!(stage.outcome, StagedOutcome::Aborted { .. }))
+    {
+        return Err(Error::new(
+            ErrorCode::Corruption,
+            "invalid staged identity or expiry",
+        ));
+    }
+    if chunks.stored != stage.stored_chunk_bytes
+        || chunks.payload != stage.uploaded_payload_bytes
+        || chunks.operations != stage.uploaded_operations
+        || chunks.assertions != stage.uploaded_read_assertions
+        || chunks.payload > stage.manifest.encoded_chunk_bytes
+        || chunks.operations > stage.manifest.operation_count
+        || chunks.assertions > stage.manifest.read_assertion_count
+    {
+        return Err(Error::new(
+            ErrorCode::Corruption,
+            "staged chunk accounting mismatch",
+        ));
+    }
+    match &stage.outcome {
+        StagedOutcome::Uploading => Ok(true),
+        StagedOutcome::Aborted { receipt } | StagedOutcome::Expired { receipt } => {
+            if chunks.chunks != 0 || receipt.revision > revision || !receipt.versions.is_empty() {
                 return Err(Error::new(
                     ErrorCode::Corruption,
-                    "restored staged chunk mismatch",
+                    "invalid canceled staged outcome",
                 ));
             }
-            stored += encoded_len(&index.to_string())? + 1 + bytes;
-            payload += bytes;
-            operations += chunk.operations.len();
-            assertions += chunk.read_set.len();
+            Ok(false)
         }
-        if stored != stage.stored_chunk_bytes
-            || payload != stage.uploaded_payload_bytes
-            || operations != stage.uploaded_operations
-            || assertions != stage.uploaded_read_assertions
-            || payload > stage.manifest.encoded_chunk_bytes
-            || operations > stage.manifest.operation_count
-            || assertions > stage.manifest.read_assertion_count
-        {
-            return Err(Error::new(
-                ErrorCode::Corruption,
-                "staged chunk accounting mismatch",
-            ));
+        StagedOutcome::Finished { outcome } => {
+            if chunks.chunks != 0
+                || outcome.as_ref().is_ok_and(|receipt| {
+                    receipt.revision > revision || !receipt.versions.is_empty()
+                })
+            {
+                return Err(Error::new(
+                    ErrorCode::Corruption,
+                    "invalid terminal staged outcome",
+                ));
+            }
+            Ok(false)
         }
-        match &stage.outcome {
-            StagedOutcome::Uploading => {
-                active.insert(key.clone());
-            }
-            StagedOutcome::Aborted { receipt } | StagedOutcome::Expired { receipt } => {
-                if !stage.chunks.is_empty()
-                    || receipt.revision > state.revision
-                    || !receipt.versions.is_empty()
-                {
-                    return Err(Error::new(
-                        ErrorCode::Corruption,
-                        "invalid canceled staged outcome",
-                    ));
-                }
-            }
-            StagedOutcome::Finished { outcome } => {
-                if !stage.chunks.is_empty()
-                    || outcome.as_ref().is_ok_and(|receipt| {
-                        receipt.revision > state.revision || !receipt.versions.is_empty()
-                    })
-                {
-                    return Err(Error::new(
-                        ErrorCode::Corruption,
-                        "invalid terminal staged outcome",
-                    ));
-                }
-            }
+    }
+}
+
+pub(super) fn validate_restored(state: &TenantState) -> Result<()> {
+    validate_budget(state, &state.limits)?;
+    let mut active = BTreeSet::new();
+    for (key, stage) in &state.staged_transactions {
+        let mut chunks = SnapshotChunks::default();
+        for (index, chunk) in &stage.chunks {
+            chunks.add(*index, chunk, stage, &state.limits)?;
+        }
+        if validate_snapshot_record(key, stage, state.revision, &chunks)? {
+            active.insert(key.clone());
         }
     }
     if active != state.active_staged_transactions {

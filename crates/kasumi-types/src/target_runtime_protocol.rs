@@ -1,20 +1,21 @@
 //! Native target request routing contains only installed semantic identifiers.
+use crate::authority_protocol::protocol_digest as digest;
 use crate::*;
 use anyhow::{Result, ensure};
-use kasumi_types::*;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TargetRuntimeRequest {
     pub tenant: String,
     pub command_id: Uuid,
     pub step: TargetRuntimeStep,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum TargetRuntimeStep {
     Materialize(TargetMaterializationInput),
+    ResumeMaterialization(Box<TargetOrigin>),
     Start(TargetReplicaInput),
     Initialize(TargetQuorumInput),
     Complete(TargetQuorumInput),
@@ -37,6 +38,9 @@ impl TargetRuntimeRequest {
         match &self.step {
             TargetRuntimeStep::Materialize(input) => {
                 input.digest()?;
+            }
+            TargetRuntimeStep::ResumeMaterialization(origin) => {
+                origin.resume_digest()?;
             }
             TargetRuntimeStep::Start(input) => {
                 input.quorum().digest()?;
@@ -71,14 +75,14 @@ impl TargetRuntimeRequest {
         Ok(())
     }
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TargetRuntimeResponse {
     pub command_id: Uuid,
     pub node_id: u64,
     pub outcome: TargetRuntimeOutcome,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum TargetRuntimeOutcome {
     Materialized(Box<SignedTargetMaterialization>),

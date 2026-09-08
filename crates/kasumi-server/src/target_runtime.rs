@@ -517,6 +517,20 @@ impl TargetRecoveryRuntime {
         admission: &TargetRequestAdmission,
     ) -> Result<(LifecyclePhase, String)> {
         Ok(match step {
+            TargetRuntimeStep::ResumeMaterialization(origin) => {
+                ensure!(
+                    phase
+                        .original()
+                        .observation()
+                        .intent
+                        .request
+                        .resume_origin
+                        .as_ref()
+                        == Some(origin),
+                    "resumption differs from exact retained Control origin"
+                );
+                (LifecyclePhase::ResumeMaterialize, origin.resume_digest()?)
+            }
             TargetRuntimeStep::Materialize(input) => {
                 input.validate(&phase.original().observation().intent)?;
                 (LifecyclePhase::Materialize, input.digest()?)
@@ -644,7 +658,12 @@ impl TargetRecoveryRuntime {
         let stores = g.stores.as_ref().unwrap().clone();
         self.config
             .install_tenant_audit_archive(stores.application(), None)?;
-        if let TargetRuntimeStep::Materialize(input) = step {
+        let materialization = match step {
+            TargetRuntimeStep::Materialize(input) => Some((input, None)),
+            TargetRuntimeStep::ResumeMaterialization(origin) => Some((&origin.input, Some(origin))),
+            _ => None,
+        };
+        if let Some((input, resume)) = materialization {
             self.placement(input)?;
             let source = template
                 .source_backups
@@ -665,32 +684,48 @@ impl TargetRecoveryRuntime {
                 keys: source.keys.provider(self.credential.clone())?,
                 timeout_ms: self.installed.limits.operation_timeout_ms,
             };
-            let materialized = kasumi_engine::materialize_target_replica(
-                op,
-                &source,
-                stores,
-                input.clone(),
-                kasumi_engine::TargetMaterializationConfig {
-                    node_id: self.installed.node.node_id,
-                    incarnation: key.1,
-                    voters: input
-                        .voters
-                        .iter()
-                        .map(|(id, p)| {
-                            (
-                                *id,
-                                kasumi_engine::ReplicaPlacement {
-                                    address: p.endpoint.clone(),
-                                    failure_domain: p.failure_domain.clone(),
-                                },
-                            )
-                        })
-                        .collect(),
-                    admission: self.admission.clone(),
-                },
-                self.audit.clone(),
-            )
-            .await?;
+            let configuration = kasumi_engine::TargetMaterializationConfig {
+                node_id: self.installed.node.node_id,
+                incarnation: key.1,
+                voters: input
+                    .voters
+                    .iter()
+                    .map(|(id, p)| {
+                        (
+                            *id,
+                            kasumi_engine::ReplicaPlacement {
+                                address: p.endpoint.clone(),
+                                failure_domain: p.failure_domain.clone(),
+                            },
+                        )
+                    })
+                    .collect(),
+                admission: self.admission.clone(),
+            };
+            let materialized = match resume {
+                Some(origin) => {
+                    kasumi_engine::resume_target_materialization(
+                        op,
+                        &source,
+                        stores,
+                        origin.as_ref().clone(),
+                        configuration,
+                        self.audit.clone(),
+                    )
+                    .await?
+                }
+                None => {
+                    kasumi_engine::materialize_target_replica(
+                        op,
+                        &source,
+                        stores,
+                        input.clone(),
+                        configuration,
+                        self.audit.clone(),
+                    )
+                    .await?
+                }
+            };
             let signed = self
                 .signer
                 .sign_materialized(&materialized.proof, op)

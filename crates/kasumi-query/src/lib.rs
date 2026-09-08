@@ -14,7 +14,7 @@ mod search;
 mod structured;
 mod validation;
 
-pub use validation::{check_unique, validate_collection, validate_document};
+pub use validation::{check_unique, unique_index_key, validate_collection, validate_document};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;

@@ -23,6 +23,7 @@ pub struct VerifiedTargetMaterialization {
     fact: TargetMaterializationFact,
     admission: Arc<crate::admission::NodeAdmission>,
     release: crate::target_invocation::TargetReleaseFence,
+    phase: LifecyclePhase,
 }
 impl VerifiedTargetMaterialization {
     pub fn fact(&self) -> &TargetMaterializationFact {
@@ -32,7 +33,7 @@ impl VerifiedTargetMaterialization {
         self.release.check(operation)?;
         operation
             .invocation()
-            .check_target(self.stores.application(), LifecyclePhase::Materialize)?;
+            .check_target(self.stores.application(), self.phase)?;
         let stores = self.stores.clone();
         let expected = self.fact.bootstrap_sha256.clone();
         let reservation = Arc::new(self.admission.reserve(
@@ -105,14 +106,81 @@ pub async fn materialize_target_replica(
     replica: TargetMaterializationConfig,
     security_audit: Arc<SecurityAudit>,
 ) -> anyhow::Result<MaterializedTargetReplica> {
+    operation.check()?;
+    let lease = operation.invocation().gate().current()?;
+    input.validate(&lease.commitment().intent)?;
+    let origin = TargetOrigin {
+        authority_manifest_sha256: lease
+            .signed()
+            .claims
+            .request
+            .authority_manifest_sha256
+            .clone(),
+        materialization: lease.commitment().intent.clone(),
+        input,
+    };
+    materialize_origin(
+        operation,
+        source,
+        targets,
+        origin,
+        LifecyclePhase::Materialize,
+        replica,
+        security_audit,
+    )
+    .await
+}
+
+/// Fresh admission is committed separately and retains the exact original
+/// origin. The original bootstrap and original intent deadline never change.
+pub async fn resume_target_materialization(
+    operation: &TargetOperation,
+    source: &RestoreSource,
+    targets: Arc<TenantStorageSet>,
+    origin: TargetOrigin,
+    replica: TargetMaterializationConfig,
+    security_audit: Arc<SecurityAudit>,
+) -> anyhow::Result<MaterializedTargetReplica> {
+    operation.check()?;
+    let lease = operation.invocation().gate().current()?;
+    let current = &lease.commitment().intent;
+    current.request.validate()?;
+    origin.accepts_phase(current, LifecyclePhase::ResumeMaterialize)?;
+    anyhow::ensure!(
+        current.request.resume_origin.as_deref() == Some(&origin)
+            && current.request.phase_input_sha256 == origin.resume_digest()?
+            && lease.signed().claims.request.authority_manifest_sha256
+                == origin.authority_manifest_sha256,
+        "fresh materialization admission differs from the retained original origin"
+    );
+    materialize_origin(
+        operation,
+        source,
+        targets,
+        origin,
+        LifecyclePhase::ResumeMaterialize,
+        replica,
+        security_audit,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn materialize_origin(
+    operation: &TargetOperation,
+    source: &RestoreSource,
+    targets: Arc<TenantStorageSet>,
+    origin: TargetOrigin,
+    phase: LifecyclePhase,
+    replica: TargetMaterializationConfig,
+    security_audit: Arc<SecurityAudit>,
+) -> anyhow::Result<MaterializedTargetReplica> {
     security_audit.require_admission(&replica.admission)?;
     operation.check()?;
     let target = targets.application().clone();
-    operation
-        .invocation()
-        .check_target(&target, LifecyclePhase::Materialize)?;
+    operation.invocation().check_target(&target, phase)?;
     let lease = operation.invocation().gate().current()?;
-    input.validate(&lease.commitment().intent)?;
+    let input = &origin.input;
     anyhow::ensure!(
         operation.timeout_ms <= source.timeout_ms
             && source.destination_alias == input.destination_alias
@@ -137,16 +205,6 @@ pub async fn materialize_target_replica(
         serde_json::to_vec(&replica.voters)? == serde_json::to_vec(&voters)?,
         "installed target peer placement differs"
     );
-    let origin = TargetOrigin {
-        authority_manifest_sha256: lease
-            .signed()
-            .claims
-            .request
-            .authority_manifest_sha256
-            .clone(),
-        materialization: lease.commitment().intent.clone(),
-        input: input.clone(),
-    };
     let _gate = operation
         .run(async { Ok(BOOTSTRAP_GATE.lock().await) })
         .await?;
@@ -169,17 +227,22 @@ pub async fn materialize_target_replica(
             .await
         })
         .await?;
+    anyhow::ensure!(
+        kasumi_types::staged_digest(&verified.source_purpose)?.0 == input.source_purpose_sha256,
+        "materialization source purpose differs from the authenticated backup root"
+    );
     let _workspace = verified._reservation.clone();
     let bootstrap = ReplicatedBootstrap {
         incarnation: replica.incarnation.to_string(),
-        initial_policy: verified.state.policy.clone(),
-        initial_limits: verified.state.limits.clone(),
+        initial_policy: verified.state.metadata().policy.clone(),
+        initial_limits: verified.state.metadata().limits.clone(),
         voters,
     };
     bootstrap.validate()?;
     let restored = operation
         .run(verified.into_genesis(
             operation.deadline,
+            replica.admission.clone(),
             target.tenant().into(),
             bootstrap.incarnation.clone(),
             Some(origin.clone()),
@@ -226,6 +289,7 @@ pub async fn materialize_target_replica(
         },
         admission: replica.admission.clone(),
         release: operation.release_fence(),
+        phase,
     };
     proof.release(operation).await?;
     operation.check()?;

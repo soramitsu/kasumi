@@ -55,6 +55,7 @@ impl ControlFixture {
                 .collect(),
             phase: LifecyclePhase::Materialize,
             phase_input_sha256: "cd".repeat(32),
+            resume_origin: None,
         };
         let mut signed = SignedControlIntent {
             observation: ControlIntentCommitment {

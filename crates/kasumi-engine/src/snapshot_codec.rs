@@ -35,7 +35,7 @@ pub(crate) enum Record {
     Target(String, Box<TargetExecutionState>),
 }
 impl Record {
-    fn order(&self) -> (u8, String, String) {
+    pub(crate) fn order(&self) -> (u8, String, String) {
         match self {
             Self::Header(_) => (0, String::new(), String::new()),
             Self::Lineage(i, _) => (1, format!("{i:020}"), String::new()),
@@ -57,6 +57,160 @@ impl Record {
             Self::Target(k, _) => (17, k.clone(), String::new()),
         }
     }
+}
+
+/// Borrow resident persistent roots, emitting one bounded record at a time. The
+/// same semantic record projection is used by portable snapshots and closures.
+pub(crate) fn records<'a>(
+    state: &'a TenantState,
+    kind: u8,
+    primary: Option<&str>,
+) -> anyhow::Result<Box<dyn Iterator<Item = anyhow::Result<Record>> + Send + 'a>> {
+    if kind == 14 {
+        let primary = primary.map(str::to_owned);
+        return Ok(Box::new(
+            state
+                .audits
+                .iter()
+                .enumerate()
+                .map(move |(i, event)| {
+                    let sequence = state
+                        .audit_retention
+                        .pruned_before
+                        .checked_add(i as u64)
+                        .ok_or_else(|| anyhow::anyhow!("audit sequence overflow"))?;
+                    Ok(Record::Audit(sequence, event.clone()))
+                })
+                .filter(move |record| {
+                    record.as_ref().map_or(true, |record| {
+                        primary.as_ref().is_none_or(|p| &record.order().1 == p)
+                    })
+                }),
+        ));
+    }
+    let collections: Box<dyn Iterator<Item = (&'a String, &'a CollectionState)> + Send + 'a> =
+        match primary {
+            Some(name) => Box::new(state.collections.get_key_value(name).into_iter()),
+            None => Box::new(state.collections.iter()),
+        };
+    let primary = primary.map(str::to_owned);
+    let records: Box<dyn Iterator<Item = Record> + Send + 'a> = match kind {
+        0 => Box::new(std::iter::once(Record::Header(Box::new(metadata(state))))),
+        1 => Box::new(
+            state
+                .restore_lineage
+                .iter()
+                .enumerate()
+                .map(|(i, link)| Record::Lineage(i as u64, link.clone())),
+        ),
+        2 => Box::new(collections.map(|(name, collection)| {
+            Record::Collection(
+                name.clone(),
+                CollectionState {
+                    definition: collection.definition.clone(),
+                    data_epoch: collection.data_epoch,
+                    documents: Default::default(),
+                    archived_documents: Default::default(),
+                    archived_document_bytes: collection.archived_document_bytes,
+                },
+            )
+        })),
+        3 => Box::new(collections.flat_map(|(name, collection)| {
+            collection
+                .documents
+                .values()
+                .map(move |document| Record::Document(name.clone(), document.clone()))
+        })),
+        4 => Box::new(collections.flat_map(|(name, collection)| {
+            collection
+                .archived_documents
+                .iter()
+                .map(move |(id, reference)| {
+                    Record::Archived(name.clone(), id.clone(), reference.clone())
+                })
+        })),
+        5 => Box::new(
+            state
+                .receipts
+                .iter()
+                .map(|(key, value)| Record::Receipt(key.clone(), value.clone())),
+        ),
+        6 => Box::new(state.staged_transactions.iter().map(|(key, value)| {
+            let mut header = value.clone();
+            header.chunks.clear();
+            Record::Stage(key.clone(), header)
+        })),
+        7 => Box::new(state.staged_transactions.iter().flat_map(|(key, value)| {
+            value
+                .chunks
+                .iter()
+                .map(move |(i, chunk)| Record::StageChunk(key.clone(), *i, chunk.clone()))
+        })),
+        8 => Box::new(
+            state
+                .active_staged_transactions
+                .iter()
+                .map(|key| Record::ActiveStage(key.clone())),
+        ),
+        9 => Box::new(state.change_feed.commits.iter().map(|(i, value)| {
+            let mut header = value.as_ref().clone();
+            header.records.clear();
+            Record::Change(*i, Arc::new(header))
+        })),
+        10 => Box::new(
+            state
+                .change_feed
+                .commits
+                .iter()
+                .flat_map(|(sequence, commit)| {
+                    commit.records.iter().enumerate().map(move |(i, record)| {
+                        Record::ChangeItem(*sequence, i as u64, record.clone())
+                    })
+                }),
+        ),
+        11 => Box::new(
+            state
+                .history_archives
+                .iter()
+                .map(|(key, value)| Record::Archive(key.clone(), value.clone())),
+        ),
+        12 => Box::new(
+            state
+                .schema_activations
+                .iter()
+                .map(|(key, value)| Record::Activation(key.clone(), value.clone())),
+        ),
+        13 => Box::new(
+            state
+                .retirements
+                .iter()
+                .map(|(key, value)| Record::Retirement(key.clone(), Box::new(value.clone()))),
+        ),
+        15 => Box::new(state.lifecycle_control.iter().flat_map(|state| {
+            state
+                .intents
+                .iter()
+                .map(|(key, value)| Record::Intent(*key, value.clone()))
+        })),
+        16 => Box::new(state.lifecycle_control.iter().flat_map(|state| {
+            state
+                .changes
+                .iter()
+                .map(|(key, value)| Record::ControlChange(*key, value.clone()))
+        })),
+        17 => Box::new(
+            state
+                .target_lifecycle
+                .iter()
+                .map(|(key, value)| Record::Target(key.clone(), Box::new(value.clone()))),
+        ),
+        _ => anyhow::bail!("unsupported snapshot record kind"),
+    };
+    Ok(Box::new(
+        records
+            .filter(move |record| primary.as_ref().is_none_or(|p| &record.order().1 == p))
+            .map(Ok),
+    ))
 }
 
 pub(crate) fn metadata(state: &TenantState) -> TenantState {
@@ -147,122 +301,91 @@ impl Write for Bounded {
     }
 }
 
-pub(crate) fn write(state: &TenantState, writer: &mut dyn Write) -> anyhow::Result<()> {
-    writer.write_all(MAGIC)?;
-    let mut digest = Sha256::new();
-    digest.update(MAGIC);
-    let mut count = 0u64;
-    let mut total = 8u64;
-    let mut emit = |record: Record| -> anyhow::Result<()> {
+pub(crate) struct Encoder<'a> {
+    writer: &'a mut dyn Write,
+    digest: Sha256,
+    count: u64,
+    total: u64,
+    previous: Option<(u8, String, String)>,
+}
+impl<'a> Encoder<'a> {
+    pub(crate) fn new(writer: &'a mut dyn Write) -> anyhow::Result<Self> {
+        writer.write_all(MAGIC)?;
+        let mut digest = Sha256::new();
+        digest.update(MAGIC);
+        Ok(Self {
+            writer,
+            digest,
+            count: 0,
+            total: 8,
+            previous: None,
+        })
+    }
+    pub(crate) fn record(&mut self, record: Record) -> anyhow::Result<()> {
+        let key = record.order();
+        anyhow::ensure!(
+            self.previous
+                .as_ref()
+                .is_none_or(|previous| previous < &key),
+            "snapshot records duplicated or unordered"
+        );
+        self.previous = Some(key);
         let mut buffer = Bounded(Vec::new());
         serde_json::to_writer(&mut buffer, &record)?;
         let length = (buffer.0.len() as u64).to_be_bytes();
-        writer.write_all(&length)?;
-        writer.write_all(&buffer.0)?;
-        digest.update(length);
-        digest.update(&buffer.0);
-        count = count
+        self.writer.write_all(&length)?;
+        self.writer.write_all(&buffer.0)?;
+        self.digest.update(length);
+        self.digest.update(&buffer.0);
+        self.count = self
+            .count
             .checked_add(1)
             .ok_or_else(|| anyhow::anyhow!("snapshot record count overflow"))?;
-        total = total
+        self.total = self
+            .total
             .checked_add(8)
             .and_then(|n| n.checked_add(buffer.0.len() as u64))
             .ok_or_else(|| anyhow::anyhow!("snapshot byte overflow"))?;
         Ok(())
-    };
-    emit(Record::Header(Box::new(metadata(state))))?;
-    for (i, item) in state.restore_lineage.iter().enumerate() {
-        emit(Record::Lineage(i as u64, item.clone()))?;
     }
-    for (key, collection) in &state.collections {
-        emit(Record::Collection(
-            key.clone(),
-            CollectionState {
-                definition: collection.definition.clone(),
-                data_epoch: collection.data_epoch,
-                documents: Default::default(),
-                archived_documents: Default::default(),
-                archived_document_bytes: collection.archived_document_bytes,
-            },
-        ))?;
+    pub(crate) fn finish(self) -> anyhow::Result<()> {
+        self.writer.write_all(&0u64.to_be_bytes())?;
+        self.writer.write_all(&self.count.to_be_bytes())?;
+        self.writer.write_all(&self.total.to_be_bytes())?;
+        self.writer.write_all(&self.digest.finalize())?;
+        Ok(())
     }
-    for (key, collection) in &state.collections {
-        for document in collection.documents.values() {
-            emit(Record::Document(key.clone(), document.clone()))?;
+}
+pub(crate) fn write(state: &TenantState, writer: &mut dyn Write) -> anyhow::Result<()> {
+    let mut encoder = Encoder::new(writer)?;
+    for kind in 0..18 {
+        for record in records(state, kind, None)? {
+            encoder.record(record?)?;
         }
     }
-    for (key, collection) in &state.collections {
-        for (id, reference) in &collection.archived_documents {
-            emit(Record::Archived(key.clone(), id.clone(), reference.clone()))?;
-        }
-    }
-    for (key, receipt) in &state.receipts {
-        emit(Record::Receipt(key.clone(), receipt.clone()))?;
-    }
-    for (key, stage) in &state.staged_transactions {
-        let mut header = stage.clone();
-        header.chunks.clear();
-        emit(Record::Stage(key.clone(), header))?;
-    }
-    for (key, stage) in &state.staged_transactions {
-        for (i, chunk) in &stage.chunks {
-            emit(Record::StageChunk(key.clone(), *i, chunk.clone()))?;
-        }
-    }
-    for key in &state.active_staged_transactions {
-        emit(Record::ActiveStage(key.clone()))?;
-    }
-    for (key, commit) in &state.change_feed.commits {
-        let mut header = commit.as_ref().clone();
-        header.records.clear();
-        emit(Record::Change(*key, Arc::new(header)))?;
-    }
-    for (key, commit) in &state.change_feed.commits {
-        for (index, change) in commit.records.iter().enumerate() {
-            emit(Record::ChangeItem(*key, index as u64, change.clone()))?;
-        }
-    }
-    for (key, archive) in &state.history_archives {
-        emit(Record::Archive(key.clone(), archive.clone()))?;
-    }
-    for (key, activation) in &state.schema_activations {
-        emit(Record::Activation(key.clone(), activation.clone()))?;
-    }
-    for (key, retirement) in &state.retirements {
-        emit(Record::Retirement(
-            key.clone(),
-            Box::new(retirement.clone()),
-        ))?;
-    }
-    for (i, audit) in state.audits.iter().enumerate() {
-        emit(Record::Audit(
-            state
-                .audit_retention
-                .pruned_before
-                .checked_add(i as u64)
-                .ok_or_else(|| anyhow::anyhow!("audit sequence overflow"))?,
-            audit.clone(),
-        ))?;
-    }
-    if let Some(control) = &state.lifecycle_control {
-        for (id, intent) in &control.intents {
-            emit(Record::Intent(*id, intent.clone()))?;
-        }
-        for (id, change) in &control.changes {
-            emit(Record::ControlChange(*id, change.clone()))?;
-        }
-    }
-    for (key, target) in &state.target_lifecycle {
-        emit(Record::Target(key.clone(), Box::new(target.clone())))?;
-    }
-    writer.write_all(&0u64.to_be_bytes())?;
-    writer.write_all(&count.to_be_bytes())?;
-    writer.write_all(&total.to_be_bytes())?;
-    writer.write_all(&digest.finalize())?;
-    Ok(())
+    encoder.finish()
 }
 
-pub(crate) fn read(reader: &mut dyn Read) -> anyhow::Result<TenantState> {
+/// Positions address payload bytes in the immutable, authenticated image.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RecordPosition {
+    pub offset: u64,
+    pub bytes: u64,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct StreamSummary {
+    pub records: u64,
+    pub bytes: u64,
+}
+
+/// Visit canonical records without retaining preceding records. Successful return
+/// proves framing, canonical encoding, strict order, terminal authentication and
+/// contiguous lineage/audit sequences. Cross-record semantic checks belong to the
+/// caller; observing a record before the terminal proof never authorizes publish.
+pub(crate) fn visit(
+    reader: &mut dyn Read,
+    mut visitor: impl FnMut(RecordPosition, Record) -> anyhow::Result<()>,
+) -> anyhow::Result<StreamSummary> {
     let mut magic = [0; 8];
     reader.read_exact(&mut magic)?;
     anyhow::ensure!(&magic == MAGIC, "unsupported tenant snapshot format");
@@ -270,8 +393,10 @@ pub(crate) fn read(reader: &mut dyn Read) -> anyhow::Result<TenantState> {
     digest.update(magic);
     let mut count = 0u64;
     let mut total = 8u64;
-    let mut state: Option<TenantState> = None;
     let mut previous = None;
+    let mut lineage = 0u64;
+    let mut audit = None;
+    let mut audit_next = 0u64;
     loop {
         let mut length = [0; 8];
         reader.read_exact(&mut length)?;
@@ -287,50 +412,117 @@ pub(crate) fn read(reader: &mut dyn Read) -> anyhow::Result<TenantState> {
                 "snapshot terminal authentication differs"
             );
             anyhow::ensure!(reader.read(&mut [0])? == 0, "trailing snapshot data");
-            let state = state.ok_or_else(|| anyhow::anyhow!("snapshot metadata absent"))?;
-            state.audit_retention.validate()?;
-            anyhow::ensure!(
-                state
-                    .audit_retention
-                    .next_sequence
-                    .checked_sub(state.audit_retention.pruned_before)
-                    == Some(state.audits.len() as u64),
-                "audit final sequence differs"
-            );
-            return Ok(state);
+            anyhow::ensure!(audit == Some(audit_next), "audit final sequence differs");
+            return Ok(StreamSummary {
+                records: count,
+                bytes: total
+                    .checked_add(56)
+                    .ok_or_else(|| anyhow::anyhow!("snapshot byte overflow"))?,
+            });
         }
         anyhow::ensure!(
             size <= MAX_RECORD as u64,
             "snapshot record exceeds byte limit"
         );
+        let position = RecordPosition {
+            offset: total
+                .checked_add(8)
+                .ok_or_else(|| anyhow::anyhow!("snapshot offset overflow"))?,
+            bytes: size,
+        };
         let mut bytes = vec![0; size as usize];
         reader.read_exact(&mut bytes)?;
         digest.update(length);
         digest.update(&bytes);
-        total = total
-            .checked_add(8)
-            .and_then(|n| n.checked_add(size))
+        total = position
+            .offset
+            .checked_add(size)
             .ok_or_else(|| anyhow::anyhow!("snapshot byte overflow"))?;
         count = count
             .checked_add(1)
             .ok_or_else(|| anyhow::anyhow!("snapshot record count overflow"))?;
-        let record: Record = serde_json::from_slice(&bytes)?;
-        let mut canonical = Bounded(Vec::new());
-        serde_json::to_writer(&mut canonical, &record)?;
-        anyhow::ensure!(canonical.0 == bytes, "noncanonical snapshot record");
+        let record = decode_record(&bytes)?;
         let order = record.order();
         anyhow::ensure!(
             previous.as_ref().is_none_or(|p| p < &order),
             "snapshot records duplicated or unordered"
         );
         previous = Some(order);
+        match &record {
+            Record::Header(header) => {
+                anyhow::ensure!(
+                    count == 1 && empty_records(header),
+                    "snapshot header contains embedded records"
+                );
+                header.audit_retention.validate()?;
+                audit = Some(header.audit_retention.pruned_before);
+                audit_next = header.audit_retention.next_sequence;
+            }
+            _ if audit.is_none() => anyhow::bail!("snapshot metadata must be first"),
+            Record::Lineage(i, _) => {
+                anyhow::ensure!(*i == lineage, "lineage sequence differs");
+                lineage = lineage
+                    .checked_add(1)
+                    .ok_or_else(|| anyhow::anyhow!("lineage sequence overflow"))?;
+            }
+            Record::Audit(i, _) => {
+                anyhow::ensure!(Some(*i) == audit, "audit sequence differs");
+                audit = Some(
+                    i.checked_add(1)
+                        .ok_or_else(|| anyhow::anyhow!("audit sequence overflow"))?,
+                );
+            }
+            Record::Collection(_, collection) => anyhow::ensure!(
+                collection.documents.is_empty() && collection.archived_documents.is_empty(),
+                "collection contains embedded documents"
+            ),
+            Record::Stage(_, stage) => {
+                anyhow::ensure!(stage.chunks.is_empty(), "stage contains embedded chunks")
+            }
+            Record::Change(_, commit) => anyhow::ensure!(
+                commit.records.is_empty(),
+                "change commit contains embedded records"
+            ),
+            _ => {}
+        }
+        // The raw bytes are no longer retained while semantic/index consumers run.
+        drop(bytes);
+        visitor(position, record)?;
+    }
+}
+
+/// Compare canonical encoding as it is emitted, without a second record buffer.
+fn decode_record(bytes: &[u8]) -> anyhow::Result<Record> {
+    struct Compare<'a>(&'a [u8]);
+    impl Write for Compare<'_> {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if !self.0.starts_with(bytes) {
+                return Err(std::io::Error::other("noncanonical snapshot record"));
+            }
+            self.0 = &self.0[bytes.len()..];
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let record: Record = serde_json::from_slice(bytes)?;
+    let mut canonical = Compare(bytes);
+    serde_json::to_writer(&mut canonical, &record)?;
+    anyhow::ensure!(canonical.0.is_empty(), "noncanonical snapshot record");
+    Ok(record)
+}
+
+pub(crate) fn read(reader: &mut dyn Read) -> anyhow::Result<TenantState> {
+    let mut state: Option<TenantState> = None;
+    visit(reader, |_, record| {
         if let Record::Header(header) = record {
             anyhow::ensure!(
                 state.is_none() && empty_records(&header),
                 "snapshot header contains embedded records"
             );
             state = Some(*header);
-            continue;
+            return Ok(());
         }
         let state = state
             .as_mut()
@@ -445,7 +637,9 @@ pub(crate) fn read(reader: &mut dyn Read) -> anyhow::Result<TenantState> {
                     .insert(id, change);
             }
         }
-    }
+        Ok(())
+    })?;
+    state.ok_or_else(|| anyhow::anyhow!("snapshot metadata absent"))
 }
 
 #[cfg(test)]

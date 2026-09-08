@@ -24,9 +24,6 @@ pub use protocol::*;
 #[cfg(test)]
 mod tests;
 
-mod target_runtime_protocol;
-pub use target_runtime_protocol::*;
-
 mod maintenance;
 pub use maintenance::*;
 
@@ -43,3 +40,11 @@ pub mod test_utils;
 
 mod signer_maintenance;
 pub use signer_maintenance::*;
+
+pub use kasumi_types::{
+    ActivateTargetInput, AuthorityAction, AuthorityCommand, AuthorityOutcome, AuthorityReceipt,
+    CommittedActivation, LifecycleAuthorityIdentity, LifecycleAuthorityReference,
+    LocalTargetCleanupFact, RecoveryTarget, SignedAuthorityReceipt, SignedLocalTargetCleanup,
+    SignedTargetStop, TargetRuntimeOutcome, TargetRuntimeRequest, TargetRuntimeResponse,
+    TargetRuntimeStep, TargetStopObservation, TargetStopReference, validate_nodes,
+};

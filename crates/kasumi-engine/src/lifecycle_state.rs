@@ -142,6 +142,23 @@ fn apply_candidate(
             if control.retired || control.pending_change.is_some() {
                 return Err(conflict("lifecycle issuance is closed"));
             }
+            if let Some(origin) = &request.resume_origin
+                && (control
+                    .intents
+                    .get(&origin.materialization.request.command_id)
+                    != Some(&origin.materialization)
+                    || origin.authority_manifest_sha256
+                        != control
+                            .installation
+                            .partitions
+                            .get(&request.authority_partition)
+                            .ok_or_else(|| conflict("resumption issuer partition missing"))?
+                            .manifest_sha256)
+            {
+                return Err(conflict(
+                    "resumption origin is not the exact retained Control commitment",
+                ));
+            }
             if control.changes.contains_key(&request.command_id)
                 || request.command_id == control.installation_command_id
             {
@@ -467,6 +484,24 @@ pub(crate) fn validate(state: &TenantState) -> Result<()> {
     }
     for (id, intent) in &control.intents {
         intent.request.validate()?;
+        if let Some(origin) = &intent.request.resume_origin
+            && (control
+                .intents
+                .get(&origin.materialization.request.command_id)
+                != Some(&origin.materialization)
+                || origin.materialization.revision >= intent.revision
+                || origin.authority_manifest_sha256
+                    != control
+                        .installation
+                        .partitions
+                        .get(&intent.request.authority_partition)
+                        .ok_or_else(|| conflict("retained resumption issuer missing"))?
+                        .manifest_sha256)
+        {
+            return Err(conflict(
+                "retained resumption lost its original Control commitment",
+            ));
+        }
         validate_name(&intent.original_principal)?;
         if !ids.insert(*id)
             || *id != intent.request.command_id

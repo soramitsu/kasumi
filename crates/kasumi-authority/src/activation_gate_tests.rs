@@ -60,6 +60,7 @@ fn completion_fixture(
     let input = TargetMaterializationInput {
         destination_alias: "fixture".into(),
         backup_id: target.checkpoint.backup_id,
+        source_purpose_sha256: digest(&kasumi_store::StoragePurpose::LocalFixture).unwrap(),
         target_incarnation: target.incarnation,
         voters: target
             .nodes

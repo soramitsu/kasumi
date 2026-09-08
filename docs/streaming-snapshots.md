@@ -47,10 +47,15 @@ then a constant-size final root. Pages form an immutable reverse chain with
 ciphertext digests on every edge. Verification first checks that chain into an
 encrypted fixed-slot spool, then traverses it forward while checking chunk
 counts, lengths, hashes, origin, key dependencies and the final resident digest.
-Historical resident state is decoded into unpublished state from its encrypted
-spool. Immediate backup completion instead compares the full authenticated stream
-to private evidence from the exact captured generation and reuses its immutable
-roots; it still verifies every transitive dependency and key catalog.
+Historical verification builds an encrypted point index containing checked offsets
+into its immutable encrypted spool. It validates documents, unique values,
+lineage, staging, change feeds, cold references, permanent outcomes, audit counters,
+and target signatures one bounded record at a time. Two temporary tables each
+have an 8 MiB page cache; their keys and pages are encrypted too. The declared
+workspace estimate is 128 MiB, independent of aggregate tenant size. Immediate
+completion instead compares the full authenticated stream to private evidence
+from the exact captured generation and reuses its immutable roots with a 64 MiB
+workspace estimate. Both paths verify every transitive dependency and key catalog.
 Genesis/bootstrap persistence, target materialization readback and Raft restore
 also consume streaming readers. Bootstrap manifest format 2 uses checked 64-bit
 byte and chunk counts and binds the same image digest in custody metadata.
@@ -95,10 +100,15 @@ archive cache before accepting the bundle. Failed verification can leave verifie
 immutable orphans, but cannot publish an archive head or pruning watermark. Cache
 paths and external destination settings remain local installation bindings. A
 replacement can produce the same archive-complete snapshot without the original
-source. This does not yet establish final bounded-memory verification or the
-3 GiB capacity gate; validation and restore still rebuild unpublished logical
-state. Full backups copy and verify the same chain in their owned session object
-namespace and stage target cache dependencies before publishing restored genesis.
+source. Snapshot transfer materializes the unpublished replacement state; it is
+separate from indexed historical backup verification. Full backups copy and verify
+the same chain in their owned session namespace and stage target cache dependencies
+before publishing restored genesis. Restore relocation rewrites bounded records
+between encrypted spools, then materializes the actual target state once under a
+separate node reservation retained through publication. These reservations are
+estimates, not allocator or RSS limits. Final 3 GiB, RSS, disk-capacity and endurance
+acceptance remains required; shared aggregate temporary-disk admission remains
+release work.
 
 The public `TenantEngine::snapshot(admission, timeout_ms)` asynchronously captures
 a complete backend bundle using the installed store and explicit node admission.
@@ -142,3 +152,12 @@ current store's exact-purpose audit decoder and the stream/head committed in the
 Control state. They cannot invoke application historical-key verification or
 cross-incarnation restore lineage. The application backup verifier continues to
 reject all reserved storage purposes.
+
+Planned retirement uses canonical `kasumi.retirement-closure.v2` records. Live
+persistent roots and indexed backups share the same record projection. Logical
+document IDs merge hot and archived records in order; each contributes its exact
+version and full-document digest. Staging and feed headers/payloads remain separate
+bounded records, and every category has a final count. Immutable lineage and
+target history are covered along with policy, resource limits and permanent
+command identities. Intrinsic audit/Raft revisions and retirement-attempt records
+remain outside this application closure. The first release has no v1 decoder.
