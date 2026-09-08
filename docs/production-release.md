@@ -351,3 +351,15 @@ a read-only quota getter or caller capacity claim cannot close this dependency.
   workspace Clippy/fixture-free production checks passed. Exact evidence and the
   corrected assertion failure are in `docs/evidence/fresh-materialization-20260908`.
   The durable distributed recovery coordinator remains in progress.
+
+- `7d8c817` adds explicit native reload of the exact activated operational signer
+  from private descriptor/key files. Source tests passed four, actual TLS reload
+  passed one and authority tests passed 37, with strict workspace Clippy and
+  fixture-free production checks. Evidence in
+  `docs/evidence/native-authority-key-reload-20260908` preserves initial failures.
+  The replicated signing head and coordinated verifier/issuer drains remain open.
+- `ee0b1e0` includes typed Control recovery records in canonical snapshots and
+  moves cold-history semantic verification into owned blocking workers. Snapshot
+  tests passed 14, backup tests ten, and affected strict Clippy/production checks
+  passed. Evidence is in `docs/evidence/recovery-records-cold-workers-20260908`.
+  The distributed recovery reducer and dispatch remain under implementation.

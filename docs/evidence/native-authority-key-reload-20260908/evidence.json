@@ -1,0 +1,103 @@
+{
+  "source_commit": "7d8c817ab4d90d1cbc679d195584815975d2fc05",
+  "source_dirty": "",
+  "lockfile_sha256": "a4a3883969dc9486548a1aea841ecf45c482c99e4ea1e0d47b56f6c52b2afa08",
+  "captured_at_utc": "2026-09-08T09:14:52.457203+00:00",
+  "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-apple-darwin\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+  "scope": "Explicit native installed operational signer reload, private source validation, immutable request deadlines and captured generations. This is scoped evidence, not final release certification. Replicated authority signing head, remote verifier acknowledgments and distributed rotation completion remain to be implemented.",
+  "gates": [
+    {
+      "gate": "source-tests",
+      "log": "/tmp/kasumi-runtime-native-reload-source-drained.log",
+      "log_sha256": "0314219bea8e7aa32eb6fb4d41ce30c4cdaff5927b4bd624734ad930d02e929c",
+      "binaries": [
+        {
+          "path": "/tmp/kasumi-production-runtime-target/debug/deps/kasumi_server-836de15f40a715c9",
+          "sha256": "26cc779f6df8929169fc474a45a2e092a561b5f5f4af4bac0273967017bf65b4",
+          "bytes": 273351680
+        }
+      ],
+      "results": [
+        "    Finished `test` profile [unoptimized + debuginfo] target(s) in 24.38s",
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 76 filtered out; finished in 1.00s"
+      ]
+    },
+    {
+      "gate": "tls-tests",
+      "log": "/tmp/kasumi-runtime-native-reload-tls-final.log",
+      "log_sha256": "088167af0de8bb644d1d4510e46ae9e925d37c3fe4d9ff11e6f5d36170081cac",
+      "binaries": [
+        {
+          "path": "/tmp/kasumi-production-runtime-target/debug/deps/kasumi_server-836de15f40a715c9",
+          "sha256": "26cc779f6df8929169fc474a45a2e092a561b5f5f4af4bac0273967017bf65b4",
+          "bytes": 273351680
+        }
+      ],
+      "results": [
+        "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.53s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 79 filtered out; finished in 11.35s"
+      ]
+    },
+    {
+      "gate": "authority-tests",
+      "log": "/tmp/kasumi-runtime-native-reload-authority-final.log",
+      "log_sha256": "a245ca4332412df8f1d708067ef1e66cfe1fb2cd8a83ca548792199b985564f3",
+      "binaries": [
+        {
+          "path": "/tmp/kasumi-production-runtime-target/debug/deps/kasumi_authority-4dc8c28d94b8f3ab",
+          "sha256": "85c1011f5da52ac361b81e0318fa81a50866dfe07b8af44bd8ef7f3e944c881c",
+          "bytes": 165445072
+        }
+      ],
+      "results": [
+        "    Finished `test` profile [unoptimized + debuginfo] target(s) in 36.99s",
+        "test result: ok. 37 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 43.59s"
+      ]
+    },
+    {
+      "gate": "clippy",
+      "log": "/tmp/kasumi-runtime-native-reload-clippy.log",
+      "log_sha256": "1ebf455b25ff99c03ca6d2316825283e3cfffbe3154901d878f07e0c03f665fb",
+      "binaries": [],
+      "results": [
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 08s"
+      ]
+    },
+    {
+      "gate": "production",
+      "log": "/tmp/kasumi-runtime-native-reload-production.log",
+      "log_sha256": "033a0393dcb5679227259ee2f89960e8fdfecc0d4f25ab90f3171d21d810dc39",
+      "binaries": [],
+      "results": [
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 35.79s"
+      ]
+    },
+    {
+      "gate": "format",
+      "log": "/tmp/kasumi-runtime-native-reload-format.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "binaries": [],
+      "results": []
+    }
+  ],
+  "initial_failures": [
+    {
+      "log": "/tmp/kasumi-runtime-native-reload-check.log",
+      "log_sha256": "49431ff5b73b567f682ae5e1c60f8452b5ff2054f4cc51002486dc75e6fe898a",
+      "disposition": "Initial compilation lacked the SigningCertificateVerification trait import; fixed before final gates.",
+      "executable_hash": "not captured before rebuilding; no historical binary hash inferred"
+    },
+    {
+      "log": "/tmp/kasumi-runtime-native-reload-source-tests.log",
+      "log_sha256": "bd9adeec65c12dd34e8ea90331ad121521e9fbb1c11a983fe0447ee9215d5e32",
+      "disposition": "Initial private source protection test caught symlink following in the older runtime key reader; signer reads now use strict private_files::read.",
+      "executable_hash": "not captured before rebuilding; no historical binary hash inferred"
+    },
+    {
+      "log": "/tmp/kasumi-runtime-native-reload-source-final.log",
+      "log_sha256": "5b9383c49fefdec821d411de308252298aac15b83219ad2336107a40831142ad",
+      "disposition": "The restart test initially retained exclusive metadata ownership while trying to reopen. It now verifies reopening is blocked until retained owners drain; no production ownership check was weakened.",
+      "executable_hash": "not captured before rebuilding; no historical binary hash inferred"
+    }
+  ]
+}

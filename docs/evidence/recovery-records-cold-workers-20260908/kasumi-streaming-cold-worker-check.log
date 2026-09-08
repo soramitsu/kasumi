@@ -1,0 +1,80 @@
+    Checking kasumi-types v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-types)
+    Checking kasumi-serving v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-serving)
+    Checking kasumi-query v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-query)
+    Checking kasumi-store v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-store)
+    Checking kasumi-raft v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-raft)
+    Checking kasumi-engine v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-engine)
+error[E0382]: borrow of moved value: `key_catalogs`
+   --> crates/kasumi-engine/src/backup_verify.rs:677:9
+    |
+351 |     let mut key_catalogs = KeyLineage::new();
+    |         ---------------- move occurs because `key_catalogs` has type `KeyLineage`, which does not implement the `Copy` trait
+...
+538 |     for archive in state.records(11, None)? {
+    |     --------------------------------------- inside of this loop
+...
+564 |         for (index, chunk) in archive.manifest.chunks.iter().enumerate() {
+    |         ---------------------------------------------------------------- inside of this loop
+...
+579 |                 .blocking(reservation.clone(), ownership.clone(), move || {
+    |                                                                   ------- value moved into closure here, in previous iteration of loop
+...
+677 |         key_catalogs.add_audit(&segment.reference.key)?;
+    |         ^^^^^^^^^^^^ value borrowed here after move
+    |
+note: verify that your loop breaking logic is correct
+   --> crates/kasumi-engine/src/backup_verify.rs:544:9
+    |
+538 |       for archive in state.records(11, None)? {
+    |       ---------------------------------------
+...
+544 |           reader.check_access().await?;
+    |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^ this `break` exits the loop at line 544
+545 |           let contents = reader
+    |  ________________________^
+546 | |             .object(
+547 | |                 uuid::Uuid::parse_str(&archive.manifest_object_id)?,
+548 | |                 MAX_ARCHIVE_MANIFEST_BYTES,
+...   |
+552 | |             .await?;
+    | |__________________^ this `break` exits the loop at line 552
+...
+564 |           for (index, chunk) in archive.manifest.chunks.iter().enumerate() {
+    |           ----------------------------------------------------------------
+565 |               let contents = reader
+    |  ____________________________^
+566 | |                 .object(
+567 | |                     uuid::Uuid::parse_str(&chunk.object_id)?,
+568 | |                     chunk.plaintext_bytes,
+...   |
+572 | |                 .await?;
+    | |______________________^ this `break` exits the loop at line 572
+...
+578 | /             deadline
+579 | |                 .blocking(reservation.clone(), ownership.clone(), move || {
+580 | |                     let check = || -> anyhow::Result<()> {
+581 | |                         deadline.check()?;
+...   |
+643 | |                 })
+644 | |                 .await?;
+    | |______________________^ this `break` exits the loop at line 644
+note: if `KeyLineage` implemented `Clone`, you could clone the value
+   --> crates/kasumi-engine/src/backup_verify.rs:286:1
+    |
+286 | struct KeyLineage {
+    | ^^^^^^^^^^^^^^^^^ consider implementing `Clone` for this type
+...
+600 |                     key_catalogs.add(&contents.key_catalog_sha256)?;
+    |                     ------------ you could clone this value
+help: consider moving the expression out of the loop so it is only moved once
+    |
+538 ~     let mut value = key_catalogs.add(&contents.key_catalog_sha256);
+539 ~     for archive in state.records(11, None)? {
+540 |         let crate::snapshot_codec::Record::Archive(_, archive) = archive? else {
+...
+600 |                     );
+601 ~                     value?;
+    |
+
+For more information about this error, try `rustc --explain E0382`.
+error: could not compile `kasumi-engine` (lib) due to 1 previous error
