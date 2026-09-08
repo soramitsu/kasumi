@@ -191,15 +191,13 @@ async fn recovery_journal_persists_before_dispatch_rejects_substitution_and_reco
         .await
         .is_err()
     );
-    let materialize = db
-        .resolve_recovery_dispatch(
-            f.context("owner"),
-            id,
-            phase_id,
-            RecoveryDispatchOutcome::Authority(Box::new(signed)),
-        )
-        .await
-        .unwrap();
+    let materialize = resolve_phase(
+        &f,
+        id,
+        phase_id,
+        RecoveryDispatchOutcome::Authority(Box::new(signed)),
+    )
+    .await;
     assert_eq!(materialize.record().phase, RecoveryPhase::Materialize);
     let sequence = materialize.record().next_phase_sequence;
     drop(materialize);
@@ -249,15 +247,13 @@ async fn recovery_journal_persists_before_dispatch_rejects_substitution_and_reco
         .unwrap()
         .intents[&intent_phase]
         .clone();
-    let state = db
-        .resolve_recovery_dispatch(
-            f.context("owner"),
-            id,
-            intent_phase,
-            RecoveryDispatchOutcome::ControlIntent(Box::new(committed.clone())),
-        )
-        .await
-        .unwrap();
+    let state = resolve_phase(
+        &f,
+        id,
+        intent_phase,
+        RecoveryDispatchOutcome::ControlIntent(Box::new(committed.clone())),
+    )
+    .await;
     assert_eq!(state.record().materialization_intent, Some(intent_phase));
     drop(state);
     for node_id in 1..=3 {
@@ -311,14 +307,13 @@ async fn recovery_journal_persists_before_dispatch_rejects_substitution_and_reco
         };
         record.admit_dispatch().await.unwrap();
         drop(record);
-        db.resolve_recovery_dispatch(
-            f.context("owner"),
+        resolve_phase(
+            &f,
             id,
             phase_id,
             RecoveryDispatchOutcome::Target(Box::new(response)),
         )
-        .await
-        .unwrap();
+        .await;
     }
     let status = db.recovery_status(f.context("owner"), id).await.unwrap();
     assert_eq!(status.record().phase, RecoveryPhase::Initialize);
@@ -377,8 +372,8 @@ async fn recovery_journal_persists_before_dispatch_rejects_substitution_and_reco
         let TargetRuntimeStep::Start(TargetReplicaInput::Quorum(quorum)) = request.step else {
             panic!("exact quorum startup required")
         };
-        db.resolve_recovery_dispatch(
-            f.context("owner"),
+        resolve_phase(
+            &f,
             id,
             phase_id,
             RecoveryDispatchOutcome::Target(Box::new(TargetRuntimeResponse {
@@ -389,8 +384,7 @@ async fn recovery_journal_persists_before_dispatch_rejects_substitution_and_reco
                 },
             })),
         )
-        .await
-        .unwrap();
+        .await;
     }
     let (phase_id, input) = prepare_next(&f, &db, id).await;
     let RecoveryDispatch::Target {
@@ -404,8 +398,8 @@ async fn recovery_journal_persists_before_dispatch_rejects_substitution_and_reco
     let TargetRuntimeStep::Initialize(quorum) = initialize.step else {
         panic!("designated initialization required")
     };
-    db.resolve_recovery_dispatch(
-        f.context("owner"),
+    resolve_phase(
+        &f,
         id,
         phase_id,
         RecoveryDispatchOutcome::Target(Box::new(TargetRuntimeResponse {
@@ -416,8 +410,7 @@ async fn recovery_journal_persists_before_dispatch_rejects_substitution_and_reco
             },
         })),
     )
-    .await
-    .unwrap();
+    .await;
     snapshot(&db).await;
     let complete_under = commit_next_control(&f, &db, id).await;
     assert_eq!(complete_under.request.phase, LifecyclePhase::Complete);
@@ -436,8 +429,8 @@ async fn recovery_journal_persists_before_dispatch_rejects_substitution_and_reco
             panic!("current completion startup required")
         };
         assert_eq!(request.command_id, complete_under.request.command_id);
-        db.resolve_recovery_dispatch(
-            f.context("owner"),
+        resolve_phase(
+            &f,
             id,
             phase_id,
             RecoveryDispatchOutcome::Target(Box::new(TargetRuntimeResponse {
@@ -448,8 +441,7 @@ async fn recovery_journal_persists_before_dispatch_rejects_substitution_and_reco
                 },
             })),
         )
-        .await
-        .unwrap();
+        .await;
     }
     let (unresolved, original_request) = prepare_next(&f, &db, id).await;
     let (complete_phase, retried) = prepare_next(&f, &db, id).await;
@@ -515,9 +507,7 @@ async fn recovery_journal_persists_before_dispatch_rejects_substitution_and_reco
         node_id,
         outcome: TargetRuntimeOutcome::Completed(Box::new(signed)),
     }));
-    db.resolve_recovery_dispatch(f.context("owner"), id, complete_phase, outcome)
-        .await
-        .unwrap();
+    resolve_phase(&f, id, complete_phase, outcome).await;
     assert_eq!(
         db.recovery_status(f.context("owner"), id)
             .await
@@ -574,14 +564,13 @@ async fn recovery_journal_persists_before_dispatch_rejects_substitution_and_reco
             .unwrap(),
         receipt: stop_receipt.clone(),
     };
-    db.resolve_recovery_dispatch(
-        f.context("owner"),
+    resolve_phase(
+        &f,
         id,
         stop_phase,
         RecoveryDispatchOutcome::Authority(Box::new(signed)),
     )
-    .await
-    .unwrap();
+    .await;
     let (cleanup_phase, input) = prepare_next(&f, &db, id).await;
     let RecoveryDispatch::ControlIntent(commit) = input else {
         panic!("cleanup Control phase required")
@@ -609,14 +598,13 @@ async fn recovery_journal_persists_before_dispatch_rejects_substitution_and_reco
         .unwrap()
         .intents[&cleanup_phase]
         .clone();
-    db.resolve_recovery_dispatch(
-        f.context("owner"),
+    resolve_phase(
+        &f,
         id,
         cleanup_phase,
         RecoveryDispatchOutcome::ControlIntent(Box::new(intent.clone())),
     )
-    .await
-    .unwrap();
+    .await;
     for node_id in 1..=3 {
         let (phase_id, input) = prepare_next(&f, &db, id).await;
         let RecoveryDispatch::Target {
@@ -720,9 +708,7 @@ async fn recovery_journal_persists_before_dispatch_rejects_substitution_and_reco
                     .is_err()
             );
         }
-        db.resolve_recovery_dispatch(f.context("owner"), id, phase_id, response(observation))
-            .await
-            .unwrap();
+        resolve_phase(&f, id, phase_id, response(observation)).await;
     }
     assert_eq!(
         db.recovery_status(f.context("owner"), id)
@@ -761,6 +747,61 @@ async fn recovery_journal_persists_before_dispatch_rejects_substitution_and_reco
     );
     drop(db);
     f.close().await;
+}
+// A phase outcome may commit before the current-quorum response fence closes.
+// Resolve that exact retained phase before advancing; all retries preserve its
+// input, signed outcome, command identity, and original authorization deadline.
+async fn resolve_phase(
+    f: &Fixture,
+    operation: Uuid,
+    phase_id: Uuid,
+    outcome: RecoveryDispatchOutcome,
+) -> kasumi_engine::VerifiedRecoveryStatus {
+    let context = f.context("owner");
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let db = f.leader().await;
+            let observed = match db
+                .recovery_phase(context.clone(), operation, phase_id)
+                .await
+            {
+                Ok(phase) => phase,
+                Err(error)
+                    if matches!(
+                        error.code,
+                        ErrorCode::UnknownOutcome | ErrorCode::Unavailable
+                    ) =>
+                {
+                    continue;
+                }
+                Err(error) => panic!("original recovery phase unavailable: {error:?}"),
+            };
+            let resolved = if let Some(retained) = &observed.record().outcome {
+                assert_eq!(retained, &outcome, "permanent phase outcome changed");
+                true
+            } else {
+                false
+            };
+            drop(observed);
+            let result = if resolved {
+                db.recovery_status(context.clone(), operation).await
+            } else {
+                db.resolve_recovery_dispatch(context.clone(), operation, phase_id, outcome.clone())
+                    .await
+            };
+            match result {
+                Ok(status) => return status,
+                Err(error)
+                    if matches!(
+                        error.code,
+                        ErrorCode::UnknownOutcome | ErrorCode::Unavailable
+                    ) => {}
+                Err(error) => panic!("original recovery outcome rejected: {error:?}"),
+            }
+        }
+    })
+    .await
+    .expect("original recovery phase outcome did not resolve")
 }
 async fn prepare_next(
     f: &Fixture,
@@ -819,14 +860,13 @@ async fn recovery_expired_target_requires_fresh_control_admission_and_fences_rev
     .await
     .unwrap();
     let (phase, input) = prepare_next(&f, &db, operation).await;
-    db.resolve_recovery_dispatch(
-        f.context("owner"),
+    resolve_phase(
+        &f,
         operation,
         phase,
         RecoveryDispatchOutcome::Authority(Box::new(prepare_receipt(&f, &input))),
     )
-    .await
-    .unwrap();
+    .await;
     let (original_id, input) = prepare_next(&f, &db, operation).await;
     let RecoveryDispatch::ControlIntent(request) = input else {
         panic!("Control phase required")
@@ -988,14 +1028,13 @@ async fn recovery_expired_target_requires_fresh_control_admission_and_fences_rev
         resumed_intent.original_credential_expires_at_ms
             > original.original_credential_expires_at_ms
     );
-    db.resolve_recovery_dispatch(
-        f.context("owner"),
+    resolve_phase(
+        &f,
         operation,
         resumed,
         RecoveryDispatchOutcome::ControlIntent(Box::new(resumed_intent)),
     )
-    .await
-    .unwrap();
+    .await;
     assert_eq!(
         db.engine()
             .generation()
@@ -1047,13 +1086,12 @@ async fn commit_next_control(f: &Fixture, db: &Arc<Database>, operation: Uuid) -
         .unwrap()
         .intents[&phase_id]
         .clone();
-    db.resolve_recovery_dispatch(
-        f.context("owner"),
+    resolve_phase(
+        f,
         operation,
         phase_id,
         RecoveryDispatchOutcome::ControlIntent(Box::new(intent.clone())),
     )
-    .await
-    .unwrap();
+    .await;
     intent
 }
