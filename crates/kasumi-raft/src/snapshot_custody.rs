@@ -15,11 +15,14 @@ use serde::{Deserialize, Serialize};
 const MAX_SNAPSHOT_CUSTODY_BYTES: usize = 2 << 20;
 const PROJECTION: &[u8] = b"snapshot_retirement";
 
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SnapshotRetirement {
     pub(crate) state: RetiredSnapshotState,
-    pub(crate) custody: crate::custody_state::CustodyState,
+    pub(crate) custody: crate::custody_tables::CustodyHead,
+    pub(crate) history_sha256: String,
+    #[serde(skip)]
+    pub(crate) records: Option<std::sync::Arc<crate::custody_records::Records>>,
     boundary: RetiredBoundary,
     header: LogHeader,
     seed: Vec<u8>,
@@ -34,7 +37,33 @@ struct Projection {
     retirement: SnapshotRetirement,
 }
 
+impl PartialEq for SnapshotRetirement {
+    fn eq(&self, other: &Self) -> bool {
+        self.state == other.state
+            && self.custody == other.custody
+            && self.history_sha256 == other.history_sha256
+            && self.boundary == other.boundary
+            && self.header == other.header
+            && self.seed == other.seed
+            && self.bootstrap_sha256 == other.bootstrap_sha256
+    }
+}
+impl Eq for SnapshotRetirement {}
 impl SnapshotRetirement {
+    pub(crate) fn verified_records(
+        &self,
+    ) -> Result<std::sync::Arc<crate::custody_records::Records>> {
+        let records = self
+            .records
+            .as_ref()
+            .context("custody snapshot records absent")?;
+        ensure!(
+            records.head == self.custody && records.sha256() == self.history_sha256,
+            "custody snapshot record identity differs"
+        );
+        Ok(records.clone())
+    }
+
     pub(crate) fn validate(&self, meta: &SnapshotMeta<u64, BasicNode>) -> Result<()> {
         ensure!(
             self.seed.len() <= crate::MAX_RETIREMENT_SEED_BYTES,
@@ -58,9 +87,10 @@ impl SnapshotRetirement {
         serde_json::to_writer(QuotaWriter(MAX_SNAPSHOT_CUSTODY_BYTES), self)?;
         self.state.validate(meta)?;
         self.custody.validate()?;
+        kasumi_types::validate_sha256(&self.history_sha256)?;
         ensure!(
-            self.custody.origin == self.state
-                && self.custody.revision
+            self.custody.policy.origin == self.state
+                && self.custody.policy.revision
                     <= self
                         .state
                         .revision_base
@@ -147,8 +177,11 @@ pub(crate) fn capture(
         &boundary.position.log_id.index.to_be_bytes(),
     )?
     .context("retired snapshot lacks original seed")?;
+    let records = crate::custody_records::Records::capture(custody.store())?;
     let retirement = SnapshotRetirement {
-        custody: control::custody_state(custody)?,
+        custody: records.head.clone(),
+        history_sha256: records.sha256().into(),
+        records: Some(records),
         state,
         boundary,
         header: retained.header,
@@ -194,7 +227,7 @@ pub(crate) fn check_same_retirement(
 
 pub(crate) struct Installation {
     pub(crate) writes: Vec<WriteOp>,
-    pub(crate) records: Option<crate::custody_tables::Replacement>,
+    pub(crate) records: Option<std::sync::Arc<crate::custody_records::Records>>,
 }
 
 /// The caller publishes metadata and streamed custody tables atomically with
@@ -253,8 +286,10 @@ pub(crate) fn installation_writes(
             if current_position
                 .is_none_or(|id| Some(id.index) <= meta.last_log_id.map(|id| id.index))
             {
-                let replacement =
-                    crate::custody_tables::prepare_replacement(control, &retirement.custody)?;
+                let replacement = crate::custody_tables::prepare_replacement(
+                    control,
+                    retirement.verified_records()?,
+                )?;
                 writes.push(replacement.head.write()?);
                 records = Some(replacement);
             }
@@ -305,7 +340,7 @@ pub(crate) fn installation_writes(
                     "same-position snapshot cannot invent an accepted retirement"
                 );
                 ensure!(
-                    control::custody_state(custody)? == retirement.custody,
+                    control::custody_head(custody)? == retirement.custody,
                     "same-position snapshot would replace current custody state"
                 );
             } else {

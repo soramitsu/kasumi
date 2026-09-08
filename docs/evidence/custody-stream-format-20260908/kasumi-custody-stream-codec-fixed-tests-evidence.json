@@ -1,0 +1,9 @@
+{
+  "source": "36c01f8e1d795a609313b310d762f1172db6345d",
+  "source_tree": "7e6ee8d71e036295de7500dd9a4d0747444505d8",
+  "log_sha256": "58b904353131eb4e07a537703c27416db29ba3559e672419d79466271e848090",
+  "test_executable_sha256": "b38850166ea4abdf5614c127011ba28a8523f533640567c4d6e72f492a4d1af0",
+  "results": [
+    "ok. 41 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 146.47s"
+  ]
+}

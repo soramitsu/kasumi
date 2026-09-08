@@ -1,0 +1,46 @@
+{
+  "source": "666155932468b4deb69328f3062be5d2807e79c4",
+  "source_tree": "5627dfb013fe5aaeb53b1f4ad1ee0846191087c7",
+  "lockfile_sha256": "a4a3883969dc9486548a1aea841ecf45c482c99e4ea1e0d47b56f6c52b2afa08",
+  "scope": "Focused macOS ARM64 streamed custody table publication; not final release acceptance. Custody transport still materializes bounded history.",
+  "gates": [
+    {
+      "name": "store-fixed-tests",
+      "exit_code": 0,
+      "log": "kasumi-production-custody-stream-store-fixed-tests.log",
+      "log_sha256": "9f07d8a4b7294925a0cc5af76d604dd398a696911b5b5355c9792869b1401741",
+      "results": [
+        "ok. 69 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 24.54s"
+      ],
+      "test_executables_sha256": {
+        "/tmp/kasumi-production-root-target/debug/deps/kasumi_store-943423dd6e84b4ad": "21ac6215378f74a5c1184cf50e857174a5af0b50bc1a17fe0df204ee08cb4b04"
+      }
+    },
+    {
+      "name": "raft-fixed-tests",
+      "exit_code": 0,
+      "log": "kasumi-production-custody-stream-raft-fixed-tests.log",
+      "log_sha256": "f3ff678911d4837cc33e8b7d448217deeca8282e6b64f03b1c7f70ae4b960037",
+      "results": [
+        "ok. 23 passed; 0 failed; 0 ignored; 0 measured; 18 filtered out; finished in 31.93s"
+      ],
+      "test_executables_sha256": {
+        "/tmp/kasumi-production-root-target/debug/deps/kasumi_raft-36014a94c98e9cab": "192a75d8f662eeb77263cae12018817ba17778249ec5386045ab676ad13bee26"
+      }
+    },
+    {
+      "name": "fixed-clippy",
+      "exit_code": 0,
+      "log": "kasumi-production-custody-stream-fixed-clippy.log",
+      "log_sha256": "e30b0bca84a23a277fa9f75a3ded83a163a4388e1dd8f4f5ce14343299e15ceb",
+      "results": [],
+      "test_executables_sha256": {}
+    }
+  ],
+  "prior_failure": {
+    "source": "77d775bcb6054431374369f7a3bce91c717d5d2f",
+    "log": "kasumi-production-custody-stream-clippy.log",
+    "log_sha256": "2a5cb7bab8c72eac4e33bb4dbae2e033460f5ab48e7b943c1a4feba38b90c272",
+    "reason": "Two existing store tests still referenced the removed single-namespace API; fixed in 6661559."
+  }
+}

@@ -4,28 +4,28 @@
 //! removes history-sized reads, clones and writes from ordinary custody commands.
 use crate::custody_state::{CustodyAudit, CustodyState};
 use anyhow::{Context, Result, ensure};
-use kasumi_store::{EncryptedTable, TenantStore, WriteOp};
+use kasumi_store::{TenantStore, WriteOp};
 use kasumi_types::{CustodyReceipt, CustodyRequest, Error, ErrorCode, RequestContext};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 pub(crate) const HEAD: &[u8] = b"custody_point_tables";
-const COMMANDS: &str = "raft.custody-commands";
-const AUDIT: &str = "raft.custody-audit";
+pub(crate) const COMMANDS: &str = "raft.custody-commands";
+pub(crate) const AUDIT: &str = "raft.custody-audit";
 // A policy can contain two independently bounded 1,024-member administrator
 // sets (current and immutable origin). Keep the existing control-record bound.
-const HEAD_BYTES: usize = 2 << 20;
-const RECORD_BYTES: usize = 64 << 10;
+pub(crate) const HEAD_BYTES: usize = 2 << 20;
+pub(crate) const RECORD_BYTES: usize = 64 << 10;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CustodyHead {
     version: u32,
     pub(crate) policy: CustodyState,
-    commands: u64,
-    audit: u64,
-    history_bytes: u64,
+    pub(crate) commands: u64,
+    pub(crate) audit: u64,
+    pub(crate) history_bytes: u64,
 }
 
 fn policy(state: &CustodyState) -> CustodyState {
@@ -67,7 +67,7 @@ fn encoded_len(value: &impl Serialize) -> kasumi_types::Result<u64> {
     serde_json::to_writer(&mut counter, value).map_err(|_| encoding_error())?;
     Ok(counter.0)
 }
-fn command_bytes(receipt: &CustodyReceipt) -> kasumi_types::Result<u64> {
+pub(crate) fn command_bytes(receipt: &CustodyReceipt) -> kasumi_types::Result<u64> {
     encoded_len(&BTreeMap::from([(&receipt.command_id, receipt)]))?
         .checked_sub(2)
         .ok_or_else(encoding_error)
@@ -243,6 +243,7 @@ pub(crate) fn transition_writes(
 /// Snapshot capture uses one encrypted database root, including its exact head.
 /// The aggregate materialization here remains a release gap until the custody
 /// snapshot transport is replaced by typed streaming records.
+#[cfg(test)]
 pub(crate) fn snapshot(store: &Arc<TenantStore>) -> Result<CustodyState> {
     let view = store.read_view()?;
     let head: CustodyHead = serde_json::from_slice(
@@ -297,52 +298,10 @@ pub(crate) fn snapshot(store: &Arc<TenantStore>) -> Result<CustodyState> {
     Ok(state)
 }
 
-/// Private validated replacement owns encrypted staging until atomic publication.
-pub(crate) struct Replacement {
-    pub(crate) head: CustodyHead,
-    commands: EncryptedTable,
-    audit: EncryptedTable,
-}
-impl Replacement {
-    pub(crate) fn namespaces(&self) -> [(&str, &EncryptedTable); 2] {
-        [(COMMANDS, &self.commands), (AUDIT, &self.audit)]
-    }
-}
-
 pub(crate) fn prepare_replacement(
     store: &TenantStore,
-    state: &CustodyState,
-) -> Result<Replacement> {
-    let head = CustodyHead::from_state(state)?;
-    let disk_bytes = (state.limits.max_state_bytes as u64)
-        .checked_mul(8)
-        .and_then(|n| n.checked_add(64 << 20))
-        .context("custody staging quota overflow")?;
-    let replacement = Replacement {
-        head,
-        commands: EncryptedTable::new(disk_bytes)?,
-        audit: EncryptedTable::new(disk_bytes)?,
-    };
-    for receipt in state.commands.values() {
-        let bytes = serde_json::to_vec(receipt)?;
-        ensure!(
-            bytes.len() <= RECORD_BYTES,
-            "custody receipt exceeds record bound"
-        );
-        replacement
-            .commands
-            .insert(receipt.command_id.as_bytes(), &bytes)?;
-    }
-    for (index, event) in state.audit.iter().enumerate() {
-        let bytes = serde_json::to_vec(event)?;
-        ensure!(
-            bytes.len() <= RECORD_BYTES,
-            "custody audit exceeds record bound"
-        );
-        replacement
-            .audit
-            .insert(&(index as u64).to_be_bytes(), &bytes)?;
-    }
+    replacement: Arc<crate::custody_records::Records>,
+) -> Result<Arc<crate::custody_records::Records>> {
     // A newer snapshot cannot discard or substitute a committed permanent
     // identity. The publication gate is held while this installed prefix is read.
     let previous = store

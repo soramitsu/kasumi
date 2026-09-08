@@ -1,0 +1,113 @@
+{
+  "base": "31549a372113a72cf8e13fb65f37b70f76c9ad61",
+  "tree": "683edcba3c5904d42ef6b23c0a7319cbbed84109",
+  "lockfile_sha256": "a4a3883969dc9486548a1aea841ecf45c482c99e4ea1e0d47b56f6c52b2afa08",
+  "gates": [
+    {
+      "name": "store",
+      "command": [
+        "cargo",
+        "+1.97.1",
+        "test",
+        "-p",
+        "kasumi-store",
+        "--lib",
+        "audit_archive",
+        "--target-dir",
+        "/tmp/kasumi-production-standalone-target",
+        "-j2"
+      ],
+      "exit_code": 0,
+      "seconds": 67.03785824775696,
+      "log": "kasumi-local-cleanup-final-store.log",
+      "log_sha256": "ab1d7e60e76d00ba4cdf1440b1b68a3a020ca84cc3002794bab90b5d8cb9d3d7"
+    },
+    {
+      "name": "recovery",
+      "command": [
+        "cargo",
+        "+1.97.1",
+        "test",
+        "-p",
+        "kasumi-server",
+        "--lib",
+        "local_recovery::tests",
+        "--target-dir",
+        "/tmp/kasumi-production-standalone-target",
+        "-j2"
+      ],
+      "exit_code": 0,
+      "seconds": 59.11558127403259,
+      "log": "kasumi-local-cleanup-final-recovery.log",
+      "log_sha256": "0ba722a96fb14b02406260c5c8575837b04e483f4a58fb80be132f2cf6121152"
+    },
+    {
+      "name": "clippy",
+      "command": [
+        "cargo",
+        "+1.97.1",
+        "clippy",
+        "-p",
+        "kasumi-store",
+        "-p",
+        "kasumi-server",
+        "--all-targets",
+        "--all-features",
+        "--target-dir",
+        "/tmp/kasumi-production-standalone-target",
+        "-j2",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 74.78594493865967,
+      "log": "kasumi-local-cleanup-final-clippy.log",
+      "log_sha256": "0884dcc7b0c2bda7029b210da3acb3a6882644bb2c7acd3ce1f7552d6936a1f7"
+    },
+    {
+      "name": "production",
+      "command": [
+        "cargo",
+        "+1.97.1",
+        "check",
+        "-p",
+        "kasumi-server",
+        "--no-default-features",
+        "--bins",
+        "--target-dir",
+        "/tmp/kasumi-production-standalone-target",
+        "-j2"
+      ],
+      "exit_code": 0,
+      "seconds": 46.5535306930542,
+      "log": "kasumi-local-cleanup-final-production.log",
+      "log_sha256": "64307f934c7208c76a89842f426156b3b9edc3d53765da1a3a3f0373a2db9457"
+    },
+    {
+      "name": "format",
+      "command": [
+        "cargo",
+        "+1.97.1",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 1.1817409992218018,
+      "log": "kasumi-local-cleanup-final-format.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "executables": {
+    "/tmp/kasumi-production-standalone-target/debug/deps/kasumi_store-b1d52c9fe50b99e9": "07a0af780f17bebefb0b194ab54f973df00c425979f0914d65333271bc2e23b3",
+    "/tmp/kasumi-production-standalone-target/debug/deps/kasumi_server-836de15f40a715c9": "16d918a25a4141c0bcfe82e9f45d57056aef93bff12def92fa380fd9baedcd1a"
+  },
+  "limitations": [
+    "Focused macOS ARM64 checks; Linux exclusive rename path and full release integration require final release gates.",
+    "Prior archive test fixture permission failure retained in /tmp/kasumi-local-cleanup-store-tests-initial-failure.log."
+  ],
+  "source": "26210c1fdf27656efc14b3e98bceeed9f9d3afde",
+  "prior_failure_log": "kasumi-local-cleanup-store-tests-initial-failure.log"
+}

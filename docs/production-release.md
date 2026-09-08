@@ -260,3 +260,31 @@ gate above and usable installation artifacts.
   compiler, binary and feature-graph evidence is in
   `docs/evidence/linux-arm64-c8d20ff-20260908`. This remains an intermediate build;
   the newer live-backup and custody publication changes need their final gates.
+
+- `6661559` streams custody table replacement into the same transaction as the
+  snapshot manifest and applied cursor. Every previously committed permanent
+  receipt and audit record must remain byte-identical in a later snapshot. Store
+  tests passed 69 with one ignored external-service test, custody tests passed 23,
+  and strict store/Raft/authority Clippy passed. Exact inputs and the corrected
+  initial test API failure are in `docs/evidence/custody-stream-publication-20260908`.
+- `26210c1` durably records exact local recovery cache/object ownership before
+  publication and cleanup. Focused archive tests passed 11, actual local recovery
+  passed two, and strict lint, production checks and formatting passed. Shared
+  archive objects remain outside cleanup ownership. Evidence is in
+  `docs/evidence/local-recovery-archive-cleanup-20260908`; Linux exclusive rename
+  and final integration checks remain open.
+- `c8d20ff` Linux x86-64 production binaries built in 25m56s, with preserved
+  executable hashes and a fixture-free normal/build feature graph. This uses
+  Rosetta translation inside the dedicated ARM64 validation VM. Evidence is in
+  `docs/evidence/linux-amd64-c8d20ff-20260908`; it is neither native performance
+  evidence nor final-source acceptance.
+
+- `2558874` replaces custody history embedded in snapshot metadata with canonical
+  typed receipt/audit records and authenticated terminal counts/digests. Encrypted
+  point indexes validate exact history without a whole-history buffer; closed
+  snapshots publish encrypted chunks atomically with records and the applied
+  cursor. Prior stream/storage formats are rejected before rewriting storage.
+  The preceding full Raft library passed 41 tests; final custody tests passed 25
+  and strict Raft Clippy passed. Evidence and the corrected initial hostile-test
+  failure are in `docs/evidence/custody-stream-format-20260908`. Fixed custody
+  lifetime quotas and the closed transport budget remain the next storage work.

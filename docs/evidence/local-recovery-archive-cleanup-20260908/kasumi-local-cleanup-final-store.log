@@ -1,0 +1,20 @@
+    Blocking waiting for file lock on build directory
+   Compiling kasumi-store v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 54.90s
+     Running unittests src/lib.rs (/tmp/kasumi-production-standalone-target/debug/deps/kasumi_store-b1d52c9fe50b99e9)
+
+running 11 tests
+test audit_archive::owned::tests::exclusive_rename_preserves_an_existing_destination_and_the_source_inode ... ok
+test audit_archive::tests::authentication_and_final_record_counts_precede_any_release ... ok
+test audit_archive::tests::existing_nonprivate_archive_directory_is_rejected_without_chmod ... ok
+test audit_archive::owned::tests::owned_publication_resolves_partial_writes_and_uncertain_rename_without_adopting_files ... ok
+test audit_archive::tests::historical_source_is_exact_and_does_not_reopen_a_live_generation ... ok
+test audit_archive::tests::historical_verification_checks_the_original_clock_and_release_fence ... ok
+test audit_archive::tests::object_symlink_cannot_read_or_overwrite_unrelated_files ... ok
+test audit_archive::tests::persisted_external_placement_never_falls_back_to_default_after_restart ... ok
+test audit_archive::tests::reverse_archive_dependencies_are_bounded_and_require_exact_link_and_source_verification ... ok
+test audit_archive::tests::verified_archive_is_private_immutable_contiguous_and_reopenable ... ok
+test audit_archive::tests::segment_capacity_is_bounded_and_positions_use_checked_u64 ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 61 filtered out; finished in 6.60s
+

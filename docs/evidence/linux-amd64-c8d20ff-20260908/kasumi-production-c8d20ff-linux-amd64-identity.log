@@ -1,0 +1,10 @@
+187d681690f17a8a9c4266df51ee8cf49dc255c51003c8aeda43125d267da8e3  /opt/kasumi-acceptance/c8d20ff-amd64-binaries/kasumi-authority
+30c3151a6f14ea3690129315fdab6a0e2fa7c165a02ab9e5dce9d05094abef63  /opt/kasumi-acceptance/c8d20ff-amd64-binaries/kasumictl
+26cf6fe5277f64517a413f6f9bc3481bb559792fd0c071a6bd4fde591ca00bd4  /opt/kasumi-acceptance/c8d20ff-amd64-binaries/kasumid
+rustc 1.97.1 (8bab26f4f 2026-07-14)
+binary: rustc
+commit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452
+commit-date: 2026-07-14
+host: x86_64-unknown-linux-gnu
+release: 1.97.1
+LLVM version: 22.1.6

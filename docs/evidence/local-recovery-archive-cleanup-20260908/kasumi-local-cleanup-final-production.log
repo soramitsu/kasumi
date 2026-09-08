@@ -1,0 +1,10 @@
+    Checking kasumi-types v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-types)
+    Checking kasumi-serving v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-serving)
+    Checking kasumi-query v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-query)
+    Checking kasumi-store v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-store)
+    Checking kasumi-client v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-client)
+    Checking kasumi-raft v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-raft)
+    Checking kasumi-authority v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-authority)
+    Checking kasumi-engine v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-engine)
+    Checking kasumi-server v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-server)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 46.49s
