@@ -2,7 +2,7 @@
   "source": "d403c55225d372fa09d6e9eb1f9472cb571af685",
   "tree": "229aded6e4318d89b320952b1fef43c436a699dd",
   "lockfile_sha256": "3f693a1bd3dd6614d3ce8e54b2fd960055361c72e5d535b8aa86e1c47e60eb0a",
-  "status": "running at launch capture; not a result",
+  "status": "Workspace gate failed; remaining gates running. This attempt cannot produce a candidate.",
   "gates_at_capture": [
     {
       "name": "toolchain",
@@ -61,6 +61,12 @@
     "kasumi-d403c55-source-files.json": "e5d8fe3e38c3223edf039752a83ee0d427fe2fd9c4cd169eb02687578c0ad990",
     "kasumi-d403c55-launch-progress.json": "531e39090dba9768c5d310f15fc8e2b28288698f1f1a4ddde45dbd6422cd08d6",
     "kasumi-pinned-build-image-42bf607-packages.txt": "efe1a3b0a9e22ecd10d16a2f39f783efc3975388b5de8bfa1c351438c0fb5def",
-    "kasumi-combined-d403c55-check.log": "3061909837a2fb8864636a3ad3f6af2ac9c5818387e97a42ca42f19d3ec0a375"
-  }
+    "kasumi-combined-d403c55-check.log": "3061909837a2fb8864636a3ad3f6af2ac9c5818387e97a42ca42f19d3ec0a375",
+    "kasumi-d403c55-memory-events.txt": "52334dacaa57da1cc9b3729462da217fa20a1e9e1a7d7c40ca8b5b77fa6c8aff",
+    "kasumi-d403c55-memory-peak.txt": "ae0cc22f5ea218082f5dec9c827424ea217b458c0891472d43332507e3435b13",
+    "kasumi-d403c55-kernel-oom.txt": "994fe9425ae20b05e670197f57f161ed651ab136ad0f2bc916133fe7de3903db",
+    "kasumi-d403c55-workspace-failed.log": "7718aab7eda481fbd7bc25b94d73c09dc286fa2ef2f9400951fecc4974d3355a"
+  },
+  "workspace_failure": "Kernel-confirmed memory-cgroup OOM killed ld while linking kasumi-server lib tests under7GiB. Tests did not reach complete workspace execution.",
+  "capture_correction": "The progress JSON already contained the failed workspace gate when copied; the initial README incorrectly described workspace as still running. Raw progress JSON is unchanged."
 }
