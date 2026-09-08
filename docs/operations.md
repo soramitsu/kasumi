@@ -99,11 +99,23 @@ tenant a distinct wrapping key and protect control/security records with their
 own keys. Replicas perform their own decrypt probes for all resident key
 versions. A decrypt denial seals immediately; delayed probes cannot extend
 the access lease beyond 60 seconds from their suspend-aware start time.
-Renewing or replacing credentials does not automatically resurrect a sealed
-resident generation: restore valid Transit authorization and restart/recover
-the affected replica, preserving its durable state and Raft identity.
+Renewing or replacing credentials never resurrects a sealed resident generation.
+The runtime detaches and fully drains that instance, then retries fresh authority
+admission for the exact installed incarnation. After valid Transit authorization
+and serving authority return, it opens a new engine over the existing durable
+state. Retained old database/store handles remain permanently closed. A retired
+source reopens only its independent custody route.
 
-Certificate configuration is loaded at startup. Existing approved node identities,
+SIGHUP reloads MCP, native and administrative TLS in `kasumid`, and native TLS
+in `kasumi-authority`. Complete certificate/key/CA candidates are validated before
+any replacement. Invalid candidates retain the previous listener generations and
+record failure. Successful publication atomically changes each listener and
+signals old connections to drain within its configured drain timeout. Standalone
+MCP certificate changes first commit the new pin to Control topology. Install
+corresponding new pins in client profiles before retiring the previous pins.
+Replication identity changes use the separate membership workflow below.
+
+Existing approved replication node identities,
 including their complete peer-pin sets, are immutable through the current native
 administrative API. Editing an existing pin in configuration makes startup fail
 against durable control metadata; `approve_peer_pool` cannot change it. Do not

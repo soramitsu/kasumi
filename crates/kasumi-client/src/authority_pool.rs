@@ -114,7 +114,9 @@ impl KasumiAuthorityPool {
                     }
                     let bearer =
                         token(self.credential.as_ref()).map_err(|_| ClientError::Authorization)?;
-                    dispatch(self.clients.get_mut(member).unwrap(), &bearer).await
+                    let client = self.clients.get_mut(member).unwrap();
+                    client.set_deadline(deadline_at);
+                    dispatch(client, &bearer).await
                 })
                 .await;
                 match result {
@@ -266,7 +268,6 @@ fn retryable(error: &ClientError) -> bool {
             tonic::Code::Unavailable
                 | tonic::Code::DeadlineExceeded
                 | tonic::Code::Unknown
-                | tonic::Code::Aborted
                 | tonic::Code::Cancelled
         ),
         _ => false,
@@ -279,6 +280,7 @@ mod tests {
     #[test]
     fn authorization_and_proof_errors_are_not_failover_signals() {
         for code in [
+            tonic::Code::Aborted,
             tonic::Code::Unauthenticated,
             tonic::Code::PermissionDenied,
             tonic::Code::InvalidArgument,

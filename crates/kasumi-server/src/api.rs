@@ -346,6 +346,8 @@ mod tests {
     include!("api_history_tests.rs");
     include!("api_schema_tests.rs");
     include!("api_backup_checkpoint_tests.rs");
+    include!("api_routing_tests.rs");
+    include!("api_tls_reload_tests.rs");
     use super::*;
     use crate::{
         auth::{AuthConfig, Authenticator},
@@ -446,6 +448,16 @@ mod tests {
                 audit.clone(),
             )
             .await
+            .unwrap();
+            // Each fixture owns a distinct durable node; give it that node's
+            // governor instead of sharing the process-wide embedded fallback
+            // with unrelated concurrent installation tests.
+            db.install_admission(
+                kasumi_engine::admission::NodeAdmission::new(
+                    kasumi_engine::admission::AdmissionConfig::default(),
+                )
+                .unwrap(),
+            )
             .unwrap();
             db.administer(
                 RequestContext {

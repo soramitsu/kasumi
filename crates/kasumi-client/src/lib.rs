@@ -1,7 +1,8 @@
 //! Native protocol and typed data client, independent of server/storage internals.
 //! Connection requires TLS 1.3, mTLS, an approved CA and server leaf pins. The
-//! caller supplies a current bearer token for every request. No retry or redirect is performed;
-//! transport uncertainty must be resolved with the original idempotency key.
+//! caller supplies current credentials for every request. Low-level clients do
+//! not retry; installed endpoint pools retain exact operation identities and
+//! pin historical reads to their originating member.
 
 use kasumi_transport::{CertificatePin, TlsIdentity};
 use kasumi_types::{
@@ -16,7 +17,9 @@ mod lifecycle;
 pub use lifecycle::KasumiLifecycleClient;
 mod authority;
 mod authority_pool;
+mod data_pool;
 pub use authority_pool::KasumiAuthorityPool;
+pub use data_pool::{KasumiClientPool, RoutedQueryPage, RoutedSnapshotLease};
 mod restore_lineage_proof;
 mod retirement_proof;
 pub use authority::KasumiAuthorityClient;
@@ -59,9 +62,28 @@ pub struct KasumiClientConfig {
 #[derive(Clone)]
 pub struct KasumiClient {
     inner: proto::kasumi_data_client::KasumiDataClient<Channel>,
+    deadline: Option<tokio::time::Instant>,
 }
 
 impl KasumiClient {
+    pub(crate) fn set_deadline(&mut self, deadline: tokio::time::Instant) {
+        self.deadline = Some(deadline);
+    }
+
+    fn authorized<T>(&self, bearer: &str, value: T) -> Result<Request<T>, ClientError> {
+        let mut request = authorized(bearer, value)?;
+        if let Some(deadline) = self.deadline {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(
+                    tonic::Status::deadline_exceeded("native operation deadline elapsed").into(),
+                );
+            }
+            request.set_timeout(remaining);
+        }
+        Ok(request)
+    }
+
     /// Current data authority observes immutable historical commitments. This
     /// proof grants no present permission and exposes no backup/key locations.
     pub async fn read_restore_lineage(
@@ -71,7 +93,7 @@ impl KasumiClient {
     ) -> Result<VerifiedRestoreLineage, ClientError> {
         let response = self
             .inner
-            .read_restore_lineage(authorized(
+            .read_restore_lineage(self.authorized(
                 bearer,
                 proto::ReadRestoreLineageRequest {
                     request_json: encode(request)?,
@@ -99,7 +121,7 @@ impl KasumiClient {
     ) -> Result<kasumi_types::ChangeFeedPage, ClientError> {
         let response = self
             .inner
-            .read_change_feed(authorized(
+            .read_change_feed(self.authorized(
                 bearer,
                 proto::ReadChangeFeedRequest {
                     request_json: encode(request)?,
@@ -118,6 +140,7 @@ impl KasumiClient {
         )
         .await?;
         Ok(Self {
+            deadline: None,
             inner: proto::kasumi_data_client::KasumiDataClient::new(channel)
                 .max_encoding_message_size((8 << 20) + (64 << 10))
                 .max_decoding_message_size(16 << 20),
@@ -131,7 +154,7 @@ impl KasumiClient {
     ) -> Result<WriteReceipt, ClientError> {
         let response = self
             .inner
-            .begin_staged_transaction(authorized(
+            .begin_staged_transaction(self.authorized(
                 bearer,
                 proto::BeginStagedTransactionRequest {
                     request_json: encode(request)?,
@@ -152,7 +175,7 @@ impl KasumiClient {
     ) -> Result<WriteReceipt, ClientError> {
         let response = self
             .inner
-            .append_staged_chunk(authorized(
+            .append_staged_chunk(self.authorized(
                 bearer,
                 proto::AppendStagedChunkRequest {
                     request_json: encode(request)?,
@@ -173,7 +196,7 @@ impl KasumiClient {
     ) -> Result<WriteReceipt, ClientError> {
         let response = self
             .inner
-            .finalize_staged_transaction(authorized(
+            .finalize_staged_transaction(self.authorized(
                 bearer,
                 proto::StagedTransactionReference {
                     request_json: encode(request)?,
@@ -194,7 +217,7 @@ impl KasumiClient {
     ) -> Result<kasumi_types::StagedTransactionStatus, ClientError> {
         let response = self
             .inner
-            .stop_staged_transaction(authorized(
+            .stop_staged_transaction(self.authorized(
                 bearer,
                 proto::StopStagedTransactionRequest {
                     request_json: encode(request)?,
@@ -212,7 +235,7 @@ impl KasumiClient {
     ) -> Result<kasumi_types::StagedTransactionStatus, ClientError> {
         let response = self
             .inner
-            .staged_transaction_status(authorized(
+            .staged_transaction_status(self.authorized(
                 bearer,
                 proto::StagedTransactionReference {
                     request_json: encode(request)?,
@@ -230,7 +253,7 @@ impl KasumiClient {
     ) -> Result<kasumi_types::SnapshotLease, ClientError> {
         let response = self
             .inner
-            .open_snapshot_lease(authorized(
+            .open_snapshot_lease(self.authorized(
                 bearer,
                 proto::OpenSnapshotLeaseRequest {
                     request_json: encode(request)?,
@@ -248,7 +271,7 @@ impl KasumiClient {
     ) -> Result<kasumi_types::SnapshotReadResponse, ClientError> {
         let response = self
             .inner
-            .read_snapshot_page(authorized(
+            .read_snapshot_page(self.authorized(
                 bearer,
                 proto::ReadSnapshotPageRequest {
                     request_json: encode(request)?,
@@ -266,7 +289,7 @@ impl KasumiClient {
     ) -> Result<kasumi_types::SnapshotScanPage, ClientError> {
         let response = self
             .inner
-            .scan_snapshot_page(authorized(
+            .scan_snapshot_page(self.authorized(
                 bearer,
                 proto::ScanSnapshotPageRequest {
                     request_json: encode(request)?,
@@ -283,7 +306,7 @@ impl KasumiClient {
         lease_id: &str,
     ) -> Result<(), ClientError> {
         self.inner
-            .close_snapshot_lease(authorized(
+            .close_snapshot_lease(self.authorized(
                 bearer,
                 proto::SnapshotLeaseReference {
                     lease_id: lease_id.into(),
@@ -299,7 +322,7 @@ impl KasumiClient {
     ) -> Result<SnapshotReadResponse, ClientError> {
         let response = self
             .inner
-            .read_snapshot(authorized(
+            .read_snapshot(self.authorized(
                 bearer,
                 proto::ReadSnapshotRequest {
                     request_json: encode(request)?,
@@ -320,7 +343,7 @@ impl KasumiClient {
     ) -> Result<QueryResponse, ClientError> {
         let response = self
             .inner
-            .query(authorized(
+            .query(self.authorized(
                 bearer,
                 proto::QueryRequest {
                     query_json: encode(request)?,
@@ -365,7 +388,7 @@ impl KasumiClient {
     ) -> Result<WriteReceipt, ClientError> {
         let response = self
             .inner
-            .mutate(authorized(
+            .mutate(self.authorized(
                 bearer,
                 proto::MutateRequest {
                     batch_json: encode(batch)?,

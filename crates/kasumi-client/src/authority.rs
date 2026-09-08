@@ -12,8 +12,27 @@ pub struct KasumiAuthorityClient {
     inner: proto::kasumi_authority_client::KasumiAuthorityClient<Channel>,
     trust: AuthorityTrust,
     certificate_sha256: String,
+    deadline: Option<tokio::time::Instant>,
 }
 impl KasumiAuthorityClient {
+    pub(crate) fn set_deadline(&mut self, deadline: tokio::time::Instant) {
+        self.deadline = Some(deadline);
+    }
+    fn authorized<T>(&self, bearer: &str, value: T) -> Result<tonic::Request<T>, ClientError> {
+        let mut request = authorized(bearer, value)?;
+        if let Some(deadline) = self.deadline {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(tonic::Status::deadline_exceeded(
+                    "authority operation deadline elapsed",
+                )
+                .into());
+            }
+            request.set_timeout(remaining);
+        }
+        Ok(request)
+    }
+
     pub async fn execute_lifecycle(
         &mut self,
         bearer: &str,
@@ -33,7 +52,7 @@ impl KasumiAuthorityClient {
             .verify_lifecycle_request(partition, request)?;
         let response = self
             .inner
-            .execute_lifecycle(authorized(
+            .execute_lifecycle(self.authorized(
                 bearer,
                 proto::AuthorityJsonRequest {
                     request_json: encode(request)?,
@@ -57,7 +76,7 @@ impl KasumiAuthorityClient {
         reference.validate()?;
         let response = self
             .inner
-            .read_lifecycle_receipt(authorized(
+            .read_lifecycle_receipt(self.authorized(
                 bearer,
                 proto::AuthorityJsonRequest {
                     request_json: encode(reference)?,
@@ -92,7 +111,7 @@ impl KasumiAuthorityClient {
         };
         let response = self
             .inner
-            .verify_control_stop(authorized(
+            .verify_control_stop(self.authorized(
                 bearer,
                 proto::AuthorityJsonRequest {
                     request_json: encode(&reference)?,
@@ -120,7 +139,7 @@ impl KasumiAuthorityClient {
         }
         let response = self
             .inner
-            .acquire_lifecycle(authorized(
+            .acquire_lifecycle(self.authorized(
                 bearer,
                 proto::AuthorityJsonRequest {
                     request_json: encode(attempt.request())?,
@@ -139,7 +158,7 @@ impl KasumiAuthorityClient {
         reference.validate()?;
         let response = self
             .inner
-            .verify_target_stop(authorized(
+            .verify_target_stop(self.authorized(
                 bearer,
                 proto::AuthorityJsonRequest {
                     request_json: encode(reference)?,
@@ -164,6 +183,7 @@ impl KasumiAuthorityClient {
         )
         .await?;
         Ok(Self {
+            deadline: None,
             inner: proto::kasumi_authority_client::KasumiAuthorityClient::new(channel)
                 .max_encoding_message_size(256 << 10)
                 .max_decoding_message_size(512 << 10),
@@ -186,7 +206,7 @@ impl KasumiAuthorityClient {
         }
         let response = self
             .inner
-            .acquire_lease(authorized(
+            .acquire_lease(self.authorized(
                 bearer,
                 proto::AuthorityJsonRequest {
                     request_json: encode(attempt.request())?,
@@ -210,7 +230,7 @@ impl KasumiAuthorityClient {
         }
         let response = self
             .inner
-            .discover_lease(authorized(
+            .discover_lease(self.authorized(
                 bearer,
                 proto::AuthorityJsonRequest {
                     request_json: encode(request)?,
@@ -239,7 +259,7 @@ impl KasumiAuthorityClient {
     ) -> Result<SignedAuthorityReceipt, ClientError> {
         let response = self
             .inner
-            .execute(authorized(
+            .execute(self.authorized(
                 bearer,
                 proto::AuthorityJsonRequest {
                     request_json: encode(command)?,
@@ -262,7 +282,7 @@ impl KasumiAuthorityClient {
     ) -> Result<Option<SignedAuthorityReceipt>, ClientError> {
         let response = self
             .inner
-            .receipt(authorized(
+            .receipt(self.authorized(
                 bearer,
                 proto::AuthorityReceiptRequest {
                     tenant: tenant.to_owned(),

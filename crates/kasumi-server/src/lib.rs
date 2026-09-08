@@ -10,6 +10,7 @@ pub mod rpc;
 pub mod runtime;
 pub mod serving_runtime;
 pub mod tls;
+pub mod tls_reload;
 
 mod target_phase_runtime;
 pub mod target_runtime_config;
