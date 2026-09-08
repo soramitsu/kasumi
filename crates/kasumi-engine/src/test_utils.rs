@@ -13,14 +13,14 @@ pub trait SnapshotFixture {
 }
 impl SnapshotFixture for TenantEngine {
     fn fixture_snapshot(&self) -> Result<SnapshotImage> {
-        self.logical_snapshot()
+        self.logical_snapshot(&kasumi_store::ScratchDisk::fixture())
     }
     fn fixture_restore(&self, candidate: &SnapshotImage) -> Result<()> {
         self.restore_candidate(candidate)
     }
 }
 pub fn encode_snapshot_candidate(state: &TenantState, max_bytes: u64) -> Result<SnapshotImage> {
-    SnapshotImage::capture(max_bytes, |writer| {
+    SnapshotImage::capture(&kasumi_store::ScratchDisk::fixture(), max_bytes, |writer| {
         crate::snapshot_codec::write(state, writer)
     })
     .map_err(|error| Error::new(ErrorCode::Corruption, error.to_string()))

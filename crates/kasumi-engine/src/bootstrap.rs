@@ -294,7 +294,7 @@ async fn open_replicated_inner(
                 bootstrap.initial_policy.clone(),
                 bootstrap.initial_limits.clone(),
             )?;
-            let bytes = engine.logical_snapshot()?;
+            let bytes = engine.logical_snapshot(store.scratch_disk())?;
             persist_new(&stores, &bytes)?;
             bytes
         }
@@ -394,7 +394,7 @@ fn load(store: &TenantStore) -> anyhow::Result<Option<SnapshotImage>> {
             && manifest.chunks == manifest.bytes.div_ceil(CHUNK as u64),
         "invalid bootstrap manifest"
     );
-    let mut spool = EncryptedSpool::new(manifest.bytes)?;
+    let mut spool = EncryptedSpool::new(store.scratch_disk(), manifest.bytes)?;
     for i in 0..manifest.chunks {
         let bytes = store
             .get(NS, &i.to_be_bytes())?
@@ -580,7 +580,7 @@ async fn open_local_inner(
                 initial_policy,
                 initial_limits,
             )?;
-            let bytes = engine.logical_snapshot()?;
+            let bytes = engine.logical_snapshot(store.scratch_disk())?;
             persist_new(&stores, &bytes)?;
             bytes
         }

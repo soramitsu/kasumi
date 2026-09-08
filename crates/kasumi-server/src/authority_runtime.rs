@@ -38,6 +38,7 @@ pub struct AuthorityRuntimeConfig {
     pub bootstrap: AuthorityBootstrap,
     pub resource_budget_bytes: u64,
     pub database_path: PathBuf,
+    pub scratch_disk: kasumi_store::ScratchDiskConfig,
     pub operational_signer: crate::signer_runtime::OperationalSignerConfig,
     pub signer_verifier: crate::signer_runtime::SignerVerifierConfig,
     #[serde(deserialize_with = "kasumi_types::deserialize_u64_map")]
@@ -87,6 +88,7 @@ impl AuthorityRuntimeConfig {
     }
     pub fn validate(&self) -> Result<()> {
         self.installation.validate()?;
+        self.scratch_disk.validate()?;
         self.node_settings()?.validate(self.replication.node_id)?;
         ensure!(
             self.installed_verifiers.len() == self.replication.peers.len()
@@ -167,6 +169,7 @@ impl AuthorityRuntime {
 
     pub async fn open(config: AuthorityRuntimeConfig) -> Result<Self> {
         config.validate()?;
+        let scratch_disk = kasumi_store::ScratchDisk::open(config.scratch_disk.clone())?;
         let auth = Authenticator::new(config.auth.clone())?;
         let native_tls = kasumi_transport::ReloadableServerConfig::new(config.native.load()?);
         let identity = config.replication.listener.tls.load()?;
@@ -203,12 +206,13 @@ impl AuthorityRuntime {
             .open(
                 std::collections::BTreeMap::from([(domain.digest()?, domain)]),
                 Arc::new(file_secret),
+                scratch_disk.clone(),
             )
             .await?;
         let signer = config.operational_signer.open(&signer_verifier)?;
         let native = TcpListener::bind(config.native.listen).await?;
         let cluster = TcpListener::bind(config.replication.listener.listen).await?;
-        let node = NodeStore::open(&config.database_path)?;
+        let node = NodeStore::open(&config.database_path, scratch_disk.clone())?;
         let audit_store = TenantStore::open(
             node.clone(),
             kasumi_engine::SECURITY_TENANT.into(),

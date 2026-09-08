@@ -932,7 +932,8 @@ impl StateMachineBackend for Backend {
 }
 impl Backend {
     fn decode_snapshot(&self, bytes: &mut dyn std::io::Read) -> Result<Snapshot> {
-        let snapshot = snapshot::read(bytes, self.resource_budget_bytes)?;
+        let snapshot =
+            snapshot::read(self.store.scratch_disk(), bytes, self.resource_budget_bytes)?;
         ensure!(
             snapshot.meta.installation == self.installation
                 && snapshot.meta.policy_epoch > 0

@@ -748,7 +748,7 @@ impl Operator {
         }
         let source = Arc::new(crate::runtime::file_secret);
         let stores = kasumi_store::TenantStorageSet::open(
-            kasumi_store::NodeStore::open(&path)?,
+            kasumi_store::NodeStore::open(&path, self.store().scratch_disk().clone())?,
             request.tenant.clone(),
             tenant.keys.provider(source.clone())?,
             tenant.custody_keys.provider(source)?,

@@ -248,7 +248,7 @@ mod tests {
         let provider = Arc::new(
             FileKeyProvider::initialize(&private.join("key.json"), "application").unwrap(),
         );
-        let node = NodeStore::open(root.path().join("db")).unwrap();
+        let node = NodeStore::open(root.path().join("db"), crate::ScratchDisk::fixture()).unwrap();
         let installation = Uuid::new_v4();
         let incarnation = Uuid::new_v4();
         let access = StorageAccess::standalone(installation, "tenant", incarnation).unwrap();

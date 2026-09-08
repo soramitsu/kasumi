@@ -113,7 +113,7 @@ impl TenantEngine {
         let output = deadline
             .run(tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
                 work.check()?;
-                let image = SnapshotImage::capture(maximum, |writer| {
+                let image = SnapshotImage::capture(work.store.scratch_disk(), maximum, |writer| {
                     let mut checked = CheckedIo {
                         io: writer,
                         work: &work,

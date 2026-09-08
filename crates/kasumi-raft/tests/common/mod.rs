@@ -78,7 +78,7 @@ impl StateMachineBackend for Backend {
 
 pub async fn store(path: &Path) -> Result<Arc<kasumi_store::TenantStorageSet>> {
     kasumi_store::TenantStorageSet::open_fixture(
-        NodeStore::open(path)?,
+        NodeStore::open(path, kasumi_store::ScratchDisk::fixture())?,
         "tenant-a".into(),
         Arc::new(LocalKeyProvider::new([19; 32])),
         Arc::new(LocalKeyProvider::new([241; 32])),

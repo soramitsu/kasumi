@@ -35,9 +35,11 @@ pub struct SnapshotBuffer {
     pending: Option<Pending>,
 }
 impl SnapshotBuffer {
-    pub fn new(limit: u64) -> io::Result<Self> {
+    pub fn new(disk: &Arc<kasumi_store::ScratchDisk>, limit: u64) -> io::Result<Self> {
         Ok(Self {
-            backing: Arc::new(Mutex::new(Backing::Receiving(EncryptedSpool::new(limit)?))),
+            backing: Arc::new(Mutex::new(Backing::Receiving(EncryptedSpool::new(
+                disk, limit,
+            )?))),
             length: Arc::new(AtomicU64::new(0)),
             limit,
             position: 0,
@@ -53,12 +55,16 @@ impl SnapshotBuffer {
             pending: None,
         }
     }
-    pub fn from_bytes(bytes: Vec<u8>, limit: u64) -> io::Result<Self> {
+    pub fn from_bytes(
+        disk: &Arc<kasumi_store::ScratchDisk>,
+        bytes: Vec<u8>,
+        limit: u64,
+    ) -> io::Result<Self> {
         if bytes.len() as u64 > limit {
             return Err(io::Error::other("snapshot exceeds byte limit"));
         }
         Ok(Self::from_image(
-            SnapshotImage::from_bytes(&bytes).map_err(io::Error::other)?,
+            SnapshotImage::from_bytes(disk, &bytes).map_err(io::Error::other)?,
         ))
     }
     pub fn len(&self) -> u64 {

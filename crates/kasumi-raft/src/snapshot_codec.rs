@@ -39,7 +39,7 @@ impl SnapshotEnvelope {
         self.encode_records(limit, true)
     }
     fn encode_records(&self, limit: u64, check_metadata: bool) -> Result<SnapshotImage> {
-        SnapshotImage::capture(limit, |writer| {
+        SnapshotImage::capture(self.backend.disk(), limit, |writer| {
             let header = serde_json::to_vec(&Header {
                 version: self.version,
                 kind: self.kind,
@@ -92,7 +92,11 @@ impl SnapshotEnvelope {
             Ok(())
         })
     }
-    pub(crate) fn decode(reader: &mut dyn Read, limit: u64) -> Result<Self> {
+    pub(crate) fn decode(
+        disk: &std::sync::Arc<kasumi_store::ScratchDisk>,
+        reader: &mut dyn Read,
+        limit: u64,
+    ) -> Result<Self> {
         let mut magic = [0; 8];
         reader.read_exact(&mut magic)?;
         ensure!(&magic == MAGIC, "unsupported snapshot stream format");
@@ -100,7 +104,7 @@ impl SnapshotEnvelope {
         digest.update(magic);
         let mut header: Option<Header> = None;
         let mut custody: Option<crate::custody_records::Builder> = None;
-        let mut spool = EncryptedSpool::new(limit)?;
+        let mut spool = EncryptedSpool::new(disk, limit)?;
         let (mut records, mut commands, mut audit) = (0u64, 0u64, 0u64);
         let mut encoded_bytes = 8u64;
         let mut previous_tag = 0u8;
@@ -169,6 +173,7 @@ impl SnapshotEnvelope {
                     if let Some(retirement) = &value.retirement {
                         retirement.validate(&value.meta)?;
                         custody = Some(crate::custody_records::Builder::new(
+                            disk,
                             retirement.custody.clone(),
                         )?);
                     }

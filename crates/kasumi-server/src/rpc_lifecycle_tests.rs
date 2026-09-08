@@ -37,7 +37,11 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
     )
     .await;
     let audit_store = TenantStore::open(
-        NodeStore::open(directory.path().join("audit.redb")).unwrap(),
+        NodeStore::open(
+            directory.path().join("audit.redb"),
+            kasumi_store::ScratchDisk::fixture(),
+        )
+        .unwrap(),
         kasumi_engine::SECURITY_TENANT.into(),
         Arc::new(LocalKeyProvider::new([88; 32])),
         StorageAccess::security_audit(),
@@ -86,7 +90,11 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
     let mut issuers = Vec::new();
     for id in 1..=3 {
         let stores = TenantStorageSet::open(
-            NodeStore::open(directory.path().join(format!("issuer-{id}.redb"))).unwrap(),
+            NodeStore::open(
+                directory.path().join(format!("issuer-{id}.redb")),
+                kasumi_store::ScratchDisk::fixture(),
+            )
+            .unwrap(),
             issuer_install.tenant(),
             Arc::new(LocalKeyProvider::new([id as u8 + 50; 32])),
             Arc::new(LocalKeyProvider::new([id as u8 + 60; 32])),
@@ -212,7 +220,11 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
     let mut nodes = Vec::new();
     for id in 1..=3 {
         let stores = TenantStorageSet::open(
-            NodeStore::open(directory.path().join(format!("node-{id}.redb"))).unwrap(),
+            NodeStore::open(
+                directory.path().join(format!("node-{id}.redb")),
+                kasumi_store::ScratchDisk::fixture(),
+            )
+            .unwrap(),
             "__kasumi_control".into(),
             Arc::new(LocalKeyProvider::new([id as u8; 32])),
             Arc::new(LocalKeyProvider::new([id as u8 + 10; 32])),

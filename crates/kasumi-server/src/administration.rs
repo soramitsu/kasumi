@@ -986,7 +986,7 @@ impl Administration {
                 )
                 .await?;
                 fresh_file(&path)?;
-                let node = NodeStore::open(&path)?;
+                let node = NodeStore::open(&path, self.node.scratch_disk().clone())?;
                 let stores = TenantStorageSet::open(
                     node,
                     context.tenant.clone(),
@@ -1857,7 +1857,7 @@ impl Administration {
             self.provider_factories
                 .get(tenant)
                 .context("tenant key factory is not installed")?()?;
-        let node = NodeStore::open(path)?;
+        let node = NodeStore::open(path, self.node.scratch_disk().clone())?;
         let stores = TenantStorageSet::open(
             node,
             tenant.to_owned(),
@@ -2356,7 +2356,7 @@ mod tests {
             0o700
         );
         assert!(fresh_file(&path).is_err());
-        let node = NodeStore::open(&path).unwrap();
+        let node = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
         drop(node);
         let original = std::fs::read(&path).unwrap();
         assert!(fresh_file(&path).is_err());

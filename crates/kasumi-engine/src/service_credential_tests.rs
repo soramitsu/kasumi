@@ -7,7 +7,7 @@ struct CredentialFixture {
 impl CredentialFixture {
     async fn new() -> Self {
         let directory = tempfile::tempdir().unwrap();
-        let node = NodeStore::open(directory.path().join("node.redb")).unwrap();
+        let node = NodeStore::open(directory.path().join("node.redb"), kasumi_store::ScratchDisk::fixture()).unwrap();
         let provider = Arc::new(LocalKeyProvider::new([0x97; 32]));
         let audit_store = TenantStore::open_fixture(
             node.clone(),
@@ -199,7 +199,7 @@ fn replicated_credential_admission_uses_only_captured_time_after_local_expiry() 
         );
         assert!(replica.generation().unwrap().state.receipts.is_empty());
     }
-    assert_eq!(first.logical_snapshot().unwrap(), second.logical_snapshot().unwrap());
+    assert_eq!(first.logical_snapshot(&kasumi_store::ScratchDisk::fixture()).unwrap(), second.logical_snapshot(&kasumi_store::ScratchDisk::fixture()).unwrap());
 }
 
 #[tokio::test]

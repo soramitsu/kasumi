@@ -275,9 +275,15 @@ impl Databases {
     ) -> Result<Self> {
         let replicas = if replicated { 3 } else { 1 };
         let mut nodes = Vec::new();
+        let scratch_disk = kasumi_store::ScratchDisk::open(kasumi_store::ScratchDiskConfig {
+            directory: path.join("scratch"),
+            max_bytes: 64 << 30,
+            min_free_bytes: 256 << 20,
+        })?;
         for replica in 0..replicas {
             nodes.push(NodeStore::open(
                 path.join(format!("replica-{replica}.redb")),
+                scratch_disk.clone(),
             )?);
         }
         let mut audits = Vec::new();

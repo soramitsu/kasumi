@@ -56,8 +56,8 @@ async fn permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopen
         let mut snapshot = custody_machine::capture(domains.custody())?;
         let mut head = custody_tables::load(domains.custody().store())?;
         let context = seed()?.0.context;
-        let mut commands = EncryptedSpool::new(64 << 20)?;
-        let mut audit = EncryptedSpool::new(64 << 20)?;
+        let mut commands = EncryptedSpool::new(&kasumi_store::ScratchDisk::fixture(), 64 << 20)?;
+        let mut audit = EncryptedSpool::new(&kasumi_store::ScratchDisk::fixture(), 64 << 20)?;
         let mut revision = 2u64;
         let mut original = None;
         for index in 0..4200 {
@@ -83,7 +83,8 @@ async fn permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopen
             revision += 1;
         }
         assert!(head.commands > 4096 && head.audit > 8192);
-        let mut builder = custody_records::Builder::new(head.clone())?;
+        let mut builder =
+            custody_records::Builder::new(&kasumi_store::ScratchDisk::fixture(), head.clone())?;
         visit_spool(&mut commands, |bytes| builder.command(bytes))?;
         let mut sequence = 0u64;
         visit_spool(&mut audit, |bytes| {

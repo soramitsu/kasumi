@@ -429,7 +429,7 @@ mod tests {
         runtime.block_on(async {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("security.redb");
-            let node = NodeStore::open(&path).unwrap();
+            let node = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
             let weak_node = Arc::downgrade(&node);
             let provider = Arc::new(LocalKeyProvider::new([83; 32]));
             let store =
@@ -497,7 +497,7 @@ mod tests {
             assert!(weak_node.upgrade().is_none());
 
             let reopened = TenantStore::open_fixture(
-                NodeStore::open(&path).unwrap(),
+                NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap(),
                 SECURITY_TENANT.into(),
                 provider,
             )
@@ -523,7 +523,7 @@ mod tests {
     async fn live_opens_share_sequence_and_preserve_concurrent_records_through_reopen() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("shared-security.redb");
-        let node = NodeStore::open(&path).unwrap();
+        let node = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
         let weak_node = Arc::downgrade(&node);
         let provider = Arc::new(LocalKeyProvider::new([85; 32]));
         let store =
@@ -583,7 +583,7 @@ mod tests {
         assert!(weak_node.upgrade().is_none());
 
         let reopened = TenantStore::open_fixture(
-            NodeStore::open(&path).unwrap(),
+            NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap(),
             SECURITY_TENANT.into(),
             provider,
         )
@@ -627,7 +627,8 @@ mod tests {
         let clock = Arc::new(ManualClock::new());
         let provider = Arc::new(LocalKeyProvider::new([84; 32]));
         let store = TenantStore::open_fixture_with_clock(
-            NodeStore::open_with_backend(disk.clone()).unwrap(),
+            NodeStore::open_with_backend(disk.clone(), kasumi_store::ScratchDisk::fixture())
+                .unwrap(),
             SECURITY_TENANT.into(),
             provider.clone(),
             clock.clone(),
@@ -660,7 +661,8 @@ mod tests {
         assert_eq!(store.scan("security.audit").unwrap().len(), 1);
 
         let recovered = TenantStore::open_fixture_with_clock(
-            NodeStore::open_with_backend(disk.crash()).unwrap(),
+            NodeStore::open_with_backend(disk.crash(), kasumi_store::ScratchDisk::fixture())
+                .unwrap(),
             SECURITY_TENANT.into(),
             provider,
             clock,

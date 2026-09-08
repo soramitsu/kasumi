@@ -138,7 +138,10 @@ pub(crate) async fn operator_state(
     let AuthKeySource::Local { signer_file } = &config.auth.source else {
         anyhow::bail!("operator recovery requires a local issuer");
     };
-    let node = NodeStore::open(&config.database_path)?;
+    let node = NodeStore::open(
+        &config.database_path,
+        kasumi_store::ScratchDisk::open(config.scratch_disk.clone())?,
+    )?;
     let store = TenantStore::open(
         node.clone(),
         kasumi_engine::SECURITY_TENANT.into(),
@@ -246,7 +249,10 @@ fn operator_tenants(
             match crate::local_recovery::active_generation(config, store, &tenant.tenant)? {
                 Some(active) => {
                     tenant.incarnation = Some(active.incarnation.to_string());
-                    NodeStore::open(active.directory.join("node.redb"))?
+                    NodeStore::open(
+                        active.directory.join("node.redb"),
+                        node.scratch_disk().clone(),
+                    )?
                 }
                 None => node.clone(),
             };
@@ -734,6 +740,7 @@ pub async fn initialize(directory: &Path, tenant: &str) -> Result<InitializedIns
     config.signer_verifier = None;
     config.replication = None;
     config.database_path = database_path.clone();
+    config.scratch_disk.directory = data.join("scratch");
     config.backup_destinations = std::collections::BTreeMap::from([(
         "local".into(),
         crate::administration::DestinationConfig::Filesystem {
@@ -771,7 +778,10 @@ pub async fn initialize(directory: &Path, tenant: &str) -> Result<InitializedIns
     config.tenants[0].initial_policy = policy;
     config.tenants[0].incarnation = Some(tenant_incarnation.to_string());
     config.validate()?;
-    let node = NodeStore::open(database_path)?;
+    let node = NodeStore::open(
+        database_path,
+        kasumi_store::ScratchDisk::open(config.scratch_disk.clone())?,
+    )?;
     let security_store = TenantStore::open(
         node,
         kasumi_engine::SECURITY_TENANT.into(),

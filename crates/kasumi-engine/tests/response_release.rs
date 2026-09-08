@@ -10,7 +10,11 @@ use std::{collections::BTreeSet, sync::Arc};
 async fn encoded_response_is_fenced_by_policy_changes_and_actual_key_denial() {
     let directory = tempfile::tempdir().unwrap();
     let keys = Arc::new(LocalKeyProvider::new([41; 32]));
-    let node = NodeStore::open(directory.path().join("node.redb")).unwrap();
+    let node = NodeStore::open(
+        directory.path().join("node.redb"),
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
     let admission =
         kasumi_engine::admission::NodeAdmission::new(kasumi_engine::admission::AdmissionConfig {
             max_inflight_operations: 1,

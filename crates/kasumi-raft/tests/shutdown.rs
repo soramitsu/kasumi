@@ -60,7 +60,7 @@ async fn shutdown_drains_snapshot_worker_before_releasing_group_or_file_ownershi
     let (entered, ready) = tokio::sync::oneshot::channel();
     let (release, wait) = mpsc::channel();
     let store = TenantStore::open_fixture_with_clock(
-        NodeStore::open(&path)?,
+        NodeStore::open(&path, kasumi_store::ScratchDisk::fixture())?,
         "tenant-a".into(),
         Arc::new(LocalKeyProvider::new([19; 32])),
         Arc::new(ManualClock::new()),

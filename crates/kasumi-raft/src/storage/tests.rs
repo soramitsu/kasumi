@@ -17,7 +17,7 @@ async fn cancelled_log_future_retains_drain_lease_until_blocking_persistence_fin
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("cancelled-persistence.redb");
     let store = TenantStore::open_fixture_with_clock(
-        NodeStore::open(&path)?,
+        NodeStore::open(&path, kasumi_store::ScratchDisk::fixture())?,
         "cancelled-persistence".into(),
         Arc::new(LocalKeyProvider::new([19; 32])),
         Arc::new(ManualClock::new()),
@@ -68,7 +68,7 @@ async fn cancelled_log_future_retains_drain_lease_until_blocking_persistence_fin
     drop(domains);
     drop(store);
     // An abandoned response does not detach persistence from its drain lease.
-    let reopened = NodeStore::open(&path)?;
+    let reopened = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture())?;
     drop(reopened);
     Ok(())
 }
@@ -115,7 +115,7 @@ impl StateMachineBackend for BytesBackend {
 
 async fn fault_store(disk: FaultBackend) -> Result<Arc<TenantStore>> {
     TenantStore::open_fixture_with_clock(
-        NodeStore::open_with_backend(disk)?,
+        NodeStore::open_with_backend(disk, kasumi_store::ScratchDisk::fixture())?,
         "snapshot-test".into(),
         Arc::new(LocalKeyProvider::new([7; 32])),
         Arc::new(ManualClock::new()),
@@ -201,8 +201,10 @@ async fn applied_metadata_does_not_block_runtime_while_snapshot_capture_holds_st
     assert_eq!(metadata?.0, None);
     let mut builder = capture.await?;
     let snapshot = builder.build_snapshot().await?;
-    let envelope =
-        SnapshotEnvelope::decode(&mut snapshot.snapshot.into_image()?.reader(), 64 << 20)?;
+    let envelope = {
+        let image = snapshot.snapshot.into_image()?;
+        SnapshotEnvelope::decode(image.disk(), &mut image.reader(), 64 << 20)?
+    };
     assert_eq!(envelope.backend.read_bounded(1024)?, b"consistent-snapshot");
     assert_eq!(envelope.meta.last_log_id, None);
     Ok(())
@@ -217,7 +219,11 @@ fn envelope(bytes: Vec<u8>) -> SnapshotEnvelope {
             last_membership: StoredMembership::default(),
             snapshot_id: uuid::Uuid::new_v4().to_string(),
         },
-        backend: kasumi_store::SnapshotImage::from_bytes(&bytes).unwrap(),
+        backend: kasumi_store::SnapshotImage::from_bytes(
+            &kasumi_store::ScratchDisk::fixture(),
+            &bytes,
+        )
+        .unwrap(),
         retirement: None,
     }
 }
@@ -240,6 +246,7 @@ async fn invalid_backend_snapshot_never_replaces_durable_recoverable_state() -> 
         .install_snapshot(
             &valid.meta,
             Box::new(SnapshotBuffer::from_bytes(
+                &kasumi_store::ScratchDisk::fixture(),
                 valid.encode(64 << 20)?.read_bounded(64 << 20)?,
                 1024,
             )?),
@@ -251,6 +258,7 @@ async fn invalid_backend_snapshot_never_replaces_durable_recoverable_state() -> 
             .install_snapshot(
                 &invalid.meta,
                 Box::new(SnapshotBuffer::from_bytes(
+                    &kasumi_store::ScratchDisk::fixture(),
                     invalid.encode(64 << 20)?.read_bounded(64 << 20)?,
                     1024
                 )?)
@@ -283,7 +291,10 @@ async fn invalid_backend_snapshot_never_replaces_durable_recoverable_state() -> 
 async fn snapshots_larger_than_store_record_limit_are_chunked_and_recovered() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let store = TenantStore::open_fixture(
-        NodeStore::open(dir.path().join("large.redb"))?,
+        NodeStore::open(
+            dir.path().join("large.redb"),
+            kasumi_store::ScratchDisk::fixture(),
+        )?,
         "large".into(),
         Arc::new(LocalKeyProvider::new([8; 32])),
     )
@@ -394,7 +405,7 @@ async fn eight_mib_command_uses_compact_log_record_and_replays_after_reopen() ->
     let bytes = vec![171u8; (8 << 20) + (64 << 10)];
     async fn open(path: &std::path::Path) -> Result<Arc<TenantStore>> {
         TenantStore::open_fixture(
-            NodeStore::open(path)?,
+            NodeStore::open(path, kasumi_store::ScratchDisk::fixture())?,
             "large-command".into(),
             Arc::new(LocalKeyProvider::new([9; 32])),
         )
@@ -521,8 +532,10 @@ async fn snapshot_materialization_releases_applied_lock_and_keeps_captured_root(
     *backend.bytes.lock().unwrap() = b"new-root".to_vec();
     release.send(())?;
     let snapshot = task.await??;
-    let envelope =
-        SnapshotEnvelope::decode(&mut snapshot.snapshot.into_image()?.reader(), 64 << 20)?;
+    let envelope = {
+        let image = snapshot.snapshot.into_image()?;
+        SnapshotEnvelope::decode(image.disk(), &mut image.reader(), 64 << 20)?
+    };
     assert_eq!(envelope.backend.read_bounded(1024)?, b"captured-root");
     assert_eq!(*backend.bytes.lock().unwrap(), b"new-root");
     Ok(())

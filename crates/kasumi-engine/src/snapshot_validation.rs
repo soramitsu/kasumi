@@ -22,7 +22,7 @@ impl ValidatedApplicationSnapshot {
         let Some(Record::Header(header)) = index.get(0, "", "")? else {
             anyhow::bail!("snapshot metadata absent");
         };
-        let scratch = EncryptedTable::new(index_disk_bytes)?;
+        let scratch = EncryptedTable::new(index.image().disk(), index_disk_bytes)?;
         let result = Self {
             index,
             header,
@@ -72,25 +72,29 @@ impl ValidatedApplicationSnapshot {
                 .context("restored history catalog size overflow")?;
             Ok(())
         })?;
-        let image = SnapshotImage::capture(self.header.limits.max_snapshot_bytes, |writer| {
-            let mut encoder = crate::snapshot_codec::Encoder::new(writer)?;
-            crate::snapshot_codec::visit(&mut self.image().reader(), |_, mut record| {
+        let image = SnapshotImage::capture(
+            self.image().disk(),
+            self.header.limits.max_snapshot_bytes,
+            |writer| {
+                let mut encoder = crate::snapshot_codec::Encoder::new(writer)?;
+                crate::snapshot_codec::visit(&mut self.image().reader(), |_, mut record| {
+                    check()?;
+                    match &mut record {
+                        Record::Header(header) => {
+                            header.history_archive_bytes = usize::try_from(history_bytes)?
+                        }
+                        Record::Archive(_, archive) => {
+                            archive.storage_destination = alias.to_owned();
+                            archive.storage_backup_session = Some(backup_id);
+                        }
+                        _ => {}
+                    }
+                    encoder.record(record)
+                })?;
                 check()?;
-                match &mut record {
-                    Record::Header(header) => {
-                        header.history_archive_bytes = usize::try_from(history_bytes)?
-                    }
-                    Record::Archive(_, archive) => {
-                        archive.storage_destination = alias.to_owned();
-                        archive.storage_backup_session = Some(backup_id);
-                    }
-                    _ => {}
-                }
-                encoder.record(record)
-            })?;
-            check()?;
-            encoder.finish()
-        })?;
+                encoder.finish()
+            },
+        )?;
         // The old image/index are released before constructing the replacement
         // point index. No logical tenant is materialized for relocation.
         drop(self);
@@ -1003,7 +1007,7 @@ mod tests {
         state
     }
     fn image(state: &TenantState) -> SnapshotImage {
-        SnapshotImage::capture(128 << 20, |writer| {
+        SnapshotImage::capture(&kasumi_store::ScratchDisk::fixture(), 128 << 20, |writer| {
             crate::snapshot_codec::write(state, writer)
         })
         .unwrap()
@@ -1126,11 +1130,12 @@ mod tests {
         let mut bytes = Vec::new();
         std::io::Read::read_to_end(&mut image.reader(), &mut bytes).unwrap();
         *bytes.last_mut().unwrap() ^= 1;
-        let corrupt = SnapshotImage::capture(128 << 20, |writer| {
-            writer.write_all(&bytes)?;
-            Ok(())
-        })
-        .unwrap();
+        let corrupt =
+            SnapshotImage::capture(&kasumi_store::ScratchDisk::fixture(), 128 << 20, |writer| {
+                writer.write_all(&bytes)?;
+                Ok(())
+            })
+            .unwrap();
         assert!(ValidatedApplicationSnapshot::validate(corrupt, 128 << 20, || Ok(())).is_err());
     }
 }

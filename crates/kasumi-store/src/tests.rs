@@ -10,7 +10,11 @@ async fn fixture() -> (
     Arc<ManualClock>,
 ) {
     let dir = tempfile::tempdir().unwrap();
-    let node = NodeStore::open(dir.path().join("database.redb")).unwrap();
+    let node = NodeStore::open(
+        dir.path().join("database.redb"),
+        crate::ScratchDisk::fixture(),
+    )
+    .unwrap();
     let provider = Arc::new(LocalKeyProvider::new([41; 32]));
     let clock = Arc::new(ManualClock::new());
     let store = TenantStore::open_fixture_with_clock(
@@ -65,7 +69,11 @@ async fn periodic_probes_start_every_twenty_seconds_despite_provider_latency() {
         starts: std::sync::Mutex::new(Vec::new()),
     });
     let store = TenantStore::open_fixture_with_clock(
-        NodeStore::open(directory.path().join("cadence.redb")).unwrap(),
+        NodeStore::open(
+            directory.path().join("cadence.redb"),
+            crate::ScratchDisk::fixture(),
+        )
+        .unwrap(),
         "cadence".into(),
         provider.clone(),
         Arc::new(ManualClock::new()),
@@ -122,7 +130,7 @@ async fn canceled_shutdown_drains_blocked_probe_and_releases_the_database_file()
     }
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("shutdown.redb");
-    let node = NodeStore::open(&path).unwrap();
+    let node = NodeStore::open(&path, crate::ScratchDisk::fixture()).unwrap();
     let weak_node = Arc::downgrade(&node);
     let provider = Arc::new(Blocked {
         inner: LocalKeyProvider::new([39; 32]),
@@ -181,7 +189,7 @@ async fn canceled_shutdown_drains_blocked_probe_and_releases_the_database_file()
     // proves no background owner can retain the previous redb database.
     provider.block.store(false, Ordering::Release);
     let reopened = TenantStore::open_fixture_with_clock(
-        NodeStore::open(&path).unwrap(),
+        NodeStore::open(&path, crate::ScratchDisk::fixture()).unwrap(),
         "shutdown".into(),
         provider,
         Arc::new(ManualClock::new()),
@@ -260,7 +268,11 @@ async fn atomic_batches_and_cross_namespace_isolation_survive_reopen() {
     drop(same);
     drop(store);
     let store = TenantStore::open_fixture_with_clock(
-        NodeStore::open(dir.path().join("database.redb")).unwrap(),
+        NodeStore::open(
+            dir.path().join("database.redb"),
+            crate::ScratchDisk::fixture(),
+        )
+        .unwrap(),
         "tenant-a".into(),
         provider,
         clock,
@@ -485,7 +497,7 @@ async fn delayed_probe_cannot_extend_a_lease_past_sixty_seconds_from_start() {
     let provider = Arc::new(DelayedProvider::new());
     let clock = Arc::new(ManualClock::new());
     let store = TenantStore::open_fixture_with_clock(
-        NodeStore::open(dir.path().join("db")).unwrap(),
+        NodeStore::open(dir.path().join("db"), crate::ScratchDisk::fixture()).unwrap(),
         "a".into(),
         provider.clone(),
         clock.clone(),
@@ -510,7 +522,7 @@ async fn a_late_success_cannot_undo_an_explicit_seal() {
     let dir = tempfile::tempdir().unwrap();
     let provider = Arc::new(DelayedProvider::new());
     let store = TenantStore::open_fixture_with_clock(
-        NodeStore::open(dir.path().join("db")).unwrap(),
+        NodeStore::open(dir.path().join("db"), crate::ScratchDisk::fixture()).unwrap(),
         "a".into(),
         provider.clone(),
         Arc::new(ManualClock::new()),
@@ -541,7 +553,11 @@ async fn rewrap_preserves_documents_after_retiring_old_wrapping_versions() {
     store.refresh_lease().await.unwrap();
     drop(store);
     let store = TenantStore::open_fixture_with_clock(
-        NodeStore::open(dir.path().join("database.redb")).unwrap(),
+        NodeStore::open(
+            dir.path().join("database.redb"),
+            crate::ScratchDisk::fixture(),
+        )
+        .unwrap(),
         "tenant-a".into(),
         provider,
         clock,
@@ -559,7 +575,8 @@ async fn every_injected_commit_failure_recovers_whole_batch_or_previous_state() 
     let backend = FaultBackend::new();
     let provider = Arc::new(LocalKeyProvider::new([51; 32]));
     let clock = Arc::new(ManualClock::new());
-    let node = NodeStore::open_with_backend(backend.clone()).unwrap();
+    let node =
+        NodeStore::open_with_backend(backend.clone(), crate::ScratchDisk::fixture()).unwrap();
     let store =
         TenantStore::open_fixture_with_clock(node, "crash".into(), provider.clone(), clock.clone())
             .await
@@ -580,7 +597,8 @@ async fn every_injected_commit_failure_recovers_whole_batch_or_previous_state() 
     let mut acknowledgments = 0;
     for position in 0..128 {
         let backend = baseline.crash();
-        let node = NodeStore::open_with_backend(backend.clone()).unwrap();
+        let node =
+            NodeStore::open_with_backend(backend.clone(), crate::ScratchDisk::fixture()).unwrap();
         let store = TenantStore::open_fixture_with_clock(
             node,
             "crash".into(),
@@ -595,7 +613,7 @@ async fn every_injected_commit_failure_recovers_whole_batch_or_previous_state() 
         backend.disarm();
         drop(store);
         let recovered = TenantStore::open_fixture_with_clock(
-            NodeStore::open_with_backend(synchronized).unwrap(),
+            NodeStore::open_with_backend(synchronized, crate::ScratchDisk::fixture()).unwrap(),
             "crash".into(),
             provider.clone(),
             clock.clone(),
@@ -644,7 +662,7 @@ async fn expiry_watchdog_discards_keys_and_notifies_without_an_incoming_request(
 async fn different_tenants_do_not_share_a_slow_key_service_open_gate() {
     let dir = tempfile::tempdir().unwrap();
     let provider = Arc::new(DelayedProvider::new());
-    let node = NodeStore::open(dir.path().join("db")).unwrap();
+    let node = NodeStore::open(dir.path().join("db"), crate::ScratchDisk::fixture()).unwrap();
     provider.delayed.store(true, Ordering::SeqCst);
     let first = {
         let node = node.clone();
@@ -697,7 +715,7 @@ async fn faulty_provider_rewrap_cannot_replace_data_keys_or_break_recovery() {
     let provider = Arc::new(BadRewrapProvider(LocalKeyProvider::new([30; 32])));
     let clock = Arc::new(ManualClock::new());
     let store = TenantStore::open_fixture_with_clock(
-        NodeStore::open(dir.path().join("db")).unwrap(),
+        NodeStore::open(dir.path().join("db"), crate::ScratchDisk::fixture()).unwrap(),
         "t".into(),
         provider.clone(),
         clock.clone(),
@@ -717,7 +735,7 @@ async fn faulty_provider_rewrap_cannot_replace_data_keys_or_break_recovery() {
     );
     drop(store);
     let store = TenantStore::open_fixture_with_clock(
-        NodeStore::open(dir.path().join("db")).unwrap(),
+        NodeStore::open(dir.path().join("db"), crate::ScratchDisk::fixture()).unwrap(),
         "t".into(),
         provider,
         clock,
@@ -736,7 +754,7 @@ async fn wrapping_catalog_is_atomic_across_every_injected_commit_failure() {
     let provider = Arc::new(LocalKeyProvider::new([19; 32]));
     let clock = Arc::new(ManualClock::new());
     let store = TenantStore::open_fixture_with_clock(
-        NodeStore::open_with_backend(backend.clone()).unwrap(),
+        NodeStore::open_with_backend(backend.clone(), crate::ScratchDisk::fixture()).unwrap(),
         "rewrap-crash".into(),
         provider.clone(),
         clock.clone(),
@@ -751,7 +769,7 @@ async fn wrapping_catalog_is_atomic_across_every_injected_commit_failure() {
     for position in 0..128 {
         let disk = baseline.crash();
         let store = TenantStore::open_fixture_with_clock(
-            NodeStore::open_with_backend(disk.clone()).unwrap(),
+            NodeStore::open_with_backend(disk.clone(), crate::ScratchDisk::fixture()).unwrap(),
             "rewrap-crash".into(),
             provider.clone(),
             clock.clone(),
@@ -764,7 +782,7 @@ async fn wrapping_catalog_is_atomic_across_every_injected_commit_failure() {
         disk.disarm();
         drop(store);
         let recovered = TenantStore::open_fixture_with_clock(
-            NodeStore::open_with_backend(durable).unwrap(),
+            NodeStore::open_with_backend(durable, crate::ScratchDisk::fixture()).unwrap(),
             "rewrap-crash".into(),
             provider.clone(),
             clock.clone(),
@@ -801,7 +819,7 @@ async fn expiry_during_fsync_reports_unknown_outcome_and_preserves_committed_bat
     let provider = Arc::new(LocalKeyProvider::new([38; 32]));
     let clock = Arc::new(ManualClock::new());
     let store = TenantStore::open_fixture_with_clock(
-        NodeStore::open_with_backend(disk.clone()).unwrap(),
+        NodeStore::open_with_backend(disk.clone(), crate::ScratchDisk::fixture()).unwrap(),
         "fsync-expiry".into(),
         provider.clone(),
         clock.clone(),
@@ -818,7 +836,7 @@ async fn expiry_during_fsync_reports_unknown_outcome_and_preserves_committed_bat
     assert!(error.to_string().contains("outcome unknown"));
     assert!(store.state.read().keys.is_empty());
     let recovered = TenantStore::open_fixture_with_clock(
-        NodeStore::open_with_backend(disk.crash()).unwrap(),
+        NodeStore::open_with_backend(disk.crash(), crate::ScratchDisk::fixture()).unwrap(),
         "fsync-expiry".into(),
         provider,
         clock,
@@ -841,7 +859,7 @@ async fn expiry_during_key_catalog_fsync_does_not_acknowledge_rotation() {
     let provider = Arc::new(LocalKeyProvider::new([39; 32]));
     let clock = Arc::new(ManualClock::new());
     let store = TenantStore::open_fixture_with_clock(
-        NodeStore::open_with_backend(disk.clone()).unwrap(),
+        NodeStore::open_with_backend(disk.clone(), crate::ScratchDisk::fixture()).unwrap(),
         "rotation-expiry".into(),
         provider.clone(),
         clock.clone(),
@@ -856,7 +874,7 @@ async fn expiry_during_key_catalog_fsync_does_not_acknowledge_rotation() {
     assert!(error.to_string().contains("outcome unknown"));
     assert!(store.state.read().keys.is_empty());
     let recovered = TenantStore::open_fixture_with_clock(
-        NodeStore::open_with_backend(disk.crash()).unwrap(),
+        NodeStore::open_with_backend(disk.crash(), crate::ScratchDisk::fixture()).unwrap(),
         "rotation-expiry".into(),
         provider,
         clock,
@@ -963,26 +981,26 @@ fn node_files_are_private_nofollow_and_keep_exclusive_database_ownership() {
     let directory = root.path().join("private");
     crate::private_files::create_directory(&directory).unwrap();
     let path = directory.join("node.redb");
-    let node = NodeStore::open(&path).unwrap();
+    let node = NodeStore::open(&path, crate::ScratchDisk::fixture()).unwrap();
     assert_eq!(
         std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
         0o600
     );
-    assert!(NodeStore::open(&path).is_err());
+    assert!(NodeStore::open(&path, crate::ScratchDisk::fixture()).is_err());
     assert!(crate::private_files::ExclusiveLock::acquire(&path).is_err());
     drop(node);
     let cleanup_lock = crate::private_files::ExclusiveLock::acquire(&path).unwrap();
-    assert!(NodeStore::open(&path).is_err());
+    assert!(NodeStore::open(&path, crate::ScratchDisk::fixture()).is_err());
     drop(cleanup_lock);
     let alias = directory.join("alias.redb");
     symlink(&path, &alias).unwrap();
-    assert!(NodeStore::open(&alias).is_err());
+    assert!(NodeStore::open(&alias, crate::ScratchDisk::fixture()).is_err());
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
     let original = std::fs::read(&path).unwrap();
-    assert!(NodeStore::open(&path).is_err());
+    assert!(NodeStore::open(&path, crate::ScratchDisk::fixture()).is_err());
     assert_eq!(original, std::fs::read(&path).unwrap());
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-    assert!(NodeStore::open(&path).is_ok());
+    assert!(NodeStore::open(&path, crate::ScratchDisk::fixture()).is_ok());
 }
 
 #[tokio::test]
@@ -1040,4 +1058,44 @@ async fn pinned_read_roots_and_streamed_namespace_publication_preserve_isolation
     );
     store.seal();
     assert!(pinned.get("authority", b"old", 1024).is_err());
+}
+
+#[tokio::test]
+async fn separate_node_stores_and_pinned_reads_share_one_scratch_budget() {
+    let directory = tempfile::tempdir().unwrap();
+    let disk = ScratchDisk::open(ScratchDiskConfig {
+        directory: directory.path().join("scratch"),
+        max_bytes: 192 << 10,
+        min_free_bytes: 0,
+    })
+    .unwrap();
+    let first = NodeStore::open(directory.path().join("application.redb"), disk.clone()).unwrap();
+    let second = NodeStore::open(directory.path().join("trust.redb"), disk.clone()).unwrap();
+    let store = TenantStore::open_fixture(
+        first.clone(),
+        "tenant".into(),
+        Arc::new(LocalKeyProvider::new([73; 32])),
+    )
+    .await
+    .unwrap();
+    let view = store.read_view().unwrap();
+    assert!(Arc::ptr_eq(first.scratch_disk(), second.scratch_disk()));
+    assert!(Arc::ptr_eq(view.scratch_disk(), &disk));
+    let image = SnapshotImage::from_bytes(view.scratch_disk(), &[17; 128 << 10]).unwrap();
+    let retained = image.reader();
+    let charge = disk.snapshot().charged_bytes;
+    assert!(charge > 128 << 10);
+    assert!(SnapshotImage::from_bytes(second.scratch_disk(), &[29; 128 << 10]).is_err());
+    assert_eq!(disk.snapshot().charged_bytes, charge);
+    drop(image);
+    drop(view);
+    drop(store);
+    drop(first);
+    assert_eq!(disk.snapshot().charged_bytes, charge);
+    drop(retained);
+    assert_eq!(disk.snapshot().charged_bytes, 0);
+    assert_eq!(disk.snapshot().live_files, 0);
+    let retry = SnapshotImage::from_bytes(second.scratch_disk(), &[29; 128 << 10]).unwrap();
+    drop(retry);
+    assert_eq!(disk.snapshot().charged_bytes, 0);
 }

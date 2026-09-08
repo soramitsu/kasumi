@@ -100,8 +100,10 @@ async fn same_position_reencoding_preserves_custody_and_reuses_verified_current_
     let state: RetiredSnapshotState = serde_json::from_reader(original.backend.reader())?;
     let mut reencoded = original.clone();
     reencoded.meta.snapshot_id = uuid::Uuid::new_v4().to_string();
-    reencoded.backend =
-        kasumi_store::SnapshotImage::from_bytes(&serde_json::to_vec_pretty(&state)?)?;
+    reencoded.backend = kasumi_store::SnapshotImage::from_bytes(
+        &kasumi_store::ScratchDisk::fixture(),
+        &serde_json::to_vec_pretty(&state)?,
+    )?;
     assert_ne!(original.backend.sha256(), reencoded.backend.sha256());
     machine
         .install_snapshot(&reencoded.meta, as_snapshot(&reencoded, 1 << 20)?.snapshot)
@@ -114,8 +116,10 @@ async fn same_position_reencoding_preserves_custody_and_reuses_verified_current_
     let mut builder = machine.get_snapshot_builder().await;
     let recaptured = builder.build_snapshot().await?;
     assert_eq!(recaptured.meta, reencoded.meta);
-    let recaptured =
-        SnapshotEnvelope::decode(&mut recaptured.snapshot.into_image()?.reader(), 64 << 20)?;
+    let recaptured = {
+        let image = recaptured.snapshot.into_image()?;
+        SnapshotEnvelope::decode(image.disk(), &mut image.reader(), 64 << 20)?
+    };
     assert_eq!(recaptured.backend.sha256(), reencoded.backend.sha256());
     assert!(
         ControlLog::open(domains.custody().clone(), 1, group())?
@@ -143,7 +147,10 @@ async fn same_position_cannot_substitute_matching_backend_and_custody_policy() -
         } else {
             state.administrators.insert("substituted".into());
         }
-        changed.backend = kasumi_store::SnapshotImage::from_bytes(&serde_json::to_vec(&state)?)?;
+        changed.backend = kasumi_store::SnapshotImage::from_bytes(
+            &kasumi_store::ScratchDisk::fixture(),
+            &serde_json::to_vec(&state)?,
+        )?;
         let mut capsule = serde_json::to_value(changed.retirement.take().unwrap())?;
         capsule["state"] = serde_json::to_value(&state)?;
         changed.retirement = Some(serde_json::from_value(capsule)?);
@@ -221,7 +228,7 @@ async fn retired_snapshot_installs_without_original_log_and_recovers_with_only_c
     drop(machine);
     drop(domains);
     let custody = kasumi_store::CustodyStore::open(
-        NodeStore::open_with_backend(crash)?,
+        NodeStore::open_with_backend(crash, kasumi_store::ScratchDisk::fixture())?,
         "tenant".into(),
         custody_provider,
     )
@@ -244,7 +251,12 @@ async fn snapshot_rejects_missing_substituted_stale_and_payload_custody_before_p
         let mut changed = original.clone();
         match case {
             0 => changed.retirement = None,
-            1 => changed.backend = kasumi_store::SnapshotImage::from_bytes(b"not-retired")?,
+            1 => {
+                changed.backend = kasumi_store::SnapshotImage::from_bytes(
+                    &kasumi_store::ScratchDisk::fixture(),
+                    b"not-retired",
+                )?
+            }
             2 | 3 => {
                 let mut state: RetiredSnapshotState =
                     serde_json::from_reader(changed.backend.reader())?;
@@ -253,8 +265,10 @@ async fn snapshot_rejects_missing_substituted_stale_and_payload_custody_before_p
                 } else {
                     state.administrators.insert("substituted".into());
                 }
-                changed.backend =
-                    kasumi_store::SnapshotImage::from_bytes(&serde_json::to_vec(&state)?)?;
+                changed.backend = kasumi_store::SnapshotImage::from_bytes(
+                    &kasumi_store::ScratchDisk::fixture(),
+                    &serde_json::to_vec(&state)?,
+                )?;
             }
             4 => {
                 let mut portable = serde_json::to_value(changed.retirement.take().unwrap())?;

@@ -27,7 +27,7 @@ fn policy() -> Policy {
     }
 }
 async fn open(path: &std::path::Path, limits: Limits) -> (Arc<Database>, Arc<SecurityAudit>) {
-    let node = NodeStore::open(path).unwrap();
+    let node = NodeStore::open(path, kasumi_store::ScratchDisk::fixture()).unwrap();
     let audit = common::security_audit(node.clone()).await;
     let store = TenantStore::open_fixture(
         node,
@@ -651,7 +651,11 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
     drop(db);
     drop(audit);
     std::fs::remove_dir_all(&cold_path).unwrap();
-    let node = NodeStore::open(root.path().join("restored.redb")).unwrap();
+    let node = NodeStore::open(
+        root.path().join("restored.redb"),
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
     let restored_audit = common::security_audit(node.clone()).await;
     let target = TenantStore::open_fixture(
         node,
@@ -772,7 +776,11 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
         } else if suffix == "missing" {
             std::fs::remove_file(&dependency_path).unwrap();
         }
-        let node = NodeStore::open(root.path().join(format!("{suffix}.redb"))).unwrap();
+        let node = NodeStore::open(
+            root.path().join(format!("{suffix}.redb")),
+            kasumi_store::ScratchDisk::fixture(),
+        )
+        .unwrap();
         let audit = common::security_audit(node.clone()).await;
         let target = TenantStore::open_fixture(
             node,

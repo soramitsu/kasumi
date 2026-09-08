@@ -38,6 +38,7 @@ pub(crate) fn stage(image: &SnapshotImage, limit: u64) -> Result<(EncryptedTable
         "closed snapshot exceeds configured disk budget"
     );
     let table = EncryptedTable::new(
+        image.disk(),
         image
             .len()
             .checked_mul(4)
@@ -80,7 +81,7 @@ pub(crate) fn load_image(custody: &CustodyStore, limit: u64) -> Result<Option<Sn
         "invalid closed snapshot manifest"
     );
     kasumi_types::validate_sha256(&manifest.sha256)?;
-    let mut spool = EncryptedSpool::new(limit)?;
+    let mut spool = EncryptedSpool::new(store.scratch_disk(), limit)?;
     for index in 0..manifest.chunks {
         let bytes = view
             .get(CLOSED_SNAPSHOT, &index.to_be_bytes(), CHUNK)?

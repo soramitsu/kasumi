@@ -187,3 +187,10 @@ rotation still requires durable dispatch and acknowledgements for every other
 authority, data and Control verifier, permanent revocation for unavailable
 members, coordinated operational-key loading, and the complete issuer drain.
 The local API must not be used to declare that this remaining work has happened.
+
+The authority runtime and signer-verifier initialization request require an
+explicit `scratch_disk` object: `directory` (absolute private leaf beneath an
+existing parent), `max_bytes`, and `min_free_bytes`. Use the same installed
+runtime scratch configuration when initializing its separate verifier store.
+Runtime opening passes the shared node owner to both stores; it does not create
+an independent per-request or per-verifier allowance.

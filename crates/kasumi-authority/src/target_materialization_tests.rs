@@ -43,7 +43,11 @@ impl MaterialFixture {
     async fn new() -> Self {
         let control = ControlFixture::new();
         let issuer = control.issuer().await;
-        let node = NodeStore::open(issuer._dir.path().join("source.redb")).unwrap();
+        let node = NodeStore::open(
+            issuer._dir.path().join("source.redb"),
+            kasumi_store::ScratchDisk::fixture(),
+        )
+        .unwrap();
         let source_admission =
             kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap();
         let security = audit(node.clone(), source_admission.clone()).await;
@@ -278,8 +282,11 @@ impl MaterialFixture {
         // Production runner obtains this original operation before providers.
         // The helper's actual opener is under the same opaque gate; each tested
         // materialization still explicitly obtains its registered operation.
-        let node =
-            NodeStore::open(self.issuer._dir.path().join(format!("target-{id}.redb"))).unwrap();
+        let node = NodeStore::open(
+            self.issuer._dir.path().join(format!("target-{id}.redb")),
+            kasumi_store::ScratchDisk::fixture(),
+        )
+        .unwrap();
         let security = audit(node.clone(), self.admissions[&id].clone()).await;
         let stores = TenantStorageSet::open(
             node,
@@ -818,7 +825,7 @@ async fn exact_actual_completion_is_required_for_issuer_and_target_activation() 
         StorageAccess::target_journal(&journal_installation.root, &journal_installation.node)
             .unwrap();
     let journal_store = TenantStore::open(
-        NodeStore::open(&journal_path).unwrap(),
+        NodeStore::open(&journal_path, kasumi_store::ScratchDisk::fixture()).unwrap(),
         journal_tenant.clone(),
         journal_provider.clone(),
         journal_access.clone(),
@@ -926,7 +933,7 @@ async fn exact_actual_completion_is_required_for_issuer_and_target_activation() 
     // Reopen only the separately encrypted journal, independently of all app
     // providers. Exact signatures survive restart; substituted facts fail closed.
     let journal_store = TenantStore::open(
-        NodeStore::open(&journal_path).unwrap(),
+        NodeStore::open(&journal_path, kasumi_store::ScratchDisk::fixture()).unwrap(),
         journal_tenant.clone(),
         journal_provider.clone(),
         journal_access.clone(),
@@ -1019,7 +1026,7 @@ async fn exact_actual_completion_is_required_for_issuer_and_target_activation() 
     // Ordinary startup uses only the independent journal, current issuer and
     // existing target keys. No source provider or old Control JWT is consulted.
     let journal_store = TenantStore::open(
-        NodeStore::open(&journal_path).unwrap(),
+        NodeStore::open(&journal_path, kasumi_store::ScratchDisk::fixture()).unwrap(),
         journal_tenant,
         journal_provider,
         journal_access,
@@ -1074,6 +1081,7 @@ async fn exact_actual_completion_is_required_for_issuer_and_target_activation() 
             ._dir
             .path()
             .join(format!("target-{projected_node_id}.redb")),
+        kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();
     let security = audit(node.clone(), f.admissions[&projected_node_id].clone()).await;
@@ -1352,7 +1360,7 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
         node: nodes().first().unwrap().clone(),
     };
     let path = f.issuer._dir.path().join("independent-target-journal.redb");
-    let node = NodeStore::open(&path).unwrap();
+    let node = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
     let tenant = format!("kasumi.target.{}.1", f.control.root.control_incarnation);
     let provider = Arc::new(LocalKeyProvider::new([238; 32]));
     let access = StorageAccess::target_journal(&installation.root, &installation.node).unwrap();
@@ -1487,7 +1495,7 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
     store.shutdown().await;
     drop(store);
     drop(node);
-    let node = NodeStore::open(path).unwrap();
+    let node = NodeStore::open(path, kasumi_store::ScratchDisk::fixture()).unwrap();
     let store = TenantStore::open(node, tenant, provider, access)
         .await
         .unwrap();

@@ -19,6 +19,7 @@ async fn fenced_source_startup_keeps_control_handle_without_constructing_applica
     ));
     let mut config = example_config();
     config.database_path = dir.path().join("node.redb");
+    config.scratch_disk.directory = dir.path().join("scratch");
     config.mcp.tls = files.clone();
     config.native.tls = files.clone();
     config.admin.tls = files.clone();
@@ -82,6 +83,7 @@ async fn fenced_source_startup_keeps_control_handle_without_constructing_applica
     verifier.database_path = trust_directory.join("trust.redb");
     verifier.keys = KeyProviderSettings::File { path: wrapping };
     crate::signer_runtime::InitializeSignerVerifier {
+        scratch_disk: config.scratch_disk.clone(),
         verifier: verifier.clone(),
         initial_certificates: vec![root.certify(1, hex::encode(operational.public_key_raw())).unwrap()],
     }.initialize().await.unwrap();
@@ -151,6 +153,7 @@ async fn original_tenant_reopens_after_key_outage_without_reviving_retained_hand
     let (public_files, _) = certificate_files(&public_dir);
     let mut config = fixture_config();
     config.database_path = dir.path().join("node.redb");
+    config.scratch_disk.directory = dir.path().join("scratch");
     config.mcp.tls = public_files.clone();
     config.native.tls = public_files.clone();
     config.admin.tls = public_files.clone();
