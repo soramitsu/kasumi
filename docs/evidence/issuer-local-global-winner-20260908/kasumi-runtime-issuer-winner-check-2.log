@@ -1,0 +1,14 @@
+    Checking kasumi-server v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-server)
+    Checking kasumi-bench v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-bench)
+    Checking kasumi-store v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-store)
+error[E0599]: no method named `send_replace` found for struct `kasumi_serving::SignerVerifierRequest` in the current scope
+    --> crates/kasumi-server/src/rpc_authority_tests.rs:1293:10
+     |
+1293 |     stop.send_replace(true);
+     |          ^^^^^^^^^^^^ method not found in `kasumi_serving::SignerVerifierRequest`
+
+    Checking kasumi-engine v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-engine)
+    Checking kasumi-authority v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-authority)
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `kasumi-server` (lib test) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...

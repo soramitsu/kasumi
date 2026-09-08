@@ -1,0 +1,202 @@
+{
+  "source": "786bffb8dadfaf5e8640177760d089d1bd6ddc12",
+  "tree": "1790fe65b00ed85530478ea30171be8d1fd4bb04",
+  "lockfile_sha256": "3f693a1bd3dd6614d3ce8e54b2fd960055361c72e5d535b8aa86e1c47e60eb0a",
+  "target": "/tmp/kasumi-production-streaming-target",
+  "gates": [
+    {
+      "name": "permanent-unit",
+      "command": [
+        "cargo",
+        "+1.97.1",
+        "test",
+        "-p",
+        "kasumi-engine",
+        "--all-features",
+        "--lib",
+        "permanent_staged",
+        "-j2"
+      ],
+      "exit": 0,
+      "seconds": 18.212,
+      "log": "/tmp/kasumi-staged-bytes-786bffb-permanent-unit.log",
+      "log_sha256": "16596c4bdc51b31405d8072e92fcf6dda1a66dae4b21c3ace673b49cff621254",
+      "executables": {
+        "/tmp/kasumi-production-streaming-target/debug/deps/kasumi_engine-4b4e80d3850c1c4e": "4802df8fc9bb7ca86e4dc88cdc6d2ca7ed50ad9ba5cc7d7cefc271b42aac464a"
+      },
+      "selected_no_tests": false
+    },
+    {
+      "name": "staging",
+      "command": [
+        "cargo",
+        "+1.97.1",
+        "test",
+        "-p",
+        "kasumi-engine",
+        "--all-features",
+        "--test",
+        "staged_transactions",
+        "--test",
+        "guarded_staging",
+        "-j2"
+      ],
+      "exit": 0,
+      "seconds": 19.646,
+      "log": "/tmp/kasumi-staged-bytes-786bffb-staging.log",
+      "log_sha256": "58a2b178eb4b177ecb1d26a9000fb061613e91909b9e971ac047d8608928db27",
+      "executables": {
+        "/tmp/kasumi-production-streaming-target/debug/deps/guarded_staging-53f6a9ecfaaea4b1": "05976942a95441ebe1f70a542aea2faa80be65b5df679aacd62b985e43969daf",
+        "/tmp/kasumi-production-streaming-target/debug/deps/staged_transactions-68f976b9235352ff": "b26fc1d001f78e7e18ad2779bc8b3a4b66f15e5d7cf4a8a770054fd4481999af"
+      },
+      "selected_no_tests": false
+    },
+    {
+      "name": "snapshot",
+      "command": [
+        "cargo",
+        "+1.97.1",
+        "test",
+        "-p",
+        "kasumi-engine",
+        "--all-features",
+        "--lib",
+        "snapshot",
+        "-j2"
+      ],
+      "exit": 0,
+      "seconds": 12.723,
+      "log": "/tmp/kasumi-staged-bytes-786bffb-snapshot.log",
+      "log_sha256": "629866f8ac0ecc2739ac6ddd3d274b6e59e8572cdef65452e45754b7a8af05ae",
+      "executables": {
+        "/tmp/kasumi-production-streaming-target/debug/deps/kasumi_engine-4b4e80d3850c1c4e": "4802df8fc9bb7ca86e4dc88cdc6d2ca7ed50ad9ba5cc7d7cefc271b42aac464a"
+      },
+      "selected_no_tests": false
+    },
+    {
+      "name": "snapshot-retirement",
+      "command": [
+        "cargo",
+        "+1.97.1",
+        "test",
+        "-p",
+        "kasumi-engine",
+        "--all-features",
+        "--test",
+        "snapshot_budget",
+        "--test",
+        "retirement",
+        "-j2"
+      ],
+      "exit": 0,
+      "seconds": 68.046,
+      "log": "/tmp/kasumi-staged-bytes-786bffb-snapshot-retirement.log",
+      "log_sha256": "b589c810ef428f811db5471705dbea6c97ea6989c8cd3c4b766a6a6d9759ab17",
+      "executables": {
+        "/tmp/kasumi-production-streaming-target/debug/deps/retirement-59874a58f1b71cc1": "93f4d382cad7874d9d9faeba074492e9ef3f6d8d5ab5b622341befd63104130a",
+        "/tmp/kasumi-production-streaming-target/debug/deps/snapshot_budget-eda05a0646dad12b": "5dc89041892f297cb497317a8705273c27829a9d01866a76c9442ab92d22cd00"
+      },
+      "selected_no_tests": false
+    },
+    {
+      "name": "history",
+      "command": [
+        "cargo",
+        "+1.97.1",
+        "test",
+        "-p",
+        "kasumi-engine",
+        "--all-features",
+        "--test",
+        "history",
+        "-j2"
+      ],
+      "exit": 0,
+      "seconds": 268.123,
+      "log": "/tmp/kasumi-staged-bytes-786bffb-history.log",
+      "log_sha256": "4dea7e2041e400a62f573f16a7c5abd56693e46a82a3ab7958a9b53e288a7088",
+      "executables": {
+        "/tmp/kasumi-production-streaming-target/debug/deps/history-a85e510e86b0d181": "28388c1034c4e9f47337cd11e69b71970fa9616b41ca51bd729193561be07f11"
+      },
+      "selected_no_tests": false
+    },
+    {
+      "name": "types",
+      "command": [
+        "cargo",
+        "+1.97.1",
+        "test",
+        "-p",
+        "kasumi-types",
+        "--all-features",
+        "--lib",
+        "-j2"
+      ],
+      "exit": 0,
+      "seconds": 14.97,
+      "log": "/tmp/kasumi-staged-bytes-786bffb-types.log",
+      "log_sha256": "3e798f85a5953876fbe2c15eb56439840e46dc16fce019c37e3c24a330459e51",
+      "executables": {
+        "/tmp/kasumi-production-streaming-target/debug/deps/kasumi_types-bcc7d464aa0c58d2": "1cf548c47c446971afc13a64bbef4bb410ca0fb2195d95177bc414e8c5128261"
+      },
+      "selected_no_tests": false
+    },
+    {
+      "name": "clippy",
+      "command": [
+        "cargo",
+        "+1.97.1",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "-j2",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit": 0,
+      "seconds": 2.365,
+      "log": "/tmp/kasumi-staged-bytes-786bffb-clippy.log",
+      "log_sha256": "57ff6de429ae308e25ed50ea76f889316eb966032dbafd6d086dbee6d623e988",
+      "executables": {},
+      "selected_no_tests": false
+    },
+    {
+      "name": "production",
+      "command": [
+        "cargo",
+        "+1.97.1",
+        "check",
+        "-p",
+        "kasumi-server",
+        "--bins",
+        "--no-default-features",
+        "-j2"
+      ],
+      "exit": 0,
+      "seconds": 47.959,
+      "log": "/tmp/kasumi-staged-bytes-786bffb-production.log",
+      "log_sha256": "b098fbb6f6dea2c122b2d9e130160a6351f4503da624d7b814448a3b09623c5d",
+      "executables": {},
+      "selected_no_tests": false
+    },
+    {
+      "name": "format",
+      "command": [
+        "cargo",
+        "+1.97.1",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit": 0,
+      "seconds": 1.757,
+      "log": "/tmp/kasumi-staged-bytes-786bffb-format.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "executables": {},
+      "selected_no_tests": false
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 12s
+     Running unittests src/lib.rs (/tmp/kasumi-production-standalone-target/debug/deps/kasumi_engine-4b4e80d3850c1c4e)
+
+running 15 tests
+test snapshot_codec::recovery_tests::canonical_recovery_records_roundtrip_and_point_accounting_match_stream ... ok
+test snapshot_codec::tests::archived_audit_prefix_preserves_absolute_sequences_and_head ... ok
+test snapshot_codec::tests::authenticated_duplicate_header_is_rejected ... ok
+test snapshot_codec::tests::canonical_stream_requires_terminal_counts_digest_and_exact_eof ... ok
+test snapshot_codec::tests::oversized_record_is_rejected_before_payload_read_or_allocation ... ok
+test snapshot_codec::recovery_tests::application_backup_rejects_control_recovery_and_embedded_or_orphan_records ... ok
+test state::snapshot_bundle::tests::control_archive_transfer_uses_exact_reserved_domain_without_application_authority ... ok
+test state::snapshot_bundle::tests::missing_archive_and_incorrect_totals_prevent_snapshot_completion ... ok
+test state::snapshot_bundle::tests::incomplete_or_corrupt_bundle_never_publishes_pruned_state ... ok
+test state::snapshot_bundle::tests::public_capture_and_restore_preparation_are_complete_admitted_and_never_publish ... ok
+test state::snapshot_bundle::tests::replacement_receives_complete_chain_and_restart_uses_local_dependencies ... ok
+test state::snapshot_validation::tests::indexed_validation_matches_full_restore_and_canonical_closure ... ok
+test state::snapshot_validation::tests::indexed_verification_keeps_all_staging_on_the_image_owner_until_drain ... ok
+test state::snapshot_validation::tests::indexing_never_returns_a_proof_after_cancellation_or_corrupt_footer ... ok
+test state::snapshot_validation::tests::authenticated_semantic_substitutions_fail_both_validation_paths ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 52 filtered out; finished in 26.31s
+

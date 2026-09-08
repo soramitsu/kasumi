@@ -4,6 +4,13 @@ This is the active implementation and acceptance ledger for the approved first
 release. An unchecked gate is unfinished. The September 5 baseline and later
 branch evidence remain historical records; they do not certify this integration.
 
+The explicit release goal remains active. Current integration adds atomic recovery
+route publication, issuer-local activation tied to the global winner, and byte
+budgets for permanent staged outcomes. Permanent point-table migration, native
+resource reservations, persistent disk admission and the final live/capacity/
+endurance gates remain open. The Linux reference VM now has16GiB memory; the
+preceding7GiB-container workspace attempt failed and is retained in full.
+
 ## Contract
 
 - Self-hosted standalone and replicated HA, Apache-2.0, Rust 1.97.1.
@@ -554,3 +561,29 @@ a read-only quota getter or caller capacity claim cannot close this dependency.
   pass; the running 7 GiB container is correctly rejected. Evidence:
   `docs/evidence/functional-memory-preflight-20260908`. The failed `d403c55`
   attempt retains its original allocation while its remaining gates finish.
+
+- `1b35c28` and integration `f44133a` publish the normal Control topology change
+  and permanent recovery phase outcome in one ordered apply. All exact target
+  confirmations precede publication; topology CAS rejection and expired phase
+  supersession are permanent, and replay preserves a later authorized route.
+  Lifecycle13/13, snapshots15/15 and strict/production checks pass within the
+  recorded source scopes. Evidence: `docs/evidence/control-recovery-route-20260908`.
+  Expired completion resolution and actual target-process recovery remain open.
+- `786bffb` replaces the staged lifetime record ceiling with checked64-bit byte
+  budgets, exact used/reserved counters and original terminal-outcome headroom.
+  All9 frozen focused gates pass, including encrypted history backup/restore.
+  Evidence: `docs/evidence/staged-history-byte-budget-20260908`. Terminal records
+  are still resident; no point-table or million-record capacity result is claimed.
+- `fd8b270` requires issuer-local signer changes to bind the exact committed
+  global stage and activation winner. Local abort cannot bypass a global winner;
+  first publication retains its original current-policy/term/physical-member
+  response fence. Authority45/45 and actual native TLS1/1 pass, as do strict and
+  production checks. Evidence: `docs/evidence/issuer-local-global-winner-20260908`.
+  Global coverage, revocation, abort and full issuer retirement remain unfinished.
+- Frozen Linux ARM64 `d403c55` is terminal and failed: the workspace linker was
+  killed by the7GiB container memory ceiling. All other10 gates passed, including
+  the fixture-free production build in834.847s. All original logs and executable
+  hashes are in `docs/evidence/frozen-linux-arm64-d403c55-terminal-20260908`;
+  no candidate was produced. The subsequent owned VM expansion to16GiB is bound
+  separately in `docs/evidence/linux-reference-memory-expansion-20260908` and
+  does not amend the failed result. A fresh complete run is required.

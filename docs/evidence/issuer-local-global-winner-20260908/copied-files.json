@@ -1,0 +1,14 @@
+{
+  "kasumi-runtime-issuer-winner-authority-before-owner-drain.log": "8baa1db283a53d19dbc4e6babf633c80914b1068beb80f432c4df684dea0bfa5",
+  "kasumi-runtime-issuer-winner-authority-before-owner-drain.sha256": "db970248f1e1918eca50578da18d3144159a66014a9ab4305a1c6502347d23e7",
+  "kasumi-runtime-issuer-winner-authority-final.log": "5b6ad2cd66a4f4e7f9e14ec5457714e80ce60874985fed8997c4bfe79efd4d31",
+  "kasumi-runtime-issuer-winner-authority.log": "842c0a6392ddd25f8d5c00b485943a7cec85d9e73eb1f29b1a08dd4c53e91e12",
+  "kasumi-runtime-issuer-winner-check-2.log": "02baa83df54f6f4fecffda39243d1d2dbdd647c97841fa939019e1e40dfa58a7",
+  "kasumi-runtime-issuer-winner-check-3.log": "4326f070e23d03db1f5f734402bfdbdd3262e6ea0b73660617b4d9ef122e51de",
+  "kasumi-runtime-issuer-winner-check.log": "eaf297983e137ca842be0c4327d50a5d7b2ca1118d719cc14e212694607e752b",
+  "kasumi-runtime-issuer-winner-clippy-final.log": "526fddf94fbea4bc96a2abcf358fc50a4181afc72d932320f9370eaed25663e6",
+  "kasumi-runtime-issuer-winner-evidence.json": "9b9b4c6ef73b94c3588d1fa39370496d1170a171372374c3cd334aaf5ec60913",
+  "kasumi-runtime-issuer-winner-format.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "kasumi-runtime-issuer-winner-native-final.log": "1cd03bfa2d2601e0d4ae0d21a151463d6355cd9ac8a90837fe1aed8cc63f8cae",
+  "kasumi-runtime-issuer-winner-production.log": "bccc00726e24d1fde32be9e578a0c70bc3525ba8e5ae0538c05dc262dcf495f5"
+}

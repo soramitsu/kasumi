@@ -1,0 +1,28 @@
+   Compiling syn v3.0.5
+   Compiling memchr v2.8.3
+   Compiling serde_json v1.0.151
+   Compiling serde_derive v1.0.229
+   Compiling thiserror-impl v2.0.20
+   Compiling thiserror v2.0.20
+   Compiling serde v1.0.229
+   Compiling kasumi-types v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-types)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 14.05s
+     Running unittests src/lib.rs (/tmp/kasumi-production-streaming-target/debug/deps/kasumi_types-bcc7d464aa0c58d2)
+
+running 13 tests
+test authorization::tests::credential_clone_cannot_renew_expiry_and_serialization_cannot_mint_live_authority ... ok
+test authorization::tests::invalid_credentials_and_a_regressing_elapsed_clock_fail_closed ... ok
+test audit::tests::limits_reject_removed_count_ceiling_and_missing_format_fields ... ok
+test authorization::tests::narrowing_keeps_original_anchor_revocation_and_parent_deadline ... ok
+test canonical_keys::tests::tagged_json_keys_are_canonical_and_duplicates_cannot_change_identity ... ok
+test lifecycle::wire_tests::lifecycle_status_requires_explicit_nullable_outcome ... ok
+test recovery::tests::planned_start_names_identity_without_a_premature_retirement_deadline ... ok
+test target::journal_limit_tests::target_metadata_capacity_has_no_lifetime_count_or_aggregate_format_ceiling ... ok
+test tests::denial_audit_marker_is_request_local_and_never_wire_controlled ... ok
+test tests::error_messages_bound_utf8_and_recovered_receipt_allocations ... ok
+test tests::exact_number_wire_round_trip ... ok
+test tests::remote_mutation_fields_are_closed ... ok
+test restore_lineage::tests::closed_lineage_rejects_substitution_discontinuity_and_resource_overflow ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+

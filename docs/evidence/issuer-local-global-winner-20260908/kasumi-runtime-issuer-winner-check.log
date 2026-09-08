@@ -1,0 +1,35 @@
+    Checking kasumi-types v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-types)
+    Checking kasumi-serving v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-serving)
+    Checking kasumi-query v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-query)
+    Checking kasumi-store v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-store)
+    Checking kasumi-client v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-client)
+    Checking kasumi-raft v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-raft)
+    Checking kasumi-engine v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-engine)
+    Checking kasumi-authority v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-authority)
+    Checking kasumi-server v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-server)
+error[E0624]: method `request_signer` is private
+   --> crates/kasumi-server/src/rpc_authority_tests.rs:994:12
+    |
+994 |     leader.request_signer().unwrap().check().unwrap();
+    |            ^^^^^^^^^^^^^^ private method
+    |
+   ::: crates/kasumi-authority/src/service.rs:416:5
+    |
+416 |     fn request_signer(&self) -> Result<Arc<AuthoritySigner>> {
+    |     -------------------------------------------------------- private method defined here
+
+error[E0624]: method `request_signer` is private
+   --> crates/kasumi-server/src/rpc_authority_tests.rs:995:23
+    |
+995 |     assert_eq!(leader.request_signer().unwrap().certificate(), &certificate);
+    |                       ^^^^^^^^^^^^^^ private method
+    |
+   ::: crates/kasumi-authority/src/service.rs:416:5
+    |
+416 |     fn request_signer(&self) -> Result<Arc<AuthoritySigner>> {
+    |     -------------------------------------------------------- private method defined here
+
+    Checking kasumi-bench v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-bench)
+For more information about this error, try `rustc --explain E0624`.
+error: could not compile `kasumi-server` (lib test) due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...

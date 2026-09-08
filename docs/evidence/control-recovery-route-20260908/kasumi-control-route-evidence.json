@@ -1,0 +1,98 @@
+{
+  "source_commit": "1b35c28bbd12b4b1028a125bc4149697718fd19a",
+  "source_tree": "ba2974ba0ea42e28fe019f32233589ef3adf3e21",
+  "parent": "c49bb94e4fc8a18b046de054190becd2caa192bc",
+  "source_files": {
+    "crates/kasumi-engine/src/control.rs": "1b77977ab2fdf067a4c06d80704566c92a3686a71ece33760f281f97e824f64b",
+    "crates/kasumi-engine/src/recovery_service.rs": "c21ddc5301934adf037029d3159242245c9a71f0752881c747aac4cbb0fab20b",
+    "crates/kasumi-engine/src/recovery_state.rs": "e631b49d0f38c60ef69feb01832b18484aa4f02e1ac974223fb8f559150d34d9",
+    "crates/kasumi-engine/tests/common/recovery_control.rs": "79d0a1c7a0b0e315096288b0b7f9de436c486721afea2520d4166c2f4b1b9fa6",
+    "crates/kasumi-engine/tests/lifecycle.rs": "2703cb7e81a5109b71f69e168c48fd60b7f4d406482c60c3fd9350d5e8f3133b",
+    "crates/kasumi-server/src/recovery_runtime.rs": "71319e7c2d629038c98518137a685033d41685cdbc527ecc60f22c6551853269",
+    "crates/kasumi-types/src/recovery.rs": "8d0391a4c816dd4870e3a41678e700e81d0ce2ecefe53980cc3904b9570e3244",
+    "docs/control-recovery.md": "3a6224c5e1ffa8e6fde3710055a694cb927e278a1c5928e7eb3730d6b91d2212",
+    "crates/kasumi-engine/src/recovery_route.rs": "0a23bc91b855d955f058bb7efcdf3bf859c2ba0f8d9069bc5d4240f952f0da6b"
+  },
+  "cargo_lock_sha256": "9f29f1383152d5ddf05b5b07955ca8b2766e1e06e2cd03ce77040d14f9371559",
+  "toolchain": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-apple-darwin\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+  "commands": {
+    "cargo_target_dir": "/tmp/kasumi-production-standalone-target",
+    "jobs": 2,
+    "rust_test_threads": 2
+  },
+  "gates": [
+    {
+      "path": "/tmp/kasumi-control-route-check.log",
+      "sha256": "5192774a086da8c53647ea5190b45952087b3c171d51ea83ad2ccfffc0a16326",
+      "status": "PASS",
+      "scope": "Intermediate workspace all-features/all-targets check before final supersession/reservation additions."
+    },
+    {
+      "path": "/tmp/kasumi-control-route-atomic-test.log",
+      "sha256": "82f5c94d0bc47866afff3cfb156cc3e6b2fe223fe8259ab8a43dd762a719a572",
+      "status": "FAIL",
+      "scope": "Fixture attempted topology schema creation after closed lifecycle installation; production guard unchanged, test initialization moved before installation."
+    },
+    {
+      "path": "/tmp/kasumi-control-route-atomic-test-2.log",
+      "sha256": "9dc98c65fa7e2dd66fb86e50c9fff5c5cab0538a4510360a62c46e3ff7f70da9",
+      "status": "FAIL",
+      "scope": "Strict audited read returned uncertain read audit after stale CAS rejection; test now retries current read with same finite context on approved uncertainty errors."
+    },
+    {
+      "path": "/tmp/kasumi-control-route-atomic-test-3.log",
+      "sha256": "7d7ae19a2fc9b7dbf438fbf6930c2658f6980577214cb2116f5d5836def8f760",
+      "status": "PASS",
+      "scope": "Focused route predecessor source before final supersession logic; not final integration evidence."
+    },
+    {
+      "path": "/tmp/kasumi-control-route-lifecycle.log",
+      "sha256": "db8980299acb9c8d5a0b885f0f4391e3d72c15d0b284e2c21287fdbf4f30202a",
+      "status": "PASS",
+      "scope": "13/13 lifecycle integration tests in108.77s; final logic, before only Clippy collapsible-if style rewrite."
+    },
+    {
+      "path": "/tmp/kasumi-control-route-clippy.log",
+      "sha256": "f671e1fd1fee859d96a7a2dfa244133abfc4733379166f9b53e1d48750f377b7",
+      "status": "FAIL",
+      "scope": "Only new snapshot validator collapsible_if lint; original log retained."
+    },
+    {
+      "path": "/tmp/kasumi-control-route-clippy-2.log",
+      "sha256": "324c88142e60b54cd567b8971a1cd6a344789c01a3ce3cb3f552fb13455d8537",
+      "status": "PASS",
+      "scope": "Final source strict workspace/all-features/all-targets Clippy,72s."
+    },
+    {
+      "path": "/tmp/kasumi-control-route-snapshots.log",
+      "sha256": "0964cb42b220938d31d7fe39be3f843017077eef448fdbfaade06120722226d3",
+      "status": "PASS",
+      "scope": "Final source15/15 snapshot selection,26.31s."
+    },
+    {
+      "path": "/tmp/kasumi-control-route-production.log",
+      "sha256": "65fbcdf61dd1fc17eaf1883c3cb75640eedff98c1015b30b8b0a73ba7e331ae1",
+      "status": "PASS",
+      "scope": "Final source server bins no-default-feature check,96s; check only, no release executable artifact."
+    }
+  ],
+  "executable_hashes": {
+    "lifecycle": {
+      "path": "/tmp/kasumi-production-standalone-target/debug/deps/lifecycle-c70bbb2e0c4a0ca5",
+      "sha256": "86e984ea9deeb983cc278dc4b3a5127beb7e24c66a9344b360b93ae4abc530e6",
+      "scope": "13/13 before sole collapsible-if rewrite"
+    },
+    "engine_snapshot": {
+      "path": "/tmp/kasumi-production-standalone-target/debug/deps/kasumi_engine-4b4e80d3850c1c4e",
+      "sha256": "9d828f1e293634a976cb6c9136229d5aa7c30cce0f88a6d9fc38f6aa64c935c0",
+      "scope": "Final source15/15 snapshots"
+    }
+  },
+  "formatting": "cargo+1.97.1 fmt --all --check and git diff --check passed",
+  "limitations": [
+    "No new three-target-process TLS end-to-end recovery acceptance in this checkpoint; lifecycle tests use encrypted stores and in-memory Raft transport with explicit signed fixtures.",
+    "Expired original completion requires the next explicit signed resolution proof path; missing facts remain unknown outcomes.",
+    "No final release binaries, full capacity, performance or24-hour HA acceptance from this checkpoint.",
+    "Initial failing fixture sources were not separately committed; logs are preserved but their complete source trees are not retained."
+  ]
+}

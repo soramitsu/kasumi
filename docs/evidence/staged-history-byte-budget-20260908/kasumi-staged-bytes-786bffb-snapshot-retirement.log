@@ -1,0 +1,30 @@
+    Blocking waiting for file lock on package cache
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 15.45s
+     Running tests/retirement.rs (/tmp/kasumi-production-streaming-target/debug/deps/retirement-59874a58f1b71cc1)
+
+running 10 tests
+test actual_retirement_seed_reopens_through_control_domain_without_loading_source_payload ... ok
+test caller_checkpoint_observation_is_not_backup_authority ... ok
+test durable_retirement_stop_defeats_inflight_backup_verification_and_survives_restart ... ok
+test invisible_staged_identity_after_checkpoint_is_not_lost_by_retirement ... ok
+test exact_retirement_seals_source_once_and_retains_proof_after_encrypted_restart ... ok
+test permanent_retirement_quota_fails_before_backup_io_and_exact_failure_replays ... ok
+test retired_source_rotates_custody_without_reopening_data_or_rewriting_original_actor ... ok
+test post_checkpoint_payload_or_rejected_mutation_identity_blocks_retirement ... ok
+test retirement_snapshot::actual_stopped_retirement_snapshot_has_no_retired_custody_marker ... ok
+test retirement_snapshot::actual_retired_snapshot_only_replica_preserves_rotated_custody_after_encrypted_restart ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 42.27s
+
+     Running tests/snapshot_budget.rs (/tmp/kasumi-production-streaming-target/debug/deps/snapshot_budget-eda05a0646dad12b)
+
+running 5 tests
+test exact_incremental_accounting_covers_documents_receipts_expiry_schemas_policy_and_restore ... ok
+test oversize_effects_become_a_durable_rejected_receipt_without_partial_documents ... ok
+test recovery_and_limit_changes_cannot_admit_state_above_snapshot_format_or_tenant_budget ... ok
+test replay_with_only_rejection_audit_headroom_keeps_the_original_receipt ... ok
+test full_audit_byte_budget_still_advances_rejections_and_can_be_raised ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.09s
+

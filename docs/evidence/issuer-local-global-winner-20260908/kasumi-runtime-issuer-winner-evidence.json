@@ -1,0 +1,138 @@
+{
+  "source": "fd8b2706c549f1ee3f022cdfce5b117f39f72c04",
+  "base": "a705abc2494359ab781b6b20c56e79e59669cffd",
+  "worktree_clean": true,
+  "host": "macOS-26.6.2-arm64-arm-64bit",
+  "machine": "arm64",
+  "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-apple-darwin\nrelease: 1.97.1\nLLVM version: 22.1.6",
+  "lockfile": {
+    "path": "/tmp/kasumi-production-runtime/Cargo.lock",
+    "size": 119491,
+    "sha256": "3f693a1bd3dd6614d3ce8e54b2fd960055361c72e5d535b8aa86e1c47e60eb0a"
+  },
+  "build_inputs": [
+    {
+      "path": "/tmp/kasumi-production-runtime/Cargo.toml",
+      "size": 1695,
+      "sha256": "9e7e3e40fa2bd2758c0e1c9c205c80323ded1ce3c9803c7a452c6aa30800c230"
+    },
+    {
+      "path": "/tmp/kasumi-production-runtime/rust-toolchain.toml",
+      "size": 86,
+      "sha256": "8e390d6a0838315f972690f46ef8bae8b7ecc9ee6c1ed70140ef852869c2482e"
+    }
+  ],
+  "checks": {
+    "authority_library": {
+      "result": "passed",
+      "command": "CARGO_TARGET_DIR=/tmp/kasumi-production-runtime-target RUST_TEST_THREADS=2 cargo +1.97.1 test -p kasumi-authority --all-features --lib --locked -j2",
+      "log": {
+        "path": "/tmp/kasumi-runtime-issuer-winner-authority-final.log",
+        "size": 5836,
+        "sha256": "5b6ad2cd66a4f4e7f9e14ec5457714e80ce60874985fed8997c4bfe79efd4d31"
+      }
+    },
+    "actual_native_authority_tls": {
+      "result": "passed",
+      "command": "CARGO_TARGET_DIR=/tmp/kasumi-production-runtime-target RUST_TEST_THREADS=2 cargo +1.97.1 test -p kasumi-server --all-features --lib actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_recovery --locked -j2",
+      "log": {
+        "path": "/tmp/kasumi-runtime-issuer-winner-native-final.log",
+        "size": 1566,
+        "sha256": "1cd03bfa2d2601e0d4ae0d21a151463d6355cd9ac8a90837fe1aed8cc63f8cae"
+      }
+    },
+    "strict_workspace_clippy": {
+      "result": "passed",
+      "command": "CARGO_TARGET_DIR=/tmp/kasumi-production-runtime-target cargo +1.97.1 clippy --workspace --all-targets --all-features --locked -j2 -- -D warnings",
+      "log": {
+        "path": "/tmp/kasumi-runtime-issuer-winner-clippy-final.log",
+        "size": 1029,
+        "sha256": "526fddf94fbea4bc96a2abcf358fc50a4181afc72d932320f9370eaed25663e6"
+      }
+    },
+    "production_server_check": {
+      "result": "passed",
+      "command": "CARGO_TARGET_DIR=/tmp/kasumi-production-runtime-target cargo +1.97.1 check -p kasumi-server --bins --no-default-features --locked -j2",
+      "log": {
+        "path": "/tmp/kasumi-runtime-issuer-winner-production.log",
+        "size": 747,
+        "sha256": "bccc00726e24d1fde32be9e578a0c70bc3525ba8e5ae0538c05dc262dcf495f5"
+      }
+    },
+    "format_and_diff": {
+      "result": "passed",
+      "command": "cargo +1.97.1 fmt --all -- --check && git diff --check",
+      "log": {
+        "path": "/tmp/kasumi-runtime-issuer-winner-format.log",
+        "size": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    }
+  },
+  "executables": {
+    "authority_library": {
+      "path": "/tmp/kasumi-production-runtime-target/debug/deps/kasumi_authority-481ba410417b8d16",
+      "size": 176018256,
+      "sha256": "0b990b6955ed469c2eb9beecee7bc55d026e49e0c0596dda18b7e064fc1d30a6"
+    },
+    "actual_native_authority_tls": {
+      "path": "/tmp/kasumi-production-runtime-target/debug/deps/kasumi_server-446a69ab7274093d",
+      "size": 289568736,
+      "sha256": "e02e747aea88cb70849ee7f7faf97f157f41274be9ad669caa04b8c4e0e9c63f"
+    }
+  },
+  "limitations": [
+    "Bounded macOS ARM64 integration checkpoint; not final platform, capacity, endurance or production acceptance.",
+    "Issuer-local Stage requires the committed global Stage; local activation and retirement bind the exact global winner and local predecessor. Local StopStage is rejected until a durable global abort protocol exists.",
+    "Current source permission fences first local effects. Historical receipts remain readable under current administration, but do not grant a new effect.",
+    "Complete frozen-roster acknowledgments, current follower/data administration, permanent remote revocation, coordinated key loading, global abort and complete issuer drain remain open. Global retirement completion remains unavailable.",
+    "macOS debug linker __eh_frame warnings, if present, remain in raw native logs.",
+    "The initial focused failed test executable was overwritten before its hash was captured; its raw failure log is preserved and not credited as final-source evidence."
+  ],
+  "initial_failures": [
+    {
+      "log": {
+        "path": "/tmp/kasumi-runtime-issuer-winner-check.log",
+        "size": 2102,
+        "sha256": "eaf297983e137ca842be0c4327d50a5d7b2ca1118d719cc14e212694607e752b"
+      },
+      "disposition": "Two test-only references called a private authority helper. Assertions now use the actual retained local owner and fenced source response."
+    },
+    {
+      "log": {
+        "path": "/tmp/kasumi-runtime-issuer-winner-check-2.log",
+        "size": 1005,
+        "sha256": "02baa83df54f6f4fecffda39243d1d2dbdd647c97841fa939019e1e40dfa58a7"
+      },
+      "disposition": "Test abort request shadowed the native listener shutdown sender. Renamed the request."
+    },
+    {
+      "log": {
+        "path": "/tmp/kasumi-runtime-issuer-winner-authority.log",
+        "size": 2466,
+        "sha256": "842c0a6392ddd25f8d5c00b485943a7cec85d9e73eb1f29b1a08dd4c53e91e12"
+      },
+      "disposition": "6/7 focused tests passed. New fixture used a signer-dependent administration response after global activation sealed that signer; fixture now dispatches the original activation through independent current signing administration."
+    },
+    {
+      "log": {
+        "path": "/tmp/kasumi-runtime-issuer-winner-authority-before-owner-drain.log",
+        "size": 6519,
+        "sha256": "8baa1db283a53d19dbc4e6babf633c80914b1068beb80f432c4df684dea0bfa5"
+      },
+      "executable_hash_capture": {
+        "path": "/tmp/kasumi-runtime-issuer-winner-authority-before-owner-drain.sha256",
+        "size": 149,
+        "sha256": "db970248f1e1918eca50578da18d3144159a66014a9ab4305a1c6502347d23e7"
+      },
+      "disposition": "44/45 full tests passed. Added restart fixture retained old response/database owners; it now proves sealing, drops all old owners and then reopens the encrypted database. No production lock bypass."
+    }
+  ],
+  "intermediate_logs": [
+    {
+      "path": "/tmp/kasumi-runtime-issuer-winner-check-3.log",
+      "size": 549,
+      "sha256": "4326f070e23d03db1f5f734402bfdbdd3262e6ea0b73660617b4d9ef122e51de"
+    }
+  ]
+}

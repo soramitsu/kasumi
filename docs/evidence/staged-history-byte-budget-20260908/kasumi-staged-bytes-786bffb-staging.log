@@ -1,0 +1,35 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.80s
+     Running tests/guarded_staging.rs (/tmp/kasumi-production-streaming-target/debug/deps/guarded_staging-53f6a9ecfaaea4b1)
+
+running 11 tests
+test committed_original_survives_receipt_absence_admission_failure_and_fresh_resolution ... ok
+test concurrent_original_and_stop_keep_exactly_one_permanent_outcome ... ok
+test final_response_fence_rechecks_authority_and_preserves_accepted_stop ... ok
+test encrypted_restore_preserves_original_stage_scope_without_reviving_historical_uploads ... ok
+test guarded_stop_orders_more_than_one_small_batch_of_authority_dependencies ... ok
+test malformed_fresh_admission_and_changed_manifest_cannot_accept_or_rebind_identity ... ok
+test missing_stop_has_no_upload_lease_and_defeats_delayed_begin_after_encrypted_restart ... ok
+test retained_snapshot_quota_rejects_missing_stop_without_leaving_partial_identity ... ok
+test stale_authority_cannot_create_stop_and_retained_terminal_release_checks_exact_read_scope ... ok
+test stopped_resolution_preserves_original_failed_finalize ... ok
+test upload_stop_clears_payload_and_permanent_capacity_is_checked_without_active_reservation ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.05s
+
+     Running tests/staged_transactions.rs (/tmp/kasumi-production-streaming-target/debug/deps/staged_transactions-68f976b9235352ff)
+
+running 11 tests
+test changed_limits_preserve_historic_outcomes_and_keep_active_snapshots_recoverable ... ok
+test complete_large_read_set_and_append_only_rules_reject_all_effects_atomically ... ok
+test killed_upload_recovers_encrypted_invisible_chunks_and_finishes_exactly_once ... ok
+test coherent_lease_pages_cover_large_dependencies_and_scans_with_live_writes ... ok
+test ordered_foreign_scope_rejection_cannot_expire_or_rebind_an_original_upload ... ok
+test large_transaction_stays_invisible_then_publishes_one_generation_and_permanent_receipt ... ok
+test permanent_staged_byte_exhaustion_preserves_success_failure_and_restored_exact_replays ... ok
+test permanent_staged_snapshot_rejection_spends_original_terminal_reservation_atomically ... ok
+test staged_crash_worker ... ok
+test staged_identity_capacity_is_reserved_before_payload_and_expiry_never_reuses_identity ... ok
+test small_lease_budget_shares_large_roots_and_expires_on_retained_version_pressure ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.43s
+

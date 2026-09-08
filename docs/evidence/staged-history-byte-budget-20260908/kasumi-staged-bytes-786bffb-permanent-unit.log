@@ -1,0 +1,12 @@
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 15.96s
+     Running unittests src/lib.rs (/tmp/kasumi-production-streaming-target/debug/deps/kasumi_engine-4b4e80d3850c1c4e)
+
+running 4 tests
+test state::staging::capacity_tests::permanent_staged_configuration_rejects_old_count_policy_and_missing_byte_budget ... ok
+test state::staging::capacity_tests::permanent_staged_reservation_bounds_all_terminal_outcomes_and_maximum_counter_widths ... ok
+test state::staging::capacity_tests::permanent_staged_snapshot_boundary_reserves_aggregate_counter_digit_growth ... ok
+test state::staging::capacity_tests::permanent_staged_point_capacity_transfers_to_outcome_and_can_expand_without_identity_reuse ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 72 filtered out; finished in 0.01s
+

@@ -1,0 +1,24 @@
+   Compiling kasumi-types v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-types)
+   Compiling kasumi-serving v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-serving)
+   Compiling kasumi-query v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-query)
+   Compiling kasumi-store v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-store)
+   Compiling kasumi-raft v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 36.62s
+     Running tests/lifecycle.rs (/tmp/kasumi-production-standalone-target/debug/deps/lifecycle-c70bbb2e0c4a0ca5)
+
+running 1 test
+
+thread 'recovery_control::recovery_uncertain_activation_resolves_original_winner_and_confirms_every_voter_forward' (21038113) panicked at crates/kasumi-engine/tests/common/recovery_control.rs:1246:48:
+called `Result::unwrap()` on an `Err` value: Error { code: Forbidden, message: "closed lifecycle control requires its policy transition; generic authority/schema invalidation is disabled" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test recovery_control::recovery_uncertain_activation_resolves_original_winner_and_confirms_every_voter_forward ... FAILED
+
+failures:
+
+failures:
+    recovery_control::recovery_uncertain_activation_resolves_original_winner_and_confirms_every_voter_forward
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 12 filtered out; finished in 21.71s
+
+error: test failed, to rerun pass `-p kasumi-engine --test lifecycle`

@@ -1,0 +1,19 @@
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.31s
+     Running tests/lifecycle.rs (/tmp/kasumi-production-standalone-target/debug/deps/lifecycle-c70bbb2e0c4a0ca5)
+
+running 1 test
+
+thread 'recovery_control::recovery_uncertain_activation_resolves_original_winner_and_confirms_every_voter_forward' (21053410) panicked at crates/kasumi-engine/tests/common/recovery_control.rs:1339:14:
+called `Result::unwrap()` on an `Err` value: Error { code: AuditUnavailable, message: "required read audit could not be confirmed durable" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test recovery_control::recovery_uncertain_activation_resolves_original_winner_and_confirms_every_voter_forward ... FAILED
+
+failures:
+
+failures:
+    recovery_control::recovery_uncertain_activation_resolves_original_winner_and_confirms_every_voter_forward
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 12 filtered out; finished in 26.16s
+
+error: test failed, to rerun pass `-p kasumi-engine --test lifecycle`

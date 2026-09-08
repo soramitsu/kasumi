@@ -1,0 +1,13 @@
+Native functional acceptance host recorded
+Running toolchain (/evidence/run/toolchain.log)
+Running format (/evidence/run/format.log)
+Running python (/evidence/run/python.log)
+Running dependency-patches (/evidence/run/dependency-patches.log)
+Running bitmaps (/evidence/run/bitmaps.log)
+Running lru (/evidence/run/lru.log)
+Running workspace (/evidence/run/workspace.log)
+Running workspace-docs (/evidence/run/workspace-docs.log)
+Running clippy (/evidence/run/clippy.log)
+Running production-features (/evidence/run/production-features.log)
+Running production (/evidence/run/production.log)
+Functional gate result: failed

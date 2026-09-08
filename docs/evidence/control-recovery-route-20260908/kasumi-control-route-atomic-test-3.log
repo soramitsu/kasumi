@@ -1,0 +1,9 @@
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.74s
+     Running tests/lifecycle.rs (/tmp/kasumi-production-standalone-target/debug/deps/lifecycle-c70bbb2e0c4a0ca5)
+
+running 1 test
+test recovery_control::recovery_uncertain_activation_resolves_original_winner_and_confirms_every_voter_forward ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 28.78s
+
