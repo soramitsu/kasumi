@@ -547,3 +547,10 @@ a read-only quota getter or caller capacity claim cannot close this dependency.
   Launch provenance and the passing combined macOS compile check are in
   `docs/evidence/frozen-linux-arm64-d403c55-launch-20260908`. This is not a
   completed functional result or final release acceptance.
+
+- `4f5550f` raises the functional host requirement to 15 GiB effective memory
+  and the reference VM template to 16 GiB, checking visible Linux cgroup limits
+  before expensive linking. Eighteen Python tests and actual macOS preflight
+  pass; the running 7 GiB container is correctly rejected. Evidence:
+  `docs/evidence/functional-memory-preflight-20260908`. The failed `d403c55`
+  attempt retains its original allocation while its remaining gates finish.

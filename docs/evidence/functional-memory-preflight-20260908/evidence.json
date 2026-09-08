@@ -1,0 +1,22 @@
+{
+  "source": "4f5550fa03fb6b5befb0064793a06fd6f57d5824",
+  "tree": "f3be20a3dc5ea16447ea46861134bfb1c66e0ff3",
+  "results": {
+    "python": "18 passed in1.221seconds",
+    "macos_host": "Passed on actual64GiBmacOSARM64host",
+    "linux_container": "Expected rejection observed under actual7GiBcgroup; exact effective capacity recorded before expensive build"
+  },
+  "motivation": "d403c55 full workspace link suffered a kernel-confirmed7GiBcgroup OOM.",
+  "limitations": [
+    "The VM template now specifies16GiB, but the currently running failedd403c55 attempt retains its original8GiBVM/7GiBcontainer.",
+    "Actual VM memory expansion must wait for the remaining frozen gates to finish.",
+    "This does not establish a15GiB/16GiB database deployment minimum or a final successful functional run."
+  ],
+  "files": {
+    "kasumi-release-memory-python.log": "3c2737c98d203a3a1eb1159bd4bc4d2e0b2a099d0d75099c52105a982932b873",
+    "kasumi-release-memory-4f5550f-host.json": "045c916921a551d6189096352cf2b6e0193318ef9177873e8c86d63035427130",
+    "kasumi-release-memory-4f5550f-host.log": "d94354e14acb619d19531ef04dc91e233e8d3f12d304ce892612e7280cdbf6a7",
+    "kasumi-release-memory-4f5550f-container-rejection.log": "4f31cec1522485f50f9e60eae78cd4d8d3a1e367859895c7ebdf580fa490299a",
+    "kasumi-release-memory-4f5550f-container.json": "29143e0e9c885d5bc791a53d348fa54425819f582c9adc84f20022cec0d77696"
+  }
+}
