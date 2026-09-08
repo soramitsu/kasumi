@@ -1200,12 +1200,7 @@ impl Operator {
     }
     fn publish_profile(&self, journal: &mut Journal) -> Result<()> {
         let request = &journal.status.request;
-        let root = self
-            .config
-            .database_path
-            .parent()
-            .and_then(Path::parent)
-            .context("installation root missing")?;
+        let root = crate::standalone::installation_root(&self.config)?;
         let profile_path = root
             .join("profiles")
             .join(format!("recovery-{}.json", request.operation_id));

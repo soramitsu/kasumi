@@ -45,10 +45,23 @@ pub async fn command(arguments: &[String]) -> Result<bool> {
                 )?
             );
         }
+        [command, directory] if command == "verify-operator-keys" => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&crate::standalone_key_backup::verify(Path::new(
+                    directory
+                ))?)?
+            );
+        }
         [command, configuration, output] if command == "backup-operator-keys" => {
             crate::standalone::backup_operator_keys(Path::new(configuration), Path::new(output))
                 .await?;
-            println!("Operator keys copied to private backup directory.");
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&crate::standalone_key_backup::verify(Path::new(
+                    output
+                ))?)?
+            );
         }
         [command, action, configuration] if command == "maintenance" => match action.as_str() {
             "rotate-wrapping-keys" => {

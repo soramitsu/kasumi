@@ -42,6 +42,7 @@ kasumid maintenance rotate-wrapping-keys /var/lib/kasumi/kasumi.json
 kasumid maintenance rotate-signer /var/lib/kasumi/kasumi.json
 kasumid maintenance rotate-certificates /var/lib/kasumi/kasumi.json
 kasumid backup-operator-keys /var/lib/kasumi/kasumi.json /secure/offline/kasumi-keys
+kasumid verify-operator-keys /secure/offline/kasumi-keys
 kasumid recover-administrator /var/lib/kasumi/kasumi.json /var/lib/kasumi/recovered
 ```
 
@@ -49,7 +50,7 @@ Wrapping-key rotation retains previous generations and rewraps installed catalog
 
 Administrator recovery issues new private profiles for administrators in the current policies. It does not silently replace policy or change existing credential-family outcomes. It requires the installed encryption and signing keys. Run the renewal watcher for recovered profiles before their one-hour lifetime expires.
 
-The `operator` directory contains plaintext wrapping keys, signing keys, and the CA private key. It is separate from ordinary encrypted data backups. The key-backup command creates an owner-only keys-only backup; store it separately on a trusted encrypted host. Retain all generations needed by completed data backups. These facilities protect data against storage disclosure while trusting the host running Kasumi; possession of the operator keys and stopped installation is administrative authority.
+The `operator` directory contains plaintext wrapping keys, signing keys, and the CA private key. It is separate from ordinary encrypted data backups. The key-backup command copies the exact installed file keyrings, signer, and CA material, including file keyrings stored outside the default operator directory. It publishes an owner-only manifest after copying every dependency and verifies every digest and wrapping-key generation inventory. Retain the returned manifest digest independently with key escrow; verification compares against this inventory and does not authenticate an untrusted replacement inventory. The command requires local file keyrings; external KMS keys require their provider’s backup procedure. Store this backup separately on a trusted encrypted host. Retain all generations needed by completed data backups. These facilities protect data against storage disclosure while trusting the host running Kasumi; possession of the operator keys and stopped installation is administrative authority.
 
 # Local data recovery
 
