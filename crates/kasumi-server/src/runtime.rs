@@ -1222,7 +1222,14 @@ impl NodeRuntime {
                 NativeData::new(registry.clone(), auth.clone()).service(),
             )
             .into_axum_router();
-            let native_admin = NativeAdmin::new(registry.clone(), auth.clone()).with_management(administration.clone()).with_telemetry(runtime.telemetry.clone());
+            let mut native_admin = NativeAdmin::new(registry.clone(), auth.clone()).with_management(administration.clone()).with_telemetry(runtime.telemetry.clone());
+            if let Some(verifier) = &runtime.signer_verifier {
+                native_admin = native_admin.with_control_signer(crate::control_signer_runtime::ControlSignerRuntime::new(
+                    config.replication.as_ref().context("remote signer requires installed replication")?.node_id,
+                    runtime.control.database.clone(), verifier.clone(), config.serving_authorities.clone(),
+                    runtime.authority_trusts.clone(), config.admin.tls.clone(), credential.clone(),
+                )?);
+            }
             #[cfg(test)]
             { runtime.audit_release_gate = native_admin.audit_release_gate(); }
             let mut admin = tonic::service::Routes::new(native_admin.service());

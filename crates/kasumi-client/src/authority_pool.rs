@@ -27,6 +27,20 @@ pub struct KasumiAuthorityPool {
     preferred: u64,
 }
 impl KasumiAuthorityPool {
+    pub async fn observe_control_signer(
+        &mut self,
+        request: &kasumi_serving::ControlSignerRequest,
+        timeout: Duration,
+    ) -> Result<crate::CurrentControlSignerObservation, ClientError> {
+        let anchor = kasumi_clock::EpochClock::system()?.observe()?;
+        let reply = self
+            .request(timeout, |client, token| {
+                let request = request.clone();
+                Box::pin(async move { client.observe_control_signer_wire(token, &request).await })
+            })
+            .await?;
+        crate::CurrentControlSignerObservation::from_current_response(reply, anchor)
+    }
     pub async fn maintenance(
         &mut self,
         request: &kasumi_serving::AuthorityMaintenanceRequest,

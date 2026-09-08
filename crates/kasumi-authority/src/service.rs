@@ -799,3 +799,6 @@ pub use signer_administration::{AuthorityAdministrativeFence, CommittedSignerDir
 #[path = "signing_administration.rs"]
 mod signing_administration;
 pub use signing_administration::AuthoritySigningResponseFence;
+#[path = "control_signer_service.rs"]
+mod control_signer_service;
+pub use control_signer_service::ControlSignerObservationFence;

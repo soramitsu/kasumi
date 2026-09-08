@@ -26,6 +26,8 @@ pub use target::NativeTargetRecovery;
 mod authority;
 #[path = "rpc_backup_sessions.rs"]
 mod backup_sessions;
+#[path = "rpc_control_signer.rs"]
+mod control_signer;
 #[path = "rpc_security_audit.rs"]
 mod security_audit;
 #[cfg(test)]
@@ -45,6 +47,10 @@ mod lifecycle_tests;
 #[path = "rpc_recovery_tests.rs"]
 mod recovery_tests;
 
+#[cfg(test)]
+#[path = "rpc_control_signer_tests.rs"]
+mod control_signer_tests;
+
 #[derive(Clone)]
 pub struct NativeData {
     registry: DatabaseRegistry,
@@ -56,6 +62,7 @@ pub struct NativeAdmin {
     auth: Arc<Authenticator>,
     management: Option<Arc<crate::administration::Administration>>,
     telemetry: Arc<crate::observability::Telemetry>,
+    control_signer: Option<Arc<crate::control_signer_runtime::ControlSignerRuntime>>,
     #[cfg(test)]
     audit_release_gate: Arc<tokio::sync::Mutex<Option<AuditReleaseGate>>>,
 }
@@ -576,6 +583,7 @@ impl NativeAdmin {
             auth,
             management: None,
             telemetry: crate::observability::Telemetry::new(),
+            control_signer: None,
             #[cfg(test)]
             audit_release_gate: Arc::new(tokio::sync::Mutex::new(None)),
         }
@@ -585,6 +593,13 @@ impl NativeAdmin {
         management: Arc<crate::administration::Administration>,
     ) -> Self {
         self.management = Some(management);
+        self
+    }
+    pub(crate) fn with_control_signer(
+        mut self,
+        runtime: Arc<crate::control_signer_runtime::ControlSignerRuntime>,
+    ) -> Self {
+        self.control_signer = Some(runtime);
         self
     }
     pub(crate) fn with_telemetry(
@@ -645,6 +660,12 @@ impl NativeAdmin {
 
 #[tonic::async_trait]
 impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
+    async fn control_signer_maintenance(
+        &self,
+        request: Request<AuthorityJsonRequest>,
+    ) -> Result<Response<AuthorityJsonResponse>, Status> {
+        self.control_signer_maintenance_impl(request).await
+    }
     async fn security_audit_status(
         &self,
         request: Request<SecurityAuditJsonRequest>,
