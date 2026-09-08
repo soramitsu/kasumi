@@ -30,6 +30,13 @@ copy and shell commands. [Plain mode](https://lima-vm.io/docs/config/port/) cont
 automatic forwarding. These recipes provision a test environment; only actual
 source-bound results close the [release gates](../../docs/release-checklist.md).
 
+The validation recipe now installs build prerequisites from Debian's fixed
+`20260908T000000Z` snapshot repositories. Signature verification remains enabled;
+only repository freshness expiry is disabled for the immutable historical view.
+Older recorded image IDs used their then-current Debian repositories and retain
+that limitation. Rebuild and record the new image before claiming this pinned
+package environment. Reusing an old image does not adopt the new recipe.
+
 The validation Dockerfile accepts `RUST_BUILD_IMAGE` for an explicit platform
 manifest from `rust-image.json`. This avoids a legacy Docker image-store conflict
 when building both architectures from the same multi-platform index on one VM.

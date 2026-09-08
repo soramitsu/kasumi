@@ -75,17 +75,24 @@ fn chunks() -> Vec<StagedChunk> {
         .collect()
 }
 fn begin(
+    incarnation: &str,
     id: &str,
     chunks: &[StagedChunk],
     ttl_ms: u64,
 ) -> (BeginStagedTransaction, StagedTransactionRef) {
     let manifest = StagedManifest::from_chunks(chunks).unwrap();
     let reference = StagedTransactionRef {
+        scope: kasumi_types::StagedTransactionScope {
+            tenant: context().tenant,
+            principal: context().principal,
+            incarnation: incarnation.into(),
+        },
         transaction_id: id.into(),
         manifest_digest: staged_digest(&manifest).unwrap().0,
     };
     (
         BeginStagedTransaction {
+            scope: reference.scope.clone(),
             transaction_id: id.into(),
             manifest,
             ttl_ms,
@@ -133,7 +140,12 @@ fn engine(limits: Limits) -> TenantEngine {
 fn large_transaction_stays_invisible_then_publishes_one_generation_and_permanent_receipt() {
     let db = engine(Limits::default());
     let chunks = chunks();
-    let (request, reference) = begin("large", &chunks, 1000);
+    let (request, reference) = begin(
+        &db.generation().unwrap().state.incarnation,
+        "large",
+        &chunks,
+        1000,
+    );
     apply(&db, 2, Operation::BeginStaged(request.clone())).unwrap();
     for index in [3, 1, 0, 2] {
         let upload = AppendStagedChunk {
@@ -211,7 +223,12 @@ fn large_transaction_stays_invisible_then_publishes_one_generation_and_permanent
 fn complete_large_read_set_and_append_only_rules_reject_all_effects_atomically() {
     let db = engine(Limits::default());
     let chunks = chunks();
-    let (request, reference) = begin("stale", &chunks, 1000);
+    let (request, reference) = begin(
+        &db.generation().unwrap().state.incarnation,
+        "stale",
+        &chunks,
+        1000,
+    );
     apply(&db, 2, Operation::BeginStaged(request)).unwrap();
     for (index, chunk) in chunks.into_iter().enumerate() {
         apply(
@@ -270,7 +287,12 @@ fn complete_large_read_set_and_append_only_rules_reject_all_effects_atomically()
             },
         ],
     }];
-    let (request, reference) = begin("immutable-stage", &invalid, 1000);
+    let (request, reference) = begin(
+        &db.generation().unwrap().state.incarnation,
+        "immutable-stage",
+        &invalid,
+        1000,
+    );
     apply(&db, 7, Operation::BeginStaged(request)).unwrap();
     apply(
         &db,
@@ -307,7 +329,12 @@ fn staged_identity_capacity_is_reserved_before_payload_and_expiry_never_reuses_i
     limits.atomic.max_transaction_records = 2;
     let db = engine(limits);
     let chunks = chunks();
-    let (a, ar) = begin("a", &chunks, 10);
+    let (a, ar) = begin(
+        &db.generation().unwrap().state.incarnation,
+        "a",
+        &chunks,
+        10,
+    );
     apply(&db, 2, Operation::BeginStaged(a)).unwrap();
     let mut mismatched = chunks[0].clone();
     mismatched.operations[0] = put("docs", "wrong", 999);
@@ -349,7 +376,12 @@ fn staged_identity_capacity_is_reserved_before_payload_and_expiry_never_reuses_i
             .values()
             .any(StagedTransaction::is_active)
     );
-    let (b, br) = begin("b", &chunks, 10);
+    let (b, br) = begin(
+        &db.generation().unwrap().state.incarnation,
+        "b",
+        &chunks,
+        10,
+    );
     assert_eq!(
         apply(&db, 4, Operation::BeginStaged(b.clone()))
             .unwrap_err()
@@ -363,7 +395,12 @@ fn staged_identity_capacity_is_reserved_before_payload_and_expiry_never_reuses_i
             .code,
         ErrorCode::Conflict
     );
-    let (c, cr) = begin("c", &chunks, 10);
+    let (c, cr) = begin(
+        &db.generation().unwrap().state.incarnation,
+        "c",
+        &chunks,
+        10,
+    );
     assert_eq!(
         apply(&db, 13, Operation::BeginStaged(c)).unwrap_err().code,
         ErrorCode::QuotaExceeded
@@ -430,7 +467,12 @@ fn staged_identity_capacity_is_reserved_before_payload_and_expiry_never_reuses_i
 fn changed_limits_preserve_historic_outcomes_and_keep_active_snapshots_recoverable() {
     let db = engine(Limits::default());
     let chunks = chunks();
-    let (request, reference) = begin("limits", &chunks, 1000);
+    let (request, reference) = begin(
+        &db.generation().unwrap().state.incarnation,
+        "limits",
+        &chunks,
+        1000,
+    );
     apply(&db, 2, Operation::BeginStaged(request.clone())).unwrap();
     apply(
         &db,
@@ -551,7 +593,12 @@ fn staged_crash_worker() {
                 .unwrap();
             }
             let chunks = chunks();
-            let (request, reference) = begin("crashed", &chunks, 60_000);
+            let (request, reference) = begin(
+                &db.engine().generation().unwrap().state.incarnation,
+                "crashed",
+                &chunks,
+                60_000,
+            );
             db.begin_staged_transaction(context(), request)
                 .await
                 .unwrap();
@@ -604,7 +651,12 @@ async fn killed_upload_recovers_encrypted_invisible_chunks_and_finishes_exactly_
     drop(raw);
     let (db, audit) = open(&directory.path().join("node.redb")).await;
     let chunks = chunks();
-    let (_, reference) = begin("crashed", &chunks, 60_000);
+    let (_, reference) = begin(
+        &db.engine().generation().unwrap().state.incarnation,
+        "crashed",
+        &chunks,
+        60_000,
+    );
     let status = db
         .staged_transaction_status(&context(), &reference)
         .await
@@ -663,7 +715,12 @@ async fn coherent_lease_pages_cover_large_dependencies_and_scans_with_live_write
         .unwrap();
     }
     let chunks = chunks();
-    let (request, reference) = begin("lease-seed", &chunks, 60_000);
+    let (request, reference) = begin(
+        &db.engine().generation().unwrap().state.incarnation,
+        "lease-seed",
+        &chunks,
+        60_000,
+    );
     db.begin_staged_transaction(context(), request)
         .await
         .unwrap();
@@ -932,4 +989,69 @@ async fn small_lease_budget_shares_large_roots_and_expires_on_retained_version_p
     );
     db.shutdown().await.unwrap();
     audit.shutdown().await;
+}
+
+#[test]
+fn ordered_foreign_scope_rejection_cannot_expire_or_rebind_an_original_upload() {
+    let db = engine(Limits::default());
+    let mut replacement = context();
+    replacement.principal = "replacement".into();
+    let mut policy = policy();
+    policy.grants.push(Grant {
+        principal: replacement.principal.clone(),
+        collection: None,
+        actions: replacement.scopes.clone(),
+    });
+    apply(&db, 1, Operation::SetPolicy(policy)).unwrap();
+    let payloads = chunks();
+    let (original, reference) = begin("incarnation", "scope-before-expiry", &payloads, 10);
+    apply(&db, 2, Operation::BeginStaged(original.clone())).unwrap();
+    let state = db.generation().unwrap();
+    let stop = StopStagedTransaction {
+        original: original.clone(),
+        admission: vec![
+            ReadAssertion::Snapshot {
+                incarnation: state.state.incarnation.clone(),
+                policy_epoch: state.state.policy_epoch,
+                schema_epoch: state.state.schema_epoch,
+            },
+            ReadAssertion::Before { not_after_ms: 2000 },
+        ],
+    };
+    drop(state);
+    for operation in [
+        Operation::BeginStaged(original),
+        Operation::AppendStaged(AppendStagedChunk {
+            transaction: reference.clone(),
+            index: 0,
+            chunk: payloads[0].clone(),
+        }),
+        Operation::FinalizeStaged(reference),
+        Operation::StopStaged(stop),
+    ] {
+        let result = db
+            .apply_command(
+                db.generation().unwrap().state.revision + 1,
+                Command {
+                    context: replacement.clone(),
+                    timestamp_ms: 1000,
+                    operation,
+                },
+            )
+            .unwrap();
+        assert_eq!(result.unwrap_err().code, ErrorCode::Forbidden);
+        let generation = db.generation().unwrap();
+        assert_eq!(generation.state.staged_transactions.len(), 1);
+        assert_eq!(generation.state.active_staged_transactions.len(), 1);
+        assert!(matches!(
+            generation
+                .state
+                .staged_transactions
+                .values()
+                .next()
+                .unwrap()
+                .outcome,
+            StagedOutcome::Uploading
+        ));
+    }
 }

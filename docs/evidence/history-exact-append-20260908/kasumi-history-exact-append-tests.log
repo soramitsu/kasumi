@@ -1,0 +1,29 @@
+   Compiling kasumi-clock v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-clock)
+   Compiling kasumi-types v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-types)
+   Compiling kasumi-serving v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-serving)
+   Compiling kasumi-query v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-query)
+   Compiling kasumi-store v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-store)
+   Compiling kasumi-raft v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 48s
+     Running tests/history.rs (/tmp/kasumi-production-root-target/debug/deps/history-a85e510e86b0d181)
+
+running 1 test
+test chunked_full_backup_restores_cold_history_and_permanent_identity_without_source_objects has been running for over 60 seconds
+test chunked_full_backup_restores_cold_history_and_permanent_identity_without_source_objects ... FAILED
+
+failures:
+
+---- chunked_full_backup_restores_cold_history_and_permanent_identity_without_source_objects stdout ----
+
+thread 'chunked_full_backup_restores_cold_history_and_permanent_identity_without_source_objects' (20644470) panicked at crates/kasumi-engine/tests/history.rs:629:43:
+assertion failed: matches!(error.code, ErrorCode::UnknownOutcome | ErrorCode::Unavailable)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    chunked_full_backup_restores_cold_history_and_permanent_identity_without_source_objects
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 69.25s
+
+error: test failed, to rerun pass `-p kasumi-engine --test history`

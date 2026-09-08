@@ -1,0 +1,94 @@
+{
+  "source": "42c018ec3ac83ce0104c033d5a81c0a7ddbab6ac",
+  "base": "e4b16096cc9168edba9d0c88af11f15971357b4a",
+  "worktree_clean": true,
+  "host": "macOS-26.6.2-arm64-arm-64bit",
+  "machine": "arm64",
+  "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-apple-darwin\nrelease: 1.97.1\nLLVM version: 22.1.6",
+  "lockfile": {
+    "path": "/tmp/kasumi-production-runtime/Cargo.lock",
+    "size": 119474,
+    "sha256": "9f29f1383152d5ddf05b5b07955ca8b2766e1e06e2cd03ce77040d14f9371559"
+  },
+  "checks": {
+    "current_control_fence": {
+      "result": "passed",
+      "log": {
+        "path": "/tmp/kasumi-runtime-control-fence-accounted-final.log",
+        "size": 765,
+        "sha256": "678d847130713042fdb4ba174a353a9b3e06d4746331477a4b49bdce27fb4729"
+      }
+    },
+    "strict_engine_raft_clippy": {
+      "result": "passed",
+      "log": {
+        "path": "/tmp/kasumi-runtime-control-fence-clippy.log",
+        "size": 261,
+        "sha256": "762622a8704add417c6250fe38871a4c014e0448c0c9fc8c55739837c21f70b6"
+      }
+    },
+    "production_server_check": {
+      "result": "passed",
+      "log": {
+        "path": "/tmp/kasumi-runtime-control-fence-production.log",
+        "size": 459,
+        "sha256": "1c9b278d8bda026e43c8d7056d755c0afdae0a45a422a0f9cfd714160de91bc5"
+      }
+    },
+    "format_and_diff": {
+      "result": "passed",
+      "log": {
+        "path": "/tmp/kasumi-runtime-control-fence-format.log",
+        "size": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    }
+  },
+  "executables": {
+    "current_control_fence": {
+      "path": "/tmp/kasumi-production-runtime-target/debug/deps/lifecycle-c70bbb2e0c4a0ca5",
+      "size": 156349304,
+      "sha256": "8f153e3b27ec36f7e8046596d9d4f7ada8de9ced0a57d342214505199e15da6c"
+    }
+  },
+  "limitations": [
+    "Focused macOS ARM64 encrypted Control quorum tests are not final multi-platform acceptance.",
+    "This current Control fence grants no physical verifier or issuer authority by itself; a remote adapter must combine it with exact current authenticated issuer registry and directive observations.",
+    "Remote publication acknowledgments, permanent verifier revocation and complete issuer drain remain outstanding; global retirement cannot complete."
+  ],
+  "initial_failures": [
+    {
+      "log": {
+        "path": "/tmp/kasumi-runtime-control-fence-check.log",
+        "size": 1133,
+        "sha256": "f223d9d1a4b1a77b7a2c6cb8b9cb1eaa9cd94d01e8c73c7b97f09344fc00996d"
+      },
+      "disposition": "Initial compile referenced the dev-only engine openraft dependency. The canonical StoredMembership type is now exported by kasumi-raft."
+    },
+    {
+      "log": {
+        "path": "/tmp/kasumi-runtime-control-fence-final-test.log",
+        "size": 1463,
+        "sha256": "9705f3bb348fe6a267ddff91001e7aea78a9358fe00c5f58fb72c0944dbf65d6"
+      },
+      "disposition": "A failed current-quorum release left a cached local leader view reusable. The owned observation now permanently seals after failed or cancelled release; final tests retain and cover this regression."
+    }
+  ],
+  "intermediate_logs": [
+    {
+      "path": "/tmp/kasumi-runtime-control-fence-test.log",
+      "size": 732,
+      "sha256": "cd2ece7b69eaf823d1801729ba9927c491e9c2eae37eaf7357ff6e9a60952739"
+    },
+    {
+      "path": "/tmp/kasumi-runtime-control-fence-sealed-test.log",
+      "size": 763,
+      "sha256": "14832b956b7dfe5638def82da0889c0a500f67dfd8eefbbfd7085002ff57f9a8"
+    },
+    {
+      "path": "/tmp/kasumi-runtime-control-fence-final.log",
+      "size": 764,
+      "sha256": "6a4328fd176689796f57bdef69b67bc875b0b0434b285c844a8f2cd03d47d1c8"
+    }
+  ]
+}

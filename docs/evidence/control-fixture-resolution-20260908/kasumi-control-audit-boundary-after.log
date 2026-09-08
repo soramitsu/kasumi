@@ -1,0 +1,39 @@
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-engine)
+error[E0308]: mismatched types
+   --> crates/kasumi-engine/tests/lifecycle.rs:949:37
+    |
+949 |         let count = audit_sequence(&f.leader().await);
+    |                                     ^^^^^^^^^^^^^^^^ expected `Database`, found `Arc<Database>`
+    |
+    = note: expected struct `kasumi_engine::Database`
+               found struct `std::sync::Arc<kasumi_engine::Database>`
+
+error[E0308]: mismatched types
+   --> crates/kasumi-engine/tests/lifecycle.rs:979:36
+    |
+979 |         assert_eq!(audit_sequence(&f.leader().await), retained);
+    |                                    ^^^^^^^^^^^^^^^^ expected `Database`, found `Arc<Database>`
+    |
+    = note: expected struct `kasumi_engine::Database`
+               found struct `std::sync::Arc<kasumi_engine::Database>`
+
+error[E0308]: mismatched types
+    --> crates/kasumi-engine/tests/lifecycle.rs:1002:32
+     |
+1002 |     assert_eq!(audit_sequence(&f.leader().await), retained + 1);
+     |                                ^^^^^^^^^^^^^^^^ expected `Database`, found `Arc<Database>`
+     |
+     = note: expected struct `kasumi_engine::Database`
+                found struct `std::sync::Arc<kasumi_engine::Database>`
+
+error[E0308]: mismatched types
+    --> crates/kasumi-engine/tests/lifecycle.rs:1019:32
+     |
+1019 |     assert_eq!(audit_sequence(&f.leader().await), retained + 1);
+     |                                ^^^^^^^^^^^^^^^^ expected `Database`, found `Arc<Database>`
+     |
+     = note: expected struct `kasumi_engine::Database`
+                found struct `std::sync::Arc<kasumi_engine::Database>`
+
+For more information about this error, try `rustc --explain E0308`.
+error: could not compile `kasumi-engine` (test "lifecycle") due to 4 previous errors

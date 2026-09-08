@@ -300,3 +300,19 @@ The next protocol work must bind live Control admission and remote verifier
 publication to this registry, persist exact acknowledgments or revocations,
 and complete the full issuer drain. Until then, global retirement stays pending;
 these enrollment operations do not certify complete distributed rotation.
+
+The engine's owned `ControlAdministrativeFence` now supplies the current Control
+side of remote verifier authorization. It is constructed only after an actual
+Control quorum barrier and pins the exact lifecycle installation and issuer
+partition, policy epoch, leader term and committed membership, including learners.
+It retains the original finite credential and revocation guard, registers draining
+work, and accounts for bounded installation and retained membership metadata.
+Expiry, revocation, a membership or policy transition, or a failed or cancelled
+release permanently closes that observation. A fresh credential cannot renew it.
+
+This observation alone does not identify physical verifier installations. The
+remote adapter must still match the actual Control membership and local physical
+owner to a fresh authenticated issuer registry observation, dispatch an exact
+committed directive, and durably return publication or permanent-stop evidence.
+Global retirement remains pending until every enrolled receiver and issuer drain
+has that coverage.

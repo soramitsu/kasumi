@@ -308,13 +308,19 @@ fn incarnation_schema_data_and_current_authority_are_independent_fences() {
 
 #[test]
 fn record_metadata_and_serialized_budgets_fail_before_partial_activation() {
-    let limits = Limits {
-        max_schema_activations: 1,
-        ..Default::default()
-    };
-    let db = engine(limits);
+    let db = engine(Limits::default());
     let install = creates(&db, "install", &["a", "b"]);
     let receipt = apply(&db, Operation::ActivateSchema(install.clone())).unwrap();
+    let used = db.generation().unwrap().state.schema_activation_bytes;
+    apply(
+        &db,
+        Operation::SetLimits(Limits {
+            max_schema_activation_bytes: used,
+            ..Default::default()
+        }),
+    )
+    .unwrap();
+    let before_epoch = db.generation().unwrap().state.schema_epoch;
     assert_eq!(
         apply(&db, Operation::ActivateSchema(creates(&db, "full", &["c"])))
             .unwrap_err()
@@ -322,10 +328,23 @@ fn record_metadata_and_serialized_budgets_fail_before_partial_activation() {
         ErrorCode::QuotaExceeded
     );
     assert!(!db.generation().unwrap().state.collections.contains_key("c"));
+    assert_eq!(db.generation().unwrap().state.schema_epoch, before_epoch);
+    assert_eq!(db.generation().unwrap().state.schema_activation_bytes, used);
     assert_eq!(
         apply(&db, Operation::ActivateSchema(install)).unwrap(),
         receipt
     );
+    // Expanding the byte budget admits an unaccepted identity without altering
+    // already permanent outcomes. Values above the former format ceiling work.
+    apply(
+        &db,
+        Operation::SetLimits(Limits {
+            max_schema_activation_bytes: 3 << 30,
+            ..Default::default()
+        }),
+    )
+    .unwrap();
+    apply(&db, Operation::ActivateSchema(creates(&db, "full", &["c"]))).unwrap();
 
     let db = engine(Limits {
         max_schema_bytes: 64,
@@ -433,7 +452,7 @@ fn schema_shape_immutable_mode_snapshot_validation_and_retained_quota() {
         apply(
             &db,
             Operation::SetLimits(Limits {
-                max_schema_activations: 1,
+                max_schema_activation_bytes: 1,
                 ..Default::default()
             })
         )
@@ -458,6 +477,50 @@ fn schema_shape_immutable_mode_snapshot_validation_and_retained_quota() {
         ErrorCode::Corruption
     );
     assert_eq!(bytes, recovered.fixture_snapshot().unwrap());
+}
+
+#[test]
+fn restored_permanent_schema_history_exceeds_the_former_lifetime_ceiling() {
+    let db = engine(Limits::default());
+    apply(&db, Operation::ActivateSchema(creates(&db, "seed", &["a"]))).unwrap();
+    let mut state = db.generation().unwrap().state.clone();
+    let seed = state.schema_activations.values().next().unwrap().clone();
+    state.schema_activations.clear();
+    state.schema_activation_bytes = 0;
+    // A generated, fully validated history fixture avoids 100,001 live network
+    // requests. The subsequent new command still traverses actual admission.
+    for index in 0..100_001 {
+        let mut record = seed.clone();
+        record.activation_id = format!("historic-{index}");
+        let key = staged_digest(&(&record.principal, &record.activation_id))
+            .unwrap()
+            .0;
+        state.schema_activation_bytes += (serde_json::to_vec(&key).unwrap().len()
+            + 1
+            + serde_json::to_vec(&record).unwrap().len())
+            as u64;
+        state.schema_activations.insert(key, record);
+    }
+    let bytes = kasumi_engine::test_utils::encode_snapshot_candidate(&state, 128 << 20).unwrap();
+    let restored = engine(Limits::default());
+    restored.fixture_restore(&bytes).unwrap();
+    apply(
+        &restored,
+        Operation::ActivateSchema(creates(&restored, "after-history", &["b"])),
+    )
+    .unwrap();
+    assert_eq!(
+        restored
+            .generation()
+            .unwrap()
+            .state
+            .schema_activations
+            .len(),
+        100_002
+    );
+    let mut incompatible = serde_json::to_value(Limits::default()).unwrap();
+    incompatible["max_schema_activations"] = json!(4096);
+    assert!(serde_json::from_value::<Limits>(incompatible).is_err());
 }
 
 #[test]

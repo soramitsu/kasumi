@@ -190,6 +190,17 @@ async fn replicated_service_preserves_batches_receipts_and_cursor_fences_across_
         .collect();
     let manifest = StagedManifest::from_chunks(&chunks).unwrap();
     let staged = StagedTransactionRef {
+        scope: kasumi_types::StagedTransactionScope {
+            tenant: context().tenant,
+            principal: context().principal,
+            incarnation: nodes[&first]
+                .engine()
+                .generation()
+                .unwrap()
+                .state
+                .incarnation
+                .clone(),
+        },
         transaction_id: "across-leaders".into(),
         manifest_digest: staged_digest(&manifest).unwrap().0,
     };
@@ -197,6 +208,7 @@ async fn replicated_service_preserves_batches_receipts_and_cursor_fences_across_
         .begin_staged_transaction(
             context(),
             BeginStagedTransaction {
+                scope: staged.scope.clone(),
                 transaction_id: staged.transaction_id.clone(),
                 manifest,
                 ttl_ms: 60_000,

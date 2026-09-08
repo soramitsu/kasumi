@@ -9,9 +9,12 @@ transaction primitives remain described in `transactions.md`.
 
 Use `begin_staged_transaction`, `append_staged_chunk`,
 `finalize_staged_transaction`, `stop_staged_transaction`, and
-`staged_transaction_status` to embedded Rust and native gRPC. Every request is
-authenticated and tenant-selected by the existing boundary. Identity is the
-pair of authenticated principal and caller-chosen transaction ID.
+`staged_transaction_status` in embedded Rust and native gRPC. Every staged
+request retains the explicit original `StagedTransactionScope` (tenant,
+incarnation and principal), verified against current native authority and
+preserved through backup/restore. The permanent key within a tenant is the pair
+of authenticated principal and caller-chosen transaction ID; its original scope
+cannot be rebound to a replacement incarnation.
 
 A required immutable manifest contains the ordered canonical-JSON SHA-256
 digest of every chunk, total encoded chunk bytes, total mutations, total read

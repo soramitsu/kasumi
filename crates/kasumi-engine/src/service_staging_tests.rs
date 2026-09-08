@@ -1,7 +1,11 @@
 #[tokio::test]
 async fn queued_staged_finalize_checks_fresh_time_and_canceled_callers_keep_durable_outcomes() {
     let directory = tempfile::tempdir().unwrap();
-    let node = NodeStore::open(directory.path().join("node.redb"), kasumi_store::ScratchDisk::fixture()).unwrap();
+    let node = NodeStore::open(
+        directory.path().join("node.redb"),
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
     let audit_store = TenantStore::open_fixture(
         node.clone(),
         crate::SECURITY_TENANT.into(),
@@ -10,7 +14,12 @@ async fn queued_staged_finalize_checks_fresh_time_and_canceled_callers_keep_dura
     .await
     .unwrap();
     let node_admission = NodeAdmission::new(AdmissionConfig::default()).unwrap();
-    let audit = SecurityAudit::open(audit_store, kasumi_types::AuditRetentionBudget::default(), node_admission.clone()).unwrap();
+    let audit = SecurityAudit::open(
+        audit_store,
+        kasumi_types::AuditRetentionBudget::default(),
+        node_admission.clone(),
+    )
+    .unwrap();
     let context = RequestContext {
         authorization: kasumi_types::RequestAuthorization::service_identity(),
         tenant: "stage-time".into(),
@@ -79,12 +88,18 @@ async fn queued_staged_finalize_checks_fresh_time_and_canceled_callers_keep_dura
         };
         let manifest = StagedManifest::from_chunks(std::slice::from_ref(&chunk)).unwrap();
         let reference = StagedTransactionRef {
+            scope: kasumi_types::StagedTransactionScope {
+                tenant: context.tenant.clone(),
+                principal: context.principal.clone(),
+                incarnation: db.engine().generation().unwrap().state.incarnation.clone(),
+            },
             transaction_id: id.into(),
             manifest_digest: staged_digest(&manifest).unwrap().0,
         };
         db.begin_staged_transaction(
             context.clone(),
             BeginStagedTransaction {
+                scope: reference.scope.clone(),
                 transaction_id: id.into(),
                 manifest,
                 ttl_ms: 60_000,

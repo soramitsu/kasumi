@@ -1,0 +1,16 @@
+    Checking kasumi-types v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-types)
+    Checking kasumi-serving v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-serving)
+    Checking kasumi-query v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-query)
+    Checking kasumi-store v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-store)
+    Checking kasumi-raft v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-raft)
+    Checking kasumi-engine v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-engine)
+error[E0433]: cannot find module or crate `openraft` in this scope
+  --> crates/kasumi-engine/src/control_administration.rs:14:21
+   |
+14 |     membership: Arc<openraft::StoredMembership<u64, kasumi_raft::BasicNode>>,
+   |                     ^^^^^^^^ use of unresolved module or unlinked crate `openraft`
+   |
+   = help: if you wanted to use a crate named `openraft`, use `cargo add openraft` to add it to your `Cargo.toml`
+
+For more information about this error, try `rustc --explain E0433`.
+error: could not compile `kasumi-engine` (lib) due to 1 previous error

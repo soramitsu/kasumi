@@ -32,14 +32,13 @@ pub struct RetirementReplayState {
     pub retired: bool,
     pub pending_restore: bool,
     pub existing_identity: Option<StoredRetirement>,
-    pub retirement_count: usize,
-    pub retirement_bytes: usize,
-    pub max_retirements: usize,
+    pub retirement_bytes: u64,
+    pub max_retirement_bytes: u64,
     pub audit_hot_bytes: u64,
     pub max_audit_hot_bytes: u64,
-    pub snapshot_bytes: usize,
+    pub snapshot_bytes: u64,
     pub max_snapshot_bytes: u64,
-    pub staged_outcome_headroom: usize,
+    pub staged_outcome_headroom: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -113,10 +112,10 @@ impl RetirementLogSeed {
                 && self.source.previous_revision >= self.source.revision_base
                 && self.observation.revision == self.source.previous_revision
                 && self.source.administrators.len() <= 1024
-                && self.source.max_retirements <= 100_000
-                && self.source.retirement_count <= self.source.max_retirements
+                && self.source.max_retirement_bytes > 0
+                && self.source.retirement_bytes <= self.source.max_retirement_bytes
                 && self.source.audit_hot_bytes <= self.source.max_audit_hot_bytes
-                && self.source.snapshot_bytes as u64 <= self.source.max_snapshot_bytes,
+                && self.source.snapshot_bytes <= self.source.max_snapshot_bytes,
             "retirement seed source binding differs"
         );
         for principal in &self.source.administrators {
@@ -205,7 +204,6 @@ impl RetirementLogSeed {
             && !self.source.retired
             && !self.source.pending_restore
             && self.source.existing_identity.is_none()
-            && self.source.retirement_count < self.source.max_retirements
             && self.source.policy_epoch < u64::MAX
             && self.admitted_at_ms <= self.request.not_after_ms
             && self.request.checkpoint.revision <= self.source.previous_revision
@@ -240,6 +238,18 @@ impl RetirementLogSeed {
     pub fn reserve_success_capacity(&self) -> kasumi_types::Result<()> {
         if !self.successful_candidate() {
             return Ok(());
+        }
+        let permanent = StoredRetirement::reservation_bytes(&self.principal, &self.request)?;
+        if self
+            .source
+            .retirement_bytes
+            .checked_add(permanent)
+            .is_none_or(|bytes| bytes > self.source.max_retirement_bytes)
+        {
+            return Err(kasumi_types::Error::new(
+                kasumi_types::ErrorCode::QuotaExceeded,
+                "retirement permanent outcome capacity unavailable",
+            ));
         }
         let record = StoredRetirement {
             principal: self.principal.clone(),
@@ -292,11 +302,11 @@ impl RetirementLogSeed {
         let required = self
             .source
             .snapshot_bytes
-            .checked_add(record_bytes)
-            .and_then(|n| n.checked_add(audit_bytes))
+            .checked_add(record_bytes as u64)
+            .and_then(|n| n.checked_add(audit_bytes as u64))
             .and_then(|n| n.checked_add(1024))
             .and_then(|n| n.checked_add(self.source.staged_outcome_headroom));
-        if required.is_none_or(|bytes| bytes as u64 > self.source.max_snapshot_bytes) {
+        if required.is_none_or(|bytes| bytes > self.source.max_snapshot_bytes) {
             return Err(kasumi_types::Error::new(
                 kasumi_types::ErrorCode::QuotaExceeded,
                 "retirement completion capacity unavailable",
