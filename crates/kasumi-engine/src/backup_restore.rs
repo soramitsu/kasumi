@@ -424,7 +424,13 @@ mod tests {
         assert_eq!(admission.snapshot().reserved_bytes, 1 << 20);
         release_tx.send(()).unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            while weak.upgrade().is_some() {
+            // Weak::upgrade can fail after the final strong count reaches zero
+            // while Reservation::drop is still releasing the governor charge.
+            // Observe the resource owner finishing, not only Arc availability.
+            while weak.upgrade().is_some()
+                || admission.snapshot().inflight_operations != 0
+                || admission.snapshot().reserved_bytes != 0
+            {
                 tokio::task::yield_now().await;
             }
         })
