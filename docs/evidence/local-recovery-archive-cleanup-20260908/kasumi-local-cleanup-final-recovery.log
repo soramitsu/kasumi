@@ -1,0 +1,14 @@
+   Compiling kasumi-store v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-store)
+   Compiling kasumi-raft v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-raft)
+   Compiling kasumi-authority v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-authority)
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-engine)
+   Compiling kasumi-server v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 35.93s
+     Running unittests src/lib.rs (/tmp/kasumi-production-standalone-target/debug/deps/kasumi_server-836de15f40a715c9)
+
+running 2 tests
+test local_recovery::tests::local_stop_persists_identity_before_cleanup_and_rejects_unrelated_files ... ok
+test local_recovery::tests::local_recovery_resumes_each_phase_and_fences_old_resources_after_activation ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 77 filtered out; finished in 18.78s
+

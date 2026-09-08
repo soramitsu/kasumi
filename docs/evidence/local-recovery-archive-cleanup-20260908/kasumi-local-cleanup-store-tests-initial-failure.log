@@ -1,0 +1,34 @@
+   Compiling kasumi-types v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-types)
+   Compiling kasumi-serving v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-serving)
+   Compiling kasumi-store v0.1.0 (/private/tmp/kasumi-production-standalone/crates/kasumi-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 29s
+     Running unittests src/lib.rs (/tmp/kasumi-production-standalone-target/debug/deps/kasumi_store-b1d52c9fe50b99e9)
+
+running 11 tests
+test audit_archive::owned::tests::exclusive_rename_preserves_an_existing_destination_and_the_source_inode ... FAILED
+test audit_archive::tests::authentication_and_final_record_counts_precede_any_release ... ok
+test audit_archive::tests::existing_nonprivate_archive_directory_is_rejected_without_chmod ... ok
+test audit_archive::owned::tests::owned_publication_resolves_partial_writes_and_uncertain_rename_without_adopting_files ... ok
+test audit_archive::tests::historical_source_is_exact_and_does_not_reopen_a_live_generation ... ok
+test audit_archive::tests::historical_verification_checks_the_original_clock_and_release_fence ... ok
+test audit_archive::tests::object_symlink_cannot_read_or_overwrite_unrelated_files ... ok
+test audit_archive::tests::persisted_external_placement_never_falls_back_to_default_after_restart ... ok
+test audit_archive::tests::reverse_archive_dependencies_are_bounded_and_require_exact_link_and_source_verification ... ok
+test audit_archive::tests::verified_archive_is_private_immutable_contiguous_and_reopenable ... ok
+test audit_archive::tests::segment_capacity_is_bounded_and_positions_use_checked_u64 ... ok
+
+failures:
+
+---- audit_archive::owned::tests::exclusive_rename_preserves_an_existing_destination_and_the_source_inode stdout ----
+
+thread 'audit_archive::owned::tests::exclusive_rename_preserves_an_existing_destination_and_the_source_inode' (19951223) panicked at crates/kasumi-store/src/audit_archive_owned.rs:129:53:
+called `Result::unwrap()` on an `Err` value: operator material must be owner-only
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    audit_archive::owned::tests::exclusive_rename_preserves_an_existing_destination_and_the_source_inode
+
+test result: FAILED. 10 passed; 1 failed; 0 ignored; 0 measured; 61 filtered out; finished in 13.93s
+
+error: test failed, to rerun pass `-p kasumi-store --lib`
