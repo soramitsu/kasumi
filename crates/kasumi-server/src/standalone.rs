@@ -528,15 +528,21 @@ pub async fn rotate_certificates(configuration: &Path) -> Result<serde_json::Val
             kasumi_engine::SecurityOutcome::Started,
         ))
         .await?;
+    let result = async {
     let root = installation_root(&config)?;
-    let ca_key = private_files::read(&root.join("operator/ca-key.pem"), 1 << 20)?;
-    let ca_key = rcgen::KeyPair::from_pem(std::str::from_utf8(&ca_key)?)?;
-    let ca_pem = std::fs::read_to_string(root.join("tls/ca.pem"))?;
-    let issuer = rcgen::Issuer::from_ca_cert_pem(&ca_pem, &ca_key)?;
+    let ca_key_pem = private_files::read(&root.join("operator/ca-key.pem"), 1 << 20)?;
+    let ca_pem = private_files::read(&root.join("tls/ca.pem"), 1 << 20)?;
+    // Rustls checks the certificate's public key against the private key before
+    // any leaf is generated or replaced. Parsing two PEM files is insufficient.
+    let ca_identity = kasumi_transport::TlsIdentity::from_pem(&ca_pem, &ca_key_pem)?;
+    kasumi_transport::server_config(&ca_identity, kasumi_transport::ClientAuthentication::OAuth)?;
+    let ca_key = rcgen::KeyPair::from_pem(std::str::from_utf8(&ca_key_pem)?)?;
+    let issuer = rcgen::Issuer::from_ca_cert_pem(std::str::from_utf8(&ca_pem)?, &ca_key)?;
     let client = TlsFiles {
         certificate: root.join("profiles/client.pem"),
         private_key: root.join("profiles/client-key.pem"),
     };
+    let mut replacements = Vec::with_capacity(4);
     for (name, files, client_auth) in [
         ("mcp", &config.mcp.tls, false),
         ("native", &config.native.tls, false),
@@ -554,13 +560,18 @@ pub async fn rotate_certificates(configuration: &Path) -> Result<serde_json::Val
         let certificate = parameters.signed_by(&key, &issuer)?;
         let key_pem = zeroize::Zeroizing::new(key.serialize_pem());
         let certificate_pem = certificate.pem();
-        kasumi_transport::TlsIdentity::from_pem(certificate_pem.as_bytes(), key_pem.as_bytes())?;
+        let identity = kasumi_transport::TlsIdentity::from_pem(certificate_pem.as_bytes(), key_pem.as_bytes())?;
+        kasumi_transport::server_config(&identity, kasumi_transport::ClientAuthentication::OAuth)?;
+        replacements.push((files.clone(), key_pem, certificate_pem));
+    }
+    for (files, key_pem, certificate_pem) in replacements {
         private_files::replace(&files.private_key, key_pem.as_bytes())?;
         private_files::replace(&files.certificate, certificate_pem.as_bytes())?;
     }
     let native_pin = hex::encode(config.native.tls.load()?.certificate_pin());
     let admin_pin = hex::encode(config.admin.tls.load()?.certificate_pin());
     let control = operator_control(&config, node, audit.clone()).await?;
+    let control_result = async {
     let context = offline_context(&control)?;
     let plane = kasumi_engine::control::ControlPlane::new(control.clone())?;
     plane.initialize(context.clone()).await?;
@@ -581,7 +592,10 @@ pub async fn rotate_certificates(configuration: &Path) -> Result<serde_json::Val
             )
             .await?;
     }
+    Ok::<_, anyhow::Error>(())
+    }.await;
     control.shutdown().await?;
+    control_result?;
     for entry in std::fs::read_dir(root.join("profiles"))? {
         let path = entry?.path();
         if path
@@ -594,14 +608,21 @@ pub async fn rotate_certificates(configuration: &Path) -> Result<serde_json::Val
             private_files::replace(&path, &serde_json::to_vec_pretty(&profile)?)?;
         }
     }
-    audit
+    Ok::<_, anyhow::Error>(serde_json::json!({"native_certificate_pin":native_pin,"admin_certificate_pin":admin_pin}))
+    }.await;
+    let recorded = audit
         .record(operator_event(
             &operation,
-            kasumi_engine::SecurityOutcome::Succeeded,
+            if result.is_ok() {
+                kasumi_engine::SecurityOutcome::Succeeded
+            } else {
+                kasumi_engine::SecurityOutcome::Failed
+            },
         ))
-        .await?;
+        .await;
     audit.shutdown().await;
-    Ok(serde_json::json!({"native_certificate_pin":native_pin,"admin_certificate_pin":admin_pin}))
+    recorded?;
+    result
 }
 
 pub async fn backup_operator_keys(configuration: &Path, output: &Path) -> Result<()> {

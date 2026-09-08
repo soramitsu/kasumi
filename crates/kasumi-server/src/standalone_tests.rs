@@ -430,6 +430,44 @@ async fn offline_maintenance_and_administrator_recovery_require_exclusive_owners
     );
     let old_profile = ClientProfile::load(&installation.control_profile).unwrap();
     let old_client_certificate = std::fs::read(&old_profile.identity.certificate).unwrap();
+    let ca_path = installation
+        .configuration
+        .parent()
+        .unwrap()
+        .join("operator/ca-key.pem");
+    let old_ca = private_files::read(&ca_path, 1 << 20).unwrap();
+    let before = (&config.mcp.tls, &config.native.tls, &config.admin.tls);
+    let before = [before.0, before.1, before.2]
+        .into_iter()
+        .map(|files| {
+            (
+                files.clone(),
+                std::fs::read(&files.certificate).unwrap(),
+                private_files::read(&files.private_key, 1 << 20).unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let wrong_ca = zeroize::Zeroizing::new(rcgen::KeyPair::generate().unwrap().serialize_pem());
+    private_files::replace(&ca_path, wrong_ca.as_bytes()).unwrap();
+    assert!(
+        rotate_certificates(&installation.configuration)
+            .await
+            .is_err()
+    );
+    for (files, certificate, key) in before {
+        assert_eq!(std::fs::read(&files.certificate).unwrap(), certificate);
+        assert_eq!(
+            private_files::read(&files.private_key, 1 << 20)
+                .unwrap()
+                .as_slice(),
+            key.as_slice()
+        );
+    }
+    assert_eq!(
+        std::fs::read(&old_profile.identity.certificate).unwrap(),
+        old_client_certificate
+    );
+    private_files::replace(&ca_path, &old_ca).unwrap();
     rotate_certificates(&installation.configuration)
         .await
         .unwrap();
