@@ -11,7 +11,13 @@ async fn encoded_response_is_fenced_by_policy_changes_and_actual_key_denial() {
     let directory = tempfile::tempdir().unwrap();
     let keys = Arc::new(LocalKeyProvider::new([41; 32]));
     let node = NodeStore::open(directory.path().join("node.redb")).unwrap();
-    let audit = common::security_audit(node.clone()).await;
+    let admission =
+        kasumi_engine::admission::NodeAdmission::new(kasumi_engine::admission::AdmissionConfig {
+            max_inflight_operations: 1,
+            ..Default::default()
+        })
+        .unwrap();
+    let audit = common::security_audit_with_admission(node.clone(), admission.clone()).await;
     let store = TenantStore::open_fixture(node, "tenant".into(), keys.clone())
         .await
         .unwrap();
@@ -43,17 +49,7 @@ async fn encoded_response_is_fenced_by_policy_changes_and_actual_key_denial() {
     )
     .await
     .unwrap();
-    database
-        .install_admission(
-            kasumi_engine::admission::NodeAdmission::new(
-                kasumi_engine::admission::AdmissionConfig {
-                    max_inflight_operations: 1,
-                    ..Default::default()
-                },
-            )
-            .unwrap(),
-        )
-        .unwrap();
+    database.install_admission(admission).unwrap();
     database
         .administer(
             context.clone(),
