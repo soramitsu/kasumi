@@ -126,6 +126,14 @@ gate above and usable installation artifacts.
 
 ## Current verified increments
 
+- Prepared JSON dependency patch `8f4cf74` passed exact resolver/hash checks and
+  the default upstream suite (239 tests passed, one upstream test ignored), then
+  failed an added large-number tagged-value regression in its number-only suite.
+  The identical failure reproduces against pristine serde_json 1.0.151 with only
+  that test added. Raw-only/combined suites and Kasumi boundary tests did not run.
+  Exact failures and source inventories are retained in
+  `docs/evidence/literal-json-upstream-20260909`; neither source review nor the
+  pristine reproduction closes the required correction and execution gates.
 - Bounded SDK checkpoint `fb172be` passes 13 snapshot decoder/ownership tests,
   the bearer-metadata redaction regression, strict client lint and a no-default
   client library check. Initial `2b9061d` passed the tests but failed three lint
