@@ -228,8 +228,25 @@ async fn local_recovery_resumes_each_phase_and_fences_old_resources_after_activa
         }],
         queries: vec![],
     };
+    let snapshot_resources = kasumi_client::ClientResources::new(16 << 20, 8).unwrap();
+    let snapshot_options = |duration| kasumi_client::SnapshotReadOptions {
+        resources: snapshot_resources.clone(),
+        limits: kasumi_client::SnapshotDecodeLimits {
+            max_request_bytes: 64 << 10,
+            max_wire_bytes: 64 << 10,
+            max_json_bytes: 64 << 10,
+            max_decoded_bytes: 2 << 20,
+            ..Default::default()
+        },
+        deadline: tokio::time::Instant::now() + duration,
+        expected_incarnation: request.target_incarnation,
+    };
     let result = client
-        .read_snapshot(&profile.bearer().unwrap(), &read)
+        .read_snapshot(
+            &profile.bearer().unwrap(),
+            &read,
+            &snapshot_options(std::time::Duration::from_secs(4)),
+        )
         .await
         .unwrap();
     assert_eq!(result.incarnation, request.target_incarnation.to_string());
@@ -239,7 +256,11 @@ async fn local_recovery_resumes_each_phase_and_fences_old_resources_after_activa
     );
     assert!(
         client
-            .read_snapshot(&old_profile.bearer().unwrap(), &read)
+            .read_snapshot(
+                &old_profile.bearer().unwrap(),
+                &read,
+                &snapshot_options(std::time::Duration::from_secs(4))
+            )
             .await
             .is_err()
     );
