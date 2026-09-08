@@ -1,0 +1,64 @@
+    Blocking waiting for file lock on package cache
+   Compiling libc v0.2.189
+   Compiling cfg-if v1.0.4
+   Compiling getrandom v0.3.4
+   Compiling rustix v1.1.4
+   Compiling zerocopy v0.8.56
+   Compiling getrandom v0.4.3
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.24
+   Compiling autocfg v1.5.1
+   Compiling bitflags v2.13.1
+   Compiling once_cell v1.21.4
+   Compiling fastrand v2.5.0
+   Compiling syn v1.0.109
+   Compiling quick-error v1.2.3
+   Compiling fnv v1.0.7
+   Compiling bit-vec v0.8.0
+   Compiling num-traits v0.2.19
+   Compiling bit-set v0.8.0
+   Compiling regex-syntax v0.8.11
+   Compiling unarray v0.1.4
+   Compiling errno v0.3.14
+   Compiling wait-timeout v0.2.1
+   Compiling rand_core v0.9.5
+   Compiling rand v0.9.5
+   Compiling rand_xorshift v0.4.0
+   Compiling tempfile v3.27.0
+   Compiling rusty-fork v0.3.1
+   Compiling ppv-lite86 v0.2.21
+   Compiling rand_chacha v0.9.0
+   Compiling proptest v1.11.0
+   Compiling proptest-derive v0.4.0
+   Compiling bitmaps v3.2.1 (/tmp/kasumi-production-upstream-regressions/bitmaps-3.2.1)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 16.78s
+     Running unittests src/lib.rs (/tmp/kasumi-production-bitmaps-upstream-miri-target/miri/aarch64-apple-darwin/debug/build/bitmaps/bc444efad2e6c5c1/out/bitmaps-bc444efad2e6c5c1)
+
+running 1 test
+test bitmap::test::one_bit_decode_rejects_all_invalid_bool_representations ... error: Undefined Behavior: constructing invalid value of type bool: encountered 0x02, but expected a boolean
+   --> src/bitmap.rs:134:27
+    |
+134 |                     data: data.assume_init(),
+    |                           ^^^^^^^^^^^^^^^^^^ Undefined Behavior occurred here
+    |
+    = help: this indicates a bug in the program: it performed an invalid operation, and caused Undefined Behavior
+    = help: see https://doc.rust-lang.org/nightly/reference/behavior-considered-undefined.html for further information
+    = note: this is on thread `bitmap::test::one_bit_decode_rejects_all_invalid_bool_represent`
+    = note: stack backtrace:
+            0: <bitmap::Bitmap<1> as std::convert::TryFrom<&[u8]>>::try_from
+                at src/bitmap.rs:134:27: 134:45
+            1: bitmap::test::one_bit_decode_rejects_all_invalid_bool_representations
+                at src/bitmap.rs:742:27: 742:67
+            2: bitmap::test::one_bit_decode_rejects_all_invalid_bool_representations::{closure#0}
+                at src/bitmap.rs:740:65: 740:65
+
+note: some details are omitted, run with `MIRIFLAGS=-Zmiri-backtrace=full` for a verbose backtrace
+
+error: aborting due to 1 previous error
+
+error: test failed, to rerun pass `--lib`
+
+Caused by:
+  process didn't exit successfully: `/Users/mtakemiya/.rustup/toolchains/nightly-aarch64-apple-darwin/bin/cargo-miri runner /tmp/kasumi-production-bitmaps-upstream-miri-target/miri/aarch64-apple-darwin/debug/build/bitmaps/bc444efad2e6c5c1/out/bitmaps-bc444efad2e6c5c1 one_bit_decode_rejects_all_invalid_bool_representations` (exit status: 1)
+note: test exited abnormally; to see the full output pass --no-capture to the harness.

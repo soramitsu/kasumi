@@ -1,0 +1,65 @@
+    Updating crates.io index
+    Blocking waiting for file lock on package cache
+     Locking 41 packages to latest compatible versions
+      Adding proptest-derive v0.4.0 (available: v0.8.0)
+    Blocking waiting for file lock on package cache
+ Downloading crates ...
+  Downloaded proptest-derive v0.4.0
+    Blocking waiting for file lock on package cache
+   Compiling libc v0.2.189
+   Compiling cfg-if v1.0.4
+   Compiling getrandom v0.3.4
+   Compiling zerocopy v0.8.56
+   Compiling getrandom v0.4.3
+   Compiling proc-macro2 v1.0.107
+   Compiling rustix v1.1.4
+   Compiling rand_core v0.9.5
+   Compiling errno v0.3.14
+   Compiling unicode-ident v1.0.24
+   Compiling autocfg v1.5.1
+   Compiling bitflags v2.13.1
+   Compiling quote v1.0.47
+   Compiling num-traits v0.2.19
+   Compiling once_cell v1.21.4
+   Compiling fastrand v2.5.0
+   Compiling syn v1.0.109
+   Compiling tempfile v3.27.0
+   Compiling ppv-lite86 v0.2.21
+   Compiling wait-timeout v0.2.1
+   Compiling bit-vec v0.8.0
+   Compiling fnv v1.0.7
+   Compiling quick-error v1.2.3
+   Compiling rusty-fork v0.3.1
+   Compiling bit-set v0.8.0
+   Compiling rand_chacha v0.9.0
+   Compiling rand_xorshift v0.4.0
+   Compiling rand v0.9.5
+   Compiling unarray v0.1.4
+   Compiling regex-syntax v0.8.11
+   Compiling proptest v1.11.0
+   Compiling proptest-derive v0.4.0
+   Compiling bitmaps v3.2.1 (/Users/mtakemiya/dev/kasumi/vendor/bitmaps-3.2.1)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 28.33s
+     Running unittests src/lib.rs (/tmp/kasumi-production-dependency-target/debug/deps/bitmaps-3d3ba7d7593bd706)
+
+running 7 tests
+test bitmap::test::mask_limits ... ok
+test bitmap::test::one_bit_decode_rejects_all_invalid_bool_representations ... ok
+test bitmap::test::mask ... ok
+test bitmap::test::get_set_and_iter_61 ... ok
+test bitmap::test::get_set_and_iter_64 ... ok
+test bitmap::test::convert_1024 ... ok
+test bitmap::test::get_set_and_iter_1024 ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.69s
+
+   Doc-tests bitmaps
+
+running 4 tests
+test src/lib.rs - (line 58) - compile fail ... ok
+test src/types.rs - types::Bits (line 569) ... ok
+test src/lib.rs - (line 16) ... ok
+test src/bitmap.rs - bitmap::Iter (line 465) ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.36s
+

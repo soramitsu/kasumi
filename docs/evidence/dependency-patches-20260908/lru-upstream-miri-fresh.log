@@ -1,0 +1,54 @@
+warning: Cargo.toml: `package.edition` is unspecified, defaulting to `2015` while 2021 is compatible with `rust-version`
+warning: `lru` (manifest) generated 1 warning
+    Blocking waiting for file lock on package cache
+   Compiling allocator-api2 v0.2.21
+   Compiling foldhash v0.2.0
+   Compiling equivalent v1.0.2
+   Compiling stats_alloc v0.1.10
+   Compiling scoped_threadpool v0.1.9
+   Compiling hashbrown v0.16.1
+   Compiling lru v0.16.4 (/tmp/kasumi-production-upstream-regressions/lru-0.16.4)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.64s
+     Running unittests src/lib.rs (/tmp/kasumi-production-lru-upstream-miri-target/miri/aarch64-apple-darwin/debug/build/lru/55857c18378d37b0/out/lru-55857c18378d37b0)
+
+running 1 test
+test tests::pop_panicking_key_drop_preserves_list ... error: Undefined Behavior: constructing invalid value of type &core::mem::MaybeUninit<tests::pop_panicking_key_drop_preserves_list::Key>: encountered a dangling reference (use-after-free)
+    --> src/lib.rs:1786:31
+     |
+1786 |         let key = unsafe { &(*(*self.ptr).key.as_ptr()) as &K };
+     |                               ^^^^^^^^^^^^^^^ Undefined Behavior occurred here
+     |
+     = help: this indicates a bug in the program: it performed an invalid operation, and caused Undefined Behavior
+     = help: see https://doc.rust-lang.org/nightly/reference/behavior-considered-undefined.html for further information
+     = note: this is on thread `tests::pop_panicking_key_drop_preserves_list`
+     = note: stack backtrace:
+             0: <Iter<'_, tests::pop_panicking_key_drop_preserves_list::Key, u8> as core::iter::Iterator>::next
+                 at src/lib.rs:1786:31: 1786:46
+             1: <core::iter::Map<Iter<'_, tests::pop_panicking_key_drop_preserves_list::Key, u8>, {closure@src/lib.rs:1996:30: 1996:38}> as core::iter::Iterator>::next
+                 at /Users/mtakemiya/.rustup/toolchains/nightly-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/iter/adapters/map.rs:107:9: 107:25
+             2: alloc::vec::Vec::<u8>::extend_desugared::<core::iter::Map<Iter<'_, tests::pop_panicking_key_drop_preserves_list::Key, u8>, {closure@src/lib.rs:1996:30: 1996:38}>>
+                 at /Users/mtakemiya/.rustup/toolchains/nightly-aarch64-apple-darwin/lib/rustlib/src/rust/library/alloc/src/vec/mod.rs:4100:35: 4100:50
+             3: <alloc::vec::Vec<u8> as alloc::vec::spec_extend::SpecExtend<u8, core::iter::Map<Iter<'_, tests::pop_panicking_key_drop_preserves_list::Key, u8>, {closure@src/lib.rs:1996:30: 1996:38}>>>::spec_extend
+                 at /Users/mtakemiya/.rustup/toolchains/nightly-aarch64-apple-darwin/lib/rustlib/src/rust/library/alloc/src/vec/spec_extend.rs:18:9: 18:36
+             4: <alloc::vec::Vec<u8> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<u8, core::iter::Map<Iter<'_, tests::pop_panicking_key_drop_preserves_list::Key, u8>, {closure@src/lib.rs:1996:30: 1996:38}>>>::from_iter
+                 at /Users/mtakemiya/.rustup/toolchains/nightly-aarch64-apple-darwin/lib/rustlib/src/rust/library/alloc/src/vec/spec_from_iter_nested.rs:41:9: 41:73
+             5: <alloc::vec::Vec<u8> as alloc::vec::spec_from_iter::SpecFromIter<u8, core::iter::Map<Iter<'_, tests::pop_panicking_key_drop_preserves_list::Key, u8>, {closure@src/lib.rs:1996:30: 1996:38}>>>::from_iter
+                 at /Users/mtakemiya/.rustup/toolchains/nightly-aarch64-apple-darwin/lib/rustlib/src/rust/library/alloc/src/vec/spec_from_iter.rs:33:9: 33:48
+             6: <alloc::vec::Vec<u8> as core::iter::FromIterator<u8>>::from_iter::<core::iter::Map<Iter<'_, tests::pop_panicking_key_drop_preserves_list::Key, u8>, {closure@src/lib.rs:1996:30: 1996:38}>>
+                 at /Users/mtakemiya/.rustup/toolchains/nightly-aarch64-apple-darwin/lib/rustlib/src/rust/library/alloc/src/vec/mod.rs:3996:9: 3996:76
+             7: <core::iter::Map<Iter<'_, tests::pop_panicking_key_drop_preserves_list::Key, u8>, {closure@src/lib.rs:1996:30: 1996:38}> as core::iter::Iterator>::collect::<alloc::vec::Vec<u8>>
+                 at /Users/mtakemiya/.rustup/toolchains/nightly-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs:2086:9: 2086:38
+             8: tests::pop_panicking_key_drop_preserves_list
+                 at src/lib.rs:1996:13: 1996:63
+             9: tests::pop_panicking_key_drop_preserves_list::{closure#0}
+                 at src/lib.rs:1956:47: 1956:47
+
+note: some details are omitted, run with `MIRIFLAGS=-Zmiri-backtrace=full` for a verbose backtrace
+
+error: aborting due to 1 previous error
+
+error: test failed, to rerun pass `--lib`
+
+Caused by:
+  process didn't exit successfully: `/Users/mtakemiya/.rustup/toolchains/nightly-aarch64-apple-darwin/bin/cargo-miri runner /tmp/kasumi-production-lru-upstream-miri-target/miri/aarch64-apple-darwin/debug/build/lru/55857c18378d37b0/out/lru-55857c18378d37b0 pop_panicking_key_drop_preserves_list` (exit status: 1)
+note: test exited abnormally; to see the full output pass --no-capture to the harness.

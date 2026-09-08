@@ -1,0 +1,19 @@
+Preparing a sysroot for Miri (target: aarch64-apple-darwin)... done
+warning: Cargo.toml: `package.edition` is unspecified, defaulting to `2015` while 2021 is compatible with `rust-version`
+warning: `lru` (manifest) generated 1 warning
+    Blocking waiting for file lock on package cache
+   Compiling equivalent v1.0.2
+   Compiling allocator-api2 v0.2.21
+   Compiling foldhash v0.2.0
+   Compiling stats_alloc v0.1.10
+   Compiling scoped_threadpool v0.1.9
+   Compiling hashbrown v0.16.1
+   Compiling lru v0.16.4 (/Users/mtakemiya/dev/kasumi/vendor/lru-0.16.4)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.27s
+     Running unittests src/lib.rs (/tmp/kasumi-production-lru-miri/miri/aarch64-apple-darwin/debug/build/lru/55857c18378d37b0/out/lru-55857c18378d37b0)
+
+running 1 test
+test tests::pop_panicking_key_drop_preserves_list ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 52 filtered out; finished in 0.46s
+

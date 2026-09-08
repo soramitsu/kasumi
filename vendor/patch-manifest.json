@@ -1,0 +1,40 @@
+{
+  "format": 1,
+  "packages": [
+    {
+      "name": "bitmaps",
+      "version": "3.2.1",
+      "path": "vendor/bitmaps-3.2.1",
+      "published_crate_sha256": "a1d084b0137aaa901caf9f1e8b21daa6aa24d41cd806e111335541eff9683bd6",
+      "files": {
+        ".cargo_vcs_info.json": "1c51972d9ddda18a22a3b36ec940f550a17ee9b3ea551cfa0354a5642e5f27da",
+        "CHANGELOG.md": "da68818d220c1338a2eee001f875463926df6eebf575d06b877d24dc8829b5d0",
+        "CODE_OF_CONDUCT.md": "3db9f112c815ffef9a6f51eef2f5f6a3f3c2900510c243f26ad890321b888473",
+        "Cargo.lock": "d9c6b0df60660be9e2cb1acdd252ef51a55c85401a92fc7f4f384d6fcc35543c",
+        "Cargo.toml": "5a9b049f95e78a49a2172c158945e65d723fa719f8f0939c0a47e8be3472c856",
+        "Cargo.toml.orig": "e9c1a3981a3523327ccb8e27797e12f0a78270733a400b65a1c128f44349a679",
+        "LICENCE.md": "e6b6566f085df5746515c6d7e2edcaec0d2b77d527ac40d91409d783fb6c8508",
+        "README.md": "d6783b57b194d82de11e8e2f78204ef93272a85915d9060ab7e0806b3b2c336f",
+        "src/bitmap.rs": "ed9ff7bcb14817d2c7b8cd034beb9ef8c5491f391b1c27f8e73a66196e4efea7",
+        "src/lib.rs": "9df6d1f9dfc421e0faad8c857bfaf763115a25444335fced74917509d8d356f4",
+        "src/types.rs": "bff4aef1f2fdc28884b455b184c0e6163d181a77186a00c523c93245acebf802"
+      }
+    },
+    {
+      "name": "lru",
+      "version": "0.16.4",
+      "path": "vendor/lru-0.16.4",
+      "published_crate_sha256": "7f66e8d5d03f609abc3a39e6f08e4164ebf1447a732906d39eb9b99b7919ef39",
+      "files": {
+        ".cargo_vcs_info.json": "7a68c67510ce26df83afd5f412590d0cf8a0a7321000016f18fc6bb298ce0e8d",
+        "CHANGELOG.md": "c55793634406da7a600a848a548cec063596dda0f55340591d1a25b41fcfa7e5",
+        "Cargo.lock": "0091c894bb4614df6d0f083b4b77f15b68ecdfe23a3a7c812678307c40f06766",
+        "Cargo.toml": "a6969ba90cad8de6a40d2a313bd89ea9e53c3787ee12f78205c859e0d0295c8d",
+        "Cargo.toml.orig": "3c11db1eb7e94817cad5ba9f3ff5a7c85aa3b7a276d3a721ab93f18dcfed3455",
+        "LICENSE": "061dc50af2cd9340703daf61978af3200cf681b12ea67a323c33ba109a23a45e",
+        "README.md": "f5f875a17f1bcc84b7bb3e14df0a14e4fcc13d2dd3713965f16256629b094484",
+        "src/lib.rs": "f97043ea90c8179662bd7caff471f5d3fe723ea2e460b4f205dee095cff35868"
+      }
+    }
+  ]
+}

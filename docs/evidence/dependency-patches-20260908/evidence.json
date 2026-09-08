@@ -1,0 +1,38 @@
+{
+  "format": 1,
+  "scope": "Development dependency patches, not final integrated release certification",
+  "rust": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-apple-darwin\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+  "miri_toolchain": "rustc 1.99.0-nightly (84b36a78a 2026-08-06)\nbinary: rustc\ncommit-hash: 84b36a78a28a63f134171c670be1932ffa2485f8\ncommit-date: 2026-08-06\nhost: aarch64-apple-darwin\nrelease: 1.99.0-nightly\nLLVM version: 23.1.0\n",
+  "source_sha256": {
+    "Cargo.toml": "9e7e3e40fa2bd2758c0e1c9c205c80323ded1ce3c9803c7a452c6aa30800c230",
+    "Cargo.lock": "9bb55164af4fb70b131ce668b81887f39715e4927aa3aaae23cf3cba6329f13c",
+    "vendor/patch-manifest.json": "f193749ad67751d175d127d7609689368b617134dc8ec4b2d9807e34b27a6fd0",
+    "scripts/check_dependency_patches.py": "4192d9230a00d1a5cd5392d853dc895297ec99425765b84614fe904a8cfc58ed"
+  },
+  "log_sha256": {
+    "bitmaps-miri.log": "92815768ba2099140169571c86d0a56a1859dc392508950f4d70f7dde2a24cb9",
+    "bitmaps-tests.log": "e3641b2ad58acf9b0253ff6998622b0454a3d06e340ebe9421afb3f9e2d7a159",
+    "bitmaps-upstream-miri-fresh.log": "e1fd3e57408f90da899715b14ea01b98889d75fc3706a9192f2da0801866ab9f",
+    "bitmaps-upstream-miri.log": "0b3deadb1436e8c62a48d6e8acab908d3f2fa035265d473d719eff0b4fd2e4e0",
+    "dependency-patches.log": "ab7dceeabe9d13798e7be466c2e07642ae52b6d9f28cd7f236253497d99430d0",
+    "lru-miri.log": "fa5d3b0fa67c7cbbc8b62ebd103e7d750e4656c0a817958bc8a8b1d4829adf70",
+    "lru-tests.log": "d2adb6d3b0a2b175f1464c04f42e997229cbda85dfccea896f07faa3f2d8d88c",
+    "lru-upstream-miri-fresh.log": "25cae81b3d60d3e695538409ca1ccb78868e304208e29b558984cba539c97513",
+    "lru-upstream-miri.log": "08955a05df42af4723f640b42314a7db95864b4e26435b59fc7008ebd3be0a24",
+    "patched-check.log": "fd5ef5d2883033e4194c811bb9933b11a64cd34d03ca2f56bb134caba906ef3b"
+  },
+  "results": {
+    "bitmaps_unit": 7,
+    "bitmaps_doctest": 4,
+    "lru_unit": 53,
+    "lru_doctest": 43,
+    "patched_miri_regressions": 2,
+    "isolated_upstream_miri_expected_UB": 2
+  },
+  "limitations": [
+    "Miri is supplementary and uses a separately recorded nightly, not the production compiler.",
+    "The first upstream reproduction reused a build directory and incorrectly ran stale patched artifacts. Its logs are rejected; fresh isolated target directories reproduce both defects.",
+    "An initial cargo test -p attempt failed because vendored packages were not workspace members; separate manifest tests are now pinned and used.",
+    "The first lru regression compile lacked no_std Vec imports; it was corrected before the retained successful suites."
+  ]
+}
