@@ -1,0 +1,104 @@
+name: Frozen release candidate
+
+# Trusted, ephemeral acceptance hosts only. This workflow does not publish a
+# release or run unreviewed fork code on a machine holding deployment secrets.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kasumi-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  functional:
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: [self-hosted, linux, x64, kasumi-acceptance]
+            target: x86_64-unknown-linux-gnu
+          - runner: [self-hosted, linux, arm64, kasumi-acceptance]
+            target: aarch64-unknown-linux-gnu
+          - runner: [self-hosted, macOS, arm64, kasumi-acceptance]
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    env:
+      KASUMI_TARGET: ${{ matrix.target }}
+      KASUMI_RUN: ${{ runner.temp }}/kasumi-release-${{ github.run_id }}-${{ github.run_attempt }}
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check native acceptance host
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir "$KASUMI_RUN"
+          python3 scripts/release_host.py --output "$KASUMI_RUN/host.json" --target "$KASUMI_TARGET"
+      - name: Linux frozen gates and candidate assembly
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --iidfile "$KASUMI_RUN/build-image-id" \
+            --file scripts/linux-validation.Dockerfile scripts \
+            > "$KASUMI_RUN/image-build.log" 2>&1
+          image="$(cat "$KASUMI_RUN/build-image-id")"
+          docker image inspect "$image" > "$KASUMI_RUN/build-image.json"
+          docker run --rm --network none "$image" dpkg-query -W \
+            > "$KASUMI_RUN/build-packages.txt"
+          docker run --rm --init \
+            --env PYTHONDONTWRITEBYTECODE=1 \
+            --env GIT_CONFIG_COUNT=1 --env GIT_CONFIG_KEY_0=safe.directory \
+            --env GIT_CONFIG_VALUE_0=/workspace \
+            --volume "$GITHUB_WORKSPACE:/workspace:ro" \
+            --volume "$KASUMI_RUN:/evidence" "$image" bash -euc '
+              python3 /workspace/scripts/release_gate.py --repository /workspace \
+                --output /evidence/run --jobs 2 \
+                --execution-description "Native Linux acceptance host; host.json and build-image.json record the environment"
+              python3 /evidence/run/source/scripts/package_release.py \
+                --evidence /evidence/run --output /evidence/candidate
+              python3 /evidence/run/source/scripts/package_release.py \
+                --evidence /evidence/run --output /evidence/repeated-assembly
+              cmp /evidence/candidate/SHA256SUMS /evidence/repeated-assembly/SHA256SUMS
+            ' > "$KASUMI_RUN/runner.log" 2>&1
+      - name: macOS frozen gates and development candidate
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.97.1 --profile minimal --component rustfmt --component clippy \
+            > "$KASUMI_RUN/toolchain-install.log" 2>&1
+          python3 scripts/release_gate.py --output "$KASUMI_RUN/run" --jobs 2 \
+            --execution-description 'Native macOS ARM64 development acceptance; host.json records the environment' \
+            > "$KASUMI_RUN/runner.log" 2>&1
+          python3 "$KASUMI_RUN/run/source/scripts/package_release.py" \
+            --evidence "$KASUMI_RUN/run" --output "$KASUMI_RUN/candidate"
+          python3 "$KASUMI_RUN/run/source/scripts/package_release.py" \
+            --evidence "$KASUMI_RUN/run" --output "$KASUMI_RUN/repeated-assembly"
+          cmp "$KASUMI_RUN/candidate/SHA256SUMS" "$KASUMI_RUN/repeated-assembly/SHA256SUMS"
+      - name: Preserve candidate and failed or successful evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: candidate-${{ matrix.target }}-${{ github.sha }}-${{ github.run_attempt }}
+          retention-days: 90
+          compression-level: 0
+          if-no-files-found: error
+          path: |
+            ${{ env.KASUMI_RUN }}/*.json
+            ${{ env.KASUMI_RUN }}/*.log
+            ${{ env.KASUMI_RUN }}/*.txt
+            ${{ env.KASUMI_RUN }}/build-image-id
+            ${{ env.KASUMI_RUN }}/run/*.json
+            ${{ env.KASUMI_RUN }}/run/*.log
+            ${{ env.KASUMI_RUN }}/run/source.tar
+            ${{ env.KASUMI_RUN }}/candidate/*.tar.gz
+            ${{ env.KASUMI_RUN }}/candidate/SHA256SUMS
+            ${{ env.KASUMI_RUN }}/candidate/binary-sha256
+            ${{ env.KASUMI_RUN }}/repeated-assembly/SHA256SUMS

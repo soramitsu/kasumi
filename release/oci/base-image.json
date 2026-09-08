@@ -1,0 +1,173 @@
+{
+  "source": "docker.io/library/debian:bookworm-slim",
+  "resolved_at": "2026-09-08",
+  "index_digest": "sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171",
+  "manifest": {
+    "manifests": [
+      {
+        "annotations": {
+          "com.docker.official-images.bashbrew.arch": "amd64",
+          "org.opencontainers.image.base.name": "scratch",
+          "org.opencontainers.image.created": "2026-08-24T00:00:00Z",
+          "org.opencontainers.image.revision": "bae6d64d90b4068b09ff9d8b564c2773ef5d8d83",
+          "org.opencontainers.image.source": "https://github.com/debuerreotype/docker-debian-artifacts.git",
+          "org.opencontainers.image.url": "https://hub.docker.com/_/debian",
+          "org.opencontainers.image.version": "bookworm-slim"
+        },
+        "digest": "sha256:5ae3c39ebd15e229dcedd5cee596b2497182493d41ff162e824ba13fc1b2b867",
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "platform": {
+          "architecture": "amd64",
+          "os": "linux"
+        },
+        "size": 1021
+      },
+      {
+        "annotations": {
+          "com.docker.official-images.bashbrew.arch": "amd64",
+          "vnd.docker.reference.digest": "sha256:5ae3c39ebd15e229dcedd5cee596b2497182493d41ff162e824ba13fc1b2b867",
+          "vnd.docker.reference.type": "attestation-manifest"
+        },
+        "digest": "sha256:ba55bf1346a4ba0f11dd85f9fb668d2b59d03ba96e8d41eb9a8704da57cb699a",
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "platform": {
+          "architecture": "unknown",
+          "os": "unknown"
+        },
+        "size": 562
+      },
+      {
+        "annotations": {
+          "com.docker.official-images.bashbrew.arch": "arm32v7",
+          "org.opencontainers.image.base.name": "scratch",
+          "org.opencontainers.image.created": "2026-08-24T00:00:00Z",
+          "org.opencontainers.image.revision": "25ccc2a1998b678050f0c6155cb3abef6e1c9f9a",
+          "org.opencontainers.image.source": "https://github.com/debuerreotype/docker-debian-artifacts.git",
+          "org.opencontainers.image.url": "https://hub.docker.com/_/debian",
+          "org.opencontainers.image.version": "bookworm-slim"
+        },
+        "digest": "sha256:09a5970b082d5d26587f315dd4751b0b534c2efe75f1fb6d55d84d790180efa5",
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "platform": {
+          "architecture": "arm",
+          "os": "linux",
+          "variant": "v7"
+        },
+        "size": 1041
+      },
+      {
+        "annotations": {
+          "com.docker.official-images.bashbrew.arch": "arm32v7",
+          "vnd.docker.reference.digest": "sha256:09a5970b082d5d26587f315dd4751b0b534c2efe75f1fb6d55d84d790180efa5",
+          "vnd.docker.reference.type": "attestation-manifest"
+        },
+        "digest": "sha256:b0ffab052852869d784ee6dadc82ee724bb10dfca040143ab70efa54feeb4d8d",
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "platform": {
+          "architecture": "unknown",
+          "os": "unknown"
+        },
+        "size": 562
+      },
+      {
+        "annotations": {
+          "com.docker.official-images.bashbrew.arch": "arm64v8",
+          "org.opencontainers.image.base.name": "scratch",
+          "org.opencontainers.image.created": "2026-08-24T00:00:00Z",
+          "org.opencontainers.image.revision": "f73bd086e8d0e5e1c8b838ccc442bf24eb3ea205",
+          "org.opencontainers.image.source": "https://github.com/debuerreotype/docker-debian-artifacts.git",
+          "org.opencontainers.image.url": "https://hub.docker.com/_/debian",
+          "org.opencontainers.image.version": "bookworm-slim"
+        },
+        "digest": "sha256:6bd27d44e6c32a66bbd72d7cb2b76a8ae3497ec2e5274a81abd1b37f6013fa1f",
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "platform": {
+          "architecture": "arm64",
+          "os": "linux",
+          "variant": "v8"
+        },
+        "size": 1041
+      },
+      {
+        "annotations": {
+          "com.docker.official-images.bashbrew.arch": "arm64v8",
+          "vnd.docker.reference.digest": "sha256:6bd27d44e6c32a66bbd72d7cb2b76a8ae3497ec2e5274a81abd1b37f6013fa1f",
+          "vnd.docker.reference.type": "attestation-manifest"
+        },
+        "digest": "sha256:fb047284ecc822a811b3d2e84657f0335c158dc5d1aefa9ebec90df179a3b1d4",
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "platform": {
+          "architecture": "unknown",
+          "os": "unknown"
+        },
+        "size": 562
+      },
+      {
+        "annotations": {
+          "com.docker.official-images.bashbrew.arch": "i386",
+          "org.opencontainers.image.base.name": "scratch",
+          "org.opencontainers.image.created": "2026-08-24T00:00:00Z",
+          "org.opencontainers.image.revision": "489459cd01466413f38b82b1ddb6ca562ce4aa8c",
+          "org.opencontainers.image.source": "https://github.com/debuerreotype/docker-debian-artifacts.git",
+          "org.opencontainers.image.url": "https://hub.docker.com/_/debian",
+          "org.opencontainers.image.version": "bookworm-slim"
+        },
+        "digest": "sha256:829d25d5de8c8da7f7f9e343d09f11cb20ba4266460f9f7c92cd9f2ecb45a170",
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "platform": {
+          "architecture": "386",
+          "os": "linux"
+        },
+        "size": 1017
+      },
+      {
+        "annotations": {
+          "com.docker.official-images.bashbrew.arch": "i386",
+          "vnd.docker.reference.digest": "sha256:829d25d5de8c8da7f7f9e343d09f11cb20ba4266460f9f7c92cd9f2ecb45a170",
+          "vnd.docker.reference.type": "attestation-manifest"
+        },
+        "digest": "sha256:f3559fd41be01ec2b5f59d3705c98f7a2948399a7a848bcc64521cdd16c08974",
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "platform": {
+          "architecture": "unknown",
+          "os": "unknown"
+        },
+        "size": 562
+      },
+      {
+        "annotations": {
+          "com.docker.official-images.bashbrew.arch": "ppc64le",
+          "org.opencontainers.image.base.name": "scratch",
+          "org.opencontainers.image.created": "2026-08-24T00:00:00Z",
+          "org.opencontainers.image.revision": "bb68445683c88e5fee3b4da71d45d925f46cd3dd",
+          "org.opencontainers.image.source": "https://github.com/debuerreotype/docker-debian-artifacts.git",
+          "org.opencontainers.image.url": "https://hub.docker.com/_/debian",
+          "org.opencontainers.image.version": "bookworm-slim"
+        },
+        "digest": "sha256:1a51c4ab0470eee849b8a2b565729259eb64159d80dd6481330a17853dcc969f",
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "platform": {
+          "architecture": "ppc64le",
+          "os": "linux"
+        },
+        "size": 1029
+      },
+      {
+        "annotations": {
+          "com.docker.official-images.bashbrew.arch": "ppc64le",
+          "vnd.docker.reference.digest": "sha256:1a51c4ab0470eee849b8a2b565729259eb64159d80dd6481330a17853dcc969f",
+          "vnd.docker.reference.type": "attestation-manifest"
+        },
+        "digest": "sha256:d65a29a3fd34a06b961558db2a8cc2d7db9b3f29752454f9f1d866ff4472b850",
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "platform": {
+          "architecture": "unknown",
+          "os": "unknown"
+        },
+        "size": 562
+      }
+    ],
+    "mediaType": "application/vnd.oci.image.index.v1+json",
+    "schemaVersion": 2
+  }
+}

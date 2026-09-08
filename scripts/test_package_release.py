@@ -37,7 +37,7 @@ class PackageReleaseTests(unittest.TestCase):
             if name == "production":
                 gate.update(executables=artifacts, compiled_packages={"fixture": {"features": []}})
             gates.append(gate)
-        record = {"schema": 1, "status": "passed", "toolchain": package.TOOLCHAIN,
+        record = {"schema": 1, "status": "passed", "toolchain": package.TOOLCHAIN, "jobs": 2,
                   "gates": gates, "source_files_sha256": sha256(root / "source-files.json"),
                   "source_archive_sha256": sha256(root / "source.tar"),
                   "lockfile_sha256": sha256(source / "Cargo.lock")}
@@ -45,7 +45,8 @@ class PackageReleaseTests(unittest.TestCase):
         return record
 
     def test_changed_binary_log_source_and_failed_gate_cannot_be_packaged(self):
-        for changed in ("binary", "log", "source", "failed", "missing-inventory", "missing-doc-gate"):
+        for changed in ("binary", "log", "source", "failed", "missing-inventory", "missing-doc-gate",
+                        "weakened-clippy", "different-build", "missing-jobs"):
             with self.subTest(changed=changed), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 record = self.make_evidence(root)
@@ -60,6 +61,12 @@ class PackageReleaseTests(unittest.TestCase):
                     record["gates"][2]["exit_code"] = 7
                 elif changed == "missing-inventory":
                     record["gates"][-1]["compiled_packages"] = {}
+                elif changed == "weakened-clippy":
+                    next(g for g in record["gates"] if g["name"] == "clippy")["command"].remove("--all-targets")
+                elif changed == "different-build":
+                    record["gates"][-1]["command"].remove("--no-default-features")
+                elif changed == "missing-jobs":
+                    del record["jobs"]
                 else:
                     record["gates"] = [g for g in record["gates"] if g["name"] != "workspace-docs"]
                 write_json(root / "evidence.json", record)
