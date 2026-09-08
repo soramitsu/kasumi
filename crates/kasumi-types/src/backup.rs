@@ -43,3 +43,91 @@ pub struct VerifyBackupCheckpoint {
     pub destination: String,
     pub backup_id: uuid::Uuid,
 }
+
+/// One durable identity is chosen before the first object is uploaded.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct BackupSessionIntent {
+    pub session_id: uuid::Uuid,
+    pub tenant: String,
+    pub source_incarnation: String,
+    pub revision: u64,
+    pub principal: String,
+    pub request_id: String,
+}
+impl BackupSessionIntent {
+    pub fn validate(&self) -> Result<()> {
+        validate_name(&self.tenant)?;
+        validate_name(&self.source_incarnation)?;
+        validate_name(&self.principal)?;
+        if self.session_id.is_nil() || self.request_id.len() > 1024 {
+            return Err(Error::new(
+                ErrorCode::InvalidArgument,
+                "invalid backup session intent",
+            ));
+        }
+        Ok(())
+    }
+}
+/// Exactly one create-only outcome can win. It is never a cleanup target.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BackupSessionOutcome {
+    Complete {
+        intent_ciphertext_sha256: String,
+        checkpoint: FullBackupCheckpoint,
+    },
+    Aborted {
+        intent_ciphertext_sha256: String,
+        session_id: uuid::Uuid,
+        principal: String,
+        reason: String,
+    },
+}
+impl BackupSessionOutcome {
+    pub fn validate(&self, intent: &BackupSessionIntent, digest: &str) -> Result<()> {
+        intent.validate()?;
+        validate_sha256(digest)?;
+        let actual = match self {
+            Self::Complete {
+                intent_ciphertext_sha256,
+                checkpoint,
+            } => {
+                checkpoint.validate()?;
+                if checkpoint.backup_id != intent.session_id
+                    || checkpoint.tenant != intent.tenant
+                    || checkpoint.source_incarnation != intent.source_incarnation
+                    || checkpoint.revision != intent.revision
+                {
+                    return Err(Error::new(
+                        ErrorCode::Corruption,
+                        "completed backup differs from session intent",
+                    ));
+                }
+                intent_ciphertext_sha256
+            }
+            Self::Aborted {
+                intent_ciphertext_sha256,
+                session_id,
+                principal,
+                reason,
+            } => {
+                validate_name(principal)?;
+                if *session_id != intent.session_id || reason.is_empty() || reason.len() > 1024 {
+                    return Err(Error::new(
+                        ErrorCode::Corruption,
+                        "aborted backup differs from session intent",
+                    ));
+                }
+                intent_ciphertext_sha256
+            }
+        };
+        if actual != digest {
+            return Err(Error::new(
+                ErrorCode::Corruption,
+                "backup outcome intent digest differs",
+            ));
+        }
+        Ok(())
+    }
+}

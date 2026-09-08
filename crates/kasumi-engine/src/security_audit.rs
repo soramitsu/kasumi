@@ -6,7 +6,7 @@ use kasumi_store::{TenantStore, WriteOp};
 use kasumi_types::AuditRetentionBudget;
 #[path = "security_audit_retention.rs"]
 mod retention;
-pub use retention::{SecurityAuditPage, SecurityAuditStatus};
+pub use retention::{SecurityAuditCursor, SecurityAuditPage, SecurityAuditStatus};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -102,7 +102,7 @@ struct AuditWriter {
     destination: Arc<dyn kasumi_store::AuditArchiveDestination>,
     maintenance: tokio::sync::Mutex<()>,
     wake: Arc<tokio::sync::Notify>,
-    _workspace: crate::admission::Reservation,
+    workspace: Mutex<Option<crate::admission::Reservation>>,
     work: Arc<WorkFence>,
 }
 
@@ -184,7 +184,7 @@ impl SecurityAudit {
             maintenance: tokio::sync::Mutex::new(()),
             wake: Arc::new(tokio::sync::Notify::new()),
             work: Arc::new(WorkFence::default()),
-            _workspace: workspace,
+            workspace: Mutex::new(Some(workspace)),
         });
         writers.insert(identity, Arc::downgrade(&writer));
         retention::start_worker(&runtime, Arc::downgrade(&writer));
@@ -362,6 +362,13 @@ impl SecurityAudit {
         self.writer.work.seal();
         self.writer.work.drain().await;
         self.writer.store.shutdown().await;
+        // Retained closed handles cannot perform more work. Release the node's
+        // maintenance reservation only after every actual store owner drains.
+        self.writer
+            .workspace
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
     }
 }
 

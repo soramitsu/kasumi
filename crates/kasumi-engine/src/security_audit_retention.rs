@@ -73,6 +73,14 @@ pub struct SecurityAuditStatus {
     pub maintenance_failures: u64,
     pub last_failure: Option<String>,
 }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SecurityAuditCursor {
+    pub stream_id: Uuid,
+    pub next_sequence: u64,
+    pub through_sequence: u64,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SecurityAuditPage {
@@ -349,6 +357,7 @@ impl SecurityAudit {
             (1..=256).contains(&limit),
             "archive page limit must be 1..256"
         );
+        let _work = self.begin()?;
         let state = self
             .writer
             .sequence
@@ -399,8 +408,7 @@ impl SecurityAudit {
 
     pub async fn export_page(
         &self,
-        first_sequence: u64,
-        through_sequence: Option<u64>,
+        cursor: Option<SecurityAuditCursor>,
         limit: u16,
     ) -> Result<SecurityAuditPage> {
         ensure!(
@@ -418,7 +426,17 @@ impl SecurityAudit {
                 .map_err(|_| anyhow::anyhow!("audit state unavailable"))?
                 .head
                 .clone();
-            let end = through_sequence.unwrap_or(head.position.next_sequence);
+            let cursor = cursor.unwrap_or(SecurityAuditCursor {
+                stream_id: head.position.stream_id,
+                next_sequence: 0,
+                through_sequence: head.position.next_sequence,
+            });
+            ensure!(
+                cursor.stream_id == head.position.stream_id,
+                "audit cursor belongs to another installed stream"
+            );
+            let first_sequence = cursor.next_sequence;
+            let end = cursor.through_sequence;
             ensure!(
                 first_sequence <= end && end <= head.position.next_sequence,
                 "audit export position is beyond history"
@@ -429,6 +447,10 @@ impl SecurityAudit {
                 next_sequence: first_sequence,
                 records: Vec::new(),
             };
+            if first_sequence == end {
+                audit.writer.store.check_access()?;
+                return Ok(page);
+            }
             let mut bytes_read = 0usize;
             let mut push = |sequence: u64, bytes: &[u8]| -> Result<()> {
                 if sequence == page.next_sequence
@@ -602,7 +624,7 @@ mod tests {
             store.clone(),
             budget.clone(),
             archive.clone(),
-            admission,
+            admission.clone(),
         )
         .unwrap();
         audit.maintain().await.unwrap();
@@ -620,7 +642,17 @@ mod tests {
         let mut next = 0;
         let end = status.position.next_sequence;
         while next < end {
-            let page = audit.export_page(next, Some(end), 7).await.unwrap();
+            let page = audit
+                .export_page(
+                    Some(SecurityAuditCursor {
+                        stream_id: status.position.stream_id,
+                        next_sequence: next,
+                        through_sequence: end,
+                    }),
+                    7,
+                )
+                .await
+                .unwrap();
             assert!(page.next_sequence > next);
             for value in &page.records {
                 assert_eq!(value["sequence"], next);
@@ -633,8 +665,33 @@ mod tests {
         for index in 0..status.archive_segments {
             audit.verify_archive(index).await.unwrap();
         }
-        assert!(audit.export_page(0, Some(end + 1), 10).await.is_err());
+        assert!(
+            audit
+                .export_page(
+                    Some(SecurityAuditCursor {
+                        stream_id: status.position.stream_id,
+                        next_sequence: 0,
+                        through_sequence: end + 1
+                    }),
+                    10
+                )
+                .await
+                .is_err()
+        );
         assert!(audit.archive_page(status.archive_segments + 1, 10).is_err());
+        assert!(
+            audit
+                .export_page(
+                    Some(SecurityAuditCursor {
+                        stream_id: Uuid::new_v4(),
+                        next_sequence: 0,
+                        through_sequence: end
+                    }),
+                    10
+                )
+                .await
+                .is_err()
+        );
         assert!(store.get(META, b"pending").unwrap().is_none());
         // Cancellation must leave the real publication registered. A stopped
         // installation cannot hand ownership to cleanup while it is still live.
@@ -655,5 +712,6 @@ mod tests {
         archive.release.add_permits(1);
         shutdown.await;
         assert!(store.check_access().is_err());
+        assert_eq!(admission.snapshot().reserved_bytes, 0);
     }
 }

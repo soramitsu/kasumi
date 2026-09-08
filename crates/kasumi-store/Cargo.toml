@@ -32,6 +32,7 @@ zeroize = { version = "1", features = ["derive"] }
 parking_lot = "0.12"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 libc = "0.2"
+quick-xml = "=0.42.0"
 time = { version = "0.3", features = ["formatting", "macros"] }
 
 [dev-dependencies]

@@ -140,7 +140,11 @@ impl ServingFixture {
             )
             .await
             .unwrap();
-            let audit = SecurityAudit::open(audit_store, kasumi_types::AuditRetentionBudget::default()).unwrap();
+            // Each simulated data node has the same independent governor used
+            // by a real NodeRuntime, including its maintenance reservation.
+            let admission = crate::admission::NodeAdmission::new(Default::default()).unwrap();
+            let archive = Arc::new(kasumi_store::FilesystemAuditArchive::open(audit_store.durable_directory().unwrap().join("audit-archives")).unwrap());
+            let audit = SecurityAudit::open_with_archive(audit_store, kasumi_types::AuditRetentionBudget::default(), archive, admission.clone()).unwrap();
             let stores = kasumi_store::TenantStorageSet::open(
                 node,
                 self.context.tenant.clone(),
@@ -165,6 +169,7 @@ impl ServingFixture {
             )
             .await
             .unwrap();
+            db.install_admission(admission).unwrap();
             self.router
                 .register(group.clone(), id, db.raft_group().raft().clone());
             self.databases.push(db);
