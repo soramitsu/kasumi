@@ -1,42 +1,7 @@
 //! Permanent target closure and a separately signed completed drain observation.
 //! An immediate stop receipt cannot construct a drained-target proof.
 use crate::*;
-use anyhow::{Result, ensure};
-use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TargetStopReference {
-    pub tenant: String,
-    pub command_id: Uuid,
-    pub receipt_digest: String,
-}
-impl TargetStopReference {
-    pub fn validate(&self) -> Result<()> {
-        kasumi_types::validate_name(&self.tenant)?;
-        kasumi_types::validate_sha256(&self.receipt_digest)?;
-        ensure!(!self.command_id.is_nil(), "nil target stop command");
-        Ok(())
-    }
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TargetStopObservation {
-    pub reference: TargetStopReference,
-    /// Actual first permanent incarnation stop, even if reference names an
-    /// exact later administrative replay command.
-    pub stop: AuthorityReceipt,
-    pub observed_term: u64,
-    pub observed_revision: u64,
-    pub drain_ms: u64,
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SignedTargetStop {
-    pub observation: TargetStopObservation,
-    pub signature: kasumi_types::GenerationSignature,
-}
 /// Irrevocable completed drain evidence, not a data or lifecycle lease. Local
 /// jobs/storage must still close and drain before physical cleanup is claimed.
 /// ```compile_fail
