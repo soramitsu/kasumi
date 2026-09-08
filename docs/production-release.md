@@ -8,8 +8,9 @@ The explicit release goal remains active. Current integration adds atomic recove
 route publication, issuer-local activation tied to the global winner, and byte
 budgets for permanent staged outcomes. Permanent point-table migration, native
 resource reservations, persistent disk admission and the final live/capacity/
-endurance gates remain open. The Linux reference VM now has16GiB memory; the
-preceding7GiB-container workspace attempt failed and is retained in full.
+endurance gates remain open. The Linux reference VM has 16 GiB memory. Its latest
+frozen run (`3a8d512`, 15 GiB container limit) failed the restored-runtime restart
+test while all other gates passed. Earlier failures remain retained in full.
 
 ## Contract
 
@@ -63,6 +64,49 @@ preceding7GiB-container workspace attempt failed and is retained in full.
   24-hour HA endurance run. No duration substitutions or waived failures.
 - [ ] Source/configuration/dependency/executable-bound evidence, dependency
   dispositions, notices, SBOM, checksums and validated release artifacts.
+
+## Next integration checkpoints
+
+These are concrete steps toward the active release goal, not separate release
+approvals. Implementation branches must pass their stated regressions before
+integration; the final integrated source must then pass the complete gates above.
+
+1. Close storage ownership across completed, cancelled and retried shutdowns.
+   Validate security and tenant audit workers, recovery supervisors, serving
+   lease renewals and target phase renewals, then repeat the three-node restored
+   restart that failed on Linux. A source-level ownership counterexample does
+   not establish the sole cause of that observed failure.
+2. Integrate original mutation receipt scope and digest verification, including
+   restored lineage intervals, native/MCP lost-response resolution and the
+   finite original SDK deadline. The prepared receipt checkpoint passes client
+   and driver tests plus strict workspace lint; engine and native functional
+   checks remain pending. Ordinary receipt lifetime and permanent table
+   migration remain separate work.
+3. Validate staged terminal records in encrypted point-addressed storage,
+   including cancellation after physical publication, exact applied-prefix
+   selection and restore publication. The prepared branch compiles; crash and
+   functional regressions have not yet passed. Reuse the validated storage
+   primitive for authority and recovery terminal facts only after these checks.
+4. Add explicit SDK snapshot transport/decode admission, exact returned snapshot
+   semantics and response ownership through cancellation. Enforce caller byte,
+   depth and node limits before the corresponding owned DTO allocation, and
+   preserve member routing and the original deadline. Document SDK-accounted
+   capacity separately from transport buffers and process RSS.
+5. Complete signer coverage and exact authority reopen, then install prepared
+   target completion reservations, terminal resolution and linked Control
+   successors. An absent Complete remains unknown until the exact durable
+   terminal protocol proves otherwise.
+6. Run a small offline standalone diagnostic with the actual fixture-free Linux
+   binaries: private initialization, native and MCP access, renewal, encrypted
+   backup, restart and stopped local restore. Preserve its exact source and
+   executable hashes. This diagnostic does not replace the full credential,
+   rotation, recovery, 3 GiB, HA or endurance acceptance gates.
+
+Persistent disk admission and native durable resource reservations must be
+implemented before claiming configured node disk capacity or reserved import
+completion. A scratch-file budget or an application payload limit does not
+account for persistent databases, indexes, WALs, archived objects or retained
+versions. The exact reservation dependency is specified below.
 
 ## Work ownership
 
