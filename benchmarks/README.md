@@ -175,6 +175,11 @@ targets have one, it measures complete paginated results. No automatic retries
 hide uncertain outcomes. Disclose the endpoint's mode, hardware, audit policy,
 KMS, dataset and server build alongside its report.
 
+For bounded corpus loading and exhaustive point-read verification against an
+installed production service, see [native capacity tooling](NATIVE-CAPACITY.md).
+It retains original commands and receipt observations across failed runs; its
+configuration is separate from a measured capacity result.
+
 ## Publication gate
 
 Check in reproducible commands, source-tree/executable identity, build profile,

@@ -19,7 +19,8 @@ class ReleaseGateTests(unittest.TestCase):
             with self.subTest(violation=violation):
                 result = {"exit_code": 0,
                           "executables": {"release/kasumi-bench-network": {
-                              "target": "kasumi-bench-network", "test": violation == "test-artifact"}},
+                              "target": "kasumi-bench-network", "test": violation == "test-artifact"},
+                              "release/kasumi-bench-capacity": {"target": "kasumi-bench-capacity", "test": False}},
                           "compiled_packages": {"dependency": {"features": [violation]}}}
                 if violation == "missing-inventory":
                     result["compiled_packages"] = {}

@@ -10,7 +10,7 @@ default-run = "kasumi-bench"
 
 [features]
 embedded-fixture = ["dep:kasumi-engine", "dep:kasumi-raft", "dep:kasumi-store", "kasumi-store/test-utils"]
-network = ["dep:kasumi-client", "dep:kasumi-transport", "dep:reqwest", "dep:tonic", "dep:zeroize"]
+network = ["dep:kasumi-client", "dep:kasumi-transport", "dep:reqwest", "dep:tonic", "dep:zeroize", "dep:base64"]
 loopback-fixture = ["network", "dep:kasumi-server", "kasumi-server/test-utils", "dep:rcgen", "dep:jsonwebtoken", "dep:base64", "dep:axum", "dep:async-trait"]
 
 [[bin]]
@@ -21,6 +21,11 @@ required-features = ["embedded-fixture"]
 [[bin]]
 name = "kasumi-bench-network"
 path = "src/bin/network.rs"
+required-features = ["network"]
+
+[[bin]]
+name = "kasumi-bench-capacity"
+path = "src/bin/capacity.rs"
 required-features = ["network"]
 
 [[bin]]
