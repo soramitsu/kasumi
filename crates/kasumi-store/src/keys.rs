@@ -56,7 +56,7 @@ pub struct TransitConfig {
     pub endpoint: String,
     pub mount: String,
     pub key_name: String,
-    pub token: String,
+    pub credential: std::sync::Arc<dyn kasumi_transport::credentials::CredentialSource>,
     pub namespace: Option<String>,
     pub ca_pem: Option<Vec<u8>>,
     /// Set only for Transit keys created with `derived=true`.
@@ -69,7 +69,7 @@ impl fmt::Debug for TransitConfig {
             .field("endpoint", &self.endpoint)
             .field("mount", &self.mount)
             .field("key_name", &self.key_name)
-            .field("token", &"[REDACTED]")
+            .field("credential", &"[REDACTED]")
             .finish_non_exhaustive()
     }
 }
@@ -81,11 +81,11 @@ pub struct TransitKeyProvider {
     key_name: String,
     key_ref: String,
     derived: bool,
+    credential: std::sync::Arc<dyn kasumi_transport::credentials::CredentialSource>,
 }
 
 impl TransitKeyProvider {
-    pub fn new(mut config: TransitConfig) -> Result<Self> {
-        let token_secret = Zeroizing::new(std::mem::take(&mut config.token));
+    pub fn new(config: TransitConfig) -> Result<Self> {
         let endpoint = Url::parse(&config.endpoint).context("invalid Transit endpoint")?;
         ensure!(endpoint.scheme() == "https", "Transit requires HTTPS");
         ensure!(
@@ -106,9 +106,6 @@ impl TransitKeyProvider {
         );
         validate_path(&config.key_name)?;
         let mut headers = HeaderMap::new();
-        let mut token = HeaderValue::from_str(&token_secret).context("invalid Transit token")?;
-        token.set_sensitive(true);
-        headers.insert("X-Vault-Token", token);
         if let Some(namespace) = &config.namespace {
             validate_path(namespace)?;
             headers.insert("X-Vault-Namespace", HeaderValue::from_str(namespace)?);
@@ -137,6 +134,7 @@ impl TransitKeyProvider {
             key_name: config.key_name,
             key_ref,
             derived: config.derived,
+            credential: config.credential,
         })
     }
 
@@ -149,9 +147,13 @@ impl TransitKeyProvider {
         let url = self
             .endpoint
             .join(&format!("v1/{}/{operation}/{}", self.mount, self.key_name))?;
+        let secret = kasumi_transport::credentials::token(self.credential.as_ref())?;
+        let mut token = HeaderValue::from_str(&secret).context("invalid Transit token")?;
+        token.set_sensitive(true);
         let mut response = self
             .client
             .post(url)
+            .header("X-Vault-Token", token)
             .json(&body)
             .send()
             .await
@@ -315,6 +317,7 @@ mod tests {
     struct Service {
         wrapping: LocalKeyProvider,
         response_mode: AtomicU8,
+        expected_token: parking_lot::Mutex<String>,
         requests: parking_lot::Mutex<Vec<(String, serde_json::Value)>>,
     }
     impl Service {
@@ -322,6 +325,7 @@ mod tests {
             Arc::new(Self {
                 wrapping: LocalKeyProvider::new([64; 32]),
                 response_mode: AtomicU8::new(0),
+                expected_token: parking_lot::Mutex::new("test-runtime-secret".into()),
                 requests: parking_lot::Mutex::new(Vec::new()),
             })
         }
@@ -347,7 +351,7 @@ mod tests {
     ) -> Response {
         if headers
             .get("x-vault-token")
-            .is_none_or(|v| v != "test-runtime-secret")
+            .is_none_or(|v| v != state.expected_token.lock().as_str())
             || headers
                 .get("x-vault-namespace")
                 .is_none_or(|v| v != "teams")
@@ -439,11 +443,44 @@ mod tests {
             endpoint: fixture.endpoint.clone(),
             mount: "teams/transit".into(),
             key_name: "tenant-key".into(),
-            token: "test-runtime-secret".into(),
+            credential: Arc::new(|| Ok(Zeroizing::new("test-runtime-secret".into()))),
             namespace: Some("teams".into()),
             ca_pem: Some(fixture.ca_pem.clone()),
             derived: true,
         }
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn transit_reads_replaced_token_for_every_request_and_never_caches_failure() {
+        use std::{io::Write, os::unix::fs::PermissionsExt};
+        let state = Service::new();
+        let fixture = TlsFixture::spawn(router(state.clone())).await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("token");
+        let publish = |value: &str| {
+            let mut file = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
+            file.as_file()
+                .set_permissions(std::fs::Permissions::from_mode(0o600))
+                .unwrap();
+            file.write_all(value.as_bytes()).unwrap();
+            file.persist(&path).unwrap();
+        };
+        publish("test-runtime-secret");
+        let mut settings = config(&fixture);
+        settings.credential =
+            Arc::new(kasumi_transport::credentials::FileCredentialSource::new(&path).unwrap());
+        let provider = TransitKeyProvider::new(settings).unwrap();
+        let key = provider.generate_key("tenant").await.unwrap();
+        *state.expected_token.lock() = "rotated-runtime-secret".into();
+        assert!(provider.unwrap_key("tenant", &key.wrapped).await.is_err());
+        publish("rotated-runtime-secret");
+        let restored = provider.unwrap_key("tenant", &key.wrapped).await.unwrap();
+        assert_eq!(restored.as_bytes(), key.plaintext.as_bytes());
+        publish("bad\nheader");
+        assert!(provider.unwrap_key("tenant", &key.wrapped).await.is_err());
+        std::fs::remove_file(&path).unwrap();
+        assert!(provider.unwrap_key("tenant", &key.wrapped).await.is_err());
     }
 
     #[tokio::test]
@@ -567,7 +604,7 @@ mod tests {
                 endpoint: bad.into(),
                 mount: "transit".into(),
                 key_name: "key".into(),
-                token: "secret".into(),
+                credential: Arc::new(|| Ok(Zeroizing::new("secret".into()))),
                 namespace: None,
                 ca_pem: None,
                 derived: false,

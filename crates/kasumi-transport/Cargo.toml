@@ -16,3 +16,9 @@ tower = { version = "0.5", features = ["util"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http = "1"
 url = "2"
+
+zeroize = "1"
+libc = "0.2"
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -16,7 +16,7 @@ target/release/kasumictl example-config > client.example.json
 
 Edit copies of these templates with operator-approved endpoints, identities,
 failure domains and credential references. `check-config` validates structure
-without contacting external services or reading secret environment values.
+without contacting external services or reading secret files.
 Startup then verifies credentials, decrypts persisted state, reconstructs
 documents/indexes and establishes control metadata before opening data service.
 A listening TLS endpoint alone is not evidence that a particular tenant has
@@ -45,9 +45,13 @@ write measurements. They still depend on the filesystem/device honoring them.
 See [the pinned Rust implementation](https://raw.githubusercontent.com/rust-lang/rust/1.94.1/library/std/src/sys/fs/unix.rs).
 
 The unit expects `/usr/local/bin/kasumid`, `/etc/kasumi/node.json` and an
-operator-created `/etc/kasumi/secrets.env`. Keep the secret file root-owned and
-mode 0600. It contains the named Transit/S3 credential variables referenced by
-the JSON, never tokens in command-line arguments. Certificate private keys
+operator-created credential files beneath `/etc/kasumi/credentials`. Keep these
+files owned by the service account and mode 0600. Configuration uses absolute
+`token_file`/`bearer_file` paths and one `credentials_file` JSON bundle for S3.
+Publish renewed credentials using a new private file, sync it, atomically rename
+it over the installed path and sync the parent directory. Every request reads a
+fresh snapshot; missing or malformed replacements fail closed. Environment
+variables and constructor-time secret snapshots are not supported. Certificate private keys
 must be readable only by the service account and its trusted operator. The
 unit confines persistent writes to `/var/lib/kasumi`; choose backup/generation
 paths beneath it or explicitly adapt that allowlist.

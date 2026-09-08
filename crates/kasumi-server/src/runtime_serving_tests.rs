@@ -65,7 +65,7 @@ async fn fenced_source_startup_keeps_control_handle_without_constructing_applica
     authority.server_ca = files.certificate.clone();
     authority.endpoints.get_mut(&0).unwrap().endpoint =
         format!("https://localhost:{}", unavailable_address.port());
-    let application_token = config.tenants[0].transit.token_env.clone();
+    let application_token = config.tenants[0].transit.token_file.clone();
     let probes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let observed = probes.clone();
     let mut runtime = NodeRuntime::open_using(config.clone(), move |name| {

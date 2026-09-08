@@ -151,9 +151,15 @@ async fn actual_minio_tls_sigv4_encrypted_roundtrip_create_only_and_access_denia
         region: "us-east-1".into(),
         bucket: bucket.clone(),
         prefix: "encrypted/backups".into(),
-        access_key_id: user.clone(),
-        secret_access_key: password.to_string(),
-        session_token: None,
+        credential: {
+            let user = user.clone();
+            let password = password.clone();
+            Arc::new(move || {
+                Ok(Zeroizing::new(serde_json::json!({
+                "access_key_id": user, "secret_access_key": password.as_str(), "session_token": null
+            }).to_string()))
+            })
+        },
         ca_pem: Some(ca.clone()),
         max_bytes: 4 << 20,
     };
@@ -220,7 +226,12 @@ async fn actual_minio_tls_sigv4_encrypted_roundtrip_create_only_and_access_denia
             .is_err()
     );
     let mut bad = make();
-    bad.secret_access_key = "incorrect-credential".into();
+    let original = bad.credential.clone();
+    bad.credential = Arc::new(move || {
+        let mut bundle: serde_json::Value = serde_json::from_str(&original.load()?)?;
+        bundle["secret_access_key"] = serde_json::json!("incorrect-credential");
+        Ok(Zeroizing::new(bundle.to_string()))
+    });
     assert!(
         S3BackupDestination::new(bad)?
             .get(id, 16 << 20)

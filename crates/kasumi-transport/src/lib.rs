@@ -1,4 +1,5 @@
 //! Shared TLS 1.3, mutual authentication and certificate pinning for Kasumi.
+pub mod credentials;
 use anyhow::{Context, Result, ensure};
 use hyper_util::rt::TokioIo;
 use rustls::{
