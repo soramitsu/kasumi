@@ -530,6 +530,16 @@ mod tests {
             );
         }
         assert_ne!(corpus.document(0).unwrap(), corpus.document(1).unwrap());
+        // Independently generated canonical vectors make the public corpus
+        // reproducible across hosts and prevent an unnoticed generator change.
+        assert_eq!(
+            digest(&serde_json::to_vec(&corpus.document(0).unwrap()).unwrap()),
+            "394fe15da12aa133d39dce92047bd3286962ba6d6136a0615b19d3f8565ac67a"
+        );
+        assert_eq!(
+            digest(&serde_json::to_vec(&corpus.document(999).unwrap()).unwrap()),
+            "0f2ce61facf68acfb2587f4d7ce740598149abeea7491f1ee373f5e092ad2a7b"
+        );
     }
     #[test]
     fn batch_identity_is_exact_and_limits_fail_before_allocating() {
