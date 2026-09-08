@@ -13,7 +13,8 @@ pub struct AtomicLimits {
     pub max_transaction_bytes: usize,
     pub max_active_transactions: usize,
     pub max_reserved_staging_bytes: usize,
-    pub max_transaction_records: usize,
+    /// Permanent canonical staged headers plus reserved terminal capacity.
+    pub max_permanent_staged_bytes: u64,
     pub max_snapshot_leases: usize,
     pub max_snapshot_lease_bytes: usize,
 }
@@ -26,7 +27,7 @@ impl Default for AtomicLimits {
             max_transaction_bytes: 64 << 20,
             max_active_transactions: 8,
             max_reserved_staging_bytes: 128 << 20,
-            max_transaction_records: 100_000,
+            max_permanent_staged_bytes: 128 << 20,
             max_snapshot_leases: 8,
             max_snapshot_lease_bytes: 256 << 20,
         }

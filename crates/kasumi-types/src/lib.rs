@@ -492,6 +492,10 @@ pub struct TenantState {
     #[serde(serialize_with = "serialize_resident_map")]
     pub staged_transactions: imbl::OrdMap<String, StagedTransaction>,
     pub active_staged_transactions: BTreeSet<String>,
+    /// Exact canonical headers and point identities; uploaded chunks are separate.
+    pub permanent_staged_bytes: u64,
+    /// Outstanding capacity owned by active stages for counter growth and termination.
+    pub reserved_staged_terminal_bytes: u64,
     pub change_feed: ChangeFeedState,
     #[serde(serialize_with = "serialize_resident_map")]
     pub history_archives: imbl::OrdMap<String, std::sync::Arc<RetainedHistoryArchive>>,

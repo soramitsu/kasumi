@@ -326,11 +326,7 @@ impl TenantEngine {
             max_audit_hot_bytes: state.limits.audit_retention.hot_bytes,
             snapshot_bytes: generation.snapshot_bytes()? as u64,
             max_snapshot_bytes: state.limits.max_snapshot_bytes,
-            staged_outcome_headroom: state
-                .active_staged_transactions
-                .len()
-                .saturating_mul(STAGED_OUTCOME_HEADROOM)
-                as u64,
+            staged_outcome_headroom: crate::accounting::staged_headroom(state)?,
         })
     }
     /// A tenant bootstrap is trusted control-plane input, identical on all replicas.
@@ -367,6 +363,8 @@ impl TenantEngine {
             receipts: imbl::OrdMap::new(),
             staged_transactions: imbl::OrdMap::new(),
             active_staged_transactions: BTreeSet::new(),
+            permanent_staged_bytes: 0,
+            reserved_staged_terminal_bytes: 0,
             change_feed: ChangeFeedState::empty(),
             history_archives: imbl::OrdMap::new(),
             history_archive_bytes: 0,
@@ -891,8 +889,7 @@ impl TenantEngine {
                     completed.outcome = StagedOutcome::Finished {
                         outcome: Err(error.clone()),
                     };
-                    rejected.staged_transactions.insert(key.clone(), completed);
-                    rejected.active_staged_transactions.remove(&key);
+                    staging::replace_record(&mut rejected, key, completed)?;
                 }
             }
             if let Some(key) = &receipt_key {
@@ -1961,8 +1958,7 @@ fn validate_limits(limits: &Limits) -> Result<()> {
         || atomic.max_active_transactions > 64
         || atomic.max_reserved_staging_bytes < atomic.max_transaction_bytes
         || atomic.max_reserved_staging_bytes > (512 << 20)
-        || atomic.max_transaction_records < atomic.max_active_transactions
-        || atomic.max_transaction_records > 1_000_000
+        || atomic.max_permanent_staged_bytes == 0
         || atomic.max_snapshot_leases == 0
         || atomic.max_snapshot_leases > 128
         || atomic.max_snapshot_lease_bytes == 0

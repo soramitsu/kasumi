@@ -326,7 +326,6 @@ fn complete_large_read_set_and_append_only_rules_reject_all_effects_atomically()
 fn staged_identity_capacity_is_reserved_before_payload_and_expiry_never_reuses_identity() {
     let mut limits = Limits::default();
     limits.atomic.max_active_transactions = 1;
-    limits.atomic.max_transaction_records = 2;
     let db = engine(limits);
     let chunks = chunks();
     let (a, ar) = begin(
@@ -389,6 +388,11 @@ fn staged_identity_capacity_is_reserved_before_payload_and_expiry_never_reuses_i
         ErrorCode::QuotaExceeded
     );
     apply(&db, 12, Operation::BeginStaged(b.clone())).unwrap();
+    let state = &db.generation().unwrap().state;
+    let mut limits = state.limits.clone();
+    limits.atomic.max_permanent_staged_bytes =
+        state.permanent_staged_bytes + state.reserved_staged_terminal_bytes;
+    apply(&db, 12, Operation::SetLimits(limits)).unwrap();
     assert_eq!(
         apply(&db, 13, Operation::FinalizeStaged(ar))
             .unwrap_err()
@@ -1082,4 +1086,208 @@ fn ordered_foreign_scope_rejection_cannot_expire_or_rebind_an_original_upload() 
             StagedOutcome::Uploading
         ));
     }
+}
+
+#[test]
+fn permanent_staged_byte_exhaustion_preserves_success_failure_and_restored_exact_replays() {
+    let db = engine(Limits::default());
+    let chunk = StagedChunk {
+        read_set: vec![],
+        operations: vec![put("docs", "once", 42)],
+    };
+    let (first, reference) = begin("incarnation", "first", std::slice::from_ref(&chunk), 1000);
+    apply(&db, 2, Operation::BeginStaged(first.clone())).unwrap();
+    apply(
+        &db,
+        3,
+        Operation::AppendStaged(AppendStagedChunk {
+            transaction: reference.clone(),
+            index: 0,
+            chunk: chunk.clone(),
+        }),
+    )
+    .unwrap();
+    let current = db.generation().unwrap();
+    let mut limits = current.state.limits.clone();
+    limits.atomic.max_permanent_staged_bytes =
+        current.state.permanent_staged_bytes + current.state.reserved_staged_terminal_bytes;
+    drop(current);
+    apply(&db, 3, Operation::SetLimits(limits.clone())).unwrap();
+    limits.atomic.max_permanent_staged_bytes -= 1;
+    assert_eq!(
+        apply(&db, 3, Operation::SetLimits(limits))
+            .unwrap_err()
+            .code,
+        ErrorCode::QuotaExceeded
+    );
+    let committed = apply(&db, 4, Operation::FinalizeStaged(reference.clone())).unwrap();
+    let (second, second_reference) =
+        begin("incarnation", "second", std::slice::from_ref(&chunk), 1000);
+    assert_eq!(
+        apply(&db, 5, Operation::BeginStaged(second.clone()))
+            .unwrap_err()
+            .code,
+        ErrorCode::QuotaExceeded
+    );
+    assert_eq!(
+        apply(&db, 6, Operation::BeginStaged(first.clone())).unwrap(),
+        committed
+    );
+    assert_eq!(
+        apply(&db, 7, Operation::FinalizeStaged(reference.clone())).unwrap(),
+        committed
+    );
+    let mut limits = db.generation().unwrap().state.limits.clone();
+    limits.atomic.max_permanent_staged_bytes = 3 << 30;
+    apply(&db, 8, Operation::SetLimits(limits)).unwrap();
+    apply(&db, 9, Operation::BeginStaged(second.clone())).unwrap();
+    apply(
+        &db,
+        10,
+        Operation::AppendStaged(AppendStagedChunk {
+            transaction: second_reference.clone(),
+            index: 0,
+            chunk,
+        }),
+    )
+    .unwrap();
+    let current = db.generation().unwrap();
+    let mut limits = current.state.limits.clone();
+    limits.atomic.max_permanent_staged_bytes =
+        current.state.permanent_staged_bytes + current.state.reserved_staged_terminal_bytes;
+    drop(current);
+    apply(&db, 11, Operation::SetLimits(limits)).unwrap();
+    let failure = apply(&db, 12, Operation::FinalizeStaged(second_reference.clone())).unwrap_err();
+    assert_eq!(failure.code, ErrorCode::Conflict);
+    let current = db.generation().unwrap();
+    assert_eq!(current.state.reserved_staged_terminal_bytes, 0);
+    assert_eq!(current.state.document_count, 1);
+    assert!(
+        current
+            .state
+            .staged_transactions
+            .values()
+            .all(|s| s.chunks.is_empty())
+    );
+    let mut limits = current.state.limits.clone();
+    limits.atomic.max_permanent_staged_bytes = current.state.permanent_staged_bytes;
+    let used = current.state.permanent_staged_bytes;
+    drop(current);
+    apply(&db, 13, Operation::SetLimits(limits)).unwrap();
+    let image = db.fixture_snapshot().unwrap();
+    let recovered = TenantEngine::new(
+        "tenant".into(),
+        "incarnation".into(),
+        policy(),
+        Limits::default(),
+    )
+    .unwrap();
+    recovered.fixture_restore(&image).unwrap();
+    assert_eq!(
+        apply(
+            &recovered,
+            172_800_004,
+            Operation::FinalizeStaged(reference)
+        )
+        .unwrap(),
+        committed
+    );
+    assert_eq!(
+        apply(&recovered, 172_800_005, Operation::BeginStaged(first)).unwrap(),
+        committed
+    );
+    assert_eq!(
+        apply(
+            &recovered,
+            172_800_006,
+            Operation::FinalizeStaged(second_reference)
+        )
+        .unwrap_err(),
+        failure
+    );
+    assert_eq!(
+        apply(&recovered, 172_800_007, Operation::BeginStaged(second)).unwrap_err(),
+        failure
+    );
+    assert_eq!(
+        recovered.generation().unwrap().state.permanent_staged_bytes,
+        used
+    );
+    assert_eq!(recovered.generation().unwrap().state.document_count, 1);
+}
+
+#[test]
+fn permanent_staged_snapshot_rejection_spends_original_terminal_reservation_atomically() {
+    let db = engine(Limits::default());
+    let chunk = StagedChunk {
+        read_set: vec![],
+        operations: vec![Mutation::Put {
+            collection: "docs".into(),
+            id: "too-large".into(),
+            body: json!({"n": 1, "body": "x".repeat(64 << 10)}),
+            expected: Precondition::Absent,
+        }],
+    };
+    let (original, reference) = begin("incarnation", "bounded", std::slice::from_ref(&chunk), 1000);
+    apply(&db, 2, Operation::BeginStaged(original.clone())).unwrap();
+    apply(
+        &db,
+        3,
+        Operation::AppendStaged(AppendStagedChunk {
+            transaction: reference.clone(),
+            index: 0,
+            chunk,
+        }),
+    )
+    .unwrap();
+    let state = &db.generation().unwrap().state;
+    let mut limits = state.limits.clone();
+    limits.atomic.max_permanent_staged_bytes =
+        state.permanent_staged_bytes + state.reserved_staged_terminal_bytes;
+    // Finalization would add both the document and its change-feed copy. This
+    // bound admits existing chunks plus terminal/audit metadata, not those effects.
+    limits.max_snapshot_bytes =
+        db.snapshot_bytes().unwrap() as u64 + state.reserved_staged_terminal_bytes + 4096;
+    apply(&db, 4, Operation::SetLimits(limits)).unwrap();
+    let failure = apply(&db, 5, Operation::FinalizeStaged(reference.clone())).unwrap_err();
+    assert_eq!(failure.code, ErrorCode::QuotaExceeded);
+    let state = &db.generation().unwrap().state;
+    assert_eq!(state.document_count, 0);
+    assert_eq!(state.change_feed.event_count, 0);
+    assert_eq!(state.reserved_staged_terminal_bytes, 0);
+    assert!(state.active_staged_transactions.is_empty());
+    let key = staged_digest(&(context().principal, &reference.transaction_id))
+        .unwrap()
+        .0;
+    assert_eq!(
+        state.staged_transactions[&key].outcome,
+        StagedOutcome::Finished {
+            outcome: Err(failure.clone())
+        }
+    );
+    assert!(state.staged_transactions[&key].chunks.is_empty());
+    let recovered = TenantEngine::new(
+        "tenant".into(),
+        "incarnation".into(),
+        policy(),
+        Limits::default(),
+    )
+    .unwrap();
+    recovered
+        .fixture_restore(&db.fixture_snapshot().unwrap())
+        .unwrap();
+    assert_eq!(
+        apply(
+            &recovered,
+            172_800_000,
+            Operation::FinalizeStaged(reference)
+        )
+        .unwrap_err(),
+        failure
+    );
+    assert_eq!(
+        apply(&recovered, 172_800_001, Operation::BeginStaged(original)).unwrap_err(),
+        failure
+    );
+    assert_eq!(recovered.generation().unwrap().state.document_count, 0);
 }

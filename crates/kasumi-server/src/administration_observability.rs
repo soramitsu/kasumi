@@ -102,6 +102,15 @@ impl Administration {
                             logical_bytes: generation.state.logical_bytes,
                             logical_budget_bytes: generation.state.limits.max_logical_bytes,
                             snapshot_disk_budget_bytes: generation.state.limits.max_snapshot_bytes,
+                            permanent_staged_bytes: generation.state.permanent_staged_bytes,
+                            reserved_staged_terminal_bytes: generation
+                                .state
+                                .reserved_staged_terminal_bytes,
+                            permanent_staged_budget_bytes: generation
+                                .state
+                                .limits
+                                .atomic
+                                .max_permanent_staged_bytes,
                             schema_activation_bytes: generation.state.schema_activation_bytes,
                             schema_activation_budget_bytes: generation
                                 .state

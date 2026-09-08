@@ -237,7 +237,6 @@ async fn upload_stop_clears_payload_and_permanent_capacity_is_checked_without_ac
     let directory = tempfile::tempdir().unwrap();
     let mut limits = Limits::default();
     limits.atomic.max_active_transactions = 1;
-    limits.atomic.max_transaction_records = 2;
     let (db, audit) = open(&directory.path().join("node.redb"), limits).await;
     let (first, chunk) = original(&db, "uploading");
     upload(&db, &first, &chunk).await;
@@ -271,7 +270,12 @@ async fn upload_stop_clears_payload_and_permanent_capacity_is_checked_without_ac
             .values()
             .all(|s| s.chunks.is_empty() && s.uploaded_payload_bytes == 0)
     );
+    let mut limits = current.state.limits.clone();
+    limits.atomic.max_permanent_staged_bytes = current.state.permanent_staged_bytes;
     drop(current);
+    db.administer(context(), Operation::SetLimits(limits))
+        .await
+        .unwrap();
     let (third, _) = original(&db, "quota-denied");
     assert_eq!(
         db.stop_staged_transaction(context(), stop(&db, &third))
