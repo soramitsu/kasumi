@@ -266,6 +266,75 @@ async fn coverage_dispatch_precedes_permission_and_survives_exact_encrypted_rest
             .acknowledgment
             .is_none()
     );
+    // A structurally valid historical DTO is still not a current observation.
+    // In particular its source permission must be the exact retained record,
+    // not merely a second valid status with the same action and command hash.
+    let original_request = pending
+        .dispatch
+        .command
+        .publication
+        .issuer_request()
+        .unwrap();
+    let mut data = SignerPublicationResponse::Issuer(Box::new(SignerVerifierResponse {
+        observation_id: original_request.observation_id,
+        request_sha256: original_request.digest().unwrap(),
+        domain_sha256: original_request.domain_sha256,
+        current: LocalSignerTrustRecord {
+            format: 1,
+            verifier: pending.dispatch.command.publication.verifier().clone(),
+            revision: 2,
+            active: certificate.clone(),
+            staged: None,
+            retirement: Some(SignerRetirement {
+                operation_id: local.operation_id,
+                retired_generation: 1,
+                retired_certificate_sha256: fixture
+                    .settings
+                    .bootstrap
+                    .initial_signer_certificate
+                    .digest()
+                    .unwrap(),
+            }),
+        },
+        receipt: Some(SignerTrustReceipt {
+            command: local.clone(),
+            command_sha256: local.digest().unwrap(),
+            principal: "operator".into(),
+            revision: 2,
+            active_generation: 2,
+            active_certificate_sha256: certificate.digest().unwrap(),
+            retirement_pending: true,
+        }),
+        loaded_certificate: None,
+        authorization: Some(permission.clone()),
+    }));
+    authority
+        .backend
+        .check_signer_coverage_publication(&pending.dispatch, &data)
+        .unwrap();
+    assert!(
+        authority
+            .backend
+            .signer_coverage_status(command.operation_id)
+            .unwrap()
+            .unwrap()
+            .acknowledgment
+            .is_none()
+    );
+    if let SignerPublicationResponse::Issuer(reply) = &mut data {
+        reply.authorization.as_mut().unwrap().admitted_principal = "intruder".into();
+    }
+    data.validate_for(
+        &pending.dispatch.command.publication,
+        &fixture.installation.manifest,
+    )
+    .unwrap();
+    assert!(
+        authority
+            .backend
+            .check_signer_coverage_publication(&pending.dispatch, &data)
+            .is_err()
+    );
     let mut after_permission = Vec::new();
     authority.backend.snapshot(&mut after_permission).unwrap();
     authority

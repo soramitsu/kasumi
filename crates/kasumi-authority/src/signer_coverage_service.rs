@@ -103,6 +103,9 @@ impl IndependentAuthority {
                     &self.installation().manifest,
                 )
                 .map_err(unknown)?;
+            self.backend
+                .check_signer_coverage_publication(&status.dispatch, publication.response())
+                .map_err(unknown)?;
             let _serial = self.proposal.lock().await;
             authorization.release().await.map_err(unknown)?;
             publication.check(&status.dispatch).map_err(unknown)?;

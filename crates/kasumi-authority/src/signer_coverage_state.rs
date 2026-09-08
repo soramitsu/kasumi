@@ -207,6 +207,33 @@ impl Backend {
         }
         Ok(())
     }
+    pub(crate) fn check_signer_coverage_publication(
+        &self,
+        dispatch: &SignerCoverageDispatch,
+        publication: &SignerPublicationResponse,
+    ) -> Result<()> {
+        let _lock = self
+            .mutation
+            .lock()
+            .map_err(|_| anyhow::anyhow!("authority state poisoned"))?;
+        let current = self
+            .coverage_status_unlocked(dispatch.command.operation_id)?
+            .context("original coverage dispatch absent")?;
+        ensure!(
+            current.dispatch == *dispatch,
+            "publication changed the retained original dispatch"
+        );
+        publication.validate_for(&dispatch.command.publication, &self.installation.manifest)?;
+        self.coverage_observation_dependencies(
+            dispatch,
+            publication,
+            self.meta()?
+                .revision
+                .checked_add(1)
+                .context("coverage revision exhausted")?,
+            |key| self.record(key),
+        )
+    }
     fn retain_coverage_permission(
         meta: &mut Meta,
         dispatch: &SignerCoverageDispatch,
@@ -436,12 +463,14 @@ impl Backend {
                     return Ok(Err(conflict(&error.to_string())));
                 }
                 self.coverage_dependencies(&status.dispatch, |key| self.record(key))?;
-                self.coverage_observation_dependencies(
+                if let Err(error) = self.coverage_observation_dependencies(
                     &status.dispatch,
                     &publication,
                     revision,
                     |key| self.record(key),
-                )?;
+                ) {
+                    return Ok(Err(conflict(&error.to_string())));
+                }
                 let ack = SignerCoverageAcknowledgment {
                     dispatch_operation_id: operation_id,
                     dispatch_sha256,
