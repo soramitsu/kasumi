@@ -123,12 +123,81 @@ pub struct PreparedAuditSegment {
     pub ciphertext: Vec<u8>,
 }
 
+/// Bounded metadata from an object whose bytes match a selected immutable
+/// archive link. This is not decrypted evidence or authorization: the caller
+/// must authorize its original source purpose against the verified checkpoint
+/// and lineage, then use HistoricalAuditVerifier before accepting plaintext.
+/// No public fields or deserializer can substitute another object afterward.
+pub struct InspectedAuditDependency<'a> {
+    bytes: &'a [u8],
+    header: Header,
+    reference: AuditArchiveReference,
+}
+impl<'a> InspectedAuditDependency<'a> {
+    pub fn from_link(bytes: &'a [u8], expected: &AuditArchiveLink) -> Result<Self> {
+        ensure!(
+            bytes.len() <= MAX_AUDIT_SEGMENT_BYTES && bytes.len() >= 12 && &bytes[..8] == MAGIC,
+            "unsupported audit archive format"
+        );
+        ensure!(
+            hex::encode(Sha256::digest(bytes)) == expected.ciphertext_sha256,
+            "audit archive link digest differs"
+        );
+        let length = u32::from_be_bytes(bytes[8..12].try_into()?) as usize;
+        ensure!(
+            length <= HEADER_LIMIT && length <= bytes.len() - 12,
+            "invalid audit archive header length"
+        );
+        let encoded = &bytes[12..12 + length];
+        let header: Header = serde_json::from_slice(encoded)?;
+        ensure!(header.format == 1, "unsupported audit archive version");
+        ensure!(
+            serde_json::to_vec(&header)? == encoded,
+            "noncanonical audit archive header"
+        );
+        let reference = reference(&header, bytes)?;
+        reference.validate()?;
+        ensure!(
+            reference.object == *expected,
+            "audit archive link identity differs"
+        );
+        ensure!(
+            header.plaintext_bytes <= PAYLOAD_LIMIT as u64,
+            "audit plaintext exceeds limit"
+        );
+        Ok(Self {
+            bytes,
+            header,
+            reference,
+        })
+    }
+    pub fn source_tenant(&self) -> &str {
+        &self.header.tenant
+    }
+    pub fn source_purpose(&self) -> &StoragePurpose {
+        &self.header.purpose
+    }
+    pub fn reference(&self) -> &AuditArchiveReference {
+        &self.reference
+    }
+    pub async fn verify(
+        &self,
+        verifier: &HistoricalAuditVerifier<'_>,
+    ) -> Result<VerifiedAuditSegment> {
+        verifier.decrypt(self.bytes, &self.reference).await
+    }
+}
+
 pub struct VerifiedAuditSegment {
     reference: AuditArchiveReference,
+    source_purpose: StoragePurpose,
     plaintext: Zeroizing<Vec<u8>>,
 }
 
 impl VerifiedAuditSegment {
+    pub fn source_purpose(&self) -> &StoragePurpose {
+        &self.source_purpose
+    }
     pub fn reference(&self) -> &AuditArchiveReference {
         &self.reference
     }
@@ -172,6 +241,27 @@ fn walk_records(
 }
 
 impl TenantStore {
+    /// The engine selects the exact historical source from a verified graph and
+    /// lineage. This retains this store's live fences throughout fresh historical
+    /// key authorization; it cannot open or renew the historical source store.
+    pub async fn verify_historical_audit(
+        &self,
+        dependency: &InspectedAuditDependency<'_>,
+        source_purpose: &StoragePurpose,
+    ) -> Result<VerifiedAuditSegment> {
+        let _access = AccessGuard(self);
+        self.check_access()?;
+        let verifier = HistoricalAuditVerifier::new(
+            &self.tenant,
+            source_purpose,
+            self.provider.as_ref(),
+            &self.access,
+        )?;
+        let verified = dependency.verify(&verifier).await?;
+        self.check_access()?;
+        Ok(verified)
+    }
+
     pub fn encrypt_audit_segment(
         &self,
         builder: AuditSegmentBuilder,
@@ -405,6 +495,7 @@ impl AuditDecoder<'_> {
         );
         Ok(VerifiedAuditSegment {
             reference: expected.clone(),
+            source_purpose: header.purpose,
             plaintext,
         })
     }
@@ -853,6 +944,66 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn reverse_archive_dependencies_are_bounded_and_require_exact_link_and_source_verification()
+     {
+        let directory = tempfile::tempdir().unwrap();
+        let keys = Arc::new(LocalKeyProvider::new([33; 32]));
+        let access =
+            crate::StorageAccess::standalone(Uuid::new_v4(), "tenant", Uuid::new_v4()).unwrap();
+        let store = TenantStore::open(
+            NodeStore::open(directory.path().join("source.redb")).unwrap(),
+            "tenant".into(),
+            keys.clone(),
+            access.clone(),
+        )
+        .await
+        .unwrap();
+        let stream = Uuid::new_v4();
+        let mut first = AuditSegmentBuilder::new(stream, 0, None).unwrap();
+        first.push(0, b"first").unwrap();
+        let first = store.encrypt_audit_segment(first).unwrap();
+        let mut second =
+            AuditSegmentBuilder::new(stream, 1, Some(first.reference.object.clone())).unwrap();
+        second.push(1, b"second").unwrap();
+        let second = store.encrypt_audit_segment(second).unwrap();
+        let destination = FilesystemAuditArchive::open(directory.path().join("archives")).unwrap();
+        destination.publish(&first).await.unwrap();
+        destination.publish(&second).await.unwrap();
+        let verifier =
+            HistoricalAuditVerifier::new("tenant", access.purpose(), keys.as_ref(), &access)
+                .unwrap();
+        let mut link = Some(second.reference.object.clone());
+        let mut count = 0u64;
+        while let Some(expected) = link.take() {
+            let bytes = destination.read(&expected).await.unwrap();
+            let inspected = InspectedAuditDependency::from_link(&bytes, &expected).unwrap();
+            assert_eq!(inspected.source_tenant(), "tenant");
+            assert_eq!(inspected.source_purpose(), access.purpose());
+            let verified = inspected.verify(&verifier).await.unwrap();
+            assert_eq!(verified.source_purpose(), access.purpose());
+            count += verified.reference().record_count;
+            link = verified.reference().previous.clone();
+        }
+        assert_eq!(count, 2);
+        assert!(
+            InspectedAuditDependency::from_link(&first.ciphertext, &second.reference.object)
+                .is_err()
+        );
+        let mut incorrect = first.reference.object.clone();
+        incorrect.object_id = Uuid::new_v4();
+        assert!(InspectedAuditDependency::from_link(&first.ciphertext, &incorrect).is_err());
+        let mut forged = first.ciphertext.clone();
+        *forged.last_mut().unwrap() ^= 1;
+        let mut forged_link = first.reference.object.clone();
+        forged_link.ciphertext_sha256 = hex::encode(Sha256::digest(&forged));
+        // Even an attacker-controlled selected link only yields inspection;
+        // altered ciphertext cannot cross the authenticated proof boundary.
+        let inspected = InspectedAuditDependency::from_link(&forged, &forged_link).unwrap();
+        assert!(inspected.verify(&verifier).await.is_err());
+        store.shutdown().await;
     }
 
     #[tokio::test]
