@@ -297,3 +297,36 @@ fn transport_error_retains_code_without_peer_message_details_or_metadata() {
     ));
     assert_eq!(options.resources.usage(), ClientResourceUsage::default());
 }
+
+#[test]
+fn query_rows_cannot_advance_beyond_their_collection_epoch() {
+    let options = options();
+    let call = options.admit().unwrap();
+    let input = ReadSnapshotRequest {
+        documents: vec![],
+        queries: vec![
+            serde_json::from_value(
+                json!({"collection":"docs", "filter":{"op":"all"}, "limit":2, "allow_scan":true}),
+            )
+            .unwrap(),
+        ],
+    };
+    let expected = Expected::read(&input, &call).unwrap();
+    let mut reply = response(&call);
+    reply["revision"] = json!(10);
+    reply["collection_epochs"] = json!({"docs":2});
+    reply["queries"] = json!([{"revision":10,"rows":[{"id":"a","version":9,"body":{"value":"too new for this collection"},"score":null}],"aggregates":[],"cursor":null}]);
+    let bytes = serde_json::to_vec(&reply).unwrap();
+    tokens::admit(&bytes, &call).unwrap();
+    assert!(expected.validate(&bytes, &call).is_err());
+    assert!(expected.decode(&bytes, &call).is_err());
+    reply["queries"][0]["rows"][0]["version"] = json!(2);
+    let bytes = serde_json::to_vec(&reply).unwrap();
+    tokens::admit(&bytes, &call).unwrap();
+    expected.validate(&bytes, &call).unwrap();
+    let semantic::Decoded::Read(decoded) = expected.decode(&bytes, &call).unwrap() else {
+        panic!("wrong snapshot kind")
+    };
+    assert_eq!(decoded.queries[0].rows[0].version, 2);
+    assert_eq!(decoded.collection_epochs["docs"], 2);
+}

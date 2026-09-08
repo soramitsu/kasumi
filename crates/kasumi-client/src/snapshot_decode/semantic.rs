@@ -136,6 +136,10 @@ impl Expected {
                             "snapshot query is incomplete or from another generation",
                         ));
                     }
+                    let data_epoch = epochs
+                        .get(&expected.collection)
+                        .copied()
+                        .ok_or_else(|| invalid("snapshot query collection epoch is missing"))?;
                     let rows = array(query.rows, expected.limit)?;
                     let aggregates = array(query.aggregates, call.limits.max_rows)?;
                     if !expected.aggregates && !aggregates.is_empty() {
@@ -147,6 +151,7 @@ impl Expected {
                         if row.id.is_empty()
                             || row.version == 0
                             || row.version > outer.revision
+                            || row.version > data_epoch
                             || !ids.insert(row.id)
                         {
                             return Err(invalid("invalid or duplicate snapshot query row"));
