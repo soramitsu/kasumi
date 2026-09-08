@@ -25,18 +25,20 @@ impl TenantStore {
         let _access = AccessGuard(self);
         self.check_access()?;
         let _mutation = self.mutations.lock();
-        let state = self.state.read();
-        self.require_access(&state)?;
-        let catalog = self.catalog.read();
         let mut tx = self.node.db.begin_write()?;
         tx.set_durability(Durability::Immediate)?;
         tx.set_two_phase_commit(true);
-        replace_domain(&tx, self, &state, &catalog, replacements)?;
-        write_domain(&tx, self, &state, &catalog, operations)?;
-        self.require_access(&state)?;
+        replace_domain(&tx, self, replacements)?;
+        {
+            let state = self.state.read();
+            self.require_access(&state)?;
+            let catalog = self.catalog.read();
+            write_domain(&tx, self, &state, &catalog, operations)?;
+        }
+        self.check_access()?;
         tx.commit()
             .context("table publication outcome may be unknown")?;
-        self.require_access(&state)
+        self.check_access()
     }
 }
 impl TenantReadView {
@@ -160,17 +162,18 @@ pub(crate) fn validate_replacements(
 pub(crate) fn replace_domain(
     tx: &redb::WriteTransaction,
     store: &TenantStore,
-    state: &KeyState,
-    catalog: &KeyCatalog,
     replacements: &[(&str, &EncryptedTable)],
 ) -> Result<()> {
     for (namespace, source) in replacements {
-        store.require_access(state)?;
-        let prefix = namespace_prefix(
-            &store.tenant,
-            namespace,
-            state.keys.get(INDEX_KEY).context("index key missing")?,
-        );
+        let prefix = {
+            let state = store.state.read();
+            store.require_access(&state)?;
+            namespace_prefix(
+                &store.tenant,
+                namespace,
+                state.keys.get(INDEX_KEY).context("index key missing")?,
+            )
+        };
         {
             let mut table = tx.open_table(RECORDS)?;
             table.retain_in(prefix.as_slice().., |key, _| !key.starts_with(&prefix))?;
@@ -180,12 +183,16 @@ pub(crate) fn replace_domain(
             count = count
                 .checked_add(1)
                 .context("replacement record count overflow")?;
-            store.require_access(state)?;
+            // Drop key-state guards after each bounded record so a large import
+            // does not block normal provider renewal for its entire duration.
+            let state = store.state.read();
+            store.require_access(&state)?;
+            let catalog = store.catalog.read();
             let operation = WriteOp::put(*namespace, key, value);
             validate_batch(&[std::slice::from_ref(&operation)])?;
-            write_domain(tx, store, state, catalog, &[operation])
+            write_domain(tx, store, &state, &catalog, &[operation])
         })?;
-        store.require_access(state)?;
+        store.check_access()?;
     }
     Ok(())
 }

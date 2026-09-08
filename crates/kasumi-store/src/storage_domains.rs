@@ -275,35 +275,41 @@ impl TenantStorageSet {
         self.check_access()?;
         let _app_mutation = application.mutations.lock();
         let _custody_mutation = custody.mutations.lock();
-        let app_state = application.state.read();
-        let custody_state = custody.state.read();
-        application.require_access(&app_state)?;
-        custody.require_access(&custody_state)?;
-        let app_catalog = application.catalog.read();
-        let custody_catalog = custody.catalog.read();
-        ensure!(
-            derive_binding(&app_catalog, &custody_catalog)? == self.custody.binding,
-            "storage key purpose changed"
-        );
-        validate_distinct_keys(&app_state, &custody_state)?;
+        {
+            let app_state = application.state.read();
+            let custody_state = custody.state.read();
+            application.require_access(&app_state)?;
+            custody.require_access(&custody_state)?;
+            let app_catalog = application.catalog.read();
+            let custody_catalog = custody.catalog.read();
+            ensure!(
+                derive_binding(&app_catalog, &custody_catalog)? == self.custody.binding,
+                "storage key purpose changed"
+            );
+            validate_distinct_keys(&app_state, &custody_state)?;
+        }
         let mut tx = application.node.db.begin_write()?;
         tx.set_durability(Durability::Immediate)?;
         tx.set_two_phase_commit(true);
-        write_domain(&tx, application, &app_state, &app_catalog, application_ops)?;
-        crate::read_view::replace_domain(
-            &tx,
-            custody,
-            &custody_state,
-            &custody_catalog,
-            replacements,
-        )?;
-        write_domain(&tx, custody, &custody_state, &custody_catalog, custody_ops)?;
-        application.require_access(&app_state)?;
-        custody.require_access(&custody_state)?;
+        {
+            let state = application.state.read();
+            application.require_access(&state)?;
+            let catalog = application.catalog.read();
+            write_domain(&tx, application, &state, &catalog, application_ops)?;
+        }
+        crate::read_view::replace_domain(&tx, custody, replacements)?;
+        {
+            let state = custody.state.read();
+            custody.require_access(&state)?;
+            let catalog = custody.catalog.read();
+            write_domain(&tx, custody, &state, &catalog, custody_ops)?;
+        }
+        self.check_access()?;
         tx.commit()
             .context("durable domain transaction failed; outcome may be unknown")?;
-        application.require_access(&app_state).context("domain transaction committed; application access expired before acknowledgment; outcome unknown")?;
-        custody.require_access(&custody_state).context("domain transaction committed; custody access expired before acknowledgment; outcome unknown")
+        self.check_access().context(
+            "domain transaction committed; access expired before acknowledgment; outcome unknown",
+        )
     }
 }
 
