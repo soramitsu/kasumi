@@ -346,6 +346,7 @@ impl TenantEngine {
             restore_lineage: Vec::new(),
             lifecycle_control: None,
             target_lifecycle: Default::default(),
+            recovery_control: Default::default(),
             document_count: 0,
             logical_bytes: 0,
             policy,
@@ -1169,6 +1170,14 @@ impl TenantEngine {
             return Err(Error::new(
                 ErrorCode::Corruption,
                 "snapshot logical accounting mismatch",
+            ));
+        }
+        if !state.recovery_control.is_empty()
+            && (state.tenant != crate::control::CONTROL_TENANT || state.lifecycle_control.is_none())
+        {
+            return Err(Error::new(
+                ErrorCode::Corruption,
+                "recovery coordinator requires installed Control state",
             ));
         }
         validate_audits(&state)?;

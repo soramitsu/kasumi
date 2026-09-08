@@ -184,7 +184,11 @@ impl ValidatedApplicationSnapshot {
         ensure!(
             h.lifecycle_control.is_none()
                 && self.index.count(15)? == 0
-                && self.index.count(16)? == 0,
+                && self.index.count(16)? == 0
+                && h.recovery_control.is_empty()
+                && self.index.count(18)? == 0
+                && self.index.count(19)? == 0
+                && self.index.count(20)? == 0,
             "Control state cannot be an application backup"
         );
         ensure!(

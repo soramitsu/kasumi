@@ -5,8 +5,8 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::io::Write;
 
-/// Covers borrowed sorting nodes; bodies are streamed, never cloned or encoded
-/// into an additional resident-state Vec. The caller owns this reservation for
+/// Covers one bounded semantic record and hash workspace; bodies are streamed
+/// without an additional resident-state buffer. The caller owns this reservation for
 /// the entire actual blocking worker, including cancellation/destruction.
 pub(crate) fn workspace_bytes(_: &TenantState) -> Result<u64> {
     // One bounded semantic record plus its canonical/hash workspace. Resident

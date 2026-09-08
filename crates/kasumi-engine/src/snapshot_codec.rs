@@ -11,6 +11,7 @@ use std::{
 
 const MAGIC: &[u8; 8] = b"KASUMIT2";
 const MAX_RECORD: usize = 32 << 20;
+pub(crate) const RECORD_KINDS: u8 = 21;
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type", content = "value", deny_unknown_fields)]
@@ -33,6 +34,9 @@ pub(crate) enum Record {
     Intent(uuid::Uuid, LifecycleIntent),
     ControlChange(uuid::Uuid, ControlPolicyChange),
     Target(String, Box<TargetExecutionState>),
+    RecoveryOperation(String, Box<RecoveryRecord>),
+    RecoveryPhase(String, Box<RecoveryPhaseRecord>),
+    RecoveryTarget(String, uuid::Uuid),
 }
 impl Record {
     pub(crate) fn order(&self) -> (u8, String, String) {
@@ -55,6 +59,9 @@ impl Record {
             Self::Intent(k, _) => (15, k.to_string(), String::new()),
             Self::ControlChange(k, _) => (16, k.to_string(), String::new()),
             Self::Target(k, _) => (17, k.clone(), String::new()),
+            Self::RecoveryOperation(k, _) => (18, k.clone(), String::new()),
+            Self::RecoveryPhase(k, _) => (19, k.clone(), String::new()),
+            Self::RecoveryTarget(k, _) => (20, k.clone(), String::new()),
         }
     }
 }
@@ -94,118 +101,140 @@ pub(crate) fn records<'a>(
             None => Box::new(state.collections.iter()),
         };
     let primary = primary.map(str::to_owned);
-    let records: Box<dyn Iterator<Item = Record> + Send + 'a> = match kind {
-        0 => Box::new(std::iter::once(Record::Header(Box::new(metadata(state))))),
-        1 => Box::new(
-            state
-                .restore_lineage
-                .iter()
-                .enumerate()
-                .map(|(i, link)| Record::Lineage(i as u64, link.clone())),
-        ),
-        2 => Box::new(collections.map(|(name, collection)| {
-            Record::Collection(
-                name.clone(),
-                CollectionState {
-                    definition: collection.definition.clone(),
-                    data_epoch: collection.data_epoch,
-                    documents: Default::default(),
-                    archived_documents: Default::default(),
-                    archived_document_bytes: collection.archived_document_bytes,
-                },
-            )
-        })),
-        3 => Box::new(collections.flat_map(|(name, collection)| {
-            collection
-                .documents
-                .values()
-                .map(move |document| Record::Document(name.clone(), document.clone()))
-        })),
-        4 => Box::new(collections.flat_map(|(name, collection)| {
-            collection
-                .archived_documents
-                .iter()
-                .map(move |(id, reference)| {
-                    Record::Archived(name.clone(), id.clone(), reference.clone())
-                })
-        })),
-        5 => Box::new(
-            state
-                .receipts
-                .iter()
-                .map(|(key, value)| Record::Receipt(key.clone(), value.clone())),
-        ),
-        6 => Box::new(state.staged_transactions.iter().map(|(key, value)| {
-            let mut header = value.clone();
-            header.chunks.clear();
-            Record::Stage(key.clone(), header)
-        })),
-        7 => Box::new(state.staged_transactions.iter().flat_map(|(key, value)| {
-            value
-                .chunks
-                .iter()
-                .map(move |(i, chunk)| Record::StageChunk(key.clone(), *i, chunk.clone()))
-        })),
-        8 => Box::new(
-            state
-                .active_staged_transactions
-                .iter()
-                .map(|key| Record::ActiveStage(key.clone())),
-        ),
-        9 => Box::new(state.change_feed.commits.iter().map(|(i, value)| {
-            let mut header = value.as_ref().clone();
-            header.records.clear();
-            Record::Change(*i, Arc::new(header))
-        })),
-        10 => Box::new(
-            state
-                .change_feed
-                .commits
-                .iter()
-                .flat_map(|(sequence, commit)| {
-                    commit.records.iter().enumerate().map(move |(i, record)| {
-                        Record::ChangeItem(*sequence, i as u64, record.clone())
+    let records: Box<dyn Iterator<Item = Record> + Send + 'a> =
+        match kind {
+            0 => Box::new(std::iter::once(Record::Header(Box::new(metadata(state))))),
+            1 => Box::new(
+                state
+                    .restore_lineage
+                    .iter()
+                    .enumerate()
+                    .map(|(i, link)| Record::Lineage(i as u64, link.clone())),
+            ),
+            2 => Box::new(collections.map(|(name, collection)| {
+                Record::Collection(
+                    name.clone(),
+                    CollectionState {
+                        definition: collection.definition.clone(),
+                        data_epoch: collection.data_epoch,
+                        documents: Default::default(),
+                        archived_documents: Default::default(),
+                        archived_document_bytes: collection.archived_document_bytes,
+                    },
+                )
+            })),
+            3 => Box::new(collections.flat_map(|(name, collection)| {
+                collection
+                    .documents
+                    .values()
+                    .map(move |document| Record::Document(name.clone(), document.clone()))
+            })),
+            4 => Box::new(collections.flat_map(|(name, collection)| {
+                collection
+                    .archived_documents
+                    .iter()
+                    .map(move |(id, reference)| {
+                        Record::Archived(name.clone(), id.clone(), reference.clone())
                     })
-                }),
-        ),
-        11 => Box::new(
-            state
-                .history_archives
-                .iter()
-                .map(|(key, value)| Record::Archive(key.clone(), value.clone())),
-        ),
-        12 => Box::new(
-            state
-                .schema_activations
-                .iter()
-                .map(|(key, value)| Record::Activation(key.clone(), value.clone())),
-        ),
-        13 => Box::new(
-            state
-                .retirements
-                .iter()
-                .map(|(key, value)| Record::Retirement(key.clone(), Box::new(value.clone()))),
-        ),
-        15 => Box::new(state.lifecycle_control.iter().flat_map(|state| {
-            state
-                .intents
-                .iter()
-                .map(|(key, value)| Record::Intent(*key, value.clone()))
-        })),
-        16 => Box::new(state.lifecycle_control.iter().flat_map(|state| {
-            state
-                .changes
-                .iter()
-                .map(|(key, value)| Record::ControlChange(*key, value.clone()))
-        })),
-        17 => Box::new(
-            state
-                .target_lifecycle
-                .iter()
-                .map(|(key, value)| Record::Target(key.clone(), Box::new(value.clone()))),
-        ),
-        _ => anyhow::bail!("unsupported snapshot record kind"),
-    };
+            })),
+            5 => Box::new(
+                state
+                    .receipts
+                    .iter()
+                    .map(|(key, value)| Record::Receipt(key.clone(), value.clone())),
+            ),
+            6 => Box::new(state.staged_transactions.iter().map(|(key, value)| {
+                let mut header = value.clone();
+                header.chunks.clear();
+                Record::Stage(key.clone(), header)
+            })),
+            7 => Box::new(state.staged_transactions.iter().flat_map(|(key, value)| {
+                value
+                    .chunks
+                    .iter()
+                    .map(move |(i, chunk)| Record::StageChunk(key.clone(), *i, chunk.clone()))
+            })),
+            8 => Box::new(
+                state
+                    .active_staged_transactions
+                    .iter()
+                    .map(|key| Record::ActiveStage(key.clone())),
+            ),
+            9 => Box::new(state.change_feed.commits.iter().map(|(i, value)| {
+                let mut header = value.as_ref().clone();
+                header.records.clear();
+                Record::Change(*i, Arc::new(header))
+            })),
+            10 => Box::new(
+                state
+                    .change_feed
+                    .commits
+                    .iter()
+                    .flat_map(|(sequence, commit)| {
+                        commit.records.iter().enumerate().map(move |(i, record)| {
+                            Record::ChangeItem(*sequence, i as u64, record.clone())
+                        })
+                    }),
+            ),
+            11 => Box::new(
+                state
+                    .history_archives
+                    .iter()
+                    .map(|(key, value)| Record::Archive(key.clone(), value.clone())),
+            ),
+            12 => Box::new(
+                state
+                    .schema_activations
+                    .iter()
+                    .map(|(key, value)| Record::Activation(key.clone(), value.clone())),
+            ),
+            13 => Box::new(
+                state
+                    .retirements
+                    .iter()
+                    .map(|(key, value)| Record::Retirement(key.clone(), Box::new(value.clone()))),
+            ),
+            15 => Box::new(state.lifecycle_control.iter().flat_map(|state| {
+                state
+                    .intents
+                    .iter()
+                    .map(|(key, value)| Record::Intent(*key, value.clone()))
+            })),
+            16 => Box::new(state.lifecycle_control.iter().flat_map(|state| {
+                state
+                    .changes
+                    .iter()
+                    .map(|(key, value)| Record::ControlChange(*key, value.clone()))
+            })),
+            17 => Box::new(
+                state
+                    .target_lifecycle
+                    .iter()
+                    .map(|(key, value)| Record::Target(key.clone(), Box::new(value.clone()))),
+            ),
+            18 => Box::new(
+                state
+                    .recovery_control
+                    .operations
+                    .iter()
+                    .map(|(key, value)| {
+                        Record::RecoveryOperation(key.clone(), Box::new(value.clone()))
+                    }),
+            ),
+            19 => {
+                Box::new(state.recovery_control.phases.iter().map(|(key, value)| {
+                    Record::RecoveryPhase(key.clone(), Box::new(value.clone()))
+                }))
+            }
+            20 => Box::new(
+                state
+                    .recovery_control
+                    .targets
+                    .iter()
+                    .map(|(key, value)| Record::RecoveryTarget(key.clone(), *value)),
+            ),
+            _ => anyhow::bail!("unsupported snapshot record kind"),
+        };
     Ok(Box::new(
         records
             .filter(move |record| primary.as_ref().is_none_or(|p| &record.order().1 == p))
@@ -241,6 +270,7 @@ pub(crate) fn metadata(state: &TenantState) -> TenantState {
                 changes: Default::default(),
             }),
         target_lifecycle: Default::default(),
+        recovery_control: Default::default(),
         document_count: state.document_count,
         logical_bytes: state.logical_bytes,
         policy: state.policy.clone(),
@@ -267,6 +297,7 @@ pub(crate) fn metadata(state: &TenantState) -> TenantState {
 }
 fn empty_records(state: &TenantState) -> bool {
     state.target_lifecycle.is_empty()
+        && state.recovery_control.is_empty()
         && state.collections.is_empty()
         && state.receipts.is_empty()
         && state.staged_transactions.is_empty()
@@ -358,7 +389,7 @@ impl<'a> Encoder<'a> {
 }
 pub(crate) fn write(state: &TenantState, writer: &mut dyn Write) -> anyhow::Result<()> {
     let mut encoder = Encoder::new(writer)?;
-    for kind in 0..18 {
+    for kind in 0..RECORD_KINDS {
         for record in records(state, kind, None)? {
             encoder.record(record?)?;
         }
@@ -483,6 +514,27 @@ pub(crate) fn visit(
                 commit.records.is_empty(),
                 "change commit contains embedded records"
             ),
+            Record::RecoveryOperation(key, value) => {
+                value.validate()?;
+                anyhow::ensure!(
+                    *key == value.request.operation_id.to_string(),
+                    "recovery operation key differs"
+                );
+            }
+            Record::RecoveryPhase(key, value) => {
+                value.validate()?;
+                anyhow::ensure!(
+                    *key == value.phase_id.to_string(),
+                    "recovery phase key differs"
+                );
+            }
+            Record::RecoveryTarget(key, operation) => {
+                let id = uuid::Uuid::parse_str(key)?;
+                anyhow::ensure!(
+                    !id.is_nil() && id.to_string() == *key && !operation.is_nil(),
+                    "recovery target key differs"
+                );
+            }
             _ => {}
         }
         // The raw bytes are no longer retained while semantic/index consumers run.
@@ -628,6 +680,34 @@ pub(crate) fn read(reader: &mut dyn Read) -> anyhow::Result<TenantState> {
             Record::Target(key, target) => {
                 state.target_lifecycle.insert(key, *target);
             }
+            Record::RecoveryOperation(key, record) => {
+                anyhow::ensure!(
+                    state.tenant == crate::control::CONTROL_TENANT
+                        && state.lifecycle_control.is_some(),
+                    "recovery coordinator requires installed Control state"
+                );
+                state.recovery_control.operations.insert(key, *record);
+            }
+            Record::RecoveryPhase(key, record) => {
+                anyhow::ensure!(
+                    state
+                        .recovery_control
+                        .operations
+                        .contains_key(&record.operation_id.to_string()),
+                    "recovery phase operation missing"
+                );
+                state.recovery_control.phases.insert(key, *record);
+            }
+            Record::RecoveryTarget(key, operation) => {
+                anyhow::ensure!(
+                    state
+                        .recovery_control
+                        .operations
+                        .contains_key(&operation.to_string()),
+                    "recovery target operation missing"
+                );
+                state.recovery_control.targets.insert(key, operation);
+            }
             Record::ControlChange(id, change) => {
                 state
                     .lifecycle_control
@@ -645,7 +725,7 @@ pub(crate) fn read(reader: &mut dyn Read) -> anyhow::Result<TenantState> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn state() -> TenantState {
+    pub(super) fn state() -> TenantState {
         crate::TenantEngine::new(
             "tenant".into(),
             "generation".into(),
@@ -795,3 +875,7 @@ mod tests {
         assert!(read(&mut bytes.as_slice()).is_err());
     }
 }
+
+#[cfg(test)]
+#[path = "snapshot_recovery_tests.rs"]
+mod recovery_tests;
