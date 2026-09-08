@@ -1,0 +1,18 @@
+{
+  "source": "931c740d437b4f4edbe9de25b0b64bbbba74fb00",
+  "tree": "82976026bb0b09fa608205d9b024f7dc11d52fb3",
+  "command": [
+    "cargo",
+    "+1.97.1",
+    "check",
+    "--workspace",
+    "--all-targets",
+    "--all-features",
+    "--locked",
+    "-j2"
+  ],
+  "exit_code": 0,
+  "duration": "74 seconds",
+  "log_sha256": "b3c232cdb53340bd374a967e514d64461ec16f8815cabf2536eebd31d6e2c4d0",
+  "scope": "Integrated permanent budgets with current Control/source fencing and packaging; compile validation, not full workspace execution."
+}
