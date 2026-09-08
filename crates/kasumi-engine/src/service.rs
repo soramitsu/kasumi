@@ -1,5 +1,7 @@
 use crate::admission::{CancelOnDrop, NodeAdmission, Reservation, WorkFence, WorkRegistration};
 use crate::{SecurityAudit, SecurityEvent, SecurityEventKind, SecurityOutcome, TenantEngine};
+#[path = "audit_maintenance_service.rs"]
+mod audit_maintenance_service;
 use kasumi_clock::{LeaseClock, SystemLeaseClock};
 use kasumi_query::QueryCancellation;
 use kasumi_raft::RaftGroup;
@@ -42,7 +44,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     sync::{
         Arc, Mutex, OnceLock,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -378,6 +380,10 @@ pub struct Database {
     custody_detached: AtomicBool,
     shutdown_gate: tokio::sync::Mutex<()>,
     seal_monitor: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    audit_worker: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    audit_worker_started: AtomicBool,
+    audit_worker_failures: AtomicU64,
+    audit_worker_completed: AtomicU64,
     proposal_gate: Arc<tokio::sync::Mutex<()>>,
     command_clock: Mutex<Arc<dyn CommandClock>>,
 }
@@ -633,10 +639,15 @@ impl Database {
             custody_detached: AtomicBool::new(false),
             shutdown_gate: tokio::sync::Mutex::new(()),
             seal_monitor: tokio::sync::Mutex::new(None),
+            audit_worker: Mutex::new(None),
+            audit_worker_started: AtomicBool::new(false),
+            audit_worker_failures: AtomicU64::new(0),
+            audit_worker_completed: AtomicU64::new(0),
             proposal_gate: Arc::new(tokio::sync::Mutex::new(())),
             command_clock: Mutex::new(clocks.command),
         });
         database.spawn_seal_monitor();
+        database.start_audit_worker();
         database
     }
 
@@ -702,6 +713,14 @@ impl Database {
         let result = self.group.shutdown().await;
         self.work.drain().await;
         self.audit_work.drain().await;
+        let audit_worker = self
+            .audit_worker
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        if let Some(task) = audit_worker {
+            let _ = task.await;
+        }
         self.store.shutdown().await;
         if !self.custody_detached.load(Ordering::Acquire) {
             self.group

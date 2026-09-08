@@ -648,6 +648,43 @@ mod tests {
         drop(write_charge);
         assert!(node.reserve(100, None).is_ok());
     }
+
+    #[test]
+    fn reserved_audit_workspace_remains_usable_under_rss_pressure() {
+        let clock = Arc::new(Clock::default());
+        let memory = Arc::new(Memory {
+            rss: AtomicU64::new(100),
+            fail: AtomicBool::new(false),
+            delay: AtomicU64::new(0),
+            clock: clock.clone(),
+        });
+        let node = NodeAdmission::create(
+            AdmissionConfig {
+                high_water_bytes: Some(1 << 30),
+                low_water_bytes: Some(512 << 20),
+                max_inflight_bytes: Some(256 << 20),
+                ..Default::default()
+            },
+            1 << 30,
+            memory.clone(),
+            clock,
+        )
+        .unwrap();
+        let pool = crate::audit_maintenance::NodeAuditMaintenance::install(&node).unwrap();
+        memory.rss.store(1 << 30, Ordering::SeqCst);
+        node.refresh();
+        assert!(node.reserve(1, None).is_err());
+        // Joining an existing installed pool requires no new capacity, and
+        // recovery materialization does not re-enter ordinary admission.
+        assert!(Arc::ptr_eq(
+            &pool,
+            &crate::audit_maintenance::NodeAuditMaintenance::install(&node).unwrap()
+        ));
+        drop(pool.applying.try_lock().unwrap());
+        drop(pool.preparation.try_acquire().unwrap());
+        drop(pool);
+        assert_eq!(node.snapshot().reserved_bytes, 0);
+    }
     #[test]
     fn retained_cursor_releases_operation_slot_but_keeps_bytes_until_last_owner() {
         let (node, _, _) = fixture();

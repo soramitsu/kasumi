@@ -15,6 +15,8 @@ mod accounting;
 mod audit_source;
 pub use audit_source::authorize_audit_source;
 pub mod admission;
+mod audit_maintenance;
+pub use audit_maintenance::AuditMaintenanceStatus;
 mod backup_format;
 mod backup_proof;
 mod backup_verify;
