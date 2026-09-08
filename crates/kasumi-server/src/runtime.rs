@@ -74,7 +74,7 @@ pub struct TransitSettings {
     pub endpoint: String,
     pub mount: String,
     pub key_name: String,
-    pub token_env: String,
+    pub token_file: String,
     #[serde(default)]
     pub namespace: Option<String>,
     #[serde(default)]
@@ -424,7 +424,7 @@ impl MutualTlsEndpoint {
 impl TransitSettings {
     pub(crate) fn validate(&self) -> Result<String> {
         let url = origin(&self.endpoint)?;
-        environment_name(&self.token_env)?;
+        credential_path(&self.token_file)?;
         ensure!(
             valid_transit_path(&self.mount)
                 && valid_transit_path(&self.key_name)
@@ -445,16 +445,17 @@ impl TransitSettings {
             self.key_name
         ))
     }
-    pub(crate) fn provider_with_secret(
+    pub(crate) fn provider_with_source(
         &self,
-        mut token: Zeroizing<String>,
+        source: crate::serving_runtime::CredentialSource,
     ) -> Result<Arc<TransitKeyProvider>> {
         self.validate()?;
+        let path = self.token_file.clone();
         Ok(Arc::new(TransitKeyProvider::new(TransitConfig {
             endpoint: self.endpoint.clone(),
             mount: self.mount.clone(),
             key_name: self.key_name.clone(),
-            token: std::mem::take(&mut *token),
+            credential: Arc::new(move || source(&path)),
             namespace: self.namespace.clone(),
             derived: self.derived,
             ca_pem: self
@@ -554,28 +555,17 @@ pub(crate) fn origin(value: &str) -> Result<url::Url> {
     );
     Ok(url)
 }
-pub(crate) fn environment_name(value: &str) -> Result<()> {
+pub(crate) fn credential_path(value: &str) -> Result<()> {
     ensure!(
-        value.starts_with("KASUMI_")
-            && value.len() <= 128
-            && value
-                .bytes()
-                .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_'),
-        "credentials require a KASUMI_ uppercase environment-variable reference"
+        Path::new(value).is_absolute(),
+        "credential file path must be absolute"
     );
     Ok(())
 }
-pub(crate) fn environment_secret(name: &str) -> Result<Zeroizing<String>> {
-    environment_name(name)?;
-    let secret = Zeroizing::new(
-        std::env::var(name)
-            .map_err(|_| anyhow::anyhow!("required credential variable {name} is unavailable"))?,
-    );
-    ensure!(
-        !secret.is_empty() && secret.len() <= 16 << 10 && !secret.chars().any(char::is_control),
-        "credential variable {name} is empty or malformed"
-    );
-    Ok(secret)
+pub(crate) fn file_secret(path: &str) -> Result<Zeroizing<String>> {
+    kasumi_transport::credentials::token(&kasumi_transport::credentials::FileCredentialSource::new(
+        path,
+    )?)
 }
 pub(crate) fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>> {
     let file = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
@@ -783,7 +773,7 @@ pub struct NodeRuntime {
 
 impl NodeRuntime {
     pub async fn open(config: RuntimeConfig) -> Result<Self> {
-        Self::open_using(config, environment_secret).await
+        Self::open_using(config, file_secret).await
     }
 
     async fn open_using(
@@ -811,9 +801,7 @@ impl NodeRuntime {
         let destinations = config
             .backup_destinations
             .iter()
-            .map(|(name, destination)| {
-                Ok((name.clone(), destination.open(&|name| credential(name))?))
-            })
+            .map(|(name, destination)| Ok((name.clone(), destination.open()?)))
             .collect::<Result<BTreeMap<_, _>>>()?;
         // Validate all TLS/credential material and bind all sockets before a
         // durable bootstrap can be created. No listener serves until `serve`.
@@ -825,15 +813,15 @@ impl NodeRuntime {
         let control_provider = config
             .control
             .transit
-            .provider_with_secret(credential(&config.control.transit.token_env)?)?;
+            .provider_with_source(credential.clone())?;
         let control_custody_provider = config
             .control
             .custody_transit
-            .provider_with_secret(credential(&config.control.custody_transit.token_env)?)?;
+            .provider_with_source(credential.clone())?;
         let security_provider = config
             .security_audit
             .transit
-            .provider_with_secret(credential(&config.security_audit.transit.token_env)?)?;
+            .provider_with_source(credential.clone())?;
         let mcp_socket = TcpListener::bind(config.mcp.listen).await?;
         let native_socket = TcpListener::bind(config.native.listen).await?;
         let admin_socket = TcpListener::bind(config.admin.listen).await?;
@@ -936,7 +924,7 @@ impl NodeRuntime {
                 lease: None,
             }];
             for tenant in &config.tenants {
-                let custody_provider = tenant.custody_transit.provider_with_secret(credential(&tenant.custody_transit.token_env)?)?;
+                let custody_provider = tenant.custody_transit.provider_with_source(credential.clone())?;
                 if kasumi_store::CustodyStore::catalog_installed(&node, &tenant.tenant)? {
                     let custody_store = kasumi_store::CustodyStore::open(node.clone(), tenant.tenant.clone(), custody_provider.clone()).await?;
                     if let Some(control) = kasumi_raft::ControlLog::installed(custody_store.clone())? {
@@ -972,7 +960,7 @@ impl NodeRuntime {
                 };
                 // The application provider is constructed only after the closed
                 // control route is excluded and an issuer capability is live.
-                let provider = tenant.transit.provider_with_secret(credential(&tenant.transit.token_env)?)?;
+                let provider = tenant.transit.provider_with_source(credential.clone())?;
                 let stores = TenantStorageSet::open(
                     node.clone(),
                     tenant.tenant.clone(),
@@ -1014,8 +1002,8 @@ impl NodeRuntime {
                 let custody = tenant.custody_transit.clone();
                 let credential = credential.clone();
                 let factory: crate::administration::ProviderFactory = Arc::new(move || {
-                    let application: Arc<dyn kasumi_store::KeyProvider> = application.provider_with_secret(credential(&application.token_env)?)?;
-                    let custody: Arc<dyn kasumi_store::KeyProvider> = custody.provider_with_secret(credential(&custody.token_env)?)?;
+                    let application: Arc<dyn kasumi_store::KeyProvider> = application.provider_with_source(credential.clone())?;
+                    let custody: Arc<dyn kasumi_store::KeyProvider> = custody.provider_with_source(credential.clone())?;
                     Ok((application, custody))
                 });
                 (tenant.tenant.clone(), factory)
@@ -1625,7 +1613,7 @@ pub fn example_config() -> RuntimeConfig {
         endpoint: "https://openbao.example".into(),
         mount: "transit".into(),
         key_name: key.into(),
-        token_env: variable.into(),
+        token_file: format!("/etc/kasumi/credentials/{variable}"),
         namespace: None,
         ca_certificate: None,
         derived: false,
@@ -1658,17 +1646,20 @@ pub fn example_config() -> RuntimeConfig {
                 },
                 endpoints: BTreeMap::from([(
                     0,
-                    crate::serving_runtime::AuthorityEndpoint {
-                        endpoint: "https://authority.example:9544".into(),
-                        certificate_pins: BTreeSet::from(["02".repeat(32)]),
-                    },
+                    BTreeMap::from([(
+                        1,
+                        crate::serving_runtime::AuthorityEndpoint {
+                            endpoint: "https://authority.example:9544".into(),
+                            certificate_pins: BTreeSet::from(["02".repeat(32)]),
+                        },
+                    )]),
                 )]),
                 tls: TlsFiles {
                     certificate: "/etc/kasumi/node-authority.pem".into(),
                     private_key: "/etc/kasumi/node-authority-key.pem".into(),
                 },
                 server_ca: "/etc/kasumi/authority-ca.pem".into(),
-                bearer_env: "KASUMI_NODE_AUTHORITY_TOKEN".into(),
+                bearer_file: "/etc/kasumi/credentials/authority-token".into(),
                 principal: "storage-node-1".into(),
             },
         )]),
@@ -1743,7 +1734,7 @@ pub struct AdminClientConfig {
     pub identity: TlsFiles,
     pub server_ca: PathBuf,
     pub server_certificate_pins: Vec<String>,
-    pub token_env: String,
+    pub token_file: String,
 }
 impl AdminClientConfig {
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
@@ -1755,7 +1746,7 @@ impl AdminClientConfig {
         origin(&self.endpoint)?;
         self.identity.validate()?;
         absolute(&self.server_ca)?;
-        environment_name(&self.token_env)?;
+        credential_path(&self.token_file)?;
         ensure!(
             !self.server_certificate_pins.is_empty(),
             "admin server certificate pins missing"
@@ -1779,7 +1770,7 @@ impl AdminClientConfig {
             .iter()
             .map(|pin| parse_certificate_pin(pin))
             .collect::<Result<_>>()?;
-        let secret = environment_secret(&self.token_env)?;
+        let secret = file_secret(&self.token_file)?;
         ensure!(
             !secret.contains(char::is_whitespace),
             "admin token must not contain whitespace"
@@ -1862,7 +1853,7 @@ mod tests {
         config.tenants[0].transit.endpoint = "https://user:password@localhost".into();
         assert!(config.validate().is_err());
         let mut config = fixture_config();
-        config.tenants[0].transit.token_env = "HOME".into();
+        config.tenants[0].transit.token_file = "HOME".into();
         assert!(config.validate().is_err());
         let mut config = fixture_config();
         config.tenants[0].transit.key_name = "../different-key".into();
@@ -2066,7 +2057,7 @@ mod tests {
             },
             server_ca: "/ca.pem".into(),
             server_certificate_pins: vec!["ab".repeat(32)],
-            token_env: "KASUMI_ADMIN_ACCESS_TOKEN".into(),
+            token_file: "/etc/kasumi/credentials/admin-token".into(),
         };
         config.validate().unwrap();
         let mut bad = config.clone();
@@ -2076,7 +2067,7 @@ mod tests {
         bad.server_certificate_pins.clear();
         assert!(bad.validate().is_err());
         let mut bad = config;
-        bad.token_env = "inline-token-value".into();
+        bad.token_file = "inline-token-value".into();
         assert!(bad.validate().is_err());
     }
 }

@@ -1,16 +1,19 @@
 //! Shared TLS 1.3, mutual authentication and certificate pinning for Kasumi.
+pub mod credentials;
+mod reload;
 use anyhow::{Context, Result, ensure};
 use hyper_util::rt::TokioIo;
+pub use reload::ReloadableServerConfig;
 use rustls::{
     ClientConfig, RootCertStore, ServerConfig,
     client::{
         WebPkiServerVerifier,
         danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
     },
-    pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime},
+    pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime, pem::PemObject},
 };
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeSet, io::Cursor, sync::Arc, time::Duration};
+use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
 pub type CertificatePin = [u8; 32];
 
@@ -20,11 +23,20 @@ pub struct TlsIdentity {
     private_key: PrivateKeyDer<'static>,
 }
 
+impl Clone for TlsIdentity {
+    fn clone(&self) -> Self {
+        Self {
+            certificates: self.certificates.clone(),
+            private_key: self.private_key.clone_key(),
+        }
+    }
+}
+
 impl TlsIdentity {
     pub fn from_pem(certificates: &[u8], private_key: &[u8]) -> Result<Self> {
         let certificates = certificates_from_pem(certificates)?;
-        let private_key = rustls_pemfile::private_key(&mut Cursor::new(private_key))?
-            .context("TLS private key missing")?;
+        let private_key = PrivateKeyDer::from_pem_slice(private_key)
+            .context("TLS private key missing or malformed")?;
         Ok(Self {
             certificates,
             private_key,
@@ -36,8 +48,7 @@ impl TlsIdentity {
 }
 
 fn certificates_from_pem(pem: &[u8]) -> Result<Vec<CertificateDer<'static>>> {
-    let certificates =
-        rustls_pemfile::certs(&mut Cursor::new(pem)).collect::<std::io::Result<Vec<_>>>()?;
+    let certificates = CertificateDer::pem_slice_iter(pem).collect::<Result<Vec<_>, _>>()?;
     ensure!(!certificates.is_empty(), "TLS certificates missing");
     Ok(certificates)
 }

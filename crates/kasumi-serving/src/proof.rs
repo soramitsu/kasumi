@@ -373,6 +373,12 @@ impl VerifiedLease {
     pub fn activation_digest(&self) -> &str {
         &self.signed.claims.activation_digest
     }
+    /// Remaining verified authority on the original suspend-aware boot clock.
+    pub fn remaining(&self) -> Result<Duration> {
+        let now = self.boot.now()?;
+        ensure!(now < self.deadline, "serving grant expired");
+        Ok(self.deadline - now)
+    }
     pub fn check(&self) -> Result<()> {
         ensure!(self.boot.now()? < self.deadline, "serving grant expired");
         Ok(())

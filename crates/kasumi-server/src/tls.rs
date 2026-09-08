@@ -10,7 +10,6 @@ use hyper_util::{
 use kasumi_transport::{CertificatePin, certificate_digest};
 #[cfg(test)]
 use kasumi_transport::{ClientAuthentication, TlsIdentity, server_config};
-use rustls::ServerConfig;
 use std::{future::Future, sync::Arc, time::Duration};
 use tokio::{
     net::TcpListener,
@@ -105,7 +104,7 @@ impl Default for ListenerLimits {
 /// graceful connection shutdown, then bounds draining before aborting leftovers.
 pub async fn serve_tls(
     listener: TcpListener,
-    config: Arc<ServerConfig>,
+    config: impl Into<kasumi_transport::ReloadableServerConfig>,
     router: Router,
     limits: ListenerLimits,
     audit: Arc<dyn TlsHandshakeAudit>,
@@ -137,7 +136,7 @@ impl ConnectionSource for TcpListener {
 
 async fn serve_tls_source(
     mut listener: impl ConnectionSource,
-    config: Arc<ServerConfig>,
+    config: impl Into<kasumi_transport::ReloadableServerConfig>,
     router: Router,
     limits: ListenerLimits,
     audit: Arc<dyn TlsHandshakeAudit>,
@@ -155,7 +154,7 @@ async fn serve_tls_source(
             && !limits.drain_timeout.is_zero(),
         "invalid TLS listener limits"
     );
-    let acceptor = TlsAcceptor::from(config);
+    let config = config.into();
     let connections = Arc::new(Semaphore::new(limits.max_connections));
     let mut tasks = JoinSet::new();
     let (connection_stop, connection_shutdown) = watch::channel(false);
@@ -174,7 +173,7 @@ async fn serve_tls_source(
                     Err(error) => { outcome = Err(error.into()); break; },
                 };
                 let Ok(permit) = connections.clone().try_acquire_owned() else { drop(socket); continue; };
-                let acceptor = acceptor.clone();
+                let acceptor = TlsAcceptor::from(config.snapshot()?);
                 let configure_socket = configure_socket.clone();
                 let router = router.clone();
                 let limits = limits.clone();

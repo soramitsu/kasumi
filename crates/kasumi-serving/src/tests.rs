@@ -193,3 +193,23 @@ fn immutable_drain_covers_slowest_client_against_fastest_issuer() {
     );
     assert_ne!(manifest.digest().unwrap(), boot.authority().digest());
 }
+
+#[test]
+fn remaining_lease_time_uses_verified_shorter_credential_deadline() {
+    let (signer, boot, clock) = fixture();
+    let attempt = boot.begin_acquisition().unwrap();
+    let mut claims = signed(&signer, &boot, &attempt).claims;
+    claims.credential_lifetime_ms = 90;
+    let lease = attempt.verify(signer.sign_lease(claims).unwrap()).unwrap();
+    let gate = ServingGate::new(lease).unwrap();
+    assert_eq!(gate.remaining().unwrap(), Duration::from_millis(90));
+    clock.0.store(60, Ordering::SeqCst);
+    assert_eq!(gate.remaining().unwrap(), Duration::from_millis(30));
+    clock.0.store(90, Ordering::SeqCst);
+    assert!(gate.remaining().is_err());
+    let fresh = boot.begin_acquisition().unwrap();
+    assert!(
+        gate.renew(fresh.verify(signed(&signer, &boot, &fresh)).unwrap())
+            .is_err()
+    );
+}

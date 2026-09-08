@@ -1819,9 +1819,11 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.20",
+ "tokio",
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
+ "url",
  "uuid",
 ]
 
@@ -1974,6 +1976,7 @@ dependencies = [
  "hyper-util",
  "kasumi-clock",
  "kasumi-serving",
+ "kasumi-transport",
  "kasumi-types",
  "libc",
  "parking_lot",
@@ -1999,14 +2002,17 @@ dependencies = [
  "anyhow",
  "http",
  "hyper-util",
+ "libc",
+ "rcgen",
  "rustls",
- "rustls-pemfile",
  "sha2",
+ "tempfile",
  "tokio",
  "tokio-rustls",
  "tonic",
  "tower",
  "url",
+ "zeroize",
 ]
 
 [[package]]
@@ -3335,15 +3341,6 @@ dependencies = [
  "rustls-webpki",
  "subtle",
  "zeroize",
-]
-
-[[package]]
-name = "rustls-pemfile"
-version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dce314e5fee3f39953d46bb63bb8a46d40c2f8fb7cc5a3b6cab2bde9721d6e50"
-dependencies = [
- "rustls-pki-types",
 ]
 
 [[package]]

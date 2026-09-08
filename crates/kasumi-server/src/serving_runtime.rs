@@ -1,8 +1,8 @@
 //! Installed source-to-authority connections and bounded renewal. Remote data
 //! requests cannot choose an issuer, credential, endpoint, epoch or boot nonce.
-use crate::runtime::{TlsFiles, environment_name, origin, parse_certificate_pin, read_bounded};
+use crate::runtime::{TlsFiles, credential_path, origin, parse_certificate_pin, read_bounded};
 use anyhow::{Context, Result, ensure};
-use kasumi_client::{KasumiAuthorityClient, KasumiClientConfig};
+use kasumi_client::{KasumiAuthorityPool, KasumiClientConfig};
 use kasumi_serving::{
     AuthorityManifest, AuthorityTrust, LeaseDiscovery, LeasePurpose, NodeIdentity, ServingBoot,
     ServingGate,
@@ -33,10 +33,10 @@ pub struct AuthorityEndpoint {
 #[serde(deny_unknown_fields)]
 pub struct ServingAuthorityConfig {
     pub manifest: AuthorityManifest,
-    pub endpoints: BTreeMap<u16, AuthorityEndpoint>,
+    pub endpoints: BTreeMap<u16, BTreeMap<u64, AuthorityEndpoint>>,
     pub tls: TlsFiles,
     pub server_ca: PathBuf,
-    pub bearer_env: String,
+    pub bearer_file: String,
     pub principal: String,
 }
 impl ServingAuthorityConfig {
@@ -48,19 +48,29 @@ impl ServingAuthorityConfig {
             "authority server CA must be an installed absolute path"
         );
         kasumi_types::validate_name(&self.principal)?;
-        environment_name(&self.bearer_env)?;
+        credential_path(&self.bearer_file)?;
         ensure!(
             self.endpoints.keys().eq(self.manifest.partitions.keys()),
             "authority endpoints differ from installed partition map"
         );
-        for endpoint in self.endpoints.values() {
-            origin(&endpoint.endpoint)?;
+        for members in self.endpoints.values() {
             ensure!(
-                !endpoint.certificate_pins.is_empty() && endpoint.certificate_pins.len() <= 8,
-                "authority endpoint needs bounded explicit leaf pins"
+                !members.is_empty() && members.len() <= 64 && !members.contains_key(&0),
+                "authority partition requires bounded installed member endpoints"
             );
-            for pin in &endpoint.certificate_pins {
-                parse_certificate_pin(pin)?;
+            let mut origins = BTreeSet::new();
+            for endpoint in members.values() {
+                ensure!(
+                    origins.insert(origin(&endpoint.endpoint)?.to_string()),
+                    "duplicate authority endpoint"
+                );
+                ensure!(
+                    !endpoint.certificate_pins.is_empty() && endpoint.certificate_pins.len() <= 8,
+                    "authority endpoint needs bounded explicit leaf pins"
+                );
+                for pin in &endpoint.certificate_pins {
+                    parse_certificate_pin(pin)?;
+                }
             }
         }
         Ok(())
@@ -79,9 +89,7 @@ pub enum TenantServingConfig {
 pub(crate) struct RuntimeLease {
     gate: Arc<ServingGate>,
     boot: ServingBoot,
-    client: AsyncMutex<KasumiAuthorityClient>,
-    credential: CredentialSource,
-    bearer_env: String,
+    client: AsyncMutex<KasumiAuthorityPool>,
     renewal: Mutex<Option<tokio::task::JoinHandle<()>>>,
     serving: AtomicBool,
 }
@@ -109,7 +117,7 @@ impl RuntimeLease {
     ) -> Result<Arc<Self>> {
         config.validate()?;
         let partition = config.manifest.partition(tenant)?;
-        let endpoint = &config.endpoints[&partition];
+        let endpoints = &config.endpoints[&partition];
         let tls = config.tls.load()?;
         let discovery = LeaseDiscovery {
             tenant: tenant.into(),
@@ -122,29 +130,33 @@ impl RuntimeLease {
             },
         };
         let trust = AuthorityTrust::install(config.manifest.clone())?;
-        let connection = KasumiClientConfig {
-            endpoint: endpoint.endpoint.clone(),
-            identity: tls,
-            trusted_ca_pem: read_bounded(&config.server_ca, 1 << 20)?,
-            server_certificate_pins: endpoint
-                .certificate_pins
-                .iter()
-                .map(|pin| parse_certificate_pin(pin))
-                .collect::<Result<_>>()?,
-        };
-        let mut client = tokio::time::timeout(
-            Duration::from_secs(5),
-            KasumiAuthorityClient::connect(&connection, trust.clone()),
-        )
-        .await
-        .context("authority connection timed out")??;
-        let bearer = credential(&config.bearer_env)?;
-        let identity = tokio::time::timeout(
-            Duration::from_secs(5),
-            client.discover_lease(&bearer, &discovery),
-        )
-        .await
-        .context("authority discovery timed out")??;
+        let connections = endpoints
+            .iter()
+            .map(|(id, endpoint)| {
+                Ok((
+                    *id,
+                    KasumiClientConfig {
+                        endpoint: endpoint.endpoint.clone(),
+                        identity: tls.clone(),
+                        trusted_ca_pem: read_bounded(&config.server_ca, 1 << 20)?,
+                        server_certificate_pins: endpoint
+                            .certificate_pins
+                            .iter()
+                            .map(|pin| parse_certificate_pin(pin))
+                            .collect::<Result<_>>()?,
+                    },
+                ))
+            })
+            .collect::<Result<_>>()?;
+        let path = config.bearer_file.clone();
+        let mut client = KasumiAuthorityPool::new(
+            connections,
+            trust.clone(),
+            Arc::new(move || credential(&path)),
+        )?;
+        let identity = client
+            .discover_lease(&discovery, Duration::from_secs(5))
+            .await?;
         let mut boot = ServingBoot::new(trust, identity)?;
         if purpose == LeasePurpose::RestorePreparation {
             boot = boot.for_restore_preparation();
@@ -152,42 +164,44 @@ impl RuntimeLease {
         // Sample before dispatch, including credential acquisition time. No
         // redirect/retry can re-anchor this exact request's local authority.
         let attempt = boot.begin_acquisition()?;
-        let bearer = credential(&config.bearer_env)?;
-        let lease = tokio::time::timeout(
-            Duration::from_millis(config.manifest.max_lease_ms.min(5000)),
-            client.acquire_lease(&bearer, &attempt),
-        )
-        .await
-        .context("authority lease acquisition timed out")??;
+        let lease = client
+            .acquire_lease(
+                &attempt,
+                Duration::from_millis(config.manifest.max_lease_ms.min(5000)),
+            )
+            .await?;
         let gate = ServingGate::new(lease)?;
         let runtime = Arc::new(Self {
             gate,
             boot,
             client: AsyncMutex::new(client),
-            credential,
-            bearer_env: config.bearer_env.clone(),
             renewal: Mutex::new(None),
             serving: AtomicBool::new(purpose == LeasePurpose::Serving),
         });
         let weak = Arc::downgrade(&runtime);
-        let interval = Duration::from_millis((config.manifest.max_lease_ms / 3).max(10));
-        let retry = Duration::from_millis((config.manifest.max_lease_ms / 10).clamp(10, 100));
         let task = tokio::spawn(async move {
-            let mut delay = interval;
+            let mut failed = false;
             loop {
+                let delay = {
+                    let Some(runtime) = weak.upgrade() else { break };
+                    let Ok(remaining) = runtime.gate.remaining() else {
+                        break;
+                    };
+                    if failed {
+                        (remaining / 4).min(Duration::from_millis(100))
+                    } else {
+                        remaining / 3
+                    }
+                };
                 tokio::time::sleep(delay).await;
                 let Some(runtime) = weak.upgrade() else { break };
-                if runtime.gate.check().is_err() {
+                let Ok(remaining) = runtime.gate.remaining() else {
                     break;
-                }
-                let renewed =
-                    tokio::time::timeout(interval.min(Duration::from_secs(5)), runtime.renew())
-                        .await;
-                delay = if matches!(renewed, Ok(Ok(()))) {
-                    interval
-                } else {
-                    retry
                 };
+                failed = !matches!(
+                    tokio::time::timeout(remaining, runtime.renew()).await,
+                    Ok(Ok(()))
+                );
                 if runtime.gate.check().is_err() {
                     break;
                 }
@@ -209,8 +223,9 @@ impl RuntimeLease {
             self.boot.clone()
         };
         let attempt = boot.begin_acquisition()?;
-        let bearer = (self.credential)(&self.bearer_env)?;
-        let lease = client.acquire_lease(&bearer, &attempt).await?;
+        let lease = client
+            .acquire_lease(&attempt, self.gate.remaining()?.min(Duration::from_secs(5)))
+            .await?;
         self.gate.renew(lease)
     }
     pub(crate) fn access(&self) -> Result<StorageAccess> {
@@ -223,8 +238,9 @@ impl RuntimeLease {
                 return self.gate.check_serving();
             }
             let attempt = self.boot.clone().for_serving().begin_acquisition()?;
-            let bearer = (self.credential)(&self.bearer_env)?;
-            let lease = client.acquire_lease(&bearer, &attempt).await?;
+            let lease = client
+                .acquire_lease(&attempt, self.gate.remaining()?.min(Duration::from_secs(5)))
+                .await?;
             self.gate.promote_prepared(lease)?;
             self.serving.store(true, Ordering::Release);
             Ok(())

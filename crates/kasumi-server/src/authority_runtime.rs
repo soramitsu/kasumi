@@ -5,8 +5,8 @@ use crate::{
     cluster::{ClusterNetwork, PeerConfig, PeerLimits},
     rpc::NativeAuthority,
     runtime::{
-        MutualTlsEndpoint, ReplicationConfig, SecurityAuditConfig, TransitSettings,
-        environment_secret, parse_certificate_pin, read_bounded, read_private_file,
+        MutualTlsEndpoint, ReplicationConfig, SecurityAuditConfig, TransitSettings, file_secret,
+        parse_certificate_pin, read_bounded, read_private_file,
     },
     tls,
 };
@@ -137,9 +137,7 @@ impl AuthorityRuntime {
             config
                 .security_audit
                 .transit
-                .provider_with_secret(environment_secret(
-                    &config.security_audit.transit.token_env,
-                )?)?,
+                .provider_with_source(Arc::new(file_secret))?,
             StorageAccess::security_audit(),
         )
         .await?;
@@ -149,12 +147,10 @@ impl AuthorityRuntime {
         let stores = TenantStorageSet::open(
             node,
             config.installation.tenant(),
-            config
-                .transit
-                .provider_with_secret(environment_secret(&config.transit.token_env)?)?,
+            config.transit.provider_with_source(Arc::new(file_secret))?,
             config
                 .custody_transit
-                .provider_with_secret(environment_secret(&config.custody_transit.token_env)?)?,
+                .provider_with_source(Arc::new(file_secret))?,
             StorageAccess::independent_authority(
                 &config.installation.manifest,
                 config.installation.partition,

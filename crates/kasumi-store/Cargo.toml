@@ -10,6 +10,7 @@ repository.workspace = true
 test-utils = []
 
 [dependencies]
+kasumi-transport.workspace = true
 kasumi-clock.workspace = true
 kasumi-serving.workspace = true
 kasumi-types.workspace = true

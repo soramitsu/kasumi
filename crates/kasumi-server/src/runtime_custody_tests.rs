@@ -130,7 +130,7 @@ async fn retired_runtime_reopens_current_custody_without_constructing_applicatio
         .clone();
     old_key.revoke();
     let probes = old_key.probe_count();
-    let forbidden_credential = config.tenants[0].transit.token_env.clone();
+    let forbidden_credential = config.tenants[0].transit.token_file.clone();
     let mut runtime = NodeRuntime::open_using(config, move |name| {
         anyhow::ensure!(
             name != forbidden_credential,
