@@ -37,7 +37,7 @@ fn request(f: &Fixture) -> RecoveryStart {
                     (
                         id,
                         TargetPeer {
-                            endpoint: format!("target-{id}"),
+                            endpoint: format!("https://target-{id}.example:8443"),
                             failure_domain: format!("zone-{id}"),
                         },
                     )
@@ -105,7 +105,11 @@ async fn recovery_uncertain_activation_requires_permanent_stop_before_target_cle
     exercise_completed_recovery(false, Some(false)).await;
 }
 async fn exercise_completed_recovery(planned: bool, activation_outcome: Option<bool>) {
-    let mut f = Fixture::new().await;
+    let mut f = if activation_outcome == Some(true) {
+        Fixture::with_topology().await
+    } else {
+        Fixture::new().await
+    };
     let mut request = request(&f);
     let mut attestation = BTreeMap::new();
     for node in request.target_nodes.values_mut() {
@@ -973,21 +977,7 @@ async fn exercise_completed_recovery(planned: bool, activation_outcome: Option<b
             );
             drop(published);
             snapshot(&db).await;
-            drop(db);
-            f.close().await;
-            f.open().await;
-            let db = f.leader().await;
-            assert_eq!(
-                db.recovery_status(f.context("owner"), id)
-                    .await
-                    .unwrap()
-                    .record()
-                    .phase,
-                RecoveryPhase::Publish,
-                "activated recovery must resume forward after restart"
-            );
-            drop(db);
-            f.close().await;
+            exercise_route_publication(&mut f, db, &request).await;
             return;
         }
     }
@@ -1221,6 +1211,286 @@ async fn exercise_completed_recovery(planned: bool, activation_outcome: Option<b
             .phase,
         RecoveryPhase::Stopped
     );
+    drop(db);
+    f.close().await;
+}
+async fn publish_route(f: &Fixture, operation: Uuid, phase: Uuid) -> RecoveryDispatchOutcome {
+    let context = f.context("owner");
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let db = f.leader().await;
+            match db
+                .publish_recovery_route(context.clone(), operation, phase)
+                .await
+            {
+                Ok(observation) => {
+                    return observation
+                        .record()
+                        .outcome
+                        .clone()
+                        .expect("permanent route outcome missing");
+                }
+                Err(error)
+                    if matches!(
+                        error.code,
+                        ErrorCode::UnknownOutcome | ErrorCode::Unavailable
+                    ) => {}
+                Err(error) => panic!("atomic route publication failed: {error:?}"),
+            }
+        }
+    })
+    .await
+    .expect("original route publication did not resolve")
+}
+// A denied response releases no topology. Retry the same finite read through
+// the actual current leader; permanent authorization/corruption errors still fail.
+async fn read_topology(f: &Fixture) -> kasumi_engine::control::VersionedTopology {
+    let context = f.context("owner");
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let plane = kasumi_engine::control::ControlPlane::new(f.leader().await).unwrap();
+            match plane.topology(&context).await {
+                Ok(Some(topology)) => return topology,
+                Err(error)
+                    if matches!(
+                        error.code,
+                        ErrorCode::UnknownOutcome
+                            | ErrorCode::Unavailable
+                            | ErrorCode::AuditUnavailable
+                    ) => {}
+                other => panic!("current topology read did not release: {other:?}"),
+            }
+        }
+    })
+    .await
+    .expect("original topology read did not acquire its durable release fence")
+}
+async fn exercise_route_publication(f: &mut Fixture, db: Arc<Database>, request: &RecoveryStart) {
+    use kasumi_engine::control::{
+        ControlNode, ControlPlane, ControlTopology, DeploymentMode, TenantRoute,
+    };
+    let plane = ControlPlane::new(db.clone()).unwrap();
+    plane.initialize(f.context("owner")).await.unwrap();
+    let mut topology = ControlTopology {
+        nodes: request
+            .target_nodes
+            .iter()
+            .map(|(node, identity)| {
+                (
+                    *node,
+                    ControlNode {
+                        endpoint: request.materialization.voters[node].endpoint.clone(),
+                        failure_domain: request.materialization.voters[node].failure_domain.clone(),
+                        certificate_pins: BTreeSet::from([identity.certificate_sha256.clone()]),
+                    },
+                )
+            })
+            .collect(),
+        tenants: BTreeMap::from([(
+            request.tenant.clone(),
+            TenantRoute {
+                incarnation: request.source_incarnation.to_string(),
+                mode: DeploymentMode::Replicated,
+                voters: request.target_nodes.keys().copied().collect(),
+            },
+        )]),
+    };
+    plane
+        .replace_topology(
+            f.context("owner"),
+            topology.clone(),
+            Precondition::Absent,
+            "recovery-source-topology".into(),
+        )
+        .await
+        .unwrap();
+    let (phase, input) = prepare_next(f, &db, request.operation_id).await;
+    let RecoveryDispatch::PublishRoute(original) = input else {
+        panic!("exact route compare-and-set must be prepared first")
+    };
+    assert_eq!(
+        original.expected_source_incarnation,
+        request.source_incarnation
+    );
+    assert!(
+        db.publish_recovery_route(f.context("intruder"), request.operation_id, phase)
+            .await
+            .is_err()
+    );
+    assert!(
+        db.resolve_recovery_dispatch(
+            f.context("owner"),
+            request.operation_id,
+            phase,
+            RecoveryDispatchOutcome::RoutePublished {
+                revision: db.engine().generation().unwrap().state.revision + 1
+            }
+        )
+        .await
+        .is_err(),
+        "ordinary resolution cannot fabricate an atomic topology publication"
+    );
+    topology.tenants.insert(
+        "unrelated".into(),
+        TenantRoute {
+            incarnation: Uuid::new_v4().to_string(),
+            mode: DeploymentMode::Replicated,
+            voters: original.target_voters.clone(),
+        },
+    );
+    plane
+        .replace_topology(
+            f.context("owner"),
+            topology.clone(),
+            Precondition::Version(original.expected_topology_version),
+            "race-recovery-topology".into(),
+        )
+        .await
+        .unwrap();
+    let raced = read_topology(f).await;
+    let rejected = publish_route(f, request.operation_id, phase).await;
+    assert_eq!(
+        rejected,
+        RecoveryDispatchOutcome::RouteRejected {
+            observed_topology_version: Some(raced.version)
+        }
+    );
+    assert_eq!(
+        read_topology(f).await.topology,
+        topology,
+        "a stale prepared phase cannot overwrite concurrent topology"
+    );
+    let expiring = f.context_for("owner", 3_000);
+    let expired = Uuid::new_v4();
+    let head = db
+        .recovery_status(f.context("owner"), request.operation_id)
+        .await
+        .unwrap();
+    let pending = db
+        .next_recovery_dispatch(&expiring, request.operation_id, expired)
+        .await
+        .unwrap()
+        .unwrap();
+    let prepared = db
+        .prepare_recovery_dispatch(
+            expiring,
+            request.operation_id,
+            expired,
+            head.record().next_phase_sequence,
+            None,
+            pending,
+        )
+        .await
+        .unwrap();
+    let original_cutoff = prepared.dispatch_limit().await.unwrap();
+    drop(prepared);
+    drop(head);
+    let now = kasumi_clock::EpochClock::system()
+        .unwrap()
+        .observe()
+        .unwrap()
+        .utc_ms();
+    tokio::time::sleep(Duration::from_millis(
+        original_cutoff.saturating_sub(now) + 20,
+    ))
+    .await;
+    let (fresh, input) = prepare_next(f, &db, request.operation_id).await;
+    let old = db
+        .recovery_phase(f.context("owner"), request.operation_id, expired)
+        .await
+        .unwrap();
+    assert_eq!(old.dispatch_limit().await.unwrap(), original_cutoff);
+    assert_eq!(
+        old.record().outcome,
+        Some(RecoveryDispatchOutcome::RouteSuperseded {
+            replacement_phase: fresh
+        })
+    );
+    drop(old);
+    assert_eq!(
+        publish_route(f, request.operation_id, expired).await,
+        RecoveryDispatchOutcome::RouteSuperseded {
+            replacement_phase: fresh
+        }
+    );
+    assert_eq!(
+        read_topology(f).await.version,
+        raced.version,
+        "an expired local phase must remain closed after fresh admission"
+    );
+    let RecoveryDispatch::PublishRoute(input) = input else {
+        panic!("fresh exact route phase required")
+    };
+    assert_eq!(input.expected_topology_version, raced.version);
+    let published = publish_route(f, request.operation_id, fresh).await;
+    let RecoveryDispatchOutcome::RoutePublished { revision } = &published else {
+        panic!("atomic publication required")
+    };
+    let active = read_topology(f).await;
+    assert_eq!(active.version, *revision);
+    assert_eq!(
+        active.topology.tenants[&request.tenant].incarnation,
+        request.target_incarnation.to_string()
+    );
+    assert_eq!(
+        active.topology.tenants["unrelated"],
+        topology.tenants["unrelated"]
+    );
+    let head = db
+        .recovery_status(f.context("owner"), request.operation_id)
+        .await
+        .unwrap();
+    assert_eq!(head.record().phase, RecoveryPhase::Finished);
+    assert_eq!(head.record().route_publication, Some(fresh));
+    drop(head);
+    let mut later = active.topology;
+    later.tenants.get_mut("unrelated").unwrap().incarnation = Uuid::new_v4().to_string();
+    plane
+        .replace_topology(
+            f.context("owner"),
+            later.clone(),
+            Precondition::Version(*revision),
+            "later-authorized-topology".into(),
+        )
+        .await
+        .unwrap();
+    let later_version = read_topology(f).await.version;
+    assert_eq!(
+        publish_route(f, request.operation_id, fresh).await,
+        published
+    );
+    assert_eq!(
+        publish_route(f, request.operation_id, phase).await,
+        rejected
+    );
+    let current = read_topology(f).await;
+    assert_eq!(current.version, later_version);
+    assert_eq!(current.topology, later);
+    snapshot(&db).await;
+    drop(plane);
+    drop(db);
+    f.close().await;
+    f.open().await;
+    let db = f.leader().await;
+    assert_eq!(
+        publish_route(f, request.operation_id, fresh).await,
+        published
+    );
+    let current = read_topology(f).await;
+    assert_eq!(current.version, later_version);
+    assert_eq!(
+        current.topology, later,
+        "replay after restart must preserve later authorized topology"
+    );
+    assert_eq!(
+        db.recovery_status(f.context("owner"), request.operation_id)
+            .await
+            .unwrap()
+            .record()
+            .phase,
+        RecoveryPhase::Finished
+    );
+    snapshot(&db).await;
     drop(db);
     f.close().await;
 }

@@ -39,6 +39,7 @@ pub struct TenantRoute {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ControlTopology {
+    #[serde(deserialize_with = "kasumi_types::deserialize_u64_map")]
     pub nodes: BTreeMap<u64, ControlNode>,
     pub tenants: BTreeMap<String, TenantRoute>,
 }

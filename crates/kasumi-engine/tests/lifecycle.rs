@@ -39,6 +39,12 @@ impl Fixture {
         Self::limits(Limits::default(), 8 << 20).await
     }
     async fn limits(limits: Limits, max_state_bytes: usize) -> Self {
+        Self::configured(limits, max_state_bytes, false).await
+    }
+    async fn with_topology() -> Self {
+        Self::configured(Limits::default(), 8 << 20, true).await
+    }
+    async fn configured(limits: Limits, max_state_bytes: usize, install_topology: bool) -> Self {
         let root = tempfile::tempdir().unwrap();
         let incarnation = Uuid::new_v4();
         let pkcs8 = Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new()).unwrap();
@@ -128,6 +134,13 @@ impl Fixture {
             installation,
         };
         result.open().await;
+        if install_topology {
+            kasumi_engine::control::ControlPlane::new(result.leader().await)
+                .unwrap()
+                .initialize(result.context("owner"))
+                .await
+                .unwrap();
+        }
         result
             .leader()
             .await

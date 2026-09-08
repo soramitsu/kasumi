@@ -12,6 +12,8 @@ mod source;
 pub(crate) use source::{issuer_action, retirement_request};
 #[path = "recovery_activation.rs"]
 pub(crate) mod activation;
+#[path = "recovery_route.rs"]
+pub(crate) mod route;
 
 pub(crate) const PREFIX: &[u8] = b"KASUMI_RECOVERY_V1\0";
 pub(crate) const MAX_COMMAND_BYTES: usize = (2 << 20) + 64 * 1024;
@@ -38,6 +40,10 @@ pub(crate) enum RecoveryMutation {
         expected_sequence: u64,
         expected_pending: Option<Uuid>,
         input: Box<RecoveryDispatch>,
+    },
+    PublishRoute {
+        operation_id: Uuid,
+        phase_id: Uuid,
     },
     Resolve {
         operation_id: Uuid,
@@ -232,6 +238,7 @@ impl TenantEngine {
                 RecoveryMutation::Stop { .. } => "recovery_stop",
                 RecoveryMutation::Prepare { .. } => "recovery_phase_prepare",
                 RecoveryMutation::Resolve { .. } => "recovery_phase_resolve",
+                RecoveryMutation::PublishRoute { .. } => "recovery_route_publish",
             }
             .into(),
             request_id: command.authorization.context.request_id.clone(),
@@ -246,15 +253,48 @@ impl TenantEngine {
             collection: None,
         };
         append_audit(&mut next, event)?;
+        let changed = if previous
+            .state
+            .collections
+            .get(route::COLLECTION)
+            .and_then(|c| c.documents.get(route::DOCUMENT))
+            .map(|d| d.version)
+            != next
+                .collections
+                .get(route::COLLECTION)
+                .and_then(|c| c.documents.get(route::DOCUMENT))
+                .map(|d| d.version)
+        {
+            BTreeMap::from([(
+                route::COLLECTION.to_string(),
+                BTreeSet::from([route::DOCUMENT.to_string()]),
+            )])
+        } else {
+            BTreeMap::new()
+        };
+        if !changed.is_empty()
+            && let Err(failure) =
+                crate::change_feed_state::append(&previous.state, &mut next, &changed)
+        {
+            next = previous.state.clone();
+            next.revision = revision;
+            outcome = Err(failure);
+        }
+        let changed = if outcome.is_ok() {
+            changed
+        } else {
+            BTreeMap::new()
+        };
         let mut accounting = previous.snapshot_accounting.updated(
             &previous.state,
             &next,
-            &BTreeMap::new(),
+            &changed,
             &BTreeSet::new(),
             &BTreeSet::new(),
         )?;
         if next.audit_retention.hot_bytes > next.limits.audit_retention.hot_bytes
             || !accounting.fits(&next)?
+            || !lifecycle::completion_fits(&next)?
         {
             next = previous.state.clone();
             next.revision = revision;
@@ -264,9 +304,18 @@ impl TenantEngine {
                 "recovery retained state or audit capacity unavailable",
             ));
         }
+        let indexes = if outcome.is_ok() && !changed.is_empty() {
+            Arc::new(previous.indexes.update(
+                &previous.state.collections,
+                &next.collections,
+                &changed,
+            )?)
+        } else {
+            previous.indexes.clone()
+        };
         self.publish_generation(Some(Arc::new(Generation {
             state: next,
-            indexes: previous.indexes.clone(),
+            indexes,
             receipt_expiry: previous.receipt_expiry.clone(),
             snapshot_accounting: accounting,
             _read_reservations: vec![],
@@ -355,7 +404,8 @@ fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Result<RecoveryR
     let operation_id = match command.mutation {
         RecoveryMutation::Stop { operation_id, .. }
         | RecoveryMutation::Prepare { operation_id, .. }
-        | RecoveryMutation::Resolve { operation_id, .. } => operation_id,
+        | RecoveryMutation::Resolve { operation_id, .. }
+        | RecoveryMutation::PublishRoute { operation_id, .. } => operation_id,
         RecoveryMutation::Start(_) => unreachable!(),
     };
     let mut operation = state
@@ -445,7 +495,16 @@ fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Result<RecoveryR
                     (RecoveryDispatch::Authority(original),RecoveryDispatch::Authority(stop))
                     if operation.phase==RecoveryPhase::Activate && command.authorization.admitted_at_ms>=original.not_after_ms
                     && matches!(&stop.action,AuthorityAction::StopActivation{original:stopped} if stopped==original));
+                let expired_route = matches!(
+                    (&pending.input, input.as_ref()),
+                    (
+                        RecoveryDispatch::PublishRoute(_),
+                        RecoveryDispatch::PublishRoute(_)
+                    )
+                ) && operation.phase == RecoveryPhase::Publish
+                    && command.authorization.admitted_at_ms >= dispatch_limit(&operation, pending)?;
                 if !completion_route_retry(pending, input, command.authorization.admitted_at_ms)
+                    && !expired_route
                     && !stop_expired
                     && !matches!(input.as_ref(), RecoveryDispatch::ControlIntent(request) if Some(request.phase) == expected)
                 {
@@ -458,6 +517,27 @@ fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Result<RecoveryR
                 }
             }
             validate_input(state, &operation, *phase_id, input, &command.authorization)?;
+            if matches!(input.as_ref(), RecoveryDispatch::PublishRoute(_))
+                && let Some(old) = operation.pending_phase
+            {
+                let mut prior = phase(state, &operation, old)?.clone();
+                if !matches!(prior.input, RecoveryDispatch::PublishRoute(_))
+                    || command.authorization.admitted_at_ms < dispatch_limit(&operation, &prior)?
+                {
+                    return Err(conflict(
+                        "local publication supersession requires its expired original phase",
+                    ));
+                }
+                prior.outcome = Some(RecoveryDispatchOutcome::RouteSuperseded {
+                    replacement_phase: *phase_id,
+                });
+                prior.resolved_revision = Some(state.revision);
+                prior.validate()?;
+                state
+                    .recovery_control
+                    .phases
+                    .insert(phase_key(operation_id, old), prior);
+            }
             let prepared = RecoveryPhaseRecord {
                 operation_id,
                 phase_id: *phase_id,
@@ -486,6 +566,35 @@ fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Result<RecoveryR
                 .checked_add(1)
                 .ok_or_else(|| conflict("recovery phase sequence exhausted"))?;
         }
+        RecoveryMutation::PublishRoute { phase_id, .. } => {
+            let key = phase_key(operation_id, *phase_id);
+            let mut prepared = phase(state, &operation, *phase_id)?.clone();
+            let RecoveryDispatch::PublishRoute(input) = &prepared.input else {
+                return Err(conflict("route publication phase input differs"));
+            };
+            if prepared.outcome.is_some() {
+                return Ok(operation);
+            }
+            if operation.phase != RecoveryPhase::Publish
+                || operation.pending_phase != Some(*phase_id)
+                || command.authorization.admitted_at_ms >= dispatch_limit(&operation, &prepared)?
+            {
+                return Err(conflict("original route publication is no longer eligible"));
+            }
+            let outcome = route::apply(
+                state,
+                &operation,
+                input,
+                command.authorization.admitted_at_ms,
+            )?;
+            prepared.outcome = Some(outcome.clone());
+            prepared.resolved_revision = Some(state.revision);
+            route::validate_outcome(&prepared, input, &outcome)?;
+            advance(state, &mut operation, &prepared, &outcome)?;
+            prepared.validate()?;
+            state.recovery_control.phases.insert(key, prepared);
+            operation.pending_phase = None;
+        }
         RecoveryMutation::Resolve {
             phase_id, outcome, ..
         } => {
@@ -496,6 +605,11 @@ fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Result<RecoveryR
                     return Err(conflict("permanent recovery phase outcome differs"));
                 }
                 return Ok(operation);
+            }
+            if matches!(prepared.input, RecoveryDispatch::PublishRoute(_)) {
+                return Err(conflict(
+                    "route outcome must be committed atomically with its topology update",
+                ));
             }
             if operation.pending_phase != Some(*phase_id) {
                 return Err(conflict(
@@ -848,6 +962,12 @@ fn validate_input(
                 }
             }
         }
+        (RecoveryPhase::Publish, RecoveryDispatch::PublishRoute(input)) => {
+            route::validate_input(operation, input)?;
+            if *input != route::next_input(state, operation)? {
+                return Err(conflict("route publication compare-and-set input changed"));
+            }
+        }
         (RecoveryPhase::RetireSource, RecoveryDispatch::RetireSource(request)) => {
             if *request != retirement_request(operation, request.not_after_ms)?
                 || request.not_after_ms <= authorization.admitted_at_ms
@@ -1078,6 +1198,21 @@ fn validate_outcome(
                 _ => return Err(conflict("target acknowledgement operation differs")),
             }
         }
+        (RecoveryDispatch::PublishRoute(input), outcome) => {
+            route::validate_outcome(prepared, input, outcome)?;
+            if let RecoveryDispatchOutcome::RouteSuperseded { replacement_phase } = outcome {
+                let replacement = phase(state, operation, *replacement_phase)?;
+                if replacement.previous_phase != Some(prepared.phase_id)
+                    || Some(replacement.prepared_revision) != prepared.resolved_revision
+                    || replacement.admitted_at_ms < dispatch_limit(operation, prepared)?
+                    || !matches!(replacement.input, RecoveryDispatch::PublishRoute(_))
+                {
+                    return Err(conflict(
+                        "local publication supersession lacks its exact fresh phase",
+                    ));
+                }
+            }
+        }
         (
             RecoveryDispatch::RetireSource(request),
             RecoveryDispatchOutcome::SourceRetired(receipt),
@@ -1162,6 +1297,11 @@ fn advance(
                 };
             }
         }
+        (RecoveryDispatch::PublishRoute(_), RecoveryDispatchOutcome::RoutePublished { .. }) => {
+            operation.route_publication = Some(prepared.phase_id);
+            operation.phase = RecoveryPhase::Finished;
+        }
+        (RecoveryDispatch::PublishRoute(_), RecoveryDispatchOutcome::RouteRejected { .. }) => {}
         (RecoveryDispatch::RetireSource(_), RecoveryDispatchOutcome::SourceRetired(_)) => {
             operation.retirement = Some(prepared.phase_id);
             operation.phase = RecoveryPhase::FenceSource;
@@ -1546,6 +1686,20 @@ pub(crate) fn validate(state: &TenantState) -> Result<()> {
                 "route publication lacks every local activation confirmation",
             ));
         }
+        if let Some(id) = operation.route_publication
+            && !matches!(
+                (
+                    &phase(state, operation, id)?.input,
+                    &phase(state, operation, id)?.outcome
+                ),
+                (
+                    RecoveryDispatch::PublishRoute(_),
+                    Some(RecoveryDispatchOutcome::RoutePublished { .. })
+                )
+            )
+        {
+            return Err(conflict("route publication reference differs"));
+        }
         if operation.target_stop.is_some() {
             stop_reference(state, operation)?;
         }
@@ -1607,6 +1761,14 @@ fn validate_frozen_input(
                 || command.not_after_ms <= retained.admitted_at_ms
             {
                 return Err(conflict("retained issuer phase input changed"));
+            }
+        }
+        RecoveryDispatch::PublishRoute(input) => {
+            route::validate_input(operation, input)?;
+            if retained.phase != RecoveryPhase::Publish
+                || input.expected_topology_version >= retained.prepared_revision
+            {
+                return Err(conflict("retained route publication position differs"));
             }
         }
         RecoveryDispatch::RetireSource(request) => {

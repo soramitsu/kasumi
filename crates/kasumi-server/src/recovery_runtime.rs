@@ -470,6 +470,24 @@ impl ControlRecoveryCoordinator {
                     acknowledgement.response().clone(),
                 )))
             }
+            RecoveryDispatch::PublishRoute(_) => {
+                let published = self
+                    .database
+                    .publish_recovery_route(
+                        context.clone(),
+                        head.request.operation_id,
+                        prepared.record().phase_id,
+                    )
+                    .await?;
+                let outcome = published
+                    .record()
+                    .outcome
+                    .clone()
+                    .context("atomic route publication has no retained outcome")?;
+                published.release().await?;
+                prepared.release().await?;
+                Ok(outcome)
+            }
             RecoveryDispatch::RetireSource(request) => {
                 let source = route
                     .source

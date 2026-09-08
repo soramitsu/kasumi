@@ -254,6 +254,26 @@ impl Database {
             .await
             .map_err(unknown)
     }
+    /// Closed local publication: topology CAS and permanent phase outcome commit
+    /// together. Replaying a completed phase does not touch current topology.
+    pub async fn publish_recovery_route(
+        self: &Arc<Self>,
+        context: RequestContext,
+        operation_id: Uuid,
+        phase_id: Uuid,
+    ) -> Result<VerifiedRecoveryPhase> {
+        self.recovery_write(
+            context.clone(),
+            RecoveryMutation::PublishRoute {
+                operation_id,
+                phase_id,
+            },
+        )
+        .await?;
+        self.recovery_phase(context, operation_id, phase_id)
+            .await
+            .map_err(unknown)
+    }
     async fn recovery_write(
         self: &Arc<Self>,
         context: RequestContext,
@@ -278,9 +298,32 @@ impl Database {
             mutation,
         };
         command.encode()?;
-        let reservation = self
-            .admission()
-            .reserve((MAX_COMMAND_BYTES * 4) as u64, None)?;
+        let mut workspace = (MAX_COMMAND_BYTES * 4) as u64;
+        if let RecoveryMutation::PublishRoute {
+            operation_id,
+            phase_id,
+        } = &command.mutation
+        {
+            let current = self.engine.generation()?;
+            let operation = current
+                .state
+                .recovery_control
+                .operations
+                .get(&operation_id.to_string())
+                .ok_or_else(|| error(ErrorCode::NotFound, "recovery operation absent"))?;
+            let prepared = recovery::phase(&current.state, operation, *phase_id)?;
+            if prepared.outcome.is_none() {
+                workspace = workspace
+                    .checked_add(recovery::route::workspace(&current.state)?)
+                    .ok_or_else(|| {
+                        error(
+                            ErrorCode::ResourceExhausted,
+                            "route publication workspace overflow",
+                        )
+                    })?;
+            }
+        }
+        let reservation = self.admission().reserve(workspace, None)?;
         let registration = self.work.begin(QueryCancellation::default())?;
         let worker = RecoveryProposal {
             database: self.clone(),
@@ -307,6 +350,7 @@ impl Database {
         operation_id: Uuid,
         phase_id: Uuid,
     ) -> Result<Option<RecoveryDispatch>> {
+        let _work = self.work.begin(QueryCancellation::default())?;
         self.lifecycle_barrier(context).await?;
         let now = self.lifecycle_now()?;
         let expires = context.authorization.expires_at_ms().ok_or_else(|| {
@@ -325,8 +369,31 @@ impl Database {
         if operation.phase.terminal() {
             return Ok(None);
         }
+        let workspace = if operation.phase == RecoveryPhase::Publish {
+            recovery::route::workspace(state)?
+        } else {
+            0
+        };
+        let _reservation = self.admission().reserve(
+            workspace
+                .checked_add((MAX_RECOVERY_RECORD_BYTES * 4) as u64)
+                .ok_or_else(|| {
+                    error(
+                        ErrorCode::ResourceExhausted,
+                        "recovery planning workspace overflow",
+                    )
+                })?,
+            None,
+        )?;
         if let Some(id) = operation.pending_phase {
             let pending = recovery::phase(state, operation, id)?;
+            if matches!(pending.input, RecoveryDispatch::PublishRoute(_))
+                && now >= recovery::dispatch_limit(operation, pending)?
+            {
+                return Ok(Some(RecoveryDispatch::PublishRoute(
+                    recovery::route::next_input(state, operation)?,
+                )));
+            }
             if let RecoveryDispatch::Target { node_id, request } = &pending.input
                 && matches!(
                     operation.phase,
@@ -513,6 +580,9 @@ impl Database {
 
             RecoveryPhase::Activate | RecoveryPhase::Confirm | RecoveryPhase::StopActivation => {
                 recovery::activation::next_dispatch(state, operation, phase_id, now, expires)?
+            }
+            RecoveryPhase::Publish => {
+                RecoveryDispatch::PublishRoute(recovery::route::next_input(state, operation)?)
             }
             RecoveryPhase::RetireSource => {
                 RecoveryDispatch::RetireSource(recovery::retirement_request(
