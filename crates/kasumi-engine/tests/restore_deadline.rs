@@ -1,5 +1,5 @@
 mod common;
-use kasumi_engine::{RestoreSource, open_local, restore_local};
+use kasumi_engine::{RestoreSource, open_local};
 use kasumi_store::{BackupDestination, NodeStore, TenantStore, test_utils::LocalKeyProvider};
 use kasumi_types::*;
 use std::{
@@ -61,21 +61,25 @@ async fn restore_deadline_bounds_source_io_and_gate_queue_without_blocking_anoth
         let audit = audit.clone();
         let first = first.clone();
         async move {
-            restore_local(
+            kasumi_engine::restore_local(
                 &RestoreSource {
                     destination_alias: "backup".into(),
                     destination: pending,
                     keys,
                     timeout_ms: 400,
                 },
-                uuid::Uuid::new_v4(),
                 kasumi_store::test_utils::with_custody(
                     first,
                     std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
                 )
                 .await
                 .unwrap(),
-                context("first"),
+                common::local_restore_request(
+                    context("first"),
+                    &common::unavailable_checkpoint("first", uuid::Uuid::new_v4()),
+                    uuid::Uuid::new_v4(),
+                ),
+                kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
                 audit,
             )
             .await
@@ -84,21 +88,25 @@ async fn restore_deadline_bounds_source_io_and_gate_queue_without_blocking_anoth
     tokio::time::timeout(Duration::from_secs(2), pending.entered.notified())
         .await
         .unwrap();
-    let queued_error = restore_local(
+    let queued_error = kasumi_engine::restore_local(
         &RestoreSource {
             destination_alias: "backup".into(),
             destination: pending.clone(),
             keys,
             timeout_ms: 30,
         },
-        uuid::Uuid::new_v4(),
         kasumi_store::test_utils::with_custody(
             queued.clone(),
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
         )
         .await
         .unwrap(),
-        context("queued"),
+        common::local_restore_request(
+            context("queued"),
+            &common::unavailable_checkpoint("queued", uuid::Uuid::new_v4()),
+            uuid::Uuid::new_v4(),
+        ),
+        kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
         audit.clone(),
     )
     .await
