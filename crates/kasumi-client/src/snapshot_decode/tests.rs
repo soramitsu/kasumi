@@ -267,7 +267,7 @@ async fn parser_error_payload_drops_before_worker_admission_is_released() {
         error,
         ClientError::DecodeRejected {
             code: tonic::Code::DataLoss,
-            reason: "snapshot JSON failed validation"
+            reason: "native JSON failed validation"
         }
     ));
     assert_eq!(options.resources.usage(), ClientResourceUsage::default());
@@ -292,7 +292,7 @@ fn transport_error_retains_code_without_peer_message_details_or_metadata() {
         error,
         ClientError::DecodeRejected {
             code: tonic::Code::Unavailable,
-            reason: "snapshot transport failed"
+            reason: "native transport failed"
         }
     ));
     assert_eq!(options.resources.usage(), ClientResourceUsage::default());

@@ -101,3 +101,12 @@ identity, and checks sequence/ordinal/commit relationships while allowing filter
 sequence gaps. It also treats the trusted Number serializer's synthetic field and
 lexeme as numeric work; literal document marker keys still use string limits. The
 new regression cases remain unrun until the frozen small cohort executes.
+
+The request preflight now reserves each declared map's borrowed-entry sorting
+workspace at `serialize_map`, before a canonical serializer may allocate it.
+Parent workspaces remain charged during child visits; each compound releases its
+own workspace on success, error, or unwinding. Checked node/string/workspace sums
+share the decoded-work limit. Sorted maps are charged conservatively as well.
+Shared `ClientResources` admission already precedes the entire request walk.
+This prepares the separate canonical map serializer integration; it does not
+claim that integration's preserve-order feature gate has executed.
