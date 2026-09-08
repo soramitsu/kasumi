@@ -1016,6 +1016,38 @@ mod tests {
         ValidatedApplicationSnapshot::validate(image(state), 128 << 20, || Ok(()))
     }
     #[test]
+    fn indexed_verification_keeps_all_staging_on_the_image_owner_until_drain() {
+        let initial = image(&state());
+        let disk = initial.disk().clone();
+        let image_bytes = disk.snapshot().charged_bytes;
+        assert_eq!(disk.snapshot().live_files, 1);
+        let verified =
+            ValidatedApplicationSnapshot::validate(initial, 128 << 20, || Ok(())).unwrap();
+        assert_eq!(disk.snapshot().live_files, 3);
+        assert!(disk.snapshot().charged_bytes > image_bytes);
+        let retained_image = verified.into_image();
+        assert_eq!(disk.snapshot().live_files, 1);
+        assert_eq!(disk.snapshot().charged_bytes, image_bytes);
+        drop(retained_image);
+        assert_eq!(disk.snapshot().live_files, 0);
+        assert_eq!(disk.snapshot().charged_bytes, 0);
+
+        let invalid = image(&state());
+        let disk = invalid.disk().clone();
+        let mut checks = 0;
+        assert!(
+            ValidatedApplicationSnapshot::validate(invalid, 128 << 20, || {
+                checks += 1;
+                anyhow::ensure!(checks < 5, "cancelled staged validation");
+                Ok(())
+            })
+            .is_err()
+        );
+        assert_eq!(disk.snapshot().live_files, 0);
+        assert_eq!(disk.snapshot().charged_bytes, 0);
+    }
+
+    #[test]
     fn indexed_validation_matches_full_restore_and_canonical_closure() {
         let state = state();
         TenantEngine::verify_logical_snapshot(&image(&state), &state).unwrap();
