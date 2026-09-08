@@ -556,4 +556,33 @@ mod tests {
         assert!(state.commands.len() > 8);
         assert!(state.audit.len() > 12);
     }
+    #[test]
+    fn custody_point_policy_preserves_large_administrator_sets_and_rejects_old_heads() {
+        use crate::custody_tables::CustodyHead;
+        let state = state();
+        let request = request(
+            &state,
+            "large-policy",
+            CustodyAction::ReplaceAdministrators(
+                (0..1024)
+                    .map(|n| format!("{n:04}-{}", "\"".repeat(250)))
+                    .collect(),
+            ),
+        );
+        let (next, _) = state.apply(&context("owner"), &request, 100, 2).unwrap();
+        let head = CustodyHead::from_state(&next).unwrap();
+        assert!(serde_json::to_vec(&head).unwrap().len() > 256 << 10);
+        head.write().unwrap();
+        assert!(
+            serde_json::from_value::<CustodyHead>(serde_json::to_value(state).unwrap()).is_err()
+        );
+        let mut unsupported = serde_json::to_value(head).unwrap();
+        unsupported["version"] = 2.into();
+        assert!(
+            serde_json::from_value::<CustodyHead>(unsupported)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+    }
 }
