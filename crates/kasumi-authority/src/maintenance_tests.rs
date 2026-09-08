@@ -665,5 +665,11 @@ async fn maintenance_removing_the_leader_resumes_the_same_committed_operation() 
             .unwrap(),
         completed
     );
+    for service in &fixture.services {
+        let lock = tokio::time::timeout(Duration::from_secs(2), service.proposal.lock())
+            .await
+            .unwrap_or_else(|_| panic!("member {} retains proposal ownership", service.local_node_id));
+        drop(lock);
+    }
     tokio::time::timeout(Duration::from_secs(15), fixture.close()).await.expect("authority owners did not drain");
 }

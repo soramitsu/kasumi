@@ -146,20 +146,15 @@ async fn permanent_target_stop_defeats_missing_and_prepared_generations_then_reo
             .target(),
         &replacement
     );
-    let fenced = service
-        .execute(
-            fixture.context("operator"),
-            fixture.command(AuthorityAction::Fence {
-                incarnation: source,
-                authority_epoch: 1,
-            }),
-        )
-        .await
-        .unwrap()
-        .0;
+    let fenced = fixture
+        .exact_administrative(fixture.command(AuthorityAction::Fence {
+            incarnation: source,
+            authority_epoch: 1,
+        }))
+        .await;
     let activate = fixture.command(AuthorityAction::Activate {
-        fence_id: fenced.receipt.command.command_id,
-        fence_digest: fenced.receipt.digest().unwrap(),
+        fence_id: fenced.command.command_id,
+        fence_digest: fenced.digest().unwrap(),
         target: replacement,
     });
     assert!(
@@ -188,20 +183,15 @@ async fn target_stop_and_activation_ordering_preserves_committed_winner_and_curr
     let service = fixture.leader().await;
     let source = fixture.enroll(&service).await;
     let replacement = target(source);
-    let fenced = service
-        .execute(
-            fixture.context("operator"),
-            fixture.command(AuthorityAction::Fence {
-                incarnation: source,
-                authority_epoch: 1,
-            }),
-        )
-        .await
-        .unwrap()
-        .0;
+    let fenced = fixture
+        .exact_administrative(fixture.command(AuthorityAction::Fence {
+            incarnation: source,
+            authority_epoch: 1,
+        }))
+        .await;
     let activate = fixture.command(AuthorityAction::Activate {
-        fence_id: fenced.receipt.command.command_id,
-        fence_digest: fenced.receipt.digest().unwrap(),
+        fence_id: fenced.command.command_id,
+        fence_digest: fenced.digest().unwrap(),
         target: replacement.clone(),
     });
     assert!(

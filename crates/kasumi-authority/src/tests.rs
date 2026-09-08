@@ -36,6 +36,26 @@ struct Fixture {
     readiness: Arc<TestMaintenanceTransport>,
 }
 impl Fixture {
+    async fn exact_administrative(&self, command: AuthorityCommand) -> AuthorityReceipt {
+        let context = self.context("operator");
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let current = self.leader().await;
+                match current.execute(context.clone(), command.clone()).await {
+                    Ok((receipt, fence)) if fence.release().await.is_ok() => break receipt.receipt,
+                    Ok(_) => {}
+                    Err(error)
+                        if matches!(
+                            error.code,
+                            ErrorCode::UnknownOutcome | ErrorCode::Unavailable
+                        ) => {}
+                    Err(error) => panic!("unexpected exact setup rejection: {error:?}"),
+                }
+            }
+        })
+        .await
+        .unwrap()
+    }
     async fn new() -> Self {
         Self::with_controls(BTreeMap::new()).await
     }

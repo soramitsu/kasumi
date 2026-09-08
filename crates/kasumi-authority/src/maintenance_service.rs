@@ -367,10 +367,8 @@ impl IndependentAuthority {
             authority_term: term,
         }));
         let response = self
-            .group
-            .write(serde_json::to_vec(&prepared).map_err(unavailable)?)
-            .await
-            .map_err(unknown)?;
+            .write_proposal(serde_json::to_vec(&prepared).map_err(unavailable)?, term)
+            .await?;
         serde_json::from_slice(&response).map_err(unknown)?
     }
     async fn release_maintenance(

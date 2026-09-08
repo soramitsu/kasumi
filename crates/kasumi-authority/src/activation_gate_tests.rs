@@ -4,24 +4,7 @@ pub(super) async fn exact_administrative(
     f: &Fixture,
     command: AuthorityCommand,
 ) -> AuthorityReceipt {
-    let context = f.context("operator");
-    tokio::time::timeout(Duration::from_secs(20), async {
-        loop {
-            let current = f.leader().await;
-            match current.execute(context.clone(), command.clone()).await {
-                Ok((receipt, fence)) if fence.release().await.is_ok() => break receipt.receipt,
-                Ok(_) => {}
-                Err(error)
-                    if matches!(
-                        error.code,
-                        ErrorCode::UnknownOutcome | ErrorCode::Unavailable
-                    ) => {}
-                Err(error) => panic!("unexpected exact setup rejection: {error:?}"),
-            }
-        }
-    })
-    .await
-    .unwrap()
+    f.exact_administrative(command).await
 }
 async fn prepared_target(f: &Fixture) -> RecoveryTarget {
     let source = Uuid::new_v4();

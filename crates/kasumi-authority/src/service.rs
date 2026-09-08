@@ -323,6 +323,34 @@ impl IndependentAuthority {
         context.authorization.check_live()?;
         Ok(self.term())
     }
+    /// Bound the acknowledgement owner after dispatch. OpenRaft still owns any
+    /// submitted entry and its storage work; dropping this wait neither rolls
+    /// back the entry nor releases the group's tracked storage ownership. An
+    /// uncertain caller resolves the same permanent command or phase identity.
+    async fn write_proposal(&self, command: Vec<u8>, term: u64) -> Result<Vec<u8>> {
+        let mut metrics = self.group.raft().metrics();
+        let response = self.group.write(command);
+        tokio::pin!(response);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let current = metrics.borrow().clone();
+                if current.current_term != term
+                    || current.current_leader != Some(self.local_node_id)
+                    || current.running_state.is_err()
+                {
+                    return Err(unknown("authority proposal leader changed"));
+                }
+                tokio::select! {
+                    result = &mut response => return result.map_err(unknown),
+                    changed = metrics.changed() => {
+                        changed.map_err(unknown)?;
+                    }
+                }
+            }
+        })
+        .await
+        .map_err(unknown)?
+    }
     fn route(&self, tenant: &str) -> Result<()> {
         if self
             .installation()
@@ -588,13 +616,12 @@ impl IndependentAuthority {
             drained_fence,
         };
         let bytes = self
-            .group
-            .write(
+            .write_proposal(
                 serde_json::to_vec(&PreparedOperation::Administrative(Box::new(prepared)))
                     .map_err(unavailable)?,
+                term,
             )
-            .await
-            .map_err(unknown)?;
+            .await?;
         let receipt: Result<AuthorityReceipt> = serde_json::from_slice(&bytes).map_err(unknown)?;
         self.release(context, receipt?, epoch, term, true).await
     }

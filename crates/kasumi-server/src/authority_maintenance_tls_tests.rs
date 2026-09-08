@@ -342,12 +342,11 @@ async fn actual_tls_peer_readiness_enrolls_replaces_and_fences_revoked_member() 
     })
     .await
     .unwrap();
+    // Release the watch read guard before awaiting transport on this runtime.
+    let current_id = current.raft_group().raft().metrics().borrow().id;
     assert!(
         networks[removed as usize - 1]
-            .bootstrap_fingerprint(
-                current.raft_group().raft().metrics().borrow().id,
-                "authority-maintenance"
-            )
+            .bootstrap_fingerprint(current_id, "authority-maintenance")
             .await
             .is_err()
     );
