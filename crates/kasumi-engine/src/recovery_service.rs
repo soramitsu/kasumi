@@ -328,9 +328,15 @@ impl Database {
         if let Some(id) = operation.pending_phase {
             let pending = recovery::phase(state, operation, id)?;
             if let RecoveryDispatch::Target { node_id, request } = &pending.input
-                && operation.phase == RecoveryPhase::Complete
+                && matches!(
+                    operation.phase,
+                    RecoveryPhase::Complete | RecoveryPhase::Confirm
+                )
                 && now < request.not_after_ms
-                && matches!(request.step, TargetRuntimeStep::Complete(_))
+                && matches!(
+                    request.step,
+                    TargetRuntimeStep::Complete(_) | TargetRuntimeStep::Activate { .. }
+                )
             {
                 let next = operation
                     .voters
@@ -343,6 +349,21 @@ impl Database {
                     node_id: next,
                     request: request.clone(),
                 }));
+            }
+            if let RecoveryDispatch::Authority(command) = &pending.input
+                && operation.phase == RecoveryPhase::Activate
+                && now >= command.not_after_ms
+                && matches!(command.action, AuthorityAction::ActivateCommitted { .. })
+            {
+                return Ok(Some(recovery::activation::authority_command(
+                    operation,
+                    phase_id,
+                    AuthorityAction::StopActivation {
+                        original: command.clone(),
+                    },
+                    now,
+                    expires,
+                )?));
             }
             let fresh_phase = match &pending.input {
                 RecoveryDispatch::Target { request, .. } if now >= request.not_after_ms => {
@@ -357,6 +378,13 @@ impl Database {
                             if operation.phase == RecoveryPhase::Initialize =>
                         {
                             LifecyclePhase::Initialize
+                        }
+                        TargetRuntimeStep::StartActivation { .. }
+                        | TargetRuntimeStep::Activate { .. }
+                        | TargetRuntimeStep::ConfirmActivation(_)
+                            if operation.phase == RecoveryPhase::Confirm =>
+                        {
+                            LifecyclePhase::Activate
                         }
                         _ => {
                             return Err(error(
@@ -483,8 +511,18 @@ impl Database {
                 }
             }
 
+            RecoveryPhase::Activate | RecoveryPhase::Confirm | RecoveryPhase::StopActivation => {
+                recovery::activation::next_dispatch(state, operation, phase_id, now, expires)?
+            }
             RecoveryPhase::RetireSource => {
-                RecoveryDispatch::RetireSource(recovery::retirement_request(operation)?.clone())
+                RecoveryDispatch::RetireSource(recovery::retirement_request(
+                    operation,
+                    now.checked_add(operation.request.phase_timeout_ms)
+                        .ok_or_else(|| {
+                            error(ErrorCode::InvalidArgument, "retirement deadline overflow")
+                        })?
+                        .min(expires),
+                )?)
             }
             RecoveryPhase::Initialize | RecoveryPhase::Complete => {
                 let kind = if operation.phase == RecoveryPhase::Initialize {

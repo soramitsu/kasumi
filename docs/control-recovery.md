@@ -27,18 +27,32 @@ advancing to activation. A retirement request retains its original absolute cap;
 a prepared request whose cap expires can resolve an accepted outcome but cannot
 be dispatched again as a new effect.
 
-**Activation, local activation confirmation, and route publication are not yet
-dispatched by this coordinator.** `resume` returns an explicit unavailable error
-at these phases. This slice is not a complete disaster recovery
-workflow or a release acceptance result.
+Activation commits a separate Control intent bound to the exact signed target
+completion and retained source fence. The coordinator resolves or installs that
+immutable intent at the issuer before submitting its original activation command.
+The issuer enforces the full source drain. Once the permanent winner is retained,
+every voter starts under a fresh finite activation phase naming that same winner.
+The coordinator requires signed local activation evidence from every voter before
+advancing to route publication; startup replies cannot satisfy confirmation.
 
-A pre-activation `stop` permanently retains the stop identity, obtains the issuer's
-permanent target stop, commits a separate local cleanup intent, and requests
-cleanup from each target. `stopped` requires exact signed evidence from all three
+**Route publication is not yet dispatched by this coordinator.** `resume` returns
+an explicit unavailable error at `publish`. This slice is not a complete disaster
+recovery workflow or a release acceptance result.
+
+A pre-activation `stop` permanently retains the stop identity. If an issuer
+activation was dispatched, the coordinator first commits a `stop_activation`
+phase naming that unchanged original command. Its signed issuer outcome resolves
+the original phase atomically in the journal. An activated outcome proceeds
+forward, even when stopping was requested. Only an exact permanent negative
+outcome permits target cleanup. An expired activation without an observed outcome
+also requires this ordered resolution; expiry alone never proves failure.
+
+When cleanup is authorized, the coordinator obtains the issuer's permanent target
+stop, commits a separate local cleanup intent, and requests cleanup from each target. `stopped` requires exact signed evidence from all three
 voters, including the complete installed issuer drain and physical verifier set.
 Target incarnation identities remain bound after cleanup and cannot be reused by
 another operation or configuration alias. A committed activation must proceed
-forward; the later activation slice must preserve this invariant.
+forward.
 
 ## Installed dispatch
 
@@ -110,19 +124,23 @@ issuer; that path remains incomplete. Other unresolved remote phase kinds
 currently require explicit original outcome resolution, and automatic recovery
 after their original admission expires remains an implementation gap.
 
-Planned start requests currently freeze the retirement request's cutoff before
-target materialization. A long materialization can therefore exhaust it before
-retirement admission. That shape still needs replacement by a permanent
-retirement identity whose finite deadline is frozen at phase preparation;
-retrying an already prepared request must preserve its original cutoff.
+Planned start requests freeze a `retirement_id` and `source_backup_destination`.
+The latter names the independently installed source destination and can differ
+from the target reader's backup alias. After target completion, the coordinator
+persists the exact retirement request with its finite phase deadline before
+source dispatch. Target materialization therefore cannot consume a retirement
+deadline that has not been admitted yet. An already prepared retirement keeps
+that original cutoff on every replay; an expired uncommitted request cannot be
+replaced by extending it.
 
 The native integration test uses real mTLS with separate replicated Control and
 issuer groups and an intentionally unavailable target endpoint. It verifies
 issuer preparation, Control phase commitment, durable unresolved dispatch, and
 stop preparation. The replicated journal tests verify restart and three-voter
 signed materialization/cleanup facts, current-phase startup, designated
-initialization, completion, and exact source fencing using explicit cryptographic
-fixtures. The planned-source dispatch helper is exercised by the real TLS native
+initialization, completion, exact source fencing, uncertain activation resolution,
+three-voter local confirmation, and forward progress after restart using explicit
+cryptographic fixtures. The planned-source dispatch helper is exercised by the real TLS native
 backup/retirement test, including recovery using only custody authority and
 rejection of the former application token. A complete coordinator-driven planned
 recovery with all target processes remains an acceptance gate.

@@ -573,7 +573,10 @@ impl TargetRecoveryRuntime {
                 )
             }
             TargetRuntimeStep::Inspect(i) => (LifecyclePhase::InspectTarget, i.digest()?),
-            TargetRuntimeStep::Activate {
+            TargetRuntimeStep::StartActivation {
+                issuer_command_id, ..
+            }
+            | TargetRuntimeStep::Activate {
                 issuer_command_id, ..
             } => {
                 let signed = admission
@@ -746,6 +749,7 @@ impl TargetRecoveryRuntime {
             TargetRuntimeStep::Start(i) => i.clone(),
             TargetRuntimeStep::Initialize(q)
             | TargetRuntimeStep::Complete(q)
+            | TargetRuntimeStep::StartActivation { quorum: q, .. }
             | TargetRuntimeStep::Activate { quorum: q, .. } => {
                 TargetReplicaInput::Quorum(q.clone())
             }
@@ -797,7 +801,7 @@ impl TargetRecoveryRuntime {
         }
         let replica = g.replica.as_ref().unwrap();
         match step {
-            TargetRuntimeStep::Start(_) => Ok((
+            TargetRuntimeStep::Start(_) | TargetRuntimeStep::StartActivation { .. } => Ok((
                 TargetRuntimeOutcome::Started {
                     origin_sha256: input.quorum().origin_sha256.clone(),
                 },
