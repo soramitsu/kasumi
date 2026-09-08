@@ -301,10 +301,18 @@ impl View {
         Ok(())
     }
     pub(crate) fn get(&self, key: &str) -> Result<Option<Row>> {
+        self.get_charged(key, |_| Ok(()))
+    }
+    pub(crate) fn get_charged(
+        &self,
+        key: &str,
+        reserve_decoded: impl FnOnce(usize) -> Result<()>,
+    ) -> Result<Option<Row>> {
         ensure!(digest(key), "invalid staged point identity");
         let Some(bytes) = self.bytes(&id_key(key))? else {
             return Ok(None);
         };
+        reserve_decoded(bytes.len())?;
         let row: Row = serde_json::from_slice(&bytes)?;
         // A commit may have persisted a row before its applied cursor. It remains
         // invisible until exact replay advances this logical view's prefix.
@@ -459,7 +467,7 @@ impl View {
         );
         self.check_head(&state.tenant)?;
         let selected = store
-            .get(CATALOG, checkpoint_sha256.as_bytes())?
+            .get_bounded(CATALOG, checkpoint_sha256.as_bytes(), 64 << 10)?
             .map(|bytes| serde_json::from_slice::<NamespaceBinding>(&bytes))
             .transpose()?;
         if reopen {

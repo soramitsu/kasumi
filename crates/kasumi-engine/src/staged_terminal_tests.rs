@@ -183,6 +183,33 @@ async fn snapshot_namespace_binding_selects_exact_prefix_and_preserves_older_liv
 }
 
 #[test]
+fn point_admission_precedes_decoding_even_for_an_unpublished_row() {
+    let table = Arc::new(EncryptedTable::new(&ScratchDisk::fixture(), 64 << 20).unwrap());
+    let key = "12".repeat(32);
+    let invalid = b"this is deliberately not a terminal row";
+    table.insert(&id_key(&key), invalid).unwrap();
+    let view = View {
+        source: Some(Arc::new(Source::Staged(table))),
+        head: StagedTerminalHead::empty("tenant", "incarnation").unwrap(),
+    };
+    let mut measured = None;
+    let error = view
+        .get_charged(&key, |bytes| {
+            measured = Some(bytes);
+            Err(Error::new(ErrorCode::ResourceExhausted, "read capacity rejected").into())
+        })
+        .unwrap_err();
+    assert_eq!(measured, Some(invalid.len()));
+    assert_eq!(
+        error.downcast_ref::<Error>().unwrap().code,
+        ErrorCode::ResourceExhausted
+    );
+    // Allowing the reservation reaches the parser; the failed charge above did
+    // not decode or accidentally turn the unpublished physical row into absence.
+    assert!(view.get(&key).unwrap_err().is::<serde_json::Error>());
+}
+
+#[test]
 fn original_begin_reservation_covers_maximum_terminal_envelope_and_counter_widths() {
     let stage = active("\"".repeat(256).as_str());
     let key = crate::state::staging::identity("owner", &stage.transaction_id).unwrap();
