@@ -302,14 +302,33 @@ pub(crate) fn installation_writes(
 ) -> Result<Vec<WriteOp>> {
     let head = CustodyHead::from_state(state)?;
     let mut writes = Vec::new();
-    for namespace in [COMMANDS, AUDIT] {
+    let previous = store
+        .get_bounded(crate::control::META, HEAD, HEAD_BYTES)?
+        .map(|bytes| serde_json::from_slice::<CustodyHead>(&bytes))
+        .transpose()?;
+    if let Some(previous) = &previous {
+        previous.validate()?;
+    }
+    for (namespace, expected) in [
+        (COMMANDS, previous.as_ref().map_or(0, |head| head.commands)),
+        (AUDIT, previous.as_ref().map_or(0, |head| head.audit)),
+    ] {
+        let mut count = 0u64;
         store.visit(namespace, RECORD_BYTES, |key, _| {
+            count = count
+                .checked_add(1)
+                .context("custody record count overflow")?;
+            ensure!(count <= expected, "unowned custody point record");
             writes.push(WriteOp::Delete {
                 namespace: namespace.into(),
                 key: key.to_vec(),
             });
             Ok(())
         })?;
+        ensure!(
+            count == expected,
+            "custody replacement source record missing"
+        );
     }
     for receipt in state.commands.values() {
         let bytes = serde_json::to_vec(receipt)?;
