@@ -537,3 +537,20 @@ a read-only quota getter or caller capacity claim cannot close this dependency.
   including actual native pages and encrypted history backup/restore. Evidence:
   `docs/evidence/bounded-snapshot-lease-ownership-20260908`. Final integrated
   release, 3 GiB and sustained resource-pressure gates remain open.
+
+- Frozen native Linux ARM64 `d403c55` failed its workspace gate while linking
+  server tests: kernel/cgroup evidence confirms an OOM kill under the 7 GiB
+  container limit. Toolchain, formatting, Python, patched dependencies and
+  documentation tests passed; remaining gates continue. This attempt cannot
+  produce a candidate. The reference memory allocation/preflight must increase
+  before a fresh frozen run; the failed source/logs remain unchanged.
+  Launch provenance and the passing combined macOS compile check are in
+  `docs/evidence/frozen-linux-arm64-d403c55-launch-20260908`. This is not a
+  completed functional result or final release acceptance.
+
+- `4f5550f` raises the functional host requirement to 15 GiB effective memory
+  and the reference VM template to 16 GiB, checking visible Linux cgroup limits
+  before expensive linking. Eighteen Python tests and actual macOS preflight
+  pass; the running 7 GiB container is correctly rejected. Evidence:
+  `docs/evidence/functional-memory-preflight-20260908`. The failed `d403c55`
+  attempt retains its original allocation while its remaining gates finish.
