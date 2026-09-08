@@ -65,8 +65,8 @@ impl ValidatedApplicationSnapshot {
             let Record::Archive(id, mut archive) = record else {
                 unreachable!()
             };
-            archive.storage_destination = alias.to_owned();
-            archive.storage_backup_session = Some(backup_id);
+            Arc::make_mut(&mut archive).storage_destination = alias.to_owned();
+            Arc::make_mut(&mut archive).storage_backup_session = Some(backup_id);
             history_bytes = history_bytes
                 .checked_add(history::metadata_entry(&id, &archive)? as u64)
                 .context("restored history catalog size overflow")?;
@@ -84,8 +84,8 @@ impl ValidatedApplicationSnapshot {
                             header.history_archive_bytes = usize::try_from(history_bytes)?
                         }
                         Record::Archive(_, archive) => {
-                            archive.storage_destination = alias.to_owned();
-                            archive.storage_backup_session = Some(backup_id);
+                            Arc::make_mut(archive).storage_destination = alias.to_owned();
+                            Arc::make_mut(archive).storage_backup_session = Some(backup_id);
                         }
                         _ => {}
                     }
@@ -130,13 +130,17 @@ impl ValidatedApplicationSnapshot {
             _ => anyhow::bail!("snapshot collection absent"),
         }
     }
-    pub(crate) fn archived(&self, collection: &str, id: &str) -> anyhow::Result<ArchivedDocument> {
+    pub(crate) fn archived(
+        &self,
+        collection: &str,
+        id: &str,
+    ) -> anyhow::Result<Arc<ArchivedDocument>> {
         match self.index.get(4, collection, id)? {
             Some(Record::Archived(_, _, reference)) => Ok(reference),
             _ => anyhow::bail!("snapshot archived reference absent"),
         }
     }
-    fn archive(&self, id: &str) -> anyhow::Result<RetainedHistoryArchive> {
+    fn archive(&self, id: &str) -> anyhow::Result<Arc<RetainedHistoryArchive>> {
         match self.index.get(11, id, "")? {
             Some(Record::Archive(_, archive)) => Ok(archive),
             _ => anyhow::bail!("snapshot history archive absent"),

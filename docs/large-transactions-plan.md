@@ -84,8 +84,10 @@ deadline and resource admission, then performs any required read audit before
 release. A policy change, failover, expired lease or memory-pressure eviction
 invalidates the token; callers reopen and recompute instead of combining pages
 from another generation. Explicit close, expiry, key sealing and shutdown release
-owned generations and memory reservations. Active workers retain their own
-registration/reservation until completion even if the caller disconnects.
+retained roots and their reservations. Native adapters bind the exact lease to
+the response fence through encoding and transport handoff, so a page that expires
+during encoding is rejected. Active workers retain their own bounded selection
+and reservation until completion even if the caller disconnects.
 
 Lease count, retained-generation byte estimates, page rows and encoded response
 bytes are bounded. The estimate contributes to the existing RSS governor and
@@ -128,11 +130,25 @@ handling.
 
 Point pages accept at most 256 IDs. Scan pages accept up to 1,000 rows, use the
 maintained primary ID index and return `next_after_id`; the encoded result remains
-at most 8 MiB. Each page starts with a fresh quorum barrier. The retained snapshot
-is conservatively charged at three times its canonical byte size against both
-tenant lease and node admission budgets. This is a bounded memory estimate, not
-allocator accounting. Duplicate common snapshot assertions from separate pages
-must be deduplicated before creating a staged manifest.
+at most 8 MiB. Each page starts with a fresh quorum barrier. Opening a lease
+shares immutable document, archived-reference, archive-manifest and primary-ID
+roots. Its private metadata is charged before capture. Generation publication
+charges additional retained values and a conservative bound for copied tree
+paths, including ID insert/delete paths. It expires the oldest leases when the
+aggregate tenant budget is exceeded; a committed write keeps its exact outcome.
+Expiration and generation publication share the same lock as root capture and
+page selection, so a burst of writes cannot wait for a later read or monitor tick
+to enforce that budget.
+
+Whole leased roots stay inside the manager. A page worker receives only its
+bounded document/reference selection and required archive manifests, covered by
+a separate node reservation. Expiring the lease releases all other old roots
+immediately; in-flight selections remain charged and fail their final release
+check. Selection, publication accounting and idle expiration use owned blocking
+work. Estimates include cloned policy/schema metadata, allocated value payloads
+and conservative tree-node/key overhead; they are not allocator instrumentation
+or a measured production capacity result. Duplicate common snapshot assertions
+from separate pages must be deduplicated before creating a staged manifest.
 
 ## Regression evidence
 

@@ -415,7 +415,7 @@ impl kasumi_data_server::KasumiData for NativeData {
         let context = verified(&self.auth, &request).await?;
         let input = decode_json(&request.into_inner().request_json).map_err(status)?;
         let database = routed(&self.registry, &self.auth, &context).await?;
-        let fence = self
+        let mut fence = self
             .auth
             .audit_result(&context, database.response_fence(&context))
             .await
@@ -424,6 +424,10 @@ impl kasumi_data_server::KasumiData for NativeData {
             .open_snapshot_lease(&context, input)
             .await
             .map_err(|error| self.registry.status(&context, error))?;
+        self.auth
+            .audit_result(&context, fence.bind_snapshot_lease(&result.lease_id).await)
+            .await
+            .map_err(status)?;
         let response = SnapshotLeaseResponse {
             response_json: encode_json(&result).map_err(status)?,
         };
@@ -438,11 +442,16 @@ impl kasumi_data_server::KasumiData for NativeData {
         request: Request<ReadSnapshotPageRequest>,
     ) -> Result<Response<ReadSnapshotResponse>, Status> {
         let context = verified(&self.auth, &request).await?;
-        let input = decode_json(&request.into_inner().request_json).map_err(status)?;
+        let input: kasumi_types::ReadSnapshotPage =
+            decode_json(&request.into_inner().request_json).map_err(status)?;
         let database = routed(&self.registry, &self.auth, &context).await?;
-        let fence = self
+        let mut fence = self
             .auth
             .audit_result(&context, database.response_fence(&context))
+            .await
+            .map_err(status)?;
+        self.auth
+            .audit_result(&context, fence.bind_snapshot_lease(&input.lease_id).await)
             .await
             .map_err(status)?;
         let result = database
@@ -463,11 +472,16 @@ impl kasumi_data_server::KasumiData for NativeData {
         request: Request<ScanSnapshotPageRequest>,
     ) -> Result<Response<SnapshotScanPageResponse>, Status> {
         let context = verified(&self.auth, &request).await?;
-        let input = decode_json(&request.into_inner().request_json).map_err(status)?;
+        let input: kasumi_types::ScanSnapshotPage =
+            decode_json(&request.into_inner().request_json).map_err(status)?;
         let database = routed(&self.registry, &self.auth, &context).await?;
-        let fence = self
+        let mut fence = self
             .auth
             .audit_result(&context, database.response_fence(&context))
+            .await
+            .map_err(status)?;
+        self.auth
+            .audit_result(&context, fence.bind_snapshot_lease(&input.lease_id).await)
             .await
             .map_err(status)?;
         let result = database
