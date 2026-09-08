@@ -62,6 +62,21 @@ impl EncryptedTable {
         let table = tx.open_table(TABLE)?;
         Ok(table.get(key)?.map(|v| v.value().to_vec()))
     }
+    /// Replace a scratch accumulator. Permanent identities use `insert`, which
+    /// rejects duplicates; this operation is only for unpublished working tables.
+    pub fn set(&self, key: &[u8], value: &[u8]) -> Result<()> {
+        ensure!(
+            key.len() <= 4096 && value.len() <= 32 << 20,
+            "staged record exceeds limit"
+        );
+        let mut tx = self.database.begin_write()?;
+        tx.set_durability(redb::Durability::None)?;
+        {
+            tx.open_table(TABLE)?.insert(key, value)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
     pub fn visit(&self, mut visitor: impl FnMut(&[u8], &[u8]) -> Result<()>) -> Result<()> {
         let tx = self.database.begin_read()?;
         let table = tx.open_table(TABLE)?;

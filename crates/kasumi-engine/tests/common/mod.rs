@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 /// The node's service security ledger uses its own encrypted tenant namespace
 /// and wrapping key, independently of customer tenant revocation.
+#[allow(dead_code)]
 pub async fn security_audit(node: Arc<NodeStore>) -> Arc<SecurityAudit> {
     security_audit_with_admission(
         node,

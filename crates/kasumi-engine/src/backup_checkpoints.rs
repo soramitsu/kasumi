@@ -51,7 +51,7 @@ impl BackupReader for LiveBackupReader<'_> {
     }
     async fn audit_dependency<'a>(
         &'a self,
-        state: &'a TenantState,
+        state: &'a crate::backup_verify::VerifiedState,
         root: &'a kasumi_store::StoragePurpose,
         link: &'a AuditArchiveLink,
     ) -> anyhow::Result<kasumi_store::PreparedAuditSegment> {
@@ -62,7 +62,7 @@ impl BackupReader for LiveBackupReader<'_> {
         };
         self.check_access().await?;
         let reference = tokio::select! {
-            result = crate::backup_verify::verify_audit_dependency(state, root, &self.database.store, &ciphertext, link) => result?,
+            result = crate::backup_verify::verify_indexed_audit_dependency(state, root, &self.database.store, &ciphertext, link) => result?,
             _ = cancelled(&self.cancellation) => return Err(cancelled_error().into()),
         };
         self.check_access().await?;
@@ -334,7 +334,7 @@ impl Database {
                     )
                     .into());
                 }
-                crate::retirement_closure::digest(&verified.state, || {
+                crate::retirement_closure::digest_verified(&verified.state, || {
                     credential.check_live()?;
                     cancellation.check()?;
                     deadline.check().map_err(|_| {

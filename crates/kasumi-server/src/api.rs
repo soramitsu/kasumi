@@ -1718,7 +1718,7 @@ name: "docs".into(),
         let reopened = crate::runtime::SecurityAudit::open(
             fixture.audit_store.clone(),
             kasumi_types::AuditRetentionBudget::default(),
-            kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+            fixture.audit.admission().clone(),
         )
         .unwrap();
         reopened

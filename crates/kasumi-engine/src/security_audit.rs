@@ -436,10 +436,11 @@ mod tests {
                 TenantStore::open_fixture(node.clone(), SECURITY_TENANT.into(), provider.clone())
                     .await
                     .unwrap();
+            let admission = crate::admission::NodeAdmission::new(Default::default()).unwrap();
             let audit = SecurityAudit::open(
                 store.clone(),
                 kasumi_types::AuditRetentionBudget::default(),
-                crate::admission::NodeAdmission::new(Default::default()).unwrap(),
+                admission.clone(),
             )
             .unwrap();
             let (entered, started) = tokio::sync::oneshot::channel();
@@ -465,7 +466,7 @@ mod tests {
             let audit = SecurityAudit::open(
                 store.clone(),
                 kasumi_types::AuditRetentionBudget::default(),
-                crate::admission::NodeAdmission::new(Default::default()).unwrap(),
+                admission.clone(),
             )
             .unwrap();
             assert!(Arc::ptr_eq(&writer.upgrade().unwrap(), &audit.writer));
@@ -529,16 +530,17 @@ mod tests {
             TenantStore::open_fixture(node.clone(), SECURITY_TENANT.into(), provider.clone())
                 .await
                 .unwrap();
+        let admission = crate::admission::NodeAdmission::new(Default::default()).unwrap();
         let first = SecurityAudit::open(
             store.clone(),
             kasumi_types::AuditRetentionBudget::default(),
-            crate::admission::NodeAdmission::new(Default::default()).unwrap(),
+            admission.clone(),
         )
         .unwrap();
         let second = SecurityAudit::open(
             store.clone(),
             kasumi_types::AuditRetentionBudget::default(),
-            crate::admission::NodeAdmission::new(Default::default()).unwrap(),
+            admission.clone(),
         )
         .unwrap();
         assert!(Arc::ptr_eq(&first.writer, &second.writer));
@@ -549,7 +551,7 @@ mod tests {
                     hot_bytes: 65 << 20,
                     ..Default::default()
                 },
-                crate::admission::NodeAdmission::new(Default::default()).unwrap()
+                admission.clone()
             )
             .is_err()
         );
@@ -566,7 +568,7 @@ mod tests {
         let third = SecurityAudit::open(
             store.clone(),
             kasumi_types::AuditRetentionBudget::default(),
-            crate::admission::NodeAdmission::new(Default::default()).unwrap(),
+            admission.clone(),
         )
         .unwrap();
         assert!(Arc::ptr_eq(&retained.writer, &third.writer));

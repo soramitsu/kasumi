@@ -257,47 +257,10 @@ pub(super) fn validate_restored(state: &TenantState) -> Result<()> {
     let mut bytes = 0usize;
     let mut current_successes = 0usize;
     for (key, record) in &state.retirements {
-        let reference = record.request.reference()?;
-        if identity(&reference)? != *key
-            || validate_name(&record.principal).is_err()
-            || reference.request_digest != record.request_digest
-            || record.request.checkpoint.tenant != state.tenant
-            || record.accepted_revision == 0
-            || record.accepted_revision > state.revision
-        {
-            return Err(Error::new(
-                ErrorCode::Corruption,
-                "retirement record identity differs",
-            ));
-        }
-        if let Ok(receipt) = &record.outcome {
-            receipt.validate()?;
-            if receipt.principal != record.principal
-                || receipt.request_digest != reference.request_digest
-                || receipt.retirement_id != reference.retirement_id
-                || receipt.source_incarnation != reference.source_incarnation
-                || receipt.target_incarnation != record.request.target_incarnation
-                || receipt.checkpoint != record.request.checkpoint
-                || receipt.revision != record.accepted_revision
-                || receipt.admitted_at_ms > record.request.not_after_ms
-            {
-                return Err(Error::new(
-                    ErrorCode::Corruption,
-                    "retirement outcome binding differs",
-                ));
-            }
-            if receipt.source_incarnation == state.incarnation {
-                current_successes += 1;
-                if !state.retired || !state.suspended || receipt.policy_epoch > state.policy_epoch {
-                    return Err(Error::new(
-                        ErrorCode::Corruption,
-                        "retirement source fence differs",
-                    ));
-                }
-            }
-        }
+        let (size, current) = validate_snapshot_record(state, key, record)?;
+        current_successes += usize::from(current);
         bytes = bytes
-            .checked_add(entry_bytes(key, record)?)
+            .checked_add(size)
             .ok_or_else(|| Error::new(ErrorCode::Corruption, "retirement byte count overflow"))?;
     }
     if current_successes != usize::from(state.retired) || bytes != state.retirement_bytes {
@@ -307,4 +270,52 @@ pub(super) fn validate_restored(state: &TenantState) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+pub(super) fn validate_snapshot_record(
+    state: &TenantState,
+    key: &str,
+    record: &StoredRetirement,
+) -> Result<(usize, bool)> {
+    let mut current_success = false;
+    let reference = record.request.reference()?;
+    if identity(&reference)? != *key
+        || validate_name(&record.principal).is_err()
+        || reference.request_digest != record.request_digest
+        || record.request.checkpoint.tenant != state.tenant
+        || record.accepted_revision == 0
+        || record.accepted_revision > state.revision
+    {
+        return Err(Error::new(
+            ErrorCode::Corruption,
+            "retirement record identity differs",
+        ));
+    }
+    if let Ok(receipt) = &record.outcome {
+        receipt.validate()?;
+        if receipt.principal != record.principal
+            || receipt.request_digest != reference.request_digest
+            || receipt.retirement_id != reference.retirement_id
+            || receipt.source_incarnation != reference.source_incarnation
+            || receipt.target_incarnation != record.request.target_incarnation
+            || receipt.checkpoint != record.request.checkpoint
+            || receipt.revision != record.accepted_revision
+            || receipt.admitted_at_ms > record.request.not_after_ms
+        {
+            return Err(Error::new(
+                ErrorCode::Corruption,
+                "retirement outcome binding differs",
+            ));
+        }
+        if receipt.source_incarnation == state.incarnation {
+            current_success = true;
+            if !state.retired || !state.suspended || receipt.policy_epoch > state.policy_epoch {
+                return Err(Error::new(
+                    ErrorCode::Corruption,
+                    "retirement source fence differs",
+                ));
+            }
+        }
+    }
+    Ok((entry_bytes(key, record)?, current_success))
 }

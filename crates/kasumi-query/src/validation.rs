@@ -280,3 +280,37 @@ pub fn check_unique(collection: &CollectionState) -> Result<()> {
     }
     Ok(())
 }
+
+/// A bounded, canonical equality key for one unique index. Missing fields are
+/// sparse; decimal spellings normalize exactly as the resident unique index does.
+/// The caller supplies durable or temporary point-addressed uniqueness storage.
+pub fn unique_index_key(index: &IndexDefinition, body: &Value) -> Result<Option<Vec<u8>>> {
+    if !index.unique {
+        return Err(invalid("equality key requires a unique index"));
+    }
+    let mut key = Vec::new();
+    let mut missing = false;
+    for field in &index.fields {
+        let mut values = indexed_values(body.pointer(&field.path), field.kind)?;
+        if values.len() != 1 {
+            return Err(invalid("unique index has a non-scalar field"));
+        }
+        let encoded = match values.remove(0) {
+            Scalar::Missing => {
+                missing = true;
+                serde_json::json!(["missing"])
+            }
+            Scalar::Null => serde_json::json!(["null"]),
+            Scalar::Boolean(value) => serde_json::json!(["boolean", value]),
+            Scalar::Number(value) => serde_json::json!(["number", value.normalized().to_string()]),
+            Scalar::String(value) => serde_json::json!(["string", value]),
+        };
+        key.push(encoded);
+    }
+    if missing {
+        return Ok(None);
+    }
+    serde_json::to_vec(&key)
+        .map(Some)
+        .map_err(|_| invalid("unique equality key encoding failed"))
+}

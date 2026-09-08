@@ -343,27 +343,8 @@ pub(super) fn validate_restored(state: &TenantState) -> Result<()> {
         ));
     }
     for (key, record) in &state.schema_activations {
-        if identity(&record.principal, &record.activation_id)? != *key
-            || !valid_digest(&record.request_digest)
-            || record.collections.is_empty()
-            || record.collections.len() > MAX_SCHEMA_CHANGESET_COLLECTIONS
-            || record.read_collections.len() > MAX_SCHEMA_READ_ASSERTIONS
-            || record.outcome.as_ref().is_ok_and(|receipt| {
-                receipt.revision == 0
-                    || receipt.revision > state.revision
-                    || !receipt.versions.is_empty()
-            })
-        {
-            return Err(Error::new(
-                ErrorCode::Corruption,
-                "invalid schema activation record",
-            ));
-        }
-        for collection in record.collections.iter().chain(&record.read_collections) {
-            validate_name(collection)?;
-        }
         bytes = bytes
-            .checked_add(entry_bytes(key, record)?)
+            .checked_add(validate_snapshot_record(key, record, state.revision)?)
             .ok_or_else(|| Error::new(ErrorCode::Corruption, "schema activation bytes overflow"))?;
     }
     if bytes != state.schema_activation_bytes {
@@ -373,4 +354,29 @@ pub(super) fn validate_restored(state: &TenantState) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+pub(super) fn validate_snapshot_record(
+    key: &str,
+    record: &StoredSchemaActivation,
+    revision: u64,
+) -> Result<usize> {
+    if identity(&record.principal, &record.activation_id)? != *key
+        || !valid_digest(&record.request_digest)
+        || record.collections.is_empty()
+        || record.collections.len() > MAX_SCHEMA_CHANGESET_COLLECTIONS
+        || record.read_collections.len() > MAX_SCHEMA_READ_ASSERTIONS
+        || record.outcome.as_ref().is_ok_and(|receipt| {
+            receipt.revision == 0 || receipt.revision > revision || !receipt.versions.is_empty()
+        })
+    {
+        return Err(Error::new(
+            ErrorCode::Corruption,
+            "invalid schema activation record",
+        ));
+    }
+    for collection in record.collections.iter().chain(&record.read_collections) {
+        validate_name(collection)?;
+    }
+    entry_bytes(key, record)
 }

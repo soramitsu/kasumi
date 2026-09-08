@@ -20,16 +20,47 @@ pub fn authorize_audit_source(
         state.restored_from.as_ref(),
         &state.restore_lineage,
     )?;
-    let root_incarnation = application(snapshot_source, &state.tenant)?;
-    let archive_incarnation = application(archive_source, &state.tenant)?;
+    authorize_checked_lineage(
+        &state.tenant,
+        &state.incarnation,
+        snapshot_source,
+        archive_source,
+        |incarnation| {
+            Ok(state
+                .restore_lineage
+                .iter()
+                .any(|link| link.checkpoint.source_incarnation == incarnation))
+        },
+        |incarnation| {
+            Ok(state
+                .restore_lineage
+                .iter()
+                .find(|link| link.target_incarnation == incarnation)
+                .map(|link| link.checkpoint.clone()))
+        },
+    )
+}
+
+/// The caller supplies lookups from an independently validated complete lineage.
+/// This helper changes neither the authenticated original purpose nor live access.
+pub(crate) fn authorize_checked_lineage(
+    tenant: &str,
+    incarnation: &str,
+    snapshot_source: &StoragePurpose,
+    archive_source: &StoragePurpose,
+    source_exists: impl Fn(&str) -> Result<bool>,
+    target_checkpoint: impl Fn(&str) -> Result<Option<kasumi_types::FullBackupCheckpoint>>,
+) -> Result<()> {
+    let root_incarnation = application(snapshot_source, tenant)?;
+    let archive_incarnation = application(archive_source, tenant)?;
     if snapshot_source.is_local_fixture() && archive_source.is_local_fixture() {
         return Ok(());
     }
     ensure!(
-        root_incarnation == state.incarnation,
+        root_incarnation == incarnation,
         "snapshot source purpose differs from state"
     );
-    if archive_incarnation == state.incarnation {
+    if archive_incarnation == incarnation {
         let matches = match (snapshot_source, archive_source) {
             (
                 StoragePurpose::Standalone {
@@ -63,10 +94,7 @@ pub fn authorize_audit_source(
         );
     } else {
         ensure!(
-            state
-                .restore_lineage
-                .iter()
-                .any(|link| link.checkpoint.source_incarnation == archive_incarnation),
+            source_exists(&archive_incarnation)?,
             "audit source is absent from authenticated restore lineage"
         );
     }
@@ -77,13 +105,9 @@ pub fn authorize_audit_source(
             ..
         } = purpose
         {
-            let original = state
-                .restore_lineage
-                .iter()
-                .find(|link| link.target_incarnation == identity.incarnation.to_string())
-                .map(|link| &link.checkpoint);
+            let original = target_checkpoint(&identity.incarnation.to_string())?;
             ensure!(
-                recovery_checkpoint.as_deref() == original,
+                recovery_checkpoint.as_deref() == original.as_ref(),
                 "audit source recovery checkpoint differs"
             );
         }

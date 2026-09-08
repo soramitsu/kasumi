@@ -3,51 +3,15 @@
 use kasumi_types::*;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeMap, io::Write};
+use std::io::Write;
 
 /// Covers borrowed sorting nodes; bodies are streamed, never cloned or encoded
 /// into an additional resident-state Vec. The caller owns this reservation for
 /// the entire actual blocking worker, including cancellation/destruction.
-pub(crate) fn workspace_bytes(state: &TenantState) -> Result<u64> {
-    let entries = state
-        .collections
-        .values()
-        .try_fold(0usize, |count, collection| {
-            count
-                .checked_add(collection.documents.len())
-                .and_then(|count| count.checked_add(collection.archived_documents.len()))
-                .ok_or_else(|| {
-                    Error::new(
-                        ErrorCode::ResourceExhausted,
-                        "retirement workspace overflow",
-                    )
-                })
-        })?;
-    let entries = [
-        state.receipts.len(),
-        state.staged_transactions.len(),
-        state.history_archives.len(),
-        state.schema_activations.len(),
-    ]
-    .into_iter()
-    .try_fold(entries, |count, next| {
-        count.checked_add(next).ok_or_else(|| {
-            Error::new(
-                ErrorCode::ResourceExhausted,
-                "retirement workspace overflow",
-            )
-        })
-    })?;
-    u64::try_from(entries)
-        .ok()
-        .and_then(|count| count.checked_mul(128))
-        .and_then(|bytes| bytes.checked_add(1 << 20))
-        .ok_or_else(|| {
-            Error::new(
-                ErrorCode::ResourceExhausted,
-                "retirement workspace overflow",
-            )
-        })
+pub(crate) fn workspace_bytes(_: &TenantState) -> Result<u64> {
+    // One bounded semantic record plus its canonical/hash workspace. Resident
+    // roots are borrowed and the indexed path retains only encrypted page caches.
+    Ok(64 << 20)
 }
 
 struct Sink<'a> {
@@ -102,27 +66,66 @@ fn record(
     digest.update(b"\n");
     Ok(())
 }
-fn map<V: Serialize + Clone>(
-    digest: &mut Sha256,
-    name: &str,
-    values: &imbl::OrdMap<String, V>,
-    check: &mut dyn FnMut() -> Result<()>,
-) -> Result<()> {
-    record(digest, &(name, values.len()), check)?;
-    let mut ordered = BTreeMap::new();
-    for (key, value) in values {
-        check()?;
-        ordered.insert(key, value);
+
+trait ClosureRecords {
+    fn metadata(&self) -> &TenantState;
+    fn records(
+        &self,
+        kind: u8,
+        primary: Option<&str>,
+    ) -> anyhow::Result<
+        Box<dyn Iterator<Item = anyhow::Result<crate::snapshot_codec::Record>> + Send + '_>,
+    >;
+}
+impl ClosureRecords for TenantState {
+    fn metadata(&self) -> &TenantState {
+        self
     }
-    for (key, value) in ordered {
-        record(digest, &(key, value), check)?;
+    fn records(
+        &self,
+        kind: u8,
+        primary: Option<&str>,
+    ) -> anyhow::Result<
+        Box<dyn Iterator<Item = anyhow::Result<crate::snapshot_codec::Record>> + Send + '_>,
+    > {
+        crate::snapshot_codec::records(self, kind, primary)
     }
-    Ok(())
+}
+impl ClosureRecords for crate::backup_verify::VerifiedState {
+    fn metadata(&self) -> &TenantState {
+        self.metadata()
+    }
+    fn records(
+        &self,
+        kind: u8,
+        primary: Option<&str>,
+    ) -> anyhow::Result<
+        Box<dyn Iterator<Item = anyhow::Result<crate::snapshot_codec::Record>> + Send + '_>,
+    > {
+        self.records(kind, primary)
+    }
+}
+fn corrupt(error: impl std::fmt::Display) -> Error {
+    Error::new(ErrorCode::Corruption, error.to_string())
 }
 
-pub(crate) fn digest(state: &TenantState, mut check: impl FnMut() -> Result<()>) -> Result<String> {
+pub(crate) fn digest(state: &TenantState, check: impl FnMut() -> Result<()>) -> Result<String> {
+    digest_records(state, check)
+}
+pub(crate) fn digest_verified(
+    state: &crate::backup_verify::VerifiedState,
+    check: impl FnMut() -> Result<()>,
+) -> Result<String> {
+    digest_records(state, check)
+}
+fn digest_records(
+    view: &impl ClosureRecords,
+    mut check: impl FnMut() -> Result<()>,
+) -> Result<String> {
+    use crate::snapshot_codec::Record;
+    let state = view.metadata();
     let mut digest = Sha256::new();
-    record(&mut digest, &"kasumi.retirement-closure.v1", &mut check)?;
+    record(&mut digest, &"kasumi.retirement-closure.v2", &mut check)?;
     record(
         &mut digest,
         &(
@@ -144,71 +147,99 @@ pub(crate) fn digest(state: &TenantState, mut check: impl FnMut() -> Result<()>)
         &(state.document_count, state.logical_bytes),
         &mut check,
     )?;
-    record(
-        &mut digest,
-        &("collections", state.collections.len()),
-        &mut check,
-    )?;
-    enum LogicalDocument<'a> {
-        Hot(&'a Document),
-        Cold(&'a ArchivedDocument),
-    }
-    for (name, collection) in &state.collections {
+    // Strictly ordered typed records include an authenticated terminal count for
+    // every category. Staging and change-feed payloads never become one value.
+    let mut collections = 0u64;
+    for collection in view.records(2, None).map_err(corrupt)? {
+        check()?;
+        let Record::Collection(name, collection) = collection.map_err(corrupt)? else {
+            unreachable!()
+        };
         record(
             &mut digest,
-            &(name, &collection.definition, collection.data_epoch),
+            &(
+                "collection",
+                &name,
+                &collection.definition,
+                collection.data_epoch,
+            ),
             &mut check,
         )?;
-        let mut ordered = BTreeMap::new();
-        for (id, document) in &collection.documents {
+        let mut hot = view.records(3, Some(&name)).map_err(corrupt)?.peekable();
+        let mut cold = view.records(4, Some(&name)).map_err(corrupt)?.peekable();
+        let mut count = 0u64;
+        loop {
             check()?;
-            ordered.insert(id, LogicalDocument::Hot(document));
-        }
-        for (id, document) in &collection.archived_documents {
-            check()?;
-            if ordered
-                .insert(id, LogicalDocument::Cold(document))
-                .is_some()
-            {
-                return Err(Error::new(
-                    ErrorCode::Corruption,
-                    "retirement document has two representations",
-                ));
-            }
-        }
-        record(&mut digest, &ordered.len(), &mut check)?;
-        for (id, document) in ordered {
-            let (version, hash) = match document {
-                LogicalDocument::Hot(document) => {
-                    let mut hash = Sha256::new();
-                    // ArchivedDocument.document_sha256 also hashes the full
-                    // Document, not merely its user body.
-                    json(&mut hash, document, &mut check)?;
-                    (document.version, hex::encode(hash.finalize()))
-                }
-                LogicalDocument::Cold(document) => {
-                    validate_sha256(&document.document_sha256)?;
-                    (document.version, document.document_sha256.clone())
-                }
+            let a = match hot.peek() {
+                Some(Ok(Record::Document(_, doc))) => Some(doc.id.as_str()),
+                Some(Err(error)) => return Err(corrupt(error)),
+                None => None,
+                _ => return Err(corrupt("unexpected closure document record")),
             };
-            record(&mut digest, &(id, version, hash), &mut check)?;
+            let b = match cold.peek() {
+                Some(Ok(Record::Archived(_, id, _))) => Some(id.as_str()),
+                Some(Err(error)) => return Err(corrupt(error)),
+                None => None,
+                _ => return Err(corrupt("unexpected closure archived record")),
+            };
+            let hot_next = match (a, b) {
+                (None, None) => break,
+                (Some(a), Some(b)) if a == b => {
+                    return Err(corrupt("retirement document has two representations"));
+                }
+                (Some(a), Some(b)) => a < b,
+                (Some(_), None) => true,
+                (None, Some(_)) => false,
+            };
+            let (id, version, hash) = if hot_next {
+                let Some(Ok(Record::Document(_, doc))) = hot.next() else {
+                    unreachable!()
+                };
+                let mut hash = Sha256::new();
+                json(&mut hash, doc.as_ref(), &mut check)?;
+                (doc.id.clone(), doc.version, hex::encode(hash.finalize()))
+            } else {
+                let Some(Ok(Record::Archived(_, id, doc))) = cold.next() else {
+                    unreachable!()
+                };
+                validate_sha256(&doc.document_sha256)?;
+                (id, doc.version, doc.document_sha256)
+            };
+            record(&mut digest, &("document", id, version, hash), &mut check)?;
+            count = count
+                .checked_add(1)
+                .ok_or_else(|| corrupt("retirement document count overflow"))?;
         }
+        record(&mut digest, &("collection-end", count), &mut check)?;
+        collections = collections
+            .checked_add(1)
+            .ok_or_else(|| corrupt("retirement collection count overflow"))?;
     }
-    // Permanent operational identities matter even when their accepted outcome
-    // changed no application document. These are part of what must be restored.
-    map(&mut digest, "receipts", &state.receipts, &mut check)?;
-    map(
+    record(&mut digest, &("collections-end", collections), &mut check)?;
+    for kind in [1u8, 5, 6, 7, 8, 9, 10, 11, 12, 17] {
+        record(&mut digest, &("category", kind), &mut check)?;
+        let mut count = 0u64;
+        for value in view.records(kind, None).map_err(corrupt)? {
+            check()?;
+            record(&mut digest, &value.map_err(corrupt)?, &mut check)?;
+            count = count
+                .checked_add(1)
+                .ok_or_else(|| corrupt("retirement record count overflow"))?;
+        }
+        record(&mut digest, &("category-end", kind, count), &mut check)?;
+    }
+    // Full feed metadata accompanies its independently emitted commit/items.
+    record(
         &mut digest,
-        "staged",
-        &state.staged_transactions,
+        &(
+            state.change_feed.next_sequence,
+            state.change_feed.event_count,
+            state.change_feed.encoded_commit_bytes,
+        ),
         &mut check,
     )?;
-    record(&mut digest, &state.active_staged_transactions, &mut check)?;
-    map(&mut digest, "schema", &state.schema_activations, &mut check)?;
-    map(&mut digest, "archives", &state.history_archives, &mut check)?;
-    record(&mut digest, &state.change_feed, &mut check)?;
-    // Intrinsic audit/Raft revisions and retirement-attempt bookkeeping are
-    // deliberately absent. No application payload path is omitted.
+    // Intrinsic audit/Raft revisions and retirement-attempt bookkeeping remain
+    // absent. Every application collection and permanent command identity is bound.
     check()?;
     Ok(hex::encode(digest.finalize()))
 }
