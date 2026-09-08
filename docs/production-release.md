@@ -484,3 +484,13 @@ a read-only quota getter or caller capacity claim cannot close this dependency.
   The initial lint failure and source-qualified results are retained in
   `docs/evidence/candidate-workflow-20260908`. Actual workflow execution, image
   builds, final candidate assembly and compiler reproducibility remain open.
+
+- `4cc27db` replaces schema activation and retirement lifetime record-count
+  ceilings with exact checked 64-bit byte budgets. Terminal outcome capacity is
+  reserved before publication, source fencing or positive Raft commitment;
+  exhausted identities remain exactly replayable and budgets can expand beyond
+  2 GiB. Twenty-three engine cases and all45Raft tests pass, followed by strict
+  workspace Clippy, fixture-free server checks and formatting. Source-qualified
+  evidence and the initial Clippy fixture failure are retained in
+  `docs/evidence/permanent-history-byte-budgets-20260908`. Resident permanent-map
+  migration, persistent disk admission and native import reservations remain open.

@@ -1,0 +1,22 @@
+    Checking kasumi-types v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-types)
+    Checking kasumi-transport v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-transport)
+   Compiling kasumi-client v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-client)
+    Checking kasumi-serving v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-serving)
+    Checking kasumi-store v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-store)
+    Checking kasumi-query v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-query)
+    Checking kasumi-raft v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-raft)
+    Checking kasumi-engine v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-engine)
+    Checking kasumi-authority v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-authority)
+    Checking kasumi-server v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-server)
+error: casting to the same type is unnecessary (`u64` -> `u64`)
+   --> crates/kasumi-raft/src/control_tests.rs:517:33
+    |
+517 |     source.max_snapshot_bytes = source.snapshot_bytes as u64 + 100;
+    |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `source.snapshot_bytes`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unnecessary_cast
+    = note: `-D clippy::unnecessary-cast` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::unnecessary_cast)]`
+
+error: could not compile `kasumi-raft` (lib test) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
