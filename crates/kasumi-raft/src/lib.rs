@@ -27,7 +27,7 @@ pub use command::{
 };
 pub use control::{AppliedEntryContext, CommittedRetirementSeed, ControlLog};
 pub use custody_command::{CustodyCommand, MAX_CUSTODY_COMMAND_BYTES};
-pub use custody_group::{CustodyRaftGroup, CustodyView};
+pub use custody_group::{CustodyRaftConfig, CustodyRaftGroup, CustodyView};
 use kasumi_store::TenantStorageSet;
 use lifetime::StorageDrain;
 pub use network::{

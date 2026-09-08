@@ -151,7 +151,7 @@ impl RetiredCustody {
         node_id: u64,
         group: String,
         transport: Arc<dyn kasumi_raft::RaftTransport>,
-        config: kasumi_raft::Config,
+        config: kasumi_raft::CustodyRaftConfig,
         admission: Arc<NodeAdmission>,
         audit: Arc<SecurityAudit>,
     ) -> anyhow::Result<Arc<Self>> {

@@ -1215,7 +1215,11 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
                 // opens the same group using custody storage only.
                 machine.failed.store(true, Ordering::Release);
                 machine.backend.close_application();
-                crate::custody_machine::publish(machine.domains.custody(), &envelope)?;
+                crate::custody_machine::publish(
+                    machine.domains.custody(),
+                    &envelope,
+                    machine.limits.max_snapshot_bytes,
+                )?;
                 state.log_id = envelope.meta.last_log_id;
                 state.membership = envelope.meta.last_membership;
                 return Ok(());
