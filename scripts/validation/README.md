@@ -1,5 +1,10 @@
 # Linux acceptance environment
 
+The [small standalone diagnostic](small-native-smoke.md) uses already-built
+fixture-free binaries for private native TLS/MCP, backup, restart and local
+recovery checks. It records failed checkpoint status and is separate from release,
+capacity and endurance acceptance.
+
 `lima-linux-arm64.yaml` defines a dedicated Debian 13 ARM64 reference VM with a
 digest-pinned base image. Lima plain mode disables dynamic host port forwarding;
 host files and SSH agent credentials are not mounted or forwarded. Run all data,
