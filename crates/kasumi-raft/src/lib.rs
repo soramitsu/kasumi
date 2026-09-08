@@ -364,6 +364,28 @@ impl RaftGroup {
         Ok(())
     }
 
+    /// Remove one nonvoting member without changing unrelated learners or voters.
+    pub async fn remove_learner(&self, id: u64) -> Result<()> {
+        self.check_proposal()?;
+        ensure!(
+            !self
+                .raft
+                .metrics()
+                .borrow()
+                .membership_config
+                .voter_ids()
+                .any(|voter| voter == id),
+            "remove voter through joint consensus before revocation"
+        );
+        self.raft
+            .change_membership(
+                openraft::ChangeMembers::RemoveNodes(BTreeSet::from([id])),
+                true,
+            )
+            .await?;
+        Ok(())
+    }
+
     pub async fn change_membership(&self, voters: BTreeSet<u64>) -> Result<()> {
         self.check_proposal()?;
         ensure!(!voters.is_empty(), "membership cannot be empty");

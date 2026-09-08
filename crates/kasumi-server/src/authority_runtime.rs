@@ -11,13 +11,14 @@ use crate::{
     tls,
 };
 use anyhow::{Context, Result, ensure};
-use kasumi_authority::{AuthorityInstallation, IndependentAuthority};
+use kasumi_authority::{
+    AuthorityBootstrap, AuthorityInstallation, AuthorityNodeSettings, IndependentAuthority,
+};
 use kasumi_engine::SecurityAudit;
 use kasumi_serving::AuthoritySigner;
 use kasumi_store::{NodeStore, StorageAccess, TenantStorageSet, TenantStore};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -35,6 +36,8 @@ fn listener_outcome(
 #[serde(deny_unknown_fields)]
 pub struct AuthorityRuntimeConfig {
     pub installation: AuthorityInstallation,
+    pub bootstrap: AuthorityBootstrap,
+    pub resource_budget_bytes: u64,
     pub database_path: PathBuf,
     pub signing_key: PathBuf,
     pub keys: KeyProviderSettings,
@@ -50,8 +53,34 @@ impl AuthorityRuntimeConfig {
         config.validate()?;
         Ok(config)
     }
+    fn node_settings(&self) -> AuthorityNodeSettings {
+        AuthorityNodeSettings {
+            bootstrap: self.bootstrap.clone(),
+            resource_budget_bytes: self.resource_budget_bytes,
+            installed_members: self
+                .replication
+                .peers
+                .iter()
+                .map(|peer| {
+                    (
+                        peer.node_id,
+                        kasumi_serving::AuthorityMember {
+                            endpoint: peer.endpoint.clone(),
+                            failure_domain: peer.failure_domain.clone(),
+                            certificate_pins: peer
+                                .certificate_pins
+                                .iter()
+                                .map(|pin| pin.to_ascii_lowercase())
+                                .collect(),
+                        },
+                    )
+                })
+                .collect(),
+        }
+    }
     pub fn validate(&self) -> Result<()> {
         self.installation.validate()?;
+        self.node_settings().validate(self.replication.node_id)?;
         Authenticator::new(self.auth.clone())?;
         ensure!(
             matches!(
@@ -67,8 +96,8 @@ impl AuthorityRuntimeConfig {
         self.native.validate()?;
         self.replication.validate()?;
         ensure!(
-            self.replication.peers.len() == 3 && self.replication.voters()?.len() == 3,
-            "authority first-release voters are fixed at three"
+            self.replication.voters()? == self.bootstrap.membership.voters,
+            "authority bootstrap voters differ from original installed voters"
         );
         ensure!(
             self.native.listen != self.replication.listener.listen,
@@ -165,23 +194,12 @@ impl AuthorityRuntime {
             )?,
         )
         .await?;
-        let voters: BTreeMap<_, _> = config
-            .replication
-            .peers
-            .iter()
-            .map(|peer| {
-                (
-                    peer.node_id,
-                    kasumi_raft::BasicNode::new(peer.endpoint.clone()),
-                )
-            })
-            .collect();
         let authority = IndependentAuthority::open_replicated(
             stores.clone(),
             config.installation.clone(),
             signer,
             config.replication.node_id,
-            voters,
+            config.node_settings(),
             network.clone(),
             kasumi_raft::server_config(),
         )
@@ -191,13 +209,30 @@ impl AuthorityRuntime {
         if let Err(error) = network.register_group_with_bootstrap(
             group.clone(),
             authority.raft_group().raft().clone(),
-            config.replication.voters()?,
+            config
+                .replication
+                .peers
+                .iter()
+                .map(|peer| peer.node_id)
+                .collect(),
             authority.bootstrap_digest().into(),
             Arc::new(move || access.check_access()),
         ) {
             authority.shutdown().await?;
             return Err(error);
         }
+        let peer_authority = Arc::downgrade(&authority);
+        network.install_group_peer_fence(
+            group,
+            Arc::new(move |peer| {
+                peer_authority
+                    .upgrade()
+                    .context("authority member owner is closed")?
+                    .peer_allowed(peer)
+            }),
+        )?;
+        network.install_authority_maintenance(Arc::downgrade(&authority))?;
+        authority.install_maintenance_transport(network.clone())?;
         let tls_reload = crate::tls_reload::RuntimeTlsReload::new(
             vec![(
                 crate::tls_reload::ListenerSource::Mutual(config.native.clone()),

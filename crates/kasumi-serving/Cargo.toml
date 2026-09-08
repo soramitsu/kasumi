@@ -20,3 +20,4 @@ hex.workspace = true
 uuid.workspace = true
 tokio.workspace = true
 ring = "0.17"
+url = "2"

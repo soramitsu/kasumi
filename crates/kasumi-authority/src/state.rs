@@ -27,49 +27,19 @@ const NS: &str = "kasumi.independent-authority";
 const META: &[u8] = b"meta";
 const MAX_RECORD_BYTES: usize = 256 << 10;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AuthorityInstallation {
-    pub manifest: AuthorityManifest,
-    pub partition: u16,
-    pub administrators: BTreeSet<String>,
-    pub max_tenants: u64,
-    pub max_receipts: u64,
-    pub max_state_bytes: u64,
-}
-impl AuthorityInstallation {
-    pub fn validate(&self) -> Result<()> {
-        self.manifest.validate()?;
-        ensure!(
-            self.manifest.partitions.contains_key(&self.partition),
-            "unknown installed partition"
-        );
-        ensure!(
-            !self.administrators.is_empty() && self.administrators.len() <= 64,
-            "invalid initial administrators"
-        );
-        for principal in &self.administrators {
-            kasumi_types::validate_name(principal)?;
-        }
-        ensure!(
-            (1..=10_000).contains(&self.max_tenants)
-                && (1..=100_000).contains(&self.max_receipts)
-                && (4096..=32 << 20).contains(&self.max_state_bytes),
-            "authority hard quota exceeded"
-        );
-        Ok(())
-    }
-    pub fn tenant(&self) -> String {
-        format!(
-            "kasumi.authority.{}.{}",
-            self.manifest.authority_id, self.partition
-        )
-    }
-}
+use crate::installation::{AuthorityInstallation, AuthorityNodeSettings};
+
+#[path = "maintenance_state.rs"]
+pub(crate) mod maintenance_state;
+use maintenance_state::{OperationalState, PreparedMaintenance, RevokedMember};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Meta {
     installation: AuthorityInstallation,
+    operational: OperationalState,
+    maintenance_receipts: u64,
+    member_revocations: u64,
     administrators: BTreeSet<String>,
     policy_epoch: u64,
     revision: u64,
@@ -98,6 +68,8 @@ pub(crate) struct TenantRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "record", deny_unknown_fields)]
 enum Record {
+    Maintenance(AuthorityMaintenanceStatus),
+    RevokedMember(RevokedMember),
     Tenant(TenantRecord),
     Receipt(AuthorityReceipt),
     Preparation(PreparationRecord),
@@ -155,11 +127,13 @@ pub(crate) struct PreparedCommand {
 pub(crate) enum PreparedOperation {
     Administrative(Box<PreparedCommand>),
     Lifecycle(Box<lifecycle_state::PreparedLifecycle>),
+    Maintenance(Box<PreparedMaintenance>),
 }
 
 pub(crate) struct Backend {
     store: Arc<TenantStore>,
     installation: AuthorityInstallation,
+    resource_budget_bytes: u64,
     mutation: Mutex<()>,
 }
 fn key_tenant(tenant: &str) -> String {
@@ -177,6 +151,12 @@ fn key_target_stop(tenant: &str, incarnation: Uuid) -> String {
 fn key_incarnation(tenant: &str, incarnation: Uuid) -> String {
     format!("i/{tenant}/{incarnation}")
 }
+fn add_count(value: &mut u64, amount: u64) -> Result<()> {
+    *value = value
+        .checked_add(amount)
+        .context("authority count or byte accounting overflow")?;
+    Ok(())
+}
 fn conflict(message: &str) -> Error {
     Error::new(ErrorCode::Conflict, message)
 }
@@ -187,6 +167,7 @@ impl Backend {
     pub fn install(
         store: Arc<TenantStore>,
         installation: AuthorityInstallation,
+        settings: &AuthorityNodeSettings,
     ) -> Result<Arc<Self>> {
         installation.validate()?;
         ensure!(
@@ -210,7 +191,15 @@ impl Backend {
             );
         } else {
             let meta = Meta {
-                administrators: installation.administrators.clone(),
+                administrators: settings.bootstrap.administrators.clone(),
+                operational: OperationalState {
+                    revision: 0,
+                    membership: settings.bootstrap.membership.clone(),
+                    capacity: settings.bootstrap.capacity.clone(),
+                    pending_operation: None,
+                },
+                maintenance_receipts: 0,
+                member_revocations: 0,
                 installation: installation.clone(),
                 policy_epoch: 1,
                 revision: 0,
@@ -230,6 +219,7 @@ impl Backend {
         Ok(Arc::new(Self {
             store,
             installation,
+            resource_budget_bytes: settings.resource_budget_bytes,
             mutation: Mutex::new(()),
         }))
     }
@@ -577,12 +567,15 @@ impl Backend {
             }
             if previous.is_none() {
                 match &value {
-                    Record::Tenant(_) => meta.tenants += 1,
-                    Record::Receipt(_) => meta.receipts += 1,
-                    Record::Preparation(_) => meta.preparations += 1,
-                    Record::Incarnation(_) => meta.incarnations += 1,
-                    Record::TargetStop(_) => meta.target_stops += 1,
-                    Record::Lifecycle(_) | Record::ControlEpoch(_) => {
+                    Record::Tenant(_) => add_count(&mut meta.tenants, 1)?,
+                    Record::Receipt(_) => add_count(&mut meta.receipts, 1)?,
+                    Record::Preparation(_) => add_count(&mut meta.preparations, 1)?,
+                    Record::Incarnation(_) => add_count(&mut meta.incarnations, 1)?,
+                    Record::TargetStop(_) => add_count(&mut meta.target_stops, 1)?,
+                    Record::Lifecycle(_)
+                    | Record::ControlEpoch(_)
+                    | Record::Maintenance(_)
+                    | Record::RevokedMember(_) => {
                         unreachable!("administrative reducer cannot issue lifecycle records")
                     }
                 }
@@ -598,21 +591,15 @@ impl Backend {
         // Every frozen source retains one successful activation receipt plus a
         // maximum-sized tenant update and permanent incarnation record. Other commands cannot spend that reserved
         // completion capacity. Rejecting a new fence leaves the source active.
-        if meta.tenants > self.installation.max_tenants
+        if meta.tenants > meta.operational.capacity.max_tenants
             || meta
-                .receipts
-                .saturating_add(meta.lifecycle_receipts)
-                .saturating_add(meta.active_fences)
-                .saturating_add(meta.open_control_epochs)
-                > self.installation.max_receipts
-            || meta.state_bytes.saturating_add(
-                meta.active_fences
-                    .saturating_mul(3 * MAX_RECORD_BYTES as u64)
-                    .saturating_add(
-                        meta.open_control_epochs
-                            .saturating_mul(MAX_RECORD_BYTES as u64),
-                    ),
-            ) > self.installation.max_state_bytes
+                .state_bytes
+                .saturating_add(Self::completion_reserve(&meta))
+                > meta
+                    .operational
+                    .capacity
+                    .max_state_bytes
+                    .saturating_sub(meta.operational.capacity.maintenance_reserve_bytes)
         {
             return Ok(Err(Error::new(
                 ErrorCode::ResourceExhausted,
@@ -900,6 +887,9 @@ impl StateMachineBackend for Backend {
             .map_err(|_| anyhow::anyhow!("authority state poisoned"))?;
         let prepared: PreparedOperation = serde_json::from_slice(bytes)?;
         let bytes = match prepared {
+            PreparedOperation::Maintenance(prepared) => {
+                serde_json::to_vec(&self.reduce_maintenance(position, *prepared)?)?
+            }
             PreparedOperation::Administrative(prepared) => {
                 serde_json::to_vec(&self.reduce(position, *prepared)?)?
             }
@@ -915,7 +905,7 @@ impl StateMachineBackend for Backend {
             .lock()
             .map_err(|_| anyhow::anyhow!("authority state poisoned"))?;
         let view = self.store.read_view()?;
-        let maximum = self.installation.max_state_bytes;
+        let maximum = self.resource_budget_bytes;
         Ok(kasumi_raft::CapturedSnapshot::new(None, move |writer| {
             snapshot::write(&view, maximum, writer)
         }))
@@ -942,7 +932,7 @@ impl StateMachineBackend for Backend {
 }
 impl Backend {
     fn decode_snapshot(&self, bytes: &mut dyn std::io::Read) -> Result<Snapshot> {
-        let snapshot = snapshot::read(bytes, self.installation.max_state_bytes)?;
+        let snapshot = snapshot::read(bytes, self.resource_budget_bytes)?;
         ensure!(
             snapshot.meta.installation == self.installation
                 && snapshot.meta.policy_epoch > 0
@@ -965,11 +955,11 @@ impl Backend {
                 bytes.len() <= MAX_RECORD_BYTES,
                 "authority snapshot record too large"
             );
-            state_bytes += bytes.len() as u64;
+            add_count(&mut state_bytes, u64::try_from(bytes.len())?)?;
             match record {
-                Record::Lifecycle(_) | Record::ControlEpoch(_) => {}
+                Record::Lifecycle(_) | Record::ControlEpoch(_) | Record::Maintenance(_) | Record::RevokedMember(_) => {}
                 Record::Tenant(record) => {
-                    tenants += 1;
+                    add_count(&mut tenants, 1)?;
                     ensure!(
                         key == key_tenant(&record.tenant)
                             && self.installation.manifest.partition(&record.tenant)?
@@ -1022,7 +1012,7 @@ impl Backend {
                         _ => anyhow::bail!("active incarnation receipt absent"),
                     }
                     if let Some(fence) = &record.fence {
-                        active_fences += 1;
+                        add_count(&mut active_fences, 1)?;
                         ensure!(
                             matches!(fence.outcome, AuthorityOutcome::Fenced { incarnation, authority_epoch } if incarnation == record.incarnation && authority_epoch == record.authority_epoch),
                             "authority fence snapshot differs"
@@ -1039,7 +1029,7 @@ impl Backend {
                     }
                 }
                 Record::Receipt(receipt) => {
-                    receipts += 1;
+                    add_count(&mut receipts, 1)?;
                     ensure!(
                         key == key_receipt(&receipt.command.tenant, receipt.command.command_id)
                             && receipt.command_digest == receipt.command.digest()?
@@ -1052,7 +1042,7 @@ impl Backend {
                     );
                 }
                 Record::Preparation(prepared) => {
-                    preparations += 1;
+                    add_count(&mut preparations, 1)?;
                     ensure!(
                         key == key_preparation(&prepared.tenant, prepared.target.incarnation)
                             && prepared.source_epoch > 0
@@ -1078,7 +1068,7 @@ impl Backend {
                     }
                 }
                 Record::TargetStop(stop) => {
-                    target_stops += 1;
+                    add_count(&mut target_stops, 1)?;
                     let (source, epoch, target) = match (&stop.command.action, &stop.outcome) {
                         (
                             AuthorityAction::StopTarget {
@@ -1116,7 +1106,7 @@ impl Backend {
                     );
                 }
                 Record::Incarnation(accepted) => {
-                    incarnations += 1;
+                    add_count(&mut incarnations, 1)?;
                     ensure!(
                         key == key_incarnation(&accepted.tenant, accepted.incarnation)
                             && accepted.authority_epoch > 0,
@@ -1191,19 +1181,14 @@ impl Backend {
                 && preparations <= receipts
                 && incarnations >= tenants
                 && incarnations <= receipts
-                && tenants <= self.installation.max_tenants
-                && receipts
-                    + snapshot.meta.lifecycle_receipts
-                    + active_fences
-                    + snapshot.meta.open_control_epochs
-                    <= self.installation.max_receipts
-                && state_bytes
-                    + active_fences * (3 * MAX_RECORD_BYTES as u64)
-                    + snapshot.meta.open_control_epochs * MAX_RECORD_BYTES as u64
-                    <= self.installation.max_state_bytes,
+                && tenants <= snapshot.meta.operational.capacity.max_tenants
+                && state_bytes.saturating_add(Self::completion_reserve(&snapshot.meta))
+                    <= snapshot.meta.operational.capacity.max_state_bytes
+                && snapshot.meta.operational.capacity.max_state_bytes <= self.resource_budget_bytes,
             "authority snapshot accounting differs"
         );
         self.validate_lifecycle_snapshot(&snapshot)?;
+        self.validate_maintenance_snapshot(&snapshot)?;
         Ok(snapshot)
     }
 }

@@ -68,13 +68,12 @@ impl IndependentAuthority {
             expected_policy_epoch: epoch,
         };
         let bytes = self
-            .group
-            .write(
+            .write_proposal(
                 serde_json::to_vec(&PreparedOperation::Lifecycle(Box::new(prepared)))
                     .map_err(unavailable)?,
+                term,
             )
-            .await
-            .map_err(unknown)?;
+            .await?;
         let receipt: Result<LifecycleAuthorityReceipt> =
             serde_json::from_slice(&bytes).map_err(unknown)?;
         self.release_lifecycle(context, receipt?, epoch, term, true)

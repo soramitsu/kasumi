@@ -97,16 +97,47 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
     let installation = AuthorityInstallation {
         manifest: manifest.clone(),
         partition: 0,
-        administrators: BTreeSet::from(["operator".into()]),
-        max_tenants: 10,
-        max_receipts: 100,
-        max_state_bytes: 4 << 20,
     };
     let trust = AuthorityTrust::install(manifest.clone()).unwrap();
     let router = Arc::new(kasumi_raft::InProcessRouter::default());
-    let voters: BTreeMap<_, _> = (1..=3)
-        .map(|id| (id, kasumi_raft::BasicNode::new(format!("authority-{id}"))))
-        .collect();
+    let settings = kasumi_authority::AuthorityNodeSettings {
+        bootstrap: kasumi_authority::AuthorityBootstrap {
+            administrators: BTreeSet::from(["operator".into()]),
+            capacity: kasumi_serving::AuthorityCapacity {
+                max_tenants: 10,
+                max_state_bytes: 4 << 20,
+                maintenance_reserve_bytes: 1 << 20,
+            },
+            membership: kasumi_serving::AuthorityMembership {
+                voters: BTreeSet::from([1, 2, 3]),
+                members: (1..=3)
+                    .map(|n| {
+                        (
+                            n,
+                            kasumi_serving::AuthorityMember {
+                                endpoint: format!("https://authority-{n}.test"),
+                                failure_domain: format!("domain-{n}"),
+                                certificate_pins: BTreeSet::from([format!("{n:064x}")]),
+                            },
+                        )
+                    })
+                    .collect(),
+            },
+        },
+        resource_budget_bytes: 4 << 20,
+        installed_members: (1..=3)
+            .map(|n| {
+                (
+                    n,
+                    kasumi_serving::AuthorityMember {
+                        endpoint: format!("https://authority-{n}.test"),
+                        failure_domain: format!("domain-{n}"),
+                        certificate_pins: BTreeSet::from([format!("{n:064x}")]),
+                    },
+                )
+            })
+            .collect(),
+    };
     let mut services = Vec::new();
     let mut stores = Vec::new();
     for id in 1..=3 {
@@ -125,7 +156,7 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
             installation.clone(),
             signer.clone(),
             id,
-            voters.clone(),
+            settings.clone(),
             router.clone(),
             kasumi_raft::Config {
                 heartbeat_interval: 30,
@@ -213,6 +244,74 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
         jsonwebtoken::encode(&header, &json!({"sub":principal,"tenant":installation.tenant(),"kasumi_resource":{"kind":"authority","authority_id":installation.manifest.authority_id,"partition":installation.partition},"scope":scopes,"iss":"https://identity.example","aud":"https://authority.example","exp":now+300}), &key).unwrap()
     };
     let admin = token("operator", "kasumi:admin");
+    use kasumi_serving::{
+        AuthorityMaintenancePhase, AuthorityMaintenanceRequest as Maintenance,
+        AuthorityMaintenanceResponse as MaintenanceReply,
+    };
+    let current = client
+        .maintenance(&admin, &Maintenance::Configuration)
+        .await
+        .unwrap();
+    let MaintenanceReply::Configuration { configuration } = current else {
+        panic!("configuration response expected")
+    };
+    assert_eq!(configuration.membership.voters, BTreeSet::from([1, 2, 3]));
+    let maintenance = kasumi_serving::AuthorityMaintenanceCommand {
+        operation_id: uuid::Uuid::new_v4(),
+        expected_policy_epoch: configuration.policy_epoch,
+        expected_operational_revision: configuration.revision,
+        not_after_ms: kasumi_clock::EpochClock::system()
+            .unwrap()
+            .now_ms()
+            .unwrap()
+            + 60_000,
+        action: kasumi_serving::AuthorityMaintenanceAction::RevokeMember { node_id: 1 },
+    };
+    let rejected = client
+        .maintenance(
+            &admin,
+            &Maintenance::Start {
+                command: maintenance.clone(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(&rejected, MaintenanceReply::Operation {status} if matches!(status.phase, AuthorityMaintenancePhase::Rejected { .. }))
+    );
+    assert_eq!(
+        client
+            .maintenance(
+                &admin,
+                &Maintenance::Status {
+                    operation_id: maintenance.operation_id
+                }
+            )
+            .await
+            .unwrap(),
+        rejected
+    );
+    assert_eq!(
+        client
+            .maintenance(
+                &admin,
+                &Maintenance::Resume {
+                    operation_id: maintenance.operation_id
+                }
+            )
+            .await
+            .unwrap(),
+        rejected
+    );
+    assert!(
+        client
+            .maintenance(
+                &token("intruder", "kasumi:admin"),
+                &Maintenance::Configuration
+            )
+            .await
+            .is_err()
+    );
     let incarnation = uuid::Uuid::new_v4();
     let command = AuthorityCommand {
         tenant: "city".into(),

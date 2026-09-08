@@ -1721,6 +1721,7 @@ name = "kasumi-authority"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "hex",
  "kasumi-clock",
  "kasumi-engine",
@@ -1921,6 +1922,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tokio",
+ "url",
  "uuid",
 ]
 

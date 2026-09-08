@@ -26,3 +26,6 @@ mod tests;
 
 mod target_runtime_protocol;
 pub use target_runtime_protocol::*;
+
+mod maintenance;
+pub use maintenance::*;

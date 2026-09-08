@@ -1,4 +1,5 @@
-use crate::state::{AuthorityInstallation, Backend, PreparedCommand, PreparedOperation};
+use crate::state::{Backend, PreparedCommand, PreparedOperation};
+use crate::{AuthorityInstallation, AuthorityMaintenanceTransport, AuthorityNodeSettings};
 use anyhow::{Context, ensure};
 use kasumi_clock::{EpochClock, LeaseClock};
 use kasumi_raft::{BasicNode, Config, RaftGroup, RaftTransport};
@@ -7,13 +8,15 @@ use kasumi_store::TenantStorageSet;
 use kasumi_types::{Error, ErrorCode, RequestContext, Result};
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use uuid::Uuid;
 #[path = "lifecycle_service.rs"]
 mod lifecycle_service;
+#[path = "maintenance_service.rs"]
+mod maintenance_service;
 #[path = "target_stop_service.rs"]
 mod target_stop_service;
 
@@ -85,6 +88,9 @@ impl AuthorityResponseFence {
     pub fn check(&self) -> Result<()> {
         self.context.authorization.check_live()?;
         self.authority.group.check_access().map_err(unavailable)?;
+        self.authority
+            .check_installed_configuration()
+            .map_err(unavailable)?;
         if self.authority.term() != self.term {
             return Err(unavailable("authority term changed"));
         }
@@ -130,8 +136,11 @@ pub struct IndependentAuthority {
     proposal: tokio::sync::Mutex<()>,
     requests: Arc<Semaphore>,
     drains: Mutex<BTreeMap<String, Drain>>,
+    settings: AuthorityNodeSettings,
+    local_node_id: u64,
     voters: BTreeMap<u64, BasicNode>,
     bootstrap_digest: String,
+    maintenance_transport: OnceLock<Arc<dyn AuthorityMaintenanceTransport>>,
 }
 impl IndependentAuthority {
     /// The authority is an explicitly installed three-voter trust root. It has
@@ -141,7 +150,7 @@ impl IndependentAuthority {
         installation: AuthorityInstallation,
         signer: Arc<AuthoritySigner>,
         node_id: u64,
-        voters: BTreeMap<u64, BasicNode>,
+        settings: AuthorityNodeSettings,
         transport: Arc<dyn RaftTransport>,
         config: Config,
     ) -> anyhow::Result<Arc<Self>> {
@@ -150,7 +159,7 @@ impl IndependentAuthority {
             installation,
             signer,
             node_id,
-            voters,
+            settings,
             transport,
             config,
             EpochClock::system()?,
@@ -163,16 +172,14 @@ impl IndependentAuthority {
         installation: AuthorityInstallation,
         signer: Arc<AuthoritySigner>,
         node_id: u64,
-        voters: BTreeMap<u64, BasicNode>,
+        settings: AuthorityNodeSettings,
         transport: Arc<dyn RaftTransport>,
         config: Config,
         clock: Arc<EpochClock>,
     ) -> anyhow::Result<Arc<Self>> {
         installation.validate()?;
-        ensure!(
-            voters.len() == 3 && voters.contains_key(&node_id) && voters.keys().all(|id| *id > 0),
-            "independent authority needs exactly three installed voters"
-        );
+        settings.validate(node_id)?;
+        let voters = settings.bootstrap.voters();
         let partition = installation
             .manifest
             .partitions
@@ -182,8 +189,11 @@ impl IndependentAuthority {
             signer.public_key() == partition.public_key,
             "installed signing key differs from authority manifest"
         );
-        let binding =
-            serde_json::to_vec(&("kasumi.independent-authority.v1", &installation, &voters))?;
+        let binding = serde_json::to_vec(&(
+            "kasumi.independent-authority.v2",
+            &installation,
+            &settings.bootstrap,
+        ))?;
         match stores
             .application()
             .get("authority.installation", b"binding")?
@@ -197,7 +207,52 @@ impl IndependentAuthority {
                     binding.clone(),
                 )])?,
         }
-        let backend = Backend::install(stores.application().clone(), installation.clone())?;
+        let local_binding = serde_json::to_vec(&("kasumi.authority-member.v1", node_id))?;
+        match stores
+            .application()
+            .get("authority.installation", b"local-member")?
+        {
+            Some(bytes) => ensure!(
+                bytes == local_binding,
+                "authority storage cannot reopen under another member identity"
+            ),
+            None => stores
+                .application()
+                .write_batch(&[kasumi_store::WriteOp::put(
+                    "authority.installation",
+                    b"local-member",
+                    local_binding,
+                )])?,
+        }
+        let required_bytes = stores
+            .application()
+            .get_bounded("authority.installation", b"resource-floor", 32)?
+            .map(|bytes| serde_json::from_slice::<u64>(&bytes))
+            .transpose()?
+            .unwrap_or(settings.bootstrap.capacity.max_state_bytes);
+        ensure!(
+            settings.resource_budget_bytes >= required_bytes,
+            "authority resource budget is below its durably acknowledged maintenance floor"
+        );
+        let backend = Backend::install(
+            stores.application().clone(),
+            installation.clone(),
+            &settings,
+        )?;
+        ensure!(
+            backend
+                .operational_configuration()?
+                .capacity
+                .max_state_bytes
+                <= settings.resource_budget_bytes,
+            "configured authority node resources cannot fit current durable capacity"
+        );
+        for (id, member) in backend.operational_configuration()?.membership.members {
+            ensure!(
+                settings.installed_members.get(&id) == Some(&member),
+                "installed peer trust differs from committed authority membership"
+            );
+        }
         let group = RaftGroup::open(
             node_id,
             partition.group.clone(),
@@ -216,7 +271,10 @@ impl IndependentAuthority {
             proposal: tokio::sync::Mutex::new(()),
             requests: Arc::new(Semaphore::new(32)),
             drains: Mutex::new(BTreeMap::new()),
+            settings,
+            local_node_id: node_id,
             voters,
+            maintenance_transport: OnceLock::new(),
             bootstrap_digest: digest(&("kasumi.authority-bootstrap.v1", &installation, &binding))?,
         }))
     }
@@ -257,12 +315,41 @@ impl IndependentAuthority {
     }
     async fn barrier(&self, context: &RequestContext) -> Result<u64> {
         context.authorization.check_live()?;
+        self.check_installed_configuration().map_err(unavailable)?;
         self.group
             .linearizable_barrier()
             .await
             .map_err(unavailable)?;
         context.authorization.check_live()?;
         Ok(self.term())
+    }
+    /// Bound the acknowledgement owner after dispatch. OpenRaft still owns any
+    /// submitted entry and its storage work; dropping this wait neither rolls
+    /// back the entry nor releases the group's tracked storage ownership. An
+    /// uncertain caller resolves the same permanent command or phase identity.
+    async fn write_proposal(&self, command: Vec<u8>, term: u64) -> Result<Vec<u8>> {
+        let mut metrics = self.group.raft().metrics();
+        let response = self.group.write(command);
+        tokio::pin!(response);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let current = metrics.borrow().clone();
+                if current.current_term != term
+                    || current.current_leader != Some(self.local_node_id)
+                    || current.running_state.is_err()
+                {
+                    return Err(unknown("authority proposal leader changed"));
+                }
+                tokio::select! {
+                    result = &mut response => return result.map_err(unknown),
+                    changed = metrics.changed() => {
+                        changed.map_err(unknown)?;
+                    }
+                }
+            }
+        })
+        .await
+        .map_err(unknown)?
     }
     fn route(&self, tenant: &str) -> Result<()> {
         if self
@@ -529,13 +616,12 @@ impl IndependentAuthority {
             drained_fence,
         };
         let bytes = self
-            .group
-            .write(
+            .write_proposal(
                 serde_json::to_vec(&PreparedOperation::Administrative(Box::new(prepared)))
                     .map_err(unavailable)?,
+                term,
             )
-            .await
-            .map_err(unknown)?;
+            .await?;
         let receipt: Result<AuthorityReceipt> = serde_json::from_slice(&bytes).map_err(unknown)?;
         self.release(context, receipt?, epoch, term, true).await
     }

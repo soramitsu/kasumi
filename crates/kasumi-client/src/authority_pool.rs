@@ -27,6 +27,18 @@ pub struct KasumiAuthorityPool {
     preferred: u64,
 }
 impl KasumiAuthorityPool {
+    pub async fn maintenance(
+        &mut self,
+        request: &kasumi_serving::AuthorityMaintenanceRequest,
+        timeout: Duration,
+    ) -> Result<kasumi_serving::AuthorityMaintenanceResponse, ClientError> {
+        self.request(timeout, |client, token| {
+            let request = request.clone();
+            Box::pin(async move { client.maintenance(token, &request).await })
+        })
+        .await
+    }
+
     pub fn new(
         endpoints: BTreeMap<u64, KasumiClientConfig>,
         trust: AuthorityTrust,

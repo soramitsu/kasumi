@@ -4,24 +4,7 @@ pub(super) async fn exact_administrative(
     f: &Fixture,
     command: AuthorityCommand,
 ) -> AuthorityReceipt {
-    let context = f.context("operator");
-    tokio::time::timeout(Duration::from_secs(20), async {
-        loop {
-            let current = f.leader().await;
-            match current.execute(context.clone(), command.clone()).await {
-                Ok((receipt, fence)) if fence.release().await.is_ok() => break receipt.receipt,
-                Ok(_) => {}
-                Err(error)
-                    if matches!(
-                        error.code,
-                        ErrorCode::UnknownOutcome | ErrorCode::Unavailable
-                    ) => {}
-                Err(error) => panic!("unexpected exact setup rejection: {error:?}"),
-            }
-        }
-    })
-    .await
-    .unwrap()
+    f.exact_administrative(command).await
 }
 async fn prepared_target(f: &Fixture) -> RecoveryTarget {
     let source = Uuid::new_v4();
@@ -215,7 +198,7 @@ fn activation(
 #[tokio::test]
 async fn committed_activation_rejects_raw_bypass_preserves_exact_winner_and_encrypted_recovery() {
     let control = ControlFixture::new();
-    let mut f = control.issuer(100).await;
+    let mut f = control.issuer().await;
     let service = f.leader().await;
     let t = prepared_target(&f).await;
     let fence = fence_target(&f, &t).await;
@@ -299,16 +282,37 @@ async fn committed_activation_rejects_raw_bypass_preserves_exact_winner_and_encr
         .0
         .unwrap();
     assert_eq!(retained.receipt, a);
-    let stopped = service
-        .execute(
-            f.context("operator"),
-            f.command(AuthorityAction::StopActivation {
-                original: Box::new(command),
-            }),
-        )
-        .await
-        .unwrap()
-        .0;
+    let stop_command = f.command(AuthorityAction::StopActivation {
+        original: Box::new(command),
+    });
+    let stop_context = f.context("operator");
+    // A leadership transition after restart can lose an acknowledgement. Resolve
+    // this exact command with the original credential fence and no new identity.
+    let stopped = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let current = f.leader().await;
+            match current
+                .execute(stop_context.clone(), stop_command.clone())
+                .await
+            {
+                Ok((receipt, fence)) => {
+                    fence.release().await.unwrap();
+                    break receipt;
+                }
+                Err(error)
+                    if matches!(
+                        error.code,
+                        ErrorCode::UnknownOutcome | ErrorCode::Unavailable
+                    ) =>
+                {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                Err(error) => panic!("exact stop recovery failed: {error}"),
+            }
+        }
+    })
+    .await
+    .unwrap();
     assert!(
         matches!(stopped.receipt.outcome,AuthorityOutcome::ActivationResolved{original} if original==Box::new(a))
     );
@@ -319,7 +323,7 @@ async fn committed_activation_rejects_raw_bypass_preserves_exact_winner_and_encr
 async fn stopped_control_epoch_and_queued_original_expiry_defeat_new_activation_effects() {
     for stop_epoch in [true, false] {
         let control = ControlFixture::new();
-        let f = control.issuer(100).await;
+        let f = control.issuer().await;
         let service = f.leader().await;
         let t = prepared_target(&f).await;
         let fence = fence_target(&f, &t).await;
@@ -407,7 +411,7 @@ pub(super) fn original_control(
 #[tokio::test]
 async fn target_storage_retains_original_phase_and_cannot_install_late_renewal_or_new_gate() {
     let control = ControlFixture::new();
-    let f = control.issuer(100).await;
+    let f = control.issuer().await;
     let service = f.leader().await;
     let t = prepared_target(&f).await;
     let signed = control.intent(&f, &t, 1_050_000);

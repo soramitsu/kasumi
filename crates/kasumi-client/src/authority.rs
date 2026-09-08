@@ -15,6 +15,58 @@ pub struct KasumiAuthorityClient {
     deadline: Option<tokio::time::Instant>,
 }
 impl KasumiAuthorityClient {
+    pub async fn maintenance(
+        &mut self,
+        bearer: &str,
+        request: &kasumi_serving::AuthorityMaintenanceRequest,
+    ) -> Result<kasumi_serving::AuthorityMaintenanceResponse, ClientError> {
+        request.validate()?;
+        let response = self
+            .inner
+            .maintenance(self.authorized(
+                bearer,
+                proto::AuthorityJsonRequest {
+                    request_json: encode(request)?,
+                },
+            )?)
+            .await?
+            .into_inner();
+        let response: kasumi_serving::AuthorityMaintenanceResponse =
+            serde_json::from_slice(&response.response_json)?;
+        let validate = || -> anyhow::Result<()> {
+            match &response {
+                kasumi_serving::AuthorityMaintenanceResponse::Configuration { configuration } => {
+                    anyhow::ensure!(
+                        matches!(
+                            request,
+                            kasumi_serving::AuthorityMaintenanceRequest::Configuration
+                        ),
+                        "maintenance response kind differs"
+                    );
+                    configuration.membership.validate()?;
+                    configuration.capacity.validate()?;
+                }
+                kasumi_serving::AuthorityMaintenanceResponse::Operation { status } => {
+                    status.validate()?;
+                    anyhow::ensure!(
+                        Some(status.command.operation_id) == request.operation_id(),
+                        "maintenance operation identity differs"
+                    );
+                    if let kasumi_serving::AuthorityMaintenanceRequest::Start { command } = request
+                    {
+                        anyhow::ensure!(
+                            status.command == *command,
+                            "maintenance command input differs"
+                        );
+                    }
+                }
+            }
+            Ok(())
+        };
+        validate()?;
+        Ok(response)
+    }
+
     pub(crate) fn set_deadline(&mut self, deadline: tokio::time::Instant) {
         self.deadline = Some(deadline);
     }
