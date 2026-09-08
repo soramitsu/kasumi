@@ -63,6 +63,11 @@ raise SystemExit(7 if mode=='raw' else 0)
         self.assertEqual(result["cases"][0]["result_sha256"],driver.digest(self.output/"raw-1.json"))
         self.assertEqual(len(result["failures"]),1)
         self.assertTrue((self.output/"capacity.json").exists())
+        report=json.loads((self.output/"capacity.json").read_text())
+        self.assertEqual(report["input_matrix_scope"],result["scope"])
+        self.assertEqual(report["matrix_sha256"],driver.digest(self.output/"matrix.json"))
+        self.assertFalse(report["production_release_acceptance"])
+        self.assertIn(result["scope"],(self.output/"capacity.md").read_text())
 
     def test_low_disk_remains_fatal_when_host_load_is_allowed(self):
         loaded=dict(self.sample,competing_processes=[{"name":"qemu-system-aarch64-headless"}],background_cpu_percent=999,free_disk_bytes=1)
