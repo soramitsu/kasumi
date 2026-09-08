@@ -366,8 +366,15 @@ async fn replicated_control_intent_is_exact_original_expiry_bound_current_quorum
             .await
             .is_err()
     );
-    let bytes = db.engine().snapshot().unwrap();
-    db.engine().validate_snapshot(&mut bytes.reader()).unwrap();
+    let mut bytes = Vec::new();
+    db.engine()
+        .capture_snapshot()
+        .unwrap()
+        .write(&mut bytes)
+        .unwrap();
+    db.engine()
+        .validate_snapshot(&mut bytes.as_slice())
+        .unwrap();
     drop(proof);
     drop(db);
     f.close().await;
@@ -692,11 +699,7 @@ async fn control_rejects_unfinishable_byte_budget_and_substituted_authenticated_
     retained.original_credential_expires_at_ms += 1000;
     assert!(
         db.engine()
-            .validate_snapshot(
-                &mut kasumi_engine::TenantEngine::encode_snapshot_state(&state, 64 << 20)
-                    .unwrap()
-                    .reader()
-            )
+            .restore(&kasumi_engine::TenantEngine::encode_snapshot_state(&state, 64 << 20).unwrap())
             .is_err()
     );
     assert_eq!(original, db.engine().snapshot().unwrap());

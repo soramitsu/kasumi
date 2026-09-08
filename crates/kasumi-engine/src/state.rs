@@ -1,5 +1,7 @@
 #[path = "custody_snapshot.rs"]
 mod custody_snapshot;
+#[path = "snapshot_bundle.rs"]
+mod snapshot_bundle;
 use crate::accounting::{SnapshotAccounting, encoded_len};
 use arc_swap::ArcSwapOption;
 use kasumi_query::{QueryIndexes, check_unique, validate_collection, validate_document};
@@ -146,16 +148,21 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
     fn capture_snapshot(&self) -> anyhow::Result<kasumi_raft::CapturedSnapshot> {
         let generation = self.generation()?;
         let retirement = custody_snapshot::retired(&generation.state)?;
+        let store = self
+            .snapshot_store
+            .get()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("snapshot storage not installed"))?;
         Ok(kasumi_raft::CapturedSnapshot::new(
             retirement,
-            move |writer| Self::write_generation(&generation, writer).map_err(Into::into),
+            move |writer| snapshot_bundle::write(&generation, &store, writer),
         ))
     }
     fn validate_snapshot(
         &self,
         bytes: &mut dyn std::io::Read,
     ) -> anyhow::Result<Option<kasumi_raft::RetiredSnapshotState>> {
-        let generation = self.prepare_snapshot_reader(bytes)?;
+        let generation = snapshot_bundle::read(self, bytes)?;
         custody_snapshot::retired(&generation.state).map_err(Into::into)
     }
     fn restore(&self, bytes: &mut dyn std::io::Read) -> anyhow::Result<()> {
@@ -163,7 +170,7 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
             .apply_lock
             .lock()
             .map_err(|_| anyhow::anyhow!("tenant apply lock poisoned"))?;
-        let generation = self.prepare_snapshot_reader(bytes)?;
+        let generation = snapshot_bundle::read(self, bytes)?;
         self.current.store(Some(Arc::new(generation)));
         Ok(())
     }
@@ -944,6 +951,16 @@ impl TenantEngine {
             .lock()
             .map_err(|_| Error::new(ErrorCode::Unavailable, "tenant apply lock poisoned"))?;
         let generation = self.prepare_snapshot_reader(&mut bytes.reader())?;
+        if generation.state.audit_retention.archive_head.is_some() {
+            let store = self.snapshot_store.get().ok_or_else(|| {
+                Error::new(
+                    ErrorCode::Corruption,
+                    "logical snapshot audit dependencies not installed",
+                )
+            })?;
+            snapshot_bundle::verify_local(&generation, store)
+                .map_err(|error| Error::new(ErrorCode::Corruption, error.to_string()))?;
+        }
         self.current.store(Some(Arc::new(generation)));
         Ok(())
     }
