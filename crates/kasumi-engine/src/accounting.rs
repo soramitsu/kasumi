@@ -394,8 +394,13 @@ impl SnapshotAccounting {
     pub fn bytes(&self, state: &TenantState) -> Result<usize> {
         // Eight-byte format prefix plus the 56-byte terminal record.
         let mut total = 64usize;
-        change(&mut total, 0, usize::try_from(state.staged_terminal_head.encoded_bytes)
-            .map_err(|_| Error::new(ErrorCode::Corruption, "terminal snapshot byte overflow"))?)?;
+        change(
+            &mut total,
+            0,
+            usize::try_from(state.staged_terminal_head.encoded_bytes).map_err(|_| {
+                Error::new(ErrorCode::Corruption, "terminal snapshot byte overflow")
+            })?,
+        )?;
         change(
             &mut total,
             0,

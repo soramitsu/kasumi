@@ -995,9 +995,15 @@ impl Database {
     ) -> Result<StagedTransactionStatus> {
         context.authorization.check_live()?;
         self.access()?;
-        crate::state::staging::authorize_scope(&self.engine.generation()?.state, context, &reference.scope)?;
+        crate::state::staging::authorize_scope(
+            &self.engine.generation()?.state,
+            context,
+            &reference.scope,
+        )?;
         self.barrier().await?;
-        let mut observed = self.read_staged_identity(context, &reference.scope, &reference.transaction_id).await?;
+        let mut observed = self
+            .read_staged_identity(context, &reference.scope, &reference.transaction_id)
+            .await?;
         let stage = crate::state::staging::lookup(&observed.state, context, reference)?;
         let policy_epoch = observed.state.policy_epoch;
         let revision = observed.state.revision;
@@ -1016,7 +1022,10 @@ impl Database {
                 (collection, kind, strict)
             })
             .collect();
-        let status = observed.status.take().ok_or_else(|| Error::new(ErrorCode::NotFound, "staged transaction not found"))?;
+        let status = observed
+            .status
+            .take()
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "staged transaction not found"))?;
         for (collection, kind, strict) in release {
             self.release_event(
                 context,
@@ -1033,7 +1042,10 @@ impl Database {
         crate::state::staging::authorize_scope(&current.state, context, &reference.scope)?;
         crate::state::staging::authorize_manifest(&current.state, context, &status.manifest)?;
         if current.state.policy_epoch != policy_epoch {
-            return Err(Error::new(ErrorCode::Conflict, "staged status policy changed before release"));
+            return Err(Error::new(
+                ErrorCode::Conflict,
+                "staged status policy changed before release",
+            ));
         }
         Ok(status)
     }
@@ -1214,7 +1226,9 @@ impl Database {
         }
         let staged_read = self.staged_operation_read(&context, &operation).await?;
         let preflight = self.engine.generation()?;
-        let stage_state = staged_read.as_ref().map_or(&preflight.state, |read| &read.state);
+        let stage_state = staged_read
+            .as_ref()
+            .map_or(&preflight.state, |read| &read.state);
         // Authorization repeats during ordered apply, so queued operations cannot bypass policy changes.
         match &operation {
             Operation::ActivateSchema(request) => crate::state::schema::authorize(
@@ -1222,11 +1236,9 @@ impl Database {
                 &context,
                 request,
             )?,
-            Operation::BeginStaged(request) => crate::state::staging::authorize_begin(
-                stage_state,
-                &context,
-                request,
-            )?,
+            Operation::BeginStaged(request) => {
+                crate::state::staging::authorize_begin(stage_state, &context, request)?
+            }
             Operation::AppendStaged(request) => {
                 crate::state::staging::authorize_upload(
                     stage_state,
@@ -1234,17 +1246,11 @@ impl Database {
                     &request.transaction,
                 )?;
             }
-            Operation::StopStaged(request) => crate::state::staging::authorize_stop(
-                stage_state,
-                &context,
-                request,
-            )?,
+            Operation::StopStaged(request) => {
+                crate::state::staging::authorize_stop(stage_state, &context, request)?
+            }
             Operation::FinalizeStaged(reference) => {
-                crate::state::staging::authorize_upload(
-                    stage_state,
-                    &context,
-                    reference,
-                )?;
+                crate::state::staging::authorize_upload(stage_state, &context, reference)?;
             }
             Operation::Mutate(batch) => {
                 for mutation in &batch.operations {

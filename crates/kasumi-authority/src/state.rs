@@ -945,12 +945,18 @@ impl StateMachineBackend for Backend {
         _context: &kasumi_raft::SnapshotRestoreContext,
         bytes: &mut dyn std::io::Read,
     ) -> Result<Box<dyn kasumi_raft::PreparedStateMachineRestore + 'a>> {
-        let guard = self.mutation.lock()
+        let guard = self
+            .mutation
+            .lock()
             .map_err(|_| anyhow::anyhow!("authority state poisoned"))?;
         let snapshot = self.decode_snapshot(bytes)?;
         self.validate_lifecycle_history(&snapshot)?;
         self.validate_roster_history(&snapshot)?;
-        Ok(Box::new(PreparedAuthorityRestore { backend: self, snapshot, _mutation_guard: guard }))
+        Ok(Box::new(PreparedAuthorityRestore {
+            backend: self,
+            snapshot,
+            _mutation_guard: guard,
+        }))
     }
     fn close_application(&self) {
         self.store.seal();
@@ -962,12 +968,18 @@ struct PreparedAuthorityRestore<'a> {
     _mutation_guard: std::sync::MutexGuard<'a, ()>,
 }
 impl kasumi_raft::PreparedStateMachineRestore for PreparedAuthorityRestore<'_> {
-    fn retirement(&self) -> Option<RetiredSnapshotState> { None }
+    fn retirement(&self) -> Option<RetiredSnapshotState> {
+        None
+    }
     fn application_replacements(&self) -> Vec<(&str, &kasumi_store::EncryptedTable)> {
         self.snapshot.records.replacements()
     }
-    fn application_writes(&self) -> &[kasumi_store::WriteOp] { &[] }
-    fn publish(self: Box<Self>) -> Result<()> { self.backend.store.check_access() }
+    fn application_writes(&self) -> &[kasumi_store::WriteOp] {
+        &[]
+    }
+    fn publish(self: Box<Self>) -> Result<()> {
+        self.backend.store.check_access()
+    }
 }
 
 impl Backend {
@@ -1253,7 +1265,9 @@ pub(crate) fn restore_test_context(bytes: &[u8]) -> kasumi_raft::SnapshotRestore
         mode: kasumi_raft::SnapshotRestoreMode::Install,
         backend_sha256: hex::encode(sha2::Sha256::digest(bytes)),
         meta: kasumi_raft::SnapshotMeta {
-            last_log_id: None, last_membership: Default::default(), snapshot_id: "negative-fixture".into(),
+            last_log_id: None,
+            last_membership: Default::default(),
+            snapshot_id: "negative-fixture".into(),
         },
     }
 }

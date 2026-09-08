@@ -495,7 +495,15 @@ async fn lifecycle_byte_exhaustion_preserves_reserved_epoch_stop_and_exact_snaps
                 serde_json::json!("substituted-admin");
         }
     });
-    assert!(service.backend.prepare_restore(&crate::state::restore_test_context(&modified), &mut modified.as_slice()).is_err());
+    assert!(
+        service
+            .backend
+            .prepare_restore(
+                &crate::state::restore_test_context(&modified),
+                &mut modified.as_slice()
+            )
+            .is_err()
+    );
     let context = f.context("operator");
     let reference = stop.reference();
     // Snapshot validation can span an election under the concurrent workspace

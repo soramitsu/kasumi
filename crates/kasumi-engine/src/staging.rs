@@ -157,7 +157,9 @@ pub(crate) fn authorize_upload(
 }
 
 pub(crate) fn authorize_stop_envelope(
-    state: &TenantState, context: &RequestContext, request: &StopStagedTransaction,
+    state: &TenantState,
+    context: &RequestContext,
+    request: &StopStagedTransaction,
 ) -> Result<()> {
     authorize_scope(state, context, &request.original.scope)?;
     validate_name(&request.original.transaction_id)?;
@@ -895,7 +897,10 @@ pub(super) fn validate_restored(state: &TenantState) -> Result<()> {
     let mut reserved = 0u64;
     for (key, stage) in &state.staged_transactions {
         if !stage.is_active() {
-            return Err(Error::new(ErrorCode::Corruption, "resident staging contains a terminal identity"));
+            return Err(Error::new(
+                ErrorCode::Corruption,
+                "resident staging contains a terminal identity",
+            ));
         }
         let charge = permanent_charge(key, stage)?;
         used = used

@@ -594,9 +594,11 @@ mod tests {
         state.audit_retention.next_sequence = 3;
         state.audit_retention.pruned_before = 3;
         state.audit_retention.archive_head = references.last().cloned();
-        engine
-            .current
-            .store(Some(Arc::new(engine.prepare_state(state, engine.generation().unwrap().terminals.clone()).unwrap())));
+        engine.current.store(Some(Arc::new(
+            engine
+                .prepare_state(state, engine.generation().unwrap().terminals.clone())
+                .unwrap(),
+        )));
         references
     }
     async fn capture(engine: Arc<TenantEngine>) -> Result<Vec<u8>> {
@@ -729,15 +731,19 @@ mod tests {
         let references = install_chain(&source, &source_store);
         let mut state = source.generation().unwrap().state.clone();
         state.audit_retention.archive_bytes += 1;
-        source
-            .current
-            .store(Some(Arc::new(source.prepare_state(state, source.generation().unwrap().terminals.clone()).unwrap())));
+        source.current.store(Some(Arc::new(
+            source
+                .prepare_state(state, source.generation().unwrap().terminals.clone())
+                .unwrap(),
+        )));
         assert!(capture(source.clone()).await.is_err());
         let mut state = source.generation().unwrap().state.clone();
         state.audit_retention.archive_bytes -= 1;
-        source
-            .current
-            .store(Some(Arc::new(source.prepare_state(state, source.generation().unwrap().terminals.clone()).unwrap())));
+        source.current.store(Some(Arc::new(
+            source
+                .prepare_state(state, source.generation().unwrap().terminals.clone())
+                .unwrap(),
+        )));
         // The source cache directory is fixed to this private installation.
         let cache = source_store
             .durable_directory()

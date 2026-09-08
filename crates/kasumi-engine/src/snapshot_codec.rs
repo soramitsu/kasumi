@@ -392,8 +392,15 @@ impl<'a> Encoder<'a> {
         Ok(())
     }
 }
-pub(crate) fn write(state: &TenantState, terminals: &crate::staged_terminal::View, writer: &mut dyn Write) -> anyhow::Result<()> {
-    anyhow::ensure!(terminals.head() == &state.staged_terminal_head, "snapshot terminal owner differs");
+pub(crate) fn write(
+    state: &TenantState,
+    terminals: &crate::staged_terminal::View,
+    writer: &mut dyn Write,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        terminals.head() == &state.staged_terminal_head,
+        "snapshot terminal owner differs"
+    );
     terminals.check_head(&state.tenant)?;
     let mut encoder = Encoder::new(writer)?;
     for kind in 0..21 {
@@ -401,7 +408,9 @@ pub(crate) fn write(state: &TenantState, terminals: &crate::staged_terminal::Vie
             encoder.record(record?)?;
         }
     }
-    for row in terminals.records() { encoder.record(Record::Terminal(Box::new(row?)))?; }
+    for row in terminals.records() {
+        encoder.record(Record::Terminal(Box::new(row?)))?;
+    }
     encoder.finish()
 }
 
@@ -582,7 +591,10 @@ pub(crate) struct Decoded {
     pub(crate) state: TenantState,
     pub(crate) terminals: crate::staged_terminal::View,
 }
-pub(crate) fn read(disk: &Arc<kasumi_store::ScratchDisk>, reader: &mut dyn Read) -> anyhow::Result<Decoded> {
+pub(crate) fn read(
+    disk: &Arc<kasumi_store::ScratchDisk>,
+    reader: &mut dyn Read,
+) -> anyhow::Result<Decoded> {
     let mut state: Option<TenantState> = None;
     let mut terminals: Option<crate::staged_terminal::Builder> = None;
     visit(reader, |_, record| {
@@ -593,8 +605,10 @@ pub(crate) fn read(disk: &Arc<kasumi_store::ScratchDisk>, reader: &mut dyn Read)
             );
             if header.staged_terminal_head.count > 0 {
                 terminals = Some(crate::staged_terminal::Builder::new(
-                    disk, crate::staged_terminal::scratch_limit(header.limits.max_snapshot_bytes)?,
-                    &header.tenant, &header.staged_terminal_head.origin_incarnation,
+                    disk,
+                    crate::staged_terminal::scratch_limit(header.limits.max_snapshot_bytes)?,
+                    &header.tenant,
+                    &header.staged_terminal_head.origin_incarnation,
                 )?);
             }
             state = Some(*header);
@@ -639,7 +653,10 @@ pub(crate) fn read(disk: &Arc<kasumi_store::ScratchDisk>, reader: &mut dyn Read)
                 state.receipts.insert(k, receipt);
             }
             Record::Stage(k, stage) => {
-                anyhow::ensure!(stage.is_active() && stage.chunks.is_empty(), "resident stage must be an active upload header");
+                anyhow::ensure!(
+                    stage.is_active() && stage.chunks.is_empty(),
+                    "resident stage must be an active upload header"
+                );
                 state.staged_transactions.insert(k, stage);
             }
             Record::StageChunk(k, i, chunk) => {
@@ -733,8 +750,14 @@ pub(crate) fn read(disk: &Arc<kasumi_store::ScratchDisk>, reader: &mut dyn Read)
                 state.recovery_control.targets.insert(key, operation);
             }
             Record::Terminal(row) => {
-                anyhow::ensure!(!state.staged_transactions.contains_key(&row.key), "staged identity is both active and terminal");
-                terminals.as_mut().ok_or_else(|| anyhow::anyhow!("terminal stream header missing"))?.push(&row, state)?;
+                anyhow::ensure!(
+                    !state.staged_transactions.contains_key(&row.key),
+                    "staged identity is both active and terminal"
+                );
+                terminals
+                    .as_mut()
+                    .ok_or_else(|| anyhow::anyhow!("terminal stream header missing"))?
+                    .push(&row, state)?;
             }
             Record::ControlChange(id, change) => {
                 state
@@ -751,8 +774,14 @@ pub(crate) fn read(disk: &Arc<kasumi_store::ScratchDisk>, reader: &mut dyn Read)
     let terminals = match terminals {
         Some(builder) => builder.finish(&state.staged_terminal_head)?,
         None => {
-            let empty = crate::staged_terminal::View::empty(&state.tenant, &state.staged_terminal_head.origin_incarnation)?;
-            anyhow::ensure!(empty.head() == &state.staged_terminal_head, "empty terminal descriptor differs");
+            let empty = crate::staged_terminal::View::empty(
+                &state.tenant,
+                &state.staged_terminal_head.origin_incarnation,
+            )?;
+            anyhow::ensure!(
+                empty.head() == &state.staged_terminal_head,
+                "empty terminal descriptor differs"
+            );
             empty
         }
     };
@@ -763,7 +792,11 @@ pub(crate) fn read(disk: &Arc<kasumi_store::ScratchDisk>, reader: &mut dyn Read)
 mod tests {
     use super::*;
     fn write(state: &TenantState, writer: &mut dyn Write) -> anyhow::Result<()> {
-        super::write(state, &crate::staged_terminal::View::empty(&state.tenant, &state.incarnation)?, writer)
+        super::write(
+            state,
+            &crate::staged_terminal::View::empty(&state.tenant, &state.incarnation)?,
+            writer,
+        )
     }
     fn read(reader: &mut dyn Read) -> anyhow::Result<TenantState> {
         Ok(super::read(&kasumi_store::ScratchDisk::fixture(), reader)?.state)

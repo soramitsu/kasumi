@@ -48,7 +48,11 @@ impl StateMachineBackend for PausedSnapshot {
         self.inner.validate_snapshot(bytes)
     }
 
-    fn prepare_restore<'a>(&'a self, context: &kasumi_raft::SnapshotRestoreContext, bytes: &mut dyn std::io::Read) -> Result<Box<dyn kasumi_raft::PreparedStateMachineRestore + 'a>> {
+    fn prepare_restore<'a>(
+        &'a self,
+        context: &kasumi_raft::SnapshotRestoreContext,
+        bytes: &mut dyn std::io::Read,
+    ) -> Result<Box<dyn kasumi_raft::PreparedStateMachineRestore + 'a>> {
         self.inner.prepare_restore(context, bytes)
     }
 }

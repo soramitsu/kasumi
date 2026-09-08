@@ -898,7 +898,8 @@ impl StateMachine {
                 ensure!(snapshot.version == 1, "unsupported raft snapshot version");
                 let context = crate::SnapshotRestoreContext {
                     mode: crate::SnapshotRestoreMode::Reopen,
-                    backend_sha256: snapshot.backend.sha256().into(), meta: snapshot.meta.clone(),
+                    backend_sha256: snapshot.backend.sha256().into(),
+                    meta: snapshot.meta.clone(),
                 };
                 let prepared = target.prepare_restore(&context, &mut snapshot.backend.reader())?;
                 crate::snapshot_custody::check_backend(
@@ -907,8 +908,10 @@ impl StateMachine {
                     prepared.retirement(),
                 )?;
                 captured_domains.write_batch_replacing(
-                    prepared.application_writes(), &[],
-                    &prepared.application_replacements(), &[],
+                    prepared.application_writes(),
+                    &[],
+                    &prepared.application_replacements(),
+                    &[],
                 )?;
                 prepared.publish()?;
                 Ok(AppliedState {
@@ -1029,11 +1032,19 @@ impl RaftSnapshotBuilder<TypeConfig> for SnapshotBuilder {
                 retirement: logical.retirement.clone(),
             };
             let snapshot = as_snapshot(&captured, limit)?;
-            let mut pending = stage_snapshot(&domains, &snapshot.snapshot.image()?, limit, &captured)?;
-            pending.application.extend(logical.backend.checkpoint_writes(&crate::SnapshotRestoreContext {
-                mode: crate::SnapshotRestoreMode::Install,
-                backend_sha256: captured.backend.sha256().into(), meta: captured.meta.clone(),
-            })?);
+            let mut pending =
+                stage_snapshot(&domains, &snapshot.snapshot.image()?, limit, &captured)?;
+            pending
+                .application
+                .extend(
+                    logical
+                        .backend
+                        .checkpoint_writes(&crate::SnapshotRestoreContext {
+                            mode: crate::SnapshotRestoreMode::Install,
+                            backend_sha256: captured.backend.sha256().into(),
+                            meta: captured.meta.clone(),
+                        })?,
+                );
             let publication = applied
                 .lock()
                 .map_err(|_| anyhow::anyhow!("applied publication lock poisoned"))?;
@@ -1255,10 +1266,17 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
             }
             let context = crate::SnapshotRestoreContext {
                 mode: crate::SnapshotRestoreMode::Install,
-                backend_sha256: envelope.backend.sha256().into(), meta: envelope.meta.clone(),
+                backend_sha256: envelope.backend.sha256().into(),
+                meta: envelope.meta.clone(),
             };
-            let prepared = machine.backend.prepare_restore(&context, &mut envelope.backend.reader())?;
-            crate::snapshot_custody::check_backend(&meta, envelope.retirement.as_ref(), prepared.retirement())?;
+            let prepared = machine
+                .backend
+                .prepare_restore(&context, &mut envelope.backend.reader())?;
+            crate::snapshot_custody::check_backend(
+                &meta,
+                envelope.retirement.as_ref(),
+                prepared.retirement(),
+            )?;
             // Durably install encrypted chunks and their manifest, then atomically publish backend state.
             // A crash between these steps recovers the new snapshot on restart.
             let pending = stage_snapshot(
@@ -1272,7 +1290,12 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
                     .control_gate
                     .lock()
                     .map_err(|_| anyhow::anyhow!("control publication lock poisoned"))?;
-                publish_snapshot(&machine.domains, pending, &envelope, Some(prepared.as_ref()))?;
+                publish_snapshot(
+                    &machine.domains,
+                    pending,
+                    &envelope,
+                    Some(prepared.as_ref()),
+                )?;
             }
             cleanup_snapshots(&machine.store, machine.limits.max_snapshot_bytes)?;
             prepared.publish()?;

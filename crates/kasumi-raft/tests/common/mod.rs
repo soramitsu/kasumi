@@ -27,12 +27,24 @@ impl Backend {
     }
 }
 
-struct PreparedBackend<'a> { backend: &'a Backend, restored: BTreeMap<u64, Vec<u8>> }
+struct PreparedBackend<'a> {
+    backend: &'a Backend,
+    restored: BTreeMap<u64, Vec<u8>>,
+}
 impl kasumi_raft::PreparedStateMachineRestore for PreparedBackend<'_> {
-    fn retirement(&self) -> Option<kasumi_raft::RetiredSnapshotState> { None }
-    fn application_replacements(&self) -> Vec<(&str, &kasumi_store::EncryptedTable)> { vec![] }
-    fn application_writes(&self) -> &[kasumi_store::WriteOp] { &[] }
-    fn publish(self: Box<Self>) -> Result<()> { *self.backend.data.lock().unwrap() = self.restored; Ok(()) }
+    fn retirement(&self) -> Option<kasumi_raft::RetiredSnapshotState> {
+        None
+    }
+    fn application_replacements(&self) -> Vec<(&str, &kasumi_store::EncryptedTable)> {
+        vec![]
+    }
+    fn application_writes(&self) -> &[kasumi_store::WriteOp] {
+        &[]
+    }
+    fn publish(self: Box<Self>) -> Result<()> {
+        *self.backend.data.lock().unwrap() = self.restored;
+        Ok(())
+    }
 }
 
 impl StateMachineBackend for Backend {
@@ -77,9 +89,16 @@ impl StateMachineBackend for Backend {
         serde_json::from_reader::<_, BTreeMap<u64, Vec<u8>>>(bytes)?;
         Ok(None)
     }
-    fn prepare_restore<'a>(&'a self, _context: &kasumi_raft::SnapshotRestoreContext, bytes: &mut dyn std::io::Read) -> Result<Box<dyn kasumi_raft::PreparedStateMachineRestore + 'a>> {
+    fn prepare_restore<'a>(
+        &'a self,
+        _context: &kasumi_raft::SnapshotRestoreContext,
+        bytes: &mut dyn std::io::Read,
+    ) -> Result<Box<dyn kasumi_raft::PreparedStateMachineRestore + 'a>> {
         let restored = serde_json::from_reader(bytes)?;
-        Ok(Box::new(PreparedBackend { backend: self, restored }))
+        Ok(Box::new(PreparedBackend {
+            backend: self,
+            restored,
+        }))
     }
 }
 

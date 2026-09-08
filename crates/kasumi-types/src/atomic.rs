@@ -180,7 +180,9 @@ impl StagedTerminalHead {
         crate::validate_name(tenant)?;
         crate::validate_name(incarnation)?;
         Ok(Self {
-            origin_incarnation: incarnation.into(), count: 0, encoded_bytes: 0,
+            origin_incarnation: incarnation.into(),
+            count: 0,
+            encoded_bytes: 0,
             sha256: staged_digest(&("kasumi.staged-terminal-root.v1", tenant, incarnation))?.0,
         })
     }

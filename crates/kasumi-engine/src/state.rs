@@ -144,7 +144,10 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
             .transpose()?;
         let actor = command.context.clone();
         let applied = crate::staged_terminal::AppliedIdentity::ordered(
-            &self.incarnation, revision, command.timestamp_ms, position,
+            &self.incarnation,
+            revision,
+            command.timestamp_ms,
+            position,
         )?;
         let outcome = self.apply_command_ordered(revision, command, applied)?;
         let retirement = if outcome.is_ok() {
@@ -176,12 +179,16 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("snapshot storage not installed"))?;
         let checkpoint_generation = generation.clone();
-        Ok(kasumi_raft::CapturedSnapshot::new(
-            retirement,
-            move |writer| snapshot_bundle::write(&generation, &store, writer),
-        ).with_checkpoint_writes(move |context| {
-            checkpoint_generation.terminals.checkpoint_writes(&checkpoint_generation.state, &context.checkpoint_sha256()?)
-        }))
+        Ok(
+            kasumi_raft::CapturedSnapshot::new(retirement, move |writer| {
+                snapshot_bundle::write(&generation, &store, writer)
+            })
+            .with_checkpoint_writes(move |context| {
+                checkpoint_generation
+                    .terminals
+                    .checkpoint_writes(&checkpoint_generation.state, &context.checkpoint_sha256()?)
+            }),
+        )
     }
     fn validate_snapshot(
         &self,
@@ -195,22 +202,39 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
         context: &kasumi_raft::SnapshotRestoreContext,
         bytes: &mut dyn std::io::Read,
     ) -> anyhow::Result<Box<dyn kasumi_raft::PreparedStateMachineRestore + 'a>> {
-        let guard = self.apply_lock.lock()
+        let guard = self
+            .apply_lock
+            .lock()
             .map_err(|_| anyhow::anyhow!("tenant apply lock poisoned"))?;
         let mut generation = snapshot_bundle::read(self, bytes)?;
-        let expected_revision = self.revision_base.checked_add(context.meta.last_log_id.map_or(0, |id| id.index))
+        let expected_revision = self
+            .revision_base
+            .checked_add(context.meta.last_log_id.map_or(0, |id| id.index))
             .ok_or_else(|| anyhow::anyhow!("snapshot applied revision overflow"))?;
-        anyhow::ensure!(generation.state.revision == expected_revision, "snapshot logical and Raft applied positions differ");
-        let store = self.snapshot_store.get().ok_or_else(|| anyhow::anyhow!("snapshot storage not installed"))?;
+        anyhow::ensure!(
+            generation.state.revision == expected_revision,
+            "snapshot logical and Raft applied positions differ"
+        );
+        let store = self
+            .snapshot_store
+            .get()
+            .ok_or_else(|| anyhow::anyhow!("snapshot storage not installed"))?;
         let installation = generation.terminals.prepare_install(
-            store, &generation.state, &context.checkpoint_sha256()?,
+            store,
+            &generation.state,
+            &context.checkpoint_sha256()?,
             context.mode == kasumi_raft::SnapshotRestoreMode::Reopen,
         )?;
         generation.terminals = installation.view.clone();
         let retirement = custody_snapshot::retired(&generation.state)?;
-        Ok(Box::new(PreparedTenantRestore { engine: self, generation, installation, retirement, _apply_guard: guard }))
+        Ok(Box::new(PreparedTenantRestore {
+            engine: self,
+            generation,
+            installation,
+            retirement,
+            _apply_guard: guard,
+        }))
     }
-
 }
 
 struct PreparedTenantRestore<'a> {
@@ -221,12 +245,27 @@ struct PreparedTenantRestore<'a> {
     _apply_guard: std::sync::MutexGuard<'a, ()>,
 }
 impl kasumi_raft::PreparedStateMachineRestore for PreparedTenantRestore<'_> {
-    fn retirement(&self) -> Option<kasumi_raft::RetiredSnapshotState> { self.retirement.clone() }
-    fn application_replacements(&self) -> Vec<(&str, &kasumi_store::EncryptedTable)> { self.installation.replacements() }
-    fn application_writes(&self) -> &[kasumi_store::WriteOp] { self.installation.writes() }
+    fn retirement(&self) -> Option<kasumi_raft::RetiredSnapshotState> {
+        self.retirement.clone()
+    }
+    fn application_replacements(&self) -> Vec<(&str, &kasumi_store::EncryptedTable)> {
+        self.installation.replacements()
+    }
+    fn application_writes(&self) -> &[kasumi_store::WriteOp] {
+        self.installation.writes()
+    }
     fn publish(self: Box<Self>) -> anyhow::Result<()> {
-        let Self { engine, generation, _apply_guard, .. } = *self;
-        engine.snapshot_store.get().ok_or_else(|| anyhow::anyhow!("snapshot storage not installed"))?.check_access()?;
+        let Self {
+            engine,
+            generation,
+            _apply_guard,
+            ..
+        } = *self;
+        engine
+            .snapshot_store
+            .get()
+            .ok_or_else(|| anyhow::anyhow!("snapshot storage not installed"))?
+            .check_access()?;
         engine.leases.replace(&engine.current, Arc::new(generation));
         Ok(())
     }
@@ -330,25 +369,51 @@ impl TenantEngine {
         Ok(())
     }
     fn install_terminal_bootstrap(&self, store: &Arc<kasumi_store::TenantStore>) -> Result<()> {
-        let _guard = self.apply_lock.lock().map_err(|_| Error::new(ErrorCode::Unavailable, "tenant apply lock poisoned"))?;
+        let _guard = self
+            .apply_lock
+            .lock()
+            .map_err(|_| Error::new(ErrorCode::Unavailable, "tenant apply lock poisoned"))?;
         let previous = self.generation()?;
         if previous.state.revision != previous.state.revision_base {
-            return Err(Error::new(ErrorCode::Conflict, "terminal bootstrap ownership must precede replay"));
+            return Err(Error::new(
+                ErrorCode::Conflict,
+                "terminal bootstrap ownership must precede replay",
+            ));
         }
         #[cfg(any(test, feature = "test-utils"))]
-        if self.bootstrap_sha256.get().is_none() && store.storage_access().purpose().is_local_fixture() {
+        if self.bootstrap_sha256.get().is_none()
+            && store.storage_access().purpose().is_local_fixture()
+        {
             let image = self.logical_snapshot(store.scratch_disk())?;
-            self.bootstrap_sha256.set(image.sha256().into()).map_err(|_| Error::new(ErrorCode::Corruption, "duplicate fixture bootstrap digest"))?;
+            self.bootstrap_sha256
+                .set(image.sha256().into())
+                .map_err(|_| {
+                    Error::new(ErrorCode::Corruption, "duplicate fixture bootstrap digest")
+                })?;
         }
-        let digest = self.bootstrap_sha256.get().ok_or_else(|| Error::new(ErrorCode::Corruption, "authenticated bootstrap image identity missing"))?;
+        let digest = self.bootstrap_sha256.get().ok_or_else(|| {
+            Error::new(
+                ErrorCode::Corruption,
+                "authenticated bootstrap image identity missing",
+            )
+        })?;
         let checkpoint = staged_digest(&("kasumi.staged-terminal-bootstrap.v1", digest))?.0;
-        let reopen = crate::staged_terminal::View::checkpoint_exists(store, &checkpoint).map_err(terminal_error)?;
-        let installation = previous.terminals.prepare_install(store, &previous.state, &checkpoint, reopen).map_err(terminal_error)?;
-        store.replace_namespaces(&installation.replacements(), installation.writes()).map_err(terminal_error)?;
+        let reopen = crate::staged_terminal::View::checkpoint_exists(store, &checkpoint)
+            .map_err(terminal_error)?;
+        let installation = previous
+            .terminals
+            .prepare_install(store, &previous.state, &checkpoint, reopen)
+            .map_err(terminal_error)?;
+        store
+            .replace_namespaces(&installation.replacements(), installation.writes())
+            .map_err(terminal_error)?;
         self.publish_generation(Some(Arc::new(Generation {
-            state: previous.state.clone(), terminals: installation.view,
-            indexes: previous.indexes.clone(), receipt_expiry: previous.receipt_expiry.clone(),
-            snapshot_accounting: previous.snapshot_accounting.clone(), _read_reservations: vec![],
+            state: previous.state.clone(),
+            terminals: installation.view,
+            indexes: previous.indexes.clone(),
+            receipt_expiry: previous.receipt_expiry.clone(),
+            snapshot_accounting: previous.snapshot_accounting.clone(),
+            _read_reservations: vec![],
         })));
         Ok(())
     }
@@ -466,7 +531,8 @@ impl TenantEngine {
             audit_maintenance: Mutex::new(None),
             leases: lease_retention::LeaseManager::default(),
             current: ArcSwapOption::from_pointee(Generation {
-                terminals: crate::staged_terminal::View::empty(&state.tenant, &state.incarnation).map_err(terminal_error)?,
+                terminals: crate::staged_terminal::View::empty(&state.tenant, &state.incarnation)
+                    .map_err(terminal_error)?,
                 state,
                 indexes,
                 receipt_expiry: ReceiptExpiry::new(),
@@ -487,11 +553,17 @@ impl TenantEngine {
         let decoded = crate::snapshot_codec::read(bytes.disk(), &mut bytes.reader())
             .map_err(|_| Error::new(ErrorCode::Corruption, "invalid tenant bootstrap"))?;
         let engine = Self::from_bootstrap_state(expected_tenant, decoded)?;
-        engine.bootstrap_sha256.set(bytes.sha256().into()).map_err(|_| Error::new(ErrorCode::Corruption, "duplicate bootstrap digest"))?;
+        engine
+            .bootstrap_sha256
+            .set(bytes.sha256().into())
+            .map_err(|_| Error::new(ErrorCode::Corruption, "duplicate bootstrap digest"))?;
         Ok(engine)
     }
 
-    fn from_bootstrap_state(expected_tenant: &str, decoded: crate::snapshot_codec::Decoded) -> Result<Self> {
+    fn from_bootstrap_state(
+        expected_tenant: &str,
+        decoded: crate::snapshot_codec::Decoded,
+    ) -> Result<Self> {
         let crate::snapshot_codec::Decoded { state, terminals } = decoded;
         if state.tenant != expected_tenant || state.revision != state.revision_base {
             return Err(Error::new(
@@ -525,7 +597,10 @@ impl TenantEngine {
         checkpoint: FullBackupCheckpoint,
         target_origin: Option<TargetOrigin>,
     ) -> Result<kasumi_store::SnapshotImage> {
-        let crate::snapshot_codec::Decoded { mut state, terminals } = crate::snapshot_codec::read(bytes.disk(), &mut bytes.reader())
+        let crate::snapshot_codec::Decoded {
+            mut state,
+            terminals,
+        } = crate::snapshot_codec::read(bytes.disk(), &mut bytes.reader())
             .map_err(|_| Error::new(ErrorCode::Corruption, "invalid logical backup"))?;
         if state.tenant != expected_tenant {
             return Err(Error::new(ErrorCode::Forbidden, "backup tenant mismatch"));
@@ -628,13 +703,22 @@ impl TenantEngine {
         // actual target allocation before decoding, under the same owned job.
         handoff_workspace()?;
         let scratch_disk = image.disk().clone();
-        let crate::snapshot_codec::Decoded { mut state, terminals } = crate::snapshot_codec::read(image.disk(), &mut image.reader())
+        let crate::snapshot_codec::Decoded {
+            mut state,
+            terminals,
+        } = crate::snapshot_codec::read(image.disk(), &mut image.reader())
             .map_err(|error| Error::new(ErrorCode::Corruption, error.to_string()))?;
         drop(image);
         Self::rebind_restored_state(&mut state, incarnation, checkpoint, target_origin)?;
-        let engine = Self::from_bootstrap_state(expected_tenant, crate::snapshot_codec::Decoded { state, terminals })?;
+        let engine = Self::from_bootstrap_state(
+            expected_tenant,
+            crate::snapshot_codec::Decoded { state, terminals },
+        )?;
         let image = engine.logical_snapshot(&scratch_disk)?;
-        engine.bootstrap_sha256.set(image.sha256().into()).map_err(|_| Error::new(ErrorCode::Corruption, "duplicate target bootstrap digest"))?;
+        engine
+            .bootstrap_sha256
+            .set(image.sha256().into())
+            .map_err(|_| Error::new(ErrorCode::Corruption, "duplicate target bootstrap digest"))?;
         Ok((image, engine))
     }
 
@@ -673,7 +757,8 @@ impl TenantEngine {
             apply_lock: Mutex::new(()),
             current: ArcSwapOption::empty(),
         };
-        let decoded = crate::snapshot_codec::read(_bytes.disk(), &mut _bytes.reader()).map_err(terminal_error)?;
+        let decoded = crate::snapshot_codec::read(_bytes.disk(), &mut _bytes.reader())
+            .map_err(terminal_error)?;
         verifier.prepare_state(state.clone(), decoded.terminals)?;
         Ok(())
     }
@@ -742,18 +827,33 @@ impl TenantEngine {
     /// Inner errors are deterministic command rejections and still advance the applied revision.
     #[cfg(any(test, feature = "test-utils"))]
     pub fn apply_command(&self, revision: u64, command: Command) -> Result<Result<WriteReceipt>> {
-        if self.snapshot_store.get().is_some_and(|store| !store.storage_access().purpose().is_local_fixture()) {
-            return Err(Error::new(ErrorCode::Forbidden, "fixture application cannot mutate production storage"));
+        if self
+            .snapshot_store
+            .get()
+            .is_some_and(|store| !store.storage_access().purpose().is_local_fixture())
+        {
+            return Err(Error::new(
+                ErrorCode::Forbidden,
+                "fixture application cannot mutate production storage",
+            ));
         }
         let applied = crate::staged_terminal::AppliedIdentity {
-            incarnation: self.incarnation.clone(), revision, timestamp_ms: command.timestamp_ms,
-            command_sha256: hex::encode(Sha256::digest(serde_json::to_vec(&command)
-                .map_err(|_| Error::new(ErrorCode::Corruption, "fixture command encoding failed"))?)),
+            incarnation: self.incarnation.clone(),
+            revision,
+            timestamp_ms: command.timestamp_ms,
+            command_sha256: hex::encode(Sha256::digest(serde_json::to_vec(&command).map_err(
+                |_| Error::new(ErrorCode::Corruption, "fixture command encoding failed"),
+            )?)),
             origin: crate::staged_terminal::AppliedOrigin::Fixture,
         };
         self.apply_command_ordered(revision, command, applied)
     }
-    fn apply_command_ordered(&self, revision: u64, command: Command, applied: crate::staged_terminal::AppliedIdentity) -> Result<Result<WriteReceipt>> {
+    fn apply_command_ordered(
+        &self,
+        revision: u64,
+        command: Command,
+        applied: crate::staged_terminal::AppliedIdentity,
+    ) -> Result<Result<WriteReceipt>> {
         let _guard = self
             .apply_lock
             .lock()
@@ -774,9 +874,16 @@ impl TenantEngine {
         }
         let terminal_owner = previous.terminals.clone();
         #[cfg(any(test, feature = "test-utils"))]
-        let terminal_owner = if matches!(applied.origin, crate::staged_terminal::AppliedOrigin::Fixture) {
-            terminal_owner.fixture_owner(&previous.state).map_err(terminal_error)?
-        } else { terminal_owner };
+        let terminal_owner = if matches!(
+            applied.origin,
+            crate::staged_terminal::AppliedOrigin::Fixture
+        ) {
+            terminal_owner
+                .fixture_owner(&previous.state)
+                .map_err(terminal_error)?
+        } else {
+            terminal_owner
+        };
         let mut next = previous.state.clone();
         let mut receipt_expiry = previous.receipt_expiry.clone();
         let mut changed_receipts = BTreeSet::new();
@@ -873,11 +980,24 @@ impl TenantEngine {
             )));
         }
         let terminal_pending = crate::staged_terminal::Pending::prepare(
-            &terminal_owner, &previous.state, &mut next, &applied,
-        ).map_err(terminal_error)?;
+            &terminal_owner,
+            &previous.state,
+            &mut next,
+            &applied,
+        )
+        .map_err(terminal_error)?;
         if let Err(error) = staging::validate_budget(&next, &next.limits) {
-            return self.reject_resource_budget(&previous, next, &command, receipt_expiry,
-                &changed_receipts, Some(error), &applied, &terminal_pending, &terminal_owner);
+            return self.reject_resource_budget(
+                &previous,
+                next,
+                &command,
+                receipt_expiry,
+                &changed_receipts,
+                Some(error),
+                &applied,
+                &terminal_pending,
+                &terminal_owner,
+            );
         }
         let changed = if changed_documents {
             operation_changes(&previous.state, &command)?
@@ -895,7 +1015,10 @@ impl TenantEngine {
                 &command,
                 receipt_expiry,
                 &changed_receipts,
-                Some(error), &applied, &terminal_pending, &terminal_owner,
+                Some(error),
+                &applied,
+                &terminal_pending,
+                &terminal_owner,
             );
         }
         let snapshot_accounting = previous.snapshot_accounting.updated(
@@ -912,7 +1035,10 @@ impl TenantEngine {
                 &command,
                 receipt_expiry,
                 &changed_receipts,
-                None, &applied, &terminal_pending, &terminal_owner,
+                None,
+                &applied,
+                &terminal_pending,
+                &terminal_owner,
             );
         }
         let indexes = if changed_documents
@@ -1023,8 +1149,12 @@ impl TenantEngine {
             event.outcome = "rejected".into();
             append_audit(&mut rejected, event)?;
             let rejected_terminals = crate::staged_terminal::Pending::prepare(
-                terminal_owner, &previous.state, &mut rejected, applied,
-            ).map_err(terminal_error)?;
+                terminal_owner,
+                &previous.state,
+                &mut rejected,
+                applied,
+            )
+            .map_err(terminal_error)?;
             let accounting = previous.snapshot_accounting.updated(
                 &previous.state,
                 &rejected,
@@ -1119,13 +1249,22 @@ impl TenantEngine {
         Ok(())
     }
 
-    fn prepare_snapshot_reader(&self, disk: &Arc<kasumi_store::ScratchDisk>, reader: &mut dyn std::io::Read) -> Result<Generation> {
-        let crate::snapshot_codec::Decoded { state, terminals } = crate::snapshot_codec::read(disk, reader)
-            .map_err(|_| Error::new(ErrorCode::Corruption, "invalid tenant snapshot"))?;
+    fn prepare_snapshot_reader(
+        &self,
+        disk: &Arc<kasumi_store::ScratchDisk>,
+        reader: &mut dyn std::io::Read,
+    ) -> Result<Generation> {
+        let crate::snapshot_codec::Decoded { state, terminals } =
+            crate::snapshot_codec::read(disk, reader)
+                .map_err(|_| Error::new(ErrorCode::Corruption, "invalid tenant snapshot"))?;
         self.prepare_state(state, terminals)
     }
 
-    fn prepare_state(&self, state: TenantState, terminals: crate::staged_terminal::View) -> Result<Generation> {
+    fn prepare_state(
+        &self,
+        state: TenantState,
+        terminals: crate::staged_terminal::View,
+    ) -> Result<Generation> {
         if state.tenant != self.tenant
             || state.incarnation != self.incarnation
             || state.revision_base != self.revision_base
@@ -1331,15 +1470,27 @@ impl TenantEngine {
         let snapshot_accounting = SnapshotAccounting::rebuild(&state)?;
         terminals.validate_state(&state).map_err(terminal_error)?;
         if terminals.head() != &state.staged_terminal_head {
-            return Err(Error::new(ErrorCode::Corruption, "terminal snapshot owner differs"));
+            return Err(Error::new(
+                ErrorCode::Corruption,
+                "terminal snapshot owner differs",
+            ));
         }
         if let Ok(current) = self.generation() {
             let old = current.terminals.head();
             if old.origin_incarnation != state.staged_terminal_head.origin_incarnation
                 || old.count > state.staged_terminal_head.count
-                || (old.count > 0 && terminals.row(old.count).map_err(terminal_error)?.sha256().map_err(terminal_error)? != old.sha256)
+                || (old.count > 0
+                    && terminals
+                        .row(old.count)
+                        .map_err(terminal_error)?
+                        .sha256()
+                        .map_err(terminal_error)?
+                        != old.sha256)
             {
-                return Err(Error::new(ErrorCode::Corruption, "snapshot removed or substituted terminal staged history"));
+                return Err(Error::new(
+                    ErrorCode::Corruption,
+                    "snapshot removed or substituted terminal staged history",
+                ));
             }
         }
         staging::validate_restored(&state)?;
@@ -2352,7 +2503,10 @@ mod restore_budget_tests {
 }
 
 fn terminal_error(error: anyhow::Error) -> Error {
-    error.downcast_ref::<Error>().cloned().unwrap_or_else(|| Error::new(ErrorCode::Corruption, error.to_string()))
+    error
+        .downcast_ref::<Error>()
+        .cloned()
+        .unwrap_or_else(|| Error::new(ErrorCode::Corruption, error.to_string()))
 }
 
 fn staged_command_key(command: &Command) -> Result<Option<String>> {

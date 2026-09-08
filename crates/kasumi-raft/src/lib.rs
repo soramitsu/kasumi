@@ -94,7 +94,8 @@ type SnapshotWriter = dyn Fn(&mut dyn std::io::Write) -> Result<()> + Send + Syn
 pub struct CapturedSnapshot {
     pub retirement: Option<RetiredSnapshotState>,
     writer: Box<SnapshotWriter>,
-    checkpoint_writes: Box<dyn Fn(&SnapshotRestoreContext) -> Result<Vec<kasumi_store::WriteOp>> + Send + Sync>,
+    checkpoint_writes:
+        Box<dyn Fn(&SnapshotRestoreContext) -> Result<Vec<kasumi_store::WriteOp>> + Send + Sync>,
 }
 impl CapturedSnapshot {
     pub fn new(
@@ -107,11 +108,20 @@ impl CapturedSnapshot {
             checkpoint_writes: Box::new(|_| Ok(Vec::new())),
         }
     }
-    pub fn with_checkpoint_writes(mut self, writes: impl Fn(&SnapshotRestoreContext) -> Result<Vec<kasumi_store::WriteOp>> + Send + Sync + 'static) -> Self {
+    pub fn with_checkpoint_writes(
+        mut self,
+        writes: impl Fn(&SnapshotRestoreContext) -> Result<Vec<kasumi_store::WriteOp>>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
         self.checkpoint_writes = Box::new(writes);
         self
     }
-    pub(crate) fn checkpoint_writes(&self, context: &SnapshotRestoreContext) -> Result<Vec<kasumi_store::WriteOp>> {
+    pub(crate) fn checkpoint_writes(
+        &self,
+        context: &SnapshotRestoreContext,
+    ) -> Result<Vec<kasumi_store::WriteOp>> {
         (self.checkpoint_writes)(context)
     }
     pub fn write(&self, writer: &mut dyn std::io::Write) -> Result<()> {
@@ -140,10 +150,19 @@ pub struct SnapshotRestoreContext {
 impl SnapshotRestoreContext {
     pub fn checkpoint_sha256(&self) -> Result<String> {
         use sha2::Digest;
-        ensure!(self.backend_sha256.len() == 64 && self.backend_sha256.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)), "invalid backend snapshot digest");
+        ensure!(
+            self.backend_sha256.len() == 64
+                && self
+                    .backend_sha256
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+            "invalid backend snapshot digest"
+        );
         Ok(hex::encode(sha2::Sha256::digest(serde_json::to_vec(&(
-            "kasumi.backend-checkpoint.v1", &self.backend_sha256,
-            &self.meta.last_log_id, &self.meta.last_membership,
+            "kasumi.backend-checkpoint.v1",
+            &self.backend_sha256,
+            &self.meta.last_log_id,
+            &self.meta.last_membership,
         ))?)))
     }
 }
