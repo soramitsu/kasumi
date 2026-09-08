@@ -358,18 +358,19 @@ async fn run(
         let outcome = match response.outcome {
             Some(proto::receipt_response::Outcome::Committed(receipt)) => {
                 validate_receipt(&config.corpus, first, count, &receipt)?;
-                json!({"kind":"committed","revision":receipt.revision,"versions":receipt.versions})
+                json!({"kind":"committed_for_key","revision":receipt.revision,"versions":receipt.versions})
             }
             Some(proto::receipt_response::Outcome::Rejected(error)) => {
-                json!({"kind":"rejected","code":error.code})
+                json!({"kind":"rejected_for_key","code":error.code})
             }
             None => {
                 json!({"kind":"unknown","message":"No retained original receipt. This is not proof that the mutation never committed."})
             }
         };
         journal.event(
-            json!({"event":"original_receipt_observed","idempotency_key":batch.idempotency_key,
-            "batch_sha256":digest(&bytes),"outcome":outcome}),
+            json!({"event":"receipt_for_original_key_observed","idempotency_key":batch.idempotency_key,
+            "batch_sha256":digest(&bytes),"outcome":outcome,"original_body_digest_verified_by_server":false,
+            "scope":"The current receipt RPC returns the retained outcome for this principal/key, without its request digest. This observation cannot prove that a differently reused key committed this exact body and never permits automatic mutation retry."}),
         )?;
         return Ok(());
     }

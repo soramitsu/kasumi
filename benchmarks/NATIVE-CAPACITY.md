@@ -56,9 +56,12 @@ target/production-bench/release/kasumi-bench-capacity capacity.json resolve \
   /absolute/new-receipt-observation /absolute/original-load-evidence
 ```
 
-Resolution requires the byte-identical original connection/corpus configuration
+Inspection requires the byte-identical original connection/corpus configuration
 and exact generated batch; renewal of the token file is still supported. An
-absent receipt remains unknown and never authorizes blind replay. The command
+absent receipt remains unknown and never authorizes blind replay. The current
+receipt RPC returns a principal/key outcome without the stored request digest;
+the inspector labels that limit explicitly and cannot certify a body if a key
+was reused with different input. The command
 does not automatically resume a partial load. A completed receipt observation
 is distinct from a complete verified corpus.
 
