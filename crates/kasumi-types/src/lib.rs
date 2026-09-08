@@ -9,6 +9,8 @@ mod canonical_keys;
 pub use canonical_keys::deserialize_u64_map;
 mod target;
 pub use target::*;
+mod target_completion;
+pub use target_completion::*;
 mod authority_protocol;
 pub use authority_protocol::*;
 mod target_runtime_protocol;
@@ -205,6 +207,7 @@ pub struct Limits {
     pub max_schema_bytes: usize,
     pub max_schema_activation_bytes: u64,
     pub max_retirement_bytes: u64,
+    pub max_target_resolution_bytes: u64,
     pub max_policy_grants: usize,
     pub max_logical_bytes: u64,
     pub max_snapshot_bytes: u64,
@@ -232,6 +235,7 @@ impl Default for Limits {
             max_schema_bytes: 8 << 20,
             max_schema_activation_bytes: 64 << 20,
             max_retirement_bytes: 64 << 20,
+            max_target_resolution_bytes: 64 << 20,
             max_policy_grants: 4096,
             max_logical_bytes: 1 << 30,
             max_snapshot_bytes: default_snapshot_bytes(),

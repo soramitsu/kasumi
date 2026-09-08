@@ -108,9 +108,12 @@ fn completion_fixture(
     let mut completion_intent = origin.materialization.clone();
     completion_intent.request.command_id = Uuid::new_v4();
     completion_intent.request.phase = LifecyclePhase::Complete;
-    completion_intent.request.phase_input_sha256 = TargetQuorumInput {
-        origin_sha256: origin.digest().unwrap(),
-        materialized: materialized.clone(),
+    completion_intent.request.phase_input_sha256 = kasumi_types::TargetCompletionInput {
+        quorum: TargetQuorumInput {
+            origin_sha256: origin.digest().unwrap(),
+            materialized: materialized.clone(),
+        },
+        predecessor: None,
     }
     .digest()
     .unwrap();
@@ -120,6 +123,7 @@ fn completion_fixture(
         origin,
         materialized,
         completion_intent,
+        predecessor: None,
         admitted_at_ms: 1_000_000,
         revision: target.checkpoint.revision + 3,
         term: 1,
@@ -558,6 +562,7 @@ async fn resolved_completion_activates_only_with_its_distinct_positive_inspectio
             materialized: original.observation.fact.materialized.clone(),
         },
         original_phase: original.observation.fact.completion_intent.clone(),
+        predecessor: original.observation.fact.predecessor.clone(),
     };
     let mut inspection = input.original_phase.clone();
     inspection.request.command_id = Uuid::new_v4();

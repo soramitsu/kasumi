@@ -464,9 +464,10 @@ async fn exercise_completed_recovery(
             panic!("fresh target startup required")
         };
         assert_eq!(actual, node_id);
-        let TargetRuntimeStep::Start(TargetReplicaInput::Quorum(quorum)) = request.step else {
+        let TargetRuntimeStep::Start(TargetReplicaInput::Completion(input)) = request.step else {
             panic!("current completion startup required")
         };
+        let quorum = input.quorum;
         assert_eq!(request.command_id, complete_under.request.command_id);
         resolve_phase(
             &f,
@@ -511,13 +512,15 @@ async fn exercise_completed_recovery(
             .outcome
             .is_none()
     );
-    let TargetRuntimeStep::Complete(quorum) = completion.step else {
+    let TargetRuntimeStep::Complete(input) = completion.step else {
         panic!("completion required")
     };
+    let quorum = input.quorum;
     let completed = TargetCompletionFact {
         origin: quorum.materialized[&1].fact.origin.clone(),
         materialized: quorum.materialized,
         completion_intent: complete_under.clone(),
+        predecessor: input.predecessor,
         admitted_at_ms: complete_under.accepted_at_ms + 1,
         revision: request.checkpoint.revision + 3,
         term: 8,

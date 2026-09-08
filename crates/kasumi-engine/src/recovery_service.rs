@@ -640,7 +640,13 @@ impl Database {
                         let (node_id, step) = if let Some(id) = missing {
                             (
                                 id,
-                                TargetRuntimeStep::Start(TargetReplicaInput::Quorum(quorum)),
+                                TargetRuntimeStep::Start(if kind == LifecyclePhase::Complete {
+                                    TargetReplicaInput::Completion(
+                                        recovery::completion::completion_input(state, operation)?,
+                                    )
+                                } else {
+                                    TargetReplicaInput::Quorum(quorum)
+                                }),
                             )
                         } else {
                             let first = *operation.voters.keys().next().ok_or_else(|| {
@@ -651,7 +657,9 @@ impl Database {
                                 if kind == LifecyclePhase::Initialize {
                                     TargetRuntimeStep::Initialize(quorum)
                                 } else {
-                                    TargetRuntimeStep::Complete(quorum)
+                                    TargetRuntimeStep::Complete(
+                                        recovery::completion::completion_input(state, operation)?,
+                                    )
                                 },
                             )
                         };

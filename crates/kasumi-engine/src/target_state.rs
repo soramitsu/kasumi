@@ -16,7 +16,7 @@ pub(crate) enum TargetCommand {
     },
     Complete {
         authorization: PreparedTargetAuthorization,
-        input: TargetQuorumInput,
+        input: TargetCompletionInput,
     },
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -150,7 +150,7 @@ fn complete(
     state: &mut TenantState,
     position: &kasumi_raft::AppliedEntryContext,
     authorization: &PreparedTargetAuthorization,
-    input: &TargetQuorumInput,
+    input: &TargetCompletionInput,
     engine: &TenantEngine,
 ) -> Result<TargetCompletionFact> {
     let entry = state
@@ -177,19 +177,20 @@ fn complete(
         &input.digest()?,
         position.log_id.leader_id.node_id,
     )?;
-    if input.origin_sha256 != origin.digest()? {
+    if input.quorum.origin_sha256 != origin.digest()? {
         return Err(error(
             ErrorCode::Conflict,
             "target completion origin changed",
         ));
     }
-    let bootstrap = kasumi_serving::verify_target_materializations(&origin, &input.materialized)
-        .map_err(|_| {
-            error(
-                ErrorCode::Forbidden,
-                "exact native target materialization proofs required",
-            )
-        })?;
+    let bootstrap =
+        kasumi_serving::verify_target_materializations(&origin, &input.quorum.materialized)
+            .map_err(|_| {
+                error(
+                    ErrorCode::Forbidden,
+                    "exact native target materialization proofs required",
+                )
+            })?;
     let membership = position.membership.membership();
     let voters: BTreeSet<_> = origin.input.voters.keys().copied().collect();
     if membership.get_joint_config() != &vec![voters]
@@ -209,7 +210,8 @@ fn complete(
     }
     if let Some(existing) = &entry.completion {
         if existing.completion_intent == authorization.grant.claims.commitment.intent
-            && existing.materialized == input.materialized
+            && existing.materialized == input.quorum.materialized
+            && existing.predecessor == input.predecessor
         {
             return Ok(existing.clone());
         }
@@ -233,7 +235,8 @@ fn complete(
     }
     let fact = TargetCompletionFact {
         origin,
-        materialized: input.materialized.clone(),
+        materialized: input.quorum.materialized.clone(),
+        predecessor: input.predecessor.clone(),
         completion_intent: authorization.grant.claims.commitment.intent.clone(),
         admitted_at_ms: authorization.admitted_at_ms,
         revision: state.revision,

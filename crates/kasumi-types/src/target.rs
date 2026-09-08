@@ -157,6 +157,8 @@ pub struct TargetCompletionFact {
     #[serde(deserialize_with = "crate::deserialize_u64_map")]
     pub materialized: BTreeMap<u64, SignedTargetMaterialization>,
     pub completion_intent: LifecycleIntent,
+    #[serde(deserialize_with = "crate::require_explicit_option")]
+    pub predecessor: Option<TargetCompletionResolutionReference>,
     pub admitted_at_ms: u64,
     pub revision: u64,
     pub term: u64,
@@ -168,18 +170,20 @@ impl TargetCompletionFact {
         self.origin
             .accepts_phase(&self.completion_intent, LifecyclePhase::Complete)?;
         validate_sha256(&self.bootstrap_sha256)?;
+        TargetCompletionInput {
+            quorum: TargetQuorumInput {
+                origin_sha256: self.origin.digest()?,
+                materialized: self.materialized.clone(),
+            },
+            predecessor: self.predecessor.clone(),
+        }
+        .validate(&self.origin, &self.completion_intent)?;
         require(
             self.term > 0
                 && self.origin.input.voters.contains_key(&self.leader_node_id)
                 && self.revision > self.origin.materialization.request.checkpoint.revision
                 && self.admitted_at_ms >= self.completion_intent.accepted_at_ms
-                && self.admitted_at_ms < self.completion_intent.original_credential_expires_at_ms
-                && self.completion_intent.request.phase_input_sha256
-                    == TargetQuorumInput {
-                        origin_sha256: self.origin.digest()?,
-                        materialized: self.materialized.clone(),
-                    }
-                    .digest()?,
+                && self.admitted_at_ms < self.completion_intent.original_credential_expires_at_ms,
             "target completion fact differs",
         )?;
         Ok(())
@@ -403,6 +407,8 @@ pub fn validate_target_history(state: &TenantState) -> Result<()> {
 pub struct TargetInspectionInput {
     pub quorum: TargetQuorumInput,
     pub original_phase: LifecycleIntent,
+    #[serde(deserialize_with = "crate::require_explicit_option")]
+    pub predecessor: Option<TargetCompletionResolutionReference>,
 }
 impl TargetInspectionInput {
     pub fn validate(&self, origin: &TargetOrigin, inspection: &LifecycleIntent) -> Result<()> {
@@ -421,10 +427,11 @@ impl TargetInspectionInput {
             "inspection differs from exact original target input",
         )?;
         if self.original_phase.request.phase == LifecyclePhase::Complete {
-            require(
-                self.original_phase.request.phase_input_sha256 == self.quorum.digest()?,
-                "inspection completion input differs",
-            )?;
+            TargetCompletionInput {
+                quorum: self.quorum.clone(),
+                predecessor: self.predecessor.clone(),
+            }
+            .validate(origin, &self.original_phase)?;
         }
         Ok(())
     }
@@ -438,12 +445,14 @@ impl TargetInspectionInput {
 #[serde(deny_unknown_fields)]
 pub enum TargetReplicaInput {
     Quorum(TargetQuorumInput),
+    Completion(TargetCompletionInput),
     Inspection(Box<TargetInspectionInput>),
 }
 impl TargetReplicaInput {
     pub fn quorum(&self) -> &TargetQuorumInput {
         match self {
             Self::Quorum(value) => value,
+            Self::Completion(value) => &value.quorum,
             Self::Inspection(value) => &value.quorum,
         }
     }
@@ -485,6 +494,7 @@ impl TargetInspectionObservation {
         require(
             *original == self.input.original_phase
                 && self.input.quorum.materialized == self.completion.materialized
+                && self.input.predecessor == self.completion.predecessor
                 && origin.input.voters.contains_key(&self.observer_node_id)
                 && self.observed_term >= self.completion.term
                 && self.observed_revision >= self.completion.revision

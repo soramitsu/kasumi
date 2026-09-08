@@ -22,6 +22,8 @@ pub use audit_maintenance::AuditMaintenanceStatus;
 mod backup_format;
 mod backup_proof;
 mod backup_verify;
+#[cfg(test)]
+mod target_completion_machine;
 mod target_invocation;
 mod target_signer;
 pub use backup_proof::VerifiedBackupCheckpoint;

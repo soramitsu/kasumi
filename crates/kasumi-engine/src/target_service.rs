@@ -94,7 +94,7 @@ impl Database {
     pub async fn complete_target(
         self: &Arc<Self>,
         operation: &TargetOperation,
-        input: TargetQuorumInput,
+        input: TargetCompletionInput,
     ) -> Result<VerifiedTargetCompletion> {
         self.target_access(operation)?;
         let generation = self.engine.generation()?;
@@ -103,13 +103,13 @@ impl Database {
             .target_lifecycle
             .get(&generation.state.incarnation)
             .ok_or_else(|| denied("native target origin missing"))?;
-        if input.origin_sha256 != entry.origin.digest()? {
+        if input.quorum.origin_sha256 != entry.origin.digest()? {
             return Err(Error::new(
                 ErrorCode::Conflict,
                 "target input origin differs",
             ));
         }
-        kasumi_serving::verify_target_materializations(&entry.origin, &input.materialized)
+        kasumi_serving::verify_target_materializations(&entry.origin, &input.quorum.materialized)
             .map_err(denied)?;
         let input_digest = input.digest()?;
         let lease = operation.invocation().gate().current().map_err(denied)?;
@@ -123,7 +123,8 @@ impl Database {
         drop(generation);
         if let Some(existing) = existing {
             if existing.completion_intent != lease.commitment().intent
-                || existing.materialized != input.materialized
+                || existing.materialized != input.quorum.materialized
+                || existing.predecessor != input.predecessor
             {
                 return Err(Error::new(
                     ErrorCode::Conflict,
@@ -178,7 +179,7 @@ impl Database {
 struct TargetProposal {
     database: Arc<Database>,
     operation: TargetOperation,
-    input: TargetQuorumInput,
+    input: TargetCompletionInput,
     _reservation: Reservation,
     _registration: WorkRegistration,
 }

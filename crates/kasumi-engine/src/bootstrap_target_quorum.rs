@@ -206,16 +206,24 @@ pub async fn open_target_replica(
                             TargetReplicaInput::Inspection(inspection) => {
                                 inspection.validate(&origin, &intent)?;
                             }
+                            TargetReplicaInput::Completion(completion) => {
+                                completion.validate(&origin, &intent)?;
+                            }
                             TargetReplicaInput::Quorum(_) => anyhow::ensure!(
-                                phase != LifecyclePhase::InspectTarget,
-                                "inspection requires exact original phase input"
+                                matches!(
+                                    phase,
+                                    LifecyclePhase::Initialize | LifecyclePhase::Activate
+                                ),
+                                "target startup requires its exact typed phase input"
                             ),
                         }
                         anyhow::ensure!(
                             origin.digest()? == input_copy.origin_sha256
                                 && (matches!(
                                     phase,
-                                    LifecyclePhase::Activate | LifecyclePhase::InspectTarget
+                                    LifecyclePhase::Activate
+                                        | LifecyclePhase::InspectTarget
+                                        | LifecyclePhase::Complete
                                 ) || input_copy.digest()? == intent.request.phase_input_sha256),
                             "target group phase input differs"
                         );

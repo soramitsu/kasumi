@@ -20,7 +20,7 @@ pub enum TargetRuntimeStep {
     ResumeMaterialization(Box<TargetOrigin>),
     Start(TargetReplicaInput),
     Initialize(TargetQuorumInput),
-    Complete(TargetQuorumInput),
+    Complete(TargetCompletionInput),
     /// Open one voter under the exact independently committed issuer winner.
     /// This does not propose or confirm target activation.
     StartActivation {
@@ -55,7 +55,10 @@ impl TargetRuntimeRequest {
             TargetRuntimeStep::Start(input) => {
                 input.quorum().digest()?;
             }
-            TargetRuntimeStep::Initialize(input) | TargetRuntimeStep::Complete(input) => {
+            TargetRuntimeStep::Initialize(input) => {
+                input.digest()?;
+            }
+            TargetRuntimeStep::Complete(input) => {
                 input.digest()?;
             }
             TargetRuntimeStep::StartActivation {

@@ -566,11 +566,12 @@ impl TargetRecoveryRuntime {
                 (LifecyclePhase::Materialize, input.digest()?)
             }
             TargetRuntimeStep::Start(input) => match input {
+                TargetReplicaInput::Completion(i) => (LifecyclePhase::Complete, i.digest()?),
                 TargetReplicaInput::Inspection(i) => (LifecyclePhase::InspectTarget, i.digest()?),
                 TargetReplicaInput::Quorum(q) => {
                     let p = phase.original().observation().intent.request.phase;
                     ensure!(
-                        matches!(p, LifecyclePhase::Initialize | LifecyclePhase::Complete),
+                        p == LifecyclePhase::Initialize,
                         "start cannot synthesize activation"
                     );
                     (p, q.digest()?)
@@ -773,8 +774,8 @@ impl TargetRecoveryRuntime {
         }
         let input = match step {
             TargetRuntimeStep::Start(i) => i.clone(),
+            TargetRuntimeStep::Complete(q) => TargetReplicaInput::Completion(q.clone()),
             TargetRuntimeStep::Initialize(q)
-            | TargetRuntimeStep::Complete(q)
             | TargetRuntimeStep::StartActivation { quorum: q, .. }
             | TargetRuntimeStep::Activate { quorum: q, .. } => {
                 TargetReplicaInput::Quorum(q.clone())

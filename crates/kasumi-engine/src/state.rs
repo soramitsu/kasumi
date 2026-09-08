@@ -1839,6 +1839,12 @@ fn apply_operation(
         }
         Operation::SetLimits(limits) => {
             authorize_state(state, &command.context, None, Action::Admin)?;
+            if limits.max_target_resolution_bytes != state.limits.max_target_resolution_bytes {
+                return Err(Error::new(
+                    ErrorCode::Forbidden,
+                    "target resolution budget requires exact current-Control maintenance",
+                ));
+            }
             validate_limits(limits)?;
             staging::validate_new_limits(state, limits)?;
             if state.schema_activation_bytes > limits.max_schema_activation_bytes
@@ -2313,6 +2319,7 @@ fn validate_limits(limits: &Limits) -> Result<()> {
         || limits.max_collections == 0
         || limits.max_schema_bytes == 0
         || limits.max_retirement_bytes == 0
+        || limits.max_target_resolution_bytes < TARGET_COMPLETION_RESERVE_BYTES
         || limits.max_schema_activation_bytes == 0
         || limits.max_policy_grants == 0
     {

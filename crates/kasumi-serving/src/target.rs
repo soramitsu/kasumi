@@ -325,3 +325,126 @@ pub fn verify_local_target_cleanup_history(
         &signed.signature,
     )
 }
+
+#[derive(Clone)]
+pub struct AuthenticatedTargetCompletionAttempt {
+    signed: kasumi_types::SignedTargetCompletionAttempt,
+}
+impl AuthenticatedTargetCompletionAttempt {
+    pub fn signed(&self) -> &kasumi_types::SignedTargetCompletionAttempt {
+        &self.signed
+    }
+}
+/// Authenticate a committed original capacity reservation. This historical
+/// proof does not extend its dispatch cap or authorize a target phase.
+pub fn verify_target_completion_attempt(
+    expected: &TargetOrigin,
+    signed: &kasumi_types::SignedTargetCompletionAttempt,
+) -> Result<AuthenticatedTargetCompletionAttempt> {
+    signed.observation.validate()?;
+    let attempt = &signed.observation.attempt;
+    ensure!(
+        attempt.origin == *expected,
+        "prepared completion target differs"
+    );
+    verify_target_materializations(expected, &attempt.input.quorum.materialized)?;
+    let installed = expected
+        .materialization
+        .request
+        .target_nodes
+        .get(&signed.observation.observer_node_id)
+        .ok_or_else(|| anyhow::anyhow!("prepared completion observer is not installed"))?;
+    verify(
+        &installed.attestation_public_key,
+        "kasumi.prepared-target-completion-observation.v1",
+        &signed.observation,
+        &signed.signature,
+    )?;
+    Ok(AuthenticatedTargetCompletionAttempt {
+        signed: signed.clone(),
+    })
+}
+
+#[derive(Clone)]
+pub struct AuthenticatedTargetCompletionResolution {
+    signed: kasumi_types::SignedTargetCompletionResolution,
+}
+impl AuthenticatedTargetCompletionResolution {
+    pub fn signed(&self) -> &kasumi_types::SignedTargetCompletionResolution {
+        &self.signed
+    }
+}
+/// A sealed outcome proves an actual permanent target transition over one
+/// exact prepared attempt. Missing facts never enter this proof type. Current
+/// Control and issuer admission are independently required for a successor.
+pub fn verify_target_completion_resolution(
+    expected: &TargetOrigin,
+    signed: &kasumi_types::SignedTargetCompletionResolution,
+) -> Result<AuthenticatedTargetCompletionResolution> {
+    signed.observation.validate()?;
+    let fact = &signed.observation.fact;
+    ensure!(
+        fact.input.attempt.origin == *expected,
+        "resolved completion target differs"
+    );
+    let bootstrap =
+        verify_target_materializations(expected, &fact.input.attempt.input.quorum.materialized)?;
+    if let kasumi_types::TargetCompletionTerminal::Committed(completion) = &fact.terminal {
+        ensure!(
+            completion.bootstrap_sha256 == bootstrap,
+            "resolved committed completion changed its prepared bootstrap"
+        );
+    }
+    let installed = expected
+        .materialization
+        .request
+        .target_nodes
+        .get(&signed.observation.observer_node_id)
+        .ok_or_else(|| anyhow::anyhow!("terminal completion observer is not installed"))?;
+    verify(
+        &installed.attestation_public_key,
+        "kasumi.resolved-target-completion-observation.v1",
+        &signed.observation,
+        &signed.signature,
+    )?;
+    Ok(AuthenticatedTargetCompletionResolution {
+        signed: signed.clone(),
+    })
+}
+
+#[derive(Clone)]
+pub struct AuthenticatedTargetResolutionBudget {
+    signed: kasumi_types::SignedTargetResolutionBudget,
+}
+impl AuthenticatedTargetResolutionBudget {
+    pub fn signed(&self) -> &kasumi_types::SignedTargetResolutionBudget {
+        &self.signed
+    }
+}
+/// Exact permanent maintenance outcome only. Re-observing an old increase does
+/// not reapply that increase or overwrite a later authorized budget change.
+pub fn verify_target_resolution_budget(
+    expected: &TargetOrigin,
+    signed: &kasumi_types::SignedTargetResolutionBudget,
+) -> Result<AuthenticatedTargetResolutionBudget> {
+    signed.observation.validate()?;
+    ensure!(
+        signed.observation.fact.origin == *expected,
+        "target budget origin differs"
+    );
+    let installed = expected
+        .materialization
+        .request
+        .target_nodes
+        .get(&signed.observation.observer_node_id)
+        .ok_or_else(|| anyhow::anyhow!("target budget observer is not installed"))?;
+    verify(
+        &installed.attestation_public_key,
+        "kasumi.target-resolution-budget-observation.v1",
+        &signed.observation,
+        &signed.signature,
+    )?;
+    Ok(AuthenticatedTargetResolutionBudget {
+        signed: signed.clone(),
+    })
+}

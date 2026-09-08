@@ -143,10 +143,12 @@ impl KasumiTargetClient {
                 );
             }
             (TargetRuntimeStep::Complete(input), TargetRuntimeOutcome::Completed(signed)) => {
-                let origin = origin(input)?;
+                let origin = origin(&input.quorum)?;
+                input.validate(&origin, intent)?;
                 ensure!(
                     signed.observation.fact.completion_intent == *intent
-                        && signed.observation.observer_node_id == self.node_id,
+                        && signed.observation.observer_node_id == self.node_id
+                        && signed.observation.fact.predecessor == input.predecessor,
                     "completion phase differs"
                 );
                 verify_target_completion(&origin, signed)?;
@@ -257,13 +259,13 @@ fn validate_request_phase(
         }
         TargetRuntimeStep::Start(TargetReplicaInput::Quorum(i)) => {
             ensure!(
-                matches!(
-                    intent.request.phase,
-                    LifecyclePhase::Initialize | LifecyclePhase::Complete
-                ),
+                matches!(intent.request.phase, LifecyclePhase::Initialize),
                 "invalid target startup phase"
             );
             (intent.request.phase, Some(i.digest()?))
+        }
+        TargetRuntimeStep::Start(TargetReplicaInput::Completion(i)) => {
+            (LifecyclePhase::Complete, Some(i.digest()?))
         }
         TargetRuntimeStep::Start(TargetReplicaInput::Inspection(i)) => {
             (LifecyclePhase::InspectTarget, Some(i.digest()?))
