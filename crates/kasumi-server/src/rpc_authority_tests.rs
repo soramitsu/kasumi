@@ -106,6 +106,7 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
         .unwrap();
     let verifier_installation = uuid::Uuid::new_v4();
     let mut verifier_stores = Vec::new();
+    let mut installed_verifiers = Vec::new();
     let mut live_owners = Vec::new();
     // Each actual authority process and the client verifier has independently
     // encrypted trust. This callback is a fixture for the current authenticated
@@ -115,6 +116,35 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
             installation_id: verifier_installation,
             node_id,
         };
+        if node_id <= 3 {
+            use crate::signer_runtime::{InitializeSignerVerifier, SignerVerifierConfig};
+            let directory = dir.path().join(format!("verifier-{node_id}"));
+            kasumi_store::private_files::create_directory(&directory).unwrap();
+            let keys = directory.join("keys.json");
+            kasumi_store::FileKeyProvider::initialize(&keys, "signer-verifier").unwrap();
+            let config = SignerVerifierConfig {
+                identity: verifier,
+                database_path: directory.join("trust.redb"),
+                keys: crate::runtime::KeyProviderSettings::File { path: keys },
+            };
+            InitializeSignerVerifier {
+                verifier: config.clone(),
+                initial_certificates: vec![certificate.clone()],
+            }
+            .initialize()
+            .await
+            .unwrap();
+            let installed = config
+                .open(
+                    BTreeMap::from([(domain.digest().unwrap(), domain.clone())]),
+                    Arc::new(crate::runtime::file_secret),
+                )
+                .await
+                .unwrap();
+            live_owners.push(installed.owner(&domain).unwrap());
+            installed_verifiers.push(installed);
+            continue;
+        }
         let store = TenantStore::open(
             NodeStore::open(dir.path().join(format!("verifier-{node_id}.redb"))).unwrap(),
             verifier.tenant(),
@@ -252,9 +282,15 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
         },
     )
     .unwrap();
-    let routes =
-        tonic::service::Routes::new(NativeAuthority::new(leader.clone(), auth.clone()).service())
-            .into_axum_router();
+    let routes = tonic::service::Routes::new(
+        NativeAuthority::new(leader.clone(), auth.clone())
+            .with_signer_verifier(
+                installed_verifiers[leader.raft_group().raft().metrics().borrow().id as usize - 1]
+                    .clone(),
+            )
+            .service(),
+    )
+    .into_axum_router();
     let (stop, stopped) = tokio::sync::watch::channel(false);
     let serving = tokio::spawn(crate::tls::serve_tls(
         socket,
@@ -429,8 +465,16 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
     let follower_task = tokio::spawn(crate::tls::serve_tls(
         follower_socket,
         follower_tls,
-        tonic::service::Routes::new(NativeAuthority::new(follower, auth.clone()).service())
-            .into_axum_router(),
+        tonic::service::Routes::new(
+            NativeAuthority::new(follower.clone(), auth.clone())
+                .with_signer_verifier(
+                    installed_verifiers
+                        [follower.raft_group().raft().metrics().borrow().id as usize - 1]
+                        .clone(),
+                )
+                .service(),
+        )
+        .into_axum_router(),
         crate::tls::ListenerLimits::default(),
         audit.clone(),
         follower_stopped,
@@ -600,6 +644,7 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
         let stage = SignerTrustCommand {
             operation_id: uuid::Uuid::new_v4(),
             expected_revision: owner.current().unwrap().revision,
+            not_after_ms: u64::MAX,
             action: SignerTrustAction::Stage {
                 certificate: next_certificate.clone(),
             },
@@ -610,12 +655,156 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
         let activate = SignerTrustCommand {
             operation_id: uuid::Uuid::new_v4(),
             expected_revision: owner.current().unwrap().revision,
+            not_after_ms: u64::MAX,
             action: SignerTrustAction::Activate {
                 staged_operation_id: stage.operation_id,
                 certificate_sha256: next_certificate.digest().unwrap(),
             },
         };
         owner.administer(&maintenance_context, activate).unwrap();
+    };
+    let local_owner = &live_owners[leader.raft_group().raft().metrics().borrow().id as usize - 1];
+    let local_identity = local_owner.current().unwrap().verifier;
+    let signer_request = |action| SignerVerifierRequest {
+        observation_id: uuid::Uuid::new_v4(),
+        verifier: local_identity.clone(),
+        domain_sha256: domain.digest().unwrap(),
+        action,
+    };
+    let operator = token("custodian", "kasumi:admin");
+    let observe = signer_request(SignerVerifierAction::Observe);
+    assert!(client.signer_maintenance(&admin, &observe).await.is_err());
+    assert!(
+        client
+            .signer_maintenance(&node_token, &observe)
+            .await
+            .is_err()
+    );
+    let observed = client
+        .signer_maintenance(&operator, &observe)
+        .await
+        .unwrap();
+    assert_eq!(observed.current.active.identity.generation, 1);
+    assert!(
+        observed
+            .validate_for(&signer_request(SignerVerifierAction::Observe), &domain)
+            .is_err()
+    );
+    let mut wrong_verifier = observe.clone();
+    wrong_verifier.verifier.node_id = 4;
+    assert!(
+        client
+            .signer_maintenance(&operator, &wrong_verifier)
+            .await
+            .is_err()
+    );
+    // The operation's immutable admission deadline survives waiting for local
+    // metadata ownership and a fresh credential on a later request.
+    let queued = signer_request(SignerVerifierAction::Administer {
+        command: SignerTrustCommand {
+            operation_id: uuid::Uuid::new_v4(),
+            expected_revision: 0,
+            not_after_ms: kasumi_clock::EpochClock::system()
+                .unwrap()
+                .now_ms()
+                .unwrap()
+                + 30,
+            action: SignerTrustAction::Stage {
+                certificate: next_certificate.clone(),
+            },
+        },
+    });
+    let context = auth
+        .authenticate(&format!("Bearer {operator}"))
+        .await
+        .unwrap();
+    let held_fence = leader.authorize_signer_maintenance(context).await.unwrap();
+    let local_installed = &installed_verifiers[local_identity.node_id as usize - 1];
+    let (_, held_scope) = local_installed
+        .authorize(&observe, held_fence, &domain)
+        .await
+        .unwrap();
+    let task = {
+        let mut client = client.clone();
+        let bearer = operator.clone();
+        let request = queued.clone();
+        tokio::spawn(async move { client.signer_maintenance(&bearer, &request).await })
+    };
+    tokio::time::sleep(Duration::from_millis(75)).await;
+    drop(held_scope);
+    assert!(task.await.unwrap().is_err());
+    assert!(
+        client
+            .signer_maintenance(&token("custodian", "kasumi:admin"), &queued)
+            .await
+            .is_err()
+    );
+    let SignerVerifierAction::Administer { command: expired } = &queued.action else {
+        unreachable!()
+    };
+    let absent = client
+        .signer_maintenance(
+            &operator,
+            &signer_request(SignerVerifierAction::Receipt {
+                operation_id: expired.operation_id,
+            }),
+        )
+        .await
+        .unwrap();
+    assert!(absent.receipt.is_none() && absent.authorization.is_none());
+    assert_eq!(absent.current.revision, 0);
+    let deadline = kasumi_clock::EpochClock::system()
+        .unwrap()
+        .now_ms()
+        .unwrap()
+        + 60_000;
+    let stage = SignerTrustCommand {
+        operation_id: uuid::Uuid::new_v4(),
+        expected_revision: 0,
+        not_after_ms: deadline,
+        action: SignerTrustAction::Stage {
+            certificate: next_certificate.clone(),
+        },
+    };
+    let staged_request = signer_request(SignerVerifierAction::Administer {
+        command: stage.clone(),
+    });
+    let staged = client
+        .signer_maintenance(&operator, &staged_request)
+        .await
+        .unwrap();
+    assert_eq!(staged.current.active.identity.generation, 1);
+    assert_eq!(
+        staged.current.staged.as_ref().unwrap().operation_id,
+        stage.operation_id
+    );
+    assert_eq!(
+        client
+            .signer_maintenance(&operator, &staged_request)
+            .await
+            .unwrap()
+            .receipt,
+        staged.receipt
+    );
+    let mut different = stage.clone();
+    different.not_after_ms -= 1;
+    assert!(
+        client
+            .signer_maintenance(
+                &operator,
+                &signer_request(SignerVerifierAction::Administer { command: different })
+            )
+            .await
+            .is_err()
+    );
+    let activation = SignerTrustCommand {
+        operation_id: uuid::Uuid::new_v4(),
+        expected_revision: 1,
+        not_after_ms: deadline,
+        action: SignerTrustAction::Activate {
+            staged_operation_id: stage.operation_id,
+            certificate_sha256: next_certificate.digest().unwrap(),
+        },
     };
     transition(&live_owners[3]);
     assert!(
@@ -629,14 +818,81 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
             .is_err(),
         "still-running retired issuer cannot mint a fresh live lease"
     );
-    for owner in &live_owners[..3] {
-        transition(owner);
-    }
+    let activated = client
+        .signer_maintenance(
+            &operator,
+            &signer_request(SignerVerifierAction::Administer {
+                command: activation.clone(),
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(activated.current.active.identity.generation, 2);
+    assert!(activated.current.retirement.is_some());
     assert!(
         source_response.check().is_err(),
         "source release retains its exact signing generation"
     );
     assert!(source_response.release().await.is_err());
+    let retirement = SignerTrustCommand {
+        operation_id: uuid::Uuid::new_v4(),
+        expected_revision: 2,
+        not_after_ms: deadline,
+        action: SignerTrustAction::CompleteRetirement {
+            activation_operation_id: activation.operation_id,
+        },
+    };
+    let retirement_request = signer_request(SignerVerifierAction::Administer {
+        command: retirement.clone(),
+    });
+    assert!(
+        client
+            .signer_maintenance(&operator, &retirement_request)
+            .await
+            .is_err()
+    );
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    let retired = client
+        .signer_maintenance(&operator, &retirement_request)
+        .await
+        .unwrap();
+    assert!(retired.current.retirement.is_none());
+    assert_eq!(retired.current.revision, 3);
+    let historical = client
+        .signer_maintenance(
+            &operator,
+            &signer_request(SignerVerifierAction::Receipt {
+                operation_id: stage.operation_id,
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(historical.receipt, staged.receipt);
+    assert_eq!(historical.current.active.identity.generation, 2);
+    // Current quorum policy still governs this channel after the old operational
+    // key is sealed. Its old signatures and old administrator JWT cannot reopen it.
+    let mut new_admin = command.clone();
+    new_admin.command_id = uuid::Uuid::new_v4();
+    new_admin.expected_policy_epoch = 2;
+    new_admin.action = AuthorityAction::ReplaceAdministrators {
+        administrators: BTreeSet::from(["successor".into()]),
+    };
+    assert!(client.execute(&operator, &new_admin).await.is_err());
+    assert!(
+        client
+            .signer_maintenance(&operator, &observe)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        client
+            .signer_maintenance(&token("successor", "kasumi:admin"), &observe)
+            .await
+            .unwrap()
+            .current
+            .revision,
+        3
+    );
 
     tokio::time::sleep(Duration::from_millis(1100)).await;
     assert!(gate.check_serving().is_err());
@@ -657,6 +913,9 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
     }
     for store in verifier_stores {
         store.shutdown().await;
+    }
+    for installed in installed_verifiers {
+        installed.shutdown().await;
     }
 }
 

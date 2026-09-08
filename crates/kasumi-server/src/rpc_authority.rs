@@ -8,10 +8,22 @@ use kasumi_serving::{AuthorityCommand, LeaseDiscovery, LeaseRequest};
 pub struct NativeAuthority {
     authority: Arc<IndependentAuthority>,
     auth: Arc<Authenticator>,
+    signer_verifier: Option<Arc<crate::signer_runtime::InstalledSignerVerifier>>,
 }
 impl NativeAuthority {
     pub fn new(authority: Arc<IndependentAuthority>, auth: Arc<Authenticator>) -> Self {
-        Self { authority, auth }
+        Self {
+            authority,
+            auth,
+            signer_verifier: None,
+        }
+    }
+    pub(crate) fn with_signer_verifier(
+        mut self,
+        verifier: Arc<crate::signer_runtime::InstalledSignerVerifier>,
+    ) -> Self {
+        self.signer_verifier = Some(verifier);
+        self
     }
     pub fn service(self) -> kasumi_authority_server::KasumiAuthorityServer<Self> {
         kasumi_authority_server::KasumiAuthorityServer::new(self)
@@ -36,6 +48,200 @@ impl NativeAuthority {
 }
 #[tonic::async_trait]
 impl kasumi_authority_server::KasumiAuthority for NativeAuthority {
+    async fn signer_maintenance(
+        &self,
+        request: Request<AuthorityJsonRequest>,
+    ) -> Result<Response<AuthorityJsonResponse>, Status> {
+        use kasumi_serving::{SignerVerifierAction, SignerVerifierRequest, SignerVerifierResponse};
+        let context = verified(&self.auth, &request).await?;
+        request
+            .extensions()
+            .get::<crate::tls::AuthenticatedTlsPeer>()
+            .and_then(|peer| peer.certificate_pin())
+            .ok_or_else(|| {
+                Status::unauthenticated("actual mutually authenticated TLS peer required")
+            })?;
+        let body: SignerVerifierRequest =
+            decode_json(&request.into_inner().request_json).map_err(status)?;
+        body.validate()
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let verifier = self
+            .signer_verifier
+            .as_ref()
+            .ok_or_else(|| Status::failed_precondition("installed signer verifier unavailable"))?;
+        let domain = self
+            .authority
+            .installation()
+            .manifest
+            .signing_domain(self.authority.installation().partition)
+            .map_err(|error| Status::failed_precondition(error.to_string()))?;
+        let fence = self
+            .auth
+            .audit_result(
+                &context,
+                self.authority
+                    .authorize_signer_maintenance(context.clone())
+                    .await,
+            )
+            .await
+            .map_err(status)?;
+        let (owner, scope) = self
+            .auth
+            .audit_result(
+                &context,
+                verifier
+                    .authorize(&body, fence.clone(), &domain)
+                    .await
+                    .map_err(|error| {
+                        kasumi_types::Error::new(
+                            kasumi_types::ErrorCode::Forbidden,
+                            error.to_string(),
+                        )
+                    }),
+            )
+            .await
+            .map_err(status)?;
+        // Recheck after waiting for the exact local slot. Any first mutation is
+        // authorized by a committed consensus directive before local dispatch.
+        self.auth
+            .audit_result(&context, fence.release().await)
+            .await
+            .map_err(status)?;
+        let authorization = match &body.action {
+            SignerVerifierAction::Observe => None,
+            SignerVerifierAction::Receipt { operation_id } => self
+                .auth
+                .audit_result(
+                    &context,
+                    self.authority
+                        .signer_directive(
+                            &context,
+                            &body.verifier,
+                            &body.domain_sha256,
+                            *operation_id,
+                        )
+                        .await,
+                )
+                .await
+                .map_err(status)?,
+            SignerVerifierAction::Administer { command } => Some(
+                self.auth
+                    .audit_result(
+                        &context,
+                        self.authority
+                            .commit_signer_directive(
+                                &context,
+                                &body.verifier,
+                                &body.domain_sha256,
+                                command,
+                            )
+                            .await,
+                    )
+                    .await
+                    .map_err(status)?
+                    .status()
+                    .clone(),
+            ),
+        };
+        let mutated = matches!(body.action, SignerVerifierAction::Administer { .. });
+        let mut effect_dispatched = false;
+        let execute = || -> anyhow::Result<_> {
+            let receipt = match &body.action {
+                SignerVerifierAction::Observe => None,
+                SignerVerifierAction::Receipt { operation_id } => {
+                    owner.status(&context, *operation_id)?
+                }
+                SignerVerifierAction::Administer { command } => {
+                    if let Some(receipt) = owner.status(&context, command.operation_id)? {
+                        anyhow::ensure!(
+                            receipt.command == *command,
+                            "permanent signer operation has different input"
+                        );
+                        Some(receipt)
+                    } else {
+                        anyhow::ensure!(
+                            context
+                                .authorization
+                                .expires_at_ms()
+                                .is_some_and(|expiry| command.not_after_ms <= expiry),
+                            "signer admission deadline exceeds original credential"
+                        );
+                        scope.bind_deadline(
+                            self.auth.signer_admission_deadline(command.not_after_ms)?,
+                        )?;
+                        effect_dispatched = true;
+                        Some(owner.administer(&context, command.clone())?)
+                    }
+                }
+            };
+            let observation = owner.observe()?;
+            let reply = SignerVerifierResponse {
+                observation_id: body.observation_id,
+                domain_sha256: body.domain_sha256.clone(),
+                current: observation.record().clone(),
+                receipt,
+                authorization,
+            };
+            reply.validate_for(&body, &domain)?;
+            Ok((reply, observation))
+        };
+        let executed = execute();
+        let (reply, observation) = self
+            .auth
+            .audit_result(
+                &context,
+                executed.map_err(|error| {
+                    kasumi_types::Error::new(
+                        if effect_dispatched {
+                            kasumi_types::ErrorCode::UnknownOutcome
+                        } else {
+                            kasumi_types::ErrorCode::Conflict
+                        },
+                        format!("resolve the exact signer operation identity: {error}"),
+                    )
+                }),
+            )
+            .await
+            .map_err(status)?;
+        let response = AuthorityJsonResponse {
+            response_json: encode_json(&reply).map_err(|error| {
+                if mutated {
+                    Status::unknown(format!(
+                        "signer outcome retained but encoding failed: {error}"
+                    ))
+                } else {
+                    status(error)
+                }
+            })?,
+        };
+        let release = || -> kasumi_types::Result<()> {
+            scope
+                .check()
+                .and_then(|_| observation.check())
+                .map_err(|error| {
+                    kasumi_types::Error::new(
+                        kasumi_types::ErrorCode::Unavailable,
+                        error.to_string(),
+                    )
+                })
+        };
+        let outcome = self.auth.audit_result(&context, release()).await;
+        let outcome = match outcome {
+            Ok(()) => fence.release().await.and_then(|_| release()),
+            Err(error) => Err(error),
+        };
+        outcome.map_err(|error| {
+            if mutated {
+                Status::unknown(format!(
+                    "signer outcome retained; response release failed: {error}"
+                ))
+            } else {
+                status(error)
+            }
+        })?;
+        Ok(Response::new(response))
+    }
+
     async fn maintenance(
         &self,
         request: Request<AuthorityJsonRequest>,

@@ -40,3 +40,6 @@ pub use live_signer::*;
 
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_utils;
+
+mod signer_maintenance;
+pub use signer_maintenance::*;

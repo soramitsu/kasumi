@@ -142,7 +142,7 @@ async fn partial_initializer_resumes_only_exact_initial_heads_and_rejects_corrup
         .initialize_live_signer_trust(
             &f.input.verifier.identity,
             f.operational.certificate.clone(),
-            Arc::new(MaintenanceClosed),
+            Arc::new(ScopedSignerAdministrator::default()),
         )
         .unwrap();
     store.shutdown().await;
@@ -249,6 +249,7 @@ async fn initialization_rejects_noninitial_and_mismatched_domains_without_publis
                 SignerTrustCommand {
                     operation_id: Uuid::new_v4(),
                     expected_revision: 0,
+                    not_after_ms: u64::MAX,
                     action: SignerTrustAction::Stage {
                         certificate: f
                             .root

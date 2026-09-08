@@ -5,4 +5,7 @@ mod state;
 pub use installation::{
     AuthorityBootstrap, AuthorityInstallation, AuthorityMaintenanceTransport, AuthorityNodeSettings,
 };
-pub use service::{AuthenticatedNode, AuthorityResponseFence, IndependentAuthority};
+pub use service::{
+    AuthenticatedNode, AuthorityAdministrativeFence, AuthorityResponseFence,
+    CommittedSignerDirective, IndependentAuthority,
+};

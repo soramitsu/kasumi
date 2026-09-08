@@ -329,7 +329,9 @@ impl AuthorityRuntime {
         };
         if initialized && outcome.is_ok() && !*shutdown.borrow() {
             let router = tonic::service::Routes::new(
-                NativeAuthority::new(self.authority.clone(), self.auth).service(),
+                NativeAuthority::new(self.authority.clone(), self.auth)
+                    .with_signer_verifier(self.signer_verifier.clone())
+                    .service(),
             )
             .into_axum_router();
             tasks.spawn(tls::serve_tls(
