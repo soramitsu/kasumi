@@ -60,7 +60,9 @@ constant-space SHA-256 commitment with domain `kasumi.full-backup-key-catalog-st
 checked 64-bit record count, and explicit final marker/count. It records the
 permanent intent catalog, root catalog, manifest pages in authenticated backward
 chain order, resident chunks in forward order, and cold-history manifests/chunks
-in their canonical traversal order. Repeated catalogs remain records. The outcome
+in their canonical traversal order. It then records each audit wrapping-key
+dependency in reverse archive-chain order, using a distinct typed marker and
+bounded canonical key metadata. Repeated keys remain records. The outcome
 must use the exact intent catalog; it adds no uncommitted key dependency.
 
 Restore requires the permanently completed session and compares the verified graph
@@ -77,6 +79,35 @@ restore-lineage checkpoint. Historical cleanup of an older aborted session requi
 a future explicit source-authorization operation; it is not granted by the current
 live API.
 
-Remaining release work: paginated wrapping-key retention reporting/CLI, transitive
-audit archive dependencies, live S3 acceptance, and the final release capacity and
-endurance gates. These are not certified by the focused session tests.
+A complete backup copies every audit archive ciphertext into its owned session
+object namespace under its original UUID. The authenticated resident head selects
+the complete reverse chain; verified byte and segment totals must match the
+resident retention state. Every original tenant, source purpose, stream, link,
+wrapping-key dependency and AEAD is verified before root publication and again
+before completion, verification proof or restore. No archive root inventory is
+collected in memory. One bounded ciphertext segment is processed at a time.
+
+Restore reads these dependencies only from the completed backup session. It
+verifies source keys using the explicitly installed source provider, independently
+checks that the target's installed provider can unwrap the same original archive
+keys, and durably preserves the ciphertext in the target's private archive cache
+before publishing genesis. The filesystem worker retains target storage ownership,
+byte reservations and recovery work registration through actual completion. Failed
+or canceled staging can leave immutable verified orphan segments but cannot
+publish a partial genesis or pruning watermark. Source-quorum availability is not
+required.
+
+Historical archive keys must remain available through the target's installed
+primary key provider and credentials after recovery and restart. Source and target
+providers are independently configured; a target with only unrelated new wrapping
+keys cannot use the restored archives and is rejected. An installed historical
+provider map for cross-provider recovery is not implemented yet. The verifier never
+substitutes the target purpose for the authenticated original purpose or omits
+unavailable archive dependencies.
+
+Remaining release work: paginated wrapping-key retention reporting/CLI, historical
+provider-map installation, live S3 acceptance, public complete snapshot API
+replacement, independent bootstrap-cache verification on every reopen, and final
+capacity/endurance gates. Live verification still rebuilds
+a full unpublished logical state and reserves proportional memory; archive streaming
+does not certify the bounded-maintenance or real 3 GiB gates.

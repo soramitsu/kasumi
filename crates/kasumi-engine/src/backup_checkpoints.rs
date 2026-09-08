@@ -46,6 +46,31 @@ impl BackupReader for LiveBackupReader<'_> {
     async fn authorize_state<'a>(&'a self, _: &'a TenantState) -> anyhow::Result<()> {
         self.check_access().await
     }
+    fn audit_target(&self) -> Option<Arc<TenantStore>> {
+        None
+    }
+    async fn audit_dependency<'a>(
+        &'a self,
+        state: &'a TenantState,
+        root: &'a kasumi_store::StoragePurpose,
+        link: &'a AuditArchiveLink,
+    ) -> anyhow::Result<kasumi_store::PreparedAuditSegment> {
+        self.check_access().await?;
+        let ciphertext = tokio::select! {
+            result = self.destination.get(link.object_id, MAX_AUDIT_SEGMENT_BYTES) => result?,
+            _ = cancelled(&self.cancellation) => return Err(cancelled_error().into()),
+        };
+        self.check_access().await?;
+        let reference = tokio::select! {
+            result = crate::backup_verify::verify_audit_dependency(state, root, &self.database.store, &ciphertext, link) => result?,
+            _ = cancelled(&self.cancellation) => return Err(cancelled_error().into()),
+        };
+        self.check_access().await?;
+        Ok(kasumi_store::PreparedAuditSegment {
+            reference,
+            ciphertext,
+        })
+    }
     async fn object<'a>(
         &'a self,
         id: uuid::Uuid,

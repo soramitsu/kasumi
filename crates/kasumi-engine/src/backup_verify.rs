@@ -71,6 +71,13 @@ pub(crate) trait BackupReader: Sync {
         &'a self,
         state: &'a TenantState,
     ) -> impl Future<Output = anyhow::Result<()>> + Send + 'a;
+    fn audit_target(&self) -> Option<Arc<kasumi_store::TenantStore>>;
+    fn audit_dependency<'a>(
+        &'a self,
+        state: &'a TenantState,
+        root: &'a kasumi_store::StoragePurpose,
+        link: &'a AuditArchiveLink,
+    ) -> impl Future<Output = anyhow::Result<kasumi_store::PreparedAuditSegment>> + Send + 'a;
     fn object<'a>(
         &'a self,
         id: uuid::Uuid,
@@ -78,6 +85,28 @@ pub(crate) trait BackupReader: Sync {
         expected_ciphertext: Option<&'a str>,
         history: bool,
     ) -> impl Future<Output = anyhow::Result<kasumi_store::BackupContents>> + Send + 'a;
+}
+
+/// This private graph boundary authorizes the exact original application purpose
+/// from authenticated state/lineage before fresh unwrap and AEAD verification.
+pub(crate) async fn verify_audit_dependency(
+    state: &TenantState,
+    root: &kasumi_store::StoragePurpose,
+    store: &kasumi_store::TenantStore,
+    ciphertext: &[u8],
+    link: &AuditArchiveLink,
+) -> anyhow::Result<AuditArchiveReference> {
+    let dependency = kasumi_store::InspectedAuditDependency::from_link(ciphertext, link)?;
+    anyhow::ensure!(
+        dependency.source_tenant() == state.tenant
+            && dependency.reference().stream_id == state.audit_retention.stream_id,
+        "backup audit stream differs"
+    );
+    crate::authorize_audit_source(state, root, dependency.source_purpose())?;
+    let verified = store
+        .verify_historical_audit(&dependency, dependency.source_purpose())
+        .await?;
+    Ok(verified.reference().clone())
 }
 
 #[derive(Clone, Copy)]
@@ -187,6 +216,21 @@ impl KeyLineage {
             hex::decode(digest)
                 .map_err(|_| Error::new(ErrorCode::Corruption, "invalid key catalog digest"))?,
         );
+        Ok(())
+    }
+    fn add_audit(&mut self, key: &AuditArchiveKeyDependency) -> anyhow::Result<()> {
+        self.count = self
+            .count
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("backup key record count overflow"))?;
+        let encoded = serde_json::to_vec(key)?;
+        anyhow::ensure!(
+            encoded.len() <= 16 << 10,
+            "audit key dependency exceeds limit"
+        );
+        self.hash.update([2]);
+        self.hash.update((encoded.len() as u64).to_be_bytes());
+        self.hash.update(encoded);
         Ok(())
     }
     fn finish(mut self) -> String {
@@ -426,6 +470,56 @@ pub(crate) async fn verify(
             }
         }
     }
+    let retention = &state.audit_retention;
+    let mut expected = retention
+        .archive_head
+        .as_ref()
+        .map(|head| head.object.clone());
+    let mut archive_bytes = 0u64;
+    let mut archive_records = 0u64;
+    while let Some(link) = expected {
+        reader.check_access().await?;
+        let segment = reader
+            .audit_dependency(&state, &source_purpose, &link)
+            .await?;
+        if archive_records == 0 {
+            anyhow::ensure!(
+                retention.archive_head.as_ref() == Some(&segment.reference),
+                "backup audit head differs"
+            );
+        }
+        expected = segment.reference.previous.clone();
+        archive_bytes = archive_bytes
+            .checked_add(segment.ciphertext.len() as u64)
+            .ok_or_else(|| anyhow::anyhow!("backup audit byte count overflow"))?;
+        archive_records = archive_records
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("backup audit segment count overflow"))?;
+        anyhow::ensure!(
+            archive_bytes <= retention.archive_bytes
+                && archive_records <= retention.archive_segments,
+            "backup audit accounting exceeded"
+        );
+        key_catalogs.add_audit(&segment.reference.key)?;
+        if let Some(target) = reader.audit_target() {
+            let placement = target.tenant_audit_archive()?;
+            deadline
+                .blocking(reservation.clone(), ownership.clone(), move || {
+                    // Keep the exact store/OS ownership and byte/work reservations
+                    // through filesystem completion even if its waiter disappears.
+                    target.check_access()?;
+                    placement.cache().publish_blocking(&segment)?;
+                    target.check_access()?;
+                    Ok(())
+                })
+                .await?;
+        }
+        reader.check_access().await?;
+    }
+    anyhow::ensure!(
+        archive_bytes == retention.archive_bytes && archive_records == retention.archive_segments,
+        "backup audit graph incomplete"
+    );
     reader.check_access().await?;
     let checkpoint = FullBackupCheckpoint {
         tenant: manifest.tenant,

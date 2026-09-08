@@ -94,7 +94,8 @@ paths and external destination settings remain local installation bindings. A
 replacement can produce the same archive-complete snapshot without the original
 source. This does not yet establish final bounded-memory verification or the
 3 GiB capacity gate; validation and restore still rebuild unpublished logical
-state, and full-backup audit dependency integration remains a separate gate.
+state. Full backups copy and verify the same chain in their owned session object
+namespace and stage target cache dependencies before publishing restored genesis.
 
 The low-level public engine `snapshot()` currently still returns a logical
 candidate, not a portable archive-complete image. Its matching `restore()` refuses
