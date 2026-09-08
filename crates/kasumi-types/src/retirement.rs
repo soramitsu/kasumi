@@ -123,6 +123,51 @@ pub struct StoredRetirement {
     pub outcome: Result<RetirementReceipt>,
 }
 
+/// Reserve any bounded error outcome, including worst-case JSON escaping, before
+/// admitting a new permanent identity. This is temporary admission headroom;
+/// only the exact terminal entry remains charged after publication.
+pub const PERMANENT_OUTCOME_HEADROOM: u64 = Error::MAX_MESSAGE_BYTES as u64 * 6 + 256;
+
+impl StoredRetirement {
+    pub fn entry_bytes(&self, key: &str) -> Result<u64> {
+        let value = staged_digest(self)?.1 as u64;
+        (staged_digest(&key)?.1 as u64)
+            .checked_add(1)
+            .and_then(|n| n.checked_add(value))
+            .ok_or_else(|| Error::new(ErrorCode::Corruption, "retirement accounting overflow"))
+    }
+
+    /// Identical pre-I/O and pre-commit reservation, independent of the future
+    /// log index and clock width. This record is measured, never stored as proof.
+    pub fn reservation_bytes(principal: &str, request: &RetireSourceRequest) -> Result<u64> {
+        validate_name(principal)?;
+        let digest = request.reference()?.request_digest;
+        let record = Self {
+            request: request.clone(),
+            principal: principal.into(),
+            request_digest: digest.clone(),
+            accepted_revision: u64::MAX,
+            outcome: Ok(RetirementReceipt {
+                tenant: request.checkpoint.tenant.clone(),
+                principal: principal.into(),
+                retirement_id: request.retirement_id.clone(),
+                request_digest: digest,
+                source_incarnation: request.expected_source_incarnation.clone(),
+                target_incarnation: request.target_incarnation.clone(),
+                revision: u64::MAX,
+                policy_epoch: u64::MAX,
+                admitted_at_ms: u64::MAX,
+                checkpoint: request.checkpoint.clone(),
+                closure_digest: "0".repeat(64),
+            }),
+        };
+        record
+            .entry_bytes(&"0".repeat(64))?
+            .checked_add(PERMANENT_OUTCOME_HEADROOM)
+            .ok_or_else(|| Error::new(ErrorCode::Corruption, "retirement reservation overflow"))
+    }
+}
+
 /// Exact accepted outcome for recovery discovery. This observation does not
 /// construct a verified retirement proof in the engine or native SDK.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

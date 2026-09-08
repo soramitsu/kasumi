@@ -43,10 +43,13 @@ receipt/audit budget can fit it. Exhaustion that prevents recording an outcome
 returns an explicit error and accepts no schema effects. A canceled or timed-out
 caller must resolve the same identity: its serialized proposal can still finish.
 
-`Limits.max_schema_activations` is a required first-release field (default 4096,
-valid 1–100,000). These operational records never expire or enter archived
-document collections. Reducing their quota below the retained count is refused.
-Snapshot accounting and recovery validate their exact retained byte count.
+`Limits.max_schema_activation_bytes` is a required positive 64-bit byte budget
+(default 64 MiB). Permanent identities have no lifetime count ceiling. Each new
+identity reserves its complete encoded key/value plus bounded error-outcome
+headroom before publishing definitions; the terminal entry retains only its
+exact byte charge. These records never expire or enter document archives.
+Reducing the budget below retained bytes is refused. Both streaming and resident
+snapshot validation check exact bytes. The former count field is rejected.
 
 `read_schema` accepts explicit target names and returns a quorum-coherent
 incarnation/schema epoch and each present definition/data epoch or explicit

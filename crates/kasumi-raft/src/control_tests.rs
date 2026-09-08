@@ -65,9 +65,8 @@ pub(crate) fn seed() -> Result<(Command, RetirementLogSeed)> {
         retired: false,
         pending_restore: false,
         existing_identity: None,
-        retirement_count: 0,
         retirement_bytes: 0,
-        max_retirements: 4096,
+        max_retirement_bytes: 64 << 20,
         audit_hot_bytes: 0,
         max_audit_hot_bytes: 1 << 20,
         snapshot_bytes: 1024,
@@ -100,6 +99,35 @@ fn retirement_reserves_full_width_audit_bytes_before_commitment() -> Result<()> 
     );
     state.max_audit_hot_bytes += MAX_AUDIT_EVENT_BYTES as u64;
     RetirementLogSeed::prepare(&command, state)?.reserve_success_capacity()?;
+    Ok(())
+}
+
+#[test]
+fn retirement_reserves_permanent_bytes_before_a_positive_seed_can_commit() -> Result<()> {
+    let (command, seed) = seed()?;
+    let mut state = seed.source().clone();
+    let required = StoredRetirement::reservation_bytes("owner", seed.request())?;
+    state.retirement_bytes = 3 << 30;
+    state.max_retirement_bytes = state.retirement_bytes + required - 1;
+    let full = RetirementLogSeed::prepare(&command, state.clone())?;
+    assert_eq!(
+        full.reserve_success_capacity().unwrap_err().code,
+        ErrorCode::QuotaExceeded
+    );
+    state.max_retirement_bytes += 1;
+    RetirementLogSeed::prepare(&command, state.clone())?.reserve_success_capacity()?;
+    state.retirement_bytes = u64::MAX - 1;
+    state.max_retirement_bytes = u64::MAX;
+    assert_eq!(
+        RetirementLogSeed::prepare(&command, state)?
+            .reserve_success_capacity()
+            .unwrap_err()
+            .code,
+        ErrorCode::QuotaExceeded
+    );
+    let mut incompatible = serde_json::to_value(seed.source())?;
+    incompatible["max_retirements"] = serde_json::json!(4096);
+    assert!(serde_json::from_value::<RetirementReplayState>(incompatible).is_err());
     Ok(())
 }
 pub(crate) fn ordinary(index: u64) -> Entry<TypeConfig> {
