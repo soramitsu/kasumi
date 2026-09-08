@@ -614,12 +614,16 @@ fn authorized<T>(bearer: &str, value: T) -> Result<Request<T>, ClientError> {
         return Err(ClientError::Authorization);
     }
     let mut request = Request::new(value);
-    request.metadata_mut().insert(
-        "authorization",
+    let mut authorization: tonic::metadata::MetadataValue<tonic::metadata::Ascii> =
         format!("Bearer {bearer}")
             .parse()
-            .map_err(|_| ClientError::Authorization)?,
-    );
+            .map_err(|_| ClientError::Authorization)?;
+    // This flag preserves the wire bytes while redacting Debug and preventing
+    // HTTP/2 implementations from indexing the credential in shared tables.
+    authorization.set_sensitive(true);
+    request
+        .metadata_mut()
+        .insert("authorization", authorization);
     Ok(request)
 }
 
@@ -627,3 +631,24 @@ mod staged_status;
 
 mod target;
 pub use target::{KasumiTargetClient, TargetAcknowledgement};
+
+#[cfg(test)]
+mod authorization_tests {
+    use super::*;
+    #[test]
+    fn bearer_wire_value_is_unchanged_while_debug_is_redacted() {
+        let bearer = "synthetic-private-bearer-for-redaction-test";
+        let request = authorized(bearer, ()).unwrap();
+        let metadata = request.metadata().get("authorization").unwrap();
+        assert_eq!(metadata.to_str().unwrap(), format!("Bearer {bearer}"));
+        assert!(metadata.is_sensitive());
+        for diagnostic in [
+            format!("{metadata:?}"),
+            format!("{:?}", request.metadata()),
+            format!("{request:?}"),
+        ] {
+            assert!(!diagnostic.contains(bearer));
+        }
+        assert!(format!("{request:?}").contains("authorization"));
+    }
+}
