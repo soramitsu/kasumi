@@ -263,7 +263,31 @@ async fn offline_maintenance_and_administrator_recovery_require_exclusive_owners
     let installation = initialize(&root.path().join("kasumi"), "tenant")
         .await
         .unwrap();
-    let config = RuntimeConfig::load(&installation.configuration).unwrap();
+    let mut config = RuntimeConfig::load(&installation.configuration).unwrap();
+    let listeners = (0..3)
+        .map(|_| std::net::TcpListener::bind("127.0.0.1:0").unwrap())
+        .collect::<Vec<_>>();
+    config.mcp.listen = listeners[0].local_addr().unwrap();
+    config.native.listen = listeners[1].local_addr().unwrap();
+    config.admin.listen = listeners[2].local_addr().unwrap();
+    config.mcp.protocol = crate::mcp::McpConfig::new(format!(
+        "https://localhost:{}/mcp",
+        config.mcp.listen.port()
+    ))
+    .unwrap();
+    private_files::replace(
+        &installation.configuration,
+        &serde_json::to_vec_pretty(&config).unwrap(),
+    )
+    .unwrap();
+    for path in [&installation.control_profile, &installation.tenant_profile] {
+        let mut profile = ClientProfile::load(path).unwrap();
+        profile.mcp_endpoint = config.mcp.protocol.public_url.clone();
+        profile.native_endpoint = format!("https://localhost:{}", config.native.listen.port());
+        profile.admin_endpoint = format!("https://localhost:{}", config.admin.listen.port());
+        private_files::replace(path, &serde_json::to_vec_pretty(&profile).unwrap()).unwrap();
+    }
+    drop(listeners);
     let runtime = NodeRuntime::open(config.clone()).await.unwrap();
     let registry = runtime.registry().clone();
     let control = runtime.control_database().clone();
@@ -323,10 +347,15 @@ async fn offline_maintenance_and_administrator_recovery_require_exclusive_owners
         2
     );
     let old_profile = ClientProfile::load(&installation.control_profile).unwrap();
+    let old_client_certificate = std::fs::read(&old_profile.identity.certificate).unwrap();
     rotate_certificates(&installation.configuration)
         .await
         .unwrap();
     let updated = ClientProfile::load(&installation.control_profile).unwrap();
+    assert_ne!(
+        old_client_certificate,
+        std::fs::read(&updated.identity.certificate).unwrap()
+    );
     assert_ne!(
         old_profile.admin_certificate_pin,
         updated.admin_certificate_pin
@@ -347,6 +376,11 @@ async fn offline_maintenance_and_administrator_recovery_require_exclusive_owners
             .await
             .unwrap();
     assert_eq!(profiles.len(), 2);
+    let recovered_control = profiles
+        .iter()
+        .map(|path| ClientProfile::load(path).unwrap())
+        .find(|profile| profile.tenant == crate::runtime::CONTROL_TENANT)
+        .unwrap();
     for profile in profiles {
         assert!(
             !ClientProfile::load(&profile)
@@ -372,6 +406,20 @@ async fn offline_maintenance_and_administrator_recovery_require_exclusive_owners
     })
     .await
     .unwrap();
+    let mut client =
+        kasumi_client::KasumiAdminClient::connect(&recovered_control.connection(true).unwrap())
+            .await
+            .unwrap();
+    let status = client
+        .credential_status(
+            &recovered_control.bearer().unwrap(),
+            &kasumi_types::CredentialReference {
+                family_id: recovered_control.family_id,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(status.revoked_at_ms.is_none());
     stop.send_replace(true);
     serving.await.unwrap().unwrap();
 }
