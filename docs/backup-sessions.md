@@ -109,9 +109,16 @@ Remaining release work: paginated wrapping-key retention reporting/CLI, historic
 provider-map installation, live S3 acceptance, and final capacity/endurance gates.
 Complete backend snapshot APIs now use explicit admitted asynchronous work, and
 bootstrap reopening independently verifies every required local archive before
-starting Raft. Live verification still rebuilds
-a full unpublished logical state and reserves proportional memory; archive streaming
-does not certify the bounded-maintenance or real 3 GiB gates.
+starting Raft. Immediate completion retains a private receipt for the exact
+canonical bytes emitted from its committed generation. Full readback still checks
+every object, source purpose, digest, dependency and key catalog, but reuses those
+immutable roots instead of decoding a second tenant or rebuilding its indexes.
+It counts and hashes chunks directly without staging another full resident image.
+The readback has a fixed 64 MiB workspace reservation. A receipt cannot be supplied
+over an API or reconstructed from a completed outcome. Verification of older or
+uncertain sessions still independently rebuilds unpublished logical state and
+reserves proportional memory; bounded historical semantic validation and the
+real 3 GiB gate remain unfinished.
 
 ## Operator commands
 

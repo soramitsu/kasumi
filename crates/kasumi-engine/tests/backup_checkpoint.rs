@@ -19,6 +19,60 @@ fn context() -> RequestContext {
         request_id: "backup-proof-test".into(),
     }
 }
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn immediate_complete_readback_reuses_captured_roots_under_fixed_workspace_budget() {
+    let maximum = 320 << 20;
+    let fixture = Fixture::with_admission(
+        Limits {
+            max_batch_bytes: 1 << 20,
+            max_result_bytes: 1 << 20,
+            ..Limits::default()
+        },
+        kasumi_engine::admission::AdmissionConfig {
+            max_inflight_bytes: Some(maximum),
+            ..Default::default()
+        },
+        true,
+    )
+    .await;
+    for index in 0..40 {
+        let id = format!("large-{index}");
+        fixture
+            .db
+            .mutate(
+                context(),
+                MutationBatch {
+                    idempotency_key: id.clone(),
+                    read_set: vec![],
+                    operations: vec![Mutation::Put {
+                        collection: "journal".into(),
+                        id,
+                        body: json!({"payload": "x".repeat(768 << 10)}),
+                        expected: Precondition::Absent,
+                    }],
+                },
+            )
+            .await
+            .unwrap();
+    }
+    let resident = fixture.db.engine().fixture_snapshot().unwrap().len();
+    // Both production archival lanes and the service ledger are installed.
+    // The former proportional verifier cannot fit alongside those same reserves.
+    assert!(fixture.db.audit_maintenance_status().is_some());
+    assert!(resident * 3 + (256 << 20) > maximum);
+    let proof = fixture
+        .db
+        .backup_checkpoint_named(context(), "approved", uuid::Uuid::new_v4())
+        .await
+        .unwrap();
+    assert_eq!(proof.checkpoint().tenant, "checkpoint");
+    assert_eq!(
+        fixture.audit.admission().snapshot().reserved_bytes,
+        3 * AuditRetentionBudget::MAINTENANCE_BYTES
+    );
+    fixture.close().await;
+}
+
 fn policy() -> Policy {
     Policy {
         grants: vec![Grant {
@@ -41,9 +95,17 @@ impl Fixture {
         Self::with_limits(Limits::default()).await
     }
     async fn with_limits(limits: Limits) -> Self {
+        Self::with_admission(limits, Default::default(), false).await
+    }
+    async fn with_admission(
+        limits: Limits,
+        config: kasumi_engine::admission::AdmissionConfig,
+        production: bool,
+    ) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let node = NodeStore::open(directory.path().join("node.redb")).unwrap();
-        let audit = common::security_audit(node.clone()).await;
+        let admission = kasumi_engine::admission::NodeAdmission::new(config).unwrap();
+        let audit = common::security_audit_with_admission(node.clone(), admission.clone()).await;
         let store = TenantStore::open_fixture(
             node,
             "checkpoint".into(),
@@ -51,24 +113,23 @@ impl Fixture {
         )
         .await
         .unwrap();
-        let db = kasumi_engine::test_utils::open_fixture(
-            kasumi_store::test_utils::with_custody(
-                store.clone(),
-                std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
-            )
-            .await
-            .unwrap(),
-            policy(),
-            limits,
-            audit.clone(),
+        let stores = kasumi_store::test_utils::with_custody(
+            store.clone(),
+            std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
         )
         .await
         .unwrap();
+        let db = if production {
+            kasumi_engine::open_local(stores, policy(), limits, audit.clone())
+                .await
+                .unwrap()
+        } else {
+            kasumi_engine::test_utils::open_fixture(stores, policy(), limits, audit.clone())
+                .await
+                .unwrap()
+        };
         // Each fixture models a separate node, with its own unchanged admission budget.
-        db.install_admission(
-            kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
-        )
-        .unwrap();
+        db.install_admission(admission).unwrap();
         db.administer(
             context(),
             Operation::CreateCollection(CollectionDefinition {

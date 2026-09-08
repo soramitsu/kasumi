@@ -169,6 +169,7 @@ impl Database {
                                         &context,
                                         destination,
                                         &session,
+                                        None,
                                     )
                                     .await?;
                                 self.finish_backup_session(
@@ -184,11 +185,16 @@ impl Database {
                         }
                     }
                     publication_admitted = true;
-                    let (expected, session) = self
+                    let (mut expected, session) = self
                         .publish_full_backup(context.clone(), destination, session_id)
                         .await?;
                     let proof = self
-                        .verify_pending_backup_checkpoint(&context, destination, &session)
+                        .verify_pending_backup_checkpoint(
+                            &context,
+                            destination,
+                            &session,
+                            expected.capture.take(),
+                        )
                         .await?;
                     if !expected.matches(proof.checkpoint()) {
                         return Err(Error::new(
@@ -270,11 +276,18 @@ impl Database {
         destination: &dyn BackupDestination,
         backup_id: uuid::Uuid,
     ) -> Result<VerifiedBackupCheckpoint> {
-        self.with_verified_backup(context, destination, backup_id, None, |verified, _, _| {
-            Ok(VerifiedBackupCheckpoint::verified(
-                verified.checkpoint.clone(),
-            ))
-        })
+        self.with_verified_backup(
+            context,
+            destination,
+            backup_id,
+            None,
+            None,
+            |verified, _, _| {
+                Ok(VerifiedBackupCheckpoint::verified(
+                    verified.checkpoint.clone(),
+                ))
+            },
+        )
         .await
     }
 
@@ -283,12 +296,14 @@ impl Database {
         context: &RequestContext,
         destination: &dyn BackupDestination,
         session: &kasumi_store::VerifiedBackupSession,
+        capture: Option<crate::backup_verify::ResidentCapture>,
     ) -> Result<VerifiedBackupCheckpoint> {
         self.with_verified_backup(
             context,
             destination,
             session.intent().session_id,
             Some(session),
+            capture,
             |verified, _, _| {
                 Ok(VerifiedBackupCheckpoint::verified(
                     verified.checkpoint.clone(),
@@ -309,6 +324,7 @@ impl Database {
             context,
             destination,
             expected.backup_id,
+            None,
             None,
             move |verified, deadline, cancellation| {
                 if verified.checkpoint != expected {
@@ -340,6 +356,7 @@ impl Database {
         destination: &dyn BackupDestination,
         backup_id: uuid::Uuid,
         pending: Option<&kasumi_store::VerifiedBackupSession>,
+        capture: Option<crate::backup_verify::ResidentCapture>,
         finish: F,
     ) -> Result<T>
     where
@@ -422,7 +439,7 @@ impl Database {
             registration: registration.clone(),
         };
         let verified = tokio::select! {
-            result = deadline.run(Box::pin(crate::backup_verify::verify(&reader, backup_id, self.admission(), deadline))) => result.map_err(|error| verification_error(error, deadline))?.map_err(|error| verification_error(error, deadline))?,
+            result = deadline.run(Box::pin(crate::backup_verify::verify(&reader, backup_id, self.admission(), deadline, capture))) => result.map_err(|error| verification_error(error, deadline))?.map_err(|error| verification_error(error, deadline))?,
             _ = cancelled(&cancellation) => return Err(cancelled_error()),
         };
         if completed

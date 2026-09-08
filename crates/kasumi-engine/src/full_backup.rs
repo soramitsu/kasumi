@@ -4,8 +4,8 @@ use super::*;
 use crate::backup_format::*;
 use std::io::Write;
 
-/// Publication identity has no verification proof or key lineage. Only the
-/// complete authenticated graph readback can construct a checkpoint.
+/// Publication identity and private captured-resident evidence have no complete
+/// graph proof or key lineage. Only authenticated readback creates a checkpoint.
 pub(super) struct PublishedRoot {
     tenant: String,
     source_incarnation: String,
@@ -13,6 +13,7 @@ pub(super) struct PublishedRoot {
     resident_sha256: String,
     backup_id: uuid::Uuid,
     manifest_ciphertext_sha256: String,
+    pub(super) capture: Option<crate::backup_verify::ResidentCapture>,
 }
 impl PublishedRoot {
     pub(super) fn matches(&self, checkpoint: &FullBackupCheckpoint) -> bool {
@@ -400,9 +401,15 @@ impl Database {
                 tenant: manifest.tenant,
                 source_incarnation: manifest.source_incarnation,
                 revision: manifest.revision,
-                resident_sha256: manifest.resident_sha256,
+                resident_sha256: manifest.resident_sha256.clone(),
                 backup_id: published.id,
                 manifest_ciphertext_sha256: published.ciphertext_sha256,
+                capture: Some(crate::backup_verify::ResidentCapture {
+                    generation,
+                    bytes: manifest.resident_bytes,
+                    sha256: manifest.resident_sha256.clone(),
+                    source: self.store.storage_access().purpose().clone(),
+                }),
             },
             session,
         ))
