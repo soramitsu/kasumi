@@ -1,5 +1,5 @@
-//! Durable owner-only operator material. These files are deliberately separate
-//! from the encrypted database and must never be included in ordinary backups.
+//! Durable owner-only files and directories. Operator material remains separate
+//! from encrypted database files and must never enter ordinary data backups.
 use anyhow::{Context, Result, ensure};
 use std::{
     fs::{File, OpenOptions},
@@ -53,6 +53,18 @@ fn options() -> OpenOptions {
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
     }
     options
+}
+
+/// Open the exact regular inode handed to redb. Validation runs on the opened
+/// descriptor so a symlink or a replaced path cannot substitute another file
+/// between permissions checking and database initialization. Redb retains its
+/// own exclusive file lock on this descriptor.
+pub(crate) fn open_database(path: &Path) -> Result<File> {
+    let file = options().read(true).write(true).create(true).open(path)?;
+    let metadata = file.metadata()?;
+    ensure!(metadata.is_file(), "database must be a regular file");
+    check_permissions(&metadata)?;
+    Ok(file)
 }
 
 pub fn read(path: &Path, maximum: usize) -> Result<Zeroizing<Vec<u8>>> {
