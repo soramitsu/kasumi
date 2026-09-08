@@ -203,6 +203,66 @@ impl Fixture {
         .await
         .unwrap()
     }
+    // A lost Raft acknowledgement is ambiguous even for an input expected to
+    // reject. Resolve the exact permanent phase and retry the unchanged input
+    // with the same original finite authorization; never accept an unresolved
+    // unknown or create a new identity/deadline to make this assertion pass.
+    async fn rejected_completion(
+        &self,
+        context: RequestContext,
+        request: CompleteControlPolicyChange,
+    ) -> Error {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let db = self.leader().await;
+                match db
+                    .lifecycle_control(
+                        context.clone(),
+                        LifecycleControlCommand::CompletePolicyChange(request.clone()),
+                    )
+                    .await
+                {
+                    Err(error)
+                        if matches!(
+                            error.code,
+                            ErrorCode::UnknownOutcome | ErrorCode::Unavailable
+                        ) =>
+                    {
+                        let observed = loop {
+                            match self
+                                .leader()
+                                .await
+                                .observe_lifecycle_change(context.clone(), request.command_id)
+                                .await
+                            {
+                                Ok(observation) => break observation,
+                                Err(error)
+                                    if matches!(
+                                        error.code,
+                                        ErrorCode::UnknownOutcome | ErrorCode::Unavailable
+                                    ) => {}
+                                Err(error) => {
+                                    panic!("original completion status unavailable: {error:?}")
+                                }
+                            }
+                        };
+                        let exact = &observed.observation().change;
+                        assert_eq!(exact.request.command_id, request.command_id);
+                        assert_eq!(exact.request_sha256, request.change_sha256);
+                        assert!(
+                            exact.completed_revision.is_none(),
+                            "invalid completion unexpectedly committed"
+                        );
+                        assert!(exact.completion_stops.is_none());
+                    }
+                    Err(error) => return error,
+                    Ok(receipt) => panic!("invalid completion unexpectedly accepted: {receipt:?}"),
+                }
+            }
+        })
+        .await
+        .expect("original rejected completion did not resolve")
+    }
     fn context(&self, principal: &str) -> RequestContext {
         self.context_for(principal, 60_000)
     }
@@ -518,13 +578,9 @@ async fn replicated_control_change_pins_all_partitions_freezes_issuance_and_reco
     };
     complete.stops.pop_first();
     assert_eq!(
-        db.lifecycle_control(
-            f.context("owner"),
-            LifecycleControlCommand::CompletePolicyChange(complete.clone())
-        )
-        .await
-        .unwrap_err()
-        .code,
+        f.rejected_completion(f.context("owner"), complete.clone())
+            .await
+            .code,
         ErrorCode::Conflict
     );
     complete.stops = stops;
@@ -538,13 +594,9 @@ async fn replicated_control_change_pins_all_partitions_freezes_issuance_and_reco
         .stop
         .installation_generation += 1;
     assert_eq!(
-        db.lifecycle_control(
-            f.context("owner"),
-            LifecycleControlCommand::CompletePolicyChange(substituted)
-        )
-        .await
-        .unwrap_err()
-        .code,
+        f.rejected_completion(f.context("owner"), substituted)
+            .await
+            .code,
         ErrorCode::Conflict
     );
     assert_eq!(
