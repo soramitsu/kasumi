@@ -464,7 +464,7 @@ fn schemas_never_resolve_remote_or_file_resources_or_rebase_fragments() {
         let mut definition = definition(&[]);
         definition.schema = schema;
         assert_eq!(
-            validate_collection(&definition, &imbl::HashMap::new())
+            validate_collection(&definition, &imbl::OrdMap::new())
                 .unwrap_err()
                 .code,
             ErrorCode::InvalidArgument

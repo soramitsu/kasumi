@@ -1,5 +1,6 @@
 //! Coherent, bounded point and collection pages from one retained generation.
 use super::*;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub(super) struct RetainedSnapshot {
     generation: Arc<crate::Generation>,
@@ -7,8 +8,10 @@ pub(super) struct RetainedSnapshot {
     created: Duration,
     ttl: Duration,
     term: u64,
-    bytes: usize,
-    _reservation: Reservation,
+    bytes: AtomicUsize,
+    metadata_bytes: usize,
+    ids: kasumi_query::ReadIds,
+    reservation: Mutex<Reservation>,
 }
 
 impl RetainedSnapshot {
@@ -25,6 +28,69 @@ impl RetainedSnapshot {
     }
     pub(super) fn retain(&self, now: Duration, pressured: bool) -> bool {
         !pressured && now.saturating_sub(self.created) < self.ttl
+    }
+    pub(super) fn refresh(&self, current: &crate::Generation) -> bool {
+        let budget = current.state.limits.atomic.max_snapshot_lease_bytes;
+        let mut bytes = self.metadata_bytes;
+        // Persistent maps skip shared branches. Charge old versions and the
+        // copied path nodes only where writes diverged from the leased root.
+        for (name, old) in &self.generation.state.collections {
+            let Some(new) = current.state.collections.get(name) else {
+                return false;
+            };
+            for difference in old.documents.diff(&new.documents) {
+                use imbl::ordmap::DiffItem;
+                let retained = match difference {
+                    DiffItem::Add(_, _) => 0,
+                    DiffItem::Update {
+                        old: (_, value), ..
+                    }
+                    | DiffItem::Remove(_, value) => match crate::accounting::encoded_len(value) {
+                        Ok(bytes) => bytes,
+                        Err(_) => return false,
+                    },
+                };
+                // A tree update retains at most O(log N) old internal nodes.
+                let nodes = (old.documents.len().max(1).ilog2() as usize + 1).saturating_mul(256);
+                bytes = bytes.saturating_add(retained).saturating_add(nodes);
+                if bytes > budget {
+                    return false;
+                }
+            }
+            for difference in old.archived_documents.diff(&new.archived_documents) {
+                use imbl::ordmap::DiffItem;
+                let retained = match difference {
+                    DiffItem::Add(_, _) => 0,
+                    DiffItem::Update {
+                        old: (_, value), ..
+                    }
+                    | DiffItem::Remove(_, value) => match crate::accounting::encoded_len(value) {
+                        Ok(bytes) => bytes,
+                        Err(_) => return false,
+                    },
+                };
+                let nodes =
+                    (old.archived_documents.len().max(1).ilog2() as usize + 1).saturating_mul(256);
+                bytes = bytes.saturating_add(retained).saturating_add(nodes);
+                if bytes > budget {
+                    return false;
+                }
+            }
+        }
+        let mut reservation = self.reservation.lock().unwrap_or_else(|p| p.into_inner());
+        let old = self.bytes.load(Ordering::Acquire);
+        if bytes > old
+            && reservation
+                .reserve_additional((bytes - old) as u64)
+                .is_err()
+        {
+            return false;
+        }
+        if bytes < old {
+            reservation.retain(bytes as u64);
+        }
+        self.bytes.store(bytes, Ordering::Release);
+        true
     }
 }
 
@@ -60,26 +126,35 @@ impl Database {
                 "snapshot lease TTL outside bounds",
             ));
         }
-        // This estimate charges the entire retained generation, including its
-        // metadata. RSS admission still measures actual resident allocations.
-        let bytes = generation.snapshot_bytes()?.saturating_mul(3);
+        // Opening a lease retains roots, not another copy of the tenant.
+        let bytes =
+            generation
+                .state
+                .collections
+                .values()
+                .try_fold(4096usize, |total, collection| {
+                    crate::accounting::encoded_len(&collection.definition)
+                        .map(|size| total.saturating_add(size).saturating_add(1024))
+                })?;
         if bytes > generation.state.limits.atomic.max_snapshot_lease_bytes {
             return Err(Error::new(
                 ErrorCode::ResourceExhausted,
-                "snapshot generation exceeds lease byte quota",
+                "snapshot lease metadata exceeds quota",
             ));
         }
         let mut reservation = self.admission().reserve(bytes as u64, None)?;
         reservation.retain(bytes as u64);
         let lease_id = uuid::Uuid::new_v4().to_string();
         let lease = Arc::new(RetainedSnapshot {
-            generation,
+            ids: generation.indexes.read_ids(),
+            generation: Arc::new(generation.lease_view()),
             principal: context.principal.clone(),
             created: self.clock.now(),
             ttl: Duration::from_millis(request.ttl_ms),
             term: self.group.raft().metrics().borrow().current_term,
-            bytes,
-            _reservation: reservation,
+            bytes: AtomicUsize::new(bytes),
+            metadata_bytes: bytes,
+            reservation: Mutex::new(reservation),
         });
         let header = lease.header(&lease_id);
         {
@@ -89,7 +164,9 @@ impl Database {
             leases.retain(|_, lease| lease.retain(self.clock.now(), false));
             let retained = leases
                 .values()
-                .try_fold(bytes, |total, lease| total.checked_add(lease.bytes))
+                .try_fold(bytes, |total, lease| {
+                    total.checked_add(lease.bytes.load(Ordering::Acquire))
+                })
                 .ok_or_else(|| {
                     Error::new(ErrorCode::ResourceExhausted, "snapshot lease byte overflow")
                 })?;
@@ -140,13 +217,27 @@ impl Database {
         self.engine
             .authorize_discovery(context, Action::Read, None)?;
         let generation = self.engine.generation()?;
-        let lease = self
-            .snapshot_leases
-            .lock()
-            .map_err(|_| Error::new(ErrorCode::Unavailable, "snapshot lease storage unavailable"))?
-            .get(lease_id)
-            .cloned()
-            .ok_or_else(|| Error::new(ErrorCode::CursorExpired, "snapshot lease unavailable"))?;
+        let lease = {
+            let mut leases = self.snapshot_leases.lock().map_err(|_| {
+                Error::new(ErrorCode::Unavailable, "snapshot lease storage unavailable")
+            })?;
+            let mut retained = 0usize;
+            leases.retain(|_, lease| {
+                let keep = lease.retain(self.clock.now(), false) && lease.refresh(&generation);
+                retained = retained.saturating_add(if keep {
+                    lease.bytes.load(Ordering::Acquire)
+                } else {
+                    0
+                });
+                keep && retained <= generation.state.limits.atomic.max_snapshot_lease_bytes
+            });
+            leases.get(lease_id).cloned().ok_or_else(|| {
+                Error::new(
+                    ErrorCode::CursorExpired,
+                    "snapshot lease unavailable or retention budget exhausted",
+                )
+            })?
+        };
         if !lease.retain(self.clock.now(), false)
             || lease.principal != context.principal
             || lease.generation.state.incarnation != generation.state.incarnation
@@ -391,7 +482,7 @@ impl Database {
                 "snapshot concurrency limit reached",
             )
         })?;
-        let candidates = lease.generation.indexes.document_ids_after(
+        let candidates = lease.ids.document_ids_after(
             &request.collection,
             request.after_id.as_deref(),
             request.limit + 1,

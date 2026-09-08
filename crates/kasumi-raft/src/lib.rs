@@ -12,6 +12,7 @@ mod lifetime;
 mod network;
 mod quorum;
 mod snapshot_buffer;
+mod snapshot_codec;
 mod snapshot_custody;
 mod snapshot_state;
 mod storage;
@@ -31,7 +32,7 @@ pub use network::{
 };
 pub use openraft::{BasicNode, Config, LogId, SnapshotPolicy};
 pub use snapshot_buffer::SnapshotBuffer;
-pub use snapshot_state::{BackendSnapshot, RetiredSnapshotState};
+pub use snapshot_state::RetiredSnapshotState;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     sync::{
@@ -50,7 +51,7 @@ pub struct RaftLimits {
 impl Default for RaftLimits {
     fn default() -> Self {
         Self {
-            max_snapshot_bytes: 2 * 1024 * 1024 * 1024,
+            max_snapshot_bytes: 64 << 30,
         }
     }
 }
@@ -82,17 +83,47 @@ impl AppliedResponse {
     }
 }
 
+type SnapshotWriter = dyn Fn(&mut dyn std::io::Write) -> Result<()> + Send + Sync;
+/// Immutable logical roots captured at one applied position. Materialization
+/// occurs after releasing the applied-state lock and can overlap new commits.
+pub struct CapturedSnapshot {
+    pub retirement: Option<RetiredSnapshotState>,
+    writer: Box<SnapshotWriter>,
+}
+impl CapturedSnapshot {
+    pub fn new(
+        retirement: Option<RetiredSnapshotState>,
+        writer: impl Fn(&mut dyn std::io::Write) -> Result<()> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            retirement,
+            writer: Box::new(writer),
+        }
+    }
+    pub fn write(&self, writer: &mut dyn std::io::Write) -> Result<()> {
+        (self.writer)(writer)
+    }
+}
+
 /// Only the Raft adapter may call mutation methods after the group starts.
 /// `apply` must publish the complete command atomically; business errors belong in
 /// its returned bytes. `restore` must validate before atomically replacing state.
 pub trait StateMachineBackend: Send + Sync + 'static {
     fn apply(&self, position: &AppliedEntryContext, command: &[u8]) -> Result<AppliedResponse>;
-    fn snapshot(&self) -> Result<BackendSnapshot>;
+    fn capture_snapshot(&self) -> Result<CapturedSnapshot>;
+    fn snapshot(&self, writer: &mut dyn std::io::Write) -> Result<Option<RetiredSnapshotState>> {
+        let captured = self.capture_snapshot()?;
+        captured.write(writer)?;
+        Ok(captured.retirement)
+    }
     /// Validate the complete logical snapshot without modifying published state.
     /// Called before durable installation; malformed snapshots must never replace
     /// the last recoverable durable snapshot.
-    fn validate_snapshot(&self, bytes: &[u8]) -> Result<Option<RetiredSnapshotState>>;
-    fn restore(&self, bytes: &[u8]) -> Result<()>;
+    fn validate_snapshot(
+        &self,
+        bytes: &mut dyn std::io::Read,
+    ) -> Result<Option<RetiredSnapshotState>>;
+    fn restore(&self, bytes: &mut dyn std::io::Read) -> Result<()>;
     /// Irreversibly evict resident application material before publishing an
     /// installed closed custody snapshot. This cannot grant data access.
     fn close_application(&self);
@@ -124,13 +155,16 @@ impl StateMachineBackend for OwnedBackend {
     fn apply(&self, position: &AppliedEntryContext, command: &[u8]) -> Result<AppliedResponse> {
         self.inner.apply(position, command)
     }
-    fn snapshot(&self) -> Result<BackendSnapshot> {
-        self.inner.snapshot()
+    fn capture_snapshot(&self) -> Result<CapturedSnapshot> {
+        self.inner.capture_snapshot()
     }
-    fn validate_snapshot(&self, bytes: &[u8]) -> Result<Option<RetiredSnapshotState>> {
+    fn validate_snapshot(
+        &self,
+        bytes: &mut dyn std::io::Read,
+    ) -> Result<Option<RetiredSnapshotState>> {
         self.inner.validate_snapshot(bytes)
     }
-    fn restore(&self, bytes: &[u8]) -> Result<()> {
+    fn restore(&self, bytes: &mut dyn std::io::Read) -> Result<()> {
         self.inner.restore(bytes)
     }
 }

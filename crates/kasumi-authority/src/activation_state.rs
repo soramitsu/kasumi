@@ -129,12 +129,12 @@ impl Backend {
         Ok(())
     }
     pub(super) fn validate_activation_snapshot(&self, snapshot: &Snapshot) -> Result<()> {
-        for record in snapshot.records.values() {
+        snapshot.records.visit(|_, record| {
             let Record::Receipt(accepted) = record else {
-                continue;
+                return Ok(());
             };
             if !matches!(accepted.outcome, AuthorityOutcome::Activated { .. }) {
-                continue;
+                return Ok(());
             }
             match &accepted.command.action {
                 AuthorityAction::Activate { .. } => ensure!(
@@ -143,11 +143,11 @@ impl Backend {
                 ),
                 AuthorityAction::ActivateCommitted { control, .. } => {
                     let Some(Record::Lifecycle(intent)) =
-                        snapshot.records.get(&control.reference.key()?)
+                        snapshot.records.get(&control.reference.key()?)?
                     else {
                         anyhow::bail!("snapshot committed activation intent missing")
                     };
-                    binding(&accepted.command, accepted.admitted_at_ms, intent)?;
+                    binding(&accepted.command, accepted.admitted_at_ms, &intent)?;
                     ensure!(
                         control
                             .completion
@@ -170,7 +170,7 @@ impl Backend {
                         "snapshot activation predates its intent"
                     );
                     if let Some(Record::Lifecycle(stop)) =
-                        snapshot.records.get(&control.reference.epoch_stop().key()?)
+                        snapshot.records.get(&control.reference.epoch_stop().key()?)?
                     {
                         ensure!(
                             stop.accepted_revision > accepted.revision,
@@ -180,7 +180,7 @@ impl Backend {
                 }
                 _ => anyhow::bail!("snapshot activation command differs"),
             }
-        }
-        Ok(())
+            Ok(())
+        })
     }
 }

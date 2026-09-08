@@ -367,7 +367,7 @@ async fn replicated_control_intent_is_exact_original_expiry_bound_current_quorum
             .is_err()
     );
     let bytes = db.engine().snapshot().unwrap();
-    db.engine().validate_snapshot(&bytes).unwrap();
+    db.engine().validate_snapshot(&mut bytes.reader()).unwrap();
     drop(proof);
     drop(db);
     f.close().await;
@@ -680,7 +680,8 @@ async fn control_rejects_unfinishable_byte_budget_and_substituted_authenticated_
     .await
     .unwrap();
     let original = db.engine().snapshot().unwrap();
-    let mut state: TenantState = serde_json::from_slice(&original).unwrap();
+    let mut state: TenantState =
+        kasumi_engine::TenantEngine::decode_snapshot_state(&original).unwrap();
     let retained = state
         .lifecycle_control
         .as_mut()
@@ -691,7 +692,11 @@ async fn control_rejects_unfinishable_byte_budget_and_substituted_authenticated_
     retained.original_credential_expires_at_ms += 1000;
     assert!(
         db.engine()
-            .validate_snapshot(&serde_json::to_vec(&state).unwrap())
+            .validate_snapshot(
+                &mut kasumi_engine::TenantEngine::encode_snapshot_state(&state, 64 << 20)
+                    .unwrap()
+                    .reader()
+            )
             .is_err()
     );
     assert_eq!(original, db.engine().snapshot().unwrap());

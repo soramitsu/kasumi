@@ -41,7 +41,45 @@ pub struct QueryIndexes {
     collections: BTreeMap<String, Arc<CollectionIndexes>>,
 }
 
+/// Persistent primary-ID roots for coherent point/scan leases. This intentionally
+/// retains no text or field-index generation.
+#[derive(Debug, Clone)]
+pub struct ReadIds(BTreeMap<String, IdSet>);
+impl ReadIds {
+    pub fn document_ids_after(
+        &self,
+        collection: &str,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<String>> {
+        use std::ops::Bound;
+        if limit == 0 || limit > 1001 {
+            return Err(invalid("ID page limit outside bounds"));
+        }
+        let ids = self
+            .0
+            .get(collection)
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "collection index not found"))?;
+        Ok(ids
+            .range::<_, str>((
+                after.map_or(Bound::Unbounded, Bound::Excluded),
+                Bound::Unbounded,
+            ))
+            .take(limit)
+            .cloned()
+            .collect())
+    }
+}
+
 impl QueryIndexes {
+    pub fn read_ids(&self) -> ReadIds {
+        ReadIds(
+            self.collections
+                .iter()
+                .map(|(name, indexes)| (name.clone(), indexes.structured.ids.clone()))
+                .collect(),
+        )
+    }
     /// Plan bounded candidates using maintained structured indexes without
     /// reading document bodies. Explicit scans are resolved by the service.
     pub fn indexed_candidate_ids(

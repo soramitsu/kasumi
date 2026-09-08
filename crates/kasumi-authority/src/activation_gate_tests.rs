@@ -251,10 +251,13 @@ async fn committed_activation_rejects_raw_bypass_preserves_exact_winner_and_encr
     );
     assert_eq!(a, b);
     assert!(matches!(a.outcome, AuthorityOutcome::Activated { .. }));
-    let snapshot = kasumi_raft::StateMachineBackend::snapshot(service.backend.as_ref()).unwrap();
-    kasumi_raft::StateMachineBackend::validate_snapshot(service.backend.as_ref(), &snapshot.data)
-        .unwrap();
-    let mut substituted: serde_json::Value = serde_json::from_slice(&snapshot.data).unwrap();
+    let mut snapshot = Vec::new();
+    kasumi_raft::StateMachineBackend::snapshot(service.backend.as_ref(), &mut snapshot).unwrap();
+    kasumi_raft::StateMachineBackend::validate_snapshot(
+        service.backend.as_ref(),
+        &mut snapshot.as_slice(),
+    )
+    .unwrap();
     fn replace_admission(value: &mut serde_json::Value, command: Uuid) {
         if let Some(object) = value.as_object_mut() {
             if object
@@ -275,11 +278,13 @@ async fn committed_activation_rejects_raw_bypass_preserves_exact_winner_and_encr
     }
     // Substitute all retained copies together; semantic history still rejects
     // execution beyond the immutable original Control cap.
-    replace_admission(&mut substituted, command.command_id);
+    let substituted = crate::state::snapshot::rewrite_for_test(&snapshot, |value| {
+        replace_admission(value, command.command_id)
+    });
     assert!(
         kasumi_raft::StateMachineBackend::validate_snapshot(
             service.backend.as_ref(),
-            &serde_json::to_vec(&substituted).unwrap()
+            &mut substituted.as_slice()
         )
         .is_err()
     );

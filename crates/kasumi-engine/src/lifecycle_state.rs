@@ -346,16 +346,19 @@ pub(crate) fn completion_fits(state: &TenantState) -> Result<bool> {
     finished.completed_revision = Some(u64::MAX);
     finished.completion_stops = Some(future_stops);
     // Conservative full-width future administrative record, not caller capacity.
-    completed.audits.push_back(AuditEvent {
-        event_id: "x".repeat(256),
-        principal: "x".repeat(256),
-        action: "lifecycle_control".into(),
-        request_id: "x".repeat(256),
-        timestamp_ms: u64::MAX,
-        data_revision: Some(u64::MAX),
-        outcome: "committed".into(),
-        collection: None,
-    });
+    super::append_audit(
+        &mut completed,
+        AuditEvent {
+            event_id: "x".repeat(256),
+            principal: "x".repeat(256),
+            action: "lifecycle_control".into(),
+            request_id: "x".repeat(256),
+            timestamp_ms: u64::MAX,
+            data_revision: Some(u64::MAX),
+            outcome: "committed".into(),
+            collection: None,
+        },
+    )?;
     if encoded_len(completed.lifecycle_control.as_ref().expect("checked"))?
         > control.installation.max_state_bytes
     {

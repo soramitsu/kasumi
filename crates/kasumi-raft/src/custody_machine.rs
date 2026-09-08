@@ -52,7 +52,7 @@ pub(crate) fn capture(custody: &CustodyStore) -> Result<SnapshotEnvelope> {
         version: 1,
         kind: SnapshotKind::Custody,
         meta,
-        backend: Vec::new(),
+        backend: kasumi_store::SnapshotImage::from_bytes(&[])?,
         retirement,
     })
 }
@@ -69,7 +69,9 @@ pub(crate) fn publish(custody: &CustodyStore, snapshot: &SnapshotEnvelope) -> Re
         .as_ref()
         .context("closed snapshot lacks retirement")?;
     retirement.validate(&snapshot.meta)?;
-    let bytes = postcard::to_allocvec(snapshot)?;
+    let bytes = snapshot
+        .encode(MAX_CLOSED_SNAPSHOT_BYTES)?
+        .read_bounded(MAX_CLOSED_SNAPSHOT_BYTES as usize)?;
     ensure!(
         bytes.len() as u64 <= MAX_CLOSED_SNAPSHOT_BYTES,
         "closed snapshot byte budget exceeded"
@@ -111,7 +113,7 @@ pub(crate) fn load_snapshot(custody: &CustodyStore) -> Result<Option<SnapshotEnv
         bytes.len() as u64 <= MAX_CLOSED_SNAPSHOT_BYTES,
         "closed snapshot byte budget exceeded"
     );
-    let snapshot: SnapshotEnvelope = postcard::from_bytes(&bytes)?;
+    let snapshot = SnapshotEnvelope::decode(&mut bytes.as_slice(), MAX_CLOSED_SNAPSHOT_BYTES)?;
     ensure!(
         snapshot.kind == SnapshotKind::Custody
             && snapshot.version == 1
@@ -316,7 +318,9 @@ impl RaftStateMachine<TypeConfig> for CustodyMachine {
     }
     async fn begin_receiving_snapshot(&mut self) -> Result<Box<SnapshotBuffer>, StorageError<u64>> {
         self.custody.store().check_access().map_err(err)?;
-        Ok(Box::new(SnapshotBuffer::new(MAX_CLOSED_SNAPSHOT_BYTES)))
+        Ok(Box::new(
+            SnapshotBuffer::new(MAX_CLOSED_SNAPSHOT_BYTES).map_err(err)?,
+        ))
     }
     async fn install_snapshot(
         &mut self,
@@ -327,10 +331,12 @@ impl RaftStateMachine<TypeConfig> for CustodyMachine {
         let machine = self.clone();
         tokio::task::spawn_blocking(move || -> Result<()> {
             ensure!(
-                snapshot.as_bytes().len() as u64 <= MAX_CLOSED_SNAPSHOT_BYTES,
+                snapshot.len() <= MAX_CLOSED_SNAPSHOT_BYTES,
                 "closed snapshot byte budget exceeded"
             );
-            let envelope: SnapshotEnvelope = postcard::from_bytes(snapshot.as_bytes())?;
+            let image = snapshot.into_image()?;
+            let envelope =
+                SnapshotEnvelope::decode(&mut image.reader(), MAX_CLOSED_SNAPSHOT_BYTES)?;
             ensure!(envelope.meta == meta, "closed snapshot metadata differs");
             let _gate = machine
                 .control_gate

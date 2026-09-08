@@ -105,12 +105,13 @@ async fn snapshot_survives_reopen_and_failed_apply_makes_replica_unavailable() -
 async fn snapshot_buffer_caps_total_size_and_sparse_seeks() -> Result<()> {
     use std::io::SeekFrom;
     use tokio::io::{AsyncSeekExt, AsyncWriteExt};
-    let mut buffer = SnapshotBuffer::new(16);
+    let mut buffer = SnapshotBuffer::new(16)?;
     buffer.write_all(b"12345678").await?;
-    buffer.seek(SeekFrom::Start(15)).await?;
+    assert!(buffer.seek(SeekFrom::Start(15)).await.is_err());
+    buffer.write_all(b"1234567").await?;
     assert!(buffer.write_all(b"xx").await.is_err());
     buffer.write_all(b"x").await?;
-    assert_eq!(buffer.as_bytes().len(), 16);
+    assert_eq!(buffer.len(), 16);
     assert!(buffer.seek(SeekFrom::Start(17)).await.is_err());
     assert!(buffer.seek(SeekFrom::Current(i64::MIN)).await.is_err());
     assert!(SnapshotBuffer::from_bytes(vec![0; 17], 16).is_err());

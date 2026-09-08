@@ -88,18 +88,27 @@ impl StateMachineBackend for BytesBackend {
         *self.0.lock().unwrap() = bytes.to_vec();
         Ok(crate::AppliedResponse::application(bytes.to_vec()))
     }
-    fn snapshot(&self) -> Result<crate::BackendSnapshot> {
-        Ok(crate::BackendSnapshot::application(
-            self.0.lock().unwrap().clone(),
-        ))
+    fn capture_snapshot(&self) -> Result<crate::CapturedSnapshot> {
+        let data = self.0.lock().unwrap().clone();
+        Ok(crate::CapturedSnapshot::new(None, move |writer| {
+            writer.write_all(&data)?;
+            Ok(())
+        }))
     }
-    fn validate_snapshot(&self, bytes: &[u8]) -> Result<Option<crate::RetiredSnapshotState>> {
-        ensure!(bytes != b"invalid", "invalid application snapshot");
+    fn validate_snapshot(
+        &self,
+        bytes: &mut dyn std::io::Read,
+    ) -> Result<Option<crate::RetiredSnapshotState>> {
+        let mut captured = Vec::new();
+        bytes.read_to_end(&mut captured)?;
+        ensure!(captured != b"invalid", "invalid application snapshot");
         Ok(None)
     }
-    fn restore(&self, bytes: &[u8]) -> Result<()> {
-        self.validate_snapshot(bytes)?;
-        *self.0.lock().unwrap() = bytes.to_vec();
+    fn restore(&self, bytes: &mut dyn std::io::Read) -> Result<()> {
+        let mut captured = Vec::new();
+        bytes.read_to_end(&mut captured)?;
+        self.validate_snapshot(&mut captured.as_slice())?;
+        *self.0.lock().unwrap() = captured;
         Ok(())
     }
 }
@@ -132,7 +141,7 @@ async fn applied_metadata_does_not_block_runtime_while_snapshot_capture_holds_st
         ) -> Result<crate::AppliedResponse> {
             Ok(crate::AppliedResponse::application(bytes.to_vec()))
         }
-        fn snapshot(&self) -> Result<crate::BackendSnapshot> {
+        fn capture_snapshot(&self) -> Result<crate::CapturedSnapshot> {
             self.entered
                 .lock()
                 .unwrap()
@@ -146,14 +155,18 @@ async fn applied_metadata_does_not_block_runtime_while_snapshot_capture_holds_st
                 .lock()
                 .unwrap()
                 .recv_timeout(std::time::Duration::from_secs(1));
-            Ok(crate::BackendSnapshot::application(
-                b"consistent-snapshot".to_vec(),
-            ))
+            Ok(crate::CapturedSnapshot::new(None, |writer| {
+                writer.write_all(b"consistent-snapshot")?;
+                Ok(())
+            }))
         }
-        fn validate_snapshot(&self, _: &[u8]) -> Result<Option<crate::RetiredSnapshotState>> {
+        fn validate_snapshot(
+            &self,
+            _: &mut dyn std::io::Read,
+        ) -> Result<Option<crate::RetiredSnapshotState>> {
             Ok(None)
         }
-        fn restore(&self, _: &[u8]) -> Result<()> {
+        fn restore(&self, _: &mut dyn std::io::Read) -> Result<()> {
             Ok(())
         }
     }
@@ -188,8 +201,9 @@ async fn applied_metadata_does_not_block_runtime_while_snapshot_capture_holds_st
     assert_eq!(metadata?.0, None);
     let mut builder = capture.await?;
     let snapshot = builder.build_snapshot().await?;
-    let envelope: SnapshotEnvelope = postcard::from_bytes(snapshot.snapshot.as_bytes())?;
-    assert_eq!(envelope.backend, b"consistent-snapshot");
+    let envelope =
+        SnapshotEnvelope::decode(&mut snapshot.snapshot.into_image()?.reader(), 64 << 20)?;
+    assert_eq!(envelope.backend.read_bounded(1024)?, b"consistent-snapshot");
     assert_eq!(envelope.meta.last_log_id, None);
     Ok(())
 }
@@ -203,7 +217,7 @@ fn envelope(bytes: Vec<u8>) -> SnapshotEnvelope {
             last_membership: StoredMembership::default(),
             snapshot_id: uuid::Uuid::new_v4().to_string(),
         },
-        backend: bytes,
+        backend: kasumi_store::SnapshotImage::from_bytes(&bytes).unwrap(),
         retirement: None,
     }
 }
@@ -226,7 +240,7 @@ async fn invalid_backend_snapshot_never_replaces_durable_recoverable_state() -> 
         .install_snapshot(
             &valid.meta,
             Box::new(SnapshotBuffer::from_bytes(
-                postcard::to_allocvec(&valid)?,
+                valid.encode(64 << 20)?.read_bounded(64 << 20)?,
                 1024,
             )?),
         )
@@ -237,14 +251,20 @@ async fn invalid_backend_snapshot_never_replaces_durable_recoverable_state() -> 
             .install_snapshot(
                 &invalid.meta,
                 Box::new(SnapshotBuffer::from_bytes(
-                    postcard::to_allocvec(&invalid)?,
+                    invalid.encode(64 << 20)?.read_bounded(64 << 20)?,
                     1024
                 )?)
             )
             .await
             .is_err()
     );
-    assert_eq!(load_snapshot(&store, 1024)?.unwrap().backend, b"valid");
+    assert_eq!(
+        load_snapshot(&store, 1024)?
+            .unwrap()
+            .backend
+            .read_bounded(1024)?,
+        b"valid"
+    );
     let restored = Arc::new(BytesBackend::default());
     StateMachine::open(
         kasumi_store::test_utils::with_custody(
@@ -259,7 +279,7 @@ async fn invalid_backend_snapshot_never_replaces_durable_recoverable_state() -> 
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn snapshots_larger_than_store_record_limit_are_chunked_and_recovered() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let store = TenantStore::open_fixture(
@@ -269,7 +289,7 @@ async fn snapshots_larger_than_store_record_limit_are_chunked_and_recovered() ->
     )
     .await?;
     let value = envelope(vec![42; 33 * 1024 * 1024]);
-    let bytes = postcard::to_allocvec(&value)?;
+    let bytes = value.encode(64 << 20)?.read_bounded(64 << 20)?;
     let domains = kasumi_store::test_utils::with_custody(
         store.clone(),
         Arc::new(LocalKeyProvider::new([241; 32])),
@@ -283,8 +303,11 @@ async fn snapshots_larger_than_store_record_limit_are_chunked_and_recovered() ->
             > 8
     );
     assert_eq!(
-        load_snapshot(&store, 64 * 1024 * 1024)?.unwrap().backend,
-        value.backend
+        load_snapshot(&store, 64 * 1024 * 1024)?
+            .unwrap()
+            .backend
+            .sha256(),
+        value.backend.sha256()
     );
     assert!(load_snapshot(&store, 1024).is_err());
     assert!(load_manifest(&store, b"pending", 64 * 1024 * 1024)?.is_none());
@@ -303,10 +326,15 @@ async fn snapshot_install_power_loss_at_every_storage_operation_keeps_whole_old_
         Arc::new(LocalKeyProvider::new([241; 32])),
     )
     .await?;
-    persist_snapshot(&initial, &postcard::to_allocvec(&old)?, 1024, &old)?;
+    persist_snapshot(
+        &initial,
+        &old.encode(64 << 20)?.read_bounded(64 << 20)?,
+        1024,
+        &old,
+    )?;
     initial.custody().store().shutdown().await;
     drop(initial);
-    let bytes = postcard::to_allocvec(&new)?;
+    let bytes = new.encode(64 << 20)?.read_bounded(64 << 20)?;
     let baseline = seed.crash();
     let store = fault_store(baseline.clone()).await?;
     let domains = kasumi_store::test_utils::with_custody(
@@ -341,12 +369,14 @@ async fn snapshot_install_power_loss_at_every_storage_operation_keeps_whole_old_
         .await?;
         validate_snapshot_coverage(&recovered_domains, &restored, 1024)?;
         assert!(
-            restored.backend == old.backend || restored.backend == new.backend,
+            restored.backend.sha256() == old.backend.sha256()
+                || restored.backend.sha256() == new.backend.sha256(),
             "torn snapshot at storage operation {failure}"
         );
         if written.is_ok() {
             assert_eq!(
-                restored.backend, new.backend,
+                restored.backend.sha256(),
+                new.backend.sha256(),
                 "acknowledged snapshot lost at operation {failure}"
             );
         }
@@ -420,3 +450,80 @@ async fn eight_mib_command_uses_compact_log_record_and_replays_after_reopen() ->
 
 #[path = "snapshot_custody_tests.rs"]
 mod snapshot_custody_tests;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn snapshot_materialization_releases_applied_lock_and_keeps_captured_root() -> Result<()> {
+    struct PausedWriter {
+        bytes: Mutex<Vec<u8>>,
+        entered: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
+        release: Arc<Mutex<std::sync::mpsc::Receiver<()>>>,
+    }
+    impl StateMachineBackend for PausedWriter {
+        fn close_application(&self) {}
+        fn apply(
+            &self,
+            _: &crate::AppliedEntryContext,
+            bytes: &[u8],
+        ) -> Result<crate::AppliedResponse> {
+            *self.bytes.lock().unwrap() = bytes.to_vec();
+            Ok(crate::AppliedResponse::application(bytes.to_vec()))
+        }
+        fn capture_snapshot(&self) -> Result<crate::CapturedSnapshot> {
+            let bytes = self.bytes.lock().unwrap().clone();
+            let entered = self.entered.clone();
+            let release = self.release.clone();
+            Ok(crate::CapturedSnapshot::new(None, move |writer| {
+                if let Some(sender) = entered.lock().unwrap().take() {
+                    sender.send(()).unwrap();
+                    release
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(std::time::Duration::from_secs(10))?;
+                }
+                writer.write_all(&bytes)?;
+                Ok(())
+            }))
+        }
+        fn validate_snapshot(
+            &self,
+            _: &mut dyn Read,
+        ) -> Result<Option<crate::RetiredSnapshotState>> {
+            Ok(None)
+        }
+        fn restore(&self, _: &mut dyn Read) -> Result<()> {
+            Ok(())
+        }
+    }
+    let (entered, ready) = tokio::sync::oneshot::channel();
+    let (release, wait) = std::sync::mpsc::channel();
+    let backend = Arc::new(PausedWriter {
+        bytes: Mutex::new(b"captured-root".to_vec()),
+        entered: Arc::new(Mutex::new(Some(entered))),
+        release: Arc::new(Mutex::new(wait)),
+    });
+    let mut machine = StateMachine::open(
+        kasumi_store::test_utils::with_custody(
+            fault_store(FaultBackend::new()).await?,
+            Arc::new(LocalKeyProvider::new([241; 32])),
+        )
+        .await?,
+        backend.clone(),
+    )
+    .await?;
+    let mut capturing = machine.clone();
+    let task = tokio::spawn(async move {
+        let mut builder = capturing.get_snapshot_builder().await;
+        builder.build_snapshot().await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(10), ready).await??;
+    tokio::time::timeout(std::time::Duration::from_secs(1), machine.applied_state()).await??;
+    // A new generation can publish while the old snapshot is materializing.
+    *backend.bytes.lock().unwrap() = b"new-root".to_vec();
+    release.send(())?;
+    let snapshot = task.await??;
+    let envelope =
+        SnapshotEnvelope::decode(&mut snapshot.snapshot.into_image()?.reader(), 64 << 20)?;
+    assert_eq!(envelope.backend.read_bounded(1024)?, b"captured-root");
+    assert_eq!(*backend.bytes.lock().unwrap(), b"new-root");
+    Ok(())
+}

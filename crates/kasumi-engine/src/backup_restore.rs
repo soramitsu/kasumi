@@ -28,7 +28,7 @@ impl RestoreSource {
     }
 }
 pub(super) struct PreparedState {
-    pub bytes: Vec<u8>,
+    pub bytes: kasumi_store::SnapshotImage,
     pub engine: Arc<TenantEngine>,
     pub sha256: String,
 }
@@ -55,7 +55,7 @@ impl VerifiedBackup {
                     )?;
                     deadline.check()?;
                     let engine = Arc::new(TenantEngine::from_bootstrap(&tenant, &bytes)?);
-                    let sha256 = hex::encode(Sha256::digest(&bytes));
+                    let sha256 = bytes.sha256().to_owned();
                     Ok(PreparedState {
                         bytes,
                         engine,
@@ -248,14 +248,18 @@ pub(super) async fn load_authorized(
         .blocking(reservation.clone(), registration.clone(), move || {
             drop(bytes);
             state.history_archive_bytes = 0;
-            for (id, archive) in state.history_archives.iter_mut() {
+            for (id, mut archive) in state.history_archives.clone() {
                 archive.storage_destination = alias.clone();
                 state.history_archive_bytes = state
                     .history_archive_bytes
-                    .checked_add(crate::state::history::metadata_entry(id, archive)?)
+                    .checked_add(crate::state::history::metadata_entry(&id, &archive)?)
                     .ok_or_else(|| anyhow::anyhow!("restored history catalog size overflow"))?;
+                state.history_archives.insert(id, archive);
             }
-            let bytes = serde_json::to_vec(&state)?;
+            let bytes =
+                kasumi_store::SnapshotImage::capture(state.limits.max_snapshot_bytes, |writer| {
+                    crate::snapshot_codec::write(&state, writer)
+                })?;
             deadline.check()?;
             TenantEngine::verify_logical_snapshot(&bytes, &state)?;
             Ok((state, bytes))

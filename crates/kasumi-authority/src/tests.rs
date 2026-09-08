@@ -893,8 +893,12 @@ async fn encrypted_restart_restarts_full_drain_and_never_reuses_an_old_incarnati
     );
     // Make a snapshot and reopen the encrypted state before attempting reuse.
     use kasumi_raft::StateMachineBackend;
-    let snapshot = service.backend.snapshot().unwrap();
-    service.backend.validate_snapshot(&snapshot.data).unwrap();
+    let mut snapshot = Vec::new();
+    service.backend.snapshot(&mut snapshot).unwrap();
+    service
+        .backend
+        .validate_snapshot(&mut snapshot.as_slice())
+        .unwrap();
     drop(service);
     fixture.reopen().await;
     let service = fixture.leader().await;
