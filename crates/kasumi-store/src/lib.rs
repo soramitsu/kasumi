@@ -21,7 +21,9 @@ pub use backup_sessions::{
 };
 mod keys;
 mod read_view;
+mod scratch_disk;
 mod scratch_table;
+pub use scratch_disk::{ScratchDisk, ScratchDiskConfig, ScratchDiskSnapshot};
 mod serving_access;
 mod spool;
 pub use read_view::TenantReadView;
