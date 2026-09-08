@@ -567,7 +567,11 @@ impl kasumi_data_server::KasumiData for NativeData {
             .operation_receipt(&context, &request.idempotency_key)
             .await;
         let stored = stored.map_err(|error| self.registry.status(&context, error))?;
-        let outcome = stored.map(|stored| match stored {
+        let request_digest = stored
+            .as_ref()
+            .map(|stored| stored.request_digest.clone())
+            .unwrap_or_default();
+        let outcome = stored.map(|stored| match stored.outcome {
             Ok(value) => receipt_response::Outcome::Committed(receipt(value)),
             Err(error) => receipt_response::Outcome::Rejected(DatabaseError {
                 code: serde_json::to_value(error.code)
@@ -578,7 +582,10 @@ impl kasumi_data_server::KasumiData for NativeData {
                 message: error.message,
             }),
         });
-        let response = ReceiptResponse { outcome };
+        let response = ReceiptResponse {
+            outcome,
+            request_digest,
+        };
         let response = release_response(&self.auth, &context, fence, response, false)
             .await
             .map_err(status)?;

@@ -138,6 +138,7 @@ async fn one_epoch_ages_commands_and_leases_without_renewing_original_credential
             .await
             .unwrap()
             .unwrap()
+            .outcome
             .unwrap(),
         receipt
     );
@@ -200,6 +201,7 @@ async fn one_epoch_ages_commands_and_leases_without_renewing_original_credential
             .await
             .unwrap()
             .unwrap()
+            .outcome
             .unwrap(),
         receipt
     );

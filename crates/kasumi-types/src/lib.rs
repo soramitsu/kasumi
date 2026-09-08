@@ -372,6 +372,14 @@ pub struct MutationBatch {
     pub operations: Vec<Mutation>,
 }
 
+impl MutationBatch {
+    /// Exact canonical input identity retained with the mutation outcome.
+    /// Includes the original idempotency key, read set and preconditions.
+    pub fn digest(&self) -> Result<String> {
+        staged_digest(self).map(|(digest, _)| digest)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(
     tag = "kind",
@@ -444,6 +452,14 @@ pub enum Operation {
 pub struct WriteReceipt {
     pub revision: u64,
     pub versions: BTreeMap<String, u64>,
+}
+/// A retained outcome is meaningful only for this exact original batch digest.
+/// Absence of this record is not proof that an invocation never committed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct MutationReceipt {
+    pub request_digest: String,
+    pub outcome: Result<WriteReceipt>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredReceipt {

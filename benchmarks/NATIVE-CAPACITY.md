@@ -63,12 +63,12 @@ target/production-bench/release/kasumi-bench-capacity capacity.json resolve \
 
 Inspection requires the byte-identical original connection/corpus configuration
 and exact generated batch, plus the original recorded credential binding;
-renewal of the token file is still supported. An
-absent receipt remains unknown and never authorizes blind replay. The current
-receipt RPC returns a principal/key outcome without the stored request digest;
-the inspector labels that limit explicitly and cannot certify a body if a key
-was reused with different input. The command
-does not automatically resume a partial load. A completed receipt observation
+renewal of the token file is still supported. A retained outcome must include
+the server's original canonical batch digest, which the inspector compares with
+the complete original key, read set, operations and preconditions. A different
+body under the same key fails resolution. An absent receipt remains unknown
+and never authorizes blind replay. The command does not automatically resume
+a partial load. A completed receipt observation
 is distinct from a complete verified corpus.
 
 Work stays bounded by one batch (at most 256 documents and 4 MiB including

@@ -1398,10 +1398,7 @@ fn apply_operation(
                     |_| Error::new(ErrorCode::InvalidArgument, "invalid receipt identity"),
                 )?;
             let receipt_key = hex::encode(Sha256::digest(identity));
-            let digest =
-                hex::encode(Sha256::digest(serde_json::to_vec(batch).map_err(|_| {
-                    Error::new(ErrorCode::InvalidArgument, "invalid mutation batch")
-                })?));
+            let digest = batch.digest()?;
             if let Some(existing) = state
                 .receipts
                 .get(&receipt_key)

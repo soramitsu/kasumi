@@ -130,6 +130,9 @@ message DatabaseError { string code = 1; string message = 2; }
 message ReceiptResponse {
   // Neither outcome set means there is no retained receipt for this principal/key.
   oneof outcome { WriteReceipt committed = 1; DatabaseError rejected = 2; }
+  // Mandatory with either outcome; empty only when no receipt is retained.
+  // SHA-256 of the canonical typed MutationBatch, including its original key.
+  string request_digest = 3;
 }
 message CollectionDefinitionRequest { bytes definition_json = 1; }
 message SetPolicyRequest { bytes policy_json = 1; }

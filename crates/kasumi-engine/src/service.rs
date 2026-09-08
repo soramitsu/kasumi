@@ -1809,7 +1809,7 @@ impl Database {
         &self,
         context: &RequestContext,
         idempotency_key: &str,
-    ) -> Result<Option<Result<WriteReceipt>>> {
+    ) -> Result<Option<MutationReceipt>> {
         let result = self.operation_receipt_inner(context, idempotency_key).await;
         self.audit_result(context, result).await
     }
@@ -1818,7 +1818,7 @@ impl Database {
         &self,
         context: &RequestContext,
         idempotency_key: &str,
-    ) -> Result<Option<Result<WriteReceipt>>> {
+    ) -> Result<Option<MutationReceipt>> {
         self.access()?;
         self.engine
             .authorize_discovery(context, Action::Write, None)?;
@@ -1879,7 +1879,10 @@ impl Database {
                 .await?;
         }
         self.access()?;
-        Ok(receipt.map(|r| r.outcome))
+        Ok(receipt.map(|r| MutationReceipt {
+            request_digest: r.request_digest,
+            outcome: r.outcome,
+        }))
     }
 
     pub async fn query(
@@ -2321,6 +2324,7 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap()
+                .outcome
                 .unwrap_err()
                 .code,
             ErrorCode::Conflict

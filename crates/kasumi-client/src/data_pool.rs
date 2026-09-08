@@ -190,6 +190,21 @@ impl KasumiClientPool {
         .await
         .map(|(_, reply)| reply)
     }
+    /// Read-only resolution against approved members, preserving the complete
+    /// original input. An absent record remains unknown and is never retried as
+    /// a new write by this operation.
+    pub async fn resolve_mutation(
+        &mut self,
+        original: &MutationBatch,
+        timeout: Duration,
+    ) -> NativeResult<Option<MutationReceipt>> {
+        self.request(None, true, timeout, |client, token| {
+            let original = original.clone();
+            Box::pin(async move { client.resolve_mutation(token, &original).await })
+        })
+        .await
+        .map(|(_, reply)| reply)
+    }
     pub async fn begin_staged_transaction(
         &mut self,
         request: &BeginStagedTransaction,

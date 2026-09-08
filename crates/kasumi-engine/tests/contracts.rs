@@ -968,6 +968,7 @@ async fn strict_read_audit_is_committed_before_return_and_tied_to_data_revision(
             .await
             .unwrap()
             .unwrap()
+            .outcome
             .is_ok()
     );
     assert_eq!(
@@ -1385,6 +1386,7 @@ async fn logical_backup_restores_suspended_with_new_incarnation_and_increasing_r
             .await
             .unwrap()
             .unwrap()
+            .outcome
             .unwrap(),
         receipt
     );
