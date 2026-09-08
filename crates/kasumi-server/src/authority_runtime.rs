@@ -83,10 +83,7 @@ impl AuthorityRuntimeConfig {
             roots[0] != roots[1] && roots[0] != roots[2] && roots[1] != roots[2],
             "authority/control/security wrapping roots must be independent"
         );
-        ensure!(
-            self.security_audit.max_records > 0,
-            "authority security audit limit must be explicit"
-        );
+        self.security_audit.retention.validate()?;
         Ok(())
     }
 }
@@ -151,7 +148,10 @@ impl AuthorityRuntime {
             StorageAccess::security_audit(),
         )
         .await?;
-        let audit = SecurityAudit::open(audit_store.clone(), config.security_audit.max_records)?;
+        let audit = config.security_audit.open(
+            audit_store.clone(),
+            kasumi_engine::admission::NodeAdmission::new(Default::default())?,
+        )?;
         auth.install_audit(audit.clone())?;
         network.install_audit(audit.clone())?;
         let stores = TenantStorageSet::open(

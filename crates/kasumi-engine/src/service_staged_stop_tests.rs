@@ -195,8 +195,7 @@ async fn accepted_stop_release_failure_is_unknown_and_reopen_recovers_exact_tomb
             provider.clone(),
         )
         .await
-        .unwrap(),
-        100_000,
+        .unwrap(), kasumi_types::AuditRetentionBudget::default(),
     )
     .unwrap();
     let application = TenantStore::open_fixture(node, context.tenant.clone(), provider)

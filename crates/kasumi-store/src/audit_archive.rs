@@ -343,6 +343,8 @@ fn reference(header: &Header, ciphertext: &[u8]) -> Result<AuditArchiveReference
 
 #[async_trait]
 pub trait AuditArchiveDestination: Send + Sync {
+    /// Stable installed namespace identity, excluding renewable credentials.
+    fn identity(&self) -> String;
     /// Idempotent only for identical bytes. Success proves durable publication
     /// and a complete readback. An error never authorizes hot-record deletion.
     async fn publish(&self, segment: &PreparedAuditSegment) -> Result<()>;
@@ -354,15 +356,20 @@ pub struct FilesystemAuditArchive {
 }
 impl FilesystemAuditArchive {
     pub fn open(root: impl AsRef<Path>) -> Result<Self> {
-        use std::os::unix::fs::PermissionsExt;
         let root = root.as_ref();
-        crate::durable_directory(root)?;
-        ensure!(
-            !std::fs::symlink_metadata(root)?.file_type().is_symlink(),
-            "audit archive root cannot be a symlink"
-        );
-        std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700))?;
+        match std::fs::symlink_metadata(root) {
+            Ok(_) => crate::private_files::check_directory(root)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                // Exclusive creation never changes an existing directory's
+                // owner or permissions, including when another opener races.
+                if let Err(error) = crate::private_files::create_directory(root) {
+                    crate::private_files::check_directory(root).map_err(|_| error)?;
+                }
+            }
+            Err(error) => return Err(error.into()),
+        }
         std::fs::File::open(root)?.sync_all()?;
+        crate::private_files::sync_parent(root)?;
         Ok(Self {
             root: std::fs::canonicalize(root)?,
         })
@@ -398,6 +405,9 @@ fn read_file(root: &Path, link: &AuditArchiveLink, durable: bool) -> Result<Vec<
 
 #[async_trait]
 impl AuditArchiveDestination for FilesystemAuditArchive {
+    fn identity(&self) -> String {
+        format!("filesystem:{}", self.root.display())
+    }
     async fn publish(&self, segment: &PreparedAuditSegment) -> Result<()> {
         segment.reference.validate()?;
         ensure!(
@@ -447,6 +457,9 @@ impl S3AuditArchive {
 }
 #[async_trait]
 impl AuditArchiveDestination for S3AuditArchive {
+    fn identity(&self) -> String {
+        self.destination.namespace_identity()
+    }
     async fn publish(&self, segment: &PreparedAuditSegment) -> Result<()> {
         segment.reference.validate()?;
         ensure!(
@@ -666,5 +679,19 @@ mod tests {
         assert!(destination.publish(&segment).await.is_err());
         assert_eq!(std::fs::read(&unrelated).unwrap(), segment.ciphertext);
         store.shutdown().await;
+    }
+
+    #[test]
+    fn existing_nonprivate_archive_directory_is_rejected_without_chmod() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("public");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(FilesystemAuditArchive::open(&root).is_err());
+        assert_eq!(std::fs::metadata(&root).unwrap().mode() & 0o777, 0o755);
+        let alias = directory.path().join("alias");
+        std::os::unix::fs::symlink(directory.path(), &alias).unwrap();
+        assert!(FilesystemAuditArchive::open(&alias).is_err());
     }
 }

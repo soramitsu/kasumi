@@ -139,8 +139,10 @@ async fn operator_state(
         StorageAccess::security_audit(),
     )
     .await?;
-    let audit =
-        kasumi_engine::SecurityAudit::open(store.clone(), config.security_audit.max_records)?;
+    let audit = config.security_audit.open(
+        store.clone(),
+        kasumi_engine::admission::NodeAdmission::new(config.admission.clone())?,
+    )?;
     let credentials = LocalCredentials::open(
         store,
         signer_file.clone(),

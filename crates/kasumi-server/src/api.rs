@@ -413,7 +413,11 @@ mod tests {
             )
             .await
             .unwrap();
-            let audit = crate::runtime::SecurityAudit::open(audit_store.clone(), 10_000).unwrap();
+            let audit = crate::runtime::SecurityAudit::open(
+                audit_store.clone(),
+                kasumi_types::AuditRetentionBudget::default(),
+            )
+            .unwrap();
             auth.install_audit(audit.clone()).unwrap();
             let store = TenantStore::open_fixture(
                 node,
@@ -1714,8 +1718,11 @@ name: "docs".into(),
         }
         // Reopening the service sink recovers the durable sequence, independently
         // of the now-sealed data tenant and its Raft log compaction.
-        let reopened =
-            crate::runtime::SecurityAudit::open(fixture.audit_store.clone(), 10_000).unwrap();
+        let reopened = crate::runtime::SecurityAudit::open(
+            fixture.audit_store.clone(),
+            kasumi_types::AuditRetentionBudget::default(),
+        )
+        .unwrap();
         reopened
             .record(crate::runtime::SecurityEvent {
                 kind: crate::runtime::SecurityEventKind::NodeStarted,
