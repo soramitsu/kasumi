@@ -82,7 +82,6 @@ fn coordinator() -> TenantState {
             source_purpose_sha256: "78".repeat(32),
             destination_alias: "backup".into(),
             backup_id: checkpoint.backup_id,
-            source_purpose_sha256: "78".repeat(32),
             target_incarnation: target,
             voters: (1..=3)
                 .map(|id| {
