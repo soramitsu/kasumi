@@ -15,6 +15,7 @@ pub struct TargetRuntimeRequest {
 #[serde(deny_unknown_fields)]
 pub enum TargetRuntimeStep {
     Materialize(TargetMaterializationInput),
+    ResumeMaterialization(Box<TargetOrigin>),
     Start(TargetReplicaInput),
     Initialize(TargetQuorumInput),
     Complete(TargetQuorumInput),
@@ -37,6 +38,9 @@ impl TargetRuntimeRequest {
         match &self.step {
             TargetRuntimeStep::Materialize(input) => {
                 input.digest()?;
+            }
+            TargetRuntimeStep::ResumeMaterialization(origin) => {
+                origin.resume_digest()?;
             }
             TargetRuntimeStep::Start(input) => {
                 input.quorum().digest()?;

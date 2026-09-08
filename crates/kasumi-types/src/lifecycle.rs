@@ -110,6 +110,8 @@ impl LifecycleInstallation {
 #[serde(rename_all = "snake_case")]
 pub enum LifecyclePhase {
     Materialize,
+    /// A separately committed admission over an exact retained original origin.
+    ResumeMaterialize,
     Initialize,
     Complete,
     Activate,
@@ -161,9 +163,39 @@ pub struct CommitLifecycleIntent {
     pub target_nodes: BTreeMap<u64, LifecycleNode>,
     pub phase: LifecyclePhase,
     pub phase_input_sha256: String,
+    #[serde(deserialize_with = "crate::require_explicit_option")]
+    pub resume_origin: Option<Box<crate::TargetOrigin>>,
 }
 impl CommitLifecycleIntent {
     pub fn validate(&self) -> Result<()> {
+        match (&self.phase, &self.resume_origin) {
+            (LifecyclePhase::ResumeMaterialize, Some(origin)) => {
+                require(
+                    origin.materialization.request.phase == LifecyclePhase::Materialize
+                        && origin.materialization.request.resume_origin.is_none(),
+                    "materialization resumption requires one original admission",
+                )?;
+                origin.validate()?;
+                let original = &origin.materialization.request;
+                require(
+                    self.command_id != original.command_id
+                        && self.tenant == original.tenant
+                        && self.source_incarnation == original.source_incarnation
+                        && self.source_authority_epoch == original.source_authority_epoch
+                        && self.target_incarnation == original.target_incarnation
+                        && self.target_nodes == original.target_nodes
+                        && self.checkpoint == original.checkpoint
+                        && self.authority_partition == original.authority_partition
+                        && self.installation_sha256 == original.installation_sha256
+                        && self.phase_input_sha256 == origin.resume_digest()?,
+                    "fresh materialization admission changed its original target or input",
+                )?;
+            }
+            (LifecyclePhase::ResumeMaterialize, None) | (_, Some(_)) => {
+                return Err(invalid("invalid materialization resumption origin"));
+            }
+            (_, None) => {}
+        }
         require(
             !self.command_id.is_nil()
                 && !self.source_incarnation.is_nil()

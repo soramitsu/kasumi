@@ -63,10 +63,12 @@ impl RecoveryStart {
             target_nodes: self.target_nodes.clone(),
             phase: LifecyclePhase::Materialize,
             phase_input_sha256: self.materialization.digest()?,
+            resume_origin: None,
         };
         intent.validate()?;
         require_recovery(
             self.materialization.backup_id == self.checkpoint.backup_id
+                && self.materialization.source_purpose_sha256 == self.source_purpose_sha256
                 && self.materialization.target_incarnation == self.target_incarnation
                 && self.target_nodes.len() == 3
                 && self

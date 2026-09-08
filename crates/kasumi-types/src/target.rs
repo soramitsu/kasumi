@@ -18,12 +18,14 @@ pub struct TargetPeer {
 pub struct TargetMaterializationInput {
     pub destination_alias: String,
     pub backup_id: Uuid,
+    pub source_purpose_sha256: String,
     pub target_incarnation: Uuid,
     #[serde(deserialize_with = "crate::deserialize_u64_map")]
     pub voters: BTreeMap<u64, TargetPeer>,
 }
 impl TargetMaterializationInput {
     pub fn validate(&self, intent: &LifecycleIntent) -> Result<()> {
+        validate_sha256(&self.source_purpose_sha256)?;
         validate_name(&self.destination_alias)?;
         let request = &intent.request;
         require(
@@ -60,6 +62,10 @@ pub struct TargetOrigin {
     pub input: TargetMaterializationInput,
 }
 impl TargetOrigin {
+    pub fn resume_digest(&self) -> Result<String> {
+        self.validate()?;
+        Ok(staged_digest(&("kasumi.resume-target-materialization.v1", self))?.0)
+    }
     pub fn validate(&self) -> Result<()> {
         validate_sha256(&self.authority_manifest_sha256)?;
         self.materialization.request.validate()?;
