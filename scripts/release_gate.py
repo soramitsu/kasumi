@@ -180,7 +180,7 @@ def functional_gates(jobs):
         ("network-features", cargo + ["tree", "--locked", "-p", "kasumi-bench", "--no-default-features",
          "--features", "network", "--edges", "normal,build", "--prefix", "none", "--format", "{p} {f}"]),
         ("network-driver", cargo + ["build", "--release", "-p", "kasumi-bench", "--no-default-features",
-         "--features", "network", "--bin", "kasumi-bench-network"] + locked + encoded),
+         "--features", "network", "--bins"] + locked + encoded),
         ("production-features", cargo + ["tree", "--locked", "-p", "kasumi-server", "--no-default-features",
          "--edges", "normal,build", "--prefix", "none", "--format", "{p} {f}"]),
         ("production", cargo + ["build", "--release", "-p", "kasumi-server", "--bins", "--no-default-features"]
@@ -191,7 +191,7 @@ def functional_gates(jobs):
 def validate_production_artifacts(name, result):
     """Check the actual compilation, independently of the earlier feature tree."""
     required = {"production": {"kasumid", "kasumictl", "kasumi-authority"},
-                "network-driver": {"kasumi-bench-network"}}.get(name)
+                "network-driver": {"kasumi-bench-network", "kasumi-bench-capacity"}}.get(name)
     if required is None:
         return
     artifacts = list(result["executables"].values())

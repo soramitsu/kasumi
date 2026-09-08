@@ -1,0 +1,17 @@
+{
+  "endpoint": "https://localhost:9444",
+  "ca_pem": "/var/lib/kasumi/installation/tls/ca.pem",
+  "client_certificate_pem": "/var/lib/kasumi/installation/tls/client.pem",
+  "client_private_key_pem": "/var/lib/kasumi/installation/tls/client-key.pem",
+  "server_certificate_sha256": "REPLACE_WITH_INSTALLED_NATIVE_CERTIFICATE_SHA256",
+  "token_file": "/var/lib/kasumi/installation/profiles/default.token",
+  "timeout_ms": 30000,
+  "corpus": {
+    "run_id": "REPLACE_WITH_NEW_UUID_FOR_THIS_CORPUS",
+    "seed_sha256": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+    "collection": "capacity",
+    "documents": 98304,
+    "document_bytes": 32768,
+    "batch_documents": 96
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "name": "capacity",
+  "retention_class": "operational",
+  "write_mode": "mutable",
+  "schema": {
+    "type": "object",
+    "required": ["ordinal", "payload", "version"],
+    "properties": {
+      "ordinal": {"type": "integer"},
+      "payload": {"type": "string"},
+      "version": {"type": "integer"}
+    },
+    "additionalProperties": false
+  },
+  "indexes": [],
+  "strict_read_audit": false
+}

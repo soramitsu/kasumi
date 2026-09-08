@@ -24,6 +24,11 @@ path = "src/bin/network.rs"
 required-features = ["network"]
 
 [[bin]]
+name = "kasumi-bench-capacity"
+path = "src/bin/capacity.rs"
+required-features = ["network"]
+
+[[bin]]
 name = "kasumi-bench-loopback"
 path = "src/bin/loopback.rs"
 required-features = ["loopback-fixture"]
