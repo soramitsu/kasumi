@@ -465,7 +465,6 @@ mod tests {
             "grow-bytes",
             CustodyAction::SetLimits(CustodyLimits {
                 max_state_bytes: 32768,
-                ..byte_full.limits.clone()
             }),
         );
         let (expanded, receipt) = byte_full
