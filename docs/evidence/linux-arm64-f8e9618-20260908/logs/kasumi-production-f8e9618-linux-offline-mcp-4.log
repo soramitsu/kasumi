@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "<stdin>", line 29, in <module>
+  File "<stdin>", line 20, in request
+AssertionError: ('unexpected HTTP status', 400, '{"jsonrpc":"2.0","id":2,"error":{"code":-32020,"message":"missing required Mcp-Method header"}}')

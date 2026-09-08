@@ -51,7 +51,7 @@ async fn main() -> Result<()> {
             result
         }
         _ => bail!(
-            "usage: kasumid init --mode standalone <absolute-directory> [--tenant name] | example-config | check-config <configuration.json> | serve <configuration.json> | credential create <control-profile> <request.json> <output-profile> | credential renew|watch <profile> | credential status|revoke <control-profile> <family-uuid> | maintenance rotate-wrapping-keys|rotate-signer|rotate-certificates <configuration.json> | recover-administrator <configuration.json> <new-private-directory> | backup-operator-keys <configuration.json> <new-private-directory>"
+            "usage: kasumid init --mode standalone <absolute-directory> [--tenant name] | example-config | check-config <configuration.json> | serve <configuration.json> | credential create <control-profile> <request.json> <output-profile> | credential renew|watch <profile> | credential status|revoke <control-profile> <family-uuid> | maintenance rotate-wrapping-keys|rotate-signer|rotate-certificates <configuration.json> | recover-administrator <configuration.json> <new-private-directory> | backup-operator-keys <configuration.json> <new-private-directory> | verify-operator-keys <private-directory> | audit status <control-profile> | audit export|archives <control-profile> <request.json> <output.json> | audit verify <control-profile> <stream-uuid> <index> | local-recovery start|status|resume|stop <configuration.json> <request.json-or-operation-uuid>"
         ),
     }
 }

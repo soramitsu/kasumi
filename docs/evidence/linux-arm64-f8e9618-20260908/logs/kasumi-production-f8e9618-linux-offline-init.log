@@ -1,0 +1,5 @@
+{
+  "configuration": "/acceptance/installation/kasumi.json",
+  "control_profile": "/acceptance/installation/profiles/control.json",
+  "tenant_profile": "/acceptance/installation/profiles/default.json"
+}

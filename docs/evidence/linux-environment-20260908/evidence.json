@@ -6,7 +6,9 @@
     "qemu_user_10.0.11": "pinned Rust compiler segmentation fault",
     "rosetta": "pinned x86_64 Rust 1.97.1 version probe passes",
     "plain_mode": "disables Rosetta; changed own VM to explicit no mounts and all-interface all-protocol port-forward ignore",
-    "arm64_build": "f8e9618 production compilation launched; not yet accepted"
+    "arm64_build": "f8e9618 production build passed; intermediate offline smoke recorded in ../linux-arm64-f8e9618-20260908; not final acceptance",
+    "amd64_image": "legacy Docker builder rejected reusing the multi-platform index digest; explicit platform manifest input built successfully under Rosetta",
+    "amd64_build": "f8e9618 production build launched under Rosetta; not yet accepted or native performance evidence"
   },
   "development_source_archive_sha256": "e75a3349f0d042e9cb87ead7122d8d83152b8f0ca4d539dbbe7e94eb40067bc9",
   "logs": [
@@ -25,6 +27,20 @@
     {
       "file": "logs/kasumi-production-linux-x86-rosetta-rust-probe.log",
       "sha256": "b2bdf493bcf6d1dc55181a0efc2774b6d9cf7bf5c8dcc5bed592c994b2ad38c4"
+    },
+    {
+      "file": "logs/kasumi-production-linux-x86-validation-image-build.log",
+      "sha256": "a20f31de7493c4147a97d4462eedb5498d573181e09774ef053d625c40b44fdd"
+    },
+    {
+      "file": "logs/kasumi-production-linux-x86-validation-image-build-2.log",
+      "sha256": "f80877fe4cdce85e2ec88f3b5b4d705c7ca71df6b6d059218ab14ab3baeab347"
+    },
+    {
+      "file": "logs/kasumi-production-linux-validation-image-identities.log",
+      "sha256": "011158b34f8aa9e44086bc8b327d1ee3b464571ebc7096dbdf74c7523430d4b6"
     }
-  ]
+  ],
+  "x86_64_validation_image": "sha256:41fffba56cf2582cee7c6d896cbe511f47fce676bde5c3d3f9e9142758ecfca7",
+  "validation_recipe_sha256": "a5eb0bd0f916de4c403a40f7e027ced73a7d53bf2b902780d4f8fcb028e7138c"
 }

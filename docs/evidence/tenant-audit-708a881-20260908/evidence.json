@@ -1,0 +1,48 @@
+{
+  "kind": "frozen focused development acceptance; not a final release gate",
+  "source": "708a8812d5e15aa29ebb333c164509f5b040b83c",
+  "lock_sha256": "497d1a81eac52249a4235d1ca31c73f9d2a08c1ad73b1e920b21f2f782c9369c",
+  "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-apple-darwin\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+  "environment": {
+    "CARGO_TARGET_DIR": "/tmp/kasumi-production-validation-target"
+  },
+  "commands": [
+    {
+      "command": "cargo clippy --locked --workspace --all-targets --all-features -j 2 -- -D warnings",
+      "exit_code": 0
+    },
+    {
+      "command": "cargo test --locked -p kasumi-engine --lib tenant_audit -j 2",
+      "exit_code": 0,
+      "passed": 2
+    },
+    {
+      "command": "cargo test --locked -p kasumi-engine --test contracts strict_empty_discovery_is_audited_and_failed_audit_persistence_blocks_results -j 2",
+      "exit_code": 0,
+      "passed": 1
+    }
+  ],
+  "executables": {
+    "/tmp/kasumi-production-validation-target/debug/deps/kasumi_engine-c67edf43fff3a01a": "958a95b3ce9c90f16e0369e9108a6e8271bc98f58f6d23a9618eaafedf4e94a2",
+    "/tmp/kasumi-production-validation-target/debug/deps/contracts-6ca0fb553c49800b": "c2ae0fcd6e10d64c85b2961d7b9b4dbace7f58ff19972504d0c70509084e420f"
+  },
+  "logs": [
+    {
+      "file": "logs/kasumi-production-708a881-clippy.log",
+      "sha256": "c342343253160c447dd1c64b17e1fddb69d72c09deeb8a1fd8641baf7f9777e0"
+    },
+    {
+      "file": "logs/kasumi-production-708a881-tenant-audit-tests.log",
+      "sha256": "a4df18aa61c99ad3e6ef044e6bc2e5ab9da517c66b3ebc88a9abd3c40b91571f"
+    },
+    {
+      "file": "logs/kasumi-production-708a881-fault-archive-tests.log",
+      "sha256": "70efc9197e9bba0489ccd07ac1bcadda5fe41899096f73262239d82613f2daa1"
+    }
+  ],
+  "limitations": [
+    "Automatic tenant pruning is disabled pending complete snapshot and backup archive dependency transfer.",
+    "Full workspace testing on the subsequent bundle branch found service-audit aggregate counters not advanced in the same transition. This focused success does not waive that integration failure.",
+    "Old count quotas, shared maintenance reservation and full runtime S3 configuration are unfinished."
+  ]
+}

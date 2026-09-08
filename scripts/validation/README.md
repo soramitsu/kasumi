@@ -29,3 +29,11 @@ The [Lima usage documentation](https://lima-vm.io/docs/usage/) describes creatio
 copy and shell commands. [Plain mode](https://lima-vm.io/docs/config/port/) controls
 automatic forwarding. These recipes provision a test environment; only actual
 source-bound results close the [release gates](../../docs/release-checklist.md).
+
+The validation Dockerfile accepts `RUST_BUILD_IMAGE` for an explicit platform
+manifest from `rust-image.json`. This avoids a legacy Docker image-store conflict
+when building both architectures from the same multi-platform index on one VM.
+Keep the compiler check in `validate_linux.sh`; a build argument never waives the
+Rust 1.97.1 requirement. Record the exact recipe, selected manifest and built image
+identity in acceptance evidence. Translated x86 execution is not native
+performance or endurance acceptance.

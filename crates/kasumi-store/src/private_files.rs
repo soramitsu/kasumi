@@ -97,6 +97,18 @@ pub fn create(path: &Path, bytes: &[u8]) -> Result<()> {
     sync_parent(path)
 }
 
+/// Publish one complete owner-only file without replacing any existing path.
+/// A failed directory sync has an uncertain outcome; inspect the exact path.
+pub fn publish(path: &Path, bytes: &[u8]) -> Result<()> {
+    let parent = path.parent().context("operator file has no parent")?;
+    check_directory(parent)?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    temporary.write_all(bytes)?;
+    temporary.as_file().sync_all()?;
+    temporary.persist_noclobber(path)?;
+    sync_parent(path)
+}
+
 /// Atomic replacement: readers see either complete generation. A failure after
 /// rename has uncertain durability and callers must reread before retrying.
 pub fn replace(path: &Path, bytes: &[u8]) -> Result<()> {

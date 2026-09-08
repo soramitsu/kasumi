@@ -1,4 +1,6 @@
 //! Transport-independent, exact JSON contracts shared by every Kasumi interface.
+mod security_audit;
+pub use security_audit::*;
 mod audit;
 pub use audit::*;
 mod canonical_keys;

@@ -308,6 +308,21 @@ impl ManagementResponseFence {
 }
 
 impl Administration {
+    pub(crate) fn security_audit_workspace(
+        &self,
+    ) -> kasumi_types::Result<kasumi_engine::admission::Reservation> {
+        // Decoded records, their encoded page and transport response coexist.
+        // This explicit charge also covers installations with tiny document limits.
+        self.admission.reserve(
+            (4 * kasumi_types::MAX_SECURITY_AUDIT_PAGE_BYTES) as u64,
+            None,
+        )
+    }
+
+    pub(crate) fn security_audit(&self) -> &Arc<SecurityAudit> {
+        &self.audit
+    }
+
     /// Administrative routing is separate from DatabaseRegistry. Reserved control
     /// access still requires its own verified tenant context and current admin
     /// permission; service-security storage is never a database route.

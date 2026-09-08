@@ -1,0 +1,205 @@
+{
+  "kind": "development integration diagnostics; not final release acceptance",
+  "source": "18667b94ee5f0bd03ea70353a22a01cf896553b0",
+  "lock_sha256": "497d1a81eac52249a4235d1ca31c73f9d2a08c1ad73b1e920b21f2f782c9369c",
+  "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-apple-darwin\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+  "command": "cargo test --locked --workspace --all-features --all-targets --no-fail-fast -j 2 -- --test-threads=2",
+  "environment": {
+    "CARGO_TARGET_DIR": "/tmp/kasumi-production-validation-target"
+  },
+  "outcome": {
+    "exit_code": 101,
+    "passed": 423,
+    "failed": 1,
+    "ignored": 2,
+    "test_groups": 43
+  },
+  "failures": [
+    "engine contracts::strict_empty_discovery_is_audited_and_failed_audit_persistence_blocks_results: FaultBackend has no durable directory; explicit private filesystem archive correction is in708a881 and requires its own frozen validation."
+  ],
+  "limitations": [
+    "Ignored live MinIO/OpenBao tests are not interoperability acceptance.",
+    "This commit predates backup-session integration, tenant audit pruning and signer-trust persistence.",
+    "Ephemeral fixture configuration is derived from frozen source, not a retained operator acceptance deployment."
+  ],
+  "executables": [
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/kasumi_authority-fa50c14e5edb27a3",
+      "sha256": "a0eb5bc28de8be2988f6feb1678b28162b89ba0583cc8f442e213ccf6e1fde8f"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/kasumi_bench-bf7ba3428988007b",
+      "sha256": "ebbed592546fc59e9864cee124eba686020923fc8d0c3478b5f6c010ce009ce2"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/kasumi_bench-efea8ace54a2c64d",
+      "sha256": "b8f7e381a32e54d780a27992a0c6fbe82ad56d19a490f27eee34e6733ae7c651"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/kasumi_bench_loopback-1c7854e119b938ad",
+      "sha256": "a1c31531d751ce45af23217d32d6d30bee8685c9338f44f121b597c916872c2c"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/kasumi_bench_network-b7bd1ae27fdecf49",
+      "sha256": "4db5ce9701c468cbc257bc2333305edda73ee48c33622b6ce2aa278252992dc3"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/kasumi_client-92e284fe21a559fa",
+      "sha256": "0504c72f204ae3441683c9ae2b7f485cd36a6e6df8c1660965734e123ad01eb3"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/kasumi_clock-8401f3bab24abbf7",
+      "sha256": "a90b6227ef1369cbdbdc54610e362dc22d971da88aa3e375fba2d3b520c441d4"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/kasumi_engine-4da1898750ac8aeb",
+      "sha256": "dd99a6ab9d140cd86331f62a90c942be1c6ec7493c98ed9adb23ad8fa847e426"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/admission-17e44865247aa693",
+      "sha256": "2d8f29279d789bb7c53c4ffdb5790061ae551322e1e1dea047ef81cc7533c037"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/backup_checkpoint-77bdaa821bbfff35",
+      "sha256": "7e68f19a37d863ce03d1d7e3ecfbb5f3156b3f3ac34b4f8b655bf731661767b8"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/concurrent_pagination-576ec22ce71ca16d",
+      "sha256": "a4188ab54ecceb8c364f18d3082888873171907e19dda1a1e363524c39faa16c"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/contracts-3965c9c4d050fc06",
+      "sha256": "d38ef4100466b8051799127c724e2603b0057ea0856b71723ba62927c3fbb797"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/control-a36d192dc29e6985",
+      "sha256": "01e55f3e78c7def0dd66b505423234fdb9fe8699699d78ec9e369263dec4daef"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/embedded_audit-bc830b88f3851a69",
+      "sha256": "015b754c6d11e5ae01fc14bb2c82a591327541291a191a30c57c91fb63e6066f"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/guarded_staging-691333b0a4b29ba8",
+      "sha256": "caa0f151b1ab6a25526bcbde41537e5443cd7ebde3d77c428dd8cdb9ea31730d"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/history-3f9d2de594f9b619",
+      "sha256": "7ad59c645894d1f8d927b558142c55f8c4fc8f5bc4556d867ec12f145ddb79c6"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/lifecycle-dae41e42420aee52",
+      "sha256": "0b53d436f6f0ec84ca42680a3e1e9bdc69bb21303e1968d990de6e3428a425b3"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/replicated-8fe03e6ae1acf769",
+      "sha256": "cc2abfe249ec2d64c30ff41ea3cc5a03a2b033013eb3ffd9170125cc9d1e17f0"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/response_release-580927d2262aeadc",
+      "sha256": "150590140f1f428ac3a4ca1322499edb9c9b647004a9f70ff0e459bb6b33750f"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/restore_deadline-e13e2e1b29994732",
+      "sha256": "4af121b06a6732de9bda2e5c4bb980e6c92258ae9f6587c65ccf2fa8c45ab137"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/retirement-3c166e15536233f5",
+      "sha256": "3b0fc35134a493438509089ddc0c19f06d9767747f91cca281ab67266cbf764f"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/schema_activation-7b579fa4092e5dc5",
+      "sha256": "6c77e200e1d79b675e770f88b55a0dfdd3beea1462ee5e7528905b407b822082"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/shutdown-3fd5b7cd7e651639",
+      "sha256": "47c007fe17e05b66a6f995aaebdb6cd0accead0e05d721308fb75facf7b325b4"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/snapshot_budget-b39586b69ee5b3e1",
+      "sha256": "12c6213a371f9315ddc92ad4df2bceb5f96f49674544aff437475afcd2eed65a"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/staged_transactions-0fd07f809b096c8c",
+      "sha256": "71500808208b267e28a2a4612c979b9cc88671931196a387be5c6b883f8c793c"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/examples/map_sharing-1d69d471cdd907cb",
+      "sha256": "0a537dfb8b413362f063fb836ddc7349ffc08166e16dd1d083617f647aac039f"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/kasumi_query-07a5aa28f9815b8d",
+      "sha256": "bf4ac20a4c552715e331d3959d85dc566cd17f2e786b1fc4356e206678197712"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/kasumi_raft-be4cc0a71f1dd450",
+      "sha256": "8df2bc9b4f304ab8bd59eccb6f3a0f1bffba067e67e40ac996af13453fc4ead5"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/cluster-27b2e7b02a1325dd",
+      "sha256": "b75d78037bfe55c4424ed4b98022a6d882e9680a066a9e6c7ac015999f9cac21"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/read_barrier-1708be2504003082",
+      "sha256": "536a7defda37f73d948e5c561b5d0082bde9809371d90c14d7d5f5af4aac2968"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/shutdown-61fd3d5544de7cfe",
+      "sha256": "1f5dd32559e36584e38f9b8aca5a2e85e69eda35cbd55dd396dab56ff0b9a8a7"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/storage_conformance-709ddef656a57764",
+      "sha256": "e09311936968517fbe2fcb57dbbabcf6ddaf068ea70061175dc07e8ae4d29c78"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/kasumi_server-f77bee8f4b1a7c92",
+      "sha256": "19952a7eb43b29eb817b952f704d14308d395166ce3b543e153f5687c0b23f10"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/kasumi_authority-c649483dc9b5d543",
+      "sha256": "320dedea6f0fc6133e0c38b53b4cc63fa0fc8b5fd9f691d8470eb033aa790963"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/kasumictl-b4922ce895441d75",
+      "sha256": "4dc3c68e74e717d199118aff43123066daeab2c7ff642833f48bfd077ce33ab6"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/kasumid-3d9cd59bd8649f2d",
+      "sha256": "4135fb3076163c8eafbd0c6072560aca77d60b02bb9ca72e46068247a5743336"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/cluster_transport-62357c9de3e03d85",
+      "sha256": "cf6a844e868a6569f0d0a41265918211b57ff9402c24e52b9848ba3b5855daf9"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/tls_listener-a497c0c06b39a30e",
+      "sha256": "0564cba3ab79d76978327e600d9ad7f611f044e2ff6c83eefbc4f89855802e80"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/kasumi_serving-86f8674d4043de85",
+      "sha256": "c829402c7cf0a2bd5ece0e623715431bf721fbd09144d7d966944118ad4aeffd"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/kasumi_store-2071149ec2744cee",
+      "sha256": "0bf54f5870371104d67e08cc541d23725fa18b044148c0c8d252d96fcbfb47c4"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/openbao_live-6e3174de146720c2",
+      "sha256": "7fafb90f4c3586a16fcdcc5359fddc13f6b86a1de315d8bc0bf449d7b3b9b170"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/kasumi_transport-bb2ee73721cf5b30",
+      "sha256": "6a2d88b7a2ac60faa8e5cc61827781ca09bb10c107c166098eb32277ecaaf8f8"
+    },
+    {
+      "path": "/tmp/kasumi-production-validation-target/debug/deps/kasumi_types-5d0d45cba67ceb53",
+      "sha256": "5025f8ebb256d5c45bbcf7f3729d2772a5dca6007ac5cf9eb28a3ad89e1ea28c"
+    }
+  ],
+  "logs": [
+    {
+      "file": "logs/kasumi-production-maintenance-workspace-tests-1.log",
+      "sha256": "62c8d32c542a992fd63036be23ab311c94db111793846e4ba03a5b1a7f93d123"
+    }
+  ]
+}
