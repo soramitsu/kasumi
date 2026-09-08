@@ -31,6 +31,7 @@ url = "=2.5.8"
 libc = "=0.2.189"
 
 [dev-dependencies]
+redb = "4.2"
 kasumi-engine = { path = ".", features = ["test-utils"] }
 kasumi-serving = { workspace = true, features = ["test-utils"] }
 openraft = { version = "=0.9.25", features = ["serde", "storage-v2"] }
