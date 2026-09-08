@@ -1,0 +1,30 @@
+    Checking kasumi-clock v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-clock)
+   Compiling kasumi-client v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-client)
+    Checking kasumi-types v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-types)
+    Checking kasumi-serving v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-serving)
+    Checking kasumi-query v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-query)
+    Checking kasumi-store v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-store)
+    Checking kasumi-raft v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-raft)
+    Checking kasumi-engine v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-engine)
+    Checking kasumi-authority v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-authority)
+    Checking kasumi-server v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-server)
+    Checking kasumi-bench v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-bench)
+error[E0308]: mismatched types
+    --> crates/kasumi-engine/tests/staged_transactions.rs:1042:67
+     |
+1042 |         let result: Result<WriteReceipt> = serde_json::from_slice(&result).unwrap();
+     |                                            ---------------------- ^^^^^^^ expected `&[u8]`, found `&Result<WriteReceipt, Error>`
+     |                                            |
+     |                                            arguments to this function are incorrect
+     |
+     = note: expected reference `&[u8]`
+                found reference `&std::result::Result<kasumi_types::WriteReceipt, kasumi_types::Error>`
+note: function defined here
+    --> /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_json-1.0.151/src/de.rs:2667:8
+     |
+2667 | pub fn from_slice<'a, T>(v: &'a [u8]) -> Result<T>
+     |        ^^^^^^^^^^
+
+For more information about this error, try `rustc --explain E0308`.
+error: could not compile `kasumi-engine` (test "staged_transactions") due to 1 previous error
+warning: build failed, waiting for other jobs to finish...

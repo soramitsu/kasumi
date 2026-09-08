@@ -418,7 +418,7 @@ a read-only quota getter or caller capacity claim cannot close this dependency.
 - The frozen functional runner now includes a separate workspace documentation
   test gate. On `8e90ff2` macOS, eleven documentation tests pass; evidence is in
   `docs/evidence/workspace-doctests-20260908`. Native Linux ARM64 full functional
-  validation of that exact source is in progress and is not a recorded pass.
+  validation of that exact source finished failed, as recorded below.
 
 - `f401a09` publishes restore state in an owned blocking worker that retains the
   original finite invocation, bootstrap lock, source/target stores and workspace
@@ -438,3 +438,59 @@ a read-only quota getter or caller capacity claim cannot close this dependency.
   These are development checks. Actual end-to-end candidate production assembly,
   OS/OCI SBOMs, OCI images, reproducible compiler builds and release acceptance
   remain open. Procedures are in `docs/release-artifacts.md`.
+
+- Frozen Linux ARM64 `8e90ff2` finished with499workspace passes, three failures
+  and two ignored tests. All other gates passed, including doctests, strict
+  Clippy and production builds (1110.499seconds). Raw source/binary-bound evidence
+  is in `docs/evidence/frozen-linux-arm64-functional-8e90ff2-20260908`. This failed
+  historical attempt cannot be promoted by later fixture fixes.
+- `cabebf8` completes current target-voter materialization, initialization and
+  signed completion orchestration. Evidence is in
+  `docs/evidence/control-recovery-quorum-20260908`; source fencing, activation and
+  publication remain later work. Exact audit/recovery fixture corrections and
+  their unavailable historical binary hashes are recorded separately in
+  `docs/evidence/control-fixture-resolution-20260908`.
+- `c50ad3b` binds every staged operation to the immutable original resource and
+  principal. Native two-principal/renewal, restored lineage, SDK, ordered stop,
+  replication and encrypted backup gates pass. Evidence and failed earlier
+  attempts: `docs/evidence/staged-original-scope-20260908`. The additional exact
+  append fixture and its unresolved earlier status failure are preserved in
+  `docs/evidence/history-exact-append-20260908`.
+- `49c9338` requires exact partition credential-file coverage and preserves one
+  credential snapshot across each original endpoint attempt. Configuration and
+  actual native/authority TLS gates pass. Evidence:
+  `docs/evidence/partition-credentials-20260908`. The separate restart Fence
+  fixture resolution is in `docs/evidence/restart-fence-resolution-20260908`.
+- `42c018e` adds an owned current Control quorum observation, permanently closed
+  on failed/canceled checks or release. Three encrypted quorum tests and scoped
+  strict/production checks pass. Evidence:
+  `docs/evidence/current-control-fence-20260908`. Fresh physical registry binding,
+  remote acknowledgments and full rotation retirement remain required.
+- Packaging source531d86e test/provenance checks and earlier failures are retained
+  in `docs/evidence/release-packaging-20260908`. No final candidate package has
+  yet passed end-to-end assembly and deployment.
+
+- `bf9f240` independently authenticates planned source application retirement and
+  custody receipt verification, and dispatches the exact unavailable-source
+  issuer fence. Seven engine lifecycle tests, actual TLS backup/retirement and
+  strict workspace checks pass; final fixture-free check remains pending after
+  the custody split. Evidence: `docs/evidence/control-source-fencing-20260908`.
+  Phase-time retirement deadlines and complete activation/publication remain open.
+
+- `42bf607` adds a pinned native acceptance workflow, exact gate-command
+  verification, host provenance, a dated Debian package snapshot and an OCI
+  recipe that verifies binary hashes and architecture. Sixteen Python tests and
+  native macOS host preflight pass; the corrected workflow passes actionlint.
+  The initial lint failure and source-qualified results are retained in
+  `docs/evidence/candidate-workflow-20260908`. Actual workflow execution, image
+  builds, final candidate assembly and compiler reproducibility remain open.
+
+- `4cc27db` replaces schema activation and retirement lifetime record-count
+  ceilings with exact checked 64-bit byte budgets. Terminal outcome capacity is
+  reserved before publication, source fencing or positive Raft commitment;
+  exhausted identities remain exactly replayable and budgets can expand beyond
+  2 GiB. Twenty-three engine cases and all45Raft tests pass, followed by strict
+  workspace Clippy, fixture-free server checks and formatting. Source-qualified
+  evidence and the initial Clippy fixture failure are retained in
+  `docs/evidence/permanent-history-byte-budgets-20260908`. Resident permanent-map
+  migration, persistent disk admission and native import reservations remain open.

@@ -1,0 +1,38 @@
+{
+  "source": "4cc27db44303e9d7b2adb9ff1b67c87ed8c7ace2",
+  "tree": "f60e379306b1358b6b09158e7eb44f92c42470a7",
+  "lockfile_sha256": "9f29f1383152d5ddf05b5b07955ca8b2766e1e06e2cd03ce77040d14f9371559",
+  "platform": "macOS ARM64",
+  "toolchain": "1.97.1",
+  "results": {
+    "engine": {
+      "source": "0c168ed69e5ee443233cbe2ff9e5adc7b11f08a2",
+      "retirement": "10 passed in 19.25 seconds",
+      "schema_activation": "13 passed in 32.01 seconds"
+    },
+    "raft": {
+      "source": "e8eaeaf1c79fde7ef4d757d2ba4f0fc3c8d2b559",
+      "result": "45 passed in 130.75 seconds",
+      "executable": "/tmp/kasumi-production-root-target/debug/deps/kasumi_raft-26a99c63397d883e",
+      "executable_sha256": "4ddb5dbfa350a16a344674e288933e0716c5851298c0a61e13f91c6e6470f8c9"
+    },
+    "strict_workspace": "Passed at final source after removing one redundant u64 fixture cast; initial failure retained",
+    "fixture_free_server_check": "Passed at final source",
+    "format": "Passed at final source"
+  },
+  "files": {
+    "kasumi-permanent-byte-budgets-engine.log": "da680ac4d4c1a60b8f6988da851fd60e98acf32b53fb9ee0dc1f3dc2084a7b19",
+    "kasumi-permanent-byte-budgets-raft.log": "6ef9a104d775a5f5bb6ac1ac6d72992b07767dbc2370183f035a41e9a668bc07",
+    "kasumi-permanent-byte-budgets-clippy-first.log": "627cd67dfe1ffa2ddf2e9fc3f1c46eea22faebe5a41dd14398566e49e76d2711",
+    "kasumi-permanent-byte-budgets-clippy-final.log": "81434899d34382c18bb66736db3adeee82ce114494f7a0648413ded6e07a5ea2",
+    "kasumi-permanent-byte-budgets-production.log": "25901e620fbdfdf27e58ca6e4371aabc5fba754c4cba34cc18532986eb216cf7",
+    "kasumi-permanent-byte-budgets-format.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "kasumi-permanent-byte-budgets-0c168ed-evidence.json": "4738fb0c40e88a25919c6c552f662cd7c1a17da98d08529dac6016a3c127eadd"
+  },
+  "limitations": [
+    "Schema capacity test restores 100001 generated valid records then admits one live engine operation; it is not 100001 network operations.",
+    "Permanent schema/retirement records still have resident maps; point-addressed storage migration remains open.",
+    "Native import capacity and persistent disk admission remain open.",
+    "No final integrated workspace/cross-platform/capacity/endurance acceptance is claimed."
+  ]
+}

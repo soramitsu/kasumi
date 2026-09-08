@@ -1,0 +1,26 @@
+{
+  "source": "3979ba5be4191f31c08238d3dc8eef47615848d8",
+  "tree": "e84070e4d1666a40ec704271ae8d848aceaf54d7",
+  "platform": "macOS ARM64 shared host",
+  "toolchain": "1.97.1",
+  "lockfile_sha256": "9f29f1383152d5ddf05b5b07955ca8b2766e1e06e2cd03ce77040d14f9371559",
+  "final_test_log": {
+    "path": "/tmp/kasumi-history-exact-append-diagnostic-tests.log",
+    "sha256": "30dc15a0dd4b212c14fd505230345f55ca97434e82d9b5b649d5c106e8357c61",
+    "result": "1 passed in308.23s"
+  },
+  "executable": {
+    "path": "/tmp/kasumi-production-root-target/debug/deps/history-a85e510e86b0d181",
+    "sha256": "567575ea08e2e7848bf176cb0abd8fd4da00654ab2af751e38cc009a003cebd8"
+  },
+  "earlier_failure": {
+    "source": "f926cc0",
+    "path": "/tmp/kasumi-history-exact-append-tests.log",
+    "sha256": "7ea01b5306e6aa8050070237a7aaa48401e25ed20f5bd14964ba8c02d063dbaa",
+    "result": "status resolution returned unexpected error; assertion omitted exact code, so cause remains unproven. Diagnostic-only follow-up passed."
+  },
+  "limitations": [
+    "Focused test does not prove a final-source Linux gate or3GiB capacity.",
+    "Exact retry branch is exercised only on actual UnknownOutcome; final pass alone does not prove fault injection."
+  ]
+}

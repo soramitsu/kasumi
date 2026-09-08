@@ -1,0 +1,4 @@
+.github/workflows/release-candidate.yml:31:23: context "runner" is not allowed here. available contexts are "github", "inputs", "matrix", "needs", "secrets", "strategy", "vars". see https://docs.github.com/en/actions/learn-github-actions/contexts#context-availability for more details [expression]
+   |
+31 |       KASUMI_RUN: ${{ runner.temp }}/kasumi-release-${{ github.run_id }}-${{ github.run_attempt }}
+   |                       ^~~~~~~~~~~

@@ -18,9 +18,18 @@ from an earlier phase cannot satisfy a new phase. A completion retry can use
 another installed voter with the same original command and absolute deadline;
 the unresolved prior attempt remains retained.
 
-**Source retirement/fencing, activation confirmation, and route publication are
-not yet dispatched by this coordinator.** `resume` returns an explicit
-unavailable error at these phases. This slice is not a complete disaster recovery
+Planned recovery then resolves the original retirement through its independently
+installed source connection and verifies the exact accepted receipt through the
+native source verification operation. Source-unavailable recovery skips this
+step and never records a planned retirement claim. Both paths commit an exact
+source-incarnation and authority-epoch fence at the installed issuer before
+advancing to activation. A retirement request retains its original absolute cap;
+a prepared request whose cap expires can resolve an accepted outcome but cannot
+be dispatched again as a new effect.
+
+**Activation, local activation confirmation, and route publication are not yet
+dispatched by this coordinator.** `resume` returns an explicit unavailable error
+at these phases. This slice is not a complete disaster recovery
 workflow or a release acceptance result.
 
 A pre-activation `stop` permanently retains the stop identity, obtains the issuer's
@@ -43,12 +52,15 @@ contains `routes`, a bounded map of names to `RecoveryRoute`. Each route install
 - Three `RecoveryMember` entries containing the physical `LifecycleNode`, target
   replication placement, and pinned mTLS `AdminClientConfig` with the Control
   resource credential file.
-- An explicit optional source client configuration for planned retirement.
+- Explicit optional application and custody source client configurations for
+  planned retirement, with distinct credential files.
 
 The complete route and issuer configuration have a canonical digest. Request
 bodies cannot provide arbitrary dispatch URLs. Credentials are read from private
 files per invocation. Issuer administration, target Control administration, and
-planned source access use independently installed credential sources.
+planned application retirement, and retained source custody use independently
+installed credential sources. An accepted retirement can be verified using
+custody authority even if the former application credential is unavailable.
 
 ## Native API and CLI
 
@@ -98,11 +110,21 @@ issuer; that path remains incomplete. Other unresolved remote phase kinds
 currently require explicit original outcome resolution, and automatic recovery
 after their original admission expires remains an implementation gap.
 
+Planned start requests currently freeze the retirement request's cutoff before
+target materialization. A long materialization can therefore exhaust it before
+retirement admission. That shape still needs replacement by a permanent
+retirement identity whose finite deadline is frozen at phase preparation;
+retrying an already prepared request must preserve its original cutoff.
+
 The native integration test uses real mTLS with separate replicated Control and
 issuer groups and an intentionally unavailable target endpoint. It verifies
 issuer preparation, Control phase commitment, durable unresolved dispatch, and
 stop preparation. The replicated journal tests verify restart and three-voter
 signed materialization/cleanup facts, current-phase startup, designated
-initialization, and completion using explicit cryptographic fixtures.
+initialization, completion, and exact source fencing using explicit cryptographic
+fixtures. The planned-source dispatch helper is exercised by the real TLS native
+backup/retirement test, including recovery using only custody authority and
+rejection of the former application token. A complete coordinator-driven planned
+recovery with all target processes remains an acceptance gate.
 Actual encrypted target execution has separate target-runner tests. These checks
 do not substitute for the planned final multi-process recovery acceptance run.

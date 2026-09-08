@@ -1,0 +1,81 @@
+{
+  "commits": {
+    "cabebf877af0a820ac4ff6fe19b23346484dfee3": {
+      "tree": "b30652103043f9a58d44fee326d6f04f825936e1",
+      "lock_sha256": "a4a3883969dc9486548a1aea841ecf45c482c99e4ea1e0d47b56f6c52b2afa08"
+    },
+    "b3fbfbaeaa0f5b703fe42b8fcd6e5456907d4ae0": {
+      "tree": "a441aae74449aa7513f48d65914ced42a8bd6f52",
+      "lock_sha256": "a4a3883969dc9486548a1aea841ecf45c482c99e4ea1e0d47b56f6c52b2afa08"
+    },
+    "d5ec1f60ab3ba155be818dde985f07c9062fc813": {
+      "tree": "f9055000dd5a9e6780fd1641435e03c625172802",
+      "lock_sha256": "a4a3883969dc9486548a1aea841ecf45c482c99e4ea1e0d47b56f6c52b2afa08"
+    }
+  },
+  "runtime": {
+    "toolchain": "Rust 1.97.1",
+    "platform": "aarch64-apple-darwin",
+    "test_threads": 2,
+    "cargo_jobs": 2
+  },
+  "binary_evidence": {
+    "status": "not preserved",
+    "reason": "The same target path is being rebuilt for the subsequent source-fencing increment. No test executable hash was captured at the preceding test runs; a later binary hash cannot establish their identity."
+  },
+  "logs": [
+    {
+      "path": "/tmp/kasumi-control-audit-boundary-before.log",
+      "sha256": "5b9d54e58ce8b5368a72d4c016dca4d9382ebf811b6f86273e672850d0129e6d",
+      "bytes": 399,
+      "outcome": "pass: original focused regression, 19.85 seconds"
+    },
+    {
+      "path": "/tmp/kasumi-control-audit-boundary-after.log",
+      "sha256": "d7d2887682a8cea23d347fa1ed51bef821dff12580c11380f69bdae9ff5b4d5f",
+      "bytes": 1827,
+      "outcome": "failed compilation: temporary Arc reference mismatch"
+    },
+    {
+      "path": "/tmp/kasumi-control-audit-boundary-after-2.log",
+      "sha256": "86bd00669e186a1d2a32a6e6c2fdea086ffba78c0b0e65e40dd08b3c3d44edda",
+      "bytes": 498,
+      "outcome": "pass: corrected focused regression, 16.64 seconds"
+    },
+    {
+      "path": "/tmp/kasumi-control-audit-boundary-lifecycle.log",
+      "sha256": "8fa3d110da94d6b963a0c679caae3516cc421f633afeacdfe544d4c678f4cbd2",
+      "bytes": 1877,
+      "outcome": "failed: six of seven pass; coordinator StopTarget receipt acknowledgement UnknownOutcome at line584"
+    },
+    {
+      "path": "/tmp/kasumi-control-audit-boundary-clippy.log",
+      "sha256": "00b1546d2ba7396e6497c180ab7a42389e5d5b586aee76de63d6fe2c911a9e2d",
+      "bytes": 659,
+      "outcome": "pass: strict engine all-feature/all-target Clippy"
+    },
+    {
+      "path": "/tmp/kasumi-control-exact-recovery-outcomes.log",
+      "sha256": "df8c02cd27e20af6b34f16d83ffbec1f0afb8f29b9158056ab8d6f044c850a62",
+      "bytes": 1154,
+      "outcome": "pass: all seven lifecycle tests,42.72 seconds; source before final needless-borrow-only fix"
+    },
+    {
+      "path": "/tmp/kasumi-control-exact-recovery-clippy.log",
+      "sha256": "5c20418ac9e2d448108f936aa6913eb3005a2ad723601535fcc747255f5989cf",
+      "bytes": 691,
+      "outcome": "failed lint: one needless borrow in fixture helper"
+    },
+    {
+      "path": "/tmp/kasumi-control-exact-recovery-clippy-2.log",
+      "sha256": "33a43a0591ba490a1b545facda002ceca7fa835a661017ba8a1e3690d11fd2ac",
+      "bytes": 171,
+      "outcome": "pass: strict engine all-feature/all-target Clippy after borrow-only correction"
+    }
+  ],
+  "limits": [
+    "These are scoped macOS checks, not a Linux rerun or final release gate.",
+    "The seven-test pass precedes one Clippy-only removal of a needless extra reference in tests/common/recovery_control.rs; final-source strict Clippy passes.",
+    "No production reservation or recovery deadline was weakened."
+  ]
+}
