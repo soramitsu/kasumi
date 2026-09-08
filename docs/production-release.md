@@ -522,3 +522,9 @@ a read-only quota getter or caller capacity claim cannot close this dependency.
   Follower authorization, durable global coverage, revocation and issuer drains
   remain open, including global winner/abort binding of the older issuer-local
   StopStage path. The remote path rejects StopStage and retirement.
+
+- `c53aeb4` makes live native/MCP benchmark requests read one fresh owner-only
+  credential file snapshot per request and rejects the old environment-token
+  contract. Two regressions and strict benchmark checks pass; evidence is in
+  `docs/evidence/live-benchmark-credentials-20260908`. This prepares external
+  renewal for long runs; it does not close the matrix or endurance gates.
