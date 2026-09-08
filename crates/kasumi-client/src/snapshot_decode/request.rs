@@ -397,6 +397,44 @@ mod tests {
         }
     }
     #[test]
+    fn canonical_wrapper_admission_bounds_actual_sorting_workspace() {
+        fn object(nested: bool) -> serde_json::Value {
+            let mut map = serde_json::Map::new();
+            for i in (0..32).rev() {
+                map.insert(
+                    format!("{i:04}"),
+                    if i == 0 && nested {
+                        object(false)
+                    } else {
+                        serde_json::Value::Bool(true)
+                    },
+                );
+            }
+            serde_json::Value::Object(map)
+        }
+        // With the external consumer's preserve_order feature these reverse
+        // insertions require the actual canonical borrowed-entry sorter. The
+        // probe tests independently prove rejection precedes that body entry.
+        let value = object(true);
+        let original = serde_json::to_vec(&value).unwrap();
+        let canonical = kasumi_types::CanonicalJsonValue(&value);
+        let small = options(2200);
+        let call = small.admit().unwrap();
+        assert!(crate::snapshot_decode::encode(&canonical, &call).is_err());
+        assert_eq!(small.resources.usage().live_owners, 1);
+        drop(call);
+        assert_eq!(small.resources.usage().live_owners, 0);
+        let large = options(100_000);
+        let call = large.admit().unwrap();
+        assert_eq!(
+            crate::snapshot_decode::encode(&canonical, &call).unwrap(),
+            serde_json::to_vec(&canonical).unwrap(),
+        );
+        assert_eq!(serde_json::to_vec(&value).unwrap(), original);
+        drop(call);
+        assert_eq!(large.resources.usage().accounted_bytes, 0);
+    }
+    #[test]
     fn map_workspace_admission_precedes_sorting_body() {
         let call = options(4096).admit().unwrap();
         let bodies = Cell::new(0);
