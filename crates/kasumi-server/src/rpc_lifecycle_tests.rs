@@ -378,6 +378,7 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
             .collect(),
         phase: LifecyclePhase::Materialize,
         phase_input_sha256: "ab".repeat(32),
+        resume_origin: None,
     };
     let receipt = client
         .execute(

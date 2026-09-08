@@ -5,7 +5,7 @@ use super::*;
 use kasumi_engine::{
     RestoreSource, TargetLifecycleInvocation, TargetMaterializationConfig, TargetOperation,
     TargetOperationScope, TargetReplicaConfig, TargetSigner, materialize_target_replica,
-    open_target_replica,
+    open_target_replica, resume_target_materialization,
 };
 use kasumi_store::{FilesystemBackupDestination, StorageAccess, TenantStorageSet, TenantStore};
 
@@ -149,6 +149,7 @@ impl MaterialFixture {
         let input = TargetMaterializationInput {
             destination_alias: "target-backups".into(),
             backup_id: target.checkpoint.backup_id,
+            source_purpose_sha256: digest(&kasumi_store::StoragePurpose::LocalFixture).unwrap(),
             target_incarnation: target.incarnation,
             voters: (1..=3)
                 .map(|id| {
@@ -443,6 +444,172 @@ async fn actual_target_materialization_preserves_image_and_original_operation_fe
     drop(stores);
     audit.shutdown().await;
     drop(audit);
+    f.close().await;
+}
+
+#[tokio::test]
+async fn fresh_materialization_admission_preserves_expired_origin_and_exact_published_image() {
+    let mut f = MaterialFixture::new().await;
+    // The short original grant is an explicit signed fixture; retained-origin
+    // validation by an actual Control quorum is covered in engine/lifecycle.
+    f.intent.observation.intent.request.command_id = Uuid::new_v4();
+    f.intent
+        .observation
+        .intent
+        .original_credential_expires_at_ms = 1_000_500;
+    f.intent.observation.intent.request_sha256 =
+        digest(&f.intent.observation.intent.request).unwrap();
+    f.control.sign_intent(&mut f.intent);
+    accepted_on_current_leader(&f.issuer, request(&f.intent)).await;
+    let (scope, stores, audit) = f.phase(1, &f.intent).await;
+    let operation = scope.begin_operation(60_000).unwrap();
+    let result = materialize_target_replica(
+        &operation,
+        &f.source,
+        stores.clone(),
+        f.input.clone(),
+        f.config(1),
+        audit.clone(),
+    )
+    .await
+    .unwrap();
+    let original = f.signers[&1]
+        .sign_materialized(&result.proof, &operation)
+        .await
+        .unwrap();
+    let origin = original.fact.origin.clone();
+    f.issuer.clock.0.store(600, Ordering::SeqCst);
+    assert!(operation.check().is_err());
+    assert!(result.proof.release(&operation).await.is_err());
+    drop(result);
+    drop(operation);
+    scope.close();
+    scope.drain().await;
+    stores.application().shutdown().await;
+    stores.custody().store().shutdown().await;
+    drop(stores);
+    audit.shutdown().await;
+    drop(audit);
+
+    let mut resume = f.intent.clone();
+    let next = &mut resume.observation.intent;
+    next.request.command_id = Uuid::new_v4();
+    next.request.phase = LifecyclePhase::ResumeMaterialize;
+    next.request.phase_input_sha256 = origin.resume_digest().unwrap();
+    next.request.resume_origin = Some(Box::new(origin.clone()));
+    next.request_sha256 = digest(&next.request).unwrap();
+    next.accepted_at_ms = 1_000_600;
+    next.original_credential_expires_at_ms = 1_500_000;
+    next.revision += 1;
+    resume.observation.observed_revision = next.revision;
+    f.control.sign_intent(&mut resume);
+    accepted_on_current_leader(&f.issuer, request(&resume)).await;
+    let mut materialized = BTreeMap::new();
+    for id in 1..=3 {
+        let (scope, stores, audit) = f.phase(id, &resume).await;
+        let operation = scope.begin_operation(60_000).unwrap();
+        assert!(
+            materialize_target_replica(
+                &operation,
+                &f.source,
+                stores.clone(),
+                f.input.clone(),
+                f.config(id),
+                audit.clone(),
+            )
+            .await
+            .is_err()
+        );
+        let result = resume_target_materialization(
+            &operation,
+            &f.source,
+            stores.clone(),
+            origin.clone(),
+            f.config(id),
+            audit.clone(),
+        )
+        .await
+        .unwrap();
+        let proof = f.signers[&id]
+            .sign_materialized(&result.proof, &operation)
+            .await
+            .unwrap();
+        assert_eq!(proof.fact.origin, origin);
+        assert_eq!(proof.fact.bootstrap_sha256, original.fact.bootstrap_sha256);
+        assert_eq!(
+            proof
+                .fact
+                .origin
+                .materialization
+                .original_credential_expires_at_ms,
+            1_000_500
+        );
+        if id == 1 {
+            assert_eq!(proof, original);
+        }
+        materialized.insert(id, proof);
+        drop(result);
+        drop(operation);
+        scope.close();
+        scope.drain().await;
+        stores.application().shutdown().await;
+        stores.custody().store().shutdown().await;
+        drop(stores);
+        audit.shutdown().await;
+    }
+    verify_target_materializations(&origin, &materialized).unwrap();
+    f.close().await;
+}
+
+#[tokio::test]
+async fn materialization_rejects_authenticated_backup_purpose_substitution_before_publication() {
+    let mut f = MaterialFixture::new().await;
+    f.input.source_purpose_sha256 = "fe".repeat(32);
+    let intent = &mut f.intent.observation.intent;
+    intent.request.command_id = Uuid::new_v4();
+    intent.request.phase_input_sha256 = f.input.digest().unwrap();
+    intent.request_sha256 = digest(&intent.request).unwrap();
+    f.control.sign_intent(&mut f.intent);
+    accepted_on_current_leader(&f.issuer, request(&f.intent)).await;
+    let (scope, stores, audit) = f.phase(1, &f.intent).await;
+    let operation = scope.begin_operation(60_000).unwrap();
+    let error = materialize_target_replica(
+        &operation,
+        &f.source,
+        stores.clone(),
+        f.input.clone(),
+        f.config(1),
+        audit.clone(),
+    )
+    .await
+    .err()
+    .unwrap();
+    assert!(
+        format!("{error:#}").contains("source purpose differs from the authenticated backup root"),
+        "{error:#}"
+    );
+    assert!(
+        stores
+            .application()
+            .get("engine.bootstrap", b"manifest")
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        stores
+            .custody()
+            .store()
+            .get("raft.meta", b"application_bootstrap_sha256")
+            .unwrap()
+            .is_none()
+    );
+    drop(operation);
+    scope.close();
+    scope.drain().await;
+    stores.application().shutdown().await;
+    stores.custody().store().shutdown().await;
+    drop(stores);
+    audit.shutdown().await;
     f.close().await;
 }
 

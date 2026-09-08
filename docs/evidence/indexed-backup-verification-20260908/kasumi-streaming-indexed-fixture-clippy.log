@@ -1,0 +1,7 @@
+    Checking kasumi-types v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-types)
+    Checking kasumi-serving v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-serving)
+    Checking kasumi-query v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-query)
+    Checking kasumi-store v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-store)
+    Checking kasumi-raft v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-raft)
+    Checking kasumi-engine v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-engine)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 48.23s

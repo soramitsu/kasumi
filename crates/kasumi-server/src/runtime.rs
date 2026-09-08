@@ -3894,7 +3894,15 @@ mod lifecycle_tests {
                 },
             )
             .await
-            .unwrap();
+            .unwrap_or_else(|error| panic!(
+                "first replicated PrepareRestore failed: {error:#}; admission after failure={:?}; destination chunk limit={:?}; source limits={:?}",
+                managers[0].security_audit().admission().snapshot(),
+                configurations[0].backup_destinations.get("primary").map(|destination| match destination {
+                    crate::administration::DestinationConfig::Filesystem { max_bytes, .. }
+                    | crate::administration::DestinationConfig::S3 { max_bytes, .. } => *max_bytes,
+                }),
+                databases[0].engine().generation().map(|generation| generation.state.limits.clone()),
+            ));
         // A single prepared replica cannot start a replacement quorum.
         assert!(
             managers[0]

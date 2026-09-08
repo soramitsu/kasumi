@@ -1,0 +1,83 @@
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-production-streaming/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 21.68s
+     Running unittests src/lib.rs (/tmp/kasumi-production-streaming-target/debug/deps/kasumi_engine-d954104df0323488)
+
+running 62 tests
+test admission::tests::real_process_rss_and_physical_capacity_are_measured ... ok
+test admission::tests::queued_rebuild_expands_its_existing_slot_and_rejects_growth_without_losing_charge ... ok
+test admission::tests::result_release_rechecks_pressure_after_suspend_even_for_completed_work ... ok
+test admission::tests::pressure_cancels_queries_but_never_changes_write_work_and_uses_hysteresis ... ok
+test admission::tests::suspend_invalidates_old_measurement_and_slow_or_failed_probe_denies ... ok
+test admission::tests::retained_cursor_releases_operation_slot_but_keeps_bytes_until_last_owner ... ok
+test admission::tests::reserved_audit_workspace_remains_usable_under_rss_pressure ... ok
+test admission::tests::shutdown_drain_waits_for_detached_work_to_release_its_registration ... ok
+test audit_maintenance::tests::tenants_share_capacity_and_retained_workers_keep_it_owned ... ok
+test audit_source::tests::replica_nodes_and_historical_epochs_share_history_without_aliasing_other_installations ... ok
+test audit_source::tests::historical_incarnation_requires_complete_lineage_and_preserves_exact_source_checkpoint ... ok
+test admission::tests::cancelled_detached_worker_keeps_semaphore_and_reservation_until_exit ... ok
+test bootstrap::backup_restore::tests::expired_restore_worker_keeps_its_admission_charge_until_actual_completion ... ok
+test security_audit::tests::uncertain_audit_commit_fences_queued_writers_until_sequence_recovery ... ok
+test backup_verify::tests::expired_live_verification_worker_keeps_bytes_and_shutdown_registration_until_done ... ok
+test security_audit::tests::cancelled_queued_audit_and_cancelled_shutdown_drain_before_immediate_reopen ... ok
+test security_audit::tests::live_opens_share_sequence_and_preserve_concurrent_records_through_reopen ... ok
+test service::tests::canceled_queued_schema_activation_finishes_once_and_checks_receipt_release_authority ... ok
+test service::tests::committed_effect_with_expired_ack_is_resolved_by_fresh_credential ... ok
+test service::tests::expired_queued_and_canceled_credentials_accept_no_effect_or_identity ... ok
+test service::tests::committed_retirement_with_expired_reply_has_fresh_authorized_receipt_recovery ... ok
+test service::tests::committed_custody_with_expired_ack_recovers_only_with_fresh_authority ... ok
+test service::tests::query_shutdown_drains_abandoned_output_and_captured_generation ... ok
+test service::tests::accepted_stop_release_failure_is_unknown_and_reopen_recovers_exact_tombstone ... ok
+test service::audit_maintenance_service::tests::encrypted_worker_drains_hot_history_when_ordinary_capacity_is_full ... ok
+test service::tests::guarded_stop_queued_deadline_and_cancellation_leave_only_actual_durable_outcomes ... ok
+test bootstrap::fixtures::tests::production_bootstrap_installs_shared_pool_for_application_and_control ... ok
+test service::tests::generic_administration_cannot_inject_a_claimed_retirement_preparation ... ok
+test service::tests::lineage_read_keeps_original_expiry_and_current_collection_policy_at_release ... ok
+test service::tests::custody_observations_preserve_mutation_capacity_and_exhaustion_can_expand ... ok
+BACKUP INNER ERROR Error { code: Unauthorized, message: "authenticated credential expired" }
+test service::tests::queued_deadlines_use_admission_time_and_survive_caller_cancellation ... ok
+test service::tests::replicated_credential_admission_uses_only_captured_time_after_local_expiry ... ok
+test service::tests::long_backup_verification_and_encoded_read_recheck_original_credential ... ok
+test service::tests::queued_schema_before_expiry_rejects_all_definitions_and_retains_original_failure ... ok
+test service::tests::queued_custody_credentials_expire_without_accepting_a_permanent_identity ... ok
+test service::tests::queued_expired_credential_cannot_accept_retirement_or_its_id ... ok
+test service::tests::queued_staged_finalize_checks_fresh_time_and_canceled_callers_keep_durable_outcomes ... ok
+test snapshot_codec::tests::archived_audit_prefix_preserves_absolute_sequences_and_head ... ok
+test snapshot_codec::tests::authenticated_duplicate_header_is_rejected ... ok
+test snapshot_codec::tests::canonical_stream_requires_terminal_counts_digest_and_exact_eof ... ok
+test snapshot_codec::tests::oversized_record_is_rejected_before_payload_read_or_allocation ... ok
+test service::tests::queued_stop_checks_authority_after_an_earlier_ordered_write ... ok
+test state::restore_budget_tests::restored_identity_metadata_is_validated_before_bootstrap_persistence ... ok
+test service::tests::queued_stop_credential_expiry_never_accepts_missing_identity ... ok
+test state::snapshot_bundle::tests::missing_archive_and_incorrect_totals_prevent_snapshot_completion ... ok
+test service::tests::retained_stop_response_fence_expires_without_changing_permanent_outcome ... ok
+test state::snapshot_bundle::tests::control_archive_transfer_uses_exact_reserved_domain_without_application_authority ... ok
+test service::tests::schema_original_deadline_and_current_lookup_dependencies_survive_until_encoded_release ... ok
+test state::snapshot_bundle::tests::incomplete_or_corrupt_bundle_never_publishes_pruned_state ... ok
+test service::tests::serialized_authorization_never_becomes_fresh_service_or_credential_authority ... ok
+test state::snapshot_bundle::tests::public_capture_and_restore_preparation_are_complete_admitted_and_never_publish ... ok
+test state::snapshot_validation::tests::indexing_never_returns_a_proof_after_cancellation_or_corrupt_footer ... ok
+test target_invocation::admission_tests::original_short_timeout_expires_during_acquisition_and_cannot_reanchor_after_suspend ... ok
+test state::snapshot_bundle::tests::replacement_receives_complete_chain_and_restart_uses_local_dependencies ... ok
+test state::snapshot_validation::tests::indexed_validation_matches_full_restore_and_canonical_closure ... ok
+test state::tenant_audit::tests::authenticated_wrong_prefix_and_corrupt_ciphertext_never_prune ... ok
+test state::tenant_audit::tests::uncertain_publication_keeps_hot_prefix_and_exact_replay_publishes_matching_root ... ok
+test service::tests::serving_expiry_rejects_queued_effect_and_late_read_or_committed_ack_then_reopens_exactly ... ok
+PROPOSAL INNER ERROR has to forward request to: None, None
+BACKUP INNER ERROR Error { code: UnknownOutcome, message: "write task failed; resolve or retry with the same idempotency key" }
+
+thread 'service::tests::serving_expiry_suppresses_long_backup_verification_and_post_publication_proof' (20177696) panicked at crates/kasumi-engine/src/service_serving_tests.rs:330:13:
+creation pause failed: operation finished before paused dependency read: Err(Error { code: UnknownOutcome, message: "backup publication was admitted but complete proof release failed; immutable artifacts may exist and no verified proof was released" })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test service::tests::serving_expiry_suppresses_long_backup_verification_and_post_publication_proof ... FAILED
+test service::tests::queued_retirement_uses_trusted_admission_deadline_and_cancellation_keeps_exact_outcome ... ok
+test state::snapshot_validation::tests::authenticated_semantic_substitutions_fail_both_validation_paths ... ok
+test security_audit::retention::tests::uncertain_publication_survives_restart_and_repeated_hot_budget_crossings_preserve_complete_history ... ok
+
+failures:
+
+failures:
+    service::tests::serving_expiry_suppresses_long_backup_verification_and_post_publication_proof
+
+test result: FAILED. 61 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 49.92s
+
+error: test failed, to rerun pass `-p kasumi-engine --lib`

@@ -108,6 +108,25 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
     let next_certificate = root
         .certify(2, hex::encode(next_key.public_key_raw()))
         .unwrap();
+    let signer_directory = dir.path().join("operational-signer");
+    kasumi_store::private_files::create_directory(&signer_directory).unwrap();
+    let old_key_file = signer_directory.join("generation-1.pk8");
+    let next_key_file = signer_directory.join("generation-2.pk8");
+    kasumi_store::private_files::create(&old_key_file, &operational.serialize_der()).unwrap();
+    kasumi_store::private_files::create(&next_key_file, &next_key.serialize_der()).unwrap();
+    let signer_file = signer_directory.join("current.json");
+    let publish_source = |certificate: &SigningCertificate, key_file: &std::path::Path| {
+        kasumi_store::private_files::replace(
+            &signer_file,
+            &serde_json::to_vec(&crate::signer_runtime::OperationalSignerConfig {
+                certificate: certificate.clone(),
+                key_file: key_file.into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+    };
+    publish_source(&certificate, &old_key_file);
     let verifier_installation = uuid::Uuid::new_v4();
     let mut verifier_stores = Vec::new();
     let mut installed_verifiers = Vec::new();
@@ -323,6 +342,7 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
                 installed_verifiers[leader.raft_group().raft().metrics().borrow().id as usize - 1]
                     .clone(),
             )
+            .with_operational_signer_file(signer_file.clone())
             .service(),
     )
     .into_axum_router();
@@ -741,6 +761,36 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
             .await
             .is_err()
     );
+    let initial_reload = signer_request(SignerVerifierAction::ReloadOperationalSigner {
+        expected_revision: 0,
+        certificate_sha256: certificate.digest().unwrap(),
+        not_after_ms: kasumi_clock::EpochClock::system()
+            .unwrap()
+            .now_ms()
+            .unwrap()
+            + 60_000,
+    });
+    assert_eq!(
+        client
+            .signer_maintenance(&operator, &initial_reload)
+            .await
+            .unwrap()
+            .loaded_certificate,
+        Some(certificate.clone())
+    );
+    kasumi_store::private_files::replace(&signer_file, b"{").unwrap();
+    assert!(
+        client
+            .signer_maintenance(&operator, &initial_reload)
+            .await
+            .is_err()
+    );
+    source_response.check().unwrap();
+    client
+        .acquire_lease(&node_token, &boot.begin_acquisition().unwrap())
+        .await
+        .unwrap();
+    publish_source(&certificate, &old_key_file);
     // The operation's immutable admission deadline survives waiting for local
     // metadata ownership and a fresh credential on a later request.
     let queued = signer_request(SignerVerifierAction::Administer {
@@ -829,6 +879,23 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
             .receipt,
         staged.receipt
     );
+    // Publishing a root-certified file does not activate it. The rejected
+    // reload leaves the live generation-one signer and retained response intact.
+    publish_source(&next_certificate, &next_key_file);
+    assert!(
+        client
+            .signer_maintenance(
+                &operator,
+                &signer_request(SignerVerifierAction::ReloadOperationalSigner {
+                    expected_revision: 1,
+                    certificate_sha256: next_certificate.digest().unwrap(),
+                    not_after_ms: deadline,
+                })
+            )
+            .await
+            .is_err()
+    );
+    source_response.check().unwrap();
     let mut different = stage.clone();
     different.not_after_ms -= 1;
     assert!(
@@ -937,28 +1004,101 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
         3
     );
 
-    // The trusted runtime may replace only the key for this exact durable
-    // owner. Requests already holding source_response retain their old signer.
-    let replacement_context = auth
-        .authenticate(&format!("Bearer {}", token("successor", "kasumi:admin")))
+    // The native adapter reads only its installed descriptor and publishes a
+    // currently activated key. Neither malformed files nor a mismatched key
+    // replace the old slot or grant live authority to the retired generation.
+    let successor = token("successor", "kasumi:admin");
+    let reload = signer_request(SignerVerifierAction::ReloadOperationalSigner {
+        expected_revision: 3,
+        certificate_sha256: next_certificate.digest().unwrap(),
+        not_after_ms: deadline,
+    });
+    kasumi_store::private_files::replace(&signer_file, b"{").unwrap();
+    assert!(
+        client
+            .signer_maintenance(&successor, &reload)
+            .await
+            .is_err()
+    );
+    publish_source(&next_certificate, &old_key_file);
+    assert!(
+        client
+            .signer_maintenance(&successor, &reload)
+            .await
+            .is_err()
+    );
+    publish_source(&next_certificate, &next_key_file);
+
+    // Waiting for the local serialization slot cannot renew a reload deadline,
+    // including when a subsequent invocation presents a renewed credential.
+    let expired_reload = signer_request(SignerVerifierAction::ReloadOperationalSigner {
+        expected_revision: 3,
+        certificate_sha256: next_certificate.digest().unwrap(),
+        not_after_ms: kasumi_clock::EpochClock::system()
+            .unwrap()
+            .now_ms()
+            .unwrap()
+            + 30,
+    });
+    let context = auth
+        .authenticate(&format!("Bearer {successor}"))
         .await
         .unwrap();
-    let replacement_authorization = leader
-        .authorize_signer_maintenance(replacement_context)
+    let held_fence = leader.authorize_signer_maintenance(context).await.unwrap();
+    let (_, held_scope) = local_installed
+        .authorize(&observe, held_fence, &domain)
         .await
         .unwrap();
-    let replacement = Arc::new(AuthoritySigner::new(
-        LiveGenerationSigner::install(
-            GenerationSigner::from_pkcs8(next_certificate.clone(), &next_key.serialize_der())
-                .unwrap(),
-            live_owners[leader.raft_group().raft().metrics().borrow().id as usize - 1].clone(),
-        )
-        .unwrap(),
-    ));
-    leader
-        .replace_operational_signer(replacement_authorization, replacement)
+    let queued_reload = {
+        let mut client = client.clone();
+        let bearer = successor.clone();
+        let request = expired_reload.clone();
+        tokio::spawn(async move { client.signer_maintenance(&bearer, &request).await })
+    };
+    tokio::time::sleep(Duration::from_millis(75)).await;
+    drop(held_scope);
+    assert!(queued_reload.await.unwrap().is_err());
+    assert!(
+        client
+            .signer_maintenance(&token("successor", "kasumi:admin"), &expired_reload)
+            .await
+            .is_err()
+    );
+    let reloaded = client
+        .signer_maintenance(&successor, &reload)
         .await
         .unwrap();
+    assert_eq!(reloaded.loaded_certificate, Some(next_certificate.clone()));
+    assert!(reloaded.authorization.is_none() && reloaded.receipt.is_none());
+    assert_eq!(
+        client
+            .signer_maintenance(&successor, &reload)
+            .await
+            .unwrap(),
+        reloaded
+    );
+    // A serialized observation cannot satisfy another request or changed head.
+    let mut altered = reload.clone();
+    altered.action = SignerVerifierAction::ReloadOperationalSigner {
+        expected_revision: 2,
+        certificate_sha256: next_certificate.digest().unwrap(),
+        not_after_ms: deadline,
+    };
+    assert!(reloaded.validate_for(&altered, &domain).is_err());
+    let mut changed_deadline = reload.clone();
+    let SignerVerifierAction::ReloadOperationalSigner { not_after_ms, .. } =
+        &mut changed_deadline.action
+    else {
+        unreachable!()
+    };
+    *not_after_ms += 1;
+    assert!(reloaded.validate_for(&changed_deadline, &domain).is_err());
+    assert!(
+        client
+            .signer_maintenance(&successor, &altered)
+            .await
+            .is_err()
+    );
     assert!(
         source_response.check().is_err(),
         "replacing a key cannot re-sign an already encoded response"

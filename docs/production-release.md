@@ -337,3 +337,29 @@ a read-only quota getter or caller capacity claim cannot close this dependency.
   and strict workspace Clippy/production checks passed. Bound evidence is in
   `docs/evidence/immutable-authority-signers-20260908`; native key-file reload and
   coordinated global rotation remain separate unfinished work.
+
+- `679a8e8` verifies historical backup snapshots through bounded encrypted point
+  indexes and the canonical engine record rules. All 62 engine library tests and
+  strict engine Clippy passed. Bound evidence and every retained stalled/failed
+  attempt are in `docs/evidence/indexed-backup-verification-20260908`; earlier
+  uncommitted-source tests remain explicitly qualified. This does not establish
+  the 3 GiB/RSS gate or cross-member backup-key failover. Combined workspace
+  checks passed at integration `3ee5787` and then `cf369cd`.
+- `00b1446` permits exact retained target materialization only through a separately
+  committed fresh Control intent and verified source-purpose digest. Authority
+  materialization tests passed ten, Control lifecycle tests five, and strict
+  workspace Clippy/fixture-free production checks passed. Exact evidence and the
+  corrected assertion failure are in `docs/evidence/fresh-materialization-20260908`.
+  The durable distributed recovery coordinator remains in progress.
+
+- `7d8c817` adds explicit native reload of the exact activated operational signer
+  from private descriptor/key files. Source tests passed four, actual TLS reload
+  passed one and authority tests passed 37, with strict workspace Clippy and
+  fixture-free production checks. Evidence in
+  `docs/evidence/native-authority-key-reload-20260908` preserves initial failures.
+  The replicated signing head and coordinated verifier/issuer drains remain open.
+- `ee0b1e0` includes typed Control recovery records in canonical snapshots and
+  moves cold-history semantic verification into owned blocking workers. Snapshot
+  tests passed 14, backup tests ten, and affected strict Clippy/production checks
+  passed. Evidence is in `docs/evidence/recovery-records-cold-workers-20260908`.
+  The distributed recovery reducer and dispatch remain under implementation.

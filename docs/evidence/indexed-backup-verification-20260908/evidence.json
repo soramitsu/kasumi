@@ -1,0 +1,79 @@
+{
+  "recorded_at": "2026-09-08T09:03:27.817251+00:00",
+  "checkpoint": "679a8e877e616031f633cf1cdcd39fd17b1f5d79",
+  "tree": "446e5160147ab29db4143fc0b6935204393adb23",
+  "logs": {
+    "library_pass": {
+      "path": "/tmp/kasumi-streaming-indexed-library-resolved.log",
+      "sha256": "27df78f4ff5bee8d7569c2aa77abe8ffe94aa9efbe716e7fc6389133e8ddcacc",
+      "source": "679a8e8",
+      "result": "62/62 passed, 38.83s"
+    },
+    "clippy_pass": {
+      "path": "/tmp/kasumi-streaming-indexed-fixture-clippy.log",
+      "sha256": "84960936725f4d13ec577d14050b16f34083e271661afefe06c9528642c0cbb8",
+      "source": "679a8e8",
+      "result": "engine all targets/all features strict Clippy passed,48.23s"
+    },
+    "production_check": {
+      "path": "/tmp/kasumi-streaming-indexed-production-check.log",
+      "sha256": "68cd6454865825b1180e03cc162424c3ee51da82714f8516ef87c234b8643829",
+      "source": "d6c6a98",
+      "result": "server bins no default features check passed,50.49s"
+    },
+    "backup_retirement_pass": {
+      "path": "/tmp/kasumi-streaming-indexed-backup-retirement-tests.log",
+      "sha256": "1e24d2e6922baff1fac546faee0b0bfbd676b3e0d87ef5889f82e8ecc67cb59c",
+      "source": null,
+      "result": "10 backup +10 retirement passed; pre-d6 enum boxing and final staging fixtures, exact source not committed at invocation"
+    },
+    "frozen_library_stall": {
+      "path": "/tmp/kasumi-streaming-indexed-final-library-tests.log",
+      "sha256": "0e14474e7749fa57eadf3cc0e7407f24b2c05d93ecd076351656180ea080ecb4",
+      "source": "d6c6a98",
+      "result": "61 reported passes, serving pause hung, scoped SIGINT"
+    },
+    "library_diagnostic": {
+      "path": "/tmp/kasumi-streaming-indexed-library-diagnostic.log",
+      "sha256": "6e4149dcd229e1239385bf8a8999b322bcaae87567a69132029b57775ee095dd",
+      "source": null,
+      "result": "61/62; Unauthorized before retirement admission"
+    },
+    "paired_incomplete_clock": {
+      "path": "/tmp/kasumi-streaming-indexed-library-paired.log",
+      "sha256": "ba75e19a6aa35ea622e3fafb9e6153e570f6b48150c05a26634010119f9b5d9b",
+      "source": null,
+      "result": "61/62; SystemWallClock still advanced"
+    },
+    "paired_expiry_failure": {
+      "path": "/tmp/kasumi-streaming-indexed-library-paired-2.log",
+      "sha256": "4955cbb780250366f7ebdd3e54f6c8bee401b46c4f4f03079eeea056db1d32fb",
+      "source": null,
+      "result": "61/62; backup returned before pause"
+    },
+    "publication_diagnostic": {
+      "path": "/tmp/kasumi-streaming-indexed-library-inner-diagnostic.log",
+      "sha256": "b1c217a7bd527f4ddf9fc70f4e3e2583fd7b9d1ada3eab74fd16dd66e0b18456",
+      "source": null,
+      "result": "61/62; inner write task failure"
+    },
+    "raft_diagnostic": {
+      "path": "/tmp/kasumi-streaming-indexed-library-proposal-diagnostic.log",
+      "sha256": "943b18469a8a5032e029bca9a62fa9ffe60ad838c643a66112795c9b556488e3",
+      "source": null,
+      "result": "61/62; ForwardToLeader(None,None) before pause"
+    }
+  },
+  "library_executable": {
+    "path": "/tmp/kasumi-production-streaming-target/debug/deps/kasumi_engine-d954104df0323488",
+    "sha256": "6adfdc133b4e18ee51deb635c1d5e13d6bcd8bdf1a36ade328dacc5f5b1a479b",
+    "source": "679a8e8",
+    "captured_before_next_DTO_rebuild": true
+  },
+  "limitations": [
+    "No real 3GiB incompressible tenant, RSS peak, 24h endurance or final architecture gate here.",
+    "Serving fixture uses independent replica wrapping keys; resolves aborted backup on original publisher and does not establish cross-member backup-key failover.",
+    "Shared aggregate temporary-disk admission still pending.",
+    "Cold-history graph chunk semantic point lookups require owned blocking follow-up."
+  ]
+}

@@ -21,7 +21,7 @@ pub use backup_restore::RestoreSource;
 mod target;
 pub use target::{
     MaterializedTargetReplica, TargetMaterializationConfig, VerifiedTargetMaterialization,
-    materialize_target_replica,
+    materialize_target_replica, resume_target_materialization,
 };
 
 #[path = "bootstrap_target_quorum.rs"]

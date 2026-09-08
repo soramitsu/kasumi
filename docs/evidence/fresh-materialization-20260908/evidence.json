@@ -1,0 +1,31 @@
+{
+  "commit": "00b1446baabe975535ef91192ba212681b209e4f",
+  "tree": "0c61e45485ff5bd00cd0bf22c2408a5a185f635d",
+  "lockfile_sha256": "a4a3883969dc9486548a1aea841ecf45c482c99e4ea1e0d47b56f6c52b2afa08",
+  "platform": "macOS ARM64",
+  "toolchain": "Rust 1.97.1",
+  "results": {
+    "authority_materialization": "10/10 passed",
+    "replicated_control_lifecycle": "5/5 passed",
+    "strict_clippy": "workspace all-features all-targets passed",
+    "production": "kasumi-server no-default-features bins check passed",
+    "format_diff": "passed"
+  },
+  "logs": {
+    "/tmp/kasumi-fresh-materialization-authority-tests-1.log": "557e6c721fe59b2128132fc431053c8043cd7567b8cb43801964e5c6303824c3",
+    "/tmp/kasumi-fresh-materialization-authority-tests-final.log": "9d261b0d8d5003f239dd460ae637c55c2f8bbaca5e01616936a5d31319cc7c6a",
+    "/tmp/kasumi-fresh-materialization-control-tests-final.log": "3f1621c6b516db0e1e2c951528c4db7daac9b0ec76b3a19d9cfa8f7edc9d20bd",
+    "/tmp/kasumi-fresh-materialization-clippy-final.log": "c08b9304909cfd4746ca932af15e44a63049667676a6e759dab9a2d3b5b3346e",
+    "/tmp/kasumi-fresh-materialization-production-final.log": "fa587c3005e8080667416029e0e6213a96774711b462ddd35335dda5b248e32a"
+  },
+  "test_binaries": {
+    "/tmp/kasumi-production-standalone-target/debug/deps/kasumi_authority-481ba410417b8d16": "a94c8eb472b09c6dd036bc0fce27dc26b5a097d487f1ff3de17c2dbb59a4b71a",
+    "/tmp/kasumi-production-standalone-target/debug/deps/lifecycle-11aab87d84f8fd79": "15c12e12a6870fd163dc9156365746011c720c2babc79f8ee7501a4a2c9f66d0"
+  },
+  "preserved_failure": "First purpose-substitution assertion expected a different error string; actual production boundary rejected the exact purpose mismatch. Corrected assertion; final rerun passed.",
+  "limitations": [
+    "Dependency/prerequisite checkpoint, not completed distributed coordinator",
+    "Real target and issuer storage/process fixture; no new native TLS resume acceptance test",
+    "Cross-platform release gates remain"
+  ]
+}

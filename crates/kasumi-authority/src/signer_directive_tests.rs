@@ -75,15 +75,22 @@ async fn signer_replacement_requires_current_authorization_and_exact_live_owner(
     let authority = fixture.leader().await;
     let selected = authority.request_signer().unwrap();
     let authorization = authority.authorize_signer_maintenance(fixture.context("operator")).await.unwrap();
+    let deadline = authority.clock.observe().unwrap().until(1_050_000).unwrap();
     let physical = selected.verifier_identity().unwrap();
     let copied = fixture.signing.for_verifier(physical).unwrap();
     assert_eq!(selected.certificate(), copied.signer.certificate());
-    assert!(authority.replace_operational_signer(authorization.clone(), copied.signer).await.is_err());
+    assert!(authority.replace_operational_signer(authorization.clone(), copied.signer, deadline.clone()).await.is_err());
     assert!(Arc::ptr_eq(&selected, &authority.request_signer().unwrap()));
-    authority.replace_operational_signer(authorization.clone(), selected.clone()).await.unwrap();
+    authority.replace_operational_signer(authorization.clone(), selected.clone(), deadline.clone()).await.unwrap();
+    // The command admission can expire while its original administrator is
+    // still live. Reusing that credential cannot extend the publication window.
+    let short = authority.clock.observe().unwrap().until(1_000_001).unwrap();
+    fixture.clock.0.store(2, Ordering::SeqCst);
+    authorization.check().unwrap();
+    assert!(authority.replace_operational_signer(authorization.clone(), selected.clone(), short).await.is_err());
     // A new invocation cannot make an expired administrative fence current.
     fixture.clock.0.store(1_000_000, Ordering::SeqCst);
-    assert!(authority.replace_operational_signer(authorization, selected.clone()).await.is_err());
+    assert!(authority.replace_operational_signer(authorization, selected.clone(), deadline).await.is_err());
     assert!(Arc::ptr_eq(&selected, &authority.request_signer().unwrap()));
     fixture.close().await;
 }
