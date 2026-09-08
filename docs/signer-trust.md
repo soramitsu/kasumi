@@ -296,10 +296,9 @@ currently undo a committed stage or activation.
 identity. Every page has a current administrator/quorum response fence. A changed
 operational revision rejects continuation instead of silently restarting it.
 
-The next protocol work must bind live Control admission and remote verifier
-publication to this registry, persist exact acknowledgments or revocations,
-and complete the full issuer drain. Until then, global retirement stays pending;
-these enrollment operations do not certify complete distributed rotation.
+Global retirement still requires durable acknowledgments or revocations for the
+entire frozen registry and the full issuer drain. These enrollment operations do
+not certify complete distributed rotation.
 
 The engine's owned `ControlAdministrativeFence` now supplies the current Control
 side of remote verifier authorization. It is constructed only after an actual
@@ -311,8 +310,58 @@ Expiry, revocation, a membership or policy transition, or a failed or cancelled
 release permanently closes that observation. A fresh credential cannot renew it.
 
 This observation alone does not identify physical verifier installations. The
-remote adapter must still match the actual Control membership and local physical
-owner to a fresh authenticated issuer registry observation, dispatch an exact
-committed directive, and durably return publication or permanent-stop evidence.
-Global retirement remains pending until every enrolled receiver and issuer drain
-has that coverage.
+remote signer adapter matches it to the independently registered physical owner
+and a fresh authenticated issuer observation as described below.
+
+## Remote Control stage and forward activation
+
+`AuthorizeControlSigner` commits one `ControlSignerDirective` in the issuer's
+permanent maintenance table. It contains the installed Control root, exact
+`NodeIdentity` including physical verifier and native client certificate, issuer
+domain digest, global stage operation, explicit optional global activation
+operation, and the complete original local `SignerTrustCommand`. The outer
+authority command must have the same UUID and `not_after_ms` as that local
+command. The issuer verifies the registered Control membership, physical
+administrative endpoint, and permanent global stage. Activation additionally
+requires the committed global winner and that physical receiver's original
+stage directive. Snapshots retain and verify these dependencies.
+
+The private `KasumiAdmin.ControlSignerMaintenance` RPC accepts a fresh observation
+UUID and that exact directive. The caller supplies a current Control administrator
+credential over mTLS. The installed receiver uses its own partition-specific
+credential file and pinned authority endpoints to call
+`KasumiAuthority.ObserveControlSigner`. The issuer requires the registered node
+principal and actual mTLS client certificate and reads the directive through its
+current quorum. A historical signature or deserialized observation cannot create
+the SDK's `CurrentControlSignerObservation`. Pool retries retain one credential
+snapshot and the original suspend-aware request anchor.
+
+The receiver checks its actual Control quorum, installation, policy epoch,
+membership including learners, and separately initialized local verifier owner.
+It keeps the original Control credential and finite issuer observation through
+local publication and final response release. An unavailable quorum, expiry,
+revocation, or changed policy or membership closes that invocation. First
+publication retains the command's original deadline; a renewed credential never
+extends it. An uncertain result resolves the same permanent command and receipt.
+If the source permission's administrative policy is no longer current, a fresh
+observation permits only resolution of an already retained local receipt.
+
+The Rust client's `control_signer_maintenance` requires the independently
+installed manifest when checking the typed response. The response distinguishes
+the permanent source directive, local publication receipt, and current physical
+head. The local receipt is durable but has not yet been collected into a global
+coverage acknowledgment. After global activation, a receiver that missed stage
+may still publish the exact original successor and proceed forward. Remote
+`StopStage` and `CompleteRetirement` are rejected; there is no activation rollback.
+
+This receiver slice requires the current Control leader's actual quorum fence.
+Follower authorization, complete remote acknowledgment/revocation collection and
+the full issuer drain remain required before global retirement can complete.
+The frozen roster remains in force throughout that unfinished retirement.
+
+The older issuer-local `AuthorizeSignerTrust` interface also remains a separate
+rotation prerequisite: its local stage/abort operations must be bound to the
+global winner and a committed global abort before a complete coordinator uses
+them. The remote Control path adds no authority to that interface and rejects
+remote abort outright. Passing this receiver's tests does not certify the older
+issuer-local path as a complete global rotation protocol.

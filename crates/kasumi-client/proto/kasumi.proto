@@ -28,6 +28,7 @@ service KasumiData {
 // Bind only to an explicitly installed independent authority deployment. This
 // service has no document API and no caller-selected source route or issuer key.
 service KasumiAuthority {
+  rpc ObserveControlSigner(AuthorityJsonRequest) returns (AuthorityJsonResponse);
   rpc SigningMaintenance(AuthorityJsonRequest) returns (AuthorityJsonResponse);
   rpc SignerMaintenance(AuthorityJsonRequest) returns (AuthorityJsonResponse);
   rpc Maintenance(AuthorityJsonRequest) returns (AuthorityJsonResponse);
@@ -48,6 +49,7 @@ message AuthorityReceiptRequest { string tenant = 1; string command_id = 2; }
 // Bind only to the administrative listener. These methods still enforce the
 // current tenant/collection admin policy in consensus order.
 service KasumiAdmin {
+  rpc ControlSignerMaintenance(AuthorityJsonRequest) returns (AuthorityJsonResponse);
   rpc SecurityAuditStatus(SecurityAuditJsonRequest) returns (SecurityAuditJsonResponse);
   rpc SecurityAuditExport(SecurityAuditJsonRequest) returns (SecurityAuditJsonResponse);
   rpc SecurityAuditArchives(SecurityAuditJsonRequest) returns (SecurityAuditJsonResponse);

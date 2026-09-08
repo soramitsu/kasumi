@@ -13,8 +13,33 @@ pub(super) struct ScopedSignerAdministrator {
     current: Mutex<Option<Weak<CurrentAuthorization>>>,
 }
 struct CurrentAuthorization {
-    fence: Arc<AuthorityAdministrativeFence>,
+    fence: CurrentFence,
     deadline: OnceLock<ElapsedDeadline>,
+}
+enum CurrentFence {
+    Authority(Arc<AuthorityAdministrativeFence>),
+    Control {
+        fence: Arc<kasumi_engine::ControlAdministrativeFence>,
+        issuer: Box<kasumi_client::CurrentControlSignerObservation>,
+    },
+}
+impl CurrentFence {
+    fn context(&self) -> &RequestContext {
+        match self {
+            Self::Authority(fence) => fence.context(),
+            Self::Control { fence, .. } => fence.context(),
+        }
+    }
+    fn check(&self) -> Result<()> {
+        match self {
+            Self::Authority(fence) => Ok(fence.check()?),
+            Self::Control { fence, issuer } => {
+                issuer.check()?;
+                fence.check()?;
+                issuer.check()
+            }
+        }
+    }
 }
 impl CurrentAuthorization {
     fn check(&self) -> Result<()> {
@@ -52,6 +77,23 @@ impl ScopedSignerAdministrator {
     pub(super) async fn bind(
         self: &Arc<Self>,
         fence: Arc<AuthorityAdministrativeFence>,
+    ) -> Result<CurrentSignerInvocation> {
+        self.bind_current(CurrentFence::Authority(fence)).await
+    }
+    pub(super) async fn bind_control(
+        self: &Arc<Self>,
+        fence: Arc<kasumi_engine::ControlAdministrativeFence>,
+        issuer: kasumi_client::CurrentControlSignerObservation,
+    ) -> Result<CurrentSignerInvocation> {
+        self.bind_current(CurrentFence::Control {
+            fence,
+            issuer: Box::new(issuer),
+        })
+        .await
+    }
+    async fn bind_current(
+        self: &Arc<Self>,
+        fence: CurrentFence,
     ) -> Result<CurrentSignerInvocation> {
         let serial = self.serial.clone().lock_owned().await;
         fence.check()?;
