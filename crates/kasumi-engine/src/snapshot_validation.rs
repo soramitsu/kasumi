@@ -342,7 +342,25 @@ impl ValidatedApplicationSnapshot {
                     .checkpoint
                     .revision
             };
-            receipt.validate_identity(&key, &self.header.tenant, maximum_revision)?;
+            let genesis_revision = if receipt.scope.incarnation == self.header.incarnation {
+                self.header.revision_base
+            } else {
+                self.lineage_target(&receipt.scope.incarnation)?
+                    .map(|link| {
+                        link.checkpoint
+                            .revision
+                            .checked_add(1)
+                            .context("receipt genesis revision overflow")
+                    })
+                    .transpose()?
+                    .unwrap_or(0)
+            };
+            receipt.validate_identity(
+                &key,
+                &self.header.tenant,
+                genesis_revision,
+                maximum_revision,
+            )?;
             Ok(())
         })
     }
@@ -1164,6 +1182,42 @@ mod tests {
                 "full case {case}"
             );
             assert!(indexed(&candidate).is_err(), "indexed case {case}");
+        }
+        let mut restored = original;
+        for incarnation in ["intermediate", "current-target"] {
+            let checkpoint = FullBackupCheckpoint {
+                tenant: restored.tenant.clone(),
+                source_incarnation: restored.incarnation.clone(),
+                revision: restored.revision,
+                resident_sha256: "12".repeat(32),
+                backup_id: uuid::Uuid::new_v4(),
+                manifest_ciphertext_sha256: "34".repeat(32),
+                key_lineage_digest: "56".repeat(32),
+            };
+            TenantEngine::rebind_restored_state(
+                &mut restored,
+                incarnation.into(),
+                checkpoint,
+                None,
+            )
+            .unwrap();
+            restored.pending_restore = None;
+            restored.suspended = false;
+            restored.revision += 2;
+        }
+        TenantEngine::verify_logical_snapshot(&image(&restored), &restored).unwrap();
+        indexed(&restored).unwrap();
+        for incarnation in ["intermediate", "current-target"] {
+            let mut candidate = restored.clone();
+            candidate.receipts.get_mut(&key).unwrap().scope.incarnation = incarnation.into();
+            assert!(
+                TenantEngine::verify_logical_snapshot(&image(&candidate), &candidate).is_err(),
+                "full relabel {incarnation}"
+            );
+            assert!(
+                indexed(&candidate).is_err(),
+                "indexed relabel {incarnation}"
+            );
         }
     }
     #[test]

@@ -1237,7 +1237,22 @@ impl TenantEngine {
                         )
                     })?
             };
-            receipt.validate_identity(key, &state.tenant, maximum_revision)?;
+            let genesis_revision = if receipt.scope.incarnation == state.incarnation {
+                state.revision_base
+            } else {
+                state
+                    .restore_lineage
+                    .iter()
+                    .find(|link| link.target_incarnation == receipt.scope.incarnation)
+                    .map(|link| {
+                        link.checkpoint.revision.checked_add(1).ok_or_else(|| {
+                            Error::new(ErrorCode::Corruption, "receipt genesis revision overflow")
+                        })
+                    })
+                    .transpose()?
+                    .unwrap_or(0)
+            };
+            receipt.validate_identity(key, &state.tenant, genesis_revision, maximum_revision)?;
         }
         if let Some(origin) = &state.restored_from {
             origin.validate()?;

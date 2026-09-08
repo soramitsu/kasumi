@@ -482,7 +482,13 @@ pub struct StoredReceipt {
     pub outcome: Result<WriteReceipt>,
 }
 impl StoredReceipt {
-    pub fn validate_identity(&self, key: &str, tenant: &str, maximum_revision: u64) -> Result<()> {
+    pub fn validate_identity(
+        &self,
+        key: &str,
+        tenant: &str,
+        genesis_revision: u64,
+        maximum_revision: u64,
+    ) -> Result<()> {
         use sha2::{Digest, Sha256};
         validate_name(&self.scope.tenant)?;
         validate_name(&self.scope.incarnation)?;
@@ -493,7 +499,7 @@ impl StoredReceipt {
             .map_err(|_| Error::new(ErrorCode::Corruption, "invalid receipt identity"))?;
         if self.scope.tenant != tenant
             || hex::encode(Sha256::digest(identity)) != key
-            || self.recorded_revision == 0
+            || self.recorded_revision <= genesis_revision
             || self.recorded_revision > maximum_revision
             || self.expires_at_ms == 0
             || self
