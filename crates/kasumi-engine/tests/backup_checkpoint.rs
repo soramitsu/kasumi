@@ -37,6 +37,9 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> Self {
+        Self::with_limits(Limits::default()).await
+    }
+    async fn with_limits(limits: Limits) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let node = NodeStore::open(directory.path().join("node.redb")).unwrap();
         let audit = common::security_audit(node.clone()).await;
@@ -55,7 +58,7 @@ impl Fixture {
             .await
             .unwrap(),
             policy(),
-            Limits::default(),
+            limits,
             audit.clone(),
         )
         .await
@@ -860,4 +863,224 @@ async fn local_restore_binds_exact_source_purpose_even_without_cold_archives() {
     .unwrap();
     restored.shutdown().await.unwrap();
     fixture.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn archived_audit_backup_is_self_contained_and_source_unavailable_restore_preserves_exact_chain()
+ {
+    let fixture = Fixture::with_limits(Limits {
+        audit_retention: AuditRetentionBudget {
+            hot_bytes: 128 << 10,
+            archive_bytes: 8 << 20,
+        },
+        ..Limits::default()
+    })
+    .await;
+    for round in 0..2 {
+        while {
+            let generation = fixture.db.engine().generation().unwrap();
+            generation.state.audit_retention.hot_bytes
+                < generation.state.limits.audit_retention.starts_at()
+        } {
+            let revision = fixture.db.engine().generation().unwrap().state.revision;
+            let command = Command {
+                context: context(),
+                timestamp_ms: 1_000,
+                operation: Operation::Audit(AuditEvent {
+                    event_id: format!("{round}/{revision}/{}", "x".repeat(2_000)),
+                    principal: "owner".into(),
+                    action: "read".into(),
+                    request_id: context().request_id,
+                    timestamp_ms: 1_000,
+                    data_revision: Some(revision),
+                    outcome: "authorized_release".into(),
+                    collection: None,
+                }),
+            };
+            let result = fixture
+                .db
+                .raft_group()
+                .write(serde_json::to_vec(&command).unwrap())
+                .await
+                .unwrap();
+            serde_json::from_slice::<Result<WriteReceipt>>(&result)
+                .unwrap()
+                .unwrap();
+        }
+        let command = fixture.db.engine().prepare_audit_prune().unwrap().unwrap();
+        let result = fixture.db.raft_group().write(command).await.unwrap();
+        serde_json::from_slice::<Result<()>>(&result)
+            .unwrap()
+            .unwrap();
+    }
+    let retained = fixture
+        .db
+        .engine()
+        .generation()
+        .unwrap()
+        .state
+        .audit_retention
+        .clone();
+    assert_eq!(retained.archive_segments, 2);
+    let proof = fixture
+        .db
+        .backup_checkpoint_named(context(), "approved", uuid::Uuid::new_v4())
+        .await
+        .unwrap();
+    let head = retained.archive_head.as_ref().unwrap();
+    let objects =
+        kasumi_store::BackupSessionObjects::new(fixture.destination.as_ref(), proof.backup_id())
+            .unwrap();
+    let ciphertext = objects
+        .get(head.object.object_id, MAX_AUDIT_SEGMENT_BYTES)
+        .await
+        .unwrap();
+    assert_eq!(
+        hex::encode(Sha256::digest(&ciphertext)),
+        head.object.ciphertext_sha256
+    );
+    let dependency_path = fixture
+        .directory
+        .path()
+        .join("backups")
+        .join("sessions")
+        .join(proof.backup_id().to_string())
+        .join("objects")
+        .join(format!("{}.kasumi", head.object.object_id));
+    std::fs::remove_file(&dependency_path).unwrap();
+    assert!(
+        fixture
+            .db
+            .verify_backup_checkpoint_named(context(), "approved", proof.backup_id())
+            .await
+            .is_err()
+    );
+    // Restore must neither consult a live source quorum nor its local cache.
+    fixture.close().await;
+    let target_directory = tempfile::tempdir().unwrap();
+    let node = NodeStore::open(target_directory.path().join("target.redb")).unwrap();
+    let target_audit = common::security_audit(node.clone()).await;
+    let target = TenantStore::open_fixture(
+        node,
+        "checkpoint".into(),
+        Arc::new(LocalKeyProvider::new([0xD8; 32])),
+    )
+    .await
+    .unwrap();
+    let domains = kasumi_store::test_utils::with_custody(
+        target.clone(),
+        Arc::new(LocalKeyProvider::new([241; 32])),
+    )
+    .await
+    .unwrap();
+    let source = kasumi_engine::RestoreSource {
+        destination_alias: "approved".into(),
+        destination: fixture.destination.clone(),
+        keys: Arc::new(LocalKeyProvider::new([0xD8; 32])),
+        timeout_ms: 60_000,
+    };
+    let target_incarnation = uuid::Uuid::new_v4();
+    assert!(
+        kasumi_engine::restore_local(
+            &source,
+            domains.clone(),
+            common::local_restore_request(context(), proof.checkpoint(), target_incarnation),
+            kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+            target_audit.clone()
+        )
+        .await
+        .is_err()
+    );
+    assert!(target.scan("engine.bootstrap").unwrap().is_empty());
+    // A valid immutable re-publication resolves the missing dependency; it does
+    // not alter the permanent completed outcome or original source purpose.
+    let mut corrupt = ciphertext.clone();
+    *corrupt.last_mut().unwrap() ^= 1;
+    objects.put(head.object.object_id, corrupt).await.unwrap();
+    assert!(
+        kasumi_engine::restore_local(
+            &source,
+            domains.clone(),
+            common::local_restore_request(context(), proof.checkpoint(), target_incarnation),
+            kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+            target_audit.clone(),
+        )
+        .await
+        .is_err()
+    );
+    assert!(target.scan("engine.bootstrap").unwrap().is_empty());
+    std::fs::remove_file(&dependency_path).unwrap();
+    objects
+        .put(head.object.object_id, ciphertext.clone())
+        .await
+        .unwrap();
+    // Source verification alone is insufficient: an independently installed
+    // target provider must also retain every original historical archive key.
+    let wrong_directory = tempfile::tempdir().unwrap();
+    let wrong_node = NodeStore::open(wrong_directory.path().join("wrong.redb")).unwrap();
+    let wrong_audit = common::security_audit(wrong_node.clone()).await;
+    let wrong_store = TenantStore::open_fixture(
+        wrong_node,
+        "checkpoint".into(),
+        Arc::new(LocalKeyProvider::new([0x47; 32])),
+    )
+    .await
+    .unwrap();
+    let wrong_domains = kasumi_store::test_utils::with_custody(
+        wrong_store.clone(),
+        Arc::new(LocalKeyProvider::new([241; 32])),
+    )
+    .await
+    .unwrap();
+    assert!(
+        kasumi_engine::restore_local(
+            &source,
+            wrong_domains,
+            common::local_restore_request(context(), proof.checkpoint(), uuid::Uuid::new_v4()),
+            kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+            wrong_audit.clone(),
+        )
+        .await
+        .is_err()
+    );
+    assert!(wrong_store.scan("engine.bootstrap").unwrap().is_empty());
+    wrong_store.shutdown().await;
+    wrong_audit.shutdown().await;
+    let restored = kasumi_engine::restore_local(
+        &source,
+        domains,
+        common::local_restore_request(context(), proof.checkpoint(), target_incarnation),
+        kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+        target_audit.clone(),
+    )
+    .await
+    .unwrap();
+    let after = restored
+        .engine()
+        .generation()
+        .unwrap()
+        .state
+        .audit_retention
+        .clone();
+    assert_eq!(after.archive_head, retained.archive_head);
+    assert_eq!(after.archive_segments, retained.archive_segments);
+    assert_eq!(
+        target
+            .tenant_audit_archive()
+            .unwrap()
+            .cache()
+            .read_blocking(&head.object)
+            .unwrap(),
+        ciphertext
+    );
+    let copied = restored
+        .backup_checkpoint_named(context(), "approved", uuid::Uuid::new_v4())
+        .await
+        .unwrap();
+    restored
+        .verify_backup_checkpoint_named(context(), "approved", copied.backup_id())
+        .await
+        .unwrap();
+    restored.shutdown().await.unwrap();
+    target_audit.shutdown().await;
 }

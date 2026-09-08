@@ -126,7 +126,7 @@ async fn object(
 
 struct RestoreReader<'a> {
     source: &'a RestoreSource,
-    target: &'a TenantStore,
+    target: &'a Arc<TenantStore>,
     authorization: RestoreAuthorization<'a>,
     work: Option<Arc<crate::backup_verify::VerificationWork>>,
     token: Option<kasumi_query::QueryCancellation>,
@@ -156,6 +156,58 @@ impl BackupReader for RestoreReader<'_> {
         self.authorization
             .authorize_state(self.target, self.audit, state)
             .await
+    }
+    fn audit_target(&self) -> Option<Arc<TenantStore>> {
+        Some(self.target.clone())
+    }
+    async fn audit_dependency<'a>(
+        &'a self,
+        state: &'a TenantState,
+        root: &'a kasumi_store::StoragePurpose,
+        link: &'a AuditArchiveLink,
+    ) -> anyhow::Result<kasumi_store::PreparedAuditSegment> {
+        self.check_access().await?;
+        let ciphertext = self
+            .source
+            .destination
+            .session_get(
+                self.session.intent().session_id,
+                kasumi_store::BackupSessionSlot::Object(link.object_id),
+                MAX_AUDIT_SEGMENT_BYTES,
+            )
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("backup audit dependency missing"))?;
+        self.check_access().await?;
+        let dependency = kasumi_store::InspectedAuditDependency::from_link(&ciphertext, link)?;
+        anyhow::ensure!(
+            dependency.source_tenant() == state.tenant
+                && dependency.reference().stream_id == state.audit_retention.stream_id,
+            "restore audit stream differs"
+        );
+        crate::authorize_audit_source(state, root, dependency.source_purpose())?;
+        let verifier = kasumi_store::HistoricalAuditVerifier::new(
+            &state.tenant,
+            dependency.source_purpose(),
+            self.source.keys.as_ref(),
+            self.target.storage_access(),
+        )?;
+        dependency.verify(&verifier).await?;
+        self.check_access().await?;
+        // The target must independently retain access to every original archive
+        // key before its new genesis can depend on this local ciphertext cache.
+        let reference = crate::backup_verify::verify_audit_dependency(
+            state,
+            root,
+            self.target,
+            &ciphertext,
+            link,
+        )
+        .await?;
+        self.check_access().await?;
+        Ok(kasumi_store::PreparedAuditSegment {
+            reference,
+            ciphertext,
+        })
     }
     async fn object<'a>(
         &'a self,
@@ -192,7 +244,7 @@ impl BackupReader for RestoreReader<'_> {
 pub(super) async fn load(
     source: &RestoreSource,
     backup_id: uuid::Uuid,
-    target: &TenantStore,
+    target: &Arc<TenantStore>,
     context: &RequestContext,
     audit: &SecurityAudit,
     admission: &Arc<NodeAdmission>,
@@ -215,7 +267,7 @@ pub(super) async fn load(
 pub(super) async fn load_authorized(
     source: &RestoreSource,
     backup_id: uuid::Uuid,
-    target: &TenantStore,
+    target: &Arc<TenantStore>,
     authorization: RestoreAuthorization<'_>,
     audit: &SecurityAudit,
     admission: &Arc<NodeAdmission>,

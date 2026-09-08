@@ -93,6 +93,27 @@ impl StreamWork {
     }
 }
 
+struct AuditReadWork {
+    store: Arc<TenantStore>,
+    engine: Arc<TenantEngine>,
+    context: RequestContext,
+    policy_epoch: u64,
+    cancellation: QueryCancellation,
+    _reservation: Arc<Reservation>,
+    _permit: Arc<tokio::sync::OwnedSemaphorePermit>,
+    _registration: WorkRegistration,
+}
+impl AuditReadWork {
+    fn check(&self) -> Result<()> {
+        self.cancellation.check()?;
+        self.engine
+            .authorize_release(&self.context, None, Action::Admin, self.policy_epoch)?;
+        self.store
+            .check_access()
+            .map_err(|_| Error::new(ErrorCode::Unavailable, "backup audit storage unavailable"))
+    }
+}
+
 impl Database {
     pub(super) async fn publish_full_backup(
         &self,
@@ -342,6 +363,15 @@ impl Database {
                 }
             }
         }
+        self.copy_audit_dependencies(
+            &context,
+            state,
+            destination,
+            &cancellation,
+            reservation.clone(),
+            permit.clone(),
+        )
+        .await?;
         let bytes = serde_json::to_vec(&manifest).map_err(|_| {
             Error::new(
                 ErrorCode::Corruption,
@@ -376,6 +406,111 @@ impl Database {
             },
             session,
         ))
+    }
+
+    async fn copy_audit_dependencies(
+        &self,
+        context: &RequestContext,
+        state: &TenantState,
+        destination: &dyn BackupDestination,
+        cancellation: &QueryCancellation,
+        reservation: Arc<Reservation>,
+        permit: Arc<tokio::sync::OwnedSemaphorePermit>,
+    ) -> Result<()> {
+        let retention = &state.audit_retention;
+        let root = self.store.storage_access().purpose();
+        let mut expected = retention
+            .archive_head
+            .as_ref()
+            .map(|head| head.object.clone());
+        let mut total_bytes = 0u64;
+        let mut total_segments = 0u64;
+        while let Some(link) = expected {
+            let work = AuditReadWork {
+                store: self.store.clone(),
+                engine: self.engine.clone(),
+                context: context.clone(),
+                policy_epoch: state.policy_epoch,
+                cancellation: cancellation.clone(),
+                _reservation: reservation.clone(),
+                _permit: permit.clone(),
+                _registration: self.work.begin(cancellation.clone())?,
+            };
+            work.check()?;
+            let source_link = link.clone();
+            let task = tokio::task::spawn_blocking(move || -> Result<_> {
+                work.check()?;
+                let placement = work.store.tenant_audit_archive().map_err(|_| {
+                    Error::new(ErrorCode::Unavailable, "backup audit cache unavailable")
+                })?;
+                let bytes = placement.cache().read_blocking(&source_link).map_err(|_| {
+                    Error::new(
+                        ErrorCode::Unavailable,
+                        "backup audit dependency unavailable",
+                    )
+                })?;
+                work.check()?;
+                // Retain the exact store, byte reservation and work registration
+                // until the bounded result itself is consumed or dropped.
+                Ok((bytes, work))
+            });
+            let (ciphertext, ownership) = tokio::select! {
+                result = task => result.map_err(|_| Error::new(ErrorCode::Unavailable, "backup audit read failed"))??,
+                _ = cancelled(cancellation) => return Err(cancelled_error()),
+            };
+            let reference = tokio::select! {
+                result = crate::backup_verify::verify_audit_dependency(state, root, &self.store, &ciphertext, &link) => result.map_err(|_| Error::new(ErrorCode::Corruption, "backup audit source verification failed"))?,
+                _ = cancelled(cancellation) => return Err(cancelled_error()),
+            };
+            ownership.check()?;
+            if total_segments == 0 && retention.archive_head.as_ref() != Some(&reference) {
+                return Err(Error::new(
+                    ErrorCode::Corruption,
+                    "backup audit source head differs",
+                ));
+            }
+            total_bytes = total_bytes
+                .checked_add(reference.ciphertext_bytes)
+                .ok_or_else(|| Error::new(ErrorCode::Corruption, "backup audit bytes overflow"))?;
+            total_segments = total_segments
+                .checked_add(1)
+                .ok_or_else(|| Error::new(ErrorCode::Corruption, "backup audit count overflow"))?;
+            if total_bytes > retention.archive_bytes || total_segments > retention.archive_segments
+            {
+                return Err(Error::new(
+                    ErrorCode::Corruption,
+                    "backup audit accounting exceeded",
+                ));
+            }
+            let _uncertain = tokio::select! {
+                result = destination.put(link.object_id, ciphertext) => result,
+                _ = cancelled(cancellation) => return Err(cancelled_error()),
+            };
+            ownership.check()?;
+            let copied = tokio::select! {
+                result = destination.get(link.object_id, MAX_AUDIT_SEGMENT_BYTES) => result.map_err(|_| Error::new(ErrorCode::Unavailable, "backup audit copy unavailable"))?,
+                _ = cancelled(cancellation) => return Err(cancelled_error()),
+            };
+            let verified = tokio::select! {
+                result = crate::backup_verify::verify_audit_dependency(state, root, &self.store, &copied, &link) => result.map_err(|_| Error::new(ErrorCode::Corruption, "backup audit copy verification failed"))?,
+                _ = cancelled(cancellation) => return Err(cancelled_error()),
+            };
+            if verified != reference {
+                return Err(Error::new(
+                    ErrorCode::Corruption,
+                    "backup audit copy source differs",
+                ));
+            }
+            ownership.check()?;
+            expected = reference.previous;
+        }
+        if total_bytes != retention.archive_bytes || total_segments != retention.archive_segments {
+            return Err(Error::new(
+                ErrorCode::Corruption,
+                "backup audit graph incomplete",
+            ));
+        }
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
