@@ -46,7 +46,7 @@ fn decode<T: DeserializeOwned>(
     }
     Ok(serde_json::from_slice(&response.response_json)?)
 }
-fn validate_page(
+pub(crate) fn validate_page(
     input: &SecurityAuditExportRequest,
     page: &SecurityAuditPage,
 ) -> Result<(), ClientError> {
@@ -121,23 +121,6 @@ impl KasumiAdminClient {
             return Err(invalid("audit status archive count differs from its roots"));
         }
         Ok(status)
-    }
-    /// Pass the returned cursor unchanged to continue this exact historical
-    /// range. This method never retries or reselects a stream on transport loss.
-    pub async fn export_security_audit(
-        &mut self,
-        bearer: &str,
-        input: &SecurityAuditExportRequest,
-    ) -> Result<SecurityAuditPage, ClientError> {
-        input.validate().map_err(invalid)?;
-        let response = self
-            .inner
-            .security_audit_export(request(bearer, input)?)
-            .await?
-            .into_inner();
-        let page = decode(response)?;
-        validate_page(input, &page)?;
-        Ok(page)
     }
     pub async fn security_audit_archives(
         &mut self,

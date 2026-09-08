@@ -231,7 +231,7 @@ async fn local_recovery_resumes_each_phase_and_fences_old_resources_after_activa
     let snapshot_resources = kasumi_client::ClientResources::new(16 << 20, 8).unwrap();
     let snapshot_options = |duration| kasumi_client::SnapshotReadOptions {
         resources: snapshot_resources.clone(),
-        limits: kasumi_client::SnapshotDecodeLimits {
+        limits: kasumi_client::ClientDecodeLimits {
             max_request_bytes: 64 << 10,
             max_wire_bytes: 64 << 10,
             max_json_bytes: 64 << 10,

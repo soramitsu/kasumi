@@ -1,16 +1,16 @@
 //! Defensive native snapshot admission, separate from server-side resource limits.
-mod request;
-mod resources;
+pub(crate) mod request;
+pub(crate) mod resources;
 mod semantic;
-mod tokens;
-mod transport;
+pub(crate) mod tokens;
+pub(crate) mod transport;
 use crate::{ClientError, KasumiClient, proto};
 use kasumi_types::{
     OpenSnapshotLease, ReadSnapshotPage, ReadSnapshotRequest, ScanSnapshotPage, SnapshotLease,
     SnapshotReadResponse, SnapshotScanPage,
 };
 pub use resources::{
-    AdmittedSnapshot, ClientResourceUsage, ClientResources, SnapshotDecodeLimits,
+    AdmittedResponse, ClientDecodeLimits, ClientResourceUsage, ClientResources, JsonReadOptions,
     SnapshotReadOptions,
 };
 pub(crate) use resources::{Call, normalize};
@@ -19,7 +19,7 @@ use semantic::Expected;
 use serde::Serialize;
 use std::io::Write;
 
-fn encode(request: &impl Serialize, call: &Call) -> Result<Vec<u8>, ClientError> {
+pub(crate) fn encode(request: &impl Serialize, call: &Call) -> Result<Vec<u8>, ClientError> {
     struct Output<'a> {
         bytes: Vec<u8>,
         maximum: usize,
@@ -118,7 +118,7 @@ pub(crate) fn prepare_read(
     ))
 }
 pub(crate) fn prepare_points(
-    lease: &AdmittedSnapshot<SnapshotLease>,
+    lease: &AdmittedResponse<SnapshotLease>,
     documents: &[kasumi_types::DocumentKey],
     call: &Call,
 ) -> Result<Arc<Prepared>, ClientError> {
@@ -157,7 +157,7 @@ pub(crate) fn prepare_points(
     ))
 }
 pub(crate) fn prepare_scan(
-    lease: &AdmittedSnapshot<SnapshotLease>,
+    lease: &AdmittedResponse<SnapshotLease>,
     collection: &str,
     after_id: Option<&str>,
     limit: usize,
@@ -200,7 +200,7 @@ impl KasumiClient {
         bearer: &str,
         request: &OpenSnapshotLease,
         options: &SnapshotReadOptions,
-    ) -> Result<AdmittedSnapshot<SnapshotLease>, ClientError> {
+    ) -> Result<AdmittedResponse<SnapshotLease>, ClientError> {
         let call = options.admit()?;
         self.snapshot_prepared(bearer, prepare_open(request, &call)?, call)
             .await
@@ -210,7 +210,7 @@ impl KasumiClient {
         bearer: &str,
         request: &ReadSnapshotRequest,
         options: &SnapshotReadOptions,
-    ) -> Result<AdmittedSnapshot<SnapshotReadResponse>, ClientError> {
+    ) -> Result<AdmittedResponse<SnapshotReadResponse>, ClientError> {
         let call = options.admit()?;
         self.snapshot_prepared(bearer, prepare_read(request, &call)?, call)
             .await
@@ -218,10 +218,10 @@ impl KasumiClient {
     pub async fn read_snapshot_page(
         &mut self,
         bearer: &str,
-        lease: &AdmittedSnapshot<SnapshotLease>,
+        lease: &AdmittedResponse<SnapshotLease>,
         request: &ReadSnapshotPage,
         options: &SnapshotReadOptions,
-    ) -> Result<AdmittedSnapshot<SnapshotReadResponse>, ClientError> {
+    ) -> Result<AdmittedResponse<SnapshotReadResponse>, ClientError> {
         let call = options.admit()?;
         if request.lease_id != lease.lease_id {
             return Err(invalid(
@@ -238,10 +238,10 @@ impl KasumiClient {
     pub async fn scan_snapshot_page(
         &mut self,
         bearer: &str,
-        lease: &AdmittedSnapshot<SnapshotLease>,
+        lease: &AdmittedResponse<SnapshotLease>,
         request: &ScanSnapshotPage,
         options: &SnapshotReadOptions,
-    ) -> Result<AdmittedSnapshot<SnapshotScanPage>, ClientError> {
+    ) -> Result<AdmittedResponse<SnapshotScanPage>, ClientError> {
         let call = options.admit()?;
         if request.lease_id != lease.lease_id {
             return Err(invalid("snapshot scan differs from admitted lease"));
@@ -264,7 +264,7 @@ impl KasumiClient {
         bearer: &str,
         prepared: Arc<Prepared>,
         call: Call,
-    ) -> Result<AdmittedSnapshot<T>, ClientError> {
+    ) -> Result<AdmittedResponse<T>, ClientError> {
         let mut waiter = call.waiter();
         call.check()?;
         let request = self
@@ -281,6 +281,7 @@ impl KasumiClient {
                 self.snapshot_channel.clone(),
                 request,
                 prepared.path,
+                transport::Format::JsonEnvelope,
                 call.clone(),
             ),
         )
@@ -321,7 +322,7 @@ output!(SnapshotScanPage, Scan);
 fn decode_wire<T: SnapshotOutput>(
     wire: transport::Wire,
     prepared: Arc<Prepared>,
-) -> tokio::task::JoinHandle<Result<AdmittedSnapshot<T>, ClientError>> {
+) -> tokio::task::JoinHandle<Result<AdmittedResponse<T>, ClientError>> {
     tokio::task::spawn_blocking(move || {
         let result = (|| {
             tokens::admit(&wire.bytes, &wire.call)?;
@@ -329,7 +330,7 @@ fn decode_wire<T: SnapshotOutput>(
             wire.call.check()?;
             let value = T::from_decoded(decoded)?;
             wire.call.check()?;
-            Ok::<_, ClientError>(AdmittedSnapshot::new(value, &wire.call))
+            Ok::<_, ClientError>(AdmittedResponse::new(value, &wire.call))
         })();
         result.map_err(normalize)
     })

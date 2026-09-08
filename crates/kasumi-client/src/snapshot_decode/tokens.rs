@@ -9,25 +9,65 @@ struct Scan<'a> {
     charge: u64,
     call: &'a Call,
 }
-pub(super) fn admit(input: &[u8], call: &Call) -> Result<(), ClientError> {
+/// One aggregate preflight budget across every JSON body in a unary response.
+#[derive(Default)]
+pub(crate) struct TokenBudget {
+    nodes: usize,
+    charge: u64,
+    json_bytes: usize,
+}
+impl TokenBudget {
+    pub(crate) fn metadata(
+        &mut self,
+        bytes: usize,
+        nodes: usize,
+        call: &Call,
+    ) -> Result<(), ClientError> {
+        call.check()?;
+        self.nodes = self.nodes.checked_add(nodes).ok_or_else(exhausted)?;
+        self.charge = self
+            .charge
+            .checked_add((bytes as u64).checked_mul(8).ok_or_else(exhausted)?)
+            .and_then(|n| n.checked_add((nodes as u64).checked_mul(512)?))
+            .ok_or_else(exhausted)?;
+        if self.nodes > call.limits.max_nodes || self.charge > call.limits.max_decoded_bytes {
+            return Err(exhausted());
+        }
+        Ok(())
+    }
+}
+pub(crate) fn admit(input: &[u8], call: &Call) -> Result<(), ClientError> {
+    admit_with(input, call, &mut TokenBudget::default())
+}
+pub(crate) fn admit_with(
+    input: &[u8],
+    call: &Call,
+    budget: &mut TokenBudget,
+) -> Result<(), ClientError> {
     call.check()?;
-    if input.len() > call.limits.max_json_bytes {
+    budget.json_bytes = budget
+        .json_bytes
+        .checked_add(input.len())
+        .ok_or_else(exhausted)?;
+    if budget.json_bytes > call.limits.max_json_bytes {
         return Err(exhausted());
     }
-    std::str::from_utf8(input).map_err(|_| invalid("snapshot JSON is not UTF-8"))?;
+    std::str::from_utf8(input).map_err(|_| invalid("native JSON is not UTF-8"))?;
     let mut scan = Scan {
         input,
         index: 0,
-        nodes: 0,
-        charge: 0,
+        nodes: budget.nodes,
+        charge: budget.charge,
         call,
     };
     scan.space()?;
     scan.value(0)?;
     scan.space()?;
     if scan.index != input.len() {
-        return Err(invalid("trailing snapshot JSON tokens"));
+        return Err(invalid("trailing native JSON tokens"));
     }
+    budget.nodes = scan.nodes;
+    budget.charge = scan.charge;
     call.check()
 }
 impl Scan<'_> {
@@ -236,7 +276,7 @@ impl Scan<'_> {
     }
 }
 
-pub(super) fn literal(input: &[u8], call: &Call) -> Result<serde_json::Value, ClientError> {
+pub(crate) fn literal(input: &[u8], call: &Call) -> Result<serde_json::Value, ClientError> {
     call.check()?;
     let mut scan = Scan {
         input,
@@ -342,12 +382,12 @@ impl Scan<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ClientResources, SnapshotDecodeLimits, SnapshotReadOptions};
+    use crate::{ClientDecodeLimits, ClientResources, SnapshotReadOptions};
     fn call() -> Call {
         SnapshotReadOptions {
             expected_incarnation: uuid::Uuid::new_v4(),
             resources: ClientResources::new(64 << 20, 2).unwrap(),
-            limits: SnapshotDecodeLimits {
+            limits: ClientDecodeLimits {
                 max_request_bytes: 1024,
                 max_wire_bytes: 65536,
                 max_json_bytes: 65536,

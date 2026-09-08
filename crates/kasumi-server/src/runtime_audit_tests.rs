@@ -129,6 +129,19 @@ async fn audit_native_tls_fixed_history_and_original_authorization_release() {
         );
     }
     append(&audit, 40).await;
+    let decode_resources = kasumi_client::ClientResources::new(512 << 20, 4).unwrap();
+    let decode_options = || kasumi_client::JsonReadOptions {
+        resources: decode_resources.clone(),
+        limits: kasumi_client::ClientDecodeLimits {
+            max_request_bytes: 64 << 10,
+            max_wire_bytes: 2 << 20,
+            max_json_bytes: 1 << 20,
+            max_decoded_bytes: 64 << 20,
+            max_rows: 1024,
+            ..Default::default()
+        },
+        deadline: tokio::time::Instant::now() + std::time::Duration::from_secs(30),
+    };
     let first = admin
         .export_security_audit(
             &operator,
@@ -136,6 +149,7 @@ async fn audit_native_tls_fixed_history_and_original_authorization_release() {
                 cursor: None,
                 limit: 2,
             },
+            &decode_options(),
         )
         .await
         .unwrap();
@@ -160,6 +174,7 @@ async fn audit_native_tls_fixed_history_and_original_authorization_release() {
                     cursor: Some(next),
                     limit: 1024,
                 },
+                &decode_options(),
             )
             .await
             .unwrap();

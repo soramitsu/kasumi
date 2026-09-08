@@ -1,8 +1,8 @@
 //! Installed native endpoint routing. Historical pages carry their originating
 //! member in an opaque SDK handle; retry cannot turn them into a fresh snapshot.
 use crate::{
-    AdmittedSnapshot, ClientError, KasumiClient, KasumiClientConfig, SnapshotReadOptions,
-    snapshot_decode,
+    AdmittedResponse, ClientError, JsonReadOptions, KasumiClient, KasumiClientConfig,
+    SnapshotReadOptions, snapshot_decode,
 };
 use kasumi_transport::credentials::{CredentialSource, token};
 use kasumi_types::*;
@@ -32,8 +32,8 @@ pub struct KasumiClientPool {
 pub struct RoutedQueryPage {
     installation: uuid::Uuid,
     member: u64,
-    query: QueryRequest,
-    response: QueryResponse,
+    prepared: Arc<crate::literal_decode::Prepared>,
+    response: AdmittedResponse<QueryResponse>,
 }
 impl RoutedQueryPage {
     pub fn response(&self) -> &QueryResponse {
@@ -47,7 +47,7 @@ impl RoutedQueryPage {
 pub struct RoutedSnapshotLease {
     installation: uuid::Uuid,
     member: u64,
-    lease: AdmittedSnapshot<SnapshotLease>,
+    lease: AdmittedResponse<SnapshotLease>,
 }
 impl RoutedSnapshotLease {
     pub fn lease(&self) -> &SnapshotLease {
@@ -298,7 +298,7 @@ impl KasumiClientPool {
         &mut self,
         request: &ReadSnapshotRequest,
         options: &SnapshotReadOptions,
-    ) -> NativeResult<AdmittedSnapshot<SnapshotReadResponse>> {
+    ) -> NativeResult<AdmittedResponse<SnapshotReadResponse>> {
         let call = options.admit()?;
         let prepared = snapshot_decode::prepare_read(request, &call)?;
         self.snapshot_request(None, true, prepared, call, options)
@@ -312,7 +312,7 @@ impl KasumiClientPool {
         prepared: Arc<snapshot_decode::Prepared>,
         first: snapshot_decode::Call,
         options: &SnapshotReadOptions,
-    ) -> NativeResult<(u64, AdmittedSnapshot<T>)> {
+    ) -> NativeResult<(u64, AdmittedResponse<T>)> {
         let mut first = Some(first);
         let options = options.clone();
         self.request_until(member, replay, options.deadline, |client, token| {
@@ -328,50 +328,69 @@ impl KasumiClientPool {
     pub async fn query(
         &mut self,
         query: &QueryRequest,
-        timeout: Duration,
+        options: &JsonReadOptions,
     ) -> NativeResult<RoutedQueryPage> {
+        let call = options.admit()?;
         if query.cursor.is_some() {
-            return Err(tonic::Status::invalid_argument(
-                "continue historical pages with their routed page handle",
-            )
-            .into());
+            return Err(snapshot_decode::normalize(
+                tonic::Status::invalid_argument("continue queries through their routed page")
+                    .into(),
+            ));
         }
+        let prepared = crate::literal_decode::prepare_query(query, None, &call)?;
         let (member, response) = self
-            .request(None, true, timeout, |client, token| {
-                let query = query.clone();
-                Box::pin(async move { client.query(token, &query).await })
-            })
+            .query_request(None, prepared.clone(), call, options)
             .await?;
         Ok(RoutedQueryPage {
             installation: self.installation,
             member,
-            query: query.clone(),
+            prepared,
             response,
         })
+    }
+    async fn query_request(
+        &mut self,
+        member: Option<u64>,
+        prepared: Arc<crate::literal_decode::Prepared>,
+        first: snapshot_decode::Call,
+        options: &JsonReadOptions,
+    ) -> NativeResult<(u64, AdmittedResponse<QueryResponse>)> {
+        let mut first = Some(first);
+        let options = options.clone();
+        self.request_until(member, true, options.deadline, |client, token| {
+            let call = first.take().map_or_else(|| options.admit(), Ok);
+            let prepared = prepared.clone();
+            Box::pin(async move { client.query_prepared(token, prepared, call?).await })
+        })
+        .await
+        .map_err(snapshot_decode::normalize)
     }
     pub async fn next_query_page(
         &mut self,
         page: &RoutedQueryPage,
-        timeout: Duration,
+        options: &JsonReadOptions,
     ) -> NativeResult<RoutedQueryPage> {
-        self.require_installation(page.installation)?;
-        let mut query = page.query.clone();
-        query.cursor = Some(
-            page.response
-                .cursor
-                .clone()
-                .ok_or_else(|| tonic::Status::invalid_argument("query has no next page"))?,
-        );
+        let call = options.admit()?;
+        self.require_installation(page.installation)
+            .map_err(snapshot_decode::normalize)?;
+        let cursor = page
+            .response
+            .cursor
+            .as_deref()
+            .ok_or_else(|| snapshot_decode::resources::invalid("query has no next page"))?;
+        let prepared = crate::literal_decode::prepare_query_page(
+            page.prepared.query(),
+            cursor,
+            page.response.revision,
+            &call,
+        )?;
         let (member, response) = self
-            .request(Some(page.member), true, timeout, |client, token| {
-                let query = query.clone();
-                Box::pin(async move { client.query(token, &query).await })
-            })
+            .query_request(Some(page.member), prepared.clone(), call, options)
             .await?;
         Ok(RoutedQueryPage {
             installation: self.installation,
             member,
-            query,
+            prepared,
             response,
         })
     }
@@ -398,7 +417,7 @@ impl KasumiClientPool {
         lease: &RoutedSnapshotLease,
         documents: &[DocumentKey],
         options: &SnapshotReadOptions,
-    ) -> NativeResult<AdmittedSnapshot<SnapshotReadResponse>> {
+    ) -> NativeResult<AdmittedResponse<SnapshotReadResponse>> {
         let call = options.admit()?;
         self.require_installation(lease.installation)
             .map_err(snapshot_decode::normalize)?;
@@ -414,7 +433,7 @@ impl KasumiClientPool {
         after_id: Option<&str>,
         limit: usize,
         options: &SnapshotReadOptions,
-    ) -> NativeResult<AdmittedSnapshot<SnapshotScanPage>> {
+    ) -> NativeResult<AdmittedResponse<SnapshotScanPage>> {
         let call = options.admit()?;
         self.require_installation(lease.installation)
             .map_err(snapshot_decode::normalize)?;
@@ -453,7 +472,7 @@ fn deadline() -> ClientError {
 fn retryable(error: &ClientError) -> bool {
     let code = match error {
         ClientError::Transport(status) => status.code(),
-        ClientError::SnapshotRejected { code, .. } => *code,
+        ClientError::DecodeRejected { code, .. } => *code,
         _ => return false,
     };
     matches!(
@@ -476,7 +495,7 @@ mod snapshot_error_tests {
             tonic::Code::Unknown,
             tonic::Code::Cancelled,
         ] {
-            assert!(retryable(&ClientError::SnapshotRejected {
+            assert!(retryable(&ClientError::DecodeRejected {
                 code,
                 reason: "bounded error"
             }));
@@ -488,7 +507,7 @@ mod snapshot_error_tests {
             tonic::Code::ResourceExhausted,
             tonic::Code::InvalidArgument,
         ] {
-            assert!(!retryable(&ClientError::SnapshotRejected {
+            assert!(!retryable(&ClientError::DecodeRejected {
                 code,
                 reason: "bounded error"
             }));

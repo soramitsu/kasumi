@@ -49,7 +49,7 @@ impl ClientResources {
     }
 }
 #[derive(Debug)]
-pub(super) struct Reservation {
+pub(crate) struct Reservation {
     resources: Arc<ClientResources>,
     pub bytes: u64,
 }
@@ -64,7 +64,7 @@ impl Drop for Reservation {
 /// Bounds accepted tokens and a conservative SDK capacity charge, not hard RSS.
 /// No value is silently substituted when a limit is too small.
 #[derive(Clone, Copy, Debug)]
-pub struct SnapshotDecodeLimits {
+pub struct ClientDecodeLimits {
     pub max_request_bytes: usize,
     /// Entire protobuf message; the five-byte gRPC prefix is accounted separately.
     pub max_wire_bytes: usize,
@@ -76,7 +76,7 @@ pub struct SnapshotDecodeLimits {
     pub max_rows: usize,
     pub max_decoded_bytes: u64,
 }
-impl Default for SnapshotDecodeLimits {
+impl Default for ClientDecodeLimits {
     fn default() -> Self {
         Self {
             max_request_bytes: 8 << 20,
@@ -91,7 +91,7 @@ impl Default for SnapshotDecodeLimits {
         }
     }
 }
-impl SnapshotDecodeLimits {
+impl ClientDecodeLimits {
     pub fn accounted_bytes(&self) -> Result<u64, ClientError> {
         if self.max_request_bytes == 0
             || self.max_wire_bytes == 0
@@ -106,14 +106,15 @@ impl SnapshotDecodeLimits {
             || self.max_number_bytes == 0
             || self.max_decoded_bytes == 0
         {
-            return Err(invalid("invalid snapshot decode limits"));
+            return Err(invalid("invalid client decode limits"));
         }
         // Retain overlap for framing, request/envelope copies, token preflight,
-        // serde scratch, metadata inspection and the final immutable DTO.
+        // serde scratch, admitted request metadata and the final immutable DTO.
+        // Two decoded-work allowances cover a retained request and response.
         (self.max_wire_bytes as u64)
             .checked_mul(4)
             .and_then(|v| v.checked_add((self.max_request_bytes as u64).checked_mul(4)?))
-            .and_then(|v| v.checked_add(self.max_decoded_bytes))
+            .and_then(|v| v.checked_add(self.max_decoded_bytes.checked_mul(2)?))
             .and_then(|v| v.checked_add(256 << 10))
             .ok_or_else(exhausted)
     }
@@ -121,7 +122,7 @@ impl SnapshotDecodeLimits {
 #[derive(Clone, Debug)]
 pub struct SnapshotReadOptions {
     pub resources: Arc<ClientResources>,
-    pub limits: SnapshotDecodeLimits,
+    pub limits: ClientDecodeLimits,
     /// One original finite deadline, including routing, decoding and release.
     pub deadline: Instant,
     /// Caller-installed database identity; never inferred from unverified JWT text.
@@ -140,35 +141,57 @@ impl SnapshotReadOptions {
             reservation,
             limits: self.limits,
             deadline: self.deadline,
-            expected_incarnation: self.expected_incarnation,
+            expected_incarnation: Some(self.expected_incarnation),
+            cancelled: Arc::new(AtomicBool::new(false)),
+        })
+    }
+}
+/// Finite admission for ordinary native JSON reads and canonical input decoding.
+/// These options do not assert a server identity absent from a wire response.
+#[derive(Clone, Debug)]
+pub struct JsonReadOptions {
+    pub resources: Arc<ClientResources>,
+    pub limits: ClientDecodeLimits,
+    pub deadline: Instant,
+}
+impl JsonReadOptions {
+    pub(crate) fn admit(&self) -> Result<Call, ClientError> {
+        if Instant::now() >= self.deadline {
+            return Err(deadline());
+        }
+        Ok(Call {
+            reservation: self.resources.reserve(self.limits.accounted_bytes()?)?,
+            limits: self.limits,
+            deadline: self.deadline,
+            expected_incarnation: None,
             cancelled: Arc::new(AtomicBool::new(false)),
         })
     }
 }
 #[derive(Clone)]
 pub(crate) struct Call {
-    pub(super) reservation: Arc<Reservation>,
-    pub(super) limits: SnapshotDecodeLimits,
-    pub(super) deadline: Instant,
-    pub(super) expected_incarnation: uuid::Uuid,
+    pub(crate) reservation: Arc<Reservation>,
+    pub(crate) limits: ClientDecodeLimits,
+    pub(crate) deadline: Instant,
+    pub(crate) expected_incarnation: Option<uuid::Uuid>,
     cancelled: Arc<AtomicBool>,
 }
 impl Call {
-    pub(super) fn check(&self) -> Result<(), ClientError> {
+    pub(crate) fn check(&self) -> Result<(), ClientError> {
         if self.cancelled.load(Ordering::Acquire) || Instant::now() >= self.deadline {
             Err(deadline())
         } else {
             Ok(())
         }
     }
-    pub(super) fn waiter(&self) -> Waiter {
+    pub(crate) fn waiter(&self) -> Waiter {
         Waiter {
             cancelled: self.cancelled.clone(),
             finished: false,
         }
     }
 }
-pub(super) struct Waiter {
+pub(crate) struct Waiter {
     cancelled: Arc<AtomicBool>,
     pub finished: bool,
 }
@@ -184,47 +207,47 @@ impl Drop for Waiter {
 /// can be copied by application code; those application allocations are outside
 /// the SDK resource contract. There is deliberately no uncharged `into_inner`.
 #[derive(Debug)]
-pub struct AdmittedSnapshot<T>(Arc<Owned<T>>);
+pub struct AdmittedResponse<T>(Arc<Owned<T>>);
 #[derive(Debug)]
 struct Owned<T> {
     value: T,
     reservation: Arc<Reservation>,
 }
-impl<T> Clone for AdmittedSnapshot<T> {
+impl<T> Clone for AdmittedResponse<T> {
     fn clone(&self) -> Self {
         Self(self.0.clone())
     }
 }
-impl<T> std::ops::Deref for AdmittedSnapshot<T> {
+impl<T> std::ops::Deref for AdmittedResponse<T> {
     type Target = T;
     fn deref(&self) -> &T {
         &self.0.value
     }
 }
-impl<T> AdmittedSnapshot<T> {
+impl<T> AdmittedResponse<T> {
     pub fn accounted_bytes(&self) -> u64 {
         self.0.reservation.bytes
     }
-    pub(super) fn new(value: T, call: &Call) -> Self {
+    pub(crate) fn new(value: T, call: &Call) -> Self {
         Self(Arc::new(Owned {
             value,
             reservation: call.reservation.clone(),
         }))
     }
 }
-pub(super) fn invalid(message: &'static str) -> ClientError {
+pub(crate) fn invalid(message: &'static str) -> ClientError {
     ClientError::InvalidResponse(message)
 }
-pub(super) fn exhausted() -> ClientError {
-    ClientError::SnapshotRejected {
+pub(crate) fn exhausted() -> ClientError {
+    ClientError::DecodeRejected {
         code: tonic::Code::ResourceExhausted,
-        reason: "snapshot client resource budget exceeded",
+        reason: "native client resource budget exceeded",
     }
 }
-pub(super) fn deadline() -> ClientError {
-    ClientError::SnapshotRejected {
+pub(crate) fn deadline() -> ClientError {
+    ClientError::DecodeRejected {
         code: tonic::Code::DeadlineExceeded,
-        reason: "snapshot operation deadline elapsed",
+        reason: "native operation deadline elapsed",
     }
 }
 
@@ -232,19 +255,18 @@ pub(super) fn deadline() -> ClientError {
 /// still exists. Returned failure values contain no newly owned diagnostic data.
 pub(crate) fn normalize(error: ClientError) -> ClientError {
     let (code, reason) = match error {
-        ClientError::SnapshotRejected { code, reason } => (code, reason),
-        ClientError::Transport(status) => (status.code(), "snapshot transport failed"),
-        ClientError::Json(_) => (tonic::Code::DataLoss, "snapshot JSON failed validation"),
-        ClientError::Connection(_) => (tonic::Code::Unavailable, "snapshot connection failed"),
+        ClientError::DecodeRejected { code, reason } => (code, reason),
+        ClientError::Transport(status) => (status.code(), "native transport failed"),
+        ClientError::Json(_) => (tonic::Code::DataLoss, "native JSON failed validation"),
+        ClientError::Connection(_) => (tonic::Code::Unavailable, "native connection failed"),
         ClientError::InvalidResponse(reason) => (tonic::Code::DataLoss, reason),
-        ClientError::Authorization => (
-            tonic::Code::Unauthenticated,
-            "snapshot authorization invalid",
-        ),
+        ClientError::Authorization => {
+            (tonic::Code::Unauthenticated, "native authorization invalid")
+        }
         ClientError::RequestTooLarge => (
             tonic::Code::ResourceExhausted,
-            "snapshot request exceeds its byte limit",
+            "native request exceeds its byte limit",
         ),
     };
-    ClientError::SnapshotRejected { code, reason }
+    ClientError::DecodeRejected { code, reason }
 }

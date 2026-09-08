@@ -294,7 +294,7 @@ fn canonical_non_nil(text: &str) -> bool {
     uuid::Uuid::parse_str(text).is_ok_and(|id| !id.is_nil() && id.to_string() == text)
 }
 fn expected_incarnation(text: &str, call: &Call) -> bool {
-    canonical_non_nil(text) && uuid::Uuid::parse_str(text).ok() == Some(call.expected_incarnation)
+    canonical_non_nil(text) && uuid::Uuid::parse_str(text).ok() == call.expected_incarnation
 }
 fn same_lease(left: &SnapshotLease, right: &SnapshotLease) -> bool {
     left.lease_id == right.lease_id

@@ -22,6 +22,7 @@ struct Budget<'a> {
     depth: usize,
     nodes: usize,
     bytes: usize,
+    numeric: bool,
 }
 impl<'b> Budget<'b> {
     fn node(&mut self, bytes: usize) -> Result<(), Bounds> {
@@ -30,10 +31,36 @@ impl<'b> Budget<'b> {
         self.bytes = self.bytes.checked_add(bytes).ok_or(Bounds)?;
         if self.nodes > self.call.limits.max_nodes
             || self.bytes > self.call.limits.max_request_bytes
+            || (self.nodes as u64)
+                .checked_mul(512)
+                .and_then(|n| n.checked_add((self.bytes as u64).checked_mul(8)?))
+                .ok_or(Bounds)?
+                > self.call.limits.max_decoded_bytes
         {
             return Err(Bounds);
         }
         Ok(())
+    }
+    fn number(&mut self, value: impl fmt::Display) -> Result<(), Bounds> {
+        struct Count {
+            bytes: usize,
+            max: usize,
+        }
+        impl fmt::Write for Count {
+            fn write_str(&mut self, text: &str) -> fmt::Result {
+                self.bytes = self.bytes.checked_add(text.len()).ok_or(fmt::Error)?;
+                if self.bytes > self.max {
+                    return Err(fmt::Error);
+                }
+                Ok(())
+            }
+        }
+        let mut count = Count {
+            bytes: 0,
+            max: self.call.limits.max_number_bytes,
+        };
+        fmt::write(&mut count, format_args!("{value}")).map_err(|_| Bounds)?;
+        self.node(0)
     }
     fn string(&mut self, value: &str) -> Result<(), Bounds> {
         if value.len() > self.call.limits.max_string_bytes {
@@ -49,10 +76,14 @@ impl<'b> Budget<'b> {
             return Err(Bounds);
         }
         self.depth += 1;
-        Ok(Compound { budget: self })
+        let numeric_before = self.numeric;
+        Ok(Compound {
+            budget: self,
+            numeric_before,
+        })
     }
 }
-pub(super) fn admit(value: &impl Serialize, call: &Call) -> Result<(), ClientError> {
+pub(crate) fn admit(value: &impl Serialize, call: &Call) -> Result<(), ClientError> {
     call.check()?;
     value
         .serialize(&mut Budget {
@@ -60,19 +91,22 @@ pub(super) fn admit(value: &impl Serialize, call: &Call) -> Result<(), ClientErr
             depth: 0,
             nodes: 0,
             bytes: 0,
+            numeric: false,
         })
         .map_err(|_| exhausted())?;
     call.check()
 }
 struct Compound<'a, 'b> {
     budget: &'a mut Budget<'b>,
+    numeric_before: bool,
 }
 impl Drop for Compound<'_, '_> {
     fn drop(&mut self) {
         self.budget.depth -= 1;
+        self.budget.numeric = self.numeric_before;
     }
 }
-macro_rules! primitive { ($($method:ident($value:ident: $ty:ty)),* $(,)?) => { $(fn $method(self, $value: $ty) -> Result<(), Bounds> { let _ = $value; self.node(0) })* }; }
+macro_rules! primitive { ($($method:ident($value:ident: $ty:ty)),* $(,)?) => { $(fn $method(self, $value: $ty) -> Result<(), Bounds> { self.number($value) })* }; }
 impl<'a, 'b> Serializer for &'a mut Budget<'b> {
     type Ok = ();
     type Error = Bounds;
@@ -83,8 +117,17 @@ impl<'a, 'b> Serializer for &'a mut Budget<'b> {
     type SerializeMap = Compound<'a, 'b>;
     type SerializeStruct = Compound<'a, 'b>;
     type SerializeStructVariant = Compound<'a, 'b>;
-    primitive! { serialize_bool(v: bool), serialize_i8(v: i8), serialize_i16(v: i16), serialize_i32(v: i32), serialize_i64(v: i64), serialize_u8(v: u8), serialize_u16(v: u16), serialize_u32(v: u32), serialize_u64(v: u64), serialize_i128(v: i128), serialize_u128(v: u128), serialize_f32(v: f32), serialize_f64(v: f64), serialize_char(v: char) }
+    primitive! { serialize_i8(v: i8), serialize_i16(v: i16), serialize_i32(v: i32), serialize_i64(v: i64), serialize_u8(v: u8), serialize_u16(v: u16), serialize_u32(v: u32), serialize_u64(v: u64), serialize_i128(v: i128), serialize_u128(v: u128), serialize_f32(v: f32), serialize_f64(v: f64) }
+    fn serialize_bool(self, _: bool) -> Result<(), Bounds> {
+        self.node(0)
+    }
+    fn serialize_char(self, value: char) -> Result<(), Bounds> {
+        self.node(value.len_utf8())
+    }
     fn serialize_str(self, value: &str) -> Result<(), Bounds> {
+        if self.numeric && value.len() > self.call.limits.max_number_bytes {
+            return Err(Bounds);
+        }
         self.string(value)
     }
     fn serialize_bytes(self, value: &[u8]) -> Result<(), Bounds> {
@@ -161,10 +204,12 @@ impl<'a, 'b> Serializer for &'a mut Budget<'b> {
     }
     fn serialize_struct(
         self,
-        _: &'static str,
+        name: &'static str,
         length: usize,
     ) -> Result<Self::SerializeStruct, Bounds> {
-        self.begin(Some(length))
+        let compound = self.begin(Some(length))?;
+        compound.budget.numeric = name == "$serde_json::private::Number";
+        Ok(compound)
     }
     fn serialize_struct_variant(
         self,
