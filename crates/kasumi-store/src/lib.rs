@@ -28,6 +28,7 @@ pub use scratch_table::EncryptedTable;
 mod storage_domains;
 pub use serving_access::{StorageAccess, StoragePurpose};
 mod file_keys;
+mod live_trust;
 pub mod private_files;
 pub use file_keys::FileKeyProvider;
 pub use spool::{EncryptedSpool, SnapshotImage, SnapshotReader};
@@ -296,6 +297,7 @@ pub struct TenantStore {
     access_epoch: AtomicU64,
     shutdown_requested: AtomicBool,
     background: AsyncMutex<BackgroundTasks>,
+    live_trust: Mutex<BTreeMap<String, Weak<kasumi_serving::LiveSignerTrust>>>,
 }
 
 #[derive(Default)]
@@ -474,6 +476,7 @@ impl TenantStore {
             access_epoch: AtomicU64::new(1),
             shutdown_requested: AtomicBool::new(false),
             background: AsyncMutex::new(BackgroundTasks::default()),
+            live_trust: Mutex::new(BTreeMap::new()),
         });
         store.refresh_lease().await?;
         // Register every background owner before another open can see this store.
