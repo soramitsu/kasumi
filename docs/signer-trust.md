@@ -425,3 +425,10 @@ is a separate required recovery gate. Current history checks reject replacing
 that state with an incomplete snapshot. A checkpoint-bound logical prefix and
 exact replay of later durable positions are still required; passing a manual
 snapshot validation plus ordinary restart does not certify that case.
+
+A pending activation that never reached its physical receiver before its original
+deadline currently remains unresolved. Replacing its local UUID or extending the
+deadline is not permitted by `Resume`. Forward progress for that case requires a
+separate durable successor phase, authorized only after the current receiver has
+permanently fenced the expired original outcome and bound the successor to the
+same committed global winner. That phase is not implemented by coverage collection.
