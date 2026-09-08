@@ -34,3 +34,6 @@ mod signing;
 pub use signing::*;
 mod live_trust;
 pub use live_trust::*;
+
+mod live_signer;
+pub use live_signer::*;

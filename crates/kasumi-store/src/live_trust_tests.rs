@@ -1,6 +1,7 @@
 use super::*;
 use kasumi_serving::{
-    GenerationSigner, InstallationSigningRoot, SignerTrustAction, SignerTrustCommand,
+    GenerationSigner, InstallationSigningRoot, LiveGenerationSigner, SignerTrustAction,
+    SignerTrustCommand,
 };
 use kasumi_types::{Action, CredentialResource, RequestAuthorization, RequestContext};
 use std::collections::BTreeSet;
@@ -551,4 +552,64 @@ async fn complete_file_reopen_retains_exact_trust_and_permanent_key_bindings() {
             .is_err()
     );
     reopened.shutdown().await;
+}
+
+#[tokio::test]
+async fn issuance_and_encoded_response_require_the_exact_active_signer_owner() {
+    let f = Fixture::new().await;
+    let trust = f.initialize();
+    let signer = |index: usize, trust: Arc<LiveSignerTrust>| {
+        LiveGenerationSigner::install(
+            GenerationSigner::from_pkcs8(
+                f.signers[index].certificate().clone(),
+                &f.keys[index].serialize_der(),
+            )
+            .unwrap(),
+            trust,
+        )
+    };
+    assert!(signer(1, trust.clone()).is_err());
+    let old = signer(0, trust.clone()).unwrap();
+    let pending = old.sign("lease", &"original-attempt").unwrap();
+    pending.check().unwrap();
+    trust
+        .historical()
+        .verify("lease", &"original-attempt", pending.signature())
+        .unwrap();
+    let stage = f.stage(&trust);
+    assert!(signer(1, trust.clone()).is_err());
+    old.sign("lease", &"still-current")
+        .unwrap()
+        .check()
+        .unwrap();
+    let activation = f.activation(&trust, &stage);
+    trust.administer(&f.context(), activation.clone()).unwrap();
+    assert!(old.check().is_err());
+    assert!(old.sign("lease", &"retired-forgery").is_err());
+    assert!(pending.check().is_err());
+    // The same bytes can still verify a retained proof, never a new live reply.
+    trust
+        .historical()
+        .verify("lease", &"original-attempt", pending.signature())
+        .unwrap();
+    let current = signer(1, trust.clone()).unwrap();
+    let new_pending = current.sign("lease", &"new-attempt").unwrap();
+    trust.administer(&f.context(), activation).unwrap();
+    new_pending.check().unwrap();
+    assert!(pending.check().is_err());
+    trust.close();
+    assert!(new_pending.check().is_err());
+    assert!(current.sign("lease", &"closed-owner").is_err());
+    let reopened = f.open();
+    let fresh = signer(1, reopened.clone()).unwrap();
+    fresh
+        .sign("lease", &"fresh-owner")
+        .unwrap()
+        .check()
+        .unwrap();
+    assert!(signer(0, reopened).is_err());
+    assert!(new_pending.check().is_err());
+    assert!(current.check().is_err());
+    f.store.shutdown().await;
+    assert!(fresh.sign("lease", &"closed-storage").is_err());
 }
