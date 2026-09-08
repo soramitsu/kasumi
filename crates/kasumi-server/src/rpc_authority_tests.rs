@@ -816,111 +816,11 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
         .await
         .unwrap();
     publish_source(&certificate, &old_key_file);
-    // The operation's immutable admission deadline survives waiting for local
-    // metadata ownership and a fresh credential on a later request.
-    let queued = signer_request(SignerVerifierAction::Administer {
-        command: SignerTrustCommand {
-            operation_id: uuid::Uuid::new_v4(),
-            expected_revision: 0,
-            not_after_ms: kasumi_clock::EpochClock::system()
-                .unwrap()
-                .now_ms()
-                .unwrap()
-                + 30,
-            action: SignerTrustAction::Stage {
-                certificate: next_certificate.clone(),
-            },
-        },
-    });
-    let context = auth
-        .authenticate(&format!("Bearer {operator}"))
-        .await
-        .unwrap();
-    let held_fence = leader.authorize_signer_maintenance(context).await.unwrap();
-    let local_installed = &installed_verifiers[local_identity.node_id as usize - 1];
-    let (_, held_scope) = local_installed
-        .authorize(&observe, held_fence, &domain)
-        .await
-        .unwrap();
-    let task = {
-        let mut client = client.clone();
-        let bearer = operator.clone();
-        let request = queued.clone();
-        tokio::spawn(async move { client.signer_maintenance(&bearer, &request).await })
-    };
-    tokio::time::sleep(Duration::from_millis(75)).await;
-    drop(held_scope);
-    assert!(task.await.unwrap().is_err());
-    assert!(
-        client
-            .signer_maintenance(&token("custodian", "kasumi:admin"), &queued)
-            .await
-            .is_err()
-    );
-    let SignerVerifierAction::Administer { command: expired } = &queued.action else {
-        unreachable!()
-    };
-    let absent = client
-        .signer_maintenance(
-            &operator,
-            &signer_request(SignerVerifierAction::Receipt {
-                operation_id: expired.operation_id,
-            }),
-        )
-        .await
-        .unwrap();
-    assert!(absent.receipt.is_none() && absent.authorization.is_none());
-    assert_eq!(absent.current.revision, 0);
     let deadline = kasumi_clock::EpochClock::system()
         .unwrap()
         .now_ms()
         .unwrap()
         + 60_000;
-    let stage = SignerTrustCommand {
-        operation_id: uuid::Uuid::new_v4(),
-        expected_revision: 0,
-        not_after_ms: deadline,
-        action: SignerTrustAction::Stage {
-            certificate: next_certificate.clone(),
-        },
-    };
-    let staged_request = signer_request(SignerVerifierAction::Administer {
-        command: stage.clone(),
-    });
-    let staged = client
-        .signer_maintenance(&operator, &staged_request)
-        .await
-        .unwrap();
-    assert_eq!(staged.current.active.identity.generation, 1);
-    assert_eq!(
-        staged.current.staged.as_ref().unwrap().operation_id,
-        stage.operation_id
-    );
-    assert_eq!(
-        client
-            .signer_maintenance(&operator, &staged_request)
-            .await
-            .unwrap()
-            .receipt,
-        staged.receipt
-    );
-    // Publishing a root-certified file does not activate it. The rejected
-    // reload leaves the live generation-one signer and retained response intact.
-    publish_source(&next_certificate, &next_key_file);
-    assert!(
-        client
-            .signer_maintenance(
-                &operator,
-                &signer_request(SignerVerifierAction::ReloadOperationalSigner {
-                    expected_revision: 1,
-                    certificate_sha256: next_certificate.digest().unwrap(),
-                    not_after_ms: deadline,
-                })
-            )
-            .await
-            .is_err()
-    );
-    source_response.check().unwrap();
     let global_request = |action| AuthoritySigningRequest {
         observation_id: uuid::Uuid::new_v4(),
         domain_sha256: domain.digest().unwrap(),
@@ -991,6 +891,108 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
         staged_global.status.unwrap().phase,
         AuthorityMaintenancePhase::Completed
     );
+    // The operation's immutable admission deadline survives waiting for local
+    // metadata ownership and a fresh credential on a later request.
+    let queued = signer_request(SignerVerifierAction::Administer {
+        command: SignerTrustCommand {
+            operation_id: uuid::Uuid::new_v4(),
+            expected_revision: 0,
+            not_after_ms: kasumi_clock::EpochClock::system()
+                .unwrap()
+                .now_ms()
+                .unwrap()
+                + 30,
+            action: SignerTrustAction::Stage {
+                certificate: next_certificate.clone(),
+            },
+        },
+    });
+    let context = auth
+        .authenticate(&format!("Bearer {operator}"))
+        .await
+        .unwrap();
+    let held_fence = leader.authorize_signer_maintenance(context).await.unwrap();
+    let local_installed = &installed_verifiers[local_identity.node_id as usize - 1];
+    let (_, held_scope) = local_installed
+        .authorize(&observe, held_fence, &domain)
+        .await
+        .unwrap();
+    let task = {
+        let mut client = client.clone();
+        let bearer = operator.clone();
+        let request = queued.clone();
+        tokio::spawn(async move { client.signer_maintenance(&bearer, &request).await })
+    };
+    tokio::time::sleep(Duration::from_millis(75)).await;
+    drop(held_scope);
+    assert!(task.await.unwrap().is_err());
+    assert!(
+        client
+            .signer_maintenance(&token("custodian", "kasumi:admin"), &queued)
+            .await
+            .is_err()
+    );
+    let SignerVerifierAction::Administer { command: expired } = &queued.action else {
+        unreachable!()
+    };
+    let absent = client
+        .signer_maintenance(
+            &operator,
+            &signer_request(SignerVerifierAction::Receipt {
+                operation_id: expired.operation_id,
+            }),
+        )
+        .await
+        .unwrap();
+    assert!(absent.receipt.is_none() && absent.authorization.is_none());
+    assert_eq!(absent.current.revision, 0);
+    let stage = SignerTrustCommand {
+        operation_id: uuid::Uuid::new_v4(),
+        expected_revision: 0,
+        not_after_ms: deadline,
+        action: SignerTrustAction::Stage {
+            certificate: next_certificate.clone(),
+        },
+    };
+    let staged_request = signer_request(SignerVerifierAction::Administer {
+        command: stage.clone(),
+    });
+    let staged = client
+        .signer_maintenance(&operator, &staged_request)
+        .await
+        .unwrap();
+    assert_eq!(staged.current.active.identity.generation, 1);
+    assert_eq!(
+        staged.current.staged.as_ref().unwrap().operation_id,
+        stage.operation_id
+    );
+    assert_eq!(
+        client
+            .signer_maintenance(&operator, &staged_request)
+            .await
+            .unwrap()
+            .receipt,
+        staged.receipt
+    );
+    // Publishing a root-certified file does not activate it. The rejected
+    // reload leaves the live generation-one signer intact. The global stage has
+    // independently closed the old source lease response.
+    publish_source(&next_certificate, &next_key_file);
+    assert!(
+        client
+            .signer_maintenance(
+                &operator,
+                &signer_request(SignerVerifierAction::ReloadOperationalSigner {
+                    expected_revision: 1,
+                    certificate_sha256: next_certificate.digest().unwrap(),
+                    not_after_ms: deadline,
+                })
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(local_owner.current().unwrap().active, certificate);
+    assert!(source_response.check().is_err());
     let mut different = stage.clone();
     different.not_after_ms -= 1;
     assert!(
@@ -1011,6 +1013,35 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
             certificate_sha256: next_certificate.digest().unwrap(),
         },
     };
+    let abort_stage = signer_request(SignerVerifierAction::Administer {
+        command: SignerTrustCommand {
+            operation_id: uuid::Uuid::new_v4(),
+            expected_revision: 1,
+            not_after_ms: deadline,
+            action: SignerTrustAction::StopStage {
+                staged_operation_id: stage.operation_id,
+            },
+        },
+    });
+    assert!(
+        client
+            .signer_maintenance(&operator, &abort_stage)
+            .await
+            .is_err()
+    );
+    assert!(
+        client
+            .signer_maintenance(
+                &operator,
+                &signer_request(SignerVerifierAction::Administer {
+                    command: activation.clone(),
+                })
+            )
+            .await
+            .is_err(),
+        "local publication cannot precede the committed global winner"
+    );
+    assert_eq!(local_owner.current().unwrap(), staged.current);
     transition(&live_owners[3]);
     assert!(
         retained.check().is_err(),
@@ -1055,6 +1086,17 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
             .await
             .unwrap(),
         global_activated
+    );
+    assert!(
+        client
+            .signer_maintenance(&operator, &abort_stage)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        local_owner.current().unwrap(),
+        staged.current,
+        "an issuer-local abort cannot undo the committed global winner"
     );
     let activated = client
         .signer_maintenance(

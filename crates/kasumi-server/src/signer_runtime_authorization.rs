@@ -15,6 +15,7 @@ pub(super) struct ScopedSignerAdministrator {
 struct CurrentAuthorization {
     fence: CurrentFence,
     deadline: OnceLock<ElapsedDeadline>,
+    directive: OnceLock<Arc<kasumi_authority::CommittedSignerDirective>>,
 }
 enum CurrentFence {
     Authority(Arc<AuthorityAdministrativeFence>),
@@ -46,6 +47,9 @@ impl CurrentAuthorization {
         self.fence.check()?;
         if let Some(deadline) = self.deadline.get() {
             deadline.check()?;
+        }
+        if let Some(directive) = self.directive.get() {
+            directive.check()?;
         }
         Ok(())
     }
@@ -100,6 +104,7 @@ impl ScopedSignerAdministrator {
         let current = Arc::new(CurrentAuthorization {
             fence,
             deadline: OnceLock::new(),
+            directive: OnceLock::new(),
         });
         *self
             .current
@@ -119,6 +124,26 @@ pub(crate) struct CurrentSignerInvocation {
     _serial: tokio::sync::OwnedMutexGuard<()>,
 }
 impl CurrentSignerInvocation {
+    pub(crate) fn bind_directive(
+        &self,
+        directive: Arc<kasumi_authority::CommittedSignerDirective>,
+    ) -> Result<()> {
+        ensure!(
+            self.current.fence.context() == directive.context()
+                && self
+                    .current
+                    .fence
+                    .context()
+                    .authorization
+                    .same_live_invocation(&directive.context().authorization),
+            "local publication cannot replace its original current source invocation"
+        );
+        self.current
+            .directive
+            .set(directive)
+            .map_err(|_| anyhow::anyhow!("original signer source permission cannot be replaced"))?;
+        self.check()
+    }
     pub(crate) fn check(&self) -> Result<()> {
         self.current.check()
     }

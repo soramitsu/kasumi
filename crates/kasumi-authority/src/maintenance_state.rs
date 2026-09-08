@@ -444,11 +444,9 @@ impl Backend {
                     .validate_signing_transition(meta, command)
                     .map_err(|error| conflict(&error.to_string()));
             }
-            AuthorityMaintenanceAction::AuthorizeSignerTrust {
-                verifier,
-                domain_sha256,
-                command,
-            } => {
+            AuthorityMaintenanceAction::AuthorizeSignerTrust { directive } => {
+                let verifier = &directive.verifier;
+                let domain_sha256 = &directive.domain_sha256;
                 if next
                     .members
                     .get(&verifier.node_id)
@@ -470,17 +468,8 @@ impl Backend {
                         "signer directive member or installed domain differs",
                     ));
                 }
-                if let SignerTrustAction::Stage { certificate } = &command.action {
-                    certificate
-                        .verify(
-                            &self
-                                .installation
-                                .manifest
-                                .signing_domain(self.installation.partition)
-                                .map_err(unavailable)?,
-                        )
-                        .map_err(unavailable)?;
-                }
+                self.validate_issuer_signer_directive(meta, directive)
+                    .map_err(|error| conflict(&error.to_string()))?;
             }
             AuthorityMaintenanceAction::EnrollLearner { node_id, member } => {
                 Self::check_new_verifier_admission(meta)?;
@@ -561,14 +550,13 @@ impl Backend {
                     if !status.phase.terminal() {
                         ensure!(pending.replace(status.command.operation_id).is_none(), "multiple unfinished authority maintenance operations");
                     }
-                    if let AuthorityMaintenanceAction::AuthorizeSignerTrust { verifier, domain_sha256, command } = &status.command.action {
+                    if let AuthorityMaintenanceAction::AuthorizeSignerTrust { directive } = &status.command.action {
+                        let verifier = &directive.verifier;
                         ensure!(matches!(status.phase, AuthorityMaintenancePhase::Completed | AuthorityMaintenancePhase::Rejected { .. }), "signer authorization has an impossible dispatched phase");
                         if status.phase == AuthorityMaintenancePhase::Completed {
-                            let domain = self.installation.manifest.signing_domain(self.installation.partition)?;
-                            ensure!(*domain_sha256 == domain.digest()?, "signer directive snapshot domain differs");
+                            self.issuer_signer_dependencies(directive, status.progress_revision, |key| snapshot.records.get(key))?;
                             ensure!(state.membership.members.get(&verifier.node_id).is_some_and(|member| member.verifier == *verifier)
                                 || matches!(snapshot.records.get(&revoked_key(verifier.node_id))?, Some(Record::RevokedMember(ref record)) if record.member.verifier == *verifier), "signer directive member lacks its permanent physical identity");
-                            if let SignerTrustAction::Stage { certificate } = &command.action { certificate.verify(&domain)?; }
                         }
                     }
                     if let AuthorityMaintenanceAction::EnrollLearner { node_id, member } = &status.command.action

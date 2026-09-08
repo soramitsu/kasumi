@@ -1225,5 +1225,7 @@ mod signing_state;
 
 #[path = "control_signer_state.rs"]
 mod control_signer_state;
+#[path = "issuer_signer_state.rs"]
+mod issuer_signer_state;
 #[path = "signer_roster.rs"]
 mod signer_roster;

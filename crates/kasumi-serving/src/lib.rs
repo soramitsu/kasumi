@@ -53,3 +53,5 @@ mod authority_signing;
 pub use authority_signing::*;
 mod control_signer;
 pub use control_signer::*;
+mod issuer_signer;
+pub use issuer_signer::*;
