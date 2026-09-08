@@ -597,3 +597,12 @@ a read-only quota getter or caller capacity claim cannot close this dependency.
   workspace check passes in65s. Evidence is in
   `docs/evidence/production-network-feature-isolation-20260908`; no new native
   capacity or final production benchmark execution is claimed.
+
+- `2466c1f` adds the fixture-free native capacity driver: checked 64-bit corpus
+  totals, bounded absent-only batches, durable original-command journaling,
+  exhaustive body verification, and resource/principal binding across JWT
+  renewal and receipt lookup. Four capacity and two network tests, client-only
+  strict Clippy, Python19, formatting and actual dependency graph pass. Evidence
+  is in `docs/evidence/native-capacity-driver-20260908`. This is not a real 3 GiB
+  load, a compressibility measurement or a live production gate; the key-only
+  receipt RPC limitation remains explicit.

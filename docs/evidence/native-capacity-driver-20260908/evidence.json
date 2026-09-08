@@ -1,0 +1,76 @@
+{
+  "source_commit": "2466c1f4cf41fcb4ebe125539d79a584eec96a8d",
+  "source_tree": "f594642559e0b374d864d739bd70787179b7f1bc",
+  "integrated_commit": "236ff529ba64aa3b77eca94fef8f70edcb8d9b6e",
+  "lockfile_sha256": "f42fec1f6e7232b1cd5e9c564cfff56dfec7634f2548eab7eb2096a0d0c17c78",
+  "host": "macOS ARM64; shared host; Rust1.97.1; CARGO_TARGET_DIR=/tmp/kasumi-production-root-target",
+  "gates": {
+    "driver_tests": {
+      "command": "cargo +1.97.1 test --locked -j 1 -p kasumi-bench --no-default-features --features network --bin kasumi-bench-capacity --bin kasumi-bench-network",
+      "exit_code": 0,
+      "build_seconds": 5.46,
+      "capacity_passed": 4,
+      "capacity_seconds": 0.15,
+      "network_passed": 2,
+      "network_seconds": 0.03
+    },
+    "strict_client_clippy": {
+      "command": "cargo +1.97.1 clippy --locked -j 1 -p kasumi-bench --no-default-features --features network --bins -- -D warnings",
+      "exit_code": 0,
+      "seconds": 1.39
+    },
+    "python": {
+      "command": "python3.12 -m unittest discover -s scripts -p test_*.py -v",
+      "exit_code": 0,
+      "passed": 19
+    },
+    "format": {
+      "command": "cargo +1.97.1 fmt --all -- --check",
+      "exit_code": 0
+    },
+    "network_graph": {
+      "command": "cargo +1.97.1 tree --locked -p kasumi-bench --no-default-features --features network -e normal,build,features",
+      "exit_code": 0,
+      "scope": "No engine/store/server/Raft or fixture capability in actual normal/build graph"
+    }
+  },
+  "test_executables": {
+    "kasumi-bench-capacity": "fb9e0fa3d615f291cc628b9e444af381300ccd21d983ad0eb858fe0889ca6ed7",
+    "kasumi-bench-network": "a6e23a28a6c0d7dfae8384558b22507e5a1422c1c250a0b43d42ef71efc355ec"
+  },
+  "earlier_checkpoint": {
+    "source_commit": "09b24eb2201f2a2e1ceb8e1b472083a23d72e00c",
+    "result": "3 capacity and2 network tests; strict client Clippy, Python19, fmt, graph passed before redaction/binding fix",
+    "test_executables": {
+      "kasumi-bench-capacity": "d4398e342cf0747cb4cbbc994d8c587b65208d253f1488802c5253a4e7b2c46f",
+      "kasumi-bench-network": "555554fe735e85f94aa649c24714b68a8eae56a5c64f7582e5b61a0cce36c806"
+    }
+  },
+  "failed_attempts": [
+    {
+      "command": "cargo +1.97fi tree --locked -p kasumi-bench --no-default-features --features network -e normal,build,features",
+      "exit_code": 1,
+      "scope": "Mistyped toolchain; no build or tests ran; raw failure retained, followed by correct1.97.1 graph command."
+    }
+  ],
+  "limitations": [
+    "Unit test validates a checked3GiB aggregate and bounded golden corpus vectors; no actual3GiB allocation, service load or incompressibility measurement.",
+    "No live TLS load, restore, restart, S3, HA, performance or endurance gate. No production release driver executable from these test gates.",
+    "Receipt RPC is key-only and omits authenticated request digest; inspector explicitly records that limitation and never auto-resumes.",
+    "JWT decoding enforces binding continuity only; actual server authenticates every request."
+  ],
+  "files": {
+    "kasumi-native-capacity-09b24eb-tests.log": "461ed3bff3673fcf2fe481539a7b0551ca79e28879cefafdd6fb740ebbaa97ac",
+    "kasumi-native-capacity-09b24eb-clippy.log": "15fb35caee8317a4d65dd748cff3852c62a03a1666f8c19058f7ae996d53ae0b",
+    "kasumi-native-capacity-09b24eb-python.log": "671b737a58fb077ab889a4cccf69102117f1457fdc8120109eb8bfd05012167b",
+    "kasumi-native-capacity-09b24eb-format.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "kasumi-native-capacity-09b24eb-features.log": "e02447d637aeef19ae0cb2fc13d0d985d29b06bc9f874080bb993673e35884b3",
+    "kasumi-native-capacity-2466c1f-tests.log": "2e6f9f3a90dd1992080591a117b1e73780bfcbad33997e30142e302d4e3e3b0a",
+    "kasumi-native-capacity-2466c1f-clippy.log": "6d80d54cf02e0d54552b70fac873285d760da132bb4fa83647e251ab17351888",
+    "kasumi-native-capacity-2466c1f-python.log": "b6039a53361a5159b9a0db7c95bde26bce398791beeda444e18a8fd90eb95ddd",
+    "kasumi-native-capacity-2466c1f-format.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "kasumi-native-capacity-2466c1f-features.log": "02018fc97b425230b585e67e32dbe3c5ef39d7d10753b754632ce8fc136be001",
+    "kasumi-native-capacity-2466c1f-features-attempt.log": "caacdf2f53dcfbd8399ba368f778106d2dfccde203dcb9df0f98413fea4ec80f",
+    "kasumi-native-capacity-2466c1f-test-executables.sha256": "5024b7a4e83c12ecdcb606436865208490bba263953a64542309ee2ccd15afd4"
+  }
+}

@@ -1,0 +1,22 @@
+   Compiling kasumi-types v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-types)
+   Compiling kasumi-serving v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-serving)
+   Compiling kasumi-client v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-client)
+   Compiling kasumi-bench v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-bench)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 13.04s
+     Running unittests src/bin/capacity.rs (/tmp/kasumi-production-root-target/debug/deps/kasumi_bench_capacity-5d4be3a3f4e03132)
+
+running 3 tests
+test tests::receipt_count_alone_cannot_substitute_a_different_document ... ok
+test tests::aggregate_exceeds_two_gib_without_allocating_a_tenant_buffer ... ok
+test tests::batch_identity_is_exact_and_limits_fail_before_allocating ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running unittests src/bin/network.rs (/tmp/kasumi-production-root-target/debug/deps/kasumi_bench_network-1aac7a782e6f4c26)
+
+running 2 tests
+test tests::environment_credential_configuration_is_unsupported ... ok
+test tests::renewal_changes_the_next_request_and_invalid_replacement_never_uses_old_token ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+

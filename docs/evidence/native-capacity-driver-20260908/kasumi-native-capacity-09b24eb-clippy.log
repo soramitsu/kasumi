@@ -1,0 +1,29 @@
+    Checking zeroize v1.9.0
+    Checking rustls-pki-types v1.15.1
+    Checking rustls-webpki v0.103.15
+    Checking rustls v0.23.43
+   Compiling prost v0.14.4
+   Compiling getrandom v0.4.3
+   Compiling rustix v1.1.4
+    Checking tokio-rustls v0.26.5
+    Checking crypto-common v0.1.7
+   Compiling tempfile v3.27.0
+    Checking axum-core v0.5.6
+    Checking digest v0.10.7
+   Compiling prost-types v0.14.4
+   Compiling prost-build v0.14.4
+    Checking axum v0.8.9
+    Checking sha2 v0.10.9
+    Checking imbl v7.0.1
+    Checking tonic v0.14.6
+   Compiling tonic-prost-build v0.14.6
+    Checking kasumi-types v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-types)
+   Compiling kasumi-client v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-client)
+    Checking webpki-roots v1.0.9
+    Checking kasumi-serving v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-serving)
+    Checking hyper-rustls v0.27.9
+    Checking tonic-prost v0.14.6
+    Checking kasumi-transport v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-transport)
+    Checking reqwest v0.12.28
+    Checking kasumi-bench v0.1.0 (/private/tmp/kasumi-production-drain-validation/crates/kasumi-bench)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 22.02s
