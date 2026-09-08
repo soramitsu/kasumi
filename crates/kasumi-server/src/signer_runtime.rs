@@ -1,7 +1,7 @@
 //! Explicitly initialized, separately encrypted local signer-verifier state.
 //! Runtime opening never bootstraps trust from a certificate received on a wire.
 use crate::{
-    runtime::{KeyProviderSettings, file_secret, read_bounded, read_private_file},
+    runtime::{KeyProviderSettings, file_secret, read_bounded},
     serving_runtime::CredentialSource,
 };
 use anyhow::{Context, Result, ensure};
@@ -185,7 +185,7 @@ impl OperationalSignerConfig {
             path.is_absolute(),
             "operational signer descriptor requires an absolute path"
         );
-        let config: Self = serde_json::from_slice(&read_private_file(path, 128 << 10)?)?;
+        let config: Self = serde_json::from_slice(&private_files::read(path, 128 << 10)?)?;
         config.validate(domain)?;
         Ok(config)
     }
@@ -200,7 +200,7 @@ impl OperationalSignerConfig {
     pub(crate) fn open(&self, verifier: &InstalledSignerVerifier) -> Result<Arc<AuthoritySigner>> {
         let signer = GenerationSigner::from_pkcs8(
             self.certificate.clone(),
-            &read_private_file(&self.key_file, 64 << 10)?,
+            &private_files::read(&self.key_file, 64 << 10)?,
         )?;
         Ok(Arc::new(AuthoritySigner::new(
             LiveGenerationSigner::install(
