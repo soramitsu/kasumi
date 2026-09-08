@@ -10,7 +10,6 @@ use std::sync::Arc;
 pub(crate) const META: &str = "raft.meta";
 pub(crate) const HEADERS: &str = "raft.headers";
 pub(crate) const SEEDS: &str = "raft.retirement-seeds";
-pub(crate) const CUSTODY_STATE: &[u8] = b"retired_custody_state";
 
 /// Actual adapter-assigned execution position. No request can select its term,
 /// leader, predecessor or membership. The engine validates a seed against its
@@ -164,15 +163,7 @@ pub(crate) fn load<T: DeserializeOwned>(
     key: &[u8],
 ) -> Result<Option<T>> {
     store
-        .get_bounded(
-            namespace,
-            key,
-            if key == CUSTODY_STATE {
-                1 << 20
-            } else {
-                2 << 20
-            },
-        )?
+        .get_bounded(namespace, key, 2 << 20)?
         .map(|bytes| serde_json::from_slice(&bytes).context("invalid raft control record"))
         .transpose()
 }
@@ -384,7 +375,7 @@ impl ControlLog {
         )?;
         store.write_batch(&[
             WriteOp::put(META, b"retired_boundary", serde_json::to_vec(&boundary)?),
-            WriteOp::put(META, CUSTODY_STATE, serde_json::to_vec(&state)?),
+            crate::custody_tables::CustodyHead::from_state(&state)?.write()?,
             WriteOp::put(
                 META,
                 b"applied",
@@ -636,16 +627,9 @@ pub(crate) fn persist_applied(
                 },
                 kasumi_types::CustodyLimits::default(),
             )?;
-            writes.push(WriteOp::put(
-                META,
-                CUSTODY_STATE,
-                serde_json::to_vec(&state)?,
-            ));
+            writes.push(crate::custody_tables::CustodyHead::from_state(&state)?.write()?);
         } else {
-            ensure!(
-                load::<crate::custody_state::CustodyState>(store, META, CUSTODY_STATE)?.is_some(),
-                "accepted retirement lacks custody state"
-            );
+            crate::custody_tables::load(store)?;
         }
         writes.push(WriteOp::put(
             META,
@@ -658,14 +642,23 @@ pub(crate) fn persist_applied(
 
 pub(crate) fn custody_state(custody: &CustodyStore) -> Result<crate::custody_state::CustodyState> {
     let boundary = retired_boundary(custody)?.context("source is not proven retired")?;
-    let state: crate::custody_state::CustodyState =
-        load(custody.store(), META, CUSTODY_STATE)?.context("retired custody state absent")?;
-    state.validate()?;
+    let state = crate::custody_tables::snapshot(custody.store())?;
     ensure!(
         state.origin.request == boundary.request && state.origin.receipt == boundary.receipt,
         "custody state permanent retirement binding differs"
     );
     Ok(state)
+}
+
+pub(crate) fn custody_head(custody: &CustodyStore) -> Result<crate::custody_tables::CustodyHead> {
+    let boundary = retired_boundary(custody)?.context("source is not proven retired")?;
+    let head = crate::custody_tables::load(custody.store())?;
+    ensure!(
+        head.policy.origin.request == boundary.request
+            && head.policy.origin.receipt == boundary.receipt,
+        "custody point table retirement binding differs"
+    );
+    Ok(head)
 }
 
 /// Caller holds the shared control publication gate. Only the closed reducer
@@ -681,7 +674,7 @@ pub(crate) fn apply_custody(
             && position.command_sha256 == sha256(&command.encoded()?),
         "closed custody applied command differs"
     );
-    let state = custody_state(custody)?;
+    let head = custody_head(custody)?;
     let previous = load::<AppliedCursor>(custody.store(), META, b"applied")?
         .context("retired custody applied cursor absent")?;
     ensure!(
@@ -691,24 +684,25 @@ pub(crate) fn apply_custody(
                 .is_some_and(|id| id.index < position.log_id.index),
         "custody command predecessor differs"
     );
-    let revision = state
+    let revision = head
+        .policy
         .origin
         .revision_base
         .checked_add(position.log_id.index)
         .context("custody revision exhausted")?;
     let mut writes = vec![applied_write(position)?];
-    let result = match state.apply(
+    let prior = crate::custody_tables::receipt(custody.store(), &command.request.command_id)?;
+    let result = match head.apply(
+        prior,
         &command.context,
         &command.request,
         command.admitted_at_ms,
         revision,
     ) {
-        Ok((next, receipt)) => {
-            writes.push(WriteOp::put(
-                META,
-                CUSTODY_STATE,
-                serde_json::to_vec(&next)?,
-            ));
+        Ok((next, receipt, event)) => {
+            writes.extend(crate::custody_tables::transition_writes(
+                &next, &receipt, &event,
+            )?);
             Ok(receipt)
         }
         Err(error) => Err(error),
