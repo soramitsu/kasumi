@@ -112,3 +112,19 @@ numbers, and oversized responses. Archive listing reports dependencies; the
 verification method returns a `VerifiedSecurityAuditArchive` only after the
 server reads and authenticates the exact encrypted segment. These observations
 are not a grant to delete archives or retire their wrapping keys.
+
+## Backup sessions
+
+Create a backup with the generated application administrator profile:
+
+```sh
+kasumid backup create /var/lib/kasumi/profiles/default.json local /secure/full-backup.json
+```
+
+The parent directory must already be private and owned by the operator. Keep the
+checkpoint together with its `*.backup-attempt.json` journal. Retry the same
+command after an uncertain result to resolve the original session. The
+[backup session runbook](backup-sessions.md#operator-commands) documents status,
+verification, permanent abort outcomes, bounded cleanup passes, and key retention.
+Use the resulting checkpoint as the exact source checkpoint in a stopped local
+recovery request.

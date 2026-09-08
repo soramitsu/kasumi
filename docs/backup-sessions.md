@@ -80,3 +80,45 @@ live API.
 Remaining release work: paginated wrapping-key retention reporting/CLI, transitive
 audit archive dependencies, live S3 acceptance, and the final release capacity and
 endurance gates. These are not certified by the focused session tests.
+
+## Operator commands
+
+Use an application database administrator profile on the native administrative
+listener. An initialized standalone installation supplies `profiles/default.json`
+and the `local` filesystem destination.
+
+```sh
+kasumid backup create /var/lib/kasumi/profiles/default.json local /secure/full-backup.json
+kasumid backup status /var/lib/kasumi/profiles/default.json local SESSION_UUID
+kasumid backup verify /var/lib/kasumi/profiles/default.json local SESSION_UUID
+kasumid backup abort /var/lib/kasumi/profiles/default.json local SESSION_UUID "operator cancellation"
+kasumid backup cleanup /var/lib/kasumi/profiles/default.json local SESSION_UUID 256
+```
+
+Creation writes a private `*.backup-attempt.json` beside the requested checkpoint
+before connecting to the server. This journal retains the session UUID,
+destination, application resource, endpoint, and TLS trust. Keep it with the
+checkpoint. After a connection failure or uncertain reply, repeat the identical
+creation command. The server resolves that original session; completed sessions
+return the original checkpoint even after later writes. A fresh authorized
+credential may resolve it after the original credential family is revoked.
+Changed destinations, resources, endpoints, or TLS trust require explicit operator
+resolution using the original session identity. Status and verification accept
+that identity directly with a currently authorized installed client profile.
+
+Checkpoint outputs require an absolute path under an existing owner-only
+directory. Publication is atomic and never replaces a different checkpoint.
+Verification prints the authenticated checkpoint for the selected completed
+backup. Aborting a session that already completed reports its completed outcome;
+inspect that outcome before attempting reclamation. Cleanup performs one bounded
+pass, with a limit of 1–256 objects. Repeat head passes to catch delayed uploads;
+`more_objects_observed: false` describes that pass and cannot promise that a late
+upload will never arrive. Completed backups, shared archives, intents, and
+permanent outcomes remain outside cleanup authority.
+
+Keep every wrapping-key generation required by completed backups, retained
+archives, and permanent session control records. The checkpoint's
+`key_lineage_digest` commits its authenticated key dependencies; a checkpoint or a
+successful cleanup pass does not authorize key retirement. Maintain a separate
+operator-key backup using `backup-operator-keys` and verify it with
+`verify-operator-keys`. Ordinary backup cleanup never reclaims those operator keys.

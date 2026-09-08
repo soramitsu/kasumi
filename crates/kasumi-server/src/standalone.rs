@@ -891,3 +891,7 @@ fn generate_identity(
 #[cfg(test)]
 #[path = "standalone_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "standalone_backup_cli_tests.rs"]
+mod backup_cli_tests;
