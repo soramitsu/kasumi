@@ -12,6 +12,9 @@ mod keys;
 mod serving_access;
 mod storage_domains;
 pub use serving_access::{StorageAccess, StoragePurpose};
+mod file_keys;
+pub mod private_files;
+pub use file_keys::FileKeyProvider;
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_utils;
 

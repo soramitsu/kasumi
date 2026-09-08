@@ -8,6 +8,11 @@ use std::sync::Arc;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", deny_unknown_fields)]
 pub enum StoragePurpose {
+    Standalone {
+        installation_id: uuid::Uuid,
+        tenant: String,
+        incarnation: uuid::Uuid,
+    },
     Serving {
         manifest_digest: String,
         identity: ServingIdentity,
@@ -35,6 +40,30 @@ pub struct StorageAccess {
     gate: Option<Arc<ServingGate>>,
 }
 impl StorageAccess {
+    /// Explicit trusted-host standalone capability. The containing NodeStore
+    /// owns the exclusive database lock, and catalog equality prevents reopening
+    /// an HA catalog or a different standalone generation with this capability.
+    pub fn standalone(
+        installation_id: uuid::Uuid,
+        tenant: &str,
+        incarnation: uuid::Uuid,
+    ) -> Result<Self> {
+        kasumi_types::validate_name(tenant)?;
+        ensure!(
+            !installation_id.is_nil() && !incarnation.is_nil(),
+            "standalone identity cannot be nil"
+        );
+        let access = Self {
+            purpose: StoragePurpose::Standalone {
+                installation_id,
+                tenant: tenant.into(),
+                incarnation,
+            },
+            gate: None,
+        };
+        access.validate_tenant(tenant)?;
+        Ok(access)
+    }
     pub fn serving(gate: Arc<ServingGate>) -> Result<Self> {
         gate.check()?;
         Ok(Self {
@@ -122,6 +151,13 @@ impl StorageAccess {
     pub(crate) fn validate_tenant(&self, tenant: &str) -> Result<()> {
         self.check()?;
         let matches = match &self.purpose {
+            StoragePurpose::Standalone {
+                tenant: installed, ..
+            } => {
+                installed == tenant
+                    && !tenant.starts_with("kasumi.")
+                    && !tenant.starts_with("__kasumi_")
+            }
             StoragePurpose::Serving { identity, .. } => {
                 identity.tenant == tenant
                     && !tenant.starts_with("kasumi.")
