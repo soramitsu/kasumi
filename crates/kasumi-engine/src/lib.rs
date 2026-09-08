@@ -1,4 +1,5 @@
 //! Deterministic tenant state and the common authorized service layer.
+pub use service::control_administration::ControlAdministrativeFence;
 pub use service::lifecycle_service::{
     LifecycleSigner, VerifiedLifecycleChange, VerifiedLifecycleIntent,
 };
