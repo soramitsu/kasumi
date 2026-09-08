@@ -4,6 +4,27 @@ use super::*;
 use crate::backup_format::*;
 use std::io::Write;
 
+/// Publication identity has no verification proof or key lineage. Only the
+/// complete authenticated graph readback can construct a checkpoint.
+pub(super) struct PublishedRoot {
+    tenant: String,
+    source_incarnation: String,
+    revision: u64,
+    resident_sha256: String,
+    backup_id: uuid::Uuid,
+    manifest_ciphertext_sha256: String,
+}
+impl PublishedRoot {
+    pub(super) fn matches(&self, checkpoint: &FullBackupCheckpoint) -> bool {
+        self.tenant == checkpoint.tenant
+            && self.source_incarnation == checkpoint.source_incarnation
+            && self.revision == checkpoint.revision
+            && self.resident_sha256 == checkpoint.resident_sha256
+            && self.backup_id == checkpoint.backup_id
+            && self.manifest_ciphertext_sha256 == checkpoint.manifest_ciphertext_sha256
+    }
+}
+
 struct StateStream {
     sender: tokio::sync::mpsc::Sender<Vec<u8>>,
     buffer: Vec<u8>,
@@ -77,7 +98,8 @@ impl Database {
         &self,
         context: RequestContext,
         destination: &dyn BackupDestination,
-    ) -> Result<FullBackupCheckpoint> {
+        session_id: uuid::Uuid,
+    ) -> Result<(PublishedRoot, kasumi_store::VerifiedBackupSession)> {
         self.access()?;
         self.engine.authorize(&context, None, Action::Admin)?;
         let cancellation = QueryCancellation::default();
@@ -101,6 +123,50 @@ impl Database {
             self.admission()
                 .reserve((96 << 20) as u64, Some(cancellation.clone()))?,
         );
+        let intent = BackupSessionIntent {
+            session_id,
+            tenant: state.tenant.clone(),
+            source_incarnation: state.incarnation.clone(),
+            revision: state.revision,
+            principal: context.principal.clone(),
+            request_id: context.request_id.clone(),
+        };
+        intent.validate()?;
+        let intent_bytes = self
+            .store
+            .encrypt_session_record(state.revision, &intent)
+            .map_err(|_| Error::new(ErrorCode::Unavailable, "backup intent encryption failed"))?;
+        destination
+            .session_put(
+                session_id,
+                kasumi_store::BackupSessionSlot::Intent,
+                intent_bytes,
+            )
+            .await
+            .map_err(|_| {
+                Error::new(
+                    ErrorCode::UnknownOutcome,
+                    "backup intent publication uncertain; resolve the same session identity",
+                )
+            })?;
+        let session = self
+            .backup_session(&context, destination, session_id)
+            .await?
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorCode::UnknownOutcome,
+                    "backup intent readback unavailable",
+                )
+            })?;
+        if session.intent() != &intent || session.outcome().is_some() {
+            return Err(Error::new(
+                ErrorCode::Conflict,
+                "backup session was concurrently resolved or names another capture",
+            ));
+        }
+        let objects = kasumi_store::BackupSessionObjects::new(destination, session_id)
+            .map_err(|_| Error::new(ErrorCode::InvalidArgument, "invalid backup session"))?;
+        let destination: &dyn BackupDestination = &objects;
         self.maintenance_audit_inner(context.clone(), "backup", "started", state.revision)
             .await?;
         let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
@@ -123,7 +189,6 @@ impl Database {
         let mut chunk_count = 0u64;
         let mut page_count = 0u64;
         let mut last_page = None;
-        let mut key_catalogs = BTreeSet::new();
         while let Some(bytes) = tokio::select! {
             bytes = receiver.recv() => bytes,
             _ = cancelled(&cancellation) => return Err(cancelled_error()),
@@ -140,7 +205,6 @@ impl Database {
                     &cancellation,
                 )
                 .await?;
-            key_catalogs.insert(published.key_catalog_sha256);
             chunk_count = chunk_count
                 .checked_add(1)
                 .ok_or_else(|| Error::new(ErrorCode::Corruption, "backup chunk overflow"))?;
@@ -168,7 +232,6 @@ impl Database {
                         &cancellation,
                     )
                     .await?;
-                key_catalogs.insert(published.key_catalog_sha256);
                 last_page = Some(BackupPageRef {
                     object_id: published.id,
                     ciphertext_sha256: published.ciphertext_sha256,
@@ -194,7 +257,6 @@ impl Database {
                     &cancellation,
                 )
                 .await?;
-            key_catalogs.insert(published.key_catalog_sha256);
             last_page = Some(BackupPageRef {
                 object_id: published.id,
                 ciphertext_sha256: published.ciphertext_sha256,
@@ -222,11 +284,23 @@ impl Database {
             .map_err(|_| Error::new(ErrorCode::Corruption, "backup manifest invalid"))?;
         for archive in state.history_archives.values() {
             let source = self.archive_destination(&archive.storage_destination)?;
+            let scoped = archive
+                .storage_backup_session
+                .map(|id| kasumi_store::BackupSessionObjects::new(source.as_ref(), id))
+                .transpose()
+                .map_err(|_| {
+                    Error::new(
+                        ErrorCode::Corruption,
+                        "invalid history source backup session",
+                    )
+                })?;
+            let source: &dyn BackupDestination =
+                scoped.as_ref().map_or(source.as_ref(), |view| view);
             let plaintext = self
                 .copy_history_dependency(
                     &context,
                     state.policy_epoch,
-                    source.as_ref(),
+                    source,
                     destination,
                     &archive.manifest_object_id,
                     &archive.manifest_ciphertext_sha256,
@@ -234,7 +308,6 @@ impl Database {
                     &cancellation,
                 )
                 .await?;
-            key_catalogs.insert(plaintext.key_catalog_sha256.clone());
             let stored: HistoryArchiveManifest = serde_json::from_slice(&plaintext.snapshot)
                 .map_err(|_| {
                     Error::new(ErrorCode::Corruption, "backup history manifest invalid")
@@ -250,7 +323,7 @@ impl Database {
                     .copy_history_dependency(
                         &context,
                         state.policy_epoch,
-                        source.as_ref(),
+                        source,
                         destination,
                         &descriptor.object_id,
                         &descriptor.ciphertext_sha256,
@@ -258,7 +331,6 @@ impl Database {
                         &cancellation,
                     )
                     .await?;
-                key_catalogs.insert(plaintext.key_catalog_sha256.clone());
                 if plaintext.snapshot.len() != descriptor.plaintext_bytes
                     || hex::encode(Sha256::digest(&plaintext.snapshot))
                         != descriptor.plaintext_sha256
@@ -277,10 +349,11 @@ impl Database {
             )
         })?;
         let published = self
-            .publish_history_object(
+            .publish_history_object_named(
                 &context,
                 state.policy_epoch,
                 state.revision,
+                session_id,
                 bytes,
                 destination,
                 &cancellation,
@@ -292,16 +365,17 @@ impl Database {
             .authorize_release(&context, None, Action::Admin, state.policy_epoch)?;
         self.admission().check_release(&cancellation)?;
         self.access()?;
-        key_catalogs.insert(published.key_catalog_sha256);
-        Ok(FullBackupCheckpoint {
-            tenant: manifest.tenant,
-            source_incarnation: manifest.source_incarnation,
-            revision: manifest.revision,
-            resident_sha256: manifest.resident_sha256,
-            backup_id: published.id,
-            manifest_ciphertext_sha256: published.ciphertext_sha256,
-            key_lineage_digest: crate::backup_verify::key_lineage_digest(&key_catalogs)?,
-        })
+        Ok((
+            PublishedRoot {
+                tenant: manifest.tenant,
+                source_incarnation: manifest.source_incarnation,
+                revision: manifest.revision,
+                resident_sha256: manifest.resident_sha256,
+                backup_id: published.id,
+                manifest_ciphertext_sha256: published.ciphertext_sha256,
+            },
+            session,
+        ))
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -1217,7 +1217,7 @@ async fn logical_backup_restores_suspended_with_new_incarnation_and_increasing_r
         .install_archive_destination("backup".into(), destination.clone())
         .unwrap();
     let checkpoint = source
-        .backup_checkpoint(context("owner"), destination.as_ref())
+        .backup_checkpoint(context("owner"), destination.as_ref(), uuid::Uuid::new_v4())
         .await
         .unwrap();
     let target_incarnation = uuid::Uuid::new_v4();

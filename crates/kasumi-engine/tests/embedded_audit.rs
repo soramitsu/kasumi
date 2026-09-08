@@ -107,7 +107,7 @@ async fn every_embedded_request_boundary_durably_audits_denials_and_sealed_tenan
     denied!(db.complete_restore(visitor.clone()));
     let destination =
         Arc::new(FilesystemBackupDestination::new(dir.path().join("backups"), 16 << 20).unwrap());
-    denied!(db.backup(visitor.clone(), destination.as_ref()));
+    denied!(db.backup(visitor.clone(), destination.as_ref(), uuid::Uuid::new_v4()));
     let mut cross_tenant = context("owner");
     cross_tenant.tenant = "other-tenant".into();
     denied!(db.get(&cross_tenant, "docs", "id"));
@@ -240,7 +240,7 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
     let destination =
         Arc::new(FilesystemBackupDestination::new(dir.path().join("backups"), 16 << 20).unwrap());
     let checkpoint = source
-        .backup_checkpoint(context("owner"), destination.as_ref())
+        .backup_checkpoint(context("owner"), destination.as_ref(), uuid::Uuid::new_v4())
         .await
         .unwrap();
     let backup = checkpoint.backup_id();

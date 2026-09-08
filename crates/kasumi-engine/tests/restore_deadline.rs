@@ -17,6 +17,17 @@ struct PendingSource {
 }
 #[async_trait::async_trait]
 impl BackupDestination for PendingSource {
+    async fn session_get(
+        &self,
+        _session: uuid::Uuid,
+        _slot: kasumi_store::BackupSessionSlot,
+        _limit: usize,
+    ) -> anyhow::Result<Option<Vec<u8>>> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        self.entered.notify_one();
+        std::future::pending().await
+    }
+
     async fn put(&self, _id: uuid::Uuid, _bytes: Vec<u8>) -> anyhow::Result<()> {
         anyhow::bail!("read-only test destination")
     }

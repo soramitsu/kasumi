@@ -95,6 +95,13 @@ impl Database {
                 Error::new(ErrorCode::Corruption, "history manifest reference missing")
             })?;
         let destination = self.archive_destination(&archive.storage_destination)?;
+        let scoped = archive
+            .storage_backup_session
+            .map(|id| kasumi_store::BackupSessionObjects::new(destination.as_ref(), id))
+            .transpose()
+            .map_err(|_| Error::new(ErrorCode::Corruption, "invalid history backup session"))?;
+        let destination: &dyn BackupDestination =
+            scoped.as_ref().map_or(destination.as_ref(), |view| view);
         if !cache.manifests.contains(&reference.archive_id) {
             // A manifest can be much larger than the requested point document.
             // Charge encrypted framing, authenticated plaintext and decoding
@@ -105,7 +112,7 @@ impl Database {
             )?;
             let plaintext = self
                 .verified_history_object(
-                    destination.as_ref(),
+                    destination,
                     &archive.manifest_object_id,
                     &archive.manifest_ciphertext_sha256,
                     MAX_ARCHIVE_MANIFEST_BYTES,
@@ -151,7 +158,7 @@ impl Database {
             )?;
             let plaintext = self
                 .verified_history_object(
-                    destination.as_ref(),
+                    destination,
                     &descriptor.object_id,
                     &descriptor.ciphertext_sha256,
                     descriptor.plaintext_bytes,

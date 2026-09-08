@@ -3038,6 +3038,7 @@ mod lifecycle_tests {
                     .execute(
                         context.clone(),
                         M::Backup {
+                            session_id: uuid::Uuid::new_v4(),
                             destination: "primary".into(),
                         },
                     )
@@ -3746,6 +3747,7 @@ mod lifecycle_tests {
             .execute(
                 context.clone(),
                 M::Backup {
+                    session_id: uuid::Uuid::new_v4(),
                     destination: "primary".into(),
                 },
             )

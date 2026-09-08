@@ -147,7 +147,7 @@ impl Fixture {
     async fn request(&self, id: &str) -> RetireSourceRequest {
         let checkpoint = self
             .db
-            .backup_checkpoint_named(context(), "approved")
+            .backup_checkpoint_named(context(), "approved", uuid::Uuid::new_v4())
             .await
             .unwrap();
         RetireSourceRequest {
@@ -614,6 +614,28 @@ struct CountedDestination {
 }
 #[async_trait::async_trait]
 impl kasumi_store::BackupDestination for CountedDestination {
+    async fn session_put(
+        &self,
+        session: uuid::Uuid,
+        slot: kasumi_store::BackupSessionSlot,
+        bytes: Vec<u8>,
+    ) -> anyhow::Result<()> {
+        kasumi_store::BackupDestination::session_put(self.inner.as_ref(), session, slot, bytes)
+            .await
+    }
+    async fn session_get(
+        &self,
+        session: uuid::Uuid,
+        slot: kasumi_store::BackupSessionSlot,
+        limit: usize,
+    ) -> anyhow::Result<Option<Vec<u8>>> {
+        if matches!(slot, kasumi_store::BackupSessionSlot::Object(_)) {
+            self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        kasumi_store::BackupDestination::session_get(self.inner.as_ref(), session, slot, limit)
+            .await
+    }
+
     async fn put(&self, id: uuid::Uuid, bytes: Vec<u8>) -> anyhow::Result<()> {
         kasumi_store::BackupDestination::put(self.inner.as_ref(), id, bytes).await
     }
@@ -700,6 +722,31 @@ struct PausedRetirementDestination {
 }
 #[async_trait::async_trait]
 impl kasumi_store::BackupDestination for PausedRetirementDestination {
+    async fn session_put(
+        &self,
+        session: uuid::Uuid,
+        slot: kasumi_store::BackupSessionSlot,
+        bytes: Vec<u8>,
+    ) -> anyhow::Result<()> {
+        kasumi_store::BackupDestination::session_put(self.inner.as_ref(), session, slot, bytes)
+            .await
+    }
+    async fn session_get(
+        &self,
+        session: uuid::Uuid,
+        slot: kasumi_store::BackupSessionSlot,
+        limit: usize,
+    ) -> anyhow::Result<Option<Vec<u8>>> {
+        if matches!(slot, kasumi_store::BackupSessionSlot::Object(_))
+            && self.pause.swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            self.entered.notify_one();
+            self.release.notified().await;
+        }
+        kasumi_store::BackupDestination::session_get(self.inner.as_ref(), session, slot, limit)
+            .await
+    }
+
     async fn put(&self, id: uuid::Uuid, bytes: Vec<u8>) -> anyhow::Result<()> {
         kasumi_store::BackupDestination::put(self.inner.as_ref(), id, bytes).await
     }

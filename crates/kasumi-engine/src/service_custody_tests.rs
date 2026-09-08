@@ -13,7 +13,7 @@ async fn credential_custody_fixture() -> (CredentialFixture, Arc<RetiredCustody>
         .unwrap();
     let checkpoint = fixture
         .db
-        .backup_checkpoint(fixture.context.clone(), destination.as_ref())
+        .backup_checkpoint(fixture.context.clone(), destination.as_ref(), uuid::Uuid::new_v4())
         .await
         .unwrap();
     let request = RetireSourceRequest {

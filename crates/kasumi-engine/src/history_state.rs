@@ -283,6 +283,7 @@ pub(crate) fn publish(
     }
     let retained = RetainedHistoryArchive {
         storage_destination: manifest.destination.clone(),
+        storage_backup_session: None,
         manifest: manifest.clone(),
         manifest_object_id: request.manifest_object_id.clone(),
         manifest_ciphertext_sha256: request.manifest_ciphertext_sha256.clone(),
@@ -416,6 +417,7 @@ pub(crate) fn validate_restored(state: &TenantState) -> Result<()> {
             .map_err(|_| Error::new(ErrorCode::Corruption, "invalid archive manifest object"))?;
         if id != &archive.manifest.archive_id
             || archive.manifest.tenant != state.tenant
+            || archive.storage_backup_session.is_some_and(|id| id.is_nil())
             || archive.published_revision > state.revision
         {
             return Err(Error::new(

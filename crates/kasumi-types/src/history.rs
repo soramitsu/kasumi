@@ -215,9 +215,13 @@ pub struct PublishHistoryArchive {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RetainedHistoryArchive {
     /// Current operator binding, distinct from immutable source provenance.
     pub storage_destination: String,
+    /// Full-backup copies remain in their completed immutable session namespace.
+    #[serde(deserialize_with = "crate::require_explicit_option")]
+    pub storage_backup_session: Option<uuid::Uuid>,
     pub manifest: HistoryArchiveManifest,
     pub manifest_object_id: String,
     pub manifest_ciphertext_sha256: String,

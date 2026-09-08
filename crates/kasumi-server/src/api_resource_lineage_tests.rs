@@ -60,7 +60,11 @@ async fn native_resources_and_two_restore_hops_preserve_immutable_issuer_facts()
             .install_archive_destination("lineage".into(), destination.clone())
             .unwrap();
         let checkpoint = current
-            .backup_checkpoint(current_context.clone(), destination.as_ref())
+            .backup_checkpoint(
+                current_context.clone(),
+                destination.as_ref(),
+                uuid::Uuid::new_v4(),
+            )
             .await
             .unwrap();
         let target_incarnation = uuid::Uuid::new_v4();
@@ -126,17 +130,23 @@ async fn native_resources_and_two_restore_hops_preserve_immutable_issuer_facts()
             request_id: format!("restore-{hop}"),
         };
         let restored = kasumi_engine::restore_local(
-&kasumi_engine::RestoreSource {
+            &kasumi_engine::RestoreSource {
                 timeout_ms: 300_000,
                 destination_alias: "lineage".into(),
                 destination: destination.clone(),
                 keys: current_key,
             },
-stores.clone(),
-kasumi_engine::LocalRestoreRequest { checkpoint: checkpoint.checkpoint().clone(), target_incarnation, source_context: embedded.clone(), target_context: embedded.clone(), source_purpose: kasumi_store::StoragePurpose::LocalFixture },
-kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
-fixture.audit.clone(),
-)
+            stores.clone(),
+            kasumi_engine::LocalRestoreRequest {
+                checkpoint: checkpoint.checkpoint().clone(),
+                target_incarnation,
+                source_context: embedded.clone(),
+                target_context: embedded.clone(),
+                source_purpose: kasumi_store::StoragePurpose::LocalFixture,
+            },
+            kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+            fixture.audit.clone(),
+        )
         .await
         .unwrap();
         restored.complete_restore(embedded.clone()).await.unwrap();
@@ -145,7 +155,8 @@ fixture.audit.clone(),
             .await
             .unwrap();
         let snapshot = restored.engine().snapshot().unwrap();
-        let mut substituted: kasumi_types::TenantState = kasumi_engine::TenantEngine::decode_snapshot_state(&snapshot).unwrap();
+        let mut substituted: kasumi_types::TenantState =
+            kasumi_engine::TenantEngine::decode_snapshot_state(&snapshot).unwrap();
         substituted.restore_lineage[0].checkpoint.resident_sha256 =
             if substituted.restore_lineage[0].checkpoint.resident_sha256 == "0".repeat(64) {
                 "1".repeat(64)
@@ -166,7 +177,10 @@ fixture.audit.clone(),
         assert!(
             restored
                 .engine()
-                .restore(&kasumi_engine::TenantEngine::encode_snapshot_state(&substituted, 64 << 20).unwrap())
+                .restore(
+                    &kasumi_engine::TenantEngine::encode_snapshot_state(&substituted, 64 << 20)
+                        .unwrap()
+                )
                 .is_err(),
             "shape-valid immutable history substitution must be rejected"
         );

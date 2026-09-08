@@ -46,13 +46,30 @@ pub struct VerifiedBackupAbort {
     session: Uuid,
     outcome_sha256: String,
     access: StorageAccess,
+    request_guard: Option<Arc<dyn Fn() -> Result<()> + Send + Sync>>,
 }
 impl VerifiedBackupAbort {
     pub fn session_id(&self) -> Uuid {
         self.session
     }
+    /// Adds a stricter live request gate to already verified abort authority.
+    /// Cloned filesystem workers retain this gate and its owned work resources.
+    pub fn with_request_guard(mut self, guard: Arc<dyn Fn() -> Result<()> + Send + Sync>) -> Self {
+        self.request_guard = Some(match self.request_guard.take() {
+            Some(previous) => Arc::new(move || {
+                previous()?;
+                guard()
+            }),
+            None => guard,
+        });
+        self
+    }
     pub(crate) fn check(&self) -> Result<()> {
-        self.access.check()
+        self.access.check()?;
+        if let Some(guard) = &self.request_guard {
+            guard()?;
+        }
+        Ok(())
     }
     pub(crate) fn matches_outcome(&self, bytes: &[u8]) -> Result<()> {
         self.check()?;
@@ -71,6 +88,7 @@ pub struct VerifiedBackupSession {
     access: StorageAccess,
     source_purpose: crate::StoragePurpose,
     intent_bytes: Vec<u8>,
+    key_catalog_sha256: String,
 }
 impl VerifiedBackupSession {
     pub async fn encrypt_outcome(
@@ -90,6 +108,9 @@ impl VerifiedBackupSession {
             .encrypt_related(&bytes, provider, &self.access)
             .await?
             .to_bytes()
+    }
+    pub fn key_catalog_sha256(&self) -> &str {
+        &self.key_catalog_sha256
     }
     pub fn source_purpose(&self) -> &crate::StoragePurpose {
         &self.source_purpose
@@ -111,6 +132,7 @@ impl VerifiedBackupSession {
         );
         Ok(VerifiedBackupAbort {
             session: self.intent.session_id,
+            request_guard: None,
             access: self.access.clone(),
             outcome_sha256: self
                 .outcome_ciphertext_sha256
@@ -124,13 +146,14 @@ async fn decode<T: serde::de::DeserializeOwned>(
     tenant: &str,
     provider: Arc<dyn KeyProvider>,
     access: &StorageAccess,
-) -> Result<(T, crate::StoragePurpose, u64)> {
+) -> Result<(T, crate::StoragePurpose, u64, String)> {
     let envelope = EncryptedBackup::from_bytes(bytes, MAX_SESSION_RECORD_BYTES)?;
     let contents = envelope.decrypt(tenant, provider, access).await?;
     Ok((
         serde_json::from_slice(&contents.snapshot)?,
         envelope.source_purpose().clone(),
         contents.revision,
+        contents.key_catalog_sha256,
     ))
 }
 pub async fn verify_backup_session(
@@ -151,31 +174,14 @@ pub async fn verify_backup_session(
     else {
         return Ok(None);
     };
-    let (intent, source_purpose, revision): (BackupSessionIntent, _, _) =
+    let (intent, source_purpose, revision, key_catalog_sha256): (BackupSessionIntent, _, _, _) =
         decode(&intent_bytes, tenant, provider.clone(), access).await?;
     intent.validate()?;
     ensure!(
         intent.revision == revision,
         "backup intent revision differs from encrypted record"
     );
-    let source_matches = match &source_purpose {
-        crate::StoragePurpose::Standalone {
-            tenant: source_tenant,
-            incarnation,
-            ..
-        } => source_tenant == tenant && incarnation.to_string() == intent.source_incarnation,
-        crate::StoragePurpose::Serving { identity, .. } => {
-            identity.tenant == tenant
-                && identity.incarnation.to_string() == intent.source_incarnation
-        }
-        #[cfg(any(test, feature = "test-utils"))]
-        crate::StoragePurpose::LocalFixture => true,
-        _ => false,
-    };
-    ensure!(
-        source_matches,
-        "backup session purpose differs from source application identity"
-    );
+    source_purpose.validate_application_identity(tenant, &intent.source_incarnation)?;
     ensure!(
         intent.session_id == session && intent.tenant == tenant,
         "backup intent identity differs"
@@ -189,10 +195,12 @@ pub async fn verify_backup_session(
         )
         .await?;
     let outcome = if let Some(bytes) = &outcome_bytes {
-        let (outcome, purpose, revision): (BackupSessionOutcome, _, _) =
+        let (outcome, purpose, revision, outcome_catalog): (BackupSessionOutcome, _, _, _) =
             decode(bytes, tenant, provider, access).await?;
         ensure!(
-            purpose == source_purpose && revision == intent.revision,
+            purpose == source_purpose
+                && revision == intent.revision
+                && outcome_catalog == key_catalog_sha256,
             "backup outcome source purpose or revision differs from intent"
         );
         outcome.validate(&intent, &intent_ciphertext_sha256)?;
@@ -207,6 +215,7 @@ pub async fn verify_backup_session(
         access: access.clone(),
         source_purpose,
         intent_bytes,
+        key_catalog_sha256,
         intent_ciphertext_sha256,
         outcome_ciphertext_sha256: outcome_bytes
             .as_ref()
@@ -414,6 +423,24 @@ mod tests {
         let proof = abort(&destination, &store, keys.clone(), &session).await;
         let page = destination.session_objects(&proof, 256).await.unwrap();
         assert_eq!(page.objects.len(), 256);
+        let denied = proof
+            .clone()
+            .with_request_guard(Arc::new(|| anyhow::bail!("original request revoked")));
+        assert!(destination.session_objects(&denied, 1).await.is_err());
+        assert!(
+            destination
+                .session_delete(&denied, &page.objects)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            destination
+                .session_objects(&proof, 256)
+                .await
+                .unwrap()
+                .objects,
+            page.objects
+        );
         assert!(page.more);
         let late_id = page.objects[0];
         destination
