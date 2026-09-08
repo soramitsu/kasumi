@@ -10,6 +10,8 @@ pub(crate) use quorum::{completion_route_retry, quorum_input, started_for};
 #[path = "recovery_source.rs"]
 mod source;
 pub(crate) use source::{issuer_action, retirement_request};
+#[path = "recovery_activation.rs"]
+pub(crate) mod activation;
 
 pub(crate) const PREFIX: &[u8] = b"KASUMI_RECOVERY_V1\0";
 pub(crate) const MAX_COMMAND_BYTES: usize = (2 << 20) + 64 * 1024;
@@ -328,6 +330,7 @@ fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Result<RecoveryR
             completion: None,
             retirement: None,
             source_fence: None,
+            activation_attempt: None,
             activation: None,
             route_publication: None,
             stop_request: None,
@@ -377,7 +380,11 @@ fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Result<RecoveryR
                 // Pending exact effects remain in the phase chain. Stop seals
                 // the target at its issuer before any physical deletion.
                 operation.pending_phase = None;
-                operation.phase = RecoveryPhase::StopTarget;
+                operation.phase = if operation.activation_attempt.is_some() {
+                    RecoveryPhase::StopActivation
+                } else {
+                    RecoveryPhase::StopTarget
+                };
             }
         }
         RecoveryMutation::Prepare {
@@ -422,17 +429,32 @@ fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Result<RecoveryR
                             {
                                 Some(LifecyclePhase::Initialize)
                             }
+                            TargetRuntimeStep::StartActivation { .. }
+                            | TargetRuntimeStep::Activate { .. }
+                            | TargetRuntimeStep::ConfirmActivation(_)
+                                if operation.phase == RecoveryPhase::Confirm =>
+                            {
+                                Some(LifecyclePhase::Activate)
+                            }
                             _ => None,
                         }
                     }
                     _ => None,
                 };
+                let stop_expired = matches!((&pending.input,input.as_ref()),
+                    (RecoveryDispatch::Authority(original),RecoveryDispatch::Authority(stop))
+                    if operation.phase==RecoveryPhase::Activate && command.authorization.admitted_at_ms>=original.not_after_ms
+                    && matches!(&stop.action,AuthorityAction::StopActivation{original:stopped} if stopped==original));
                 if !completion_route_retry(pending, input, command.authorization.admitted_at_ms)
+                    && !stop_expired
                     && !matches!(input.as_ref(), RecoveryDispatch::ControlIntent(request) if Some(request.phase) == expected)
                 {
                     return Err(conflict(
                         "resolve the exact pending recovery phase before another dispatch",
                     ));
+                }
+                if stop_expired {
+                    operation.phase = RecoveryPhase::StopActivation;
                 }
             }
             validate_input(state, &operation, *phase_id, input, &command.authorization)?;
@@ -453,6 +475,10 @@ fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Result<RecoveryR
             };
             prepared.validate()?;
             state.recovery_control.phases.insert(key, prepared);
+            if matches!(input.as_ref(),RecoveryDispatch::Authority(command) if matches!(command.action,AuthorityAction::ActivateCommitted{..}))
+            {
+                operation.activation_attempt = Some(*phase_id);
+            }
             operation.pending_phase = Some(*phase_id);
             operation.last_phase = Some(*phase_id);
             operation.next_phase_sequence = operation
@@ -477,6 +503,38 @@ fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Result<RecoveryR
                 ));
             }
             validate_outcome(state, &operation, &prepared, outcome)?;
+            if let (
+                RecoveryDispatch::Authority(command),
+                RecoveryDispatchOutcome::Authority(signed),
+            ) = (&prepared.input, outcome.as_ref())
+                && let AuthorityAction::StopActivation { original } = &command.action
+                && matches!(
+                    signed.receipt.outcome,
+                    AuthorityOutcome::ActivationResolved { .. }
+                )
+            {
+                let original_key = phase_key(operation_id, original.command_id);
+                let mut original_phase = phase(state, &operation, original.command_id)?.clone();
+                let resolved = RecoveryDispatchOutcome::AuthorityResolution(signed.clone());
+                if let Some(existing) = &original_phase.outcome {
+                    if activation::original_receipt(existing)?
+                        != activation::original_receipt(&resolved)?
+                    {
+                        return Err(conflict(
+                            "activation stop changed permanent original outcome",
+                        ));
+                    }
+                } else {
+                    validate_outcome(state, &operation, &original_phase, &resolved)?;
+                    original_phase.outcome = Some(resolved);
+                    original_phase.resolved_revision = Some(state.revision);
+                    original_phase.validate()?;
+                    state
+                        .recovery_control
+                        .phases
+                        .insert(original_key, original_phase);
+                }
+            }
             advance(state, &mut operation, &prepared, outcome)?;
             prepared.outcome = Some(outcome.as_ref().clone());
             prepared.resolved_revision = Some(state.revision);
@@ -512,6 +570,12 @@ pub(crate) fn expected_intent(
         LifecyclePhase::Initialize | LifecyclePhase::Complete => {
             (quorum_input(state, operation)?.digest()?, None)
         }
+        LifecyclePhase::Activate => (
+            activation::activation_input(state, operation)?
+                .digest()
+                .map_err(|_| conflict("activation input digest failed"))?,
+            None,
+        ),
         LifecyclePhase::StopLocal => (
             staged_digest(&(
                 "kasumi.stop-local-target-input.v1",
@@ -582,10 +646,24 @@ fn validate_input(
     }
     match (operation.phase, input) {
         (
-            RecoveryPhase::Prepare | RecoveryPhase::StopTarget | RecoveryPhase::FenceSource,
+            RecoveryPhase::Prepare
+            | RecoveryPhase::StopTarget
+            | RecoveryPhase::FenceSource
+            | RecoveryPhase::Activate
+            | RecoveryPhase::StopActivation,
             RecoveryDispatch::Authority(command),
         ) => {
-            let action = issuer_action(operation, operation.phase)?;
+            if matches!(
+                operation.phase,
+                RecoveryPhase::Activate | RecoveryPhase::StopTarget
+            ) {
+                activation::require_negative_attempt(state, operation)?;
+            }
+            let action = match operation.phase {
+                RecoveryPhase::Activate => activation::current_action(state, operation)?,
+                RecoveryPhase::StopActivation => activation::stop_action(state, operation)?,
+                _ => issuer_action(operation, operation.phase)?,
+            };
             command
                 .validate()
                 .map_err(|_| conflict("invalid recovery issuer command"))?;
@@ -600,6 +678,16 @@ fn validate_input(
                         .ok_or_else(|| conflict("phase deadline overflow"))?
                 || command.not_after_ms <= authorization.admitted_at_ms
                 || command.action != action
+                || (operation.phase == RecoveryPhase::Activate
+                    && command.not_after_ms
+                        > intent(
+                            state,
+                            operation,
+                            operation
+                                .current_intent
+                                .ok_or_else(|| conflict("activation intent absent"))?,
+                        )?
+                        .original_credential_expires_at_ms)
             {
                 return Err(conflict(
                     "recovery issuer command differs from frozen input or original deadline",
@@ -610,10 +698,17 @@ fn validate_input(
             RecoveryPhase::Materialize
             | RecoveryPhase::Cleanup
             | RecoveryPhase::Initialize
-            | RecoveryPhase::Complete,
+            | RecoveryPhase::Complete
+            | RecoveryPhase::Activate
+            | RecoveryPhase::Confirm,
             RecoveryDispatch::ControlIntent(request),
         ) => {
-            let phase = if operation.phase == RecoveryPhase::Initialize {
+            let phase = if matches!(
+                operation.phase,
+                RecoveryPhase::Activate | RecoveryPhase::Confirm
+            ) {
+                LifecyclePhase::Activate
+            } else if operation.phase == RecoveryPhase::Initialize {
                 LifecyclePhase::Initialize
             } else if operation.phase == RecoveryPhase::Complete {
                 LifecyclePhase::Complete
@@ -664,7 +759,8 @@ fn validate_input(
             RecoveryPhase::Materialize
             | RecoveryPhase::Cleanup
             | RecoveryPhase::Initialize
-            | RecoveryPhase::Complete,
+            | RecoveryPhase::Complete
+            | RecoveryPhase::Confirm,
             RecoveryDispatch::Target { node_id, request },
         ) => {
             request
@@ -698,6 +794,14 @@ fn validate_input(
                 ));
             }
             match (&request.step, operation.phase) {
+                (_, RecoveryPhase::Confirm) => activation::validate_step(
+                    state,
+                    operation,
+                    current,
+                    *node_id,
+                    &request.step,
+                    true,
+                )?,
                 (_, RecoveryPhase::Initialize | RecoveryPhase::Complete) => {
                     quorum::validate_quorum_step(
                         state,
@@ -745,7 +849,7 @@ fn validate_input(
             }
         }
         (RecoveryPhase::RetireSource, RecoveryDispatch::RetireSource(request)) => {
-            if request != retirement_request(operation)?
+            if *request != retirement_request(operation, request.not_after_ms)?
                 || request.not_after_ms <= authorization.admitted_at_ms
                 || request.not_after_ms > authorization.expires_at_ms
                 || request.not_after_ms
@@ -793,23 +897,15 @@ fn validate_outcome(
                         "invalid signed recovery issuer outcome",
                     )
                 })?;
-            if receipt.command != **expected
-                || receipt.authority_id != issuer.authority_id
-                || receipt.manifest_digest != issuer.manifest_sha256
-                || receipt.partition != issuer.partition
-                || receipt.term == 0
-                || receipt.revision == 0
-                || receipt.command_digest
-                    != expected
-                        .digest()
-                        .map_err(|_| conflict("issuer command digest failed"))?
-            {
-                return Err(conflict(
-                    "issuer recovery receipt differs from exact durable dispatch",
-                ));
-            }
+            activation::receipt_identity(issuer, expected, receipt)?;
             if matches!(receipt.outcome, AuthorityOutcome::Rejected { .. }) {
                 return Ok(());
+            }
+            if matches!(expected.action, AuthorityAction::ActivateCommitted { .. }) {
+                return activation::validate_original(state, operation, expected, receipt);
+            }
+            if let AuthorityAction::StopActivation { original } = &expected.action {
+                return activation::validate_resolution(state, operation, original, signed);
             }
             if receipt.admitted_at_ms >= expected.not_after_ms {
                 return Err(conflict("issuer effect exceeds original phase deadline"));
@@ -849,6 +945,20 @@ fn validate_outcome(
                     },
                 ) if incarnation == actual && authority_epoch == epoch => {}
                 _ => return Err(conflict("issuer returned another recovery outcome")),
+            }
+        }
+        (
+            RecoveryDispatch::Authority(expected),
+            RecoveryDispatchOutcome::AuthorityResolution(signed),
+        ) => {
+            activation::validate_resolution(state, operation, expected, signed)?;
+            let stop = phase(state, operation, signed.receipt.command.command_id)?;
+            if stop.sequence <= prepared.sequence
+                || !matches!(&stop.input,RecoveryDispatch::Authority(command) if **command==signed.receipt.command)
+            {
+                return Err(conflict(
+                    "activation resolution lacks its permanent ordered stop phase",
+                ));
             }
         }
         (
@@ -904,6 +1014,10 @@ fn validate_outcome(
                     TargetRuntimeOutcome::Started { origin_sha256 },
                 )
                 | (
+                    TargetRuntimeStep::StartActivation { quorum: input, .. },
+                    TargetRuntimeOutcome::Started { origin_sha256 },
+                )
+                | (
                     TargetRuntimeStep::Initialize(input),
                     TargetRuntimeOutcome::Initialized { origin_sha256 },
                 ) => {
@@ -930,6 +1044,22 @@ fn validate_outcome(
                             )
                         })?;
                 }
+                (TargetRuntimeStep::Activate { .. }, TargetRuntimeOutcome::Activated(signed)) => {
+                    activation::validate_local_proof(state, operation, *node_id, signed, true)?;
+                }
+                (
+                    TargetRuntimeStep::ConfirmActivation(expected),
+                    TargetRuntimeOutcome::Activated(signed),
+                ) => {
+                    activation::validate_local_proof(state, operation, *node_id, signed, true)?;
+                    if signed.observation.activation != expected.observation.activation
+                        || signed.observation.completion != expected.observation.completion
+                    {
+                        return Err(conflict(
+                            "target confirmation changed exact committed activation",
+                        ));
+                    }
+                }
                 (TargetRuntimeStep::Stop(reference), TargetRuntimeOutcome::Stopped(signed)) => {
                     kasumi_serving::verify_local_target_cleanup_history(
                         partition(state, operation)?,
@@ -948,8 +1078,11 @@ fn validate_outcome(
                 _ => return Err(conflict("target acknowledgement operation differs")),
             }
         }
-        (RecoveryDispatch::RetireSource(_), RecoveryDispatchOutcome::SourceRetired(receipt)) => {
-            source::validate_retirement(operation, receipt)?;
+        (
+            RecoveryDispatch::RetireSource(request),
+            RecoveryDispatchOutcome::SourceRetired(receipt),
+        ) => {
+            source::validate_retirement(operation, request, receipt)?;
         }
         _ => {
             return Err(conflict(
@@ -987,6 +1120,47 @@ fn advance(
             operation.source_fence = Some(prepared.phase_id);
             operation.current_intent = None;
             operation.phase = RecoveryPhase::Activate;
+        }
+        (RecoveryDispatch::Authority(command), RecoveryDispatchOutcome::Authority(signed))
+            if prepared.phase == RecoveryPhase::Activate =>
+        {
+            if matches!(signed.receipt.outcome, AuthorityOutcome::Activated { .. }) {
+                operation.activation = Some(prepared.phase_id);
+                operation.current_intent = None;
+                operation.phase = RecoveryPhase::Confirm;
+            } else if matches!(command.action, AuthorityAction::ActivateCommitted { .. })
+                && matches!(
+                    signed.receipt.outcome,
+                    AuthorityOutcome::ActivationStopped { .. }
+                )
+            {
+                operation.current_intent = None;
+            } else {
+                return Err(conflict("unsupported issuer activation progress"));
+            }
+        }
+        (RecoveryDispatch::Authority(command), RecoveryDispatchOutcome::Authority(signed))
+            if prepared.phase == RecoveryPhase::StopActivation =>
+        {
+            let AuthorityAction::StopActivation { original } = &command.action else {
+                return Err(conflict("activation stop input differs"));
+            };
+            let AuthorityOutcome::ActivationResolved { original: resolved } =
+                &signed.receipt.outcome
+            else {
+                return Err(conflict("activation stop did not resolve original command"));
+            };
+            operation.current_intent = None;
+            if matches!(resolved.outcome, AuthorityOutcome::Activated { .. }) {
+                operation.activation = Some(original.command_id);
+                operation.phase = RecoveryPhase::Confirm;
+            } else {
+                operation.phase = if operation.stop_request.is_some() {
+                    RecoveryPhase::StopTarget
+                } else {
+                    RecoveryPhase::Activate
+                };
+            }
         }
         (RecoveryDispatch::RetireSource(_), RecoveryDispatchOutcome::SourceRetired(_)) => {
             operation.retirement = Some(prepared.phase_id);
@@ -1063,6 +1237,12 @@ fn advance(
                     } else {
                         RecoveryPhase::FenceSource
                     };
+                }
+                TargetRuntimeOutcome::Activated(_) => {
+                    voter.confirmation = Some(prepared.phase_id);
+                    if operation.voters.values().all(|v| v.confirmation.is_some()) {
+                        operation.phase = RecoveryPhase::Publish;
+                    }
                 }
                 TargetRuntimeOutcome::Stopped(_) => {
                     voter.cleanup = Some(prepared.phase_id);
@@ -1249,7 +1429,7 @@ pub(crate) fn validate(state: &TenantState) -> Result<()> {
         for (node_id, voter) in &operation.voters {
             if let Some(id) = voter.started {
                 let record = phase(state, operation, id)?;
-                if !matches!((&record.input,&record.outcome), (RecoveryDispatch::Target {node_id:actual,request},Some(RecoveryDispatchOutcome::Target(response))) if actual==node_id && response.node_id==*node_id && matches!(request.step,TargetRuntimeStep::Start(TargetReplicaInput::Quorum(_))) && matches!(response.outcome,TargetRuntimeOutcome::Started{..}))
+                if !matches!((&record.input,&record.outcome), (RecoveryDispatch::Target {node_id:actual,request},Some(RecoveryDispatchOutcome::Target(response))) if actual==node_id && response.node_id==*node_id && matches!(request.step,TargetRuntimeStep::Start(TargetReplicaInput::Quorum(_))|TargetRuntimeStep::StartActivation{..}) && matches!(response.outcome,TargetRuntimeOutcome::Started{..}))
                 {
                     return Err(conflict(
                         "startup progress lacks exact native voter acknowledgement",
@@ -1267,7 +1447,10 @@ pub(crate) fn validate(state: &TenantState) -> Result<()> {
             let Some(RecoveryDispatchOutcome::SourceRetired(receipt)) = &record.outcome else {
                 return Err(conflict("source retirement progress reference differs"));
             };
-            source::validate_retirement(operation, receipt)?;
+            let RecoveryDispatch::RetireSource(request) = &record.input else {
+                return Err(conflict("source retirement progress input differs"));
+            };
+            source::validate_retirement(operation, request, receipt)?;
         }
         if let Some(id) = operation.source_fence
             && !matches!(phase(state, operation, id)?.outcome.as_ref(), Some(RecoveryDispatchOutcome::Authority(s)) if matches!(s.receipt.outcome, AuthorityOutcome::Fenced{incarnation,authority_epoch} if incarnation == operation.request.source_incarnation && authority_epoch == operation.request.source_authority_epoch))
@@ -1297,6 +1480,71 @@ pub(crate) fn validate(state: &TenantState) -> Result<()> {
         ) && operation.retirement.is_none()
         {
             return Err(conflict("planned source fence lacks verified retirement"));
+        }
+        if let Some(id) = operation.activation_attempt {
+            activation::attempt(state, operation)?;
+            if let Some(RecoveryDispatchOutcome::AuthorityResolution(signed)) =
+                &phase(state, operation, id)?.outcome
+            {
+                let stop = phase(state, operation, signed.receipt.command.command_id)?;
+                if stop.outcome.as_ref()
+                    != Some(&RecoveryDispatchOutcome::Authority(signed.clone()))
+                {
+                    return Err(conflict(
+                        "activation resolution differs from permanent stop outcome",
+                    ));
+                }
+            }
+        }
+        if operation.activation.is_some() {
+            if operation.activation != operation.activation_attempt {
+                return Err(conflict(
+                    "committed winner differs from original activation attempt",
+                ));
+            }
+            activation::winner(state, operation)?;
+        }
+        if matches!(
+            operation.phase,
+            RecoveryPhase::StopTarget | RecoveryPhase::Cleanup | RecoveryPhase::Stopped
+        ) {
+            activation::require_negative_attempt(state, operation)?;
+        }
+        if matches!(
+            operation.phase,
+            RecoveryPhase::Confirm | RecoveryPhase::Publish | RecoveryPhase::Finished
+        ) && operation.activation.is_none()
+        {
+            return Err(conflict(
+                "target confirmation precedes committed issuer winner",
+            ));
+        }
+        for (node, voter) in &operation.voters {
+            if let Some(id) = voter.confirmation {
+                let retained = phase(state, operation, id)?;
+                let Some(RecoveryDispatchOutcome::Target(response)) = &retained.outcome else {
+                    return Err(conflict("target confirmation lacks native outcome"));
+                };
+                let TargetRuntimeOutcome::Activated(signed) = &response.outcome else {
+                    return Err(conflict("target confirmation proof differs"));
+                };
+                activation::validate_local_proof(state, operation, *node, signed, true)?;
+                if let Some(first) = activation::local_proof(state, operation)?
+                    && (first.observation.activation != signed.observation.activation
+                        || first.observation.completion != signed.observation.completion)
+                {
+                    return Err(conflict("target confirmations disagree"));
+                }
+            }
+        }
+        if matches!(
+            operation.phase,
+            RecoveryPhase::Publish | RecoveryPhase::Finished
+        ) && !operation.voters.values().all(|v| v.confirmation.is_some())
+        {
+            return Err(conflict(
+                "route publication lacks every local activation confirmation",
+            ));
         }
         if operation.target_stop.is_some() {
             stop_reference(state, operation)?;
@@ -1347,7 +1595,7 @@ fn validate_frozen_input(
 ) -> Result<()> {
     match &retained.input {
         RecoveryDispatch::Authority(command) => {
-            let expected = issuer_action(operation, retained.phase)?;
+            let expected = activation::retained_action(state, operation, retained, command)?;
             command
                 .validate()
                 .map_err(|_| conflict("retained issuer command invalid"))?;
@@ -1363,7 +1611,7 @@ fn validate_frozen_input(
         }
         RecoveryDispatch::RetireSource(request) => {
             if retained.phase != RecoveryPhase::RetireSource
-                || request != retirement_request(operation)?
+                || *request != retirement_request(operation, request.not_after_ms)?
                 || request.not_after_ms <= retained.admitted_at_ms
                 || request.not_after_ms > dispatch_limit(operation, retained)?
             {
@@ -1380,6 +1628,10 @@ fn validate_frozen_input(
                 ) | (RecoveryPhase::Cleanup, LifecyclePhase::StopLocal)
                     | (RecoveryPhase::Initialize, LifecyclePhase::Initialize)
                     | (RecoveryPhase::Complete, LifecyclePhase::Complete)
+                    | (
+                        RecoveryPhase::Activate | RecoveryPhase::Confirm,
+                        LifecyclePhase::Activate
+                    )
             ) || **request
                 != expected_intent(
                     state,
@@ -1411,6 +1663,14 @@ fn validate_frozen_input(
                 return Err(conflict("retained target dispatch resource differs"));
             }
             match (&request.step, retained.phase) {
+                (_, RecoveryPhase::Confirm) => activation::validate_step(
+                    state,
+                    operation,
+                    current,
+                    *node_id,
+                    &request.step,
+                    false,
+                )?,
                 (_, RecoveryPhase::Initialize | RecoveryPhase::Complete) => {
                     quorum::validate_quorum_step(
                         state,
@@ -1480,6 +1740,14 @@ pub(crate) fn validate_successor(previous: &TenantState, incoming: &TenantState)
                 .is_some_and(|id| new.stop_request != Some(id))
         {
             return Err(conflict("snapshot substituted recovery operation identity"));
+        }
+        if let Some(old_id) = old.activation_attempt {
+            let new_id = new
+                .activation_attempt
+                .ok_or_else(|| conflict("snapshot removed original activation attempt"))?;
+            if phase(incoming, new, new_id)?.sequence < phase(previous, old, old_id)?.sequence {
+                return Err(conflict("snapshot regressed original activation attempt"));
+            }
         }
         for (old, new) in [
             (old.materialization_intent, new.materialization_intent),

@@ -121,6 +121,17 @@ impl KasumiTargetClient {
                 ensure!(*origin_sha256 == origin.digest()?, "started origin differs");
             }
             (
+                TargetRuntimeStep::StartActivation { quorum, .. },
+                TargetRuntimeOutcome::Started { origin_sha256 },
+            ) => {
+                let origin = origin(quorum)?;
+                origin.accepts_phase(intent, LifecyclePhase::Activate)?;
+                ensure!(
+                    *origin_sha256 == origin.digest()?,
+                    "activation startup origin differs"
+                );
+            }
+            (
                 TargetRuntimeStep::Initialize(input),
                 TargetRuntimeOutcome::Initialized { origin_sha256 },
             ) => {
@@ -291,7 +302,8 @@ fn validate_request_phase(
         TargetRuntimeStep::Inspect(i) => (LifecyclePhase::InspectTarget, Some(i.digest()?)),
         TargetRuntimeStep::Initialize(i) => (LifecyclePhase::Initialize, Some(i.digest()?)),
         TargetRuntimeStep::Complete(i) => (LifecyclePhase::Complete, Some(i.digest()?)),
-        TargetRuntimeStep::Activate { quorum, .. } => {
+        TargetRuntimeStep::StartActivation { quorum, .. }
+        | TargetRuntimeStep::Activate { quorum, .. } => {
             origin(quorum)?.accepts_phase(intent, LifecyclePhase::Activate)?;
             (LifecyclePhase::Activate, None)
         }

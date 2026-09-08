@@ -353,6 +353,45 @@ impl ControlRecoveryCoordinator {
                     return Ok(RecoveryDispatchOutcome::Authority(Box::new(receipt)));
                 }
                 prepared.admit_dispatch().await?;
+                if let AuthorityAction::ActivateCommitted { control, .. } = &command.action {
+                    let accepted = pool
+                        .read_lifecycle_receipt(&control.reference, duration)
+                        .await?;
+                    if let Some(accepted) = accepted {
+                        ensure!(
+                            accepted.receipt.reference == control.reference
+                                && accepted.receipt.request_sha256 == control.intent_sha256,
+                            "retained issuer activation intent differs"
+                        );
+                    } else {
+                        let LifecycleAuthorityIdentity::Intent(id) = control.reference.identity
+                        else {
+                            anyhow::bail!("activation intent reference differs")
+                        };
+                        let observed = self
+                            .database
+                            .observe_lifecycle_intent(context.clone(), id)
+                            .await?;
+                        let signed = self.signer.sign_intent(&observed).await?;
+                        let acceptance = kasumi_serving::LifecycleAuthorityRequest::AcceptIntent(
+                            Box::new(signed),
+                        );
+                        ensure!(
+                            acceptance.reference() == control.reference
+                                && acceptance.digest()? == control.intent_sha256,
+                            "fresh issuer observation changed immutable activation identity"
+                        );
+                        prepared.admit_dispatch().await?;
+                        let accepted = pool.execute_lifecycle(&acceptance, duration).await?;
+                        ensure!(
+                            accepted.receipt.reference == control.reference
+                                && accepted.receipt.request_sha256 == control.intent_sha256,
+                            "issuer returned another activation acceptance"
+                        );
+                        observed.release().await?;
+                    }
+                    prepared.admit_dispatch().await?;
+                }
                 let result = pool.execute(command, duration).await?;
                 prepared.release().await?;
                 Ok(RecoveryDispatchOutcome::Authority(Box::new(result)))

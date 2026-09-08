@@ -63,6 +63,7 @@ fn same_nodes(
         && nodes.iter().all(|n| {
             expected.get(&n.node_id).is_some_and(|e| {
                 e.node_id == n.node_id
+                    && e.verifier == n.verifier
                     && e.principal == n.principal
                     && e.certificate_sha256 == n.certificate_sha256
             })
@@ -182,5 +183,43 @@ impl Backend {
             }
             Ok(())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn activation_cannot_substitute_a_physical_verifier_behind_the_same_node_and_certificate() {
+        let node = NodeIdentity {
+            node_id: 1,
+            verifier: kasumi_types::TrustVerifierIdentity {
+                installation_id: Uuid::new_v4(),
+                node_id: 1,
+            },
+            principal: "target-one".into(),
+            certificate_sha256: "12".repeat(32),
+        };
+        node.validate().unwrap();
+        let expected = kasumi_types::LifecycleNode {
+            node_id: node.node_id,
+            verifier: node.verifier.clone(),
+            principal: node.principal.clone(),
+            certificate_sha256: node.certificate_sha256.clone(),
+            attestation_public_key: "34".repeat(32),
+        };
+        expected.validate().unwrap();
+        let voters = BTreeSet::from([node]);
+        assert!(same_nodes(
+            &voters,
+            &BTreeMap::from([(1, expected.clone())])
+        ));
+        let mut alias = expected;
+        alias.verifier.installation_id = Uuid::new_v4();
+        alias.validate().unwrap();
+        assert!(
+            !same_nodes(&voters, &BTreeMap::from([(1, alias)])),
+            "a different physical installation is not the prepared target voter"
+        );
     }
 }
