@@ -219,6 +219,29 @@ pub struct NodeAdmission {
     state: Mutex<State>,
 }
 impl NodeAdmission {
+    /// Deterministic memory observations for unit tests of ownership. This is
+    /// unavailable in library and fixture-feature builds of the database.
+    #[cfg(test)]
+    pub(crate) fn with_fixed_memory(
+        config: AdmissionConfig,
+        capacity: u64,
+        resident: u64,
+    ) -> anyhow::Result<Arc<Self>> {
+        struct FixedMemory(u64);
+        impl MemorySource for FixedMemory {
+            fn resident_bytes(&self) -> anyhow::Result<u64> {
+                Ok(self.0)
+            }
+        }
+        let high = config.resolve_high_water(capacity)?;
+        Self::create(
+            config,
+            high,
+            Arc::new(FixedMemory(resident)),
+            Arc::new(SystemLeaseClock),
+        )
+    }
+
     pub fn new(config: AdmissionConfig) -> anyhow::Result<Arc<Self>> {
         config.validate()?;
         // An explicit threshold may reduce the detected capacity, but must not

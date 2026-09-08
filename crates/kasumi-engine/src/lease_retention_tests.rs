@@ -23,12 +23,16 @@ fn context() -> RequestContext {
 fn node() -> Arc<NodeAdmission> {
     // These unit tests isolate lease ownership. They install no production
     // maintenance lanes and do not establish a production capacity gate.
-    NodeAdmission::new(AdmissionConfig {
-        high_water_bytes: Some(8 << 30),
-        low_water_bytes: Some(7 << 30),
-        max_inflight_bytes: Some(512 << 20),
-        ..Default::default()
-    })
+    NodeAdmission::with_fixed_memory(
+        AdmissionConfig {
+            high_water_bytes: Some(8 << 30),
+            low_water_bytes: Some(7 << 30),
+            max_inflight_bytes: Some(512 << 20),
+            ..Default::default()
+        },
+        8 << 30,
+        0,
+    )
     .unwrap()
 }
 fn fixture(count: usize, body_bytes: usize, budget: usize) -> TenantEngine {
