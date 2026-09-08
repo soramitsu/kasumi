@@ -1,0 +1,34 @@
+    Checking kasumi-types v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-types)
+   Compiling kasumi-client v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-client)
+    Checking kasumi-serving v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-serving)
+    Checking kasumi-query v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-query)
+    Checking kasumi-store v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-store)
+    Checking kasumi-raft v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-raft)
+    Checking kasumi-engine v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-engine)
+    Checking kasumi-authority v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-authority)
+    Checking kasumi-server v0.1.0 (/private/tmp/kasumi-production-runtime/crates/kasumi-server)
+error: large size difference between variants
+  --> crates/kasumi-server/src/signer_runtime_authorization.rs:19:1
+   |
+19 | /  enum CurrentFence {
+20 | |      Authority(Arc<AuthorityAdministrativeFence>),
+   | |      -------------------------------------------- the second-largest variant contains at least 8 bytes
+21 | |/     Control {
+22 | ||         fence: Arc<kasumi_engine::ControlAdministrativeFence>,
+23 | ||         issuer: kasumi_client::CurrentControlSignerObservation,
+24 | ||     },
+   | ||_____- the largest variant contains at least 1376 bytes
+25 | |  }
+   | |__^ the entire enum is at least 1376 bytes
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#large_enum_variant
+   = note: `-D clippy::large-enum-variant` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::large_enum_variant)]`
+help: consider boxing the large fields or introducing indirection in some other way to reduce the total size of the enum
+   |
+23 -         issuer: kasumi_client::CurrentControlSignerObservation,
+23 +         issuer: Box<kasumi_client::CurrentControlSignerObservation>,
+   |
+
+error: could not compile `kasumi-server` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
