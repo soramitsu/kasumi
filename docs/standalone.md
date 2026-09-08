@@ -45,7 +45,7 @@ kasumid backup-operator-keys /var/lib/kasumi/kasumi.json /secure/offline/kasumi-
 kasumid recover-administrator /var/lib/kasumi/kasumi.json /var/lib/kasumi/recovered
 ```
 
-Wrapping-key rotation retains previous generations and rewraps installed catalogs. Signer rotation retains previous verification keys. Certificate rotation retains the CA, replaces server keys and certificates, commits the new local Control certificate pin, and updates profiles inside the installation's `profiles` directory. Update any copied/external profiles using the returned pins before reconnecting. A failed rotation leaves a durable started event and can be rerun while the server remains stopped.
+Wrapping-key rotation retains previous generations and rewraps installed catalogs. Signer rotation retains previous verification keys. Certificate rotation retains the CA, replaces server and generated client keys and certificates, commits the new local Control certificate pin, and updates profiles inside the installation's `profiles` directory. Update any copied/external profiles using the returned pins before reconnecting. A failed rotation leaves a durable started event and can be rerun while the server remains stopped.
 
 Administrator recovery issues new private profiles for administrators in the current policies. It does not silently replace policy or change existing credential-family outcomes. It requires the installed encryption and signing keys. Run the renewal watcher for recovered profiles before their one-hour lifetime expires.
 

@@ -478,15 +478,24 @@ pub async fn rotate_certificates(configuration: &Path) -> Result<serde_json::Val
     let ca_key = rcgen::KeyPair::from_pem(std::str::from_utf8(&ca_key)?)?;
     let ca_pem = std::fs::read_to_string(root.join("tls/ca.pem"))?;
     let issuer = rcgen::Issuer::from_ca_cert_pem(&ca_pem, &ca_key)?;
-    for (name, files) in [
-        ("mcp", &config.mcp.tls),
-        ("native", &config.native.tls),
-        ("admin", &config.admin.tls),
+    let client = TlsFiles {
+        certificate: root.join("profiles/client.pem"),
+        private_key: root.join("profiles/client-key.pem"),
+    };
+    for (name, files, client_auth) in [
+        ("mcp", &config.mcp.tls, false),
+        ("native", &config.native.tls, false),
+        ("admin", &config.admin.tls, false),
+        ("client", &client, true),
     ] {
         let key = rcgen::KeyPair::generate()?;
         let mut parameters = parameters(name, 365)?;
         parameters.key_usages = vec![rcgen::KeyUsagePurpose::DigitalSignature];
-        parameters.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
+        parameters.extended_key_usages = vec![if client_auth {
+            rcgen::ExtendedKeyUsagePurpose::ClientAuth
+        } else {
+            rcgen::ExtendedKeyUsagePurpose::ServerAuth
+        }];
         let certificate = parameters.signed_by(&key, &issuer)?;
         let key_pem = zeroize::Zeroizing::new(key.serialize_pem());
         let certificate_pem = certificate.pem();
