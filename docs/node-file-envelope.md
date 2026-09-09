@@ -54,6 +54,17 @@ to the recognized installed store; `RepairAborted` never permits falling back to
 writable opening of an unrecognized file. The envelope adds fixed framing only;
 it does not establish persistent disk admission or hard RSS bounds.
 
+`NodeStore::claim_cleanup(path, expected_id)` performs no redb open or mutation.
+It accepts only a complete canonical Prepared or Ready envelope under the same
+private single-link descriptor lock and returns `NodeFileCleanup`. This guard
+exposes the held `FileIdentity` and retains physical custody through the caller's
+exact unlink and parent synchronization. It grants no authority to stop/delete:
+permanent stop, issuer drain, gate closure and actual worker/storage ownership
+drain remain caller preconditions. Empty or torn headers require the separate
+original journal-bound inode protocol; they are never interpreted as a format
+fallback. A source regression checks both states, byte-exact rejection and the
+held inode lock even after its path moves.
+
 Caller reconciliation is required after this initial core source checkpoint.
 Standalone/general node files need a configured random durable UUID. HA target
 generations use the permanently journaled Control incarnation, tenant, target
@@ -65,7 +76,7 @@ original installation, local operation and target incarnation. Shared named
 UUIDv8 values. They exclude paths, mutable membership, TLS certificates and the
 candidate header. Target journal and signer-verifier files have distinct domains.
 
-The focused source tests are `node_file::tests::` (eight ordinary tests and one
+The focused source tests are `node_file::tests::` (nine ordinary tests and one
 explicit subprocess helper). They cover byte-exact clean/unclean unrelated-file
 rejection, actual process-exit recovery, wrong UUIDs and inodes, partial headers,
 canonical fields/checksum, checked offset I/O, actual descriptor close, and path

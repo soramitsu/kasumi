@@ -225,6 +225,59 @@ fn validated_descriptor_handoff_never_reopens_a_substituted_path() {
     assert_eq!(unrelated, std::fs::read(&path).unwrap());
 }
 
+#[test]
+fn cleanup_custody_accepts_only_exact_recognized_headers_and_holds_the_inode_lock() {
+    let directory = directory();
+    for ready in [false, true] {
+        let path = directory.path().join(if ready {
+            "ready-cleanup"
+        } else {
+            "prepared-cleanup"
+        });
+        if ready {
+            drop(NodeStore::create_new(&path, ID, ScratchDisk::fixture()).unwrap());
+        } else {
+            drop(NodeFile::create_new(&path, ID).unwrap());
+        }
+        let before = std::fs::read(&path).unwrap();
+        assert!(NodeStore::claim_cleanup(&path, Uuid::from_u128(10)).is_err());
+        assert_eq!(before, std::fs::read(&path).unwrap());
+        let identity = private_files::file_identity(&path).unwrap();
+        let cleanup = NodeStore::claim_cleanup(&path, ID).unwrap();
+        assert_eq!(cleanup.identity(), &identity);
+        assert_eq!(before, std::fs::read(&path).unwrap());
+        assert!(NodeStore::claim_cleanup(&path, ID).is_err());
+        assert!(options().open(&path).unwrap().try_lock().is_err());
+        let alias = directory.path().join(if ready {
+            "ready-moved"
+        } else {
+            "prepared-moved"
+        });
+        std::fs::rename(&path, &alias).unwrap();
+        assert!(options().open(&alias).unwrap().try_lock().is_err());
+        assert_eq!(private_files::file_identity(&alias).unwrap(), identity);
+        std::fs::remove_file(&alias).unwrap();
+        File::open(directory.path()).unwrap().sync_all().unwrap();
+        assert_eq!(cleanup.identity(), &identity);
+        drop(cleanup);
+    }
+    let torn = header(ID, PREPARED);
+    for (name, bytes) in [("empty", &b""[..]), ("torn", &torn[..40])] {
+        let path = directory.path().join(name);
+        let file = options().create_new(true).open(&path).unwrap();
+        file.write_all_at(bytes, 0).unwrap();
+        drop(file);
+        let before = std::fs::read(&path).unwrap();
+        assert!(NodeStore::claim_cleanup(&path, ID).is_err());
+        assert_eq!(before, std::fs::read(&path).unwrap());
+    }
+    let path = directory.path().join("unrelated-cleanup");
+    drop(raw_database(&path));
+    let before = std::fs::read(&path).unwrap();
+    assert!(NodeStore::claim_cleanup(&path, ID).is_err());
+    assert_eq!(before, std::fs::read(&path).unwrap());
+}
+
 struct OwnedChild(Child);
 impl Drop for OwnedChild {
     fn drop(&mut self) {

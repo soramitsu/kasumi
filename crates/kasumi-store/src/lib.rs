@@ -23,6 +23,7 @@ mod device_disk;
 mod keys;
 mod node_disk;
 mod node_file;
+pub use node_file::NodeFileCleanup;
 pub mod node_store_ids;
 mod read_view;
 pub use node_disk::{
@@ -156,6 +157,13 @@ pub struct NodeStore {
 }
 
 impl NodeStore {
+    /// Claim an exact recognized Prepared or Ready inode for independently
+    /// authorized cleanup. No redb open, initialization or repair takes place.
+    /// This physical guard grants no authority to stop or delete a generation.
+    pub fn claim_cleanup(path: impl AsRef<Path>, expected_id: Uuid) -> Result<NodeFileCleanup> {
+        node_file::NodeFile::claim_cleanup(path.as_ref(), expected_id)
+    }
+
     /// Initialize a new, exclusively created inode. Its parent must exist.
     /// The caller durably chooses `node_store_id` before creating the file and
     /// retains responsibility for exact partial/uncertain initialization cleanup.

@@ -21,6 +21,25 @@ const MAGIC: &[u8; 16] = b"KASUMI-NODE-0001";
 const PREPARED: u8 = 1;
 const READY: u8 = 2;
 
+#[derive(Clone, Copy)]
+enum HeaderUse {
+    Reopen,
+    Cleanup,
+}
+
+/// Physical descriptor custody only. The caller must independently establish
+/// permanent stop, issuer drain and worker/storage drain before deleting a file.
+/// Retain this guard through exact unlink and parent directory synchronization.
+pub struct NodeFileCleanup {
+    _owner: Arc<NodeFile>,
+    identity: FileIdentity,
+}
+impl NodeFileCleanup {
+    pub fn identity(&self) -> &FileIdentity {
+        &self.identity
+    }
+}
+
 pub(crate) struct NodeFile {
     // Closing redb removes the actual descriptor even if an internal reader
     // retains its backend Arc. Already-running descriptor operations drain
@@ -76,9 +95,31 @@ impl NodeFile {
             );
             let mut bytes = [0; HEADER_BYTES];
             file.read_exact_at(&mut bytes, 0)?;
-            validate_header(&bytes, expected_id)?;
+            validate_header(&bytes, expected_id, HeaderUse::Reopen)?;
         }
         Ok(owner)
+    }
+
+    pub(crate) fn claim_cleanup(path: &Path, expected_id: Uuid) -> Result<NodeFileCleanup> {
+        ensure!(!expected_id.is_nil(), "node store identity is nil");
+        let owner = Self::own(path, options().open(path)?, expected_id)?;
+        let identity = {
+            let guard = owner.file.read();
+            let file = present(&guard)?;
+            let length = file.metadata()?.len();
+            ensure!(
+                length >= HEADER_BYTES as u64 && length <= i64::MAX as u64,
+                "node cleanup envelope length is invalid"
+            );
+            let mut bytes = [0; HEADER_BYTES];
+            file.read_exact_at(&mut bytes, 0)?;
+            validate_header(&bytes, expected_id, HeaderUse::Cleanup)?;
+            private_files::descriptor_identity(file)?
+        };
+        Ok(NodeFileCleanup {
+            _owner: owner,
+            identity,
+        })
     }
 
     fn own(path: &Path, file: File, id: Uuid) -> Result<Arc<Self>> {
@@ -160,13 +201,16 @@ fn header(id: Uuid, state: u8) -> [u8; HEADER_BYTES] {
     bytes
 }
 
-fn validate_header(bytes: &[u8; HEADER_BYTES], expected: Uuid) -> Result<()> {
+fn validate_header(bytes: &[u8; HEADER_BYTES], expected: Uuid, use_for: HeaderUse) -> Result<()> {
     ensure!(&bytes[..16] == MAGIC, "unsupported node file format");
     ensure!(
         &bytes[16..32] == expected.as_bytes(),
         "installed node store identity differs"
     );
-    ensure!(bytes[32] == READY, "node file initialization is incomplete");
+    ensure!(
+        bytes[32] == READY || (matches!(use_for, HeaderUse::Cleanup) && bytes[32] == PREPARED),
+        "node file initialization is incomplete or unsupported"
+    );
     ensure!(
         bytes[33..CHECKSUM_AT].iter().all(|byte| *byte == 0),
         "unsupported node header fields"
