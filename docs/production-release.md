@@ -22,6 +22,12 @@ test while all other gates passed. Earlier failures remain retained in full.
 - Streaming storage and resource-budget capacity, archive-before-prune audits,
   complete recovery, and usable release artifacts.
 
+Choose the strongest first-release design without preserving earlier prototype
+APIs, configuration shapes, digests or storage layouts for compatibility. Update
+all supported callers and writers together, remove superseded paths, and reject
+unsupported inputs explicitly. Retained test evidence documents earlier sources;
+it does not make their interfaces or formats part of the release contract.
+
 ## Implementation milestones
 
 - [x] Create `codex/production-v1` and integrate committed resource credentials,
@@ -126,6 +132,13 @@ gate above and usable installation artifacts.
 
 ## Current verified increments
 
+- Combined SDK/canonical-payload checkpoint `785dd7f` passes 26 focused tests,
+  strict client lint and no-default-feature compilation. Both previous compile
+  and lint failures remain retained in `docs/evidence/sdk-literal-small-20260909`.
+  It is merged with corrected JSON dependency and shutdown/receipt work only in
+  validation checkpoint `b1851d5`; actual combined native and production checks
+  remain unrun. External consumer and actual SDK feed/schema TLS coverage are
+  being added with their own exact scope.
 - Broader SDK literal decoding passed nine focused tests at `0523c64`, then
   failed two stale diagnostic assertions in the snapshot cohort (11 passed).
   The preceding `3027530` compile failure and both exact attempts are retained in
