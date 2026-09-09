@@ -1,0 +1,6 @@
+test_signal_before_popen_returns_cannot_lose_the_new_process_owner (test_release_gate.ReleaseGateTests.test_signal_before_popen_returns_cannot_lose_the_new_process_owner) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.220s
+
+OK

@@ -17,6 +17,12 @@ class PackageReleaseTests(unittest.TestCase):
         source = root / "source"
         source.mkdir()
         (source / "Cargo.lock").write_text("locked input")
+        (source / "scripts").mkdir()
+        runner_inputs = {}
+        for name in ("release_gate.py", "gate_process.py"):
+            path = source / "scripts" / name
+            path.write_text("fixture runner input: " + name)
+            runner_inputs["scripts/" + name] = sha256(path)
         (root / "source.tar").write_bytes(b"unit fixture archive")
         write_json(root / "source-files.json", inventory(source))
         (root / "target").mkdir()
@@ -37,10 +43,21 @@ class PackageReleaseTests(unittest.TestCase):
             gate = {"name": name, "command": command, "exit_code": 0,
                     "log": log.name, "log_sha256": sha256(log),
                     "resources": resources.name, "resources_sha256": sha256(resources)}
+            cleanup = {"group": 123, "before": [], "after": [], "signals": [],
+                       "errors": [], "drained": True, "process_returncode": 0}
+            process = root / (name + "-process.json")
+            write_json(process, {"status": "passed", "outputs_stable": True, "command": command, "exit_code": 0,
+                                 "process_exit_code": 0, "timeout_seconds": 14400, "timed_out": False,
+                                 "received_signals": [], "error": None, "process_group": 123,
+                                 "cleanup": cleanup})
+            gate.update(process=process.name, process_sha256=sha256(process), process_cleanup=cleanup,
+                        timeout_seconds=14400, timed_out=False, received_signals=[], process_error=None)
             if name == "production":
                 gate.update(executables=artifacts, compiled_packages={"fixture": {"features": []}})
             gates.append(gate)
         record = {"schema": 1, "status": "passed", "toolchain": package.TOOLCHAIN, "jobs": 2,
+                  "gate_timeout_seconds": 14400,
+                  "runner_inputs": runner_inputs,
                   "gates": gates, "source_files_sha256": sha256(root / "source-files.json"),
                   "source_archive_sha256": sha256(root / "source.tar"),
                   "lockfile_sha256": sha256(source / "Cargo.lock")}
@@ -99,6 +116,45 @@ class PackageReleaseTests(unittest.TestCase):
             with tarfile.open(root / "a.tar.gz") as archive:
                 self.assertEqual(archive.extractfile("kasumi-0.1.0/file").read(), b"file")
                 self.assertEqual(archive.getmember("kasumi-0.1.0/bin/run").mode, 0o755)
+
+    def test_absent_changed_or_uncertain_process_receipt_cannot_be_packaged(self):
+        for changed in ("missing", "bytes", "timed-out", "signals", "unknown-members", "forced-drain",
+                        "wrong-command", "wrong-timeout", "missing-timeout", "missing-runner", "changed-helper"):
+            with self.subTest(changed=changed), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                record = self.make_evidence(root)
+                gate = record["gates"][0]
+                path = root / gate["process"]
+                process = json.loads(path.read_text())
+                if changed == "missing":
+                    del gate["process"]
+                elif changed == "missing-timeout":
+                    del record["gate_timeout_seconds"]
+                elif changed == "missing-runner":
+                    del record["runner_inputs"]
+                elif changed == "changed-helper":
+                    record["runner_inputs"]["scripts/gate_process.py"] = "0" * 64
+                else:
+                    if changed == "timed-out":
+                        process["timed_out"] = True
+                    elif changed == "signals":
+                        process["received_signals"] = [15]
+                    elif changed == "unknown-members":
+                        process["cleanup"]["after"] = None
+                    elif changed == "forced-drain":
+                        process["cleanup"]["signals"] = ["SIGTERM"]
+                    elif changed == "wrong-command":
+                        process["command"] = ["true"]
+                    elif changed == "wrong-timeout":
+                        process["timeout_seconds"] += 1
+                    else:
+                        process["unrecorded-change"] = True
+                    write_json(path, process)
+                    if changed != "bytes":
+                        gate["process_sha256"] = sha256(path)
+                write_json(root / "evidence.json", record)
+                with self.assertRaises(ValueError):
+                    package.verify_evidence(root)
 
     def test_cached_notice_must_match_locked_archive_and_cannot_follow_symlink(self):
         with tempfile.TemporaryDirectory() as temporary:

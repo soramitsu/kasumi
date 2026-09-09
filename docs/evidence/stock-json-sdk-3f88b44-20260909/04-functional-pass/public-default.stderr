@@ -1,0 +1,7 @@
+   Compiling serde_json v1.0.151
+   Compiling kasumi-types v0.1.0 (/private/tmp/kasumi-stock-sdk-consumer/crates/kasumi-types)
+   Compiling kasumi-serving v0.1.0 (/private/tmp/kasumi-stock-sdk-consumer/crates/kasumi-serving)
+   Compiling kasumi-client v0.1.0 (/private/tmp/kasumi-stock-sdk-consumer/crates/kasumi-client)
+   Compiling kasumi-stock-json-sdk-consumer v0.0.0 (/private/tmp/kasumi-stock-sdk-consumer/external-tests/stock-json-sdk)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 15.01s
+     Running consumer.rs (/tmp/kasumi-stock-sdk-consumer-target/debug/deps/consumer-1fcb27532586af41)

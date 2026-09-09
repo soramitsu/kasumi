@@ -13,11 +13,11 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
-import signal
 import subprocess
 import sys
 import tarfile
-import time
+
+import gate_process
 
 TOOLCHAIN = "1.97.1"
 
@@ -137,22 +137,27 @@ def memory_observation(membership=Path("/proc/self/cgroup"), root=Path("/sys/fs/
     return record
 
 
-def run_gate(name, command, source, output, environment):
-    """Hash actual Cargo-reported executable outputs when this gate closes."""
-    started = time.monotonic()
+def run_gate(name, command, source, output, environment, timeout_seconds=14400):
+    """Hash actual executable outputs only after the original process group drains."""
     log = Path(output) / (name + ".log")
+    process_path = Path(output) / (name + "-process.json")
     artifacts = {}
     compiled_packages = {}
     target = (Path(output) / "target").resolve()
     memory_before = memory_observation()
-    with log.open("wb") as stream:
-        process = subprocess.Popen(command, cwd=source, env=environment,
-                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                   start_new_session=True)
-        try:
-            for line in process.stdout:
-                stream.write(line)
-                stream.flush()
+    process = None
+    try:
+        with log.open("wb") as stream:
+            process = gate_process.run(command, source, environment, stream, timeout_seconds,
+                                       lambda value: write_json(process_path, value))
+        process["outputs_stable"] = process["cleanup"]["drained"] and not process["cleanup"]["errors"]
+        write_json(process_path, process)
+        if not process["outputs_stable"]:
+            raise RuntimeError("gate process custody is uncertain; logs and artifacts remain unverified")
+        # Read the retained file after command ownership closes. A silent child
+        # cannot hold a pipe open beyond the command's original deadline.
+        with log.open("rb") as stream:
+            for line in stream:
                 try:
                     message = json.loads(line)
                 except (ValueError, UnicodeDecodeError):
@@ -175,48 +180,28 @@ def run_gate(name, command, source, output, environment):
                         "test": message.get("profile", {}).get("test"),
                         "package_id": message.get("package_id"),
                     }
-            code = process.wait()
-        except BaseException as error:
-            # Cargo can leave compiler/test children alive after its own exit.
-            # Stop this gate's entire process group before closing its evidence.
-            cleanup_errors = []
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            except OSError as cleanup_error:
-                cleanup_errors.append("SIGTERM process-group cleanup failed: " + str(cleanup_error))
-            try:
-                process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                pass
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            except OSError as cleanup_error:
-                cleanup_errors.append("SIGKILL process-group cleanup failed: " + str(cleanup_error))
-            process.wait()
-            for cleanup_error in cleanup_errors:
+        for relative, artifact in artifacts.items():
+            path = target / relative
+            artifact.update(sha256=sha256(path), bytes=path.stat().st_size)
+    except BaseException as error:
+        if process is not None:
+            for cleanup_error in process["cleanup"]["errors"]:
                 error.add_note(cleanup_error)
-            raise
-        finally:
-            process.stdout.close()
-            stream.flush()
-            os.fsync(stream.fileno())
-            # The container may disappear after this runner exits. Preserve
-            # each terminal observation before a later gate or teardown.
-            memory_after = memory_observation()
-            write_json(Path(output) / (name + "-resources.json"),
-                       {"before": memory_before, "after": memory_after})
-    for relative, artifact in artifacts.items():
-        path = target / relative
-        artifact.update(sha256=sha256(path), bytes=path.stat().st_size)
+            if not process["cleanup"]["drained"]:
+                error.add_note("original gate process group has not drained")
+        raise
+    finally:
+        write_json(Path(output) / (name + "-resources.json"),
+                   {"before": memory_before, "after": memory_observation()})
     return {
-        "name": name, "command": command, "exit_code": code,
-        "duration_seconds": round(time.monotonic() - started, 3),
+        "name": name, "command": command, "exit_code": process["exit_code"],
+        "duration_seconds": process["duration_seconds"],
         "log": log.name, "log_sha256": sha256(log), "executables": artifacts,
         "compiled_packages": compiled_packages,
+        "process": process_path.name, "process_sha256": sha256(process_path),
+        "process_cleanup": process["cleanup"], "timed_out": process["timed_out"],
+        "received_signals": process["received_signals"], "process_error": process["error"],
+        "timeout_seconds": timeout_seconds,
         "resources": name + "-resources.json",
         "resources_sha256": sha256(Path(output) / (name + "-resources.json")),
     }
@@ -275,12 +260,27 @@ def validate_production_artifacts(name, result):
         result["exit_code"] = 1
 
 
+def verify_runner_inputs(source):
+    """The executing Python modules must be the archived first-release inputs."""
+    actual = {"scripts/release_gate.py": Path(__file__).resolve(),
+              "scripts/gate_process.py": Path(gate_process.__file__).resolve()}
+    result = {}
+    for relative, path in actual.items():
+        checksum = sha256(path)
+        if checksum != sha256(Path(source) / relative):
+            raise ValueError("executing release tool differs from frozen source: " + relative)
+        result[relative] = checksum
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repository", type=Path, default=Path(__file__).resolve().parent.parent)
     parser.add_argument("--output", type=Path, required=True, help="new absolute evidence directory outside the checkout")
     parser.add_argument("--execution-description", required=True, help="actual host/VM and native or translated execution")
     parser.add_argument("--jobs", type=int, default=2)
+    parser.add_argument("--gate-timeout-seconds", type=int, default=14400,
+                        help="original timeout for each functional gate, in 1..86400 seconds")
     args = parser.parse_args()
     if sys.version_info < (3, 11):
         parser.error("release tooling requires Python 3.11 or newer")
@@ -290,6 +290,8 @@ def main():
         parser.error("output must be absolute and outside the repository")
     if not 1 <= args.jobs <= 64:
         parser.error("jobs must be in 1..64")
+    if not 1 <= args.gate_timeout_seconds <= 86400:
+        parser.error("gate timeout must be in 1..86400 seconds")
     def git(*arguments):
         return subprocess.check_output(["git", "-C", str(repository), *arguments], text=True).strip()
     if git("status", "--porcelain", "--untracked-files=no"):
@@ -301,6 +303,7 @@ def main():
         "scope": "functional gates only; not final production release acceptance",
         "execution_description": args.execution_description, "toolchain": TOOLCHAIN,
         "jobs": args.jobs,
+        "gate_timeout_seconds": args.gate_timeout_seconds,
         "python_version": sys.version,
         "python_executable_sha256": sha256(sys.executable),
         "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -313,6 +316,8 @@ def main():
         record["source_archive_sha256"] = sha256(archive)
         source = output / "source"
         extract_source(archive, source)
+        record["runner_inputs"] = verify_runner_inputs(source)
+        write_json(output / "evidence.json", record)
         original = inventory(source)
         write_json(output / "source-files.json", original)
         record["source_files_sha256"] = sha256(output / "source-files.json")
@@ -324,7 +329,7 @@ def main():
                                        ["RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CC", "CXX", "AR", "SOURCE_DATE_EPOCH"]}
         for name, command in functional_gates(args.jobs):
             print("Running " + name + " (" + str(output / (name + ".log")) + ")", flush=True)
-            result = run_gate(name, command, source, output, environment)
+            result = run_gate(name, command, source, output, environment, args.gate_timeout_seconds)
             if name in ("production-features", "network-features") and re.search(r"kasumi-[^\n]*\btest-utils\b", (output / result["log"]).read_text()):
                 result["fixture_feature_violation"] = True
                 result["exit_code"] = 1
@@ -333,6 +338,10 @@ def main():
             if inventory(source) != original:
                 raise RuntimeError("a gate changed frozen source inputs; results are invalid")
             write_json(output / "evidence.json", record)
+            if not result["process_cleanup"]["drained"] or result["process_cleanup"]["errors"]:
+                raise RuntimeError("gate process custody is uncertain; no later gate was dispatched")
+            if result["received_signals"]:
+                raise KeyboardInterrupt("functional run cancelled after owned gate cleanup")
         record["status"] = "passed" if all(g["exit_code"] == 0 for g in record["gates"]) else "failed"
     except BaseException as error:
         record["status"] = "interrupted" if isinstance(error, KeyboardInterrupt) else "failed"

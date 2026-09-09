@@ -1,0 +1,187 @@
+{
+  "schema": 1,
+  "scope": "External stock SDK dependency preparation only; no Rust compilation or native execution",
+  "source": "9aad42eb6754b4d6eedad801497fe7eac0162015",
+  "tree": "708f6cbe49bdfc7c1203f0d47feb750e198dc263",
+  "source_before_sha256": "67aef6481dcb82210d52c72defdd70adab799e89248ae8d69d08d90ed986071b",
+  "runner_sha256": "961f03786a5f4bd3789da0cfe3774f90be7545d0a0fe9883ef3666bd47b4a6ce",
+  "target": "/tmp/kasumi-stock-sdk-consumer-target",
+  "jobs": 1,
+  "gates": [
+    {
+      "name": "generate-lockfile",
+      "command": [
+        "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+        "generate-lockfile",
+        "--manifest-path",
+        "external-tests/stock-json-sdk/Cargo.toml"
+      ],
+      "timeout_seconds": 300,
+      "exit_code": 0,
+      "timed_out": false,
+      "exception": null,
+      "duration_seconds": 0.854,
+      "stdout": "generate-lockfile.stdout",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr": "generate-lockfile.stderr",
+      "stderr_sha256": "0f944dbd6a91753b65fea607fc1d84671ab65d4ca24d9bd4703449dc7c9459e3",
+      "process_cleanup": {
+        "group": 72631,
+        "before": [],
+        "signals": [],
+        "after": [],
+        "drained": true
+      },
+      "tracked_source_unchanged": true,
+      "consumer_lock_sha256": "a8e28648a99e39be408e011d28559ec2edbc8cc5c333f207b59315c438471699",
+      "locked_graph_unchanged": true
+    },
+    {
+      "name": "metadata-default",
+      "command": [
+        "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+        "metadata",
+        "--manifest-path",
+        "external-tests/stock-json-sdk/Cargo.toml",
+        "--locked",
+        "--format-version",
+        "1"
+      ],
+      "timeout_seconds": 300,
+      "exit_code": 0,
+      "timed_out": false,
+      "exception": null,
+      "duration_seconds": 0.72,
+      "stdout": "metadata-default.stdout",
+      "stdout_sha256": "7a151e637b574883838d52564d612967aa733fab6d5ab9ac4f97197ce542c169",
+      "stderr": "metadata-default.stderr",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "process_cleanup": {
+        "group": 72648,
+        "before": [],
+        "signals": [],
+        "after": [],
+        "drained": true
+      },
+      "tracked_source_unchanged": true,
+      "consumer_lock_sha256": "a8e28648a99e39be408e011d28559ec2edbc8cc5c333f207b59315c438471699",
+      "locked_graph_unchanged": true
+    },
+    {
+      "name": "guard-default",
+      "command": [
+        "/Users/mtakemiya/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "external-tests/stock-json-sdk/check_graph.py",
+        "/tmp/kasumi-stock-sdk-dependency-preparation-9aad42e/metadata-default.stdout",
+        "--mode",
+        "default"
+      ],
+      "timeout_seconds": 300,
+      "exit_code": 0,
+      "timed_out": false,
+      "exception": null,
+      "duration_seconds": 0.437,
+      "stdout": "guard-default.stdout",
+      "stdout_sha256": "bf945c4cc4ceaa5705114d583bf026aa2b8e9ccf2f5c8e4532b6fbf427076987",
+      "stderr": "guard-default.stderr",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "process_cleanup": {
+        "group": 72664,
+        "before": [],
+        "signals": [],
+        "after": [],
+        "drained": true
+      },
+      "tracked_source_unchanged": true,
+      "consumer_lock_sha256": "a8e28648a99e39be408e011d28559ec2edbc8cc5c333f207b59315c438471699",
+      "locked_graph_unchanged": true
+    },
+    {
+      "name": "metadata-ordered",
+      "command": [
+        "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+        "metadata",
+        "--manifest-path",
+        "external-tests/stock-json-sdk/Cargo.toml",
+        "--locked",
+        "--format-version",
+        "1",
+        "--features",
+        "ordered"
+      ],
+      "timeout_seconds": 300,
+      "exit_code": 0,
+      "timed_out": false,
+      "exception": null,
+      "duration_seconds": 0.498,
+      "stdout": "metadata-ordered.stdout",
+      "stdout_sha256": "1e17426ca301fc90fb31f05d7e1c3d225a9291576df7e43243b725736438215d",
+      "stderr": "metadata-ordered.stderr",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "process_cleanup": {
+        "group": 72678,
+        "before": [],
+        "signals": [],
+        "after": [],
+        "drained": true
+      },
+      "tracked_source_unchanged": true,
+      "consumer_lock_sha256": "a8e28648a99e39be408e011d28559ec2edbc8cc5c333f207b59315c438471699",
+      "locked_graph_unchanged": true
+    },
+    {
+      "name": "guard-ordered",
+      "command": [
+        "/Users/mtakemiya/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "external-tests/stock-json-sdk/check_graph.py",
+        "/tmp/kasumi-stock-sdk-dependency-preparation-9aad42e/metadata-ordered.stdout",
+        "--mode",
+        "ordered"
+      ],
+      "timeout_seconds": 300,
+      "exit_code": 0,
+      "timed_out": false,
+      "exception": null,
+      "duration_seconds": 0.387,
+      "stdout": "guard-ordered.stdout",
+      "stdout_sha256": "754ada9df2b950ecfe74ed4c754ba8f1f13cebd0f4f622abf70b4fd05b0827a1",
+      "stderr": "guard-ordered.stderr",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "process_cleanup": {
+        "group": 72697,
+        "before": [],
+        "signals": [],
+        "after": [],
+        "drained": true
+      },
+      "tracked_source_unchanged": true,
+      "consumer_lock_sha256": "a8e28648a99e39be408e011d28559ec2edbc8cc5c333f207b59315c438471699",
+      "locked_graph_unchanged": true
+    }
+  ],
+  "status": "passed",
+  "tools": {
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo": {
+      "sha256": "7672ead309d505577c018fff2cafb3433601f073e38cbe87359ac1f7b944bbf5",
+      "version": "cargo 1.97.1 (c980f4866 2026-06-30)"
+    },
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc": {
+      "sha256": "210df6794001b73ec3d453878707fa1e0bdcb63c427024a6e6574bbe5615a4da",
+      "version": "rustc 1.97.1 (8bab26f4f 2026-07-14)"
+    },
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustdoc": {
+      "sha256": "aa94960b6a477441f6d1a797394daf4cafcc889d837550c8fa462b102e3fa5da",
+      "version": "rustdoc 1.97.1 (8bab26f4f 2026-07-14)"
+    },
+    "/Users/mtakemiya/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3": {
+      "sha256": "ac60cfe0268614638d0ffa35f3b0284fc7b3a11482723793455e17eeb278509e",
+      "version": "Python 3.12.14"
+    }
+  },
+  "cargo_configuration_hashes": {},
+  "started_at": "2026-09-08T17:03:03.440023+00:00",
+  "source_after_sha256": "2d44427fee14fc46a4b623ab73048da795d53cfda68afbc567c92b3311a81e4a",
+  "tracked_source_unchanged": true,
+  "consumer_lock_sha256": "a8e28648a99e39be408e011d28559ec2edbc8cc5c333f207b59315c438471699",
+  "finished_at": "2026-09-08T17:03:07.483860+00:00"
+}

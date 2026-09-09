@@ -12,6 +12,12 @@ endurance gates remain open. The Linux reference VM has 16 GiB memory. Its lates
 frozen run (`3a8d512`, 15 GiB container limit) failed the restored-runtime restart
 test while all other gates passed. Earlier failures remain retained in full.
 
+Release tooling now requires original command deadlines, verified process-group
+drain and exact executing runner/helper provenance before accepting or packaging
+functional results. Its [44 macOS and 20 Linux Python checks](evidence/release-process-abc8794-20260909/README.md)
+passed after preserving and correcting a failed deadline/cleanup counterexample.
+Those tool checks do not replace any database acceptance gate.
+
 ## Contract
 
 - Self-hosted standalone and replicated HA, Apache-2.0, Rust 1.97.1.
@@ -120,6 +126,13 @@ versions. The exact reservation dependency is specified below.
 
 ## Work ownership
 
+The combined SDK metadata checkpoint `e17a5eb` passed all 11 literal-decoder
+tests, client strict Clippy and formatting. Feed after-images now require their
+exact event identity and commit version; schema responses reject impossible
+epoch metadata before constructing schema bodies. Source and all owned process
+groups closed cleanly. [The retained evidence](evidence/sdk-metadata-e17a5eb-20260909/README.md)
+does not certify the server TLS regression, which remains pending execution.
+
 The integration checkout is `/Users/mtakemiya/dev/kasumi`. Implementation branches
 use separate worktrees for streaming storage, standalone runtime and HA runtime.
 The existing `/private/tmp/kasumi-target-runner` remains preserved. Unrelated
@@ -132,6 +145,22 @@ gate above and usable installation artifacts.
 
 ## Current verified increments
 
+- External stock SDK checkpoint `3f88b44` passes the exact canonical-admission
+  test under `preserve_order` and all six public literal-decoding tests in each
+  default/ordered graph (13 test executions). Locked metadata and actual compiled
+  artifacts verify stock serde_json and the permitted SDK-only dependency graph;
+  source/lock stay unchanged and every process group drains. Preparation, the
+  initial package-selection failure, the corrected compile-only diagnostic and
+  final actual results are retained in
+  `docs/evidence/stock-json-sdk-3f88b44-20260909`. This closes the scoped external
+  consumer check; combined engine/server/native and final release gates remain
+  open. No compatibility API, decoder fallback or format alias was introduced.
+- Validation checkpoint `075e24d` combines current release tooling, corrected
+  JSON dependency, canonical SDK and shutdown/receipt source. It passes all 36
+  release-tool Python tests, exact vendored dependency checks, formatting, six
+  canonical payload tests, 13 type-library tests and strict type-library lint.
+  Exact evidence is in `docs/evidence/combined-canonical-source-075e24d-20260909`.
+  Full workspace, native and production gates have not run for this combination.
 - Combined SDK/canonical-payload checkpoint `785dd7f` passes 26 focused tests,
   strict client lint and no-default-feature compilation. Both previous compile
   and lint failures remain retained in `docs/evidence/sdk-literal-small-20260909`.

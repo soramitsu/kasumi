@@ -1,0 +1,17 @@
+test_archive_refuses_escape_and_links_without_writing_outside_source (test_release_gate.ReleaseGateTests.test_archive_refuses_escape_and_links_without_writing_outside_source) ... ok
+test_artifact_outside_owned_target_is_rejected (test_release_gate.ReleaseGateTests.test_artifact_outside_owned_target_is_rejected) ... ok
+test_build_inventory_includes_fresh_non_executable_dependencies (test_release_gate.ReleaseGateTests.test_build_inventory_includes_fresh_non_executable_dependencies) ... ok
+test_child_oom_counters_survive_failed_gate_without_claiming_private_peak (test_release_gate.ReleaseGateTests.test_child_oom_counters_survive_failed_gate_without_claiming_private_peak) ... ok
+test_cleanup_error_preserves_original_rejection_and_cleanup_failure (test_release_gate.ReleaseGateTests.test_cleanup_error_preserves_original_rejection_and_cleanup_failure) ... ok
+test_compiled_fixture_or_test_artifact_cannot_pass_production_driver (test_release_gate.ReleaseGateTests.test_compiled_fixture_or_test_artifact_cannot_pass_production_driver) ... ok
+test_content_and_new_inputs_change_inventory_without_relying_on_mtime (test_release_gate.ReleaseGateTests.test_content_and_new_inputs_change_inventory_without_relying_on_mtime) ... ok
+test_failed_gate_retains_log_and_exact_executable_hash (test_release_gate.ReleaseGateTests.test_failed_gate_retains_log_and_exact_executable_hash) ... ok
+test_missing_process_inventory_cannot_claim_a_drained_group (test_release_gate.ReleaseGateTests.test_missing_process_inventory_cannot_claim_a_drained_group) ... ok
+test_repeated_signals_drain_before_restoring_original_handlers (test_release_gate.ReleaseGateTests.test_repeated_signals_drain_before_restoring_original_handlers) ... ok
+test_silent_command_times_out_and_retains_exact_owned_cleanup (test_release_gate.ReleaseGateTests.test_silent_command_times_out_and_retains_exact_owned_cleanup) ... ok
+test_successful_leader_cannot_hide_a_surviving_child (test_release_gate.ReleaseGateTests.test_successful_leader_cannot_hide_a_surviving_child) ... ok
+
+----------------------------------------------------------------------
+Ran 12 tests in 1.474s
+
+OK

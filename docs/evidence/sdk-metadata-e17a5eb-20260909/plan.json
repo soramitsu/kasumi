@@ -1,0 +1,59 @@
+{
+  "source": "/tmp/kasumi-production-drain-validation",
+  "target": "/tmp/kasumi-production-root-target",
+  "expected_head": "e17a5eb802487417da0ca90b7e09e2f9bef72ab0",
+  "expected_tree": "4e90cd5437552d4d913bb75eb954c2cab10fa858",
+  "output": "/tmp/kasumi-e17a5eb-sdk-gates",
+  "scope": "SDK literal decoder invariants only on combined source; no engine/store/server/Raft compiler or native listeners. Shared host, no capacity/performance or release acceptance.",
+  "gates": [
+    {
+      "name": "sdk-literal-invariants",
+      "timeout_seconds": 300,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-client",
+        "--lib",
+        "literal_decode::tests",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "literal_decode::tests::change_feed_after_image_requires_exact_commit_version_and_identity",
+        "literal_decode::tests::schema_read_rejects_impossible_schema_and_collection_epochs"
+      ]
+    },
+    {
+      "name": "sdk-strict",
+      "timeout_seconds": 300,
+      "cargo_args": [
+        "clippy",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-client",
+        "--all-targets",
+        "--all-features",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "-D",
+        "warnings"
+      ]
+    },
+    {
+      "name": "format",
+      "timeout_seconds": 300,
+      "cargo_args": [
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ]
+    }
+  ]
+}

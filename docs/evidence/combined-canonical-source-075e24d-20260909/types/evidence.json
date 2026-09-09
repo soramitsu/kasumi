@@ -1,0 +1,150 @@
+{
+  "scope": "Combined first-release types and canonical payload tests with corrected workspace JSON dependency. Kasumi-types only; no engine/store/server/Raft or native listener/provider. Not production acceptance or capacity evidence.",
+  "source_before": {
+    "head": "075e24dc95c39be8e2c63baf63aa22aae78539ea",
+    "tree": "4326a8ab9fb669c1444c97d46902175fb14e828f",
+    "status": "",
+    "lock_sha256": "fa77f53d97ea1537b23f2b60cf30c153e4bac9f4d7920afc63d7360773ba16a7"
+  },
+  "tools": {
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo": "7672ead309d505577c018fff2cafb3433601f073e38cbe87359ac1f7b944bbf5",
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc": "210df6794001b73ec3d453878707fa1e0bdcb63c427024a6e6574bbe5615a4da",
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustdoc": "aa94960b6a477441f6d1a797394daf4cafcc889d837550c8fa462b102e3fa5da"
+  },
+  "runner_sha256": "8287b5964581f5655ac171ed40b13c1ed3eb36c0cb03ab56dc516110393a11c6",
+  "per_gate_timeout_seconds": 300,
+  "gates": [
+    {
+      "name": "canonical-types",
+      "command": [
+        "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-types",
+        "--test",
+        "canonical_json",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "seconds": 9.59012641699519,
+      "process_group_id": 23177,
+      "process_exit_code": 0,
+      "exit_code": 0,
+      "problem": null,
+      "cleanup": {
+        "signals": [],
+        "process_returncode": 0,
+        "process_group_drained": true
+      },
+      "required_test": [
+        "literal_json_has_one_explicit_byte_contract",
+        "mutation_replay_and_staging_manifest_are_feature_independent",
+        "archive_plaintext_and_document_references_share_the_same_encoding",
+        "schema_activation_identity_preserves_typed_field_order",
+        "typed_maps_and_enclosing_field_order_are_explicit",
+        "bounded_writer_failure_does_not_require_an_encoded_payload_copy"
+      ],
+      "required_test_passed": true,
+      "log_sha256": "cae96af8532e5838402130d4ff7a4e84d9d8f0f3feb67e03fca6394fd485d8cd",
+      "artifacts": [
+        {
+          "path": "/tmp/kasumi-production-root-target/debug/deps/canonical_json-3a8932830245ca65",
+          "sha256": "6063ce7b29d14c489740cec643b146ad962d9188d1f2d285e80bf533c877d4f3",
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 2,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": []
+        }
+      ]
+    },
+    {
+      "name": "types-lib",
+      "command": [
+        "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-types",
+        "--lib",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "seconds": 7.367947667022236,
+      "process_group_id": 23279,
+      "process_exit_code": 0,
+      "exit_code": 0,
+      "problem": null,
+      "cleanup": {
+        "signals": [],
+        "process_returncode": 0,
+        "process_group_drained": true
+      },
+      "required_test": null,
+      "required_test_passed": true,
+      "log_sha256": "bb9c526033447635e7ab1c0847ed2d2f30cab98d331ae95dd24b0c34ac21a90e",
+      "artifacts": [
+        {
+          "path": "/tmp/kasumi-production-root-target/debug/deps/kasumi_types-22950832e95ebbc4",
+          "sha256": "7cb50047f9fbc18181db16ba8331cb86580654516355f10a7fe787002aa889bd",
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 2,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": []
+        }
+      ]
+    },
+    {
+      "name": "types-strict",
+      "command": [
+        "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+        "clippy",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-types",
+        "--all-targets",
+        "--all-features",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "seconds": 10.855021791998297,
+      "process_group_id": 23383,
+      "process_exit_code": 0,
+      "exit_code": 0,
+      "problem": null,
+      "cleanup": {
+        "signals": [],
+        "process_returncode": 0,
+        "process_group_drained": true
+      },
+      "required_test": null,
+      "required_test_passed": true,
+      "log_sha256": "3fa0ddb966b52f22e432fa42008f27247a63d1a1cc0bd9e13cf260475268aa8f",
+      "artifacts": []
+    }
+  ],
+  "source_after": {
+    "head": "075e24dc95c39be8e2c63baf63aa22aae78539ea",
+    "tree": "4326a8ab9fb669c1444c97d46902175fb14e828f",
+    "status": "",
+    "lock_sha256": "fa77f53d97ea1537b23f2b60cf30c153e4bac9f4d7920afc63d7360773ba16a7"
+  }
+}

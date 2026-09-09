@@ -1,0 +1,91 @@
+{
+  "source": "abc879423e14b29453b4d756f6e20d30d2b76d27",
+  "tree": "99c24a7aa1b3956f4c82633c7bdba0a807f035f2",
+  "source_files": {
+    "scripts/gate_process.py": "6c8b255e5a69aa8985da8d70f5baa73337bcaeac7098bd756c4d6cc6472e58de",
+    "scripts/release_gate.py": "d3e03ad6b80c2c1ece8405ed7d2634a82d6385203ed1c0d209b45a58d7d1bd2f",
+    "scripts/package_release.py": "fee053a6433dc7b06f1a843d7d9670a8d69f18a9f2d734ca83e07e19f6981ff1",
+    "scripts/test_release_gate.py": "0f9eb927c6916040aa5e5cb5d32851fb0b2d222f4b584c61bc972a809c926836",
+    "scripts/test_package_release.py": "bcbcdeb048e2e5845730f637414f263ed7d44a2c943706483eec06394d82eda7",
+    "docs/functional-release-gates.md": "7447350e6c7d712c83dc791f11b6ffd6ef434e7ee54b34220562b83c1ddd6096"
+  },
+  "python": "3.12.14 (main, Aug 25 2026, 13:50:33) [Clang 22.1.3 ]",
+  "python_executable": "/Users/mtakemiya/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+  "python_sha256": "ac60cfe0268614638d0ffa35f3b0284fc7b3a11482723793455e17eeb278509e",
+  "macos_final": {
+    "tests": 44,
+    "passed": true,
+    "seconds": 4.127
+  },
+  "linux_arm64": {
+    "tests": 20,
+    "passed": true,
+    "seconds": 1.354,
+    "source_files_match": true,
+    "python_only": true
+  },
+  "preserved_failure": {
+    "source": "03545c1f005543841b862fd7908baa4ea2b0485d",
+    "tests": 44,
+    "failed": 1,
+    "test": "test_delayed_observation_cannot_accept_a_completion_after_original_deadline",
+    "reason": "Already exited leader was signaled before being reaped; terminal drain assertion failed."
+  },
+  "earlier_passes": {
+    "a": 12,
+    "b": 41,
+    "c": 42,
+    "launch_race": 1
+  },
+  "preservation": [
+    {
+      "path": "kasumi-release-process-custody-tests-a.log",
+      "original": "/tmp/kasumi-release-process-custody-tests-a.log",
+      "sha256": "7096170b75a2c9ed9e3cc25e6806e41c96db4d61fb7a94b1fbfa3d56b4f1889f",
+      "bytes": 2135
+    },
+    {
+      "path": "kasumi-release-process-custody-tests-b.log",
+      "original": "/tmp/kasumi-release-process-custody-tests-b.log",
+      "sha256": "5701320d3ede5fd6f78bc816040364d9fa1c08dc5bcf5e56403457410726ee82",
+      "bytes": 7679
+    },
+    {
+      "path": "kasumi-release-process-custody-tests-c.log",
+      "original": "/tmp/kasumi-release-process-custody-tests-c.log",
+      "sha256": "80bdb8df0e571c3141b9856bee4aa82178ec1ea8d877c1004c43f1463d01eb23",
+      "bytes": 7859
+    },
+    {
+      "path": "kasumi-release-process-custody-tests-d.log",
+      "original": "/tmp/kasumi-release-process-custody-tests-d.log",
+      "sha256": "a7822d2b8fa42afd8d6a202f7100c193a6becafb2cc22bb6fdf924afdbffcf0c",
+      "bytes": 8881
+    },
+    {
+      "path": "kasumi-release-process-custody-tests-e.log",
+      "original": "/tmp/kasumi-release-process-custody-tests-e.log",
+      "sha256": "2f34a0ff528531338785e051984c11369875f6de6298633c30a19ee898f2e3df",
+      "bytes": 8233
+    },
+    {
+      "path": "kasumi-release-process-custody-launch-race.log",
+      "original": "/tmp/kasumi-release-process-custody-launch-race.log",
+      "sha256": "f63facf883955203a9900f5b4ccca6be7c6ce0270264ae98c9cf0265f97c1e93",
+      "bytes": 275
+    },
+    {
+      "path": "kasumi-release-process-abc8794-linux-tests.log",
+      "original": "/tmp/kasumi-release-process-abc8794-linux-tests.log",
+      "sha256": "946a752c7920f827b3fcbffa19339c96d76d9d59d6355f2fd8c9a0065122af7c",
+      "bytes": 3555
+    },
+    {
+      "path": "kasumi-release-process-abc8794-linux-source.json",
+      "original": "/tmp/kasumi-release-process-abc8794-linux-source.json",
+      "sha256": "105e95bd8faccb8ff56b16c565d8284233f5e2c05605bb8616f4785b090e99ee",
+      "bytes": 1439
+    }
+  ],
+  "scope": "Release harness and packaging counterexamples only; no database/Cargo/native/production gate was run by this validation."
+}

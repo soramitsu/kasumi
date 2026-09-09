@@ -1,0 +1,99 @@
+{
+  "scope": "Combined frozen source release-tool Python tests, exact dependency resolver/input hash checks and workspace formatting. No Rust compilation, native listener, provider, final release or capacity acceptance.",
+  "source_before": {
+    "head": "075e24dc95c39be8e2c63baf63aa22aae78539ea",
+    "tree": "4326a8ab9fb669c1444c97d46902175fb14e828f",
+    "status": "",
+    "lock_sha256": "fa77f53d97ea1537b23f2b60cf30c153e4bac9f4d7920afc63d7360773ba16a7"
+  },
+  "tools": {
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo": "7672ead309d505577c018fff2cafb3433601f073e38cbe87359ac1f7b944bbf5",
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc": "210df6794001b73ec3d453878707fa1e0bdcb63c427024a6e6574bbe5615a4da",
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustdoc": "aa94960b6a477441f6d1a797394daf4cafcc889d837550c8fa462b102e3fa5da"
+  },
+  "runner_sha256": "3e37875acf76d789a3af0085b975b28be16555bc2f7549d0844be7e520375322",
+  "per_gate_timeout_seconds": 300,
+  "gates": [
+    {
+      "name": "python-tools",
+      "command": [
+        "/Users/mtakemiya/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "-B",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "scripts",
+        "-p",
+        "test_*.py",
+        "-v"
+      ],
+      "seconds": 1.6686894999584183,
+      "process_group_id": 21683,
+      "process_exit_code": 0,
+      "exit_code": 0,
+      "problem": null,
+      "cleanup": {
+        "signals": [],
+        "process_returncode": 0,
+        "process_group_drained": true
+      },
+      "required_test": null,
+      "required_test_passed": true,
+      "log_sha256": "f17859f0248d9e47ce730a735a02d9555feddc27716dbf6b3b0dcc28ffb6aa2a",
+      "artifacts": []
+    },
+    {
+      "name": "dependency-patches",
+      "command": [
+        "/Users/mtakemiya/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "-B",
+        "scripts/check_dependency_patches.py"
+      ],
+      "seconds": 0.6307900829706341,
+      "process_group_id": 21722,
+      "process_exit_code": 0,
+      "exit_code": 0,
+      "problem": null,
+      "cleanup": {
+        "signals": [],
+        "process_returncode": 0,
+        "process_group_drained": true
+      },
+      "required_test": null,
+      "required_test_passed": true,
+      "log_sha256": "d4ee369e6f581e6e652610e49647d88487e863553cec28ca1c4b20b1e5a4400a",
+      "artifacts": []
+    },
+    {
+      "name": "format",
+      "command": [
+        "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "seconds": 1.3884987500496209,
+      "process_group_id": 21729,
+      "process_exit_code": 0,
+      "exit_code": 0,
+      "problem": null,
+      "cleanup": {
+        "signals": [],
+        "process_returncode": 0,
+        "process_group_drained": true
+      },
+      "required_test": null,
+      "required_test_passed": true,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "artifacts": []
+    }
+  ],
+  "source_after": {
+    "head": "075e24dc95c39be8e2c63baf63aa22aae78539ea",
+    "tree": "4326a8ab9fb669c1444c97d46902175fb14e828f",
+    "status": "",
+    "lock_sha256": "fa77f53d97ea1537b23f2b60cf30c153e4bac9f4d7920afc63d7360773ba16a7"
+  }
+}
