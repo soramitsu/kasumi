@@ -19,6 +19,7 @@ production acceptance remain unfinished.
 | `11a06d0` | Compilation failed in 2.738 s: a new mutable-table assertion lacked its trait import under the selected feature graph. No tests ran. |
 | `76f79ac` | Three candidate tests passed in 7.451 s; growth tests then ran in 8.507 s with 13 passing and one failing in actual commit-preparation rollback. |
 | `97ae207` | Compilation failed in 1.071 s because the storage-failure Drop path retained the renamed namespace cleanup call. No tests ran. |
+| `1a816ac` | All three candidate tests passed in 3.811 s and all fourteen growth/admitted-commit tests passed in 7.884 s, none ignored. |
 
 In `ccf76d6`, the shared allocator/system-namespace state regression passed.
 Five tests failed at reopening their 512-byte-page fixture with a builder that
@@ -68,9 +69,9 @@ The actual run used system Python with the corrected streaming helper; its
 executable/version/hash is explicitly recorded as post-execution metadata. The
 later instruction to use bundled Python did not retroactively change this run.
 
-The subsequent admitted durable subset at `11a06d0` is source-only and changes
-commit outcomes and supported modes. It has no result in this record and cannot
-reuse these 13 passing tests as its own validation. Full upstream tests/fuzzing,
+The subsequent admitted durable subset changes commit outcomes and supported
+modes. Its own failed attempts and later focused result appear below; none reuse
+the 13 baseline tests as their own validation. Full upstream tests/fuzzing,
 all-mode preparation, database-wide disk ownership, and production acceptance
 remain open.
 
@@ -98,3 +99,21 @@ updates must be discarded without claiming successful rollback or releasing the
 I/O failure latch. Source, locks, and package inputs were unchanged; session 66221
 and owned group 57808 drained. The failing `76f79ac` executable remains preserved
 independently. This compile failure does not validate the abort-inventory fix.
+
+Frozen `1a816ac` passed the complete authorized 17-test leaf cohort after the
+namespace abort inventory and failed-storage Drop ownership corrections. All
+regression assertions remain present, including actual commit-preparation denial,
+full rollback, subsequent usability, and reopen. Session 67420 and groups 65196 /
+65314 ended successfully and drained. Exact features are `default`, `std`, and
+`experimental-precommit-growth-admission`; bundled Python 3.12, pinned Rust 1.97.1,
+one job/thread, locked/offline commands, and 300-second per-command limits match
+the failed attempts. Source, archive, package manifest, full patch, and lock hashes
+were unchanged. Preserved executable SHA-256 is
+`f867151f3a264455a3217bf13372881890009fb728d7c28179c97a6dd6427fe0`.
+
+This is a focused correctness result for the experimental admitted immediate-
+durability subset, including quick-repair/two-phase combinations and its explicit
+unsupported-state rejection. It is not a quiet performance measurement, a full
+upstream/fuzz result, or a production persistent-disk admission result. Open,
+close, repair, compaction, non-admitted writes, durable physical ownership, and
+Kasumi integration remain outside the admitted transaction callback contract.

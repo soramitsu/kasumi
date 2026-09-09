@@ -1,0 +1,39 @@
+{
+  "artifacts": [
+    {
+      "path": "/tmp/kasumi-redb-capacity-target/debug/deps/redb-ba841ece6df4e8b1",
+      "sha256": "f867151f3a264455a3217bf13372881890009fb728d7c28179c97a6dd6427fe0",
+      "profile": {
+        "opt_level": "0",
+        "debuginfo": 2,
+        "debug_assertions": true,
+        "overflow_checks": true,
+        "test": true
+      },
+      "features": [
+        "default",
+        "experimental-precommit-growth-admission",
+        "std"
+      ],
+      "preserved_path": "/tmp/kasumi-redb-1a816ac-leaf/preserved-executables/redb-allocator-candidate-redb-ba841ece6df4e8b1"
+    },
+    {
+      "path": "/tmp/kasumi-redb-capacity-target/debug/deps/redb-ba841ece6df4e8b1",
+      "sha256": "f867151f3a264455a3217bf13372881890009fb728d7c28179c97a6dd6427fe0",
+      "profile": {
+        "opt_level": "0",
+        "debuginfo": 2,
+        "debug_assertions": true,
+        "overflow_checks": true,
+        "test": true
+      },
+      "features": [
+        "default",
+        "experimental-precommit-growth-admission",
+        "std"
+      ],
+      "preserved_path": "/tmp/kasumi-redb-1a816ac-leaf/preserved-executables/redb-growth-admission-redb-ba841ece6df4e8b1"
+    }
+  ],
+  "note": "Verified outside-repository executable copies; no binary is checked in."
+}
