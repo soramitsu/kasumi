@@ -554,8 +554,9 @@ impl ValidatedApplicationSnapshot {
         );
         Ok(())
     }
-    /// Only the original subject and applying incarnation are needed for one
-    /// row. Both links come from the already verified encrypted lineage index.
+    /// One row needs the subject's closing link and both the applying
+    /// incarnation's genesis and closing links. Fetch those exact links from
+    /// the verified encrypted index without materializing the full lineage.
     fn staging_lineage(&self, subject: &str, applied: Option<&str>) -> anyhow::Result<TenantState> {
         let mut state = self.header.as_ref().clone();
         for incarnation in [Some(subject), applied].into_iter().flatten() {
@@ -570,6 +571,15 @@ impl ValidatedApplicationSnapshot {
                         .context("staged incarnation is outside verified lineage")?,
                 );
             }
+        }
+        if let Some(applied) = applied.filter(|id| *id != state.incarnation)
+            && let Some(genesis) = self.lineage_target(applied)?
+            && !state
+                .restore_lineage
+                .iter()
+                .any(|link| link.target_incarnation == applied)
+        {
+            state.restore_lineage.push(genesis);
         }
         Ok(state)
     }
@@ -1245,6 +1255,121 @@ mod tests {
     }
     fn indexed(state: &TenantState) -> anyhow::Result<ValidatedApplicationSnapshot> {
         ValidatedApplicationSnapshot::validate(image(state), 128 << 20, || Ok(()))
+    }
+    #[test]
+    fn indexed_terminal_provenance_retains_the_intermediate_incarnation_genesis() {
+        use crate::staged_terminal::{AppliedIdentity, AppliedOrigin, Row};
+
+        fn link(source: &str, target: &str, revision: u64) -> RestoreLineageLink {
+            RestoreLineageLink {
+                checkpoint: FullBackupCheckpoint {
+                    tenant: "tenant".into(),
+                    source_incarnation: source.into(),
+                    revision,
+                    resident_sha256: "01".repeat(32),
+                    backup_id: uuid::Uuid::from_u128(u128::from(revision)),
+                    manifest_ciphertext_sha256: "02".repeat(32),
+                    key_lineage_digest: "03".repeat(32),
+                },
+                target_incarnation: target.into(),
+            }
+        }
+        fn proof(state: &TenantState, row: &Row) -> ValidatedApplicationSnapshot {
+            let mut header = crate::snapshot_codec::metadata(state);
+            crate::staged_terminal::advance(&mut header.staged_terminal_head, row).unwrap();
+            header.permanent_staged_bytes = header.staged_terminal_head.encoded_bytes;
+            let disk = kasumi_store::ScratchDisk::fixture();
+            let image = SnapshotImage::capture(&disk, 128 << 20, |writer| {
+                let mut encoder = crate::snapshot_codec::Encoder::new(writer)?;
+                encoder.record(Record::Header(Box::new(header.clone())))?;
+                for (ordinal, link) in state.restore_lineage.iter().enumerate() {
+                    encoder.record(Record::Lineage(ordinal as u64, link.clone()))?;
+                }
+                encoder.record(Record::Terminal(Box::new(row.clone())))?;
+                encoder.finish()
+            })
+            .unwrap();
+            let proof = ValidatedApplicationSnapshot {
+                index: StagedSnapshot::new(image, 128 << 20, || Ok(())).unwrap(),
+                header: Box::new(header),
+                lineage: EncryptedTable::new(&disk, 128 << 20).unwrap(),
+            };
+            proof.validate_lineage(&mut || Ok(())).unwrap();
+            proof
+        }
+
+        let mut state = state();
+        let key = staging::identity("owner", "upload").unwrap();
+        let mut stage = state.staged_transactions.remove(&key).unwrap();
+        stage.scope.incarnation = "middle".into();
+        stage.chunks.clear();
+        stage.stored_chunk_bytes = 0;
+        stage.uploaded_payload_bytes = 0;
+        stage.uploaded_operations = 0;
+        stage.uploaded_read_assertions = 0;
+        stage.expires_at_ms = None;
+        stage.outcome = StagedOutcome::Aborted {
+            receipt: WriteReceipt {
+                revision: 12,
+                versions: Default::default(),
+            },
+        };
+        state.active_staged_transactions.clear();
+        state.reserved_staged_terminal_bytes = 0;
+        state.permanent_staged_bytes = 0;
+        state.incarnation = "current".into();
+        state.revision_base = 21;
+        state.revision = 25;
+        state.restore_lineage = vec![
+            link("generation", "middle", 10),
+            link("middle", "current", 20),
+        ];
+        state.restored_from = Some(state.restore_lineage[1].checkpoint.clone());
+        let row = Row {
+            ordinal: 1,
+            key,
+            previous_sha256: state.staged_terminal_head.sha256.clone(),
+            applied: AppliedIdentity {
+                incarnation: "middle".into(),
+                revision: 12,
+                timestamp_ms: 1000,
+                command_sha256: "ab".repeat(32),
+                origin: AppliedOrigin::Raft {
+                    term: 1,
+                    leader: 1,
+                    index: 1,
+                    context_sha256: "cd".repeat(32),
+                },
+            },
+            stage,
+        };
+        row.validate(&state).unwrap();
+        let indexed = proof(&state, &row);
+        indexed.validate_staging(&mut || Ok(())).unwrap();
+        let selected = indexed.staging_lineage("middle", Some("middle")).unwrap();
+        assert_eq!(selected.restore_lineage.len(), 2);
+        assert!(selected.restore_lineage.contains(&state.restore_lineage[0]));
+
+        // Recompute the stream's final root for each substituted row, so these
+        // failures must come from provenance rather than a stale digest.
+        let mut relabelled = row.clone();
+        relabelled.applied.incarnation = "current".into();
+        assert!(relabelled.validate(&state).is_err());
+        assert!(
+            proof(&state, &relabelled)
+                .validate_staging(&mut || Ok(()))
+                .is_err()
+        );
+        let mut wrong_position = row;
+        if let AppliedOrigin::Raft { index, .. } = &mut wrong_position.applied.origin {
+            *index = 2;
+        }
+        assert!(wrong_position.validate(&state).is_err());
+        assert!(
+            proof(&state, &wrong_position)
+                .validate_staging(&mut || Ok(()))
+                .is_err()
+        );
     }
     #[test]
     fn indexed_verification_keeps_all_staging_on_the_image_owner_until_drain() {
