@@ -1270,13 +1270,13 @@ impl Administration {
             SecurityOutcome::Started,
         )
         .await?;
-        if let Some(bootstrap) = target.bootstrap {
+        if let Some(bootstrap) = &target.bootstrap {
             ensure!(
                 self.config.replication.as_ref().map(|r| r.node_id)
                     == bootstrap.voters.keys().next().copied(),
                 "initialize on the lowest configured voter"
             );
-            kasumi_engine::initialize_replicated(target.database, bootstrap).await?;
+            kasumi_engine::initialize_replicated(&target.database, bootstrap).await?;
         }
         self.event(
             context,
