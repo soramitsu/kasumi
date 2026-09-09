@@ -226,10 +226,6 @@ pub struct ReplicationConfig {
     pub peers: Vec<ReplicaConfig>,
 }
 
-fn default_prepared_limit() -> usize {
-    2
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeConfig {
@@ -241,8 +237,6 @@ pub struct RuntimeConfig {
     pub serving_authorities: BTreeMap<String, crate::serving_runtime::ServingAuthorityConfig>,
     #[serde(deserialize_with = "kasumi_types::require_explicit_option")]
     pub signer_verifier: Option<crate::signer_runtime::SignerVerifierConfig>,
-    #[serde(default = "default_prepared_limit")]
-    pub max_prepared_generations_per_tenant: usize,
     #[serde(default)]
     pub admission: kasumi_engine::admission::AdmissionConfig,
     #[serde(default)]
@@ -316,10 +310,6 @@ impl RuntimeConfig {
             kasumi_types::validate_name(name)?;
             authority.validate()?;
         }
-        ensure!(
-            (1..=16).contains(&self.max_prepared_generations_per_tenant),
-            "prepared generation limit must be 1..16"
-        );
         for (name, destination) in &self.backup_destinations {
             kasumi_types::validate_name(name)?;
             destination.validate()?;
@@ -1165,10 +1155,7 @@ impl NodeRuntime {
             let mut managed = vec![crate::administration::ManagedTenant {
                 database: runtime.control.database.clone(),
                 store: runtime.control.store.clone(),
-                provider: control_provider,
-                custody_provider: control_custody_provider,
                 bootstrap: runtime.control.bootstrap.clone(),
-                descriptor: None,
                 lease: None,
             }];
             for configured_tenant in &config.tenants {
@@ -1253,25 +1240,11 @@ impl NodeRuntime {
                 managed.push(crate::administration::ManagedTenant {
                     database: opened.database.clone(),
                     store: opened.store.clone(),
-                    provider,
-                    custody_provider,
                     bootstrap: opened.bootstrap.clone(),
-                    descriptor: None,
                     lease,
                 });
                 runtime.tenants.push(opened);
             }
-            let provider_factories = config.tenants.iter().map(|tenant| {
-                let application = tenant.keys.clone();
-                let custody = tenant.custody_keys.clone();
-                let credential = credential.clone();
-                let factory: crate::administration::ProviderFactory = Arc::new(move || {
-                    let application: Arc<dyn kasumi_store::KeyProvider> = application.provider(credential.clone())?;
-                    let custody: Arc<dyn kasumi_store::KeyProvider> = custody.provider(credential.clone())?;
-                    Ok((application, custody))
-                });
-                (tenant.tenant.clone(), factory)
-            }).collect();
             if config.target_recovery.is_some() {
                 runtime.target_recovery=Some(crate::target_runtime::TargetRecoveryRuntime::open(config.clone(),runtime.authority_trusts.clone(),credential.clone(),admission.clone(),runtime.audit.clone(),runtime.cluster.clone().context("target requires installed cluster")?,destinations.clone(),registry.clone()).await?);
             }
@@ -1286,14 +1259,13 @@ impl NodeRuntime {
                 managed,
                 destinations,
                 admission.clone(),
-                provider_factories,
                 credential.clone(),
             )?;
             runtime.administration = Some(administration.clone());
             if let Some(network) = &runtime.cluster {
-                let provider: Arc<dyn crate::cluster::RestoreReadinessProvider> =
+                let provider: Arc<dyn crate::cluster::EnrollmentReadinessProvider> =
                     administration.clone();
-                network.install_restore_readiness(Arc::downgrade(&provider))?;
+                network.install_enrollment_readiness(Arc::downgrade(&provider))?;
             }
             let mcp =
                 crate::mcp::router(config.mcp.protocol.clone(), registry.clone(), auth.clone())?;
@@ -2057,7 +2029,6 @@ pub fn example_config() -> RuntimeConfig {
             },
         )]),
         format: 1,
-        max_prepared_generations_per_tenant: default_prepared_limit(),
         admission: kasumi_engine::admission::AdmissionConfig::default(),
         backup_destinations: BTreeMap::new(),
         mode: DeploymentMode::Replicated,
@@ -3434,7 +3405,7 @@ mod lifecycle_tests {
                     .await
                     .unwrap();
                 let backup = manager
-                    .execute(
+                    .execute_for_test(
                         context.clone(),
                         M::Backup {
                             session_id: uuid::Uuid::new_v4(),
@@ -3446,32 +3417,26 @@ mod lifecycle_tests {
                 let backup_id =
                     uuid::Uuid::parse_str(backup["backup_id"].as_str().unwrap()).unwrap();
                 manager
-                    .execute(context.clone(), M::RotateDataKey)
+                    .execute_for_test(context.clone(), M::RotateDataKey)
                     .await
                     .unwrap();
                 manager
-                    .execute(context.clone(), M::RewrapKeys)
+                    .execute_for_test(context.clone(), M::RewrapKeys)
                     .await
                     .unwrap();
                 database
                     .verify_backup_checkpoint_named(context.clone(), "primary", backup_id)
                     .await
                     .unwrap();
-                let error = manager
-                    .execute(
-                        context.clone(),
-                        M::PrepareRestore {
-                            destination: "primary".into(),
-                            backup_id,
-                            incarnation: uuid::Uuid::new_v4(),
-                        },
-                    )
-                    .await
-                    .unwrap_err();
                 assert!(
-                    error
-                        .to_string()
-                        .contains("stopped-installation local recovery coordinator")
+                    serde_json::from_value::<M>(serde_json::json!({
+                        "operation": "prepare_restore",
+                        "destination": "primary",
+                        "backup_id": backup_id,
+                        "incarnation": uuid::Uuid::new_v4()
+                    }))
+                    .is_err(),
+                    "removed management recovery must be rejected at decoding"
                 );
                 database
                     .administer(context.clone(), Operation::Suspend(false))
@@ -3484,11 +3449,9 @@ mod lifecycle_tests {
             }
             if round == 1 {
                 use crate::administration::ManagementCommand as M;
-                let command = M::Status { incarnation: None };
-                let fence = manager.response_fence(&context, &command).unwrap();
-                let _encoded =
-                    serde_json::to_vec(&manager.execute(context.clone(), command).await.unwrap())
-                        .unwrap();
+                let invocation = manager.prepare(context.clone(), M::Status {}).unwrap();
+                let fence = invocation.response_fence().unwrap();
+                let _encoded = serde_json::to_vec(&invocation.execute().await.unwrap()).unwrap();
                 let policy = database.engine().generation().unwrap().state.policy.clone();
                 let mut changed = policy.clone();
                 changed

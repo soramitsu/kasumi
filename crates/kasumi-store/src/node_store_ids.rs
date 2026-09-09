@@ -52,27 +52,6 @@ pub fn target_generation(
     ))
 }
 
-/// File identity for an explicitly prepared management generation. The node's
-/// installed database UUID and selected resource identity remain fixed across
-/// later serving reopen; the authenticated generation descriptor is separate.
-pub fn administrative_generation(
-    database_id: Uuid,
-    tenant: &str,
-    target_incarnation: Uuid,
-) -> Result<Uuid> {
-    require_id(database_id)?;
-    kasumi_types::validate_name(tenant)?;
-    require_id(target_incarnation)?;
-    Ok(derive(
-        b"kasumi.node-file.administrative-generation.v1",
-        &[
-            database_id.as_bytes(),
-            tenant.as_bytes(),
-            target_incarnation.as_bytes(),
-        ],
-    ))
-}
-
 pub fn local_generation(
     installation_id: Uuid,
     operation_id: Uuid,
@@ -158,18 +137,6 @@ mod tests {
             })
             .unwrap()
         );
-        let managed = administrative_generation(a, "tenant", c).unwrap();
-        assert_eq!(managed, administrative_generation(a, "tenant", c).unwrap());
-        assert_ne!(managed, administrative_generation(b, "tenant", c).unwrap());
-        assert_ne!(managed, administrative_generation(a, "other", c).unwrap());
-        assert_ne!(managed, administrative_generation(a, "tenant", b).unwrap());
-        assert_ne!(managed, local);
-        assert_ne!(
-            managed,
-            target_generation(b, "tenant", c, &verifier).unwrap()
-        );
-        assert!(administrative_generation(Uuid::nil(), "tenant", c).is_err());
-        assert!(administrative_generation(a, "../tenant", c).is_err());
         assert!(!local.is_nil());
         assert!(local_generation(a, Uuid::nil(), c).is_err());
         assert!(target_journal(Uuid::nil(), &verifier).is_err());

@@ -274,7 +274,12 @@ impl TargetRecoveryRuntime {
             self.audit.clone(),
         )
         .await?;
+        g.serving = Some(owner);
+        let owner = g.serving.as_ref().context("opened serving owner absent")?;
         let database = owner.database()?;
+        for (name, destination) in &self.destinations {
+            database.install_archive_destination(name.clone(), destination.clone())?;
+        }
         let execution = projection.execution()?;
         let name = format!("{tenant}/{incarnation}");
         let check = stores.clone();
@@ -292,7 +297,6 @@ impl TargetRecoveryRuntime {
             Arc::new(move || check.check_access()),
         )?;
         g.registered_group = Some(name);
-        g.serving = Some(owner);
         ensure!(
             !self.closing.load(Ordering::Acquire),
             "target runtime closing"

@@ -79,12 +79,10 @@ original installation, local operation and target incarnation. Shared named
 `node_store_ids` helpers define versioned, length-framed SHA-256 derivations into
 UUIDv8 values. They exclude paths, mutable membership, TLS certificates and the
 candidate header. Target journal and signer-verifier files have distinct domains.
-The still-accessible management restore family uses a separate
-`administrative_generation(database_id, tenant, incarnation)` domain for both
-creation and later reopen. Its directory preparation hands the new path directly
-to `NodeStore::create_new`; it does not precreate an empty inode and later adopt
-whatever the path names. This file-level correction does not close replacement
-of that older management family by the durable recovery coordinator.
+Management has no generation-file format or alternate generation opener. Only
+explicit enrollment, the journal-owned target runner and the exclusive standalone
+coordinator may create their respective node files. Unsupported envelopes and
+removed generation descriptors are rejected; no migration or fallback adopts them.
 
 The focused source tests are `node_file::tests::` (nine ordinary tests and one
 explicit subprocess helper). They cover byte-exact clean/unclean unrelated-file

@@ -1016,16 +1016,21 @@ impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
             .management
             .as_ref()
             .ok_or_else(|| Status::unavailable("runtime administration unavailable"))?;
-        let fence = self
-            .auth
-            .audit_result(&context, manager.response_fence(&context, &command))
-            .await
-            .map_err(status)?;
         let mutation = !matches!(
             command,
             crate::administration::ManagementCommand::Status { .. }
         );
-        let result = manager.execute(context.clone(), command).await;
+        let invocation = self
+            .auth
+            .audit_result(&context, manager.prepare(context.clone(), command))
+            .await
+            .map_err(status)?;
+        let fence = self
+            .auth
+            .audit_result(&context, invocation.response_fence())
+            .await
+            .map_err(status)?;
+        let result = invocation.execute().await;
         // Administration owns its operation denials, including nested database
         // requests. The adapter owns only its route and response fences.
         let result = result.map_err(|error| self.registry.status(&context, error))?;

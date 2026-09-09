@@ -1,5 +1,5 @@
-//! Audited maintenance and immutable replacement generations. Destination names
-//! and all physical paths come from operator configuration, never data requests.
+//! Audited maintenance of the exact installed data route. Recovery is owned by
+//! the typed Control coordinator and target runner, never this management API.
 use crate::{
     api::DatabaseRegistry,
     cluster::ClusterNetwork,
@@ -11,15 +11,15 @@ use kasumi_engine::{
     control::{ControlPlane, ControlTopology},
 };
 use kasumi_store::{
-    BackupDestination, FilesystemBackupDestination, KeyProvider, NodeStore, S3BackupConfig,
-    S3BackupDestination, TenantStorageSet, TenantStore, WriteOp,
+    BackupDestination, FilesystemBackupDestination, NodeStore, S3BackupConfig, S3BackupDestination,
+    TenantStorageSet, TenantStore, WriteOp,
 };
 use kasumi_types::{Action, Operation, Precondition, RequestContext};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{Arc, RwLock},
 };
 use uuid::Uuid;
@@ -137,28 +137,7 @@ pub enum ManagementCommand {
     },
     RotateDataKey,
     RewrapKeys,
-    Status {
-        #[serde(default)]
-        incarnation: Option<Uuid>,
-    },
-    PrepareRestore {
-        destination: String,
-        backup_id: Uuid,
-        incarnation: Uuid,
-    },
-    InitializeRestore {
-        incarnation: Uuid,
-    },
-    CompleteRestore {
-        incarnation: Uuid,
-    },
-    RetireSource {
-        request: kasumi_types::RetireSourceRequest,
-    },
-    ActivateRestore {
-        incarnation: Uuid,
-        retirement: kasumi_types::RetirementRef,
-    },
+    Status {},
     AddLearner {
         node_id: u64,
     },
@@ -190,26 +169,9 @@ pub enum ManagementCommand {
 pub(crate) struct ManagedTenant {
     pub database: Arc<Database>,
     pub store: Arc<TenantStore>,
-    pub provider: Arc<dyn KeyProvider>,
-    pub custody_provider: Arc<dyn KeyProvider>,
     pub bootstrap: Option<ReplicatedBootstrap>,
-    pub descriptor: Option<GenerationDescriptor>,
     pub lease: Option<Arc<crate::serving_runtime::RuntimeLease>>,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct GenerationDescriptor {
-    pub format: u32,
-    pub tenant: String,
-    pub incarnation: Uuid,
-    pub backup_id: Uuid,
-    pub bootstrap: Option<ReplicatedBootstrap>,
-    pub bootstrap_sha256: String,
-}
-
-pub(crate) type ProviderFactory =
-    Arc<dyn Fn() -> Result<(Arc<dyn KeyProvider>, Arc<dyn KeyProvider>)> + Send + Sync>;
-
 #[path = "administration_observability.rs"]
 mod observability;
 #[path = "original_serving_runtime.rs"]
@@ -225,67 +187,71 @@ pub struct Administration {
     audit: Arc<SecurityAudit>,
     cluster: Option<Arc<ClusterNetwork>>,
     destinations: BTreeMap<String, Arc<dyn BackupDestination>>,
-    // Includes active and prepared generations, keyed by immutable incarnation.
+    // Original configured owners only; canonical recovery targets belong to their runner.
     generations: RwLock<BTreeMap<(String, String), ManagedTenant>>,
     custody_generations: RwLock<BTreeMap<(String, String), Arc<kasumi_engine::RetiredCustody>>>,
     active: RwLock<BTreeMap<String, String>>,
-    enabled: RwLock<BTreeSet<String>>,
     gate: tokio::sync::Mutex<()>,
     // Retain observed failures if a caller cancels while another owner drains.
     shutdown_failure: tokio::sync::Mutex<Option<anyhow::Error>>,
     admission: Arc<kasumi_engine::admission::NodeAdmission>,
-    provider_factories: BTreeMap<String, ProviderFactory>,
     credential: crate::serving_runtime::CredentialSource,
 }
-/// Holds the exact source/target handles across adapter serialization. Activation
-/// deliberately retires the source, so its acknowledgement is fenced by the new
-/// target and control database instead.
-pub struct ManagementResponseFence {
+/// Administrative selection borrows the already installed serving owner. It
+/// never constructs providers, starts renewal, reopens storage, or owns shutdown.
+#[derive(Clone)]
+struct SelectedTenant {
+    database: Arc<Database>,
+    store: Arc<TenantStore>,
+}
+impl SelectedTenant {
+    fn new(database: Arc<Database>) -> Self {
+        let store = database.store().clone();
+        Self { database, store }
+    }
+}
+
+/// One immutable selection is shared by execution and final response release.
+/// Reconciliation cannot redirect an admitted request to a fresh serving owner.
+pub struct ManagementInvocation {
     manager: Arc<Administration>,
     context: RequestContext,
-    source: Option<ManagedTenant>,
-    target: Option<Uuid>,
+    command: ManagementCommand,
+    source: SelectedTenant,
     provisioning: Option<ManagedTenant>,
-    retirement_source: Option<String>,
 }
-impl ManagementResponseFence {
-    pub fn check_release(&self) -> kasumi_types::Result<()> {
-        self.context.authorization.check_live()?;
-        let check = |tenant: &ManagedTenant| -> kasumi_types::Result<()> {
-            tenant.store.check_access().map_err(|_| {
-                kasumi_types::Error::new(
-                    kasumi_types::ErrorCode::Sealed,
-                    "tenant key access expired",
-                )
-            })?;
-            tenant
-                .database
-                .engine()
-                .authorize(&self.context, None, Action::Admin)
-        };
-        if let Some(source) = &self.source {
-            check(source)?;
-        }
-        if let Some(incarnation) = &self.retirement_source {
-            self.manager
-                .registry
-                .retirement_source(&self.context, incarnation)?
-                .response_fence(&self.context)?
-                .check()?;
-        }
-        if let Some(incarnation) = self.target {
-            let target = self
+impl ManagementInvocation {
+    pub fn response_fence(&self) -> kasumi_types::Result<ManagementResponseFence<'_>> {
+        Ok(ManagementResponseFence {
+            invocation: self,
+            source: self.source.database.response_fence(&self.context)?,
+            control: self
                 .manager
-                .generation(&self.context.tenant, &incarnation.to_string())
-                .map_err(|_| {
-                    kasumi_types::Error::new(
-                        kasumi_types::ErrorCode::Unavailable,
-                        "restore generation unavailable",
-                    )
-                })?;
-            check(&target)?;
-        }
-        if let Some(target) = &self.provisioning {
+                .control
+                .response_fence(&self.manager.control_context)?,
+        })
+    }
+    pub async fn execute(&self) -> kasumi_types::Result<serde_json::Value> {
+        self.manager.execute_selected(self).await
+    }
+}
+
+pub struct ManagementResponseFence<'a> {
+    invocation: &'a ManagementInvocation,
+    source: kasumi_engine::ResponseFence<'a>,
+    control: kasumi_engine::ResponseFence<'a>,
+}
+impl ManagementResponseFence<'_> {
+    pub fn check_release(&self) -> kasumi_types::Result<()> {
+        self.source.check()?;
+        self.control.check()?;
+        let selected = self.invocation;
+        selected
+            .source
+            .database
+            .engine()
+            .authorize(&selected.context, None, Action::Admin)?;
+        if let Some(target) = &selected.provisioning {
             target.store.check_access().map_err(|_| {
                 kasumi_types::Error::new(
                     kasumi_types::ErrorCode::Sealed,
@@ -293,18 +259,8 @@ impl ManagementResponseFence {
                 )
             })?;
         }
-        self.manager
-            .control
-            .raft_group()
-            .check_access()
-            .map_err(|_| {
-                kasumi_types::Error::new(
-                    kasumi_types::ErrorCode::Sealed,
-                    "control key access unavailable",
-                )
-            })?;
-        self.manager.control.engine().authorize(
-            &self.manager.control_context,
+        selected.manager.control.engine().authorize(
+            &selected.manager.control_context,
             None,
             Action::Admin,
         )?;
@@ -343,7 +299,7 @@ impl Administration {
                 )
                 .into());
             }
-            let tenant = self.current(&context.tenant)?;
+            let tenant = self.current(context)?;
             self.authorized(&tenant, context, true).await?;
             Ok(tenant.database)
         }
@@ -360,46 +316,28 @@ impl Administration {
                 })
         })
     }
-    pub fn response_fence(
+    pub fn prepare(
         self: &Arc<Self>,
-        context: &RequestContext,
-        command: &ManagementCommand,
-    ) -> kasumi_types::Result<ManagementResponseFence> {
-        let retirement_source = lifecycle_source(command).map(str::to_owned);
-        let source = if let Some(incarnation) = &retirement_source {
-            self.registry
-                .retirement_source(context, incarnation)?
-                .response_fence(context)?
-                .check()?;
-            None
-        } else {
-            let source = self.current(&context.tenant).map_err(|_| {
-                kasumi_types::Error::new(kasumi_types::ErrorCode::Forbidden, "tenant access denied")
-            })?;
-            source
-                .database
-                .engine()
-                .authorize(context, None, Action::Admin)?;
-            Some(source)
-        };
-        let target = match command {
-            ManagementCommand::Status { incarnation } => *incarnation,
-            ManagementCommand::PrepareRestore { incarnation, .. }
-            | ManagementCommand::InitializeRestore { incarnation }
-            | ManagementCommand::CompleteRestore { incarnation }
-            | ManagementCommand::ActivateRestore { incarnation, .. } => Some(*incarnation),
-            ManagementCommand::RetireSource { request } => {
-                Some(Uuid::parse_str(&request.target_incarnation).map_err(|_| {
+        context: RequestContext,
+        command: ManagementCommand,
+    ) -> kasumi_types::Result<ManagementInvocation> {
+        let source = self.current(&context).map_err(|error| {
+            error
+                .downcast_ref::<kasumi_types::Error>()
+                .cloned()
+                .unwrap_or_else(|| {
                     kasumi_types::Error::new(
-                        kasumi_types::ErrorCode::InvalidArgument,
-                        "invalid retirement target",
+                        kasumi_types::ErrorCode::Unavailable,
+                        "administrative database unavailable",
                     )
-                })?)
-            }
-            _ => None,
-        };
-        let provisioning = provisioning_tenant(command)
-            .map(|name| self.configured(name))
+                })
+        })?;
+        source
+            .database
+            .engine()
+            .authorize(&context, None, Action::Admin)?;
+        let provisioning = provisioning_tenant(&command)
+            .map(|name| self.provision_target(name))
             .transpose()
             .map_err(|_| {
                 kasumi_types::Error::new(
@@ -408,16 +346,28 @@ impl Administration {
                 )
             })?;
         if provisioning.is_some() || matches!(command, ManagementCommand::ApprovePeerPool { .. }) {
-            require_control(context)?;
+            require_control(&context)?;
         }
-        Ok(ManagementResponseFence {
-            provisioning,
+        Ok(ManagementInvocation {
             manager: self.clone(),
-            context: context.clone(),
+            context,
+            command,
             source,
-            retirement_source,
-            target,
+            provisioning,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn execute_for_test(
+        self: &Arc<Self>,
+        context: RequestContext,
+        command: ManagementCommand,
+    ) -> kasumi_types::Result<serde_json::Value> {
+        let invocation = self.prepare(context, command)?;
+        let fence = invocation.response_fence()?;
+        let result = invocation.execute().await?;
+        fence.check_release()?;
+        Ok(result)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -432,7 +382,6 @@ impl Administration {
         tenants: Vec<ManagedTenant>,
         destinations: BTreeMap<String, Arc<dyn BackupDestination>>,
         admission: Arc<kasumi_engine::admission::NodeAdmission>,
-        provider_factories: BTreeMap<String, ProviderFactory>,
         credential: crate::serving_runtime::CredentialSource,
     ) -> Result<Arc<Self>> {
         let mut generations = BTreeMap::new();
@@ -466,23 +415,32 @@ impl Administration {
             generations: RwLock::new(generations),
             custody_generations: RwLock::new(BTreeMap::new()),
             active: RwLock::new(active),
-            enabled: RwLock::new(BTreeSet::from([crate::runtime::CONTROL_TENANT.into()])),
             gate: tokio::sync::Mutex::new(()),
             shutdown_failure: tokio::sync::Mutex::new(None),
             admission,
-            provider_factories,
             credential,
         }))
     }
-    fn current(&self, tenant: &str) -> Result<ManagedTenant> {
+    fn current(&self, context: &RequestContext) -> Result<SelectedTenant> {
+        context.authorization.check_live()?;
+        if context.tenant == crate::runtime::CONTROL_TENANT {
+            return Ok(SelectedTenant::new(self.control.clone()));
+        }
+        let database = self.registry.database(context)?;
+        let generation = database.engine().generation()?;
+        let topology = self.committed_topology()?;
         ensure!(
-            self.enabled
-                .read()
-                .map_err(|_| anyhow::anyhow!("routing unavailable"))?
-                .contains(tenant),
-            kasumi_types::Error::new(kasumi_types::ErrorCode::Forbidden, "tenant access denied")
+            topology
+                .tenants
+                .get(&context.tenant)
+                .is_some_and(|route| route.incarnation == generation.state.incarnation),
+            kasumi_types::Error::new(
+                kasumi_types::ErrorCode::Unavailable,
+                "registered generation differs from committed control route"
+            )
         );
-        self.configured(tenant)
+        drop(generation);
+        Ok(SelectedTenant::new(database))
     }
     fn configured(&self, tenant: &str) -> Result<ManagedTenant> {
         let incarnation = self
@@ -535,7 +493,7 @@ impl Administration {
     }
     async fn authorized(
         &self,
-        tenant: &ManagedTenant,
+        tenant: &SelectedTenant,
         context: &RequestContext,
         barrier: bool,
     ) -> Result<()> {
@@ -564,46 +522,27 @@ impl Administration {
             .authorize(context, None, Action::Admin)?;
         Ok(())
     }
-    pub async fn execute(
+    async fn execute_selected(
         &self,
-        context: RequestContext,
-        command: ManagementCommand,
+        invocation: &ManagementInvocation,
     ) -> kasumi_types::Result<serde_json::Value> {
-        // No user-provided tenant can bypass this lookup and current RBAC.
+        let context = &invocation.context;
+        let command = &invocation.command;
+        let source = &invocation.source;
         let _guard = self.gate.lock().await;
         let mut admitted = false;
         let mutation = !matches!(command, ManagementCommand::Status { .. });
-        let retirement_source = lifecycle_source(&command).map(str::to_owned);
         let mut result: Result<serde_json::Value> = async {
-            if let Some(incarnation) = &retirement_source {
-                self.registry
-                    .retirement_source(&context, incarnation)?
-                    .response_fence(&context)?
-                    .check()?;
-            } else {
-                let source = self.current(&context.tenant)?;
-                self.authorized(&source, &context, false).await?;
-            }
-            ensure!(
-                self.config.mode == crate::runtime::DeploymentMode::Replicated || !matches!(&command, ManagementCommand::PrepareRestore { .. }),
-                kasumi_types::Error::new(kasumi_types::ErrorCode::InvalidArgument, "standalone restore requires the stopped-installation local recovery coordinator")
-            );
-            // Management can perform several durable steps. Once execution is
-            // admitted, credential expiry cannot assert those steps rolled back.
+            self.authorized(source, context, false).await?;
             admitted = true;
-            // Keep composed callers and listener tasks from retaining every
-            // administrative branch's workspace in their own async frame.
-            // This remains the same future: dropping it still drops its guards.
-            let result = Box::pin(self.execute_inner(&context, command)).await?;
-            if let Some(incarnation) = &retirement_source {
-                self.registry
-                    .retirement_source(&context, incarnation)?
-                    .response_fence(&context)?
-                    .check()?;
-            } else {
-                let current = self.current(&context.tenant)?;
-                self.authorized(&current, &context, false).await?;
-            }
+            let result = Box::pin(self.execute_inner(
+                context,
+                command.clone(),
+                source,
+                invocation.provisioning.as_ref(),
+            ))
+            .await?;
+            self.authorized(source, context, false).await?;
             Ok(result)
         }
         .await;
@@ -623,7 +562,7 @@ impl Administration {
                 SecurityEventKind::AccessDenied
             };
             // A failed denial audit can never turn the denial into access.
-            let _ = self.event(&context, kind, SecurityOutcome::Denied).await;
+            let _ = self.event(context, kind, SecurityOutcome::Denied).await;
             error.mark_denial_audit_attempted();
         }
         let result = result.map_err(|error| {
@@ -643,161 +582,16 @@ impl Administration {
             result
         }
     }
-    async fn execute_retirement_lifecycle(
-        &self,
-        context: &RequestContext,
-        command: ManagementCommand,
-    ) -> Result<serde_json::Value> {
-        match command {
-            ManagementCommand::RetireSource { request } => {
-                request.validate()?;
-                let target = self.generation(&context.tenant, &request.target_incarnation)?;
-                self.authorized(&target, context, false).await?;
-                let target_state = target.database.engine().generation()?;
-                ensure!(
-                    target_state.state.suspended
-                        && target_state.state.pending_restore.is_none()
-                        && target_state.state.restored_from.as_ref() == Some(&request.checkpoint),
-                    "target restore must match the exact retirement checkpoint"
-                );
-                let source = self
-                    .registry
-                    .retirement_source(context, &request.expected_source_incarnation)?;
-                let proof = source.retire_source(context.clone(), request).await?;
-                source.retirement_response_fence(context, &proof)?.check()?;
-                Ok(serde_json::to_value(proof.receipt())?)
-            }
-            ManagementCommand::ActivateRestore {
-                incarnation,
-                retirement,
-            } => {
-                retirement.validate()?;
-                let expected_source = retirement.source_incarnation.clone();
-                self.close_retired_generations().await?;
-                let retired_source = self.registry.retirement_source(context, &expected_source)?;
-                let proof = retired_source
-                    .verify_retirement_receipt(context.clone(), &retirement)
-                    .await?;
-                ensure!(
-                    proof.target_incarnation() == incarnation.to_string(),
-                    "retirement target differs"
-                );
-                let target = self.generation(&context.tenant, &incarnation.to_string())?;
-                if let Some(lease) = &target.lease {
-                    lease.promote().await?;
-                }
-                self.authorized(&target, context, false).await?;
-                ensure!(
-                    target
-                        .database
-                        .engine()
-                        .generation()?
-                        .state
-                        .restored_from
-                        .as_ref()
-                        == Some(proof.checkpoint()),
-                    "target restored origin differs from source retirement"
-                );
-                let active = self
-                    .active
-                    .read()
-                    .map_err(|_| anyhow::anyhow!("active source route unavailable"))?
-                    .get(&context.tenant)
-                    .cloned();
-                if active.as_deref() == Some(incarnation.to_string().as_str()) {
-                    let plane = ControlPlane::new(self.control.clone())?;
-                    let topology = plane
-                        .topology(&self.control_context)
-                        .await?
-                        .context("control topology missing")?;
-                    ensure!(
-                        topology
-                            .topology
-                            .tenants
-                            .get(&context.tenant)
-                            .is_some_and(|route| route.incarnation == incarnation.to_string()),
-                        "control route changed"
-                    );
-                    self.event(
-                        context,
-                        SecurityEventKind::Restore,
-                        SecurityOutcome::Succeeded,
-                    )
-                    .await?;
-                    return Ok(
-                        serde_json::json!({"active_incarnation":incarnation,"suspended":target.database.engine().generation()?.state.suspended}),
-                    );
-                }
-                ensure!(
-                    active
-                        .as_deref()
-                        .is_none_or(|active| active == expected_source),
-                    "active source route changed"
-                );
-                let target_state = target.database.engine().generation()?;
-                ensure!(
-                    target_state.state.suspended && target_state.state.pending_restore.is_none(),
-                    "target must be a completed suspended restore"
-                );
-                let plane = ControlPlane::new(self.control.clone())?;
-                let current = plane
-                    .topology(&self.control_context)
-                    .await?
-                    .context("control topology missing")?;
-                let mut topology = current.topology;
-                let route = topology
-                    .tenants
-                    .get_mut(&context.tenant)
-                    .context("tenant route absent")?;
-                ensure!(
-                    route.incarnation == expected_source
-                        || route.incarnation == incarnation.to_string(),
-                    "control route changed"
-                );
-                let needs_publication = route.incarnation != incarnation.to_string();
-                route.incarnation = incarnation.to_string();
-                self.event(
-                    context,
-                    SecurityEventKind::Restore,
-                    SecurityOutcome::Started,
-                )
-                .await?;
-                if needs_publication {
-                    plane
-                        .replace_topology(
-                            self.control_context.clone(),
-                            topology,
-                            Precondition::Version(current.version),
-                            format!("activate-{incarnation}"),
-                        )
-                        .await?;
-                }
-                self.publish_target(&context.tenant, &expected_source, target)?;
-                self.event(
-                    context,
-                    SecurityEventKind::Restore,
-                    SecurityOutcome::Succeeded,
-                )
-                .await?;
-                Ok(serde_json::json!({"active_incarnation":incarnation,"suspended":true}))
-            }
-            _ => anyhow::bail!("not a retirement lifecycle operation"),
-        }
-    }
-
     async fn execute_inner(
         &self,
         context: &RequestContext,
         command: ManagementCommand,
+        source: &SelectedTenant,
+        provisioning: Option<&ManagedTenant>,
     ) -> Result<serde_json::Value> {
-        if lifecycle_source(&command).is_some() {
-            return self.execute_retirement_lifecycle(context, command).await;
-        }
-        let source = self.current(&context.tenant)?;
-        self.authorized(&source, context, false).await?;
+        self.authorized(source, context, false).await?;
         let _maintenance = match &command {
-            ManagementCommand::Backup { destination, .. }
-            | ManagementCommand::PrepareRestore { destination, .. } => {
+            ManagementCommand::Backup { destination, .. } => {
                 let limit = self
                     .config
                     .backup_destinations
@@ -821,31 +615,46 @@ impl Administration {
             }
             ManagementCommand::ApproveTenant { tenant } => {
                 require_control(context)?;
-                self.approve_tenant(context, &tenant).await
+                self.approve_tenant(
+                    context,
+                    &tenant,
+                    provisioning.context("selected provisioning owner absent")?,
+                )
+                .await
             }
             ManagementCommand::PrepareTenant { tenant } => {
                 require_control(context)?;
-                self.prepare_tenant(context, &tenant).await
+                self.prepare_tenant(
+                    context,
+                    &tenant,
+                    provisioning.context("selected provisioning owner absent")?,
+                )
+                .await
             }
             ManagementCommand::InitializeTenant { tenant } => {
                 require_control(context)?;
-                self.initialize_tenant(context, &tenant).await
+                self.initialize_tenant(
+                    context,
+                    &tenant,
+                    provisioning.context("selected provisioning owner absent")?,
+                )
+                .await
             }
             ManagementCommand::ActivateTenant {
                 tenant,
                 expected_topology_version,
             } => {
                 require_control(context)?;
-                self.activate_tenant(context, &tenant, expected_topology_version)
-                    .await
+                self.activate_tenant(
+                    context,
+                    &tenant,
+                    provisioning.context("selected provisioning owner absent")?,
+                    expected_topology_version,
+                )
+                .await
             }
-            ManagementCommand::Status { incarnation } => {
-                let source = if let Some(incarnation) = incarnation {
-                    self.generation(&context.tenant, &incarnation.to_string())?
-                } else {
-                    source
-                };
-                self.authorized(&source, context, false).await?;
+            ManagementCommand::Status {} => {
+                self.authorized(source, context, false).await?;
                 self.event(
                     context,
                     SecurityEventKind::Administration,
@@ -887,7 +696,7 @@ impl Administration {
                 Ok(serde_json::json!({"backup_id":result?}))
             }
             ManagementCommand::RotateDataKey | ManagementCommand::RewrapKeys => {
-                self.authorized(&source, context, true).await?;
+                self.authorized(source, context, true).await?;
                 let action = if matches!(command, ManagementCommand::RotateDataKey) {
                     "key_rotation"
                 } else {
@@ -937,213 +746,11 @@ impl Administration {
                     )
                     .await?;
                 result?;
-                self.authorized(&source, context, true).await?;
+                self.authorized(source, context, true).await?;
                 Ok(serde_json::json!({"completed":true,"scope":"this_replica"}))
             }
-            ManagementCommand::PrepareRestore {
-                destination,
-                backup_id,
-                incarnation,
-            } => {
-                ensure!(
-                    !incarnation.is_nil()
-                        && source.database.engine().generation()?.state.incarnation
-                            != incarnation.to_string(),
-                    "restore requires a fresh incarnation"
-                );
-                if generation_path(&self.config.database_path, &context.tenant, incarnation)
-                    .is_file()
-                    && self
-                        .generation(&context.tenant, &incarnation.to_string())
-                        .is_err()
-                {
-                    self.load_generation(&context.tenant, incarnation).await?;
-                }
-                ensure!(
-                    source.database.engine().generation()?.state.suspended,
-                    "source must be suspended before restore"
-                );
-                if let Ok(existing) = self.generation(&context.tenant, &incarnation.to_string()) {
-                    let descriptor = existing.descriptor.context("incarnation already exists")?;
-                    ensure!(
-                        descriptor.backup_id == backup_id,
-                        "incarnation belongs to another backup"
-                    );
-                    return Ok(serde_json::to_value(descriptor)?);
-                }
-                self.event(
-                    context,
-                    SecurityEventKind::Restore,
-                    SecurityOutcome::Started,
-                )
-                .await?;
-                let path =
-                    generation_path(&self.config.database_path, &context.tenant, incarnation);
-                let (storage_access, lease) = crate::serving_runtime::acquire_tenant_access(
-                    &self.config,
-                    &self.authority_trusts,
-                    self.credential.clone(),
-                    &context.tenant,
-                    incarnation,
-                    kasumi_serving::LeasePurpose::RestorePreparation,
-                )
-                .await?;
-                let node = create_generation_file(
-                    &path,
-                    kasumi_store::node_store_ids::administrative_generation(
-                        self.config.database_id,
-                        &context.tenant,
-                        incarnation,
-                    )?,
-                    self.node.scratch_disk().clone(),
-                )?;
-                let stores = TenantStorageSet::open(
-                    node,
-                    context.tenant.clone(),
-                    source.provider.clone(),
-                    source.custody_provider.clone(),
-                    storage_access,
-                )
-                .await?;
-                let store = stores.application().clone();
-                self.config.install_tenant_audit_archive(&store, None)?;
-                let (database, bootstrap, hash) = if let (Some(_bootstrap), Some(network)) =
-                    (&source.bootstrap, &self.cluster)
-                {
-                    let topology = self.committed_topology()?;
-                    let route = topology
-                        .tenants
-                        .get(&context.tenant)
-                        .context("tenant route absent")?;
-                    let voters = route
-                        .voters
-                        .iter()
-                        .map(|id| {
-                            let node = topology.nodes.get(id).context("voter metadata absent")?;
-                            Ok((
-                                *id,
-                                kasumi_engine::ReplicaPlacement {
-                                    address: node.endpoint.clone(),
-                                    failure_domain: node.failure_domain.clone(),
-                                },
-                            ))
-                        })
-                        .collect::<Result<BTreeMap<_, _>>>()?;
-                    let prepared = kasumi_engine::prepare_replicated_restore(
-                        &kasumi_engine::RestoreSource {
-                            timeout_ms: 300_000,
-                            destination_alias: destination.clone(),
-                            destination: self.destinations[&destination].clone(),
-                            keys: source.provider.clone(),
-                        },
-                        backup_id,
-                        stores.clone(),
-                        context.clone(),
-                        kasumi_engine::ReplicaRestoreConfig {
-                            node_id: self
-                                .config
-                                .replication
-                                .as_ref()
-                                .context("replication missing")?
-                                .node_id,
-                            incarnation,
-                            voters,
-                            raft: kasumi_raft::server_config(),
-                            admission: self.admission.clone(),
-                        },
-                        network.clone(),
-                        self.audit.clone(),
-                    )
-                    .await?;
-                    let fingerprint = crate::runtime::persisted_bootstrap_fingerprint(&store)?;
-                    let bootstrap_store = store.clone();
-                    network.register_group_with_bootstrap(
-                        format!("{}/{}", context.tenant, incarnation),
-                        prepared.database.raft_group().raft().clone(),
-                        prepared.bootstrap.voters.keys().copied().collect(),
-                        fingerprint,
-                        Arc::new(move || bootstrap_store.check_access()),
-                    )?;
-                    (
-                        prepared.database,
-                        Some(prepared.bootstrap),
-                        prepared.bootstrap_sha256,
-                    )
-                } else {
-                    anyhow::bail!("replicated restore transport is missing");
-                };
-                let descriptor = GenerationDescriptor {
-                    format: 1,
-                    tenant: context.tenant.clone(),
-                    incarnation,
-                    backup_id,
-                    bootstrap: bootstrap.clone(),
-                    bootstrap_sha256: hash,
-                };
-                store.write_batch(&[WriteOp::put(
-                    "runtime.generation",
-                    b"descriptor",
-                    serde_json::to_vec(&descriptor)?,
-                )])?;
-                self.generations
-                    .write()
-                    .map_err(|_| anyhow::anyhow!("generation registry unavailable"))?
-                    .insert(
-                        (context.tenant.clone(), incarnation.to_string()),
-                        ManagedTenant {
-                            database,
-                            store,
-                            provider: source.provider.clone(),
-                            custody_provider: source.custody_provider.clone(),
-                            bootstrap,
-                            descriptor: Some(descriptor.clone()),
-                            lease,
-                        },
-                    );
-                self.event(
-                    context,
-                    SecurityEventKind::Restore,
-                    SecurityOutcome::Succeeded,
-                )
-                .await?;
-                Ok(serde_json::to_value(descriptor)?)
-            }
-            ManagementCommand::InitializeRestore { incarnation } => {
-                let target = self.generation(&context.tenant, &incarnation.to_string())?;
-                self.authorized(&target, context, false).await?;
-                let bootstrap = target
-                    .bootstrap
-                    .as_ref()
-                    .context("local restore already initialized")?;
-                ensure!(
-                    self.config
-                        .replication
-                        .as_ref()
-                        .is_some_and(|r| Some(&r.node_id) == bootstrap.voters.keys().next()),
-                    "initialize on designated lowest voter"
-                );
-                // Readiness is checked through pinned peer identities before a
-                // replacement generation can start consensus.
-                self.verify_restore_peers(&target).await?;
-                kasumi_engine::initialize_replicated(&target.database, bootstrap).await?;
-                Ok(serde_json::json!({"initialized":true}))
-            }
-            ManagementCommand::CompleteRestore { incarnation } => {
-                let target = self.generation(&context.tenant, &incarnation.to_string())?;
-                target.database.complete_restore(context.clone()).await?;
-                self.event(
-                    context,
-                    SecurityEventKind::Restore,
-                    SecurityOutcome::Succeeded,
-                )
-                .await?;
-                Ok(serde_json::json!({"completed":true,"incarnation":incarnation}))
-            }
-            ManagementCommand::RetireSource { .. } | ManagementCommand::ActivateRestore { .. } => {
-                anyhow::bail!("retirement lifecycle dispatch mismatch")
-            }
             ManagementCommand::AddLearner { node_id } => {
-                self.authorized(&source, context, true).await?;
+                self.authorized(source, context, true).await?;
                 let topology = self.committed_topology()?;
                 let node = topology
                     .nodes
@@ -1194,7 +801,7 @@ impl Administration {
                 Ok(serde_json::json!({"caught_up":node_id}))
             }
             ManagementCommand::ChangeMembership { voters } => {
-                self.authorized(&source, context, true).await?;
+                self.authorized(source, context, true).await?;
                 let mut topology = self.committed_topology()?;
                 validate_voters(&topology, &voters)?;
                 if let Some(route) = topology.tenants.get_mut(&context.tenant) {
@@ -1454,12 +1061,8 @@ impl Administration {
         context: &RequestContext,
         expected: u64,
     ) -> Result<serde_json::Value> {
-        self.authorized(
-            &self.current(crate::runtime::CONTROL_TENANT)?,
-            context,
-            true,
-        )
-        .await?;
+        self.authorized(&self.current(&self.control_context)?, context, true)
+            .await?;
         let plane = ControlPlane::new(self.control.clone())?;
         let current = plane
             .topology(context)
@@ -1510,19 +1113,15 @@ impl Administration {
         &self,
         context: &RequestContext,
         tenant: &str,
+        target: &ManagedTenant,
     ) -> Result<serde_json::Value> {
-        self.authorized(
-            &self.current(crate::runtime::CONTROL_TENANT)?,
-            context,
-            true,
-        )
-        .await?;
-        let target = self.provision_target(tenant)?;
+        self.authorized(&self.current(&self.control_context)?, context, true)
+            .await?;
         ensure!(
             !self.committed_topology()?.tenants.contains_key(tenant),
             "tenant already has a serving route"
         );
-        let hash = self.provision_hash(tenant, &target)?;
+        let hash = self.provision_hash(tenant, target)?;
         let definition = kasumi_types::CollectionDefinition {
             retention_class: kasumi_types::CollectionRetentionClass::Operational,
             write_mode: kasumi_types::CollectionWriteMode::Mutable,
@@ -1588,9 +1187,9 @@ impl Administration {
         &self,
         context: &RequestContext,
         tenant: &str,
+        target: &ManagedTenant,
     ) -> Result<serde_json::Value> {
-        let target = self.provision_target(tenant)?;
-        let hash = self.provision_hash(tenant, &target)?;
+        let hash = self.provision_hash(tenant, target)?;
         ensure!(
             self.provision_approval(tenant)? == hash,
             "approved bootstrap differs from this replica"
@@ -1624,7 +1223,7 @@ impl Administration {
         target: &ManagedTenant,
         require_initialized: bool,
     ) -> Result<()> {
-        use crate::cluster::RestoreReadinessProvider;
+        use crate::cluster::EnrollmentReadinessProvider;
         let hash = self.provision_hash(tenant, target)?;
         ensure!(
             self.provision_approval(tenant)? == hash,
@@ -1643,7 +1242,7 @@ impl Administration {
                     Some(network.bootstrap_fingerprint(*peer, &group).await?) == fingerprint,
                     "replica persisted bootstrap differs"
                 );
-                network.restore_readiness(*peer, &group).await?
+                network.enrollment_readiness(*peer, &group).await?
             } else {
                 self.readiness(&group)?
             };
@@ -1652,7 +1251,7 @@ impl Administration {
                 "replica bootstrap or identity/pins differ"
             );
             ensure!(
-                !ready.pending_restore && (!require_initialized || ready.initialized),
+                !require_initialized || ready.initialized,
                 "replica has not applied initialized membership"
             );
         }
@@ -1662,22 +1261,22 @@ impl Administration {
         &self,
         context: &RequestContext,
         tenant: &str,
+        target: &ManagedTenant,
     ) -> Result<serde_json::Value> {
-        let target = self.provision_target(tenant)?;
-        self.verify_provision_peers(tenant, &target, false).await?;
+        self.verify_provision_peers(tenant, target, false).await?;
         self.event(
             context,
             SecurityEventKind::Administration,
             SecurityOutcome::Started,
         )
         .await?;
-        if let Some(bootstrap) = &target.bootstrap {
+        if let Some(bootstrap) = target.bootstrap {
             ensure!(
                 self.config.replication.as_ref().map(|r| r.node_id)
                     == bootstrap.voters.keys().next().copied(),
                 "initialize on the lowest configured voter"
             );
-            kasumi_engine::initialize_replicated(&target.database, bootstrap).await?;
+            kasumi_engine::initialize_replicated(target.database, bootstrap).await?;
         }
         self.event(
             context,
@@ -1691,22 +1290,18 @@ impl Administration {
         &self,
         context: &RequestContext,
         tenant: &str,
+        target: &ManagedTenant,
         expected: u64,
     ) -> Result<serde_json::Value> {
-        self.authorized(
-            &self.current(crate::runtime::CONTROL_TENANT)?,
-            context,
-            true,
-        )
-        .await?;
-        let target = self.provision_target(tenant)?;
-        self.verify_provision_peers(tenant, &target, true).await?;
+        self.authorized(&self.current(&self.control_context)?, context, true)
+            .await?;
+        self.verify_provision_peers(tenant, target, true).await?;
         let plane = ControlPlane::new(self.control.clone())?;
         let current = plane
             .topology(context)
             .await?
             .context("control topology missing")?;
-        let route = self.provision_route(&target)?;
+        let route = self.provision_route(target)?;
         if let Some(existing) = current.topology.tenants.get(tenant) {
             ensure!(
                 existing == &route,
@@ -1764,204 +1359,6 @@ impl Administration {
         topology.validate()?;
         Ok(topology)
     }
-    fn publish_target(&self, tenant: &str, expected: &str, target: ManagedTenant) -> Result<()> {
-        for (alias, destination) in &self.destinations {
-            target
-                .database
-                .install_archive_destination(alias.clone(), destination.clone())?;
-        }
-        let incarnation = target
-            .database
-            .engine()
-            .generation()?
-            .state
-            .incarnation
-            .clone();
-        if self
-            .registry
-            .database(&RequestContext {
-                authorization: kasumi_types::RequestAuthorization::service_identity(),
-                tenant: tenant.into(),
-                principal: "runtime".into(),
-                scopes: BTreeSet::new(),
-                request_id: "runtime".into(),
-            })
-            .is_ok()
-        {
-            self.registry
-                .replace_generation(expected, target.database.clone())?;
-        } else {
-            self.registry.insert(target.database.clone())?;
-        }
-        if expected != incarnation
-            && let Ok(previous) = self.generation(tenant, expected)
-        {
-            previous.database.engine().seal();
-            previous.store.seal();
-        }
-        self.active
-            .write()
-            .map_err(|_| anyhow::anyhow!("generation registry unavailable"))?
-            .insert(tenant.into(), incarnation);
-        self.enabled
-            .write()
-            .map_err(|_| anyhow::anyhow!("routing unavailable"))?
-            .insert(tenant.into());
-        Ok(())
-    }
-    async fn verify_restore_peers(&self, target: &ManagedTenant) -> Result<()> {
-        let descriptor = target
-            .descriptor
-            .as_ref()
-            .context("restore descriptor missing")?;
-        let bootstrap = target
-            .bootstrap
-            .as_ref()
-            .context("restore bootstrap missing")?;
-        let network = self
-            .cluster
-            .as_ref()
-            .context("replication transport missing")?;
-        let group = format!("{}/{}", descriptor.tenant, descriptor.incarnation);
-        let fingerprint = crate::runtime::persisted_bootstrap_fingerprint(&target.store)?;
-        for peer in bootstrap.voters.keys() {
-            ensure!(
-                network.bootstrap_fingerprint(*peer, &group).await? == fingerprint,
-                "replicas prepared different bootstrap state or placement"
-            );
-            let ready = network.restore_readiness(*peer, &group).await?;
-            ensure!(
-                ready.bootstrap_sha256 == descriptor.bootstrap_sha256,
-                "replicas prepared different restored state"
-            );
-        }
-        Ok(())
-    }
-    async fn load_generation(&self, tenant: &str, incarnation: Uuid) -> Result<ManagedTenant> {
-        let path = generation_path(&self.config.database_path, tenant, incarnation);
-        ensure!(path.is_file(), "durably routed generation file is missing");
-        let (storage_access, lease) = match crate::serving_runtime::acquire_tenant_access(
-            &self.config,
-            &self.authority_trusts,
-            self.credential.clone(),
-            tenant,
-            incarnation,
-            kasumi_serving::LeasePurpose::Serving,
-        )
-        .await
-        {
-            Ok(active) => active,
-            Err(_) => {
-                crate::serving_runtime::acquire_tenant_access(
-                    &self.config,
-                    &self.authority_trusts,
-                    self.credential.clone(),
-                    tenant,
-                    incarnation,
-                    kasumi_serving::LeasePurpose::RestorePreparation,
-                )
-                .await?
-            }
-        };
-        let (provider, custody_provider) =
-            self.provider_factories
-                .get(tenant)
-                .context("tenant key factory is not installed")?()?;
-        let node = NodeStore::open_existing(
-            path,
-            kasumi_store::node_store_ids::administrative_generation(
-                self.config.database_id,
-                tenant,
-                incarnation,
-            )?,
-            self.node.scratch_disk().clone(),
-        )?;
-        let stores = TenantStorageSet::open(
-            node,
-            tenant.to_owned(),
-            provider.clone(),
-            custody_provider.clone(),
-            storage_access,
-        )
-        .await?;
-        let _reservation = self
-            .admission
-            .reserve(kasumi_engine::recovery_workspace_bytes(&stores)?, None)?;
-        let store = stores.application().clone();
-        self.config.install_tenant_audit_archive(&store, None)?;
-        let descriptor: GenerationDescriptor = serde_json::from_slice(
-            &store
-                .get("runtime.generation", b"descriptor")?
-                .context("generation descriptor absent")?,
-        )?;
-        ensure!(
-            descriptor.format == 1
-                && descriptor.tenant == tenant
-                && descriptor.incarnation == incarnation,
-            "generation descriptor mismatch"
-        );
-        let database = if let Some(bootstrap) = &descriptor.bootstrap {
-            let network = self
-                .cluster
-                .as_ref()
-                .context("replication transport absent")?;
-            let db = kasumi_engine::open_replicated(
-                self.config
-                    .replication
-                    .as_ref()
-                    .context("replication absent")?
-                    .node_id,
-                stores.clone(),
-                bootstrap,
-                network.clone(),
-                kasumi_raft::server_config(),
-                self.audit.clone(),
-            )
-            .await?;
-            let fingerprint = crate::runtime::persisted_bootstrap_fingerprint(&store)?;
-            let bootstrap_store = store.clone();
-            network.register_group_with_bootstrap(
-                format!("{tenant}/{incarnation}"),
-                db.raft_group().raft().clone(),
-                bootstrap.voters.keys().copied().collect(),
-                fingerprint,
-                Arc::new(move || bootstrap_store.check_access()),
-            )?;
-            db
-        } else {
-            kasumi_engine::open_local(
-                stores.clone(),
-                self.config
-                    .tenants
-                    .iter()
-                    .find(|t| t.tenant == tenant)
-                    .context("unknown tenant")?
-                    .initial_policy
-                    .clone(),
-                kasumi_types::Limits::default(),
-                self.audit.clone(),
-            )
-            .await?
-        };
-        database.install_admission(self.admission.clone())?;
-        let target = ManagedTenant {
-            database,
-            store,
-            provider,
-            custody_provider,
-            bootstrap: descriptor.bootstrap.clone(),
-            descriptor: Some(descriptor),
-            lease,
-        };
-        self.registry.install_retirement_source(
-            kasumi_engine::InstalledRetirementSource::Serving(target.database.clone()),
-        )?;
-        self.generations
-            .write()
-            .map_err(|_| anyhow::anyhow!("generation registry unavailable"))?
-            .insert((tenant.to_owned(), incarnation.to_string()), target.clone());
-        Ok(target)
-    }
     async fn close_retired_generations(&self) -> Result<()> {
         let generations = self
             .generations
@@ -2005,7 +1402,8 @@ impl Administration {
                 .get(&tenant)
                 .cloned();
             if active.as_deref() == Some(&incarnation) {
-                self.registry.remove(&tenant)?;
+                self.registry
+                    .detach_target_generation(&tenant, &incarnation, &source.database)?;
             }
             // Publish an explicit closed transition before sealing/draining the
             // old handle. Concurrent native callers can retry unavailable
@@ -2057,10 +1455,22 @@ impl Administration {
         }
         let topology = self.committed_topology()?;
         for (tenant, route) in topology.tenants {
-            if self
-                .recover_original(&tenant, &route.incarnation)
-                .await
-                .is_err()
+            let original = self
+                .config
+                .tenants
+                .iter()
+                .find(|entry| entry.tenant == tenant)
+                .is_some_and(|entry| {
+                    entry
+                        .incarnation
+                        .as_deref()
+                        .is_none_or(|id| id == route.incarnation)
+                });
+            if original
+                && self
+                    .recover_original(&tenant, &route.incarnation)
+                    .await
+                    .is_err()
             {
                 tracing::warn!(
                     tenant,
@@ -2068,71 +1478,32 @@ impl Administration {
                 );
                 continue;
             }
-            let custody_context = RequestContext {
-                tenant: tenant.clone(),
-                ..self.control_context.clone()
-            };
-            if matches!(
-                self.registry
-                    .retirement_source(&custody_context, &route.incarnation),
-                Ok(kasumi_engine::InstalledRetirementSource::RetiredCustody(_)
-                    | kasumi_engine::InstalledRetirementSource::RecoveringControl { .. })
-            ) {
-                continue;
-            }
-            let source = self.configured(&tenant).ok();
-            let old = self
-                .active
+            // Canonical targets belong exclusively to TargetRecoveryRuntime.
+            // Observe their registered handle; never infer a path or reopen one.
+            let Some(source) = self
+                .generations
                 .read()
-                .map_err(|_| anyhow::anyhow!("active source routing unavailable"))?
-                .get(&tenant)
+                .map_err(|_| anyhow::anyhow!("original generation registry unavailable"))?
+                .get(&(tenant.clone(), route.incarnation.clone()))
                 .cloned()
-                .or_else(|| {
-                    self.config
-                        .tenants
-                        .iter()
-                        .find(|source| source.tenant == tenant)
-                        .and_then(|source| source.incarnation.clone())
-                });
-            let old = old.unwrap_or_else(|| route.incarnation.clone());
-            if old == route.incarnation
-                && source
-                    .as_ref()
-                    .is_some_and(|source| source.database.engine().generation().is_ok())
-            {
-                let source = source.as_ref().expect("checked serving source");
-                if !self
-                    .enabled
-                    .read()
-                    .map_err(|_| anyhow::anyhow!("routing unavailable"))?
-                    .contains(&tenant)
-                {
-                    self.registry.insert(source.database.clone())?;
-                    self.enabled
-                        .write()
-                        .map_err(|_| anyhow::anyhow!("routing unavailable"))?
-                        .insert(tenant.clone());
-                }
+            else {
                 continue;
-            }
-            let target = match self.generation(&tenant, &route.incarnation) {
-                Ok(target) => target,
-                Err(_) => {
-                    self.load_generation(&tenant, Uuid::parse_str(&route.incarnation)?)
-                        .await?
-                }
             };
-            if target
-                .database
-                .engine()
-                .generation()?
-                .state
-                .pending_restore
-                .is_some()
-            {
+            if source.database.check_serving().is_err() {
                 continue;
             }
-            self.publish_target(&tenant, &old, target)?;
+            let generation = source.database.engine().generation()?;
+            if generation.state.retired || generation.state.pending_restore.is_some() {
+                continue;
+            }
+            drop(generation);
+            if self
+                .registry
+                .installed_generation(&tenant, &route.incarnation)?
+                .is_none()
+            {
+                self.registry.insert(source.database.clone())?;
+            }
         }
         Ok(())
     }
@@ -2175,67 +1546,35 @@ impl Administration {
         failure.take().map_or(Ok(()), Err)
     }
 }
-pub(crate) fn generation_path(base: &Path, tenant: &str, incarnation: Uuid) -> PathBuf {
-    let digest = Sha256::digest(tenant.as_bytes())
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect::<String>();
-    base.with_extension("generations")
-        .join(digest)
-        .join(format!("{incarnation}.redb"))
-}
-fn create_generation_file(
-    path: &Path,
-    database_id: Uuid,
-    scratch: Arc<kasumi_store::ScratchDisk>,
-) -> Result<Arc<NodeStore>> {
-    let parent = path.parent().context("generation directory absent")?;
-    std::fs::create_dir_all(parent)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
-    }
-    // NodeStore owns the exclusively created descriptor from its first byte;
-    // there is no path-based handoff through an unbound precreated empty file.
-    let node = NodeStore::create_new(path, database_id, scratch)
-        .context("restore target must be fresh and private")?;
-    for directory in parent.ancestors() {
-        if !directory.as_os_str().is_empty() {
-            std::fs::File::open(directory)?.sync_all()?;
-        }
-    }
-    Ok(node)
-}
-
-impl crate::cluster::RestoreReadinessProvider for Administration {
-    fn readiness(&self, group: &str) -> Result<crate::cluster::RestoreReadiness> {
+impl crate::cluster::EnrollmentReadinessProvider for Administration {
+    fn readiness(&self, group: &str) -> Result<crate::cluster::EnrollmentReadiness> {
         let (tenant, incarnation) = group.rsplit_once('/').context("invalid generation group")?;
         let target = self.generation(tenant, incarnation)?;
         target.store.check_access()?;
         let state = target.database.engine().generation()?;
-        let bootstrap_sha256 = if let Some(descriptor) = &target.descriptor {
-            descriptor.bootstrap_sha256.clone()
-        } else {
-            let expected = self.provision_hash(tenant, &target)?;
-            let approval = self.provision_approval(tenant)?;
-            ensure!(
-                approval == expected,
-                "provisioning approval differs from configured bootstrap"
-            );
-            let prepared = target
-                .store
-                .get("runtime.provisioning", b"prepared")?
-                .context("tenant is not prepared")?;
-            ensure!(
-                prepared == expected.as_bytes(),
-                "prepared tenant bootstrap differs"
-            );
-            expected
-        };
-        Ok(crate::cluster::RestoreReadiness {
+        let expected = self.provision_hash(tenant, &target)?;
+        let approval = self.provision_approval(tenant)?;
+        ensure!(
+            approval == expected,
+            "provisioning approval differs from configured bootstrap"
+        );
+        let prepared = target
+            .store
+            .get("runtime.provisioning", b"prepared")?
+            .context("tenant is not prepared")?;
+        ensure!(
+            prepared == expected.as_bytes(),
+            "prepared tenant bootstrap differs"
+        );
+        ensure!(
+            state.state.pending_restore.is_none()
+                && state.state.restored_from.is_none()
+                && !state.state.retired,
+            "enrollment readiness requires the original fresh tenant"
+        );
+        let bootstrap_sha256 = expected;
+        Ok(crate::cluster::EnrollmentReadiness {
             bootstrap_sha256,
-            pending_restore: state.state.pending_restore.is_some(),
             initialized: initialized(&target),
             revision: state.state.revision,
         })
@@ -2309,16 +1648,6 @@ fn validate_voters(topology: &ControlTopology, voters: &BTreeSet<u64>) -> Result
     Ok(())
 }
 
-fn lifecycle_source(command: &ManagementCommand) -> Option<&str> {
-    match command {
-        ManagementCommand::RetireSource { request } => Some(&request.expected_source_incarnation),
-        ManagementCommand::ActivateRestore { retirement, .. } => {
-            Some(&retirement.source_incarnation)
-        }
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2329,10 +1658,10 @@ mod tests {
         }
         let bytes = future_size(
             |(manager, context, command): (
-                &'static Administration,
+                &'static Arc<Administration>,
                 RequestContext,
                 ManagementCommand,
-            )| manager.execute(context, command),
+            )| manager.execute_for_test(context, command),
         );
         let retirement_bytes = future_size(
             |(database, context, request): (
@@ -2349,10 +1678,44 @@ mod tests {
         );
     }
     #[test]
+    fn removed_management_recovery_and_status_selection_have_no_decoder() {
+        for operation in [
+            "prepare_restore",
+            "initialize_restore",
+            "complete_restore",
+            "retire_source",
+            "activate_restore",
+        ] {
+            let error = serde_json::from_value::<ManagementCommand>(serde_json::json!({
+                "operation": operation,
+                "destination": "named",
+                "backup_id": Uuid::new_v4(),
+                "incarnation": Uuid::new_v4(),
+                "request": {}
+            }))
+            .unwrap_err();
+            assert!(
+                error.to_string().contains("unknown variant"),
+                "{operation}: {error}"
+            );
+        }
+        let error = serde_json::from_value::<ManagementCommand>(serde_json::json!({
+            "operation": "status", "incarnation": Uuid::new_v4()
+        }))
+        .unwrap_err();
+        assert!(error.to_string().contains("unknown field"), "{error}");
+        assert!(matches!(
+            serde_json::from_value::<ManagementCommand>(serde_json::json!({"operation": "status"}))
+                .unwrap(),
+            ManagementCommand::Status {}
+        ));
+    }
+
+    #[test]
     fn closed_commands_reject_path_and_tenant_overrides() {
         assert!(
             serde_json::from_value::<ManagementCommand>(
-                serde_json::json!({"operation":"backup","destination":"named","tenant":"other"})
+                serde_json::json!({"operation":"backup","destination":"named","session_id":Uuid::new_v4(),"tenant":"other"})
             )
             .is_err()
         );
@@ -2378,55 +1741,5 @@ mod tests {
             max_bytes: 0,
         };
         assert!(destination.validate().is_err());
-    }
-    #[test]
-    #[cfg(unix)]
-    fn fresh_restore_file_is_private_exclusive_and_accepted_by_storage() {
-        use std::os::unix::fs::{PermissionsExt, symlink};
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("generations/tenant/target.redb");
-        let database_id = kasumi_store::node_store_ids::administrative_generation(
-            Uuid::new_v4(),
-            "tenant",
-            Uuid::new_v4(),
-        )
-        .unwrap();
-        let scratch = kasumi_store::ScratchDisk::fixture();
-        let create = |path: &Path| create_generation_file(path, database_id, scratch.clone());
-        let node = create(&path).unwrap();
-        assert_eq!(
-            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-        assert_eq!(
-            std::fs::metadata(path.parent().unwrap())
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o700
-        );
-        assert!(create(&path).is_err());
-        drop(node);
-        drop(NodeStore::open_existing(&path, database_id, scratch.clone()).unwrap());
-        let original = std::fs::read(&path).unwrap();
-        assert!(create(&path).is_err());
-        assert_eq!(std::fs::read(&path).unwrap(), original);
-        let link = path.with_extension("link");
-        symlink(&path, &link).unwrap();
-        assert!(create(&link).is_err());
-        assert_eq!(std::fs::read(&path).unwrap(), original);
-    }
-    #[test]
-    fn generation_paths_cannot_inherit_tenant_traversal() {
-        let base = Path::new("/var/lib/kasumi/node.redb");
-        let incarnation = Uuid::new_v4();
-        let path = generation_path(base, "../../escape", incarnation);
-        assert!(path.starts_with("/var/lib/kasumi/node.generations"));
-        assert_eq!(
-            path.file_name().unwrap(),
-            format!("{incarnation}.redb").as_str()
-        );
-        assert_eq!(path.components().count(), 7);
     }
 }

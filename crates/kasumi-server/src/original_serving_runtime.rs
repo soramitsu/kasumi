@@ -27,9 +27,6 @@ impl Administration {
             .incarnation
             .as_deref()
             .is_some_and(|installed| installed != incarnation)
-            || previous
-                .as_ref()
-                .is_some_and(|previous| previous.descriptor.is_some())
             || (configured.incarnation.is_none() && previous.is_none())
         {
             return Ok(());
@@ -51,10 +48,6 @@ impl Administration {
             }
             self.registry
                 .detach_target_generation(tenant, incarnation, &previous.database)?;
-            self.enabled
-                .write()
-                .map_err(|_| anyhow::anyhow!("routing unavailable"))?
-                .remove(tenant);
             if let Some(network) = &self.cluster {
                 network.unregister_group(&format!("{tenant}/{incarnation}"))?;
             }
@@ -191,10 +184,7 @@ impl Administration {
             Ok(ManagedTenant {
                 database,
                 store: stores.application().clone(),
-                provider,
-                custody_provider,
                 bootstrap,
-                descriptor: None,
                 lease,
             })
         }

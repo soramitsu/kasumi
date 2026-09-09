@@ -19,6 +19,27 @@ pub struct DatabaseRegistry {
 }
 
 impl DatabaseRegistry {
+    /// Read-only internal observation of one committed route. This neither
+    /// authorizes a request nor transfers the installed runner's ownership.
+    pub(crate) fn installed_generation(
+        &self,
+        tenant: &str,
+        incarnation: &str,
+    ) -> Result<Option<Arc<Database>>> {
+        let database = self
+            .databases
+            .read()
+            .map_err(|_| Error::new(ErrorCode::Unavailable, "tenant registry unavailable"))?
+            .get(tenant)
+            .cloned();
+        match database {
+            Some(database) if database.engine().generation()?.state.incarnation == incarnation => {
+                Ok(Some(database))
+            }
+            _ => Ok(None),
+        }
+    }
+
     /// Installed source custody is retained separately from mutable data routes.
     /// This takes a typed service handle, never wire-selected keys or locations.
     pub fn install_retirement_source(
@@ -1933,15 +1954,11 @@ name: "docs".into(),
             vec![ManagedTenant {
                 database: control.clone(),
                 store,
-                provider,
-                custody_provider: Arc::new(LocalKeyProvider::new([241; 32])),
                 bootstrap: None,
-                descriptor: None,
                 lease: None,
             }],
             BTreeMap::new(),
             kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
-            BTreeMap::new(),
             Arc::new(|_| anyhow::bail!("fixture has no installed authority credential")),
         )
         .unwrap();
