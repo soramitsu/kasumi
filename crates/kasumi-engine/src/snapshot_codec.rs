@@ -11,7 +11,7 @@ use std::{
 
 const MAGIC: &[u8; 8] = b"KASUMIT3";
 const MAX_RECORD: usize = 32 << 20;
-pub(crate) const RECORD_KINDS: u8 = 22;
+pub(crate) const RECORD_KINDS: u8 = 23;
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type", content = "value", deny_unknown_fields)]
@@ -38,6 +38,7 @@ pub(crate) enum Record {
     RecoveryPhase(String, Box<RecoveryPhaseRecord>),
     RecoveryTarget(String, uuid::Uuid),
     Terminal(Box<crate::staged_terminal::Row>),
+    TargetResolution(Box<crate::target_resolution::Row>),
 }
 impl Record {
     pub(crate) fn order(&self) -> (u8, String, String) {
@@ -64,6 +65,7 @@ impl Record {
             Self::RecoveryPhase(k, _) => (19, k.clone(), String::new()),
             Self::RecoveryTarget(k, _) => (20, k.clone(), String::new()),
             Self::Terminal(row) => (21, format!("{:020}", row.ordinal), String::new()),
+            Self::TargetResolution(row) => (22, format!("{:020}", row.ordinal), String::new()),
         }
     }
 }
@@ -284,6 +286,8 @@ pub(crate) fn metadata(state: &TenantState) -> TenantState {
         permanent_staged_bytes: state.permanent_staged_bytes,
         reserved_staged_terminal_bytes: state.reserved_staged_terminal_bytes,
         staged_terminal_head: state.staged_terminal_head.clone(),
+        target_resolution_head: state.target_resolution_head.clone(),
+        target_completion_head: state.target_completion_head.clone(),
         change_feed: ChangeFeedState {
             next_sequence: state.change_feed.next_sequence,
             event_count: state.change_feed.event_count,
@@ -395,6 +399,7 @@ impl<'a> Encoder<'a> {
 pub(crate) fn write(
     state: &TenantState,
     terminals: &crate::staged_terminal::View,
+    target_resolutions: &crate::target_resolution::View,
     writer: &mut dyn Write,
 ) -> anyhow::Result<()> {
     anyhow::ensure!(
@@ -402,6 +407,7 @@ pub(crate) fn write(
         "snapshot terminal owner differs"
     );
     terminals.check_head(&state.tenant)?;
+    target_resolutions.validate_state(state)?;
     let mut encoder = Encoder::new(writer)?;
     for kind in 0..21 {
         for record in records(state, kind, None)? {
@@ -410,6 +416,9 @@ pub(crate) fn write(
     }
     for row in terminals.records() {
         encoder.record(Record::Terminal(Box::new(row?)))?;
+    }
+    for row in target_resolutions.records() {
+        encoder.record(Record::TargetResolution(Box::new(row?)))?;
     }
     encoder.finish()
 }
@@ -531,6 +540,10 @@ pub(crate) fn visit(
                 row.ordinal > 0 && !row.stage.is_active() && row.stage.chunks.is_empty(),
                 "invalid terminal staged record"
             ),
+            Record::TargetResolution(row) => {
+                row.record.validate()?;
+                row.framed_bytes()?;
+            }
             Record::Change(_, commit) => anyhow::ensure!(
                 commit.records.is_empty(),
                 "change commit contains embedded records"
@@ -590,6 +603,7 @@ fn decode_record(bytes: &[u8]) -> anyhow::Result<Record> {
 pub(crate) struct Decoded {
     pub(crate) state: TenantState,
     pub(crate) terminals: crate::staged_terminal::View,
+    pub(crate) target_resolutions: crate::target_resolution::View,
 }
 pub(crate) fn read(
     disk: &Arc<kasumi_store::ScratchDisk>,
@@ -597,12 +611,23 @@ pub(crate) fn read(
 ) -> anyhow::Result<Decoded> {
     let mut state: Option<TenantState> = None;
     let mut terminals: Option<crate::staged_terminal::Builder> = None;
+    let mut target_resolutions: Option<crate::target_resolution::Builder> = None;
     visit(reader, |_, record| {
         if let Record::Header(header) = record {
             anyhow::ensure!(
                 state.is_none() && empty_records(&header),
                 "snapshot header contains embedded records"
             );
+            if header.target_resolution_head.count > 0 {
+                target_resolutions = Some(crate::target_resolution::Builder::new(
+                    disk,
+                    crate::target_resolution::scratch_limit(
+                        header.limits.max_target_resolution_bytes,
+                    )?,
+                    &header.tenant,
+                    &header.target_resolution_head.origin_incarnation,
+                )?);
+            }
             if header.staged_terminal_head.count > 0 {
                 terminals = Some(crate::staged_terminal::Builder::new(
                     disk,
@@ -759,6 +784,12 @@ pub(crate) fn read(
                     .ok_or_else(|| anyhow::anyhow!("terminal stream header missing"))?
                     .push(&row, state)?;
             }
+            Record::TargetResolution(row) => {
+                target_resolutions
+                    .as_mut()
+                    .ok_or_else(|| anyhow::anyhow!("target resolution rows without header"))?
+                    .push(&row, state)?;
+            }
             Record::ControlChange(id, change) => {
                 state
                     .lifecycle_control
@@ -785,7 +816,25 @@ pub(crate) fn read(
             empty
         }
     };
-    Ok(Decoded { state, terminals })
+    let target_resolutions = match target_resolutions {
+        Some(builder) => builder.finish(&state.target_resolution_head)?,
+        None => {
+            let empty = crate::target_resolution::View::empty(
+                &state.tenant,
+                &state.target_resolution_head.origin_incarnation,
+            )?;
+            anyhow::ensure!(
+                empty.head() == &state.target_resolution_head,
+                "empty target terminal descriptor differs"
+            );
+            empty
+        }
+    };
+    Ok(Decoded {
+        state,
+        terminals,
+        target_resolutions,
+    })
 }
 
 #[cfg(test)]
@@ -795,6 +844,7 @@ mod tests {
         super::write(
             state,
             &crate::staged_terminal::View::empty(&state.tenant, &state.incarnation)?,
+            &crate::target_resolution::View::empty(&state.tenant, &state.incarnation)?,
             writer,
         )
     }

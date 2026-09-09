@@ -141,6 +141,15 @@ impl StagedSnapshot {
             .ok_or_else(|| anyhow::anyhow!("unsupported snapshot record kind"))
     }
 
+    /// Exact payload and length-prefix bytes for one canonical record kind.
+    pub(crate) fn framed_bytes(&self, kind: u8) -> Result<u64> {
+        let span = self
+            .spans
+            .get(usize::from(kind))
+            .ok_or_else(|| anyhow::anyhow!("unsupported snapshot record kind"))?;
+        Ok(span.map_or(0, |(start, end)| end - start))
+    }
+
     pub(crate) fn image(&self) -> &SnapshotImage {
         &self.image
     }

@@ -596,7 +596,11 @@ mod tests {
         state.audit_retention.archive_head = references.last().cloned();
         engine.current.store(Some(Arc::new(
             engine
-                .prepare_state(state, engine.generation().unwrap().terminals.clone())
+                .prepare_state(
+                    state,
+                    engine.generation().unwrap().terminals.clone(),
+                    engine.generation().unwrap().target_resolutions.clone(),
+                )
                 .unwrap(),
         )));
         references
@@ -755,7 +759,11 @@ mod tests {
         state.audit_retention.archive_bytes += 1;
         source.current.store(Some(Arc::new(
             source
-                .prepare_state(state, source.generation().unwrap().terminals.clone())
+                .prepare_state(
+                    state,
+                    source.generation().unwrap().terminals.clone(),
+                    source.generation().unwrap().target_resolutions.clone(),
+                )
                 .unwrap(),
         )));
         assert!(capture(source.clone()).await.is_err());
@@ -763,7 +771,11 @@ mod tests {
         state.audit_retention.archive_bytes -= 1;
         source.current.store(Some(Arc::new(
             source
-                .prepare_state(state, source.generation().unwrap().terminals.clone())
+                .prepare_state(
+                    state,
+                    source.generation().unwrap().terminals.clone(),
+                    source.generation().unwrap().target_resolutions.clone(),
+                )
                 .unwrap(),
         )));
         // The source cache directory is fixed to this private installation.

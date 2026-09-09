@@ -24,12 +24,17 @@ pub trait SnapshotFixtureState {
 }
 impl SnapshotFixtureState for TenantState {
     fn write_fixture(&self, writer: &mut dyn std::io::Write) -> anyhow::Result<()> {
-        write_candidate(self, None, writer)
+        write_candidate(self, None, None, writer)
     }
 }
 impl SnapshotFixtureState for crate::Generation {
     fn write_fixture(&self, writer: &mut dyn std::io::Write) -> anyhow::Result<()> {
-        crate::snapshot_codec::write(&self.state, &self.terminals, writer)
+        crate::snapshot_codec::write(
+            &self.state,
+            &self.terminals,
+            &self.target_resolutions,
+            writer,
+        )
     }
 }
 #[derive(Clone)]
@@ -47,7 +52,12 @@ impl std::ops::DerefMut for SnapshotCandidate {
 }
 impl SnapshotFixtureState for SnapshotCandidate {
     fn write_fixture(&self, writer: &mut dyn std::io::Write) -> anyhow::Result<()> {
-        write_candidate(&self.0.state, Some(&self.0.terminals), writer)
+        write_candidate(
+            &self.0.state,
+            Some(&self.0.terminals),
+            Some(&self.0.target_resolutions),
+            writer,
+        )
     }
 }
 pub fn encode_snapshot_candidate(
@@ -70,6 +80,7 @@ pub fn decode_snapshot_candidate(candidate: &SnapshotImage) -> Result<SnapshotCa
 fn write_candidate(
     state: &TenantState,
     terminals: Option<&crate::staged_terminal::View>,
+    target_resolutions: Option<&crate::target_resolution::View>,
     writer: &mut dyn std::io::Write,
 ) -> anyhow::Result<()> {
     let mut encoder = crate::snapshot_codec::Encoder::new(writer)?;
@@ -81,6 +92,13 @@ fn write_candidate(
     if let Some(terminals) = terminals {
         for row in terminals.records() {
             encoder.record(crate::snapshot_codec::Record::Terminal(Box::new(row?)))?;
+        }
+    }
+    if let Some(target_resolutions) = target_resolutions {
+        for row in target_resolutions.records() {
+            encoder.record(crate::snapshot_codec::Record::TargetResolution(Box::new(
+                row?,
+            )))?;
         }
     }
     encoder.finish()

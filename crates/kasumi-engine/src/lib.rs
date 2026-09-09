@@ -41,6 +41,7 @@ mod service;
 mod snapshot_codec;
 mod snapshot_index;
 mod staged_terminal;
+mod target_resolution;
 mod state;
 pub use bootstrap::{
     LocalRestoreRequest, MaterializedTargetReplica, PreparedReplicaRestore, ReplicaPlacement,

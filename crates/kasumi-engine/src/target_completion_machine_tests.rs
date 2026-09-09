@@ -15,7 +15,7 @@ fn sign(value: &impl serde::Serialize, domain: &str, node: u64) -> String {
             .as_ref(),
     )
 }
-fn origin() -> TargetOrigin {
+pub(crate) fn origin() -> TargetOrigin {
     let source = Uuid::from_u128(1);
     let target = Uuid::from_u128(2);
     let checkpoint = FullBackupCheckpoint {
@@ -119,7 +119,7 @@ fn position(index: u64) -> TargetCommitPosition {
         command_sha256: format!("{index:064x}"),
     }
 }
-fn attempt(
+pub(crate) fn attempt(
     origin: &TargetOrigin,
     predecessor: Option<TargetCompletionResolutionReference>,
     control_revision: u64,
@@ -172,7 +172,7 @@ fn attempt(
     value.validate().unwrap();
     value
 }
-fn resolution(
+pub(crate) fn resolution(
     original: &TargetCompletionAttempt,
     control_revision: u64,
 ) -> (TargetCompletionResolutionInput, LifecycleIntent) {
@@ -189,7 +189,7 @@ fn resolution(
     );
     (input, under)
 }
-fn applied(intent: LifecycleIntent, admitted_at_ms: u64, index: u64) -> ResolutionApply {
+pub(crate) fn applied(intent: LifecycleIntent, admitted_at_ms: u64, index: u64) -> ResolutionApply {
     ResolutionApply {
         intent,
         admitted_at_ms,

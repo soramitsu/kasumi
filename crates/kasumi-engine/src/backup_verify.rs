@@ -299,6 +299,26 @@ impl VerifiedState {
                         }),
                 ))
             }
+            Self::Captured(generation) if kind == 22 => {
+                let primary = primary.map(str::to_owned);
+                Ok(Box::new(
+                    generation
+                        .target_resolutions
+                        .records()
+                        .map(|row| {
+                            row.map(|row| {
+                                crate::snapshot_codec::Record::TargetResolution(Box::new(row))
+                            })
+                        })
+                        .filter(move |record| {
+                            primary.as_ref().is_none_or(|key| {
+                                record
+                                    .as_ref()
+                                    .map_or(true, |record| record.order().1 == *key)
+                            })
+                        }),
+                ))
+            }
             _ => crate::snapshot_codec::records(self.metadata(), kind, primary),
         }
     }

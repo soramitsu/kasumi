@@ -38,6 +38,7 @@ impl ValidatedApplicationSnapshot {
         result.validate_permanent(&mut check)?;
         result.validate_audits(&mut check)?;
         result.validate_targets(&mut check)?;
+        result.validate_target_resolutions(&mut check)?;
         check()?;
         Ok(result)
     }
@@ -75,7 +76,7 @@ impl ValidatedApplicationSnapshot {
         })?;
         let image = SnapshotImage::capture(
             self.image().disk(),
-            self.header.limits.max_snapshot_bytes,
+            crate::target_resolution::snapshot_limit(&self.header)?,
             |writer| {
                 let mut encoder = crate::snapshot_codec::Encoder::new(writer)?;
                 crate::snapshot_codec::visit(&mut self.image().reader(), |_, mut record| {
@@ -241,7 +242,8 @@ impl ValidatedApplicationSnapshot {
             self.index
                 .summary()
                 .bytes
-                .checked_add(headroom)
+                .checked_sub(self.index.framed_bytes(22)?)
+                .and_then(|n| n.checked_add(headroom))
                 .is_some_and(|n| n <= h.limits.max_snapshot_bytes),
             "snapshot exceeds serialized byte quota"
         );
@@ -865,6 +867,76 @@ impl ValidatedApplicationSnapshot {
         );
         Ok(())
     }
+    fn validate_target_resolutions(
+        &self,
+        check: &mut impl FnMut() -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
+        let h = &self.header;
+        let mut selected = TargetResolutionPrefixHead::empty(
+            &h.tenant,
+            &h.target_resolution_head.origin_incarnation,
+        )?;
+        ensure!(
+            selected.origin_incarnation == h.incarnation
+                || self.lineage_source(&selected.origin_incarnation)?.is_some(),
+            "target terminal prefix origin is outside lineage"
+        );
+        self.index.visit(22, |record| {
+            check()?;
+            let Record::TargetResolution(row) = record else {
+                unreachable!()
+            };
+            let incarnation = row.record.origin().input.target_incarnation.to_string();
+            let mut state = self.staging_lineage(&incarnation, None)?;
+            let Record::Target(_, target) = self
+                .index
+                .get(17, &incarnation, "")?
+                .context("target terminal origin is absent")?
+            else {
+                unreachable!()
+            };
+            state.target_lifecycle.insert(incarnation, *target);
+            row.validate(&state)?;
+            ensure!(
+                get::<u64>(&self.lineage, &("target-terminal-key", &row.key))?.is_none(),
+                "duplicate permanent target terminal identity"
+            );
+            insert(
+                &self.lineage,
+                &("target-terminal-key", &row.key),
+                &row.ordinal,
+            )?;
+            crate::target_resolution::advance(&mut selected, &row)?;
+            Ok(())
+        })?;
+        ensure!(
+            selected == h.target_resolution_head && selected.count == self.index.count(22)?,
+            "target terminal snapshot prefix count/root/bytes differ"
+        );
+        ensure!(
+            self.index.framed_bytes(22)? <= selected.encoded_bytes,
+            "target terminal table charge does not cover its snapshot framing"
+        );
+        let mut current = h.as_ref().clone();
+        if let Some(Record::Target(_, target)) = self.index.get(17, &h.incarnation, "")? {
+            current
+                .target_lifecycle
+                .insert(h.incarnation.clone(), *target);
+        }
+        crate::target_resolution::validate_current(&current, |key| {
+            check()?;
+            let Some(ordinal) = get::<u64>(&self.lineage, &("target-terminal-key", key))? else {
+                return Ok(None);
+            };
+            let Some(Record::TargetResolution(row)) =
+                self.index.get(22, &format!("{ordinal:020}"), "")?
+            else {
+                anyhow::bail!("target terminal key redirected outside ordinal prefix");
+            };
+            Ok(Some(*row))
+        })
+    }
+
     fn validate_targets(
         &self,
         check: &mut impl FnMut() -> anyhow::Result<()>,
@@ -1124,6 +1196,10 @@ mod tests {
                 &crate::staged_terminal::View::empty(
                     &state.tenant,
                     &state.staged_terminal_head.origin_incarnation,
+                )?,
+                &crate::target_resolution::View::empty(
+                    &state.tenant,
+                    &state.target_resolution_head.origin_incarnation,
                 )?,
                 writer,
             )

@@ -288,4 +288,4 @@ fn conflict(message: &str) -> Error {
 
 #[cfg(test)]
 #[path = "target_completion_machine_tests.rs"]
-mod tests;
+pub(crate) mod tests;

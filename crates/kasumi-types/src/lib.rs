@@ -567,6 +567,9 @@ pub struct TenantState {
     /// Outstanding capacity owned by active stages for counter growth and termination.
     pub reserved_staged_terminal_bytes: u64,
     pub staged_terminal_head: StagedTerminalHead,
+    pub target_resolution_head: TargetResolutionPrefixHead,
+    #[serde(deserialize_with = "crate::require_explicit_option")]
+    pub target_completion_head: Option<TargetCompletionHead>,
     pub change_feed: ChangeFeedState,
     #[serde(serialize_with = "serialize_resident_map")]
     pub history_archives: imbl::OrdMap<String, std::sync::Arc<RetainedHistoryArchive>>,

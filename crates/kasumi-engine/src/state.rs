@@ -36,6 +36,7 @@ pub(crate) mod tenant_audit;
 pub struct Generation {
     pub state: TenantState,
     pub(crate) terminals: crate::staged_terminal::View,
+    pub(crate) target_resolutions: crate::target_resolution::View,
     pub indexes: Arc<QueryIndexes>,
     // Derived from snapshotted receipts; each command removes only expired
     // buckets instead of traversing every retained receipt on every write.
@@ -52,6 +53,7 @@ impl Generation {
         state.history_archives = self.state.history_archives.clone();
         Self {
             terminals: self.terminals.clone(),
+            target_resolutions: self.target_resolutions.clone(),
             state,
             indexes: Arc::new(QueryIndexes::default()),
             receipt_expiry: ReceiptExpiry::new(),
@@ -69,6 +71,7 @@ impl Generation {
         state.collections = collections;
         Self {
             terminals: self.terminals.clone(),
+            target_resolutions: self.target_resolutions.clone(),
             state,
             indexes: self.indexes.clone(),
             receipt_expiry: self.receipt_expiry.clone(),
@@ -184,9 +187,15 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
                 snapshot_bundle::write(&generation, &store, writer)
             })
             .with_checkpoint_writes(move |context| {
-                checkpoint_generation
-                    .terminals
-                    .checkpoint_writes(&checkpoint_generation.state, &context.checkpoint_sha256()?)
+                let mut writes = checkpoint_generation.terminals.checkpoint_writes(
+                    &checkpoint_generation.state,
+                    &context.checkpoint_sha256()?,
+                )?;
+                writes.extend(checkpoint_generation.target_resolutions.checkpoint_writes(
+                    &checkpoint_generation.state,
+                    &context.checkpoint_sha256()?,
+                )?);
+                Ok(writes)
             }),
         )
     }
@@ -226,11 +235,22 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
             context.mode == kasumi_raft::SnapshotRestoreMode::Reopen,
         )?;
         generation.terminals = installation.view.clone();
+        let target_installation = generation.target_resolutions.prepare_install(
+            store,
+            &generation.state,
+            &context.checkpoint_sha256()?,
+            context.mode == kasumi_raft::SnapshotRestoreMode::Reopen,
+        )?;
+        generation.target_resolutions = target_installation.view.clone();
+        let mut writes = installation.writes().to_vec();
+        writes.extend_from_slice(target_installation.writes());
         let retirement = custody_snapshot::retired(&generation.state)?;
         Ok(Box::new(PreparedTenantRestore {
             engine: self,
             generation,
             installation,
+            target_installation,
+            writes,
             retirement,
             _apply_guard: guard,
         }))
@@ -241,6 +261,8 @@ struct PreparedTenantRestore<'a> {
     engine: &'a TenantEngine,
     generation: Generation,
     installation: crate::staged_terminal::Installation,
+    target_installation: crate::target_resolution::Installation,
+    writes: Vec<kasumi_store::WriteOp>,
     retirement: Option<kasumi_raft::RetiredSnapshotState>,
     _apply_guard: std::sync::MutexGuard<'a, ()>,
 }
@@ -249,10 +271,12 @@ impl kasumi_raft::PreparedStateMachineRestore for PreparedTenantRestore<'_> {
         self.retirement.clone()
     }
     fn application_replacements(&self) -> Vec<(&str, &kasumi_store::EncryptedTable)> {
-        self.installation.replacements()
+        let mut replacements = self.installation.replacements();
+        replacements.extend(self.target_installation.replacements());
+        replacements
     }
     fn application_writes(&self) -> &[kasumi_store::WriteOp] {
-        self.installation.writes()
+        &self.writes
     }
     fn publish(self: Box<Self>) -> anyhow::Result<()> {
         let Self {
@@ -404,12 +428,22 @@ impl TenantEngine {
             .terminals
             .prepare_install(store, &previous.state, &checkpoint, reopen)
             .map_err(terminal_error)?;
-        store
-            .replace_namespaces(&installation.replacements(), installation.writes())
+        let target_installation = previous
+            .target_resolutions
+            .prepare_install(store, &previous.state, &checkpoint, reopen)
             .map_err(terminal_error)?;
+        let mut replacements = installation.replacements();
+        replacements.extend(target_installation.replacements());
+        let mut writes = installation.writes().to_vec();
+        writes.extend_from_slice(target_installation.writes());
+        store
+            .replace_namespaces(&replacements, &writes)
+            .map_err(terminal_error)?;
+        drop(replacements);
         self.publish_generation(Some(Arc::new(Generation {
             state: previous.state.clone(),
             terminals: installation.view,
+            target_resolutions: target_installation.view,
             indexes: previous.indexes.clone(),
             receipt_expiry: previous.receipt_expiry.clone(),
             snapshot_accounting: previous.snapshot_accounting.clone(),
@@ -496,6 +530,8 @@ impl TenantEngine {
             permanent_staged_bytes: 0,
             reserved_staged_terminal_bytes: 0,
             staged_terminal_head: StagedTerminalHead::empty(&tenant, &incarnation)?,
+            target_resolution_head: TargetResolutionPrefixHead::empty(&tenant, &incarnation)?,
+            target_completion_head: None,
             change_feed: ChangeFeedState::empty(),
             history_archives: imbl::OrdMap::new(),
             history_archive_bytes: 0,
@@ -531,6 +567,11 @@ impl TenantEngine {
             audit_maintenance: Mutex::new(None),
             leases: lease_retention::LeaseManager::default(),
             current: ArcSwapOption::from_pointee(Generation {
+                target_resolutions: crate::target_resolution::View::empty(
+                    &state.tenant,
+                    &state.incarnation,
+                )
+                .map_err(terminal_error)?,
                 terminals: crate::staged_terminal::View::empty(&state.tenant, &state.incarnation)
                     .map_err(terminal_error)?,
                 state,
@@ -564,7 +605,11 @@ impl TenantEngine {
         expected_tenant: &str,
         decoded: crate::snapshot_codec::Decoded,
     ) -> Result<Self> {
-        let crate::snapshot_codec::Decoded { state, terminals } = decoded;
+        let crate::snapshot_codec::Decoded {
+            state,
+            terminals,
+            target_resolutions,
+        } = decoded;
         if state.tenant != expected_tenant || state.revision != state.revision_base {
             return Err(Error::new(
                 ErrorCode::Corruption,
@@ -584,7 +629,7 @@ impl TenantEngine {
             apply_lock: Mutex::new(()),
             current: ArcSwapOption::empty(),
         };
-        let generation = engine.prepare_state(state, terminals)?;
+        let generation = engine.prepare_state(state, terminals, target_resolutions)?;
         engine.publish_generation(Some(Arc::new(generation)));
         Ok(engine)
     }
@@ -600,6 +645,7 @@ impl TenantEngine {
         let crate::snapshot_codec::Decoded {
             mut state,
             terminals,
+            target_resolutions,
         } = crate::snapshot_codec::read(bytes.disk(), &mut bytes.reader())
             .map_err(|_| Error::new(ErrorCode::Corruption, "invalid logical backup"))?;
         if state.tenant != expected_tenant {
@@ -609,8 +655,9 @@ impl TenantEngine {
         Self::rebind_restored_state(&mut state, incarnation, checkpoint, target_origin)?;
         kasumi_store::SnapshotImage::capture(
             bytes.disk(),
-            state.limits.max_snapshot_bytes,
-            |writer| crate::snapshot_codec::write(&state, &terminals, writer),
+            crate::target_resolution::snapshot_limit(&state)
+                .map_err(|e| Error::new(ErrorCode::Corruption, e.to_string()))?,
+            |writer| crate::snapshot_codec::write(&state, &terminals, &target_resolutions, writer),
         )
         .map_err(|e| Error::new(ErrorCode::Corruption, e.to_string()))
     }
@@ -638,6 +685,7 @@ impl TenantEngine {
         });
         state.restored_from = Some(checkpoint.clone());
         state.incarnation = incarnation;
+        state.target_completion_head = None;
         if let Some(origin) = target_origin {
             origin.validate()?;
             if origin
@@ -654,6 +702,7 @@ impl TenantEngine {
                     "target genesis origin differs or incarnation reused",
                 ));
             }
+            state.target_completion_head = Some(TargetCompletionHead::empty(&origin)?);
             state.target_lifecycle.insert(
                 state.incarnation.clone(),
                 TargetExecutionState {
@@ -706,13 +755,18 @@ impl TenantEngine {
         let crate::snapshot_codec::Decoded {
             mut state,
             terminals,
+            target_resolutions,
         } = crate::snapshot_codec::read(image.disk(), &mut image.reader())
             .map_err(|error| Error::new(ErrorCode::Corruption, error.to_string()))?;
         drop(image);
         Self::rebind_restored_state(&mut state, incarnation, checkpoint, target_origin)?;
         let engine = Self::from_bootstrap_state(
             expected_tenant,
-            crate::snapshot_codec::Decoded { state, terminals },
+            crate::snapshot_codec::Decoded {
+                state,
+                terminals,
+                target_resolutions,
+            },
         )?;
         let image = engine.logical_snapshot(&scratch_disk)?;
         engine
@@ -759,7 +813,7 @@ impl TenantEngine {
         };
         let decoded = crate::snapshot_codec::read(_bytes.disk(), &mut _bytes.reader())
             .map_err(terminal_error)?;
-        verifier.prepare_state(state.clone(), decoded.terminals)?;
+        verifier.prepare_state(state.clone(), decoded.terminals, decoded.target_resolutions)?;
         Ok(())
     }
 
@@ -968,6 +1022,7 @@ impl TenantEngine {
             rejected.revision = revision;
             self.publish_generation(Some(Arc::new(Generation {
                 terminals: previous.terminals.clone(),
+                target_resolutions: previous.target_resolutions.clone(),
                 state: rejected,
                 indexes: previous.indexes.clone(),
                 receipt_expiry: previous.receipt_expiry.clone(),
@@ -1054,6 +1109,7 @@ impl TenantEngine {
         };
         let terminals = terminal_pending.persist().map_err(terminal_error)?;
         self.publish_generation(Some(Arc::new(Generation {
+            target_resolutions: previous.target_resolutions.clone(),
             terminals,
             state: next,
             indexes,
@@ -1168,6 +1224,7 @@ impl TenantEngine {
             {
                 let terminals = rejected_terminals.persist().map_err(terminal_error)?;
                 self.publish_generation(Some(Arc::new(Generation {
+                    target_resolutions: previous.target_resolutions.clone(),
                     terminals,
                     state: rejected,
                     indexes: previous.indexes.clone(),
@@ -1184,6 +1241,7 @@ impl TenantEngine {
         rejected.revision = revision;
         self.publish_generation(Some(Arc::new(Generation {
             terminals: previous.terminals.clone(),
+            target_resolutions: previous.target_resolutions.clone(),
             state: rejected,
             indexes: previous.indexes.clone(),
             receipt_expiry: previous.receipt_expiry.clone(),
@@ -1206,8 +1264,13 @@ impl TenantEngine {
                 "snapshot byte accounting mismatch",
             ));
         }
-        crate::snapshot_codec::write(&generation.state, &generation.terminals, writer)
-            .map_err(|_| Error::new(ErrorCode::Corruption, "snapshot encoding failed"))
+        crate::snapshot_codec::write(
+            &generation.state,
+            &generation.terminals,
+            &generation.target_resolutions,
+            writer,
+        )
+        .map_err(|_| Error::new(ErrorCode::Corruption, "snapshot encoding failed"))
     }
 
     pub(crate) fn logical_snapshot(
@@ -1217,7 +1280,8 @@ impl TenantEngine {
         let generation = self.generation()?;
         kasumi_store::SnapshotImage::capture(
             scratch_disk,
-            generation.state.limits.max_snapshot_bytes,
+            crate::target_resolution::snapshot_limit(&generation.state)
+                .map_err(|e| Error::new(ErrorCode::Corruption, e.to_string()))?,
             |writer| Ok(Self::write_generation(&generation, writer)?),
         )
         .map_err(|e| Error::new(ErrorCode::Corruption, e.to_string()))
@@ -1254,16 +1318,20 @@ impl TenantEngine {
         disk: &Arc<kasumi_store::ScratchDisk>,
         reader: &mut dyn std::io::Read,
     ) -> Result<Generation> {
-        let crate::snapshot_codec::Decoded { state, terminals } =
-            crate::snapshot_codec::read(disk, reader)
-                .map_err(|_| Error::new(ErrorCode::Corruption, "invalid tenant snapshot"))?;
-        self.prepare_state(state, terminals)
+        let crate::snapshot_codec::Decoded {
+            state,
+            terminals,
+            target_resolutions,
+        } = crate::snapshot_codec::read(disk, reader)
+            .map_err(|_| Error::new(ErrorCode::Corruption, "invalid tenant snapshot"))?;
+        self.prepare_state(state, terminals, target_resolutions)
     }
 
     fn prepare_state(
         &self,
         state: TenantState,
         terminals: crate::staged_terminal::View,
+        target_resolutions: crate::target_resolution::View,
     ) -> Result<Generation> {
         if state.tenant != self.tenant
             || state.incarnation != self.incarnation
@@ -1493,6 +1561,27 @@ impl TenantEngine {
                 ));
             }
         }
+        target_resolutions
+            .validate_state(&state)
+            .map_err(terminal_error)?;
+        if let Ok(current) = self.generation() {
+            let old = current.target_resolutions.head();
+            if old.origin_incarnation != state.target_resolution_head.origin_incarnation
+                || old.count > state.target_resolution_head.count
+                || (old.count > 0
+                    && target_resolutions
+                        .row(old.count)
+                        .map_err(terminal_error)?
+                        .sha256()
+                        .map_err(terminal_error)?
+                        != old.sha256)
+            {
+                return Err(Error::new(
+                    ErrorCode::Corruption,
+                    "snapshot removed or substituted permanent target terminal history",
+                ));
+            }
+        }
         staging::validate_restored(&state)?;
         schema::validate_restored(&state)?;
         retirement::validate_restored(&state)?;
@@ -1577,6 +1666,7 @@ impl TenantEngine {
         }
         Ok(Generation {
             terminals,
+            target_resolutions,
             state,
             indexes,
             receipt_expiry,
