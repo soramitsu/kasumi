@@ -2,6 +2,18 @@
 //! may resolve it; absence never becomes a negative outcome or new mutation.
 use super::*;
 
+/// The retained Complete identity commits the complete canonical input,
+/// including the explicit predecessor field. A quorum-only digest is invalid.
+pub(crate) fn validate_original_intent(
+    origin: &TargetOrigin,
+    expected: &TargetCompletionInput,
+    original: &LifecycleIntent,
+) -> Result<()> {
+    expected
+        .validate(origin, original)
+        .map_err(|_| conflict("original completion identity input differs"))
+}
+
 pub(crate) fn completion_input(
     state: &TenantState,
     operation: &RecoveryRecord,
@@ -205,3 +217,7 @@ pub(crate) fn next_inspection(
         }),
     })
 }
+
+#[cfg(test)]
+#[path = "recovery_completion_tests.rs"]
+mod tests;

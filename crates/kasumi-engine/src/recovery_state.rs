@@ -1653,10 +1653,11 @@ pub(crate) fn validate(state: &TenantState) -> Result<()> {
         }
         if let Some(id) = operation.completion_intent {
             let original = intent(state, operation, id)?;
-            origin(state, operation)?.accepts_phase(original, LifecyclePhase::Complete)?;
-            if original.request.phase_input_sha256 != quorum_input(state, operation)?.digest()? {
-                return Err(conflict("original completion identity input differs"));
-            }
+            completion::validate_original_intent(
+                &origin(state, operation)?,
+                &completion::completion_input(state, operation)?,
+                original,
+            )?;
         }
         if let Some(id) = operation.completion_attempt {
             let retained = phase(state, operation, id)?;
