@@ -2422,7 +2422,7 @@ fn document_path(collection: &str, id: &str) -> String {
     format!("/{}/{}", escape(collection), escape(id))
 }
 
-fn validate_limits(limits: &Limits) -> Result<()> {
+pub(super) fn validate_limits(limits: &Limits) -> Result<()> {
     limits.audit_retention.validate()?;
     if limits.history.max_feed_events == 0
         || limits.history.max_feed_events > 1_000_000
@@ -2499,7 +2499,7 @@ fn next_policy_epoch(epoch: u64) -> Result<u64> {
         .ok_or_else(|| Error::new(ErrorCode::QuotaExceeded, "policy generation exhausted"))
 }
 
-fn validate_policy(policy: &Policy, limits: &Limits) -> Result<()> {
+pub(super) fn validate_policy(policy: &Policy, limits: &Limits) -> Result<()> {
     if policy.grants.len() > limits.max_policy_grants {
         return Err(Error::new(
             ErrorCode::QuotaExceeded,

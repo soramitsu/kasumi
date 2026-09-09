@@ -117,56 +117,58 @@ impl Administration {
             let _reservation = self
                 .admission
                 .reserve(kasumi_engine::recovery_workspace_bytes(&stores)?, None)?;
-            let bootstrap = self.config.bootstrap(
-                &configured.initial_policy,
-                &configured.initial_limits,
-                Some(incarnation),
-            )?;
-            let database = if let Some(bootstrap) = &bootstrap {
-                let network = self.cluster.as_ref().context("replication unavailable")?;
-                let database = kasumi_engine::open_existing_replicated(
-                    self.config
-                        .replication
-                        .as_ref()
-                        .context("replication unavailable")?
-                        .node_id,
-                    stores.clone(),
-                    bootstrap,
-                    network.clone(),
-                    kasumi_raft::server_config(),
-                    self.audit.clone(),
-                )
-                .await?;
-                let fingerprint =
-                    crate::runtime::persisted_bootstrap_fingerprint(stores.application())?;
-                let store = stores.application().clone();
-                if let Err(error) = network.register_group_with_bootstrap(
-                    group.clone(),
-                    database.raft_group().raft().clone(),
-                    self.config
-                        .replication
-                        .as_ref()
-                        .unwrap()
-                        .peers
-                        .iter()
-                        .map(|peer| peer.node_id)
-                        .collect(),
-                    fingerprint,
-                    Arc::new(move || store.check_access()),
-                ) {
-                    database.shutdown().await?;
-                    return Err(error);
-                }
-                registered = true;
-                database
-            } else {
-                kasumi_engine::open_existing_local(
-                    stores.clone(),
-                    self.audit.clone(),
-                    Uuid::parse_str(incarnation)?,
-                )
-                .await?
-            };
+            let expected_incarnation = Uuid::parse_str(incarnation)?;
+            let (database, bootstrap) =
+                if self.config.mode == crate::runtime::DeploymentMode::Replicated {
+                    let network = self.cluster.as_ref().context("replication unavailable")?;
+                    let opened = kasumi_engine::open_existing_replicated(
+                        self.config
+                            .replication
+                            .as_ref()
+                            .context("replication unavailable")?
+                            .node_id,
+                        stores.clone(),
+                        expected_incarnation,
+                        network.clone(),
+                        kasumi_raft::server_config(),
+                        self.audit.clone(),
+                    )
+                    .await?;
+                    let kasumi_engine::OpenedReplica {
+                        database,
+                        bootstrap,
+                    } = opened;
+                    let fingerprint =
+                        crate::runtime::persisted_bootstrap_fingerprint(stores.application())?;
+                    let store = stores.application().clone();
+                    if let Err(error) = network.register_group_with_bootstrap(
+                        group.clone(),
+                        database.raft_group().raft().clone(),
+                        self.config
+                            .replication
+                            .as_ref()
+                            .unwrap()
+                            .peers
+                            .iter()
+                            .map(|peer| peer.node_id)
+                            .collect(),
+                        fingerprint,
+                        Arc::new(move || store.check_access()),
+                    ) {
+                        database.shutdown().await?;
+                        return Err(error);
+                    }
+                    registered = true;
+                    (database, Some(bootstrap))
+                } else {
+                    let database = kasumi_engine::open_existing_local(
+                        stores.clone(),
+                        self.audit.clone(),
+                        expected_incarnation,
+                    )
+                    .await?;
+                    (database, None)
+                };
             let setup = (|| {
                 database.install_admission(self.admission.clone())?;
                 for (name, destination) in &self.destinations {

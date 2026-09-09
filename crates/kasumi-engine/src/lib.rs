@@ -46,12 +46,13 @@ mod staged_terminal;
 mod state;
 mod target_resolution;
 pub use bootstrap::{
-    LocalRestoreRequest, MaterializedTargetReplica, PreparedReplicaRestore, ReplicaPlacement,
-    ReplicaRestoreConfig, ReplicatedBootstrap, RestoreSource, TargetMaterializationConfig,
-    TargetReplica, TargetReplicaConfig, VerifiedTargetMaterialization, initialize_replicated,
-    materialize_target_replica, open_existing_local, open_existing_replicated, open_local,
-    open_local_with_incarnation, open_replicated, open_target_replica, prepare_replicated_restore,
-    recovery_workspace_bytes, restore_local, resume_target_materialization,
+    LocalRestoreRequest, MaterializedTargetReplica, OpenedReplica, PreparedReplicaRestore,
+    ReplicaPlacement, ReplicaRestoreConfig, ReplicatedBootstrap, RestoreSource,
+    TargetMaterializationConfig, TargetReplica, TargetReplicaConfig, VerifiedTargetMaterialization,
+    initialize_replicated, materialize_target_replica, open_existing_local,
+    open_existing_replicated, open_local, open_local_with_incarnation, open_replicated,
+    open_target_replica, prepare_replicated_restore, recovery_workspace_bytes, restore_local,
+    resume_target_materialization,
 };
 pub use security_audit::{
     SECURITY_TENANT, SecurityAudit, SecurityEvent, SecurityEventKind, SecurityOutcome,

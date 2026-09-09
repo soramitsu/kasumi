@@ -10,6 +10,7 @@ use kasumi_types::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
@@ -60,6 +61,7 @@ pub struct ReplicatedBootstrap {
     pub incarnation: String,
     pub initial_policy: Policy,
     pub initial_limits: Limits,
+    #[serde(deserialize_with = "kasumi_types::deserialize_u64_map")]
     pub voters: BTreeMap<u64, ReplicaPlacement>,
 }
 
@@ -206,6 +208,8 @@ pub async fn prepare_replicated_restore(
 
 impl ReplicatedBootstrap {
     pub fn validate(&self) -> anyhow::Result<()> {
+        crate::state::validate_limits(&self.initial_limits)?;
+        crate::state::validate_policy(&self.initial_policy, &self.initial_limits)?;
         anyhow::ensure!(
             !uuid::Uuid::parse_str(&self.incarnation)?.is_nil(),
             "nil replicated incarnation"
@@ -272,10 +276,11 @@ fn require_deployment(stores: &TenantStorageSet, binding: &[u8]) -> anyhow::Resu
     Ok(())
 }
 
-/// Open a replica without changing membership. Register its Raft handle with
+/// Open a replica for explicit first enrollment. Register its Raft handle with
 /// the authenticated peer transport before calling `initialize_replicated` on
-/// the lowest initial voter. Reopening never reduces replication or changes
-/// policy. New learners use the same bootstrap and their own approved node ID.
+/// the lowest initial voter. New learners receive the original installed
+/// bootstrap and their own approved node ID. Existing installations use
+/// `open_existing_replicated`, which reads that immutable descriptor itself.
 pub async fn open_replicated(
     node_id: u64,
     stores: Arc<TenantStorageSet>,
@@ -284,73 +289,133 @@ pub async fn open_replicated(
     config: Config,
     security_audit: Arc<SecurityAudit>,
 ) -> anyhow::Result<Arc<Database>> {
-    open_replicated_inner(
+    let (database, _) = open_replicated_inner(
         node_id,
         stores,
-        bootstrap,
         transport,
         config,
         security_audit,
-        ReplicaRuntime::FirstEnrollment,
+        ReplicaRuntime::FirstEnrollment(bootstrap),
     )
-    .await
+    .await?;
+    Ok(database)
 }
 
-/// Reopen only an installed replicated bootstrap and its exact physical Raft
-/// identity. The installed initial placement is immutable; operational
-/// membership is recovered by Raft, never reconstructed from these defaults.
+/// An existing replica and its authenticated immutable genesis descriptor.
+/// Operational membership and addresses are recovered independently by Raft.
+/// The descriptor can finish an interrupted first enrollment only when Raft's
+/// retained state still permits initialization.
+pub struct OpenedReplica {
+    pub database: Arc<Database>,
+    pub bootstrap: ReplicatedBootstrap,
+}
+
+/// Reopen an installed replicated database under an exact non-nil incarnation.
+/// Neither initial policy/limits nor initial voters are accepted from current
+/// runtime configuration. Both encrypted domains must retain identical typed
+/// replicated genesis, and its logical bootstrap and physical Raft identity
+/// must match before startup. Missing installation state is never provisioned.
 pub async fn open_existing_replicated(
     node_id: u64,
     stores: Arc<TenantStorageSet>,
-    bootstrap: &ReplicatedBootstrap,
+    expected_incarnation: uuid::Uuid,
     transport: Arc<dyn RaftTransport>,
     config: Config,
     security_audit: Arc<SecurityAudit>,
-) -> anyhow::Result<Arc<Database>> {
-    open_replicated_inner(
+) -> anyhow::Result<OpenedReplica> {
+    let (database, bootstrap) = open_replicated_inner(
         node_id,
         stores,
-        bootstrap,
         transport,
         config,
         security_audit,
-        ReplicaRuntime::Existing,
+        ReplicaRuntime::Existing(expected_incarnation),
     )
-    .await
+    .await?;
+    Ok(OpenedReplica {
+        database,
+        bootstrap: bootstrap.into_owned(),
+    })
 }
 
 #[derive(Clone, Copy)]
-enum ReplicaRuntime {
-    FirstEnrollment,
-    Existing,
+enum ReplicaRuntime<'a> {
+    FirstEnrollment(&'a ReplicatedBootstrap),
+    Existing(uuid::Uuid),
     #[cfg(any(test, feature = "test-utils"))]
-    FixtureEnrollment,
+    FixtureEnrollment(&'a ReplicatedBootstrap),
 }
-impl ReplicaRuntime {
+impl ReplicaRuntime<'_> {
     fn maintenance(self) -> bool {
         match self {
-            Self::FirstEnrollment | Self::Existing => true,
+            Self::FirstEnrollment(_) | Self::Existing(_) => true,
             #[cfg(any(test, feature = "test-utils"))]
-            Self::FixtureEnrollment => false,
+            Self::FixtureEnrollment(_) => false,
         }
     }
 }
 
-async fn open_replicated_inner(
+fn installed_replicated_bootstrap(
+    stores: &TenantStorageSet,
+    expected_incarnation: uuid::Uuid,
+) -> anyhow::Result<ReplicatedBootstrap> {
+    anyhow::ensure!(
+        !expected_incarnation.is_nil(),
+        "nil expected replicated incarnation"
+    );
+    stores.check_access()?;
+    let bytes = stores
+        .application()
+        .get("engine.deployment", b"mode")?
+        .ok_or_else(|| anyhow::anyhow!("required deployment binding is absent"))?;
+    anyhow::ensure!(
+        stores
+            .custody()
+            .store()
+            .get("engine.deployment", b"mode")?
+            .as_deref()
+            == Some(bytes.as_slice()),
+        "required deployment binding is absent or differs across domains"
+    );
+    let (tag, bootstrap): (String, ReplicatedBootstrap) = serde_json::from_slice(&bytes)?;
+    anyhow::ensure!(tag == "replicated", "unsupported replicated deployment tag");
+    bootstrap.validate()?;
+    anyhow::ensure!(
+        bootstrap.incarnation == expected_incarnation.to_string(),
+        "installed replicated genesis differs from expected incarnation"
+    );
+    Ok(bootstrap)
+}
+
+async fn open_replicated_inner<'a>(
     node_id: u64,
     stores: Arc<TenantStorageSet>,
-    bootstrap: &ReplicatedBootstrap,
     transport: Arc<dyn RaftTransport>,
     config: Config,
     security_audit: Arc<SecurityAudit>,
-    runtime: ReplicaRuntime,
-) -> anyhow::Result<Arc<Database>> {
+    runtime: ReplicaRuntime<'a>,
+) -> anyhow::Result<(Arc<Database>, Cow<'a, ReplicatedBootstrap>)> {
     let store = stores.application().clone();
     anyhow::ensure!(
         store.storage_access().lifecycle_gate().is_none(),
         "closed target runner required for lifecycle storage"
     );
-    bootstrap.validate()?;
+    anyhow::ensure!(node_id > 0, "node ID must be positive");
+    let _gate = BOOTSTRAP_GATE.lock().await;
+    reject_retired_serving_open(&stores)?;
+    let bootstrap = match runtime {
+        ReplicaRuntime::Existing(expected) => {
+            Cow::Owned(installed_replicated_bootstrap(&stores, expected)?)
+        }
+        ReplicaRuntime::FirstEnrollment(bootstrap) => Cow::Borrowed(bootstrap),
+        #[cfg(any(test, feature = "test-utils"))]
+        ReplicaRuntime::FixtureEnrollment(bootstrap) => Cow::Borrowed(bootstrap),
+    };
+    // Existing mode validates its descriptor during the single authenticated
+    // decode; enrollment validates the independently supplied initial inputs.
+    if !matches!(runtime, ReplicaRuntime::Existing(_)) {
+        bootstrap.validate()?;
+    }
     if let Some(gate) = store.storage_access().serving_gate() {
         anyhow::ensure!(
             gate.identity().incarnation.to_string() == bootstrap.incarnation
@@ -358,20 +423,17 @@ async fn open_replicated_inner(
             "replicated node or incarnation differs from its signed serving authority"
         );
     }
-    anyhow::ensure!(node_id > 0, "node ID must be positive");
-    let _gate = BOOTSTRAP_GATE.lock().await;
-    reject_retired_serving_open(&stores)?;
-    let binding = serde_json::to_vec(&("replicated", bootstrap))?;
-    if matches!(runtime, ReplicaRuntime::Existing) {
-        require_deployment(&stores, &binding)?;
-    } else {
-        bind_deployment(&stores, &binding)?;
+    if !matches!(runtime, ReplicaRuntime::Existing(_)) {
+        bind_deployment(
+            &stores,
+            &serde_json::to_vec(&("replicated", bootstrap.as_ref()))?,
+        )?;
     }
     let bytes = match load(&store)? {
         Some(bytes) => bytes,
         None => {
             anyhow::ensure!(
-                !matches!(runtime, ReplicaRuntime::Existing),
+                !matches!(runtime, ReplicaRuntime::Existing(_)),
                 "replicated bootstrap is not initialized"
             );
             let engine = TenantEngine::new(
@@ -391,7 +453,7 @@ async fn open_replicated_inner(
         engine.generation()?.state.incarnation == bootstrap.incarnation,
         "replicated incarnation differs from bootstrap"
     );
-    if matches!(runtime, ReplicaRuntime::Existing) {
+    if matches!(runtime, ReplicaRuntime::Existing(_)) {
         let installed = kasumi_raft::ControlLog::installed(stores.custody().clone())?
             .ok_or_else(|| anyhow::anyhow!("replicated consensus identity is not initialized"))?;
         anyhow::ensure!(
@@ -416,7 +478,7 @@ async fn open_replicated_inner(
         config,
     )
     .await?;
-    Ok(if runtime.maintenance() {
+    let database = if runtime.maintenance() {
         Database::new_with_admission(
             engine,
             group,
@@ -426,7 +488,8 @@ async fn open_replicated_inner(
         )
     } else {
         Database::new(engine, group, store, security_audit)
-    })
+    };
+    Ok((database, bootstrap))
 }
 
 /// Explicit first creation, never a partition fallback. Only the designated

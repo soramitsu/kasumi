@@ -60,11 +60,33 @@ failure domains stay immutable, while current operational membership is
 recovered by Raft and is never reset to the initial placement on reopen.
 
 The explicit first-enrollment branch remains separate from existing-only mode.
+`open_existing_replicated(node_id, stores, expected_incarnation, transport,
+config, audit)` now returns `OpenedReplica { database, bootstrap }`. It accepts
+no current initial policy, limits, endpoints or voter set. Under the bootstrap
+open gate, it reads the authenticated original deployment bytes from both
+domains, requires byte equality, decodes the exact replicated tag and typed
+descriptor once, validates policy/limits/placement and canonical numeric voter
+keys, and requires its incarnation to equal the non-nil expected UUID. It passes
+that same descriptor through startup and returns it for an interrupted initial
+enrollment. No second descriptor decode or write of reconstructed defaults is
+needed. `RuntimeConfig::bootstrap` is no longer used by original-serving
+readmission; current transport routes remain independently installed.
+
+The initialization helper checks Raft's recovered `is_initialized` state before
+initializing. OpenRaft treats any retained log or nondefault vote as initialized,
+and its initialization command independently rejects non-pristine state. Thus a
+reopened group cannot replace operational membership with its genesis voters.
+The returned descriptor can only complete an enrollment that is still pristine.
+
 Four additional source tests cover missing bootstrap/consensus identity,
 corrupt manifest/body/custody commitment and authenticated wrong incarnation,
-initial placement/policy/capacity substitution, and an encrypted three-replica
-full close/reopen preserving committed state and membership using in-process
-transport. No compiler or functional gate has run on this source yet.
+wrong genesis tag/domain/descriptor/canonical key or expected UUID, and real
+committed endpoint/voter replacement followed by encrypted full close/reopen.
+The latter installs a fourth learner, replaces a nonleader initial voter, then
+reopens the current three voters through in-process transport and checks the
+original deployment bytes, logical state, current membership and new endpoint.
+Calling initialization again must leave that current membership intact.
+No compiler or functional gate has run on this successor source yet.
 
 HA first enrollment and administrative tenant creation still require their
 explicit installation handling. The separate node-file opener review also

@@ -103,14 +103,14 @@ impl Replica {
     async fn reject(
         &self,
         node_id: u64,
-        installed: &ReplicatedBootstrap,
+        expected_incarnation: uuid::Uuid,
         expected: &str,
     ) -> anyhow::Result<()> {
         let before = retained(&self.stores)?;
         let error = open_existing_replicated(
             node_id,
             self.stores.clone(),
-            installed,
+            expected_incarnation,
             Arc::new(InProcessRouter::default()),
             raft_config(),
             self.audit.clone(),
@@ -190,18 +190,30 @@ async fn existing_replica_never_creates_missing_bootstrap_or_consensus_identity(
     let fixture = Replica::new().await?;
     let installed = bootstrap();
     fixture
-        .reject(1, &installed, "required deployment binding")
+        .reject(
+            1,
+            uuid::Uuid::parse_str(&installed.incarnation)?,
+            "required deployment binding",
+        )
         .await?;
     bind_deployment(
         &fixture.stores,
         &serde_json::to_vec(&("replicated", &installed))?,
     )?;
     fixture
-        .reject(1, &installed, "replicated bootstrap is not initialized")
+        .reject(
+            1,
+            uuid::Uuid::parse_str(&installed.incarnation)?,
+            "replicated bootstrap is not initialized",
+        )
         .await?;
     fixture.seed(&installed, &installed.incarnation)?;
     fixture
-        .reject(1, &installed, "consensus identity is not initialized")
+        .reject(
+            1,
+            uuid::Uuid::parse_str(&installed.incarnation)?,
+            "consensus identity is not initialized",
+        )
         .await?;
     fixture
         .stores
@@ -209,7 +221,11 @@ async fn existing_replica_never_creates_missing_bootstrap_or_consensus_identity(
         .store()
         .write_batch(&[WriteOp::put("raft.meta", b"node_id", b"1")])?;
     fixture
-        .reject(1, &installed, "consensus identity is incomplete")
+        .reject(
+            1,
+            uuid::Uuid::parse_str(&installed.incarnation)?,
+            "consensus identity is incomplete",
+        )
         .await?;
     fixture
         .stores
@@ -221,7 +237,11 @@ async fn existing_replica_never_creates_missing_bootstrap_or_consensus_identity(
             serde_json::to_vec(&format!("replica/{}", installed.incarnation))?,
         )])?;
     fixture
-        .reject(2, &installed, "consensus identity differs")
+        .reject(
+            2,
+            uuid::Uuid::parse_str(&installed.incarnation)?,
+            "consensus identity differs",
+        )
         .await?;
     fixture
         .stores
@@ -229,7 +249,11 @@ async fn existing_replica_never_creates_missing_bootstrap_or_consensus_identity(
         .store()
         .write_batch(&[WriteOp::put("raft.meta", b"group", b"\"another/group\"")])?;
     fixture
-        .reject(1, &installed, "consensus identity differs")
+        .reject(
+            1,
+            uuid::Uuid::parse_str(&installed.incarnation)?,
+            "consensus identity differs",
+        )
         .await?;
     drop(fixture.close().await);
     Ok(())
@@ -247,21 +271,35 @@ async fn existing_replica_rejects_corrupt_manifest_body_and_authenticated_incarn
     wrong.format = 99;
     store.write_batch(&[WriteOp::put(NS, b"manifest", serde_json::to_vec(&wrong)?)])?;
     fixture
-        .reject(1, &installed, "invalid bootstrap manifest")
+        .reject(
+            1,
+            uuid::Uuid::parse_str(&installed.incarnation)?,
+            "invalid bootstrap manifest",
+        )
         .await?;
     store.write_batch(&[WriteOp::put(NS, b"manifest", b"{")])?;
-    fixture.reject(1, &installed, "EOF").await?;
+    fixture
+        .reject(1, uuid::Uuid::parse_str(&installed.incarnation)?, "EOF")
+        .await?;
     store.write_batch(&[WriteOp::put(NS, b"manifest", saved)])?;
     let chunk = store.get(NS, &0u64.to_be_bytes())?.unwrap();
     store.write_batch(&[WriteOp::delete(NS, 0u64.to_be_bytes())])?;
     fixture
-        .reject(1, &installed, "incomplete bootstrap")
+        .reject(
+            1,
+            uuid::Uuid::parse_str(&installed.incarnation)?,
+            "incomplete bootstrap",
+        )
         .await?;
     let mut corrupt = chunk.clone();
     corrupt[0] ^= 1;
     store.write_batch(&[WriteOp::put(NS, 0u64.to_be_bytes(), corrupt)])?;
     fixture
-        .reject(1, &installed, "bootstrap digest mismatch")
+        .reject(
+            1,
+            uuid::Uuid::parse_str(&installed.incarnation)?,
+            "bootstrap digest mismatch",
+        )
         .await?;
     store.write_batch(&[WriteOp::put(NS, 0u64.to_be_bytes(), chunk)])?;
     fixture
@@ -274,7 +312,11 @@ async fn existing_replica_rejects_corrupt_manifest_body_and_authenticated_incarn
             b"\"wrong\"",
         )])?;
     fixture
-        .reject(1, &installed, "bootstrap/control identity differs")
+        .reject(
+            1,
+            uuid::Uuid::parse_str(&installed.incarnation)?,
+            "bootstrap/control identity differs",
+        )
         .await?;
     drop(fixture.close().await);
     let fixture = Replica::new().await?;
@@ -282,7 +324,7 @@ async fn existing_replica_rejects_corrupt_manifest_body_and_authenticated_incarn
     fixture
         .reject(
             1,
-            &installed,
+            uuid::Uuid::parse_str(&installed.incarnation)?,
             "replicated incarnation differs from bootstrap",
         )
         .await?;
@@ -291,33 +333,79 @@ async fn existing_replica_rejects_corrupt_manifest_body_and_authenticated_incarn
 }
 
 #[tokio::test]
-async fn existing_replica_preserves_immutable_initial_placement_and_configuration()
+async fn existing_replica_validates_authenticated_genesis_tag_domains_and_descriptor()
 -> anyhow::Result<()> {
     let fixture = Replica::new().await?;
     let installed = bootstrap();
+    let expected = uuid::Uuid::parse_str(&installed.incarnation)?;
     fixture.seed(&installed, &installed.incarnation)?;
-    for field in 0..6 {
-        let mut changed = installed.clone();
-        match field {
-            0 => changed.incarnation = uuid::Uuid::new_v4().to_string(),
-            1 => changed.voters.get_mut(&1).unwrap().address = "substitution".into(),
-            2 => changed.voters.get_mut(&1).unwrap().failure_domain = "other-zone".into(),
-            3 => {
-                let member = changed.voters.remove(&3).unwrap();
-                changed.voters.insert(4, member);
-            }
-            4 => changed.initial_policy.grants[0].principal = "replacement-admin".into(),
-            5 => changed.initial_limits.max_document_bytes += 1,
-            _ => unreachable!(),
-        }
-        fixture
-            .reject(1, &changed, "required deployment binding")
-            .await?;
-    }
-    let mut nil = installed.clone();
-    nil.incarnation = uuid::Uuid::nil().to_string();
     fixture
-        .reject(1, &nil, "nil replicated incarnation")
+        .reject(1, uuid::Uuid::nil(), "nil expected replicated incarnation")
+        .await?;
+    fixture
+        .reject(1, uuid::Uuid::new_v4(), "differs from expected incarnation")
+        .await?;
+    let binding = serde_json::to_vec(&("replicated", &installed))?;
+    let replace = |bytes: &[u8]| {
+        fixture.stores.write_batch(
+            &[WriteOp::put("engine.deployment", b"mode", bytes)],
+            &[WriteOp::put("engine.deployment", b"mode", bytes)],
+        )
+    };
+    replace(&serde_json::to_vec(&("local", &installed))?)?;
+    fixture
+        .reject(1, expected, "unsupported replicated deployment tag")
+        .await?;
+    replace(b"{")?;
+    fixture.reject(1, expected, "invalid type").await?;
+    let canonical = std::str::from_utf8(&binding)?;
+    replace(canonical.replace("\"1\":", "\"01\":").as_bytes())?;
+    fixture
+        .reject(1, expected, "noncanonical or duplicate object key")
+        .await?;
+
+    for field in 0..5 {
+        let mut invalid = installed.clone();
+        let diagnostic = match field {
+            0 => {
+                invalid.incarnation = uuid::Uuid::nil().to_string();
+                "nil replicated incarnation"
+            }
+            1 => {
+                invalid.voters.remove(&3);
+                "exactly three initial voters"
+            }
+            2 => {
+                invalid.voters.get_mut(&2).unwrap().failure_domain = "zone-1".into();
+                "independent failure domains"
+            }
+            3 => {
+                invalid.initial_policy.grants.clear();
+                "tenant needs an administrator"
+            }
+            4 => {
+                invalid.initial_limits.history.max_feed_events = 0;
+                "invalid history resource limits"
+            }
+            _ => unreachable!(),
+        };
+        replace(&serde_json::to_vec(&("replicated", &invalid))?)?;
+        fixture.reject(1, expected, diagnostic).await?;
+    }
+    replace(&binding)?;
+    let mut substituted = installed.clone();
+    substituted.voters.get_mut(&1).unwrap().address = "tampered-domain".into();
+    fixture
+        .stores
+        .custody()
+        .store()
+        .write_batch(&[WriteOp::put(
+            "engine.deployment",
+            b"mode",
+            serde_json::to_vec(&("replicated", substituted))?,
+        )])?;
+    fixture
+        .reject(1, expected, "differs across domains")
         .await?;
     fixture
         .stores
@@ -325,7 +413,7 @@ async fn existing_replica_preserves_immutable_initial_placement_and_configuratio
         .store()
         .write_batch(&[WriteOp::delete("engine.deployment", b"mode")])?;
     fixture
-        .reject(1, &installed, "required deployment binding")
+        .reject(1, expected, "required deployment binding")
         .await?;
     drop(fixture.close().await);
     Ok(())
@@ -362,7 +450,7 @@ async fn existing_replicas_replay_committed_state_and_membership_after_full_clos
     let router = Arc::new(InProcessRouter::default());
     let mut fixtures = BTreeMap::new();
     let mut nodes = BTreeMap::new();
-    for id in 1..=3 {
+    for id in 1..=4 {
         let fixture = Replica::new().await?;
         let database = fixtures::open_fixture_replicated(
             id,
@@ -399,12 +487,35 @@ async fn existing_replicas_replay_committed_state_and_membership_after_full_clos
         )
         .await?;
     let revision = nodes[&first].engine().generation()?.state.revision;
+    nodes[&first]
+        .raft_group()
+        .add_learner(4, BasicNode::new("relocated-4"))
+        .await?;
+    // Keep the current leader in the replacement voter set, avoiding an
+    // intentionally ambiguous leader-removal response in this reopen fixture.
+    let removed = (1..=3).find(|id| *id != first).unwrap();
+    let voters = (1..=4).filter(|id| *id != removed).collect::<BTreeSet<_>>();
+    nodes[&first]
+        .raft_group()
+        .change_membership(voters.clone())
+        .await?;
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            if nodes.values().all(|node| {
+            if voters.iter().all(|id| {
+                let node = &nodes[id];
                 node.engine()
                     .generation()
                     .is_ok_and(|generation| generation.state.revision == revision)
+                    && node
+                        .raft_group()
+                        .raft()
+                        .metrics()
+                        .borrow()
+                        .membership_config
+                        .membership()
+                        .voter_ids()
+                        .collect::<BTreeSet<_>>()
+                        == voters
             }) {
                 break;
             }
@@ -423,16 +534,29 @@ async fn existing_replicas_replay_committed_state_and_membership_after_full_clos
     }
     let mut reopened = BTreeMap::new();
     for (id, directory) in directories {
+        if id == removed {
+            drop(directory);
+            continue;
+        }
         let fixture = Replica::existing(directory).await?;
-        let database = open_existing_replicated(
+        let opened = open_existing_replicated(
             id,
             fixture.stores.clone(),
-            &installed,
+            uuid::Uuid::parse_str(&installed.incarnation)?,
             router.clone(),
             raft_config(),
             fixture.audit.clone(),
         )
         .await?;
+        assert_eq!(
+            serde_json::to_vec(&opened.bootstrap)?,
+            serde_json::to_vec(&installed)?
+        );
+        let binding = serde_json::to_vec(&("replicated", &installed))?;
+        require_deployment(&fixture.stores, &binding)?;
+        let database = opened.database;
+        // This is a no-op for recovered membership, even at an original voter.
+        initialize_replicated(&database, &opened.bootstrap).await?;
         let generation = database.engine().generation()?;
         assert_eq!(generation.state.incarnation, installed.incarnation);
         assert_eq!(generation.state.revision, revision);
@@ -444,7 +568,16 @@ async fn existing_replicas_replay_committed_state_and_membership_after_full_clos
                 .membership()
                 .voter_ids()
                 .collect::<Vec<_>>(),
-            vec![1, 2, 3]
+            voters.iter().copied().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            metrics
+                .membership_config
+                .membership()
+                .get_node(&4)
+                .unwrap()
+                .addr,
+            "relocated-4"
         );
         router.register(group.clone(), id, database.raft_group().raft().clone());
         nodes.insert(id, database);
