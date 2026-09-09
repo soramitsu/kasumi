@@ -858,6 +858,8 @@ struct ServingTasks {
     maintenance: JoinSet<Result<()>>,
     data_stop: watch::Sender<bool>,
     cluster_stop: watch::Sender<bool>,
+    report: kasumi_types::drain::DrainReport,
+    failed_tasks: BTreeMap<tokio::task::Id, usize>,
 }
 
 impl ServingTasks {
@@ -867,42 +869,44 @@ impl ServingTasks {
             maintenance: JoinSet::new(),
             data_stop: watch::channel(false).0,
             cluster_stop: watch::channel(false).0,
+            report: Default::default(),
+            failed_tasks: BTreeMap::new(),
         }
     }
 
-    async fn shutdown(&mut self) -> Result<()> {
+    async fn shutdown(&mut self) -> kasumi_types::drain::DrainResult {
         self.data_stop.send_replace(true);
         self.cluster_stop.send_replace(true);
         // Reconciliation may be rebuilding an admitted tenant and own Raft or
         // storage workers. Signal its loop and join the current operation before
         // taking the final generation inventory; cancellation could detach work.
-        let mut failure = None;
-        while let Some(result) = self.maintenance.join_next().await {
-            match result {
-                Ok(Ok(())) => {}
-                Err(error) if error.is_cancelled() => {}
-                Ok(Err(error)) => {
-                    failure.get_or_insert(error);
-                }
-                Err(error) => {
-                    failure.get_or_insert(error.into());
-                }
-            }
-        }
-        while let Some(result) = self.listeners.join_next().await {
-            match result {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => {
-                    failure.get_or_insert(error);
-                }
-                Err(error) => {
-                    failure.get_or_insert(error.into());
+        for (component, tasks) in [
+            ("serving maintenance", &mut self.maintenance),
+            ("serving listener", &mut self.listeners),
+        ] {
+            while let Some(result) = tasks.join_next_with_id().await {
+                let failed = match result {
+                    Ok((_, Ok(()))) => None,
+                    Ok((id, Err(error))) => Some((id, error)),
+                    Err(error) => Some((error.id(), error.into())),
+                };
+                if let Some((id, error)) = failed {
+                    // Each installed task contributes at most one slot. Keep
+                    // the actual outcome before awaiting another task, so a
+                    // cancelled drain cannot forget a completed failure.
+                    let next = self.failed_tasks.len();
+                    let slot = *self.failed_tasks.entry(id).or_insert(next);
+                    self.report.record(component, slot, error);
                 }
             }
         }
-        failure.map_or(Ok(()), Err)
+        self.report.complete()
     }
 }
+
+#[cfg(test)]
+#[path = "serving_task_drain_tests.rs"]
+mod serving_task_drain_tests;
 
 pub struct NodeRuntime {
     startup_drain: kasumi_types::drain::DrainReport,
