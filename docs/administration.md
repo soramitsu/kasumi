@@ -6,11 +6,28 @@
 
 ```
 kasumid check-config /etc/kasumi/node.json
+# First enrollment of this HA node file only:
+kasumid provision-node /etc/kasumi/node.json
 kasumid serve /etc/kasumi/node.json
 kasumictl --config /etc/kasumi/client-node1.json create-collection collection.json
 kasumictl --config /etc/kasumi/client-node1.json suspend
 kasumictl --config /etc/kasumi/client-node1.json manage operation.json
 ```
+
+The server configuration requires a nonnil `database_id` UUID chosen and saved
+before file creation. Keep it unchanged for that node file; each new node gets
+its own UUID. `example-config` generates a candidate UUID, so save the generated
+configuration once instead of regenerating it on restart. The database parent
+and configured scratch parent must already exist, with node state owned by the
+service account. Run `provision-node` as that account; it exclusively creates the
+configured node file and refuses every existing path. It currently provisions
+the file envelope and storage tables only. Explicit HA security/Control/application
+catalog and bootstrap provisioning remains a separate release requirement.
+`serve` opens an existing file with the configured UUID and never creates or
+repairs an unrelated file. On restart omit `provision-node`; a failed or uncertain
+creation is not permission to remove/recreate its file. See the
+[node-file contract](node-file-envelope.md) for partial creation and cleanup.
+Standalone installations use `kasumid init --mode standalone` instead.
 
 `manage` accepts the closed `ManagementCommand` JSON enum, rejects unknown fields, and prints exact JSON. Ordinary schema, policy, limits, suspension and resume commands use their corresponding native methods. Management is never exposed as an MCP data tool.
 

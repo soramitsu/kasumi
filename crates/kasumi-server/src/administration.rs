@@ -985,8 +985,15 @@ impl Administration {
                     kasumi_serving::LeasePurpose::RestorePreparation,
                 )
                 .await?;
-                fresh_file(&path)?;
-                let node = NodeStore::open(&path, self.node.scratch_disk().clone())?;
+                let node = create_generation_file(
+                    &path,
+                    kasumi_store::node_store_ids::administrative_generation(
+                        self.config.database_id,
+                        &context.tenant,
+                        incarnation,
+                    )?,
+                    self.node.scratch_disk().clone(),
+                )?;
                 let stores = TenantStorageSet::open(
                     node,
                     context.tenant.clone(),
@@ -1857,7 +1864,15 @@ impl Administration {
             self.provider_factories
                 .get(tenant)
                 .context("tenant key factory is not installed")?()?;
-        let node = NodeStore::open(path, self.node.scratch_disk().clone())?;
+        let node = NodeStore::open_existing(
+            path,
+            kasumi_store::node_store_ids::administrative_generation(
+                self.config.database_id,
+                tenant,
+                incarnation,
+            )?,
+            self.node.scratch_disk().clone(),
+        )?;
         let stores = TenantStorageSet::open(
             node,
             tenant.to_owned(),
@@ -2158,7 +2173,11 @@ pub(crate) fn generation_path(base: &Path, tenant: &str, incarnation: Uuid) -> P
         .join(digest)
         .join(format!("{incarnation}.redb"))
 }
-fn fresh_file(path: &Path) -> Result<()> {
+fn create_generation_file(
+    path: &Path,
+    database_id: Uuid,
+    scratch: Arc<kasumi_store::ScratchDisk>,
+) -> Result<Arc<NodeStore>> {
     let parent = path.parent().context("generation directory absent")?;
     std::fs::create_dir_all(parent)?;
     #[cfg(unix)]
@@ -2166,14 +2185,16 @@ fn fresh_file(path: &Path) -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
     }
-    kasumi_store::private_files::create(path, &[])
+    // NodeStore owns the exclusively created descriptor from its first byte;
+    // there is no path-based handoff through an unbound precreated empty file.
+    let node = NodeStore::create_new(path, database_id, scratch)
         .context("restore target must be fresh and private")?;
     for directory in parent.ancestors() {
         if !directory.as_os_str().is_empty() {
             std::fs::File::open(directory)?.sync_all()?;
         }
     }
-    Ok(())
+    Ok(node)
 }
 
 impl crate::cluster::RestoreReadinessProvider for Administration {
@@ -2353,7 +2374,15 @@ mod tests {
         use std::os::unix::fs::{PermissionsExt, symlink};
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("generations/tenant/target.redb");
-        fresh_file(&path).unwrap();
+        let database_id = kasumi_store::node_store_ids::administrative_generation(
+            Uuid::new_v4(),
+            "tenant",
+            Uuid::new_v4(),
+        )
+        .unwrap();
+        let scratch = kasumi_store::ScratchDisk::fixture();
+        let create = |path: &Path| create_generation_file(path, database_id, scratch.clone());
+        let node = create(&path).unwrap();
         assert_eq!(
             std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o600
@@ -2366,15 +2395,15 @@ mod tests {
                 & 0o777,
             0o700
         );
-        assert!(fresh_file(&path).is_err());
-        let node = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
+        assert!(create(&path).is_err());
         drop(node);
+        drop(NodeStore::open_existing(&path, database_id, scratch.clone()).unwrap());
         let original = std::fs::read(&path).unwrap();
-        assert!(fresh_file(&path).is_err());
+        assert!(create(&path).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), original);
         let link = path.with_extension("link");
         symlink(&path, &link).unwrap();
-        assert!(fresh_file(&link).is_err());
+        assert!(create(&link).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), original);
     }
     #[test]

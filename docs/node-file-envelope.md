@@ -65,8 +65,12 @@ original journal-bound inode protocol; they are never interpreted as a format
 fallback. A source regression checks both states, byte-exact rejection and the
 held inode lock even after its path moves.
 
-Caller reconciliation is required after this initial core source checkpoint.
-Standalone/general node files need a configured random durable UUID. HA target
+Standalone, general data and authority node files require a configured random
+durable `database_id` UUID. Both daemon entrypoints open that expected existing
+file; explicit `provision-node` commands perform first enrollment only. These
+commands do not by themselves establish complete HA catalog/bootstrap state.
+Standalone initialization and journal-owned generation recovery use their own
+explicit creation boundaries. HA target
 generations use the permanently journaled Control incarnation, tenant, target
 incarnation and physical verifier identity. These inputs exist even when an
 early Stop precedes materialization; the full original target origin remains a
@@ -75,6 +79,12 @@ original installation, local operation and target incarnation. Shared named
 `node_store_ids` helpers define versioned, length-framed SHA-256 derivations into
 UUIDv8 values. They exclude paths, mutable membership, TLS certificates and the
 candidate header. Target journal and signer-verifier files have distinct domains.
+The still-accessible management restore family uses a separate
+`administrative_generation(database_id, tenant, incarnation)` domain for both
+creation and later reopen. Its directory preparation hands the new path directly
+to `NodeStore::create_new`; it does not precreate an empty inode and later adopt
+whatever the path names. This file-level correction does not close replacement
+of that older management family by the durable recovery coordinator.
 
 The focused source tests are `node_file::tests::` (nine ordinary tests and one
 explicit subprocess helper). They cover byte-exact clean/unclean unrelated-file
@@ -83,3 +93,11 @@ canonical fields/checksum, checked offset I/O, actual descriptor close, and path
 substitution between validation and redb handoff. These source tests have not yet
 been compiled or executed. The child exits only after an immediate durable
 transaction and its parent owns kill/wait cleanup with a finite deadline.
+
+Engine, Raft, native-runtime and benchmark fixtures now distinguish initial
+creation from known reopen explicitly. Shared fixture helpers carry a caller-known
+`create` boolean; they never infer creation permission from file absence. Their
+fixed fixture UUID is default-off `test-utils` material. Production constructors
+have no fixture/default identity. Caller source and these tests remain uncompiled
+until the coordinated combined gate includes the separately owned standalone,
+target and security-audit initialization changes.
