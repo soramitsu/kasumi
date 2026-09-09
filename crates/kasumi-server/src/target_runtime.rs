@@ -191,6 +191,28 @@ pub(crate) async fn shutdown_target(owner: &mut Option<Arc<TargetRecoveryRuntime
     Ok(())
 }
 impl TargetRecoveryRuntime {
+    /// Inspect an already owned target in the native integration fixture. This
+    /// never opens storage, publishes a route, or creates serving authority.
+    #[cfg(test)]
+    pub(crate) async fn test_owned_database(
+        &self,
+        tenant: &str,
+        incarnation: Uuid,
+    ) -> Option<Arc<kasumi_engine::Database>> {
+        let generation = self
+            .generations
+            .lock()
+            .await
+            .get(&(tenant.to_owned(), incarnation))
+            .cloned()?;
+        let generation = generation.lock().await;
+        if let Some(replica) = &generation.replica {
+            Some(replica.database().clone())
+        } else {
+            generation.serving.as_ref()?.database().ok()
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn open(
         config: RuntimeConfig,

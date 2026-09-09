@@ -2945,10 +2945,10 @@ mod lifecycle_tests {
         };
         for (manager, registry) in managers.iter().zip(registries) {
             assert!(registry.database(&beta).is_err());
-            assert!(manager.authorized_database(&beta).await.is_err());
+            assert!(manager.prepare(beta.clone(), M::Status {}).is_err());
             assert!(
                 manager
-                    .execute(
+                    .execute_for_test(
                         beta.clone(),
                         M::ApproveTenant {
                             tenant: tenant.into()
@@ -2959,7 +2959,7 @@ mod lifecycle_tests {
             );
             assert!(
                 manager
-                    .execute(
+                    .execute_for_test(
                         RequestContext {
                             principal: "not-an-operator".into(),
                             ..operator.clone()
@@ -2973,7 +2973,7 @@ mod lifecycle_tests {
             );
             assert!(
                 manager
-                    .execute(
+                    .execute_for_test(
                         operator.clone(),
                         M::PrepareTenant {
                             tenant: tenant.into()
@@ -2989,7 +2989,7 @@ mod lifecycle_tests {
                     let metrics = control.raft_group().raft().metrics().borrow().clone();
                     if metrics.current_leader == Some(metrics.id)
                         && manager
-                            .execute(
+                            .execute_for_test(
                                 operator.clone(),
                                 M::ApproveTenant {
                                     tenant: tenant.into(),
@@ -3009,7 +3009,7 @@ mod lifecycle_tests {
         // Neither control approval nor one prepared replica publishes data.
         assert!(
             managers[0]
-                .execute(
+                .execute_for_test(
                     operator.clone(),
                     M::InitializeTenant {
                         tenant: tenant.into()
@@ -3022,7 +3022,7 @@ mod lifecycle_tests {
             tokio::time::timeout(Duration::from_secs(10), async {
                 loop {
                     if manager
-                        .execute(
+                        .execute_for_test(
                             operator.clone(),
                             M::PrepareTenant {
                                 tenant: tenant.into(),
@@ -3042,7 +3042,7 @@ mod lifecycle_tests {
             if index == 0 && managers.len() > 1 {
                 assert!(
                     manager
-                        .execute(
+                        .execute_for_test(
                             operator.clone(),
                             M::InitializeTenant {
                                 tenant: tenant.into()
@@ -3054,7 +3054,7 @@ mod lifecycle_tests {
             }
         }
         managers[0]
-            .execute(
+            .execute_for_test(
                 operator.clone(),
                 M::InitializeTenant {
                     tenant: tenant.into(),
@@ -3068,7 +3068,7 @@ mod lifecycle_tests {
         for manager in managers {
             assert!(
                 manager
-                    .execute(
+                    .execute_for_test(
                         operator.clone(),
                         M::ActivateTenant {
                             tenant: tenant.into(),
@@ -3090,7 +3090,7 @@ mod lifecycle_tests {
                             .await;
                         if let Ok(Some(topology)) = topology
                             && manager
-                                .execute(
+                                .execute_for_test(
                                     operator.clone(),
                                     M::ActivateTenant {
                                         tenant: tenant.into(),
@@ -3556,8 +3556,15 @@ mod lifecycle_tests {
     async fn initial_tenant_bootstrap_rejects_mismatched_limits_and_raft_traffic() {
         replicated_runtime_fixture(false, Some(BootstrapFault::TenantLimits)).await;
     }
+    mod recovery_fixture {
+        include!("runtime_recovery_tests.rs");
+    }
+
     async fn replicated_runtime_fixture(with_spare: bool, bootstrap_fault: Option<BootstrapFault>) {
         let _fixture = LIFECYCLE_GATE.lock().await;
+        let canonical = !with_spare && bootstrap_fault.is_none();
+        let recovery_credentials = recovery_fixture::Credentials::new();
+        let recovery_jwks = recovery_credentials.jwks.clone();
         let node_count = if with_spare { 4 } else { 3 };
         let dir = tempfile::tempdir().unwrap();
         let (mock_files, _) = certificate_files(dir.path());
@@ -3576,6 +3583,13 @@ mod lifecycle_tests {
             .unwrap(),
             Router::new()
                 .route("/v1/transit/{*operation}", post(transit))
+                .route(
+                    "/recovery-jwks",
+                    axum::routing::get(move || {
+                        let jwks = recovery_jwks.clone();
+                        async move { Json(jwks) }
+                    }),
+                )
                 .with_state(Arc::new(TransitFixture::default())),
             ListenerLimits::default(),
             Arc::new(FixtureAudit),
@@ -3639,6 +3653,23 @@ mod lifecycle_tests {
         }
         let incarnation = uuid::Uuid::new_v4().to_string();
         let control_incarnation = uuid::Uuid::new_v4().to_string();
+        let mut recovery = if canonical {
+            Some(
+                recovery_fixture::Fixture::new(
+                    dir.path(),
+                    recovery_credentials,
+                    &files,
+                    ca_path.clone(),
+                    Uuid::parse_str(&incarnation).unwrap(),
+                    Uuid::parse_str(&control_incarnation).unwrap(),
+                    &kms_endpoint,
+                    &mock_files.certificate,
+                )
+                .await,
+            )
+        } else {
+            None
+        };
         let mut configurations = Vec::new();
         for node in 0..node_count {
             let mut config = fixture_config();
@@ -3710,7 +3741,14 @@ mod lifecycle_tests {
                     None => {}
                 }
             }
-            create_fixture_node(&config).await;
+            if let Some(recovery) = &recovery {
+                recovery.configure(&mut config, node).await;
+                crate::data_node_enrollment::initialize(config.clone())
+                    .await
+                    .unwrap();
+            } else {
+                create_fixture_node(&config).await;
+            }
             configurations.push(config);
         }
         drop(reserved);
@@ -3720,6 +3758,11 @@ mod lifecycle_tests {
             tenant: "acme".into(),
             scopes: BTreeSet::from([Action::Read, Action::Write, Action::Admin, Action::Audit]),
             request_id: uuid::Uuid::new_v4().to_string(),
+        };
+        let context = if let Some(recovery) = &recovery {
+            recovery.context(false).await
+        } else {
+            context
         };
         if let Some(fault) = bootstrap_fault {
             let mut runtimes = Vec::new();
@@ -3828,12 +3871,18 @@ mod lifecycle_tests {
         let mut managers = Vec::new();
         let mut controls = Vec::new();
         let mut cluster_networks = Vec::new();
+        let mut recovery_handles = Vec::new();
         for config in configurations.iter().cloned() {
-            let runtime = NodeRuntime::open_using(config, |_| {
-                Ok(Zeroizing::new("test-runtime-token".into()))
+            let runtime = NodeRuntime::open_using(config, move |path| {
+                if canonical {
+                    file_secret(path)
+                } else {
+                    Ok(Zeroizing::new("test-runtime-token".into()))
+                }
             })
             .await
             .unwrap();
+            recovery_handles.push(recovery_fixture::Handles::capture(&runtime));
             registries.push(runtime.registry.clone());
             managers.push(runtime.administration.clone().unwrap());
             controls.push(runtime.control.database.clone());
@@ -3872,7 +3921,7 @@ mod lifecycle_tests {
                         let metrics = control.raft_group().raft().metrics().borrow().clone();
                         if metrics.current_leader == Some(metrics.id)
                             && managers[index]
-                                .execute(
+                                .execute_for_test(
                                     control_context(&fixture_config().control.initial_policy)
                                         .unwrap(),
                                     crate::administration::ManagementCommand::AddLearner {
@@ -3977,13 +4026,13 @@ mod lifecycle_tests {
         use crate::administration::ManagementCommand as M;
         if with_spare {
             managers[leader]
-                .execute(context.clone(), M::AddLearner { node_id: 4 })
+                .execute_for_test(context.clone(), M::AddLearner { node_id: 4 })
                 .await
                 .unwrap();
             let final_voters = BTreeSet::from([1, 2, 4]);
             assert!(
                 managers[leader]
-                    .execute(
+                    .execute_for_test(
                         context.clone(),
                         M::ChangeMembership {
                             voters: BTreeSet::from([1, 2])
@@ -4014,7 +4063,7 @@ mod lifecycle_tests {
                             return;
                         }
                         let _ = manager
-                            .execute(
+                            .execute_for_test(
                                 context.clone(),
                                 M::ChangeMembership {
                                     voters: final_voters.clone(),
@@ -4033,7 +4082,7 @@ mod lifecycle_tests {
                         let metrics = control.raft_group().raft().metrics().borrow().clone();
                         if metrics.current_leader == Some(metrics.id)
                             && manager
-                                .execute(
+                                .execute_for_test(
                                     context.clone(),
                                     M::PublishMembership {
                                         voters: final_voters.clone(),
@@ -4056,7 +4105,7 @@ mod lifecycle_tests {
                         let metrics = control.raft_group().raft().metrics().borrow().clone();
                         if metrics.current_leader == Some(metrics.id)
                             && managers[index]
-                                .execute(
+                                .execute_for_test(
                                     control_context(&fixture_config().control.initial_policy)
                                         .unwrap(),
                                     M::ChangeMembership {
@@ -4108,7 +4157,7 @@ mod lifecycle_tests {
             .await
             .unwrap();
         let backup = managers[leader]
-            .execute(
+            .execute_for_test(
                 context.clone(),
                 M::Backup {
                     session_id: uuid::Uuid::new_v4(),
@@ -4128,188 +4177,56 @@ mod lifecycle_tests {
         })
         .await
         .unwrap();
-        let incarnation = uuid::Uuid::new_v4();
-        let source = databases[leader]
-            .engine()
-            .generation()
-            .unwrap()
-            .state
-            .incarnation
-            .clone();
-        let retirement_request = kasumi_types::RetireSourceRequest {
-            retirement_id: "replicated-restore".into(),
-            expected_source_incarnation: source.clone(),
-            target_incarnation: incarnation.to_string(),
-            destination: "primary".into(),
-            not_after_ms: u64::MAX,
-            checkpoint: databases[leader]
-                .verify_backup_checkpoint_named(context.clone(), "primary", backup_id)
-                .await
+        let source_incarnation = Uuid::parse_str(
+            &databases[leader]
+                .engine()
+                .generation()
                 .unwrap()
-                .checkpoint()
-                .clone(),
-        };
-        managers[0]
-            .execute(
-                context.clone(),
-                M::PrepareRestore {
-                    destination: "primary".into(),
-                    backup_id,
-                    incarnation,
-                },
-            )
+                .state
+                .incarnation,
+        )
+        .unwrap();
+        let source_context = context.clone();
+        let checkpoint = databases[leader]
+            .verify_backup_checkpoint_named(context.clone(), "primary", backup_id)
             .await
-            .unwrap_or_else(|error| panic!(
-                "first replicated PrepareRestore failed: {error:#}; admission after failure={:?}; destination chunk limit={:?}; source limits={:?}",
-                managers[0].security_audit().admission().snapshot(),
-                configurations[0].backup_destinations.get("primary").map(|destination| match destination {
-                    crate::administration::DestinationConfig::Filesystem { max_bytes, .. }
-                    | crate::administration::DestinationConfig::S3 { max_bytes, .. } => *max_bytes,
-                }),
-                databases[0].engine().generation().map(|generation| generation.state.limits.clone()),
-            ));
-        // A single prepared replica cannot start a replacement quorum.
-        assert!(
-            managers[0]
-                .execute(context.clone(), M::InitializeRestore { incarnation })
-                .await
-                .is_err()
-        );
-        for manager in &managers[1..] {
-            manager
-                .execute(
-                    context.clone(),
-                    M::PrepareRestore {
-                        destination: "primary".into(),
-                        backup_id,
-                        incarnation,
-                    },
-                )
-                .await
-                .unwrap();
-        }
-        managers[0]
-            .execute(context.clone(), M::InitializeRestore { incarnation })
-            .await
-            .unwrap();
-        let restored_databases = managers
-            .iter()
-            .map(|manager| manager.test_generation(&context.tenant, &incarnation.to_string()))
-            .collect::<Vec<_>>();
-        let target_leader = quorum_ready_leader(&restored_databases, "new restore election").await;
-        let group = format!("{}/{}", context.tenant, incarnation);
-        // A leader hint remains visible when this group loses quorum. Refusal
-        // must preserve the pending restore; other tenant/control groups keep
-        // their authenticated peer permissions and continue normally.
-        cluster_networks[target_leader]
-            .set_group_allowed_peers(&group, BTreeSet::from([target_leader as u64 + 1]))
-            .unwrap();
-        let before = restored_databases[target_leader]
-            .engine()
-            .generation()
             .unwrap()
-            .state
-            .pending_restore
+            .checkpoint()
             .clone();
-        assert!(before.is_some());
-        let blocked_barrier = restored_databases[target_leader]
-            .raft_group()
-            .raft()
-            .ensure_linearizable()
-            .await
-            .unwrap_err();
-        assert!(
-            blocked_barrier.api_error().is_some(),
-            "unexpected fatal barrier: {blocked_barrier:?}"
-        );
-        eprintln!("intentional restore quorum loss: {blocked_barrier:?}");
-        let hint = managers[target_leader]
-            .execute(
-                context.clone(),
-                M::Status {
-                    incarnation: Some(incarnation),
-                },
+        let recovery = recovery.as_mut().unwrap();
+        let incarnation = recovery.target;
+        recovery
+            .install_targets(
+                &configurations,
+                &recovery_handles,
+                &controls,
+                &databases[leader],
+                checkpoint,
             )
-            .await
-            .unwrap();
-        assert_eq!(hint["leader"].as_u64(), Some(target_leader as u64 + 1));
-        assert_eq!(
-            hint["observation"],
-            serde_json::json!("local_committed_state")
-        );
-        let denied = managers[target_leader]
-            .execute(context.clone(), M::CompleteRestore { incarnation })
-            .await
-            .unwrap_err();
-        assert_eq!(denied.code, kasumi_types::ErrorCode::Unavailable);
-        assert_eq!(
-            serde_json::to_value(
-                &restored_databases[target_leader]
+            .await;
+        {
+            let source_status = managers[leader]
+                .prepare(source_context.clone(), M::Status {})
+                .unwrap();
+            let source_release = source_status.response_fence().unwrap();
+            let retained_source_response = source_status.execute().await.unwrap();
+            assert_eq!(
+                retained_source_response["incarnation"],
+                databases[leader]
                     .engine()
                     .generation()
                     .unwrap()
                     .state
-                    .pending_restore
-            )
-            .unwrap(),
-            serde_json::to_value(&before).unwrap()
-        );
-        cluster_networks[target_leader]
-            .set_group_allowed_peers(&group, BTreeSet::from([1, 2, 3]))
-            .unwrap();
-        on_quorum_leader(
-            &restored_databases,
-            "complete restored generation",
-            |index| managers[index].execute(context.clone(), M::CompleteRestore { incarnation }),
-        )
-        .await;
-        tokio::time::timeout(Duration::from_secs(20), async {
-            loop {
-                let mut ready = true;
-                for manager in &managers {
-                    let status = manager
-                        .execute(
-                            context.clone(),
-                            M::Status {
-                                incarnation: Some(incarnation),
-                            },
-                        )
-                        .await
-                        .unwrap();
-                    ready &= status["pending_restore"].is_null();
-                }
-                if ready {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .unwrap();
-        tokio::time::timeout(Duration::from_secs(20), async {
-            loop {
-                for manager in &managers {
-                    // The original group can hand off to closed custody after
-                    // an uncertain acknowledgement; retry through installed
-                    // authority instead of polling the discarded warm handle.
-                    if manager
-                        .execute(
-                            context.clone(),
-                            M::RetireSource {
-                                request: retirement_request.clone(),
-                            },
-                        )
-                        .await
-                        .is_ok()
-                    {
-                        return;
-                    }
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .unwrap();
+                    .incarnation
+            );
+            source_release.check_release().unwrap();
+            recovery.recover(&cluster_networks).await;
+            // Keep the exact pre-activation database selection and request clock.
+            // Target activation never upgrades this original source response fence.
+            assert!(source_release.check_release().is_err());
+        }
+        // The planned coordinator must retain actual source custody retirement,
+        // independently from the issuer's fencing and the target activation.
         tokio::time::timeout(Duration::from_secs(20), async {
             while !databases.iter().all(|db| {
                 kasumi_raft::ControlLog::installed(
@@ -4324,16 +4241,7 @@ mod lifecycle_tests {
         })
         .await
         .unwrap();
-        on_quorum_leader(&controls, "activate restored route", |index| {
-            managers[index].execute(
-                context.clone(),
-                M::ActivateRestore {
-                    incarnation,
-                    retirement: retirement_request.reference().unwrap(),
-                },
-            )
-        })
-        .await;
+        let context = recovery.context(true).await;
         tokio::time::timeout(Duration::from_secs(20), async {
             while !registries.iter().all(|registry| {
                 registry
@@ -4349,6 +4257,34 @@ mod lifecycle_tests {
         })
         .await
         .unwrap();
+        let restored_databases = recovery.databases().await;
+        let activation_facts = restored_databases
+            .iter()
+            .map(|database| {
+                let generation = database.engine().generation().unwrap();
+                let execution = generation.state.target_lifecycle.clone().unwrap();
+                assert_eq!(
+                    execution.origin.materialization.request.source_incarnation,
+                    source_incarnation
+                );
+                assert!(execution.completion.is_some() && execution.activation.is_some());
+                execution
+            })
+            .collect::<Vec<_>>();
+        for manager in &managers {
+            let status = manager
+                .execute_for_test(context.clone(), M::Status {})
+                .await
+                .unwrap();
+            assert_eq!(status["incarnation"], incarnation.to_string());
+            assert!(status["pending_restore"].is_null());
+            assert_eq!(status["observation"], "local_committed_state");
+            assert!(
+                manager
+                    .prepare(source_context.clone(), M::Status {})
+                    .is_err()
+            );
+        }
         let (resumed_leader, ()) =
             on_quorum_leader(&restored_databases, "resume restored tenant", |index| {
                 let context = context.clone();
@@ -4372,7 +4308,18 @@ mod lifecycle_tests {
             })
             .await;
         assert_eq!(document.body["durable"], serde_json::json!(true));
-        assert!(databases[leader].get(&context, "docs", "a").await.is_err());
+        assert!(
+            databases[leader]
+                .get(&source_context, "docs", "a")
+                .await
+                .is_err()
+        );
+        for registry in &registries {
+            assert!(registry.database(&source_context).is_err());
+        }
+        drop(restored);
+        drop(restored_databases);
+        recovery.close_targets().await;
         for stop in &stops {
             stop.send_replace(true);
         }
@@ -4386,8 +4333,7 @@ mod lifecycle_tests {
         for database in databases {
             assert!(database.engine().generation().is_err());
         }
-        drop(restored);
-        drop(restored_databases);
+        recovery_handles.clear();
         cluster_networks.clear();
         managers.clear();
         controls.clear();
@@ -4401,6 +4347,20 @@ mod lifecycle_tests {
         let mismatched_incarnation = uuid::Uuid::new_v4().to_string();
         let mut second_managers = Vec::new();
         let mut second_controls = Vec::new();
+        let mut second_recovery_handles = Vec::new();
+        recovery
+            .enroll_tenant("beta", Uuid::parse_str(&beta_incarnation).unwrap())
+            .await;
+        recovery
+            .enroll_tenant(
+                "mismatched",
+                Uuid::parse_str(&mismatched_incarnation).unwrap(),
+            )
+            .await;
+        // This remains a release assertion, not an ignored case: strict startup
+        // must support explicit dormant tenant enrollment before these new
+        // catalogs can be opened. The production enrollment path is a remaining
+        // prerequisite; this fixture must never recreate missing catalogs itself.
         for (index, mut config) in configurations.into_iter().enumerate() {
             config
                 .replication
@@ -4427,11 +4387,8 @@ mod lifecycle_tests {
                 mismatched.initial_limits.max_documents -= 1;
             }
             config.tenants.push(mismatched);
-            let runtime = NodeRuntime::open_using(config, |_| {
-                Ok(Zeroizing::new("test-runtime-token".into()))
-            })
-            .await
-            .unwrap();
+            let runtime = NodeRuntime::open_using(config, file_secret).await.unwrap();
+            second_recovery_handles.push(recovery_fixture::Handles::capture(&runtime));
             second_registries.push(runtime.registry.clone());
             second_managers.push(runtime.administration.clone().unwrap());
             second_controls.push(runtime.control.database.clone());
@@ -4439,6 +4396,7 @@ mod lifecycle_tests {
             second_stops.push(stop);
             second_tasks.push(tokio::spawn(runtime.serve(shutdown)));
         }
+        recovery.reopen_targets(&second_recovery_handles).await;
         tokio::time::timeout(Duration::from_secs(20), async {
             loop {
                 for task in &mut second_tasks {
@@ -4462,6 +4420,26 @@ mod lifecycle_tests {
         })
         .await
         .unwrap();
+        for (index, registry) in second_registries.iter().enumerate() {
+            assert!(registry.database(&source_context).is_err());
+            let database = registry.database(&context).unwrap();
+            assert_eq!(
+                database
+                    .engine()
+                    .generation()
+                    .unwrap()
+                    .state
+                    .target_lifecycle
+                    .as_ref(),
+                Some(&activation_facts[index])
+            );
+            let status = second_managers[index]
+                .execute_for_test(context.clone(), M::Status {})
+                .await
+                .unwrap();
+            assert_eq!(status["incarnation"], incarnation.to_string());
+            assert!(status["pending_restore"].is_null());
+        }
         let recovered = tokio::time::timeout(Duration::from_secs(20), async {
             loop {
                 for registry in &second_registries {
@@ -4479,7 +4457,7 @@ mod lifecycle_tests {
         let operator = control_context(&fixture_config().control.initial_policy).unwrap();
         assert!(
             second_managers[0]
-                .execute(
+                .execute_for_test(
                     context.clone(),
                     M::ApprovePeerPool {
                         expected_topology_version: 0
@@ -4504,7 +4482,7 @@ mod lifecycle_tests {
                         }
                         assert!(
                             manager
-                                .execute(
+                                .execute_for_test(
                                     operator.clone(),
                                     M::ApprovePeerPool {
                                         expected_topology_version: 0
@@ -4514,7 +4492,7 @@ mod lifecycle_tests {
                                 .is_err()
                         );
                         if manager
-                            .execute(
+                            .execute_for_test(
                                 operator.clone(),
                                 M::ApprovePeerPool {
                                     expected_topology_version: topology.version,
@@ -4547,7 +4525,7 @@ mod lifecycle_tests {
                     let metrics = control.raft_group().raft().metrics().borrow().clone();
                     if metrics.current_leader == Some(metrics.id)
                         && manager
-                            .execute(
+                            .execute_for_test(
                                 operator.clone(),
                                 M::ApproveTenant {
                                     tenant: "mismatched".into(),
@@ -4568,7 +4546,7 @@ mod lifecycle_tests {
         let mut rejected = 0;
         for manager in &second_managers {
             if manager
-                .execute(
+                .execute_for_test(
                     operator.clone(),
                     M::PrepareTenant {
                         tenant: "mismatched".into(),
@@ -4583,7 +4561,7 @@ mod lifecycle_tests {
         assert!(rejected > 0);
         assert!(
             second_managers[0]
-                .execute(
+                .execute_for_test(
                     operator.clone(),
                     M::InitializeTenant {
                         tenant: "mismatched".into()
@@ -4621,6 +4599,7 @@ mod lifecycle_tests {
         })
         .await
         .unwrap();
+        recovery.close_targets().await;
         for stop in &second_stops {
             stop.send_replace(true);
         }
@@ -4631,6 +4610,10 @@ mod lifecycle_tests {
                 .unwrap()
                 .unwrap();
         }
+        second_recovery_handles.clear();
+        // Release the issuer only after every source/target renewal owner drains.
+        // Its retained activation is reused on restart, never synthesized again.
+        recovery.shutdown_issuer().await;
         mock_stop.send_replace(true);
         mock.await.unwrap().unwrap();
     }
