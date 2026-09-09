@@ -172,7 +172,9 @@ fn image(state: &TenantState) -> kasumi_store::SnapshotImage {
     let mut spool =
         kasumi_store::EncryptedSpool::new(&kasumi_store::ScratchDisk::fixture(), 16 << 20).unwrap();
     let terminals = crate::staged_terminal::View::empty(&state.tenant, &state.incarnation).unwrap();
-    write(state, &terminals, &mut spool).unwrap();
+    let target_resolutions =
+        crate::target_resolution::View::empty(&state.tenant, &state.incarnation).unwrap();
+    write(state, &terminals, &target_resolutions, &mut spool).unwrap();
     kasumi_store::SnapshotImage::freeze(spool).unwrap()
 }
 
