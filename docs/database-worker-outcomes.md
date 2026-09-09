@@ -45,7 +45,7 @@ Four regression sources exercise actual encrypted stores and Tokio workers:
 - `database_shutdown_cancels_undispatched_shared_permit_wait_before_other_tenant_drain`:
   an aborted worker's successful unclaimed Prepared retains the shared permit.
   Another tenant still shuts down before that owner drains. Draining the first
-owner releases both permit and registration before physical reopen.
+  owner releases both permit and registration before physical reopen.
 
 All held blocking callbacks have finite failure deadlines and a guard that
 releases them on assertion failure. These are cancellation/panic tests, not
