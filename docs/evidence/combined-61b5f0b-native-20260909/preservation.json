@@ -1,0 +1,62 @@
+[
+  {
+    "path": "evidence.json",
+    "original": "/tmp/kasumi-61b5f0b-native-remainder/evidence.json",
+    "sha256": "0716a0af5e4ec773a639ad8538b62c08cd8d63b16d83183f7fb8e9381e2e0b46",
+    "bytes": 2560045
+  },
+  {
+    "path": "native-mcp-receipts.log",
+    "original": "/tmp/kasumi-61b5f0b-native-remainder/native-mcp-receipts.log",
+    "sha256": "987186ce92256bc05c824938e9156fb08a85e6f5c3f4fdc546caa4183765f192",
+    "bytes": 430706
+  },
+  {
+    "path": "native-sdk-literal.log",
+    "original": "/tmp/kasumi-61b5f0b-native-remainder/native-sdk-literal.log",
+    "sha256": "9ef722c9f69eebdf5e2976ddcb6cf3bbda2fce48127aa6e14023ddd5952cd4c4",
+    "bytes": 431107
+  },
+  {
+    "path": "plan.json",
+    "original": "/tmp/kasumi-61b5f0b-native-remainder/plan.json",
+    "sha256": "bd52e1abee7edf78dd489b5766038952126b306399a603ed3a512a916860dc29",
+    "bytes": 9273
+  },
+  {
+    "path": "rejected-native-receipt.log",
+    "original": "/tmp/kasumi-61b5f0b-native-remainder/rejected-native-receipt.log",
+    "sha256": "13c4402964ca0ef5619ba8f8e16ee643376f50452837410dcb52c35990953486",
+    "bytes": 430523
+  },
+  {
+    "path": "runner.py",
+    "original": "/tmp/kasumi-61b5f0b-native-remainder/runner.py",
+    "sha256": "ad3d647fbb73d9d32e04e4e202814f68aea2cb5aa80acbed03a10fa8a3855a6f",
+    "bytes": 10765
+  },
+  {
+    "path": "runtime-restart.log",
+    "original": "/tmp/kasumi-61b5f0b-native-remainder/runtime-restart.log",
+    "sha256": "cbe02601d3373c55ad1d9cdf4bcdf1ecb3a2b3c0e40c3bc052e165b16aac0ffe",
+    "bytes": 430547
+  },
+  {
+    "path": "signer-worker-ownership.log",
+    "original": "/tmp/kasumi-61b5f0b-native-remainder/signer-worker-ownership.log",
+    "sha256": "601b7a8017a07498c05cd84a407528d4c7628a7d70fff50431f3fb5f5ec61a61",
+    "bytes": 431084
+  },
+  {
+    "path": "source-before.json",
+    "original": "/tmp/kasumi-61b5f0b-native-remainder/source-before.json",
+    "sha256": "2d357a6c2d7d2a9aba88457a6753482e91b43b74639816bbd31404084ad869be",
+    "bytes": 301217
+  },
+  {
+    "path": "target-worker-ownership.log",
+    "original": "/tmp/kasumi-61b5f0b-native-remainder/target-worker-ownership.log",
+    "sha256": "6e8ca65844539dcf2df09fd1e3b608bdf94d08e8a2c63407c8bbd89983e2a9f7",
+    "bytes": 432378
+  }
+]
