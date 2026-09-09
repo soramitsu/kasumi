@@ -14,19 +14,23 @@ capacity, platform, endurance and artifact gates remain open.
 
 The combined `3b932ee` source adds explicit singleton creation/reopening,
 standalone operator ownership from first lock through cleanup, and Control-approved
-HA tenant enrollment with dormant configuration templates. Their new regression
-tests remain **UNRUN**. The [prepared immutable cohort](evidence/first-release-3b932ee-prepared-20260910/README.md)
-retains the original compiler, formatting, full-store and strict-store deadlines
-and requires 44 named store regressions. Preparation is not an execution result.
+HA tenant enrollment with dormant configuration templates. Its
+[actual frozen cohort](evidence/first-release-3b932ee-check-20260910/README.md)
+failed compilation on three missing redb trait-method diagnostics in the new
+singleton module. All later formatting, full-store and strict-store gates were
+withheld, so the 44 mandatory storage regressions remain **UNRUN** on this source.
+Root `198bb6c` adds the missing trait import; its actual validation is pending.
+The [original prepared cohort](evidence/first-release-3b932ee-prepared-20260910/README.md)
+and failed run retain unchanged deadlines, commands, source and process evidence.
 
 Subsequent development integrates typed drain completion (`b02c60f`), retained
 startup owners across polling panics (`0f940a4`), and required immutable Control
 genesis (`2547bad`). The genesis tag replaces empty-Control startup creation and
 binds its encrypted baseline to enrollment. These changes and their new tests
-remain **UNRUN** and are excluded from the queued `3b932ee` cohort. Leaf worker
+remain **UNRUN** and are excluded from the failed `3b932ee` cohort. Leaf worker
 failure propagation and standalone tenant staging are separate unfinished work.
 
-The latest [frozen compiler/store cohort](evidence/first-release-7a21995-check-20260909/README.md)
+The preceding [frozen compiler/store cohort](evidence/first-release-7a21995-check-20260909/README.md)
 passed workspace compilation and formatting, then failed one store identity
 assertion: 126 passed, one failed, two ignored. Strict store lint did not run after
 the original stop-on-failure rule. All owned processes drained and source stayed
