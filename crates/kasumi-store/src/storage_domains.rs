@@ -5,6 +5,7 @@ use redb::ReadableTable;
 use std::collections::BTreeSet;
 
 mod catalog_initialization;
+mod existing_catalogs;
 
 const BINDING_NS: &str = "kasumi.storage-domains";
 const BINDING_KEY: &[u8] = b"binding";
@@ -75,34 +76,12 @@ impl CustodyStore {
         application_tenant: String,
         provider: Arc<dyn KeyProvider>,
     ) -> Result<Arc<Self>> {
-        validate_application_tenant(&application_tenant)?;
-        let store = TenantStore::open_existing(
-            node.clone(),
-            Self::catalog_name(&application_tenant),
-            provider,
-            StorageAccess::custody(&application_tenant),
-        )
-        .await?;
-        Self::from_installed(node, application_tenant, store)
-    }
-
-    fn from_installed(
-        node: Arc<NodeStore>,
-        application_tenant: String,
-        store: Arc<TenantStore>,
-    ) -> Result<Arc<Self>> {
-        let application = node
-            .catalog(&application_tenant)?
-            .context("application catalog absent")?;
-        let binding = derive_binding(&application, &store.catalog.read())?;
-        let saved = store
-            .get(BINDING_NS, BINDING_KEY)?
-            .context("storage domain binding absent")?;
-        ensure!(
-            serde_json::from_slice::<StorageBinding>(&saved)? == binding,
-            "installed storage domain binding differs"
-        );
-        Ok(Arc::new(Self { store, binding }))
+        match existing_catalogs::open(node, application_tenant, provider, None).await? {
+            existing_catalogs::Opened::Custody(store) => Ok(store),
+            existing_catalogs::Opened::Pair(_) => {
+                unreachable!("custody request cannot return an application pair")
+            }
+        }
     }
 
     pub fn binding(&self) -> &StorageBinding {
@@ -130,36 +109,19 @@ impl TenantStorageSet {
         custody_provider: Arc<dyn KeyProvider>,
         application_access: StorageAccess,
     ) -> Result<Arc<Self>> {
-        validate_application_tenant(&tenant)?;
-        application_access.validate_tenant(&tenant)?;
-        let custody = CustodyStore::open(node.clone(), tenant.clone(), custody_provider).await?;
-        ensure!(
-            &custody.binding.application_purpose == application_access.purpose(),
-            "current serving authority differs from authenticated installed binding"
-        );
-        let application =
-            TenantStore::open_existing(node, tenant, application_provider, application_access)
-                .await?;
+        match existing_catalogs::open(
+            node,
+            tenant,
+            custody_provider,
+            Some((application_provider, application_access)),
+        )
+        .await?
         {
-            let _app_access = AccessGuard(&application);
-            let _custody_access = AccessGuard(&custody.store);
-            application.check_access()?;
-            custody.store.check_access()?;
-            let app_state = application.state.read();
-            let custody_state = custody.store.state.read();
-            application.require_access(&app_state)?;
-            custody.store.require_access(&custody_state)?;
-            validate_distinct_keys(&app_state, &custody_state)?;
-            ensure!(
-                derive_binding(&application.catalog.read(), &custody.store.catalog.read())?
-                    == custody.binding,
-                "opened storage domains differ from authenticated installed binding"
-            );
+            existing_catalogs::Opened::Pair(stores) => Ok(stores),
+            existing_catalogs::Opened::Custody(_) => {
+                unreachable!("pair request cannot return custody alone")
+            }
         }
-        Ok(Arc::new(Self {
-            application,
-            custody,
-        }))
     }
 
     pub async fn open(

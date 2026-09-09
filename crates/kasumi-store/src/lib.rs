@@ -273,7 +273,10 @@ impl NodeStore {
     }
 
     fn catalog(&self, tenant: &str) -> Result<Option<KeyCatalog>> {
-        let tx = self.db.begin_read()?;
+        Self::catalog_at(&self.db.begin_read()?, tenant)
+    }
+
+    fn catalog_at(tx: &redb::ReadTransaction, tenant: &str) -> Result<Option<KeyCatalog>> {
         let table = tx.open_table(CATALOG)?;
         table
             .get(tenant_hash(tenant).as_slice())?
@@ -304,7 +307,7 @@ impl NodeStore {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct KeyCatalog {
     format: u32,

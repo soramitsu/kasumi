@@ -36,11 +36,10 @@ using it as final node drain. A cancelled drain retains unfinished JoinHandles.
 Completed tasks are also joined/reaped on the next admission, so the registry
 does not retain a history proportional to lifetime installations.
 
-This source checkpoint does **not** convert `TenantStorageSet::open_existing`
-or `CustodyStore::open` to deferred borrowed/provisional ownership. Their
-rejected-open and cancellation ownership gap remains required follow-up work.
-It also does not supply full process-wide admission for an arbitrary number
-of concurrent initialization requests.
+Existing acquisition now has a separate prepared/borrowed ownership path in
+[existing-catalog-ownership.md](existing-catalog-ownership.md). Neither path
+supplies full process-wide admission for an arbitrary number of concurrent
+catalog requests. Remaining create-or-open APIs still require removal.
 
 ## Validation status
 

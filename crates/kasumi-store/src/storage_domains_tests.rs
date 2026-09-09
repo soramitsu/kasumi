@@ -250,9 +250,17 @@ async fn combined_quota_and_substituted_catalog_binding_fail_before_publication(
     let mut catalog = node.catalog("tenant")?.unwrap();
     catalog.catalog_id = Uuid::new_v4();
     node.save_catalog("tenant", &catalog)?;
-    let result =
-        CustodyStore::from_installed(node, "tenant".into(), stores.custody().store().clone());
+    let result = CustodyStore::open(
+        node.clone(),
+        "tenant".into(),
+        Arc::new(LocalKeyProvider::new([12; 32])),
+    )
+    .await;
     assert!(result.is_err());
+    node.drain_initializers().await?;
+    stores.check_access()?;
+    stores.application().shutdown().await;
+    stores.custody().store().shutdown().await;
     Ok(())
 }
 

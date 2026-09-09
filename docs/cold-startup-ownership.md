@@ -32,13 +32,10 @@ live and its resources unavailable for reopen. Once actual drain succeeds, its
 first failure still returns as an error from the join or failed open. There is
 no successful cleanup receipt derived merely from a failed attempt or timer.
 
-This source does not close the failure window *inside* an existing composite
-storage opener before it has returned a handle. `CustodyStore::open` and
-`TenantStorageSet::open_existing` still need a prepared/borrowed ownership
-protocol: failed opens must close only their new unpublished owners, and never
-close an existing borrowed cache owner. No global cache sweep or Arc-count
-ownership inference is introduced here. Existing composite failure handling,
-Control genesis publication, process-wide startup admission/resource limits,
+The strict existing composite openers now have a separate source-only
+[prepared/borrowed ownership protocol](existing-catalog-ownership.md). No global
+cache sweep or Arc-count ownership inference is used. Remaining create-or-open
+APIs, Control genesis publication, process-wide startup admission/resource limits,
 and final acceptance remain open.
 
 ## Validation status
