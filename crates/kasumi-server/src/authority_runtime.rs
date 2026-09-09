@@ -55,11 +55,18 @@ pub struct AuthorityRuntimeConfig {
     pub replication: ReplicationConfig,
 }
 impl AuthorityRuntimeConfig {
-    /// Explicit file enrollment. Issuer/security catalog and bootstrap
-    /// initialization are separate from this outer node-file operation.
-    pub fn provision_node_file(&self) -> Result<()> {
+    /// Explicit node and service-audit enrollment. Issuer catalogs/bootstrap
+    /// require their own installation operation.
+    pub async fn provision_node_file(&self) -> Result<()> {
         self.validate()?;
-        crate::node_provision::create(&self.database_path, self.database_id, &self.scratch_disk)
+        crate::node_provision::create(
+            &self.database_path,
+            self.database_id,
+            &self.scratch_disk,
+            &self.security_audit,
+            kasumi_engine::admission::NodeAdmission::new(Default::default())?,
+        )
+        .await
     }
 
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
@@ -251,7 +258,7 @@ impl AuthorityRuntime {
             config.database_id,
             scratch_disk.clone(),
         )?;
-        let audit_store = TenantStore::open(
+        let audit_store = TenantStore::open_existing(
             node.clone(),
             kasumi_engine::SECURITY_TENANT.into(),
             config.security_audit.keys.provider(Arc::new(file_secret))?,

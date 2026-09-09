@@ -70,14 +70,16 @@ pub struct SecurityEvent {
     pub outcome: SecurityOutcome,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TransportAuditMetadata {
     pub peer_address: SocketAddr,
     pub certificate_pin: Option<String>,
     pub observed_at_ms: u64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct StoredSecurityEvent {
     format: u32,
     sequence: u64,
@@ -132,7 +134,34 @@ impl AuditWork {
     }
 }
 
+#[derive(Clone, Copy)]
+enum AuditOpen {
+    Initialize,
+    Existing,
+}
+
 impl SecurityAudit {
+    /// Create the canonical stream exactly once at explicit installation time.
+    /// The caller must own a newly provisioned security domain and its node.
+    pub fn initialize(
+        store: Arc<TenantStore>,
+        budget: AuditRetentionBudget,
+        admission: Arc<crate::admission::NodeAdmission>,
+    ) -> Result<Arc<Self>> {
+        let root = store.durable_directory()?.join("audit-archives");
+        let destination = Arc::new(kasumi_store::FilesystemAuditArchive::open(root)?);
+        Self::initialize_with_archive(store, budget, destination, admission)
+    }
+
+    pub fn initialize_with_archive(
+        store: Arc<TenantStore>,
+        budget: AuditRetentionBudget,
+        destination: Arc<dyn kasumi_store::AuditArchiveDestination>,
+        admission: Arc<crate::admission::NodeAdmission>,
+    ) -> Result<Arc<Self>> {
+        Self::open_inner(store, budget, destination, admission, AuditOpen::Initialize)
+    }
+
     /// The default archive is beneath the durable data directory. Embedded
     /// backends without a directory must install an explicit durable destination.
     pub fn open(
@@ -151,6 +180,16 @@ impl SecurityAudit {
         destination: Arc<dyn kasumi_store::AuditArchiveDestination>,
         admission: Arc<crate::admission::NodeAdmission>,
     ) -> Result<Arc<Self>> {
+        Self::open_inner(store, budget, destination, admission, AuditOpen::Existing)
+    }
+
+    fn open_inner(
+        store: Arc<TenantStore>,
+        budget: AuditRetentionBudget,
+        destination: Arc<dyn kasumi_store::AuditArchiveDestination>,
+        admission: Arc<crate::admission::NodeAdmission>,
+        mode: AuditOpen,
+    ) -> Result<Arc<Self>> {
         budget.validate()?;
         ensure!(
             store.tenant() == SECURITY_TENANT,
@@ -166,16 +205,37 @@ impl SecurityAudit {
         let identity = Arc::as_ptr(&store) as usize;
         if let Some(writer) = writers.get(&identity).and_then(Weak::upgrade) {
             ensure!(
+                matches!(mode, AuditOpen::Existing),
+                "service audit already has an installed writer"
+            );
+            ensure!(
                 writer.budget == budget
                     && writer.destination.identity() == destination.identity()
                     && Arc::ptr_eq(&writer.admission, &admission),
                 "live service audit retention configuration or node governor differs"
             );
+            {
+                // Keep the writer's reserved maintenance workspace alive while
+                // the strict retained-head observation reads bounded records.
+                let _registration = writer.work.begin(QueryCancellation::default())?;
+                let current = writer
+                    .sequence
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("service audit state unavailable"))?;
+                let head = retention::Head::open(&store, &destination.identity(), &budget)?;
+                ensure!(
+                    !current.failed && head == current.head,
+                    "live service audit head differs from durable state"
+                );
+            }
             return Ok(Arc::new(Self { writer }));
         }
         let mut workspace = admission.reserve(AuditRetentionBudget::MAINTENANCE_BYTES, None)?;
         workspace.retain_workspace();
-        let head = retention::Head::open(&store, &destination.identity())?;
+        let head = match mode {
+            AuditOpen::Initialize => retention::Head::initialize(&store, &destination.identity())?,
+            AuditOpen::Existing => retention::Head::open(&store, &destination.identity(), &budget)?,
+        };
         let writer = Arc::new(AuditWriter {
             store,
             sequence: Mutex::new(AuditSequence {

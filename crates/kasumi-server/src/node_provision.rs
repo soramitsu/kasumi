@@ -1,16 +1,40 @@
-//! Explicit first-enrollment file creation. This establishes only the node-file
-//! envelope and encrypted-storage tables, not HA tenant/catalog/bootstrap state.
+//! Explicit first enrollment of a node file and its service audit. Application,
+//! Control and authority catalogs/bootstrap require their own installation.
 use anyhow::{Context, Result};
-use kasumi_store::{NodeStore, ScratchDisk, ScratchDiskConfig, private_files};
-use std::path::Path;
+use kasumi_store::{
+    NodeStore, ScratchDisk, ScratchDiskConfig, StorageAccess, TenantStore, private_files,
+};
+use std::{path::Path, sync::Arc};
 use uuid::Uuid;
 
-pub(crate) fn create(path: &Path, database_id: Uuid, scratch: &ScratchDiskConfig) -> Result<()> {
+pub(crate) async fn create(
+    path: &Path,
+    database_id: Uuid,
+    scratch: &ScratchDiskConfig,
+    security: &crate::runtime::SecurityAuditConfig,
+    admission: Arc<kasumi_engine::admission::NodeAdmission>,
+) -> Result<()> {
     private_files::check_directory(path.parent().context("node database directory is absent")?)?;
+    security.validate()?;
+    let provider = security
+        .keys
+        .provider(Arc::new(crate::runtime::file_secret))?;
     let disk = ScratchDisk::open(scratch.clone())?;
     let node = NodeStore::create_new(path, database_id, disk)?;
-    // No worker or tenant is started. Drop closes the actual redb descriptor
-    // before this synchronous operator command reports completion.
+    let store = TenantStore::open(
+        node.clone(),
+        kasumi_engine::SECURITY_TENANT.into(),
+        provider,
+        StorageAccess::security_audit(),
+    )
+    .await?;
+    let opened = security.initialize(store.clone(), admission);
+    if let Ok(audit) = &opened {
+        audit.shutdown().await;
+    }
+    store.shutdown().await;
+    opened?;
+    drop(store);
     drop(node);
     Ok(())
 }

@@ -6,6 +6,7 @@ use kasumi_types::{
     AuditArchiveReference, AuditRetentionState, MAX_AUDIT_EVENT_BYTES, MAX_AUDIT_SEGMENT_BYTES,
     SecurityAuditCursor, SecurityAuditPage, SecurityAuditStatus,
 };
+use sha2::Digest;
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -14,7 +15,7 @@ const ARCHIVES: &str = "security.audit.archives";
 // Reserve wire-envelope and per-record separator bytes inside the shared limit.
 const MAX_PAGE_BYTES: usize = kasumi_types::MAX_SECURITY_AUDIT_PAGE_BYTES - 4096;
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Head {
     format: u32,
@@ -22,33 +23,132 @@ pub(super) struct Head {
     pub position: AuditRetentionState,
 }
 impl Head {
-    pub fn open(store: &TenantStore, destination: &str) -> Result<Self> {
-        ensure!(
-            store.get(META, b"next")?.is_none(),
-            "unsupported service audit format"
-        );
-        if let Some(bytes) = store.get_bounded(META, b"head", 64 << 10)? {
-            let head: Self = serde_json::from_slice(&bytes)?;
-            ensure!(
-                head.format == 1 && head.destination == destination,
-                "unsupported service audit format"
-            );
-            head.position.validate()?;
-            ensure!(
-                (head.position.archive_segments == 0) == head.position.archive_head.is_none(),
-                "audit archive root count mismatch"
-            );
-            return Ok(head);
+    /// Explicit genesis creation. An existing audit namespace is never adopted,
+    /// even when its head is missing or its hot log has already been pruned.
+    pub fn initialize(store: &Arc<TenantStore>, destination: &str) -> Result<Self> {
+        let view = store.read_view()?;
+        for namespace in [META, ARCHIVES, "security.audit"] {
+            view.visit(namespace, MAX_AUDIT_SEGMENT_BYTES, |_, _| {
+                anyhow::bail!("service audit initialization requires empty audit namespaces")
+            })?;
         }
-        store.visit("security.audit", MAX_AUDIT_EVENT_BYTES, |_, _| {
-            anyhow::bail!("audit records without canonical head")
-        })?;
+        drop(view);
         let head = Self {
             format: 1,
             destination: destination.into(),
             position: AuditRetentionState::empty(Uuid::new_v4()),
         };
         store.write_batch(&[head.write()?])?;
+        Ok(head)
+    }
+
+    /// Read one committed encrypted root. Missing state is corruption, never
+    /// permission to assign a new permanent sequence space.
+    pub fn open(
+        store: &Arc<TenantStore>,
+        destination: &str,
+        budget: &AuditRetentionBudget,
+    ) -> Result<Self> {
+        let view = store.read_view()?;
+        let bytes = view
+            .get(META, b"head", 64 << 10)?
+            .context("installed service audit head is missing")?;
+        let head: Self = serde_json::from_slice(&bytes)?;
+        ensure!(
+            head.format == 1 && head.destination == destination,
+            "unsupported or substituted service audit head"
+        );
+        head.position.validate()?;
+        ensure!(
+            head.position.hot_bytes <= budget.hot_bytes
+                && head.position.archive_bytes <= budget.archive_bytes,
+            "installed service audit exceeds configured retention budgets"
+        );
+        view.visit(META, MAX_AUDIT_SEGMENT_BYTES, |key, _| {
+            ensure!(
+                matches!(key, b"head" | b"pending" | b"pending-ciphertext"),
+                "unsupported service audit metadata"
+            );
+            Ok(())
+        })?;
+        let mut records = 0u64;
+        let mut hot_bytes = 0u64;
+        view.visit("security.audit", MAX_AUDIT_EVENT_BYTES, |key, bytes| {
+            let key: [u8; 8] = key.try_into().context("invalid service audit record key")?;
+            let sequence = u64::from_be_bytes(key);
+            ensure!(
+                sequence >= head.position.pruned_before && sequence < head.position.next_sequence,
+                "service audit record lies outside its retained hot range"
+            );
+            let record: StoredSecurityEvent = serde_json::from_slice(bytes)?;
+            ensure!(
+                record.format == 1 && record.sequence == sequence,
+                "service audit record format or sequence differs"
+            );
+            records = records
+                .checked_add(1)
+                .context("service audit count overflow")?;
+            hot_bytes = hot_bytes
+                .checked_add(bytes.len() as u64 + 8)
+                .context("service audit byte count overflow")?;
+            ensure!(
+                hot_bytes <= budget.hot_bytes,
+                "service audit hot read exceeds budget"
+            );
+            Ok(())
+        })?;
+        ensure!(
+            records == head.position.next_sequence - head.position.pruned_before
+                && hot_bytes == head.position.hot_bytes,
+            "service audit hot range differs from its committed head"
+        );
+        match &head.position.archive_head {
+            Some(expected) => {
+                let bytes = view
+                    .get(
+                        ARCHIVES,
+                        &(head.position.archive_segments - 1).to_be_bytes(),
+                        64 << 10,
+                    )?
+                    .context("service audit archive root is missing")?;
+                let actual: AuditArchiveReference = serde_json::from_slice(&bytes)?;
+                actual.validate()?;
+                ensure!(
+                    actual == *expected,
+                    "service audit archive root differs from head"
+                );
+            }
+            None => view.visit(ARCHIVES, 64 << 10, |_, _| {
+                anyhow::bail!("service audit archive records exist without a committed root")
+            })?,
+        }
+        // An uncertain publication remains recoverable from this exact local
+        // pending object and unchanged hot records; opening needs no remote I/O.
+        let pending = view.get(META, b"pending", 64 << 10)?;
+        let ciphertext = view.get(META, b"pending-ciphertext", MAX_AUDIT_SEGMENT_BYTES)?;
+        match (pending, ciphertext) {
+            (None, None) => {}
+            (Some(bytes), Some(ciphertext)) => {
+                let reference: AuditArchiveReference = serde_json::from_slice(&bytes)?;
+                reference.validate()?;
+                ensure!(
+                    reference.stream_id == head.position.stream_id
+                        && reference.object.first_sequence == head.position.pruned_before
+                        && reference.object.next_sequence <= head.position.next_sequence
+                        && reference.previous
+                            == head
+                                .position
+                                .archive_head
+                                .as_ref()
+                                .map(|head| head.object.clone())
+                        && reference.ciphertext_bytes == ciphertext.len() as u64
+                        && reference.object.ciphertext_sha256
+                            == hex::encode(sha2::Sha256::digest(&ciphertext)),
+                    "pending service audit publication differs from its committed head"
+                );
+            }
+            _ => anyhow::bail!("pending service audit publication is incomplete"),
+        }
         Ok(head)
     }
     pub fn write(&self) -> Result<WriteOp> {

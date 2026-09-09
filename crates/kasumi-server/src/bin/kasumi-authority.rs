@@ -36,9 +36,11 @@ async fn run(args: &[String]) -> Result<()> {
             Ok(())
         }
         [command, path] if command == "provision-node" => {
-            AuthorityRuntimeConfig::load(path)?.provision_node_file()?;
+            AuthorityRuntimeConfig::load(path)?
+                .provision_node_file()
+                .await?;
             println!(
-                "Created the configured authority node file. Issuer catalogs and bootstrap state require separate initialization."
+                "Created the configured authority node file and security audit. Issuer catalogs and bootstrap state require separate initialization."
             );
             Ok(())
         }

@@ -874,7 +874,7 @@ async fn initialize_owned(
     )
     .await?;
     let opened = (|| {
-        config.security_audit.open(
+        config.security_audit.initialize(
             security_store.clone(),
             kasumi_engine::admission::NodeAdmission::new(config.admission.clone())?,
         )

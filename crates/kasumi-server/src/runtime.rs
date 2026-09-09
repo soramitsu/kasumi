@@ -174,18 +174,34 @@ impl SecurityAuditConfig {
         Ok(())
     }
 
+    fn destination(
+        &self,
+        store: &kasumi_store::TenantStore,
+    ) -> Result<Arc<dyn kasumi_store::AuditArchiveDestination>> {
+        self.validate()?;
+        Ok(match &self.archive {
+            None => Arc::new(kasumi_store::FilesystemAuditArchive::open(
+                store.durable_directory()?.join("audit-archives"),
+            )?) as Arc<dyn kasumi_store::AuditArchiveDestination>,
+            Some(config) => config.open()?,
+        })
+    }
+
+    pub(crate) fn initialize(
+        &self,
+        store: Arc<kasumi_store::TenantStore>,
+        admission: Arc<kasumi_engine::admission::NodeAdmission>,
+    ) -> Result<Arc<SecurityAudit>> {
+        let archive = self.destination(&store)?;
+        SecurityAudit::initialize_with_archive(store, self.retention.clone(), archive, admission)
+    }
+
     pub(crate) fn open(
         &self,
         store: Arc<kasumi_store::TenantStore>,
         admission: Arc<kasumi_engine::admission::NodeAdmission>,
     ) -> Result<Arc<SecurityAudit>> {
-        self.validate()?;
-        let archive = match &self.archive {
-            None => Arc::new(kasumi_store::FilesystemAuditArchive::open(
-                store.durable_directory()?.join("audit-archives"),
-            )?) as Arc<dyn kasumi_store::AuditArchiveDestination>,
-            Some(config) => config.open()?,
-        };
+        let archive = self.destination(&store)?;
         SecurityAudit::open_with_archive(store, self.retention.clone(), archive, admission)
     }
 }
@@ -247,15 +263,22 @@ pub struct RuntimeConfig {
 }
 
 impl RuntimeConfig {
-    /// Explicit initial file enrollment for HA. This does not provision tenant,
-    /// security-audit or Control catalogs/bootstrap metadata.
-    pub fn provision_node_file(&self) -> Result<()> {
+    /// Explicit node and service-audit enrollment for HA. Application and
+    /// Control catalogs/bootstrap require their own installation operation.
+    pub async fn provision_node_file(&self) -> Result<()> {
         self.validate()?;
         ensure!(
             self.mode == DeploymentMode::Replicated,
             "standalone installation requires kasumid init"
         );
-        crate::node_provision::create(&self.database_path, self.database_id, &self.scratch_disk)
+        crate::node_provision::create(
+            &self.database_path,
+            self.database_id,
+            &self.scratch_disk,
+            &self.security_audit,
+            kasumi_engine::admission::NodeAdmission::new(self.admission.clone())?,
+        )
+        .await
     }
 
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
@@ -1025,23 +1048,13 @@ impl NodeRuntime {
             config.database_id,
             scratch_disk.clone(),
         )?;
-        let security_store = if existing_standalone {
-            TenantStore::open_existing(
-                node.clone(),
-                SECURITY_TENANT.into(),
-                security_provider,
-                kasumi_store::StorageAccess::security_audit(),
-            )
-            .await?
-        } else {
-            TenantStore::open(
-                node.clone(),
-                SECURITY_TENANT.into(),
-                security_provider,
-                kasumi_store::StorageAccess::security_audit(),
-            )
-            .await?
-        };
+        let security_store = TenantStore::open_existing(
+            node.clone(),
+            SECURITY_TENANT.into(),
+            security_provider,
+            kasumi_store::StorageAccess::security_audit(),
+        )
+        .await?;
         if config.mode == DeploymentMode::Standalone
             && let Err(error) = crate::local_recovery::require_runtime_ready(&security_store)
         {

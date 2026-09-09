@@ -47,9 +47,9 @@ async fn run(arguments: &[String]) -> Result<()> {
             Ok(())
         }
         [command, path] if command == "provision-node" => {
-            RuntimeConfig::load(path)?.provision_node_file()?;
+            RuntimeConfig::load(path)?.provision_node_file().await?;
             println!(
-                "Created the configured node file. HA catalogs and bootstrap state require separate initialization."
+                "Created the configured node file and security audit. HA tenant and Control bootstrap state require separate initialization."
             );
             Ok(())
         }
