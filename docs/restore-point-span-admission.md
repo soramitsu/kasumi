@@ -28,6 +28,18 @@ cancellation, work registration and exact store ownership stay with the actual
 blocking worker and returned publication state. Public preparation returns only
 a verified image and fixed identity, and never publishes a live generation.
 
+External history chunks have an independent structural peak: their document
+bodies are not records in the logical snapshot. Before decoding each bounded
+8 MiB plaintext chunk, the verifier scans it with the same fixed-space JSON
+meter and expands the existing reservation to the retained logical index and
+point-read workspace **plus** the external chunk work. The immutable captured
+generation path adds the same external work to its existing 64 MiB verification
+floor. The expanded charge covers the chunk DTO, validation temporaries and
+concurrent point reads. Successful verification drops the body and plaintext
+before returning to the base charge. Decode or validation failure and panic
+keep the expanded reservation with the worker/result until drain; cancelling
+the waiter never releases the worker's reservation or shutdown registration.
+
 The structural model counts all JSON containers, scalars, strings and object
 keys, including duplicate or ignored fields. It scans arbitrary-precision
 numeric lexemes even when a number is only `0`. It counts scalar wire bytes;
@@ -60,3 +72,10 @@ kinds, bounds before payload reads, duplicate/out-of-order frames, footer
 substitution, dense numbers, escaped keys and cross-frame lexer state are also
 covered by named source regressions. No Rust compilation or functional result is
 claimed until the separately scheduled source-frozen gates complete.
+
+External history source regressions use a bounded dense numeric document to
+check exact peak admission and rejection at one byte less, before typed
+verification. They also cover decode failure, validation panic and deterministic
+waiter cancellation while the body and then only the base workspace remain
+live. These tests are work-accounting and ownership checks, not a measured
+8 MiB archive or 3 GiB tenant capacity result.

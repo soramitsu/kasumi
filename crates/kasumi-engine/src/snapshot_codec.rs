@@ -16,6 +16,21 @@ pub(crate) const FRAME_HEADER_BYTES: usize = 9;
 #[path = "snapshot_record_work.rs"]
 mod record_work;
 
+/// Reuse the same structural model for external authenticated history bodies.
+/// Check the original operation between bounded slices before allocating DTOs.
+pub(crate) fn inspect_external_json_work(
+    bytes: &[u8],
+    check: &mut dyn FnMut() -> anyhow::Result<()>,
+) -> anyhow::Result<u64> {
+    let mut meter = record_work::Meter::default();
+    for chunk in bytes.chunks(64 << 10) {
+        check()?;
+        meter.consume(chunk)?;
+    }
+    check()?;
+    meter.finish()
+}
+
 pub(crate) fn record_limit(kind: u8) -> anyhow::Result<u64> {
     Ok(match kind {
         0..=20 => MAX_RECORD as u64,
