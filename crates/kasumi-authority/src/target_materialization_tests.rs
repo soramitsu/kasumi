@@ -898,8 +898,20 @@ async fn three_actual_materializations_initialize_and_commit_completion_with_res
     f.close().await;
 }
 
+#[path = "target_serving_tests.rs"]
+mod serving_tests;
+
 #[tokio::test]
 async fn exact_actual_completion_is_required_for_issuer_and_target_activation() {
+    Box::pin(exercise_target_activation(false)).await;
+}
+
+#[tokio::test]
+async fn activated_target_keeps_operational_suspension_and_membership_across_restart() {
+    Box::pin(exercise_target_activation(true)).await;
+}
+
+async fn exercise_target_activation(maintenance: bool) {
     let f = MaterialFixture::new().await;
     let input = f.materialize_all().await;
     let initialize = f.commit_phase(LifecyclePhase::Initialize, &input).await;
@@ -1117,6 +1129,15 @@ async fn exact_actual_completion_is_required_for_issuer_and_target_activation() 
         assert_eq!(signed_local.observation.activation, fact);
         assert_eq!(signed_local.observation.observer_node_id, follower.id);
         verify_target_activation(&input.materialized[&1].fact.origin, &signed_local).unwrap();
+        if maintenance {
+            serving_tests::record_follower_projection(
+                &f,
+                follower,
+                &local,
+                &activation_input.digest().unwrap(),
+            )
+            .await;
+        }
         assert!(follower.owner.database().check_serving().is_err());
     }
     let projected = journal
@@ -1241,130 +1262,10 @@ async fn exact_actual_completion_is_required_for_issuer_and_target_activation() 
     assert_eq!(recovered.fact(), &fact);
     drop(recovered);
     f.close_targets(targets, &router).await;
-    // Ordinary startup uses only the independent journal, current issuer and
-    // existing target keys. No source provider or old Control JWT is consulted.
-    let journal_store = TenantStore::open(
-        NodeStore::open_existing(
-            &journal_path,
-            journal_file_id,
-            kasumi_store::ScratchDisk::fixture(),
-        )
-        .unwrap(),
-        journal_tenant,
-        journal_provider,
-        journal_access,
-    )
-    .await
-    .unwrap();
-    let journal = kasumi_engine::TargetJournal::open_existing(
-        journal_store.clone(),
-        journal_installation,
-        journal_limits,
-        f.admissions[&projected_node_id].clone(),
-    )
-    .unwrap();
-    let projection = Arc::new(
-        journal
-            .serving_projection("city", f.target.incarnation)
-            .unwrap()
-            .unwrap(),
-    );
-    let identity = nodes()
-        .into_iter()
-        .find(|node| node.node_id == projected_node_id)
-        .unwrap();
-    let boot = ServingBoot::with_test_clock(
-        f.issuer.trust_for(projected_node_id),
-        ServingIdentity {
-            tenant: "city".into(),
-            incarnation: f.target.incarnation,
-            authority_epoch: 2,
-            node: identity.clone(),
-        },
-        f.issuer.clock.clone(),
-    )
-    .unwrap();
-    let attempt = boot.begin_acquisition().unwrap();
-    let issuer = f.issuer.leader().await;
-    let (lease, fence) = issuer
-        .acquire(
-            AuthenticatedNode::from_verified_transport(
-                f.issuer.context(&identity.principal),
-                identity.certificate_sha256,
-            )
-            .unwrap(),
-            attempt.request().clone(),
-        )
-        .await
-        .unwrap();
-    fence.check().unwrap();
-    let live = ServingGate::new(attempt.verify(lease).unwrap()).unwrap();
-    let node = NodeStore::open_existing(
-        f.issuer
-            ._dir
-            .path()
-            .join(format!("target-{projected_node_id}.redb")),
-        kasumi_store::node_store_ids::target_generation(
-            f.control.root.control_incarnation,
-            "city",
-            f.target.incarnation,
-            &identity.verifier,
-        )
-        .unwrap(),
-        kasumi_store::ScratchDisk::fixture(),
-    )
-    .unwrap();
-    let security = audit(node.clone(), f.admissions[&projected_node_id].clone(), true).await;
-    let stores = TenantStorageSet::open(
-        node,
-        "city".into(),
-        Arc::new(LocalKeyProvider::new([61; 32])),
-        Arc::new(LocalKeyProvider::new([221; 32])),
-        projection.storage_access(live.clone()).unwrap(),
-    )
-    .await
-    .unwrap();
-    let mut serving = kasumi_engine::open_serving_target(
-        projection.clone(),
-        stores.clone(),
-        TargetReplicaConfig {
-            node_id: projected_node_id,
-            raft: Config::default(),
-            admission: f.admissions[&projected_node_id].clone(),
-        },
-        router.clone(),
-        security.clone(),
-    )
-    .await
-    .unwrap();
-    let database = serving.database().unwrap();
-    assert_eq!(
-        database
-            .engine()
-            .generation()
-            .unwrap()
-            .state
-            .target_lifecycle[&f.target.incarnation.to_string()]
-            .activation
-            .as_ref(),
-        Some(&fact)
-    );
-    // A later serving expiry closes this newly admitted generation; immutable
-    // projection replay cannot renew its captured gate.
-    f.issuer.clock.0.store(2001, Ordering::SeqCst);
-    assert!(serving.database().is_err());
-    assert!(projection.storage_access(live).is_err());
-    drop(database);
-    serving.close().await.unwrap();
-    drop(serving);
-    stores.custody().store().shutdown().await;
-    drop(stores);
-    security.shutdown().await;
-    drop(security);
-    drop(projection);
-    drop(journal);
-    journal_store.shutdown().await;
-    drop(journal_store);
+    // Ordinary startup uses independent journals and fresh Serving leases.
+    // The extended case also reopens after ordinary maintenance; no old phase
+    // grant becomes data authority and no original activation fact changes.
+    serving_tests::exercise_serving(&f, &router, projected_node_id, &fact, maintenance).await;
     drop(issuer);
     drop(current);
     f.close().await;

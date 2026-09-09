@@ -37,30 +37,21 @@ impl TargetServingReplica {
                     .target_lifecycle
                     .get(&generation.state.incarnation)
                     == Some(&self.projection.execution()?)
-                && !generation.state.retired
-                && !generation.state.suspended,
+                && !generation.state.retired,
             "actual local activated target differs from independent projection"
         );
         let execution = self.projection.execution()?;
-        let covered = self.database.raft_group().confirm_local_application(
+        // Activation checked its actual original quorum when this immutable
+        // fact committed. Replay must retain that exact fact and independently
+        // persisted application coverage. The latest applied membership and
+        // suspension are operational state, not the activation's identity.
+        self.database.raft_group().confirm_local_application(
             &execution
                 .activation
                 .as_ref()
                 .context("activation missing")?
                 .position,
         )?;
-        let membership = covered.membership();
-        anyhow::ensure!(
-            membership.membership().get_joint_config()
-                == &vec![self.bootstrap.voters.keys().copied().collect()]
-                && membership.membership().nodes().count() == self.bootstrap.voters.len()
-                && membership.membership().nodes().all(|(id, node)| self
-                    .bootstrap
-                    .voters
-                    .get(id)
-                    .is_some_and(|peer| peer.address == node.addr)),
-            "serving target membership differs from original quorum"
-        );
         self.projection.check(gate)
     }
     pub async fn close(&mut self) -> anyhow::Result<()> {
