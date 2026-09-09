@@ -1,0 +1,20 @@
+{
+  "scope": "Linux ARM64 Python-only release process and packaging tests; no database or Cargo",
+  "files": {
+    "scripts/._gate_process.py": "d56d1ae45fcd93c58936173543172bf79e95a711cb00a1a5e1002891e9d192c4",
+    "scripts/._package_release.py": "d56d1ae45fcd93c58936173543172bf79e95a711cb00a1a5e1002891e9d192c4",
+    "scripts/._release_gate.py": "d56d1ae45fcd93c58936173543172bf79e95a711cb00a1a5e1002891e9d192c4",
+    "scripts/._test_package_release.py": "d56d1ae45fcd93c58936173543172bf79e95a711cb00a1a5e1002891e9d192c4",
+    "scripts/._test_release_gate.py": "d56d1ae45fcd93c58936173543172bf79e95a711cb00a1a5e1002891e9d192c4",
+    "scripts/gate_process.py": "6c8b255e5a69aa8985da8d70f5baa73337bcaeac7098bd756c4d6cc6472e58de",
+    "scripts/package_release.py": "fee053a6433dc7b06f1a843d7d9670a8d69f18a9f2d734ca83e07e19f6981ff1",
+    "scripts/release_gate.py": "d3e03ad6b80c2c1ece8405ed7d2634a82d6385203ed1c0d209b45a58d7d1bd2f",
+    "scripts/test_package_release.py": "bcbcdeb048e2e5845730f637414f263ed7d44a2c943706483eec06394d82eda7",
+    "scripts/test_release_gate.py": "0f9eb927c6916040aa5e5cb5d32851fb0b2d222f4b584c61bc972a809c926836"
+  },
+  "python": "3.13.5 (main, Jul 15 2026, 20:25:40) [GCC 14.2.0]",
+  "python_executable": "/usr/bin/python3",
+  "python_sha256": "bd241b38381974ae27d7d5098a6d0e6dda0a744b5e9fdd6fe3a1ae632588961e",
+  "platform": "Linux-6.12.95+deb13-cloud-arm64-aarch64-with-glibc2.41",
+  "machine": "aarch64"
+}

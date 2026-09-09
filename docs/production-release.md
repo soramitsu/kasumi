@@ -12,6 +12,12 @@ endurance gates remain open. The Linux reference VM has 16 GiB memory. Its lates
 frozen run (`3a8d512`, 15 GiB container limit) failed the restored-runtime restart
 test while all other gates passed. Earlier failures remain retained in full.
 
+Release tooling now requires original command deadlines, verified process-group
+drain and exact executing runner/helper provenance before accepting or packaging
+functional results. Its [44 macOS and 20 Linux Python checks](evidence/release-process-abc8794-20260909/README.md)
+passed after preserving and correcting a failed deadline/cleanup counterexample.
+Those tool checks do not replace any database acceptance gate.
+
 ## Contract
 
 - Self-hosted standalone and replicated HA, Apache-2.0, Rust 1.97.1.
