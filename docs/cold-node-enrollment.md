@@ -46,9 +46,9 @@ enrollment; it does not replace durable membership or policy on restart.
 This is a source checkpoint of explicit local genesis provisioning and strict
 cold open calls, not complete startup acceptance. The following remain open:
 
-* General cold startup needs a retained owner before the runtime struct exists,
-  including error/cancellation drain and private delivery of a successful
-  runtime. Existing early-error paths can still lose renewal owners.
+* General cold startup now has a source-only retained owner and private success
+  delivery; its implementation and remaining internal composite-open gap are
+  described in [cold-startup-ownership.md](cold-startup-ownership.md).
 * Existing borrowed composite storage opens still need their own deferred
   ownership transition; fresh-only initialization does not solve that case.
 * HA `publish_control` still initializes reserved schema/topology on absence

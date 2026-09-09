@@ -909,6 +909,8 @@ pub struct NodeRuntime {
     target_recovery: Option<Arc<crate::target_runtime::TargetRecoveryRuntime>>,
     tls_reload: Option<crate::tls_reload::RuntimeTlsReload>,
     _standalone_lock: Option<kasumi_store::private_files::ExclusiveLock>,
+    // Scope-owned cached stores observed during startup, including custody probes.
+    startup_stores: Vec<Arc<TenantStore>>,
     #[cfg(test)]
     audit_release_gate: Arc<tokio::sync::Mutex<Option<crate::rpc::AuditReleaseGate>>>,
 }
@@ -928,10 +930,28 @@ impl NodeRuntime {
         config: RuntimeConfig,
         credential: impl Fn(&str) -> Result<Zeroizing<String>> + Send + Sync + 'static,
     ) -> Result<Self> {
+        crate::startup_owner::open(
+            crate::startup_owner::Kind::Data,
+            Self::open_owned(config, Arc::new(credential)),
+        )
+        .await
+    }
+
+    /// Join cancelled/incomplete opens after stopping new startup admission.
+    /// Runtimes already handed to their callers retain their ordinary ownership.
+    pub async fn drain_startups() -> Result<()> {
+        crate::startup_owner::drain(crate::startup_owner::Kind::Data).await
+    }
+
+    async fn open_owned(
+        config: RuntimeConfig,
+        credential: crate::serving_runtime::CredentialSource,
+    ) -> Result<Self> {
+        let mut pending = crate::startup_resources::Resources::default();
+        let outcome = async {
         config.validate()?;
-        let standalone_lock = crate::standalone::claim(&config)?;
+        pending.standalone_lock = crate::standalone::claim(&config)?;
         let scratch_disk = kasumi_store::ScratchDisk::open(config.scratch_disk.clone())?;
-        let credential = Arc::new(credential);
         let signer_verifier = if let Some(verifier) = &config.signer_verifier {
             let mut domains = BTreeMap::new();
             for authority in config.serving_authorities.values() {
@@ -948,6 +968,7 @@ impl NodeRuntime {
         } else {
             None
         };
+        if let Some(verifier) = &signer_verifier { pending.verifiers.push(verifier.clone()); }
         let authority_trusts = config
             .serving_authorities
             .iter()
@@ -1036,6 +1057,7 @@ impl NodeRuntime {
             config.database_id,
             scratch_disk.clone(),
         )?;
+        pending.nodes.push(node.clone());
         let security_store = TenantStore::open_existing(
             node.clone(),
             SECURITY_TENANT.into(),
@@ -1043,6 +1065,7 @@ impl NodeRuntime {
             kasumi_store::StorageAccess::security_audit(),
         )
         .await?;
+        pending.stores.push(security_store.clone());
         if config.mode == DeploymentMode::Standalone
             && let Err(error) = crate::local_recovery::require_runtime_ready(&security_store)
         {
@@ -1062,6 +1085,7 @@ impl NodeRuntime {
         let audit = config
             .security_audit
             .open(security_store, admission.clone())?;
+        pending.audits.push(audit.clone());
         auth.install_audit(audit.clone())?;
         if let crate::auth::AuthKeySource::Local { signer_file } = &config.auth.source {
             auth.install_local_credentials(crate::local_auth::LocalCredentials::open(
@@ -1083,6 +1107,8 @@ impl NodeRuntime {
                 kasumi_store::StorageAccess::node_control(),
             )
             .await?;
+            pending.stores.push(control_stores.application().clone());
+            pending.stores.push(control_stores.custody().store().clone());
             Self::open_database(
                 &config,
                 control_stores,
@@ -1102,10 +1128,12 @@ impl NodeRuntime {
                 return Err(error);
             }
         };
+        pending.databases.push(control.database.clone());
         control.database.install_admission(admission.clone())?;
         let mut runtime = Self {
             telemetry: crate::observability::Telemetry::new(),
-            _standalone_lock: standalone_lock,
+            _standalone_lock: None,
+            startup_stores: pending.stores.iter().filter(|store| store.tenant() != SECURITY_TENANT).cloned().collect(),
             config: config.clone(),
             signer_verifier,
             authority_trusts,
@@ -1152,6 +1180,7 @@ impl NodeRuntime {
                 let custody_provider = tenant.custody_keys.provider(credential.clone())?;
                 if kasumi_store::CustodyStore::catalog_installed(&tenant_node, &tenant.tenant)? {
                     let custody_store = kasumi_store::CustodyStore::open(tenant_node.clone(), tenant.tenant.clone(), custody_provider.clone()).await?;
+                    runtime.startup_stores.push(custody_store.store().clone());
                     if let Some(control) = kasumi_raft::ControlLog::installed(custody_store.clone())? {
                         let incarnation = control.group().strip_prefix(&format!("{}/", tenant.tenant)).context("installed source group differs")?.to_owned();
                         if let Some(expected) = &tenant.incarnation { ensure!(*expected == incarnation, "configured source incarnation differs"); }
@@ -1163,8 +1192,8 @@ impl NodeRuntime {
                                     Err(_) => kasumi_engine::InstalledRetirementSource::RecoveringControl { tenant: tenant.tenant.clone(), source_incarnation: incarnation.clone() },
                                 }
                             } else { kasumi_engine::InstalledRetirementSource::RecoveringControl { tenant: tenant.tenant.clone(), source_incarnation: incarnation.clone() } };
-                            registry.install_retirement_source(source.clone())?;
-                            runtime.custody_sources.push(OpenedCustody { tenant: tenant.tenant.clone(), incarnation, source, store: custody_store });
+                            runtime.custody_sources.push(OpenedCustody { tenant: tenant.tenant.clone(), incarnation, source: source.clone(), store: custody_store });
+                            registry.install_retirement_source(source)?;
                             continue;
                         }
                     }
@@ -1194,6 +1223,8 @@ impl NodeRuntime {
                 let provider = tenant.keys.provider(credential.clone())?;
                 let stores = TenantStorageSet::open_existing(tenant_node.clone(), tenant.tenant.clone(),
                     provider.clone(), custody_provider.clone(), storage_access).await?;
+                runtime.startup_stores.push(stores.application().clone());
+                runtime.startup_stores.push(stores.custody().store().clone());
                 let opened = Self::open_database(
                     &config,
                     stores,
@@ -1204,6 +1235,7 @@ impl NodeRuntime {
                     runtime.audit.clone(),
                 )
                 .await?;
+                pending.databases.push(opened.database.clone());
                 if let Some(active) = active {
                     let generation = opened.database.engine().generation()?;
                     if generation.state.restored_from.as_ref() != Some(&active.checkpoint) || generation.state.pending_restore.is_some() {
@@ -1251,12 +1283,12 @@ impl NodeRuntime {
                 provider_factories,
                 credential.clone(),
             )?;
+            runtime.administration = Some(administration.clone());
             if let Some(network) = &runtime.cluster {
                 let provider: Arc<dyn crate::cluster::RestoreReadinessProvider> =
                     administration.clone();
                 network.install_restore_readiness(Arc::downgrade(&provider))?;
             }
-            runtime.administration = Some(administration.clone());
             let mcp =
                 crate::mcp::router(config.mcp.protocol.clone(), registry.clone(), auth.clone())?;
             let native = tonic::service::Routes::new(
@@ -1313,10 +1345,25 @@ impl NodeRuntime {
         }
         .await;
         if let Err(error) = result {
-            let _ = runtime.shutdown().await;
-            return Err(error);
+            let drained = crate::startup_owner::finish(&mut runtime).await;
+            return Err(match drained {
+                Ok(()) => error,
+                Err(cleanup) => error.context(format!("startup drain failed before completion: {cleanup:#}")),
+            });
         }
+        runtime._standalone_lock = pending.standalone_lock.take();
         Ok(runtime)
+        }.await;
+        if outcome.is_err()
+            && let Err(cleanup) = crate::startup_owner::finish(&mut pending).await
+        {
+            return outcome.map_err(|error| {
+                error.context(format!(
+                    "startup drain failed before completion: {cleanup:#}"
+                ))
+            });
+        }
+        outcome
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1778,6 +1825,9 @@ impl NodeRuntime {
             } else {
                 source.store.store().shutdown().await;
             }
+        }
+        for store in &self.startup_stores {
+            store.shutdown().await;
         }
         self.audit.shutdown().await;
         if let Some(verifier) = &self.signer_verifier {
@@ -3120,6 +3170,7 @@ mod lifecycle_tests {
 
     include!("runtime_custody_tests.rs");
     include!("runtime_serving_tests.rs");
+    include!("runtime_startup_tests.rs");
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn local_runtime_opens_real_transit_tls_publishes_control_serves_and_reopens_durable_state()
@@ -4702,3 +4753,11 @@ mod audit_tests;
 #[cfg(test)]
 #[path = "runtime_observability_tests.rs"]
 mod observability_tests;
+
+impl crate::startup_owner::Runtime for NodeRuntime {
+    fn close(
+        &mut self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + '_>> {
+        Box::pin(NodeRuntime::shutdown(self))
+    }
+}

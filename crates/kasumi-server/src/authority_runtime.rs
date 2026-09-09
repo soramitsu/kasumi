@@ -189,161 +189,206 @@ impl AuthorityRuntime {
     }
 
     pub async fn open(config: AuthorityRuntimeConfig) -> Result<Self> {
-        config.validate()?;
-        let scratch_disk = kasumi_store::ScratchDisk::open(config.scratch_disk.clone())?;
-        let auth = Authenticator::new(config.auth.clone())?;
-        let native_tls = kasumi_transport::ReloadableServerConfig::new(config.native.load()?);
-        let identity = config.replication.listener.tls.load()?;
-        let ca = read_bounded(&config.replication.listener.client_ca, 1 << 20)?;
-        let peers = config
-            .replication
-            .peers
-            .iter()
-            .map(|peer| {
-                Ok(PeerConfig {
-                    node_id: peer.node_id,
-                    endpoint: peer.endpoint.clone(),
-                    certificate_pins: peer
-                        .certificate_pins
-                        .iter()
-                        .map(|value| parse_certificate_pin(value))
-                        .collect::<Result<_>>()?,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let network = ClusterNetwork::new(
-            config.replication.node_id,
-            &identity,
-            &ca,
-            peers,
-            PeerLimits::default(),
-        )?;
-        let domain = config
-            .installation
-            .manifest
-            .signing_domain(config.installation.partition)?;
-        let signer_verifier = config
-            .signer_verifier
-            .open(
-                std::collections::BTreeMap::from([(domain.digest()?, domain)]),
-                Arc::new(file_secret),
-                scratch_disk.clone(),
-            )
-            .await?;
-        let signer = crate::signer_runtime::OperationalSignerConfig::load(
-            &config.operational_signer_file,
-            &config
-                .installation
-                .manifest
-                .signing_domain(config.installation.partition)?,
-        )?
-        .open(&signer_verifier)?;
-        let native = TcpListener::bind(config.native.listen).await?;
-        let cluster = TcpListener::bind(config.replication.listener.listen).await?;
-        let node = NodeStore::open_existing(
-            &config.database_path,
-            config.database_id,
-            scratch_disk.clone(),
-        )?;
-        let audit_store = TenantStore::open_existing(
-            node.clone(),
-            kasumi_engine::SECURITY_TENANT.into(),
-            config.security_audit.keys.provider(Arc::new(file_secret))?,
-            StorageAccess::security_audit(),
+        crate::startup_owner::open(
+            crate::startup_owner::Kind::Authority,
+            Self::open_owned(config),
         )
-        .await?;
-        if let Err(error) = crate::node_enrollment::require_complete(
-            &audit_store,
-            config.database_id,
-            crate::node_enrollment::Kind::Authority,
-        ) {
-            audit_store.shutdown().await;
-            signer_verifier.shutdown().await;
-            return Err(error);
-        }
-        let audit = config.security_audit.open(
-            audit_store.clone(),
-            kasumi_engine::admission::NodeAdmission::new(Default::default())?,
-        )?;
-        auth.install_audit(audit.clone())?;
-        network.install_audit(audit.clone())?;
-        let stores = TenantStorageSet::open_existing(
-            node,
-            config.installation.tenant(),
-            config.keys.provider(Arc::new(file_secret))?,
-            config.custody_keys.provider(Arc::new(file_secret))?,
-            StorageAccess::independent_authority(
-                &config.installation.manifest,
-                config.installation.partition,
-            )?,
-        )
-        .await?;
-        let authority = IndependentAuthority::open_existing_replicated(
-            stores.clone(),
-            config.installation.clone(),
-            signer,
-            config.replication.node_id,
-            config.node_settings()?,
-            network.clone(),
-            kasumi_raft::server_config(),
-        )
-        .await?;
-        let group = &config.installation.manifest.partitions[&config.installation.partition].group;
-        let access = stores.clone();
-        if let Err(error) = network.register_group_with_bootstrap(
-            group.clone(),
-            authority.raft_group().raft().clone(),
-            config
+        .await
+    }
+
+    /// Join cancelled/incomplete opens after stopping new startup admission.
+    pub async fn drain_startups() -> Result<()> {
+        crate::startup_owner::drain(crate::startup_owner::Kind::Authority).await
+    }
+
+    /// Close an opened runtime that has not entered its consuming serve loop.
+    pub async fn shutdown(&mut self) -> Result<()> {
+        let outcome = self.authority.shutdown().await;
+        self.stores.application().shutdown().await;
+        self.stores.custody().store().shutdown().await;
+        self.audit.shutdown().await;
+        self.signer_verifier.shutdown().await;
+        outcome
+    }
+
+    async fn open_owned(config: AuthorityRuntimeConfig) -> Result<Self> {
+        let mut pending = crate::startup_resources::Resources::default();
+        let outcome = async {
+            config.validate()?;
+            let scratch_disk = kasumi_store::ScratchDisk::open(config.scratch_disk.clone())?;
+            let auth = Authenticator::new(config.auth.clone())?;
+            let native_tls = kasumi_transport::ReloadableServerConfig::new(config.native.load()?);
+            let identity = config.replication.listener.tls.load()?;
+            let ca = read_bounded(&config.replication.listener.client_ca, 1 << 20)?;
+            let peers = config
                 .replication
                 .peers
                 .iter()
-                .map(|peer| peer.node_id)
-                .collect(),
-            authority.bootstrap_digest().into(),
-            Arc::new(move || access.check_access()),
-        ) {
-            authority.shutdown().await?;
-            return Err(error);
-        }
-        let peer_authority = Arc::downgrade(&authority);
-        network.install_group_peer_fence(
-            group,
-            Arc::new(move |peer| {
-                peer_authority
-                    .upgrade()
-                    .context("authority member owner is closed")?
-                    .peer_allowed(peer)
-            }),
-        )?;
-        network.install_authority_maintenance(Arc::downgrade(&authority))?;
-        authority.install_maintenance_transport(network.clone())?;
-        if let Some(publications) = &config.signer_publications {
-            authority.install_signer_publication_transport(
-                publications.open(config.installation.manifest.clone())?,
+                .map(|peer| {
+                    Ok(PeerConfig {
+                        node_id: peer.node_id,
+                        endpoint: peer.endpoint.clone(),
+                        certificate_pins: peer
+                            .certificate_pins
+                            .iter()
+                            .map(|value| parse_certificate_pin(value))
+                            .collect::<Result<_>>()?,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let network = ClusterNetwork::new(
+                config.replication.node_id,
+                &identity,
+                &ca,
+                peers,
+                PeerLimits::default(),
             )?;
+            let domain = config
+                .installation
+                .manifest
+                .signing_domain(config.installation.partition)?;
+            let signer_verifier = config
+                .signer_verifier
+                .open(
+                    std::collections::BTreeMap::from([(domain.digest()?, domain)]),
+                    Arc::new(file_secret),
+                    scratch_disk.clone(),
+                )
+                .await?;
+            pending.verifiers.push(signer_verifier.clone());
+            let signer = crate::signer_runtime::OperationalSignerConfig::load(
+                &config.operational_signer_file,
+                &config
+                    .installation
+                    .manifest
+                    .signing_domain(config.installation.partition)?,
+            )?
+            .open(&signer_verifier)?;
+            let native = TcpListener::bind(config.native.listen).await?;
+            let cluster = TcpListener::bind(config.replication.listener.listen).await?;
+            let node = NodeStore::open_existing(
+                &config.database_path,
+                config.database_id,
+                scratch_disk.clone(),
+            )?;
+            pending.nodes.push(node.clone());
+            let audit_store = TenantStore::open_existing(
+                node.clone(),
+                kasumi_engine::SECURITY_TENANT.into(),
+                config.security_audit.keys.provider(Arc::new(file_secret))?,
+                StorageAccess::security_audit(),
+            )
+            .await?;
+            pending.stores.push(audit_store.clone());
+            if let Err(error) = crate::node_enrollment::require_complete(
+                &audit_store,
+                config.database_id,
+                crate::node_enrollment::Kind::Authority,
+            ) {
+                audit_store.shutdown().await;
+                signer_verifier.shutdown().await;
+                return Err(error);
+            }
+            let audit = config.security_audit.open(
+                audit_store.clone(),
+                kasumi_engine::admission::NodeAdmission::new(Default::default())?,
+            )?;
+            pending.audits.push(audit.clone());
+            auth.install_audit(audit.clone())?;
+            network.install_audit(audit.clone())?;
+            let stores = TenantStorageSet::open_existing(
+                node,
+                config.installation.tenant(),
+                config.keys.provider(Arc::new(file_secret))?,
+                config.custody_keys.provider(Arc::new(file_secret))?,
+                StorageAccess::independent_authority(
+                    &config.installation.manifest,
+                    config.installation.partition,
+                )?,
+            )
+            .await?;
+            pending.stores.push(stores.application().clone());
+            pending.stores.push(stores.custody().store().clone());
+            let authority = IndependentAuthority::open_existing_replicated(
+                stores.clone(),
+                config.installation.clone(),
+                signer,
+                config.replication.node_id,
+                config.node_settings()?,
+                network.clone(),
+                kasumi_raft::server_config(),
+            )
+            .await?;
+            pending.authorities.push(authority.clone());
+            let group =
+                &config.installation.manifest.partitions[&config.installation.partition].group;
+            let access = stores.clone();
+            if let Err(error) = network.register_group_with_bootstrap(
+                group.clone(),
+                authority.raft_group().raft().clone(),
+                config
+                    .replication
+                    .peers
+                    .iter()
+                    .map(|peer| peer.node_id)
+                    .collect(),
+                authority.bootstrap_digest().into(),
+                Arc::new(move || access.check_access()),
+            ) {
+                authority.shutdown().await?;
+                return Err(error);
+            }
+            let peer_authority = Arc::downgrade(&authority);
+            network.install_group_peer_fence(
+                group,
+                Arc::new(move |peer| {
+                    peer_authority
+                        .upgrade()
+                        .context("authority member owner is closed")?
+                        .peer_allowed(peer)
+                }),
+            )?;
+            network.install_authority_maintenance(Arc::downgrade(&authority))?;
+            authority.install_maintenance_transport(network.clone())?;
+            if let Some(publications) = &config.signer_publications {
+                authority.install_signer_publication_transport(
+                    publications.open(config.installation.manifest.clone())?,
+                )?;
+            }
+            let tls_reload = crate::tls_reload::RuntimeTlsReload::new(
+                vec![(
+                    crate::tls_reload::ListenerSource::Mutual(config.native.clone()),
+                    native_tls.clone(),
+                )],
+                None,
+                audit.clone(),
+            );
+            Ok(Self {
+                tls_reload,
+                config,
+                authority,
+                signer_verifier,
+                stores,
+                audit,
+                audit_store,
+                network,
+                native,
+                cluster,
+                native_tls,
+                auth,
+            })
         }
-        let tls_reload = crate::tls_reload::RuntimeTlsReload::new(
-            vec![(
-                crate::tls_reload::ListenerSource::Mutual(config.native.clone()),
-                native_tls.clone(),
-            )],
-            None,
-            audit.clone(),
-        );
-        Ok(Self {
-            tls_reload,
-            config,
-            authority,
-            signer_verifier,
-            stores,
-            audit,
-            audit_store,
-            network,
-            native,
-            cluster,
-            native_tls,
-            auth,
-        })
+        .await;
+        if outcome.is_err()
+            && let Err(cleanup) = crate::startup_owner::finish(&mut pending).await
+        {
+            return outcome.map_err(|error| {
+                error.context(format!(
+                    "startup drain failed before completion: {cleanup:#}"
+                ))
+            });
+        }
+        outcome
     }
     pub async fn serve(self, mut shutdown: watch::Receiver<bool>) -> Result<()> {
         let (stop, stopped) = watch::channel(false);
@@ -422,8 +467,17 @@ impl AuthorityRuntime {
         let close = self.authority.shutdown().await;
         self.stores.application().shutdown().await;
         self.stores.custody().store().shutdown().await;
+        self.audit.shutdown().await;
         self.audit_store.shutdown().await;
         self.signer_verifier.shutdown().await;
         outcome.and(close)
+    }
+}
+
+impl crate::startup_owner::Runtime for AuthorityRuntime {
+    fn close(
+        &mut self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + '_>> {
+        Box::pin(AuthorityRuntime::shutdown(self))
     }
 }

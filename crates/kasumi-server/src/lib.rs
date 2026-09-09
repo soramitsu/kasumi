@@ -29,6 +29,8 @@ pub mod serving_runtime;
 pub mod standalone;
 pub mod standalone_cli;
 pub mod standalone_key_backup;
+mod startup_owner;
+mod startup_resources;
 pub mod tls;
 pub mod tls_reload;
 
