@@ -1,0 +1,544 @@
+{
+  "build_gates": {
+    "network-driver": {
+      "compiled_package_count": 180,
+      "exit_code": 0,
+      "feature_inventory_sha256": "d4d833c10cbb84a0f53bf7e8a7ec3c3482a97f4fe9c14449fccf94cdae3ca084",
+      "fixture_features_absent": true
+    },
+    "production": {
+      "compiled_package_count": 416,
+      "exit_code": 0,
+      "feature_inventory_sha256": "84dd36bcdf0e8fcb1fb7916eac57271a1b4c9b357935edbb0dec227c992cb9fa",
+      "fixture_features_absent": true
+    }
+  },
+  "dispatch": {
+    "cleanup_verified": true,
+    "commands": [
+      {
+        "exit_code": 0,
+        "forced_process_stop": false,
+        "label": "source-head",
+        "process_group_drained": true,
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "c89780cefdcf15b15c14080443b5cc403e9ba2abd0f249d1894f6d090e3a40d8"
+      },
+      {
+        "exit_code": 0,
+        "forced_process_stop": false,
+        "label": "source-tree",
+        "process_group_drained": true,
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "ea712d0720603a410b9bbd118f0017dbb9dfff8a222f12a28f6c1020cec56983"
+      },
+      {
+        "exit_code": 0,
+        "forced_process_stop": false,
+        "label": "preflight-all-containers",
+        "process_group_drained": true,
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "eee12f7b3bda319c0f815a354979d229f33d334500bd5fd0a08aab1f009ec89f"
+      },
+      {
+        "exit_code": 0,
+        "forced_process_stop": false,
+        "label": "preflight-active-containers",
+        "process_group_drained": true,
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "exit_code": 0,
+        "forced_process_stop": false,
+        "label": "image-inspect",
+        "process_group_drained": true,
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "189920d3f57ca251313ff72ece0c84eb5183293b117cf6dc80468ca6da60cfcc"
+      },
+      {
+        "exit_code": 0,
+        "forced_process_stop": false,
+        "label": "container-create",
+        "process_group_drained": true,
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "d9abac2f59cb2c8659db349a8f93ceedc281ea12c4facc30c66fe97494d8323a"
+      },
+      {
+        "exit_code": 0,
+        "forced_process_stop": false,
+        "label": "container-create-inspect",
+        "process_group_drained": true,
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "87618e944de8d1a887ae183785bc43e52faef5c52253e857c0c61f301bee3810"
+      },
+      {
+        "exit_code": 0,
+        "forced_process_stop": false,
+        "label": "container-start",
+        "process_group_drained": true,
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "d9abac2f59cb2c8659db349a8f93ceedc281ea12c4facc30c66fe97494d8323a"
+      },
+      {
+        "exit_code": 0,
+        "forced_process_stop": false,
+        "label": "container-poll",
+        "process_group_drained": true,
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "539ae27fffb94cecde99600fd766eb8cf6d0353877de34a8406fdbace682e40a"
+      },
+      {
+        "exit_code": 0,
+        "forced_process_stop": false,
+        "label": "container-poll",
+        "process_group_drained": true,
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "f806e1aa5444b02c4b7d244e7698b3c322ea2d79d63eea18acd10b85c23575cb"
+      },
+      {
+        "exit_code": 0,
+        "forced_process_stop": false,
+        "label": "container-poll",
+        "process_group_drained": true,
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "f806e1aa5444b02c4b7d244e7698b3c322ea2d79d63eea18acd10b85c23575cb"
+      },
+      {
+        "exit_code": 0,
+        "forced_process_stop": false,
+        "label": "container-poll",
+        "process_group_drained": true,
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "68c8d1de9476f72facf64981e59b3acb7ae1c158efa0475fb6f75e0342759d7f"
+      },
+      {
+        "exit_code": 0,
+        "forced_process_stop": false,
+        "label": "cleanup-owned-inspect",
+        "process_group_drained": true,
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "68c8d1de9476f72facf64981e59b3acb7ae1c158efa0475fb6f75e0342759d7f"
+      },
+      {
+        "exit_code": 0,
+        "forced_process_stop": false,
+        "label": "container-terminal-inspect",
+        "process_group_drained": true,
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "68c8d1de9476f72facf64981e59b3acb7ae1c158efa0475fb6f75e0342759d7f"
+      },
+      {
+        "exit_code": 0,
+        "forced_process_stop": false,
+        "label": "container-terminal-logs",
+        "process_group_drained": true,
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "446a3ef856b9b74f884ee942be4818656f6f7ffd039e3ba65ff24acb46deaadd"
+      }
+    ],
+    "container_id": "a39fb19f7fd156cc6f34166691e06077362cd5748ca15f46e81af1f3a8283b6f",
+    "create_count": 1,
+    "elapsed_seconds": 8.076015562000975,
+    "finished_at": "2026-09-09T03:34:06.491684+00:00",
+    "forced_stop": false,
+    "image": "sha256:abf802c3daf7460f7498869910288b63bf5e138efc28e3c0704bf931b99e1ed4",
+    "preserved_container_ids": [
+      "1e568c64b3ea",
+      "8439dd098eee",
+      "94255cddb090"
+    ],
+    "start_count": 1,
+    "started_at": "2026-09-09T03:33:58.415695+00:00",
+    "status": "passed",
+    "terminal_state": {
+      "ExitCode": 0,
+      "FinishedAt": "2026-09-09T03:34:05.199898274Z",
+      "OOMKilled": false,
+      "Paused": false,
+      "Pid": 0,
+      "Restarting": false,
+      "Running": false,
+      "StartedAt": "2026-09-09T03:33:59.984632819Z",
+      "Status": "exited"
+    }
+  },
+  "executables": {
+    "kasumi-bench-capacity": {
+      "build_gate": "network-driver",
+      "bytes": 5068568,
+      "sha256": "2bf9528308df725f4f3d343d700934d9dd628b92c6e17f3008552e434fea1975",
+      "test": false
+    },
+    "kasumictl": {
+      "build_gate": "production",
+      "bytes": 6289896,
+      "sha256": "5488d51495a750e3ec4a22ae4591d8f5a1e313af1e8183a59ce7292ecc75a600",
+      "test": false
+    },
+    "kasumid": {
+      "build_gate": "production",
+      "bytes": 104710280,
+      "sha256": "340db15a8130289da49ca18c50e6da25ac27a1a3210bbdeed72ec5acba81bc8b",
+      "test": false
+    }
+  },
+  "isolation": {
+    "cpus": 2,
+    "init": true,
+    "memory_bytes": 4294967296,
+    "memory_swap_bytes": 4294967296,
+    "network": "none",
+    "only_host_writable_mount": "/results",
+    "pids_limit": 512,
+    "private_parent_mode": "0700",
+    "private_parent_uid": 0,
+    "read_only_root": true,
+    "readonly_mounts": [
+      "/source",
+      "/build",
+      "/tools/small_native_smoke.py"
+    ],
+    "tmpfs_tmp_bytes": 268435456,
+    "verified_environment": {
+      "GIT_CONFIG_COUNT": "1",
+      "GIT_CONFIG_KEY_0": "safe.directory",
+      "GIT_CONFIG_VALUE_0": "/source",
+      "PYTHONDONTWRITEBYTECODE": "1"
+    }
+  },
+  "native": {
+    "backup_exact_checkpoint_verified": true,
+    "canonical_bytes": 132096,
+    "cleanup_error_count": 0,
+    "corpus_checks": {
+      "verify-after-rejection": {
+        "canonical_bytes": 132096,
+        "documents": 129,
+        "event": "passed",
+        "expected_sha256": "1db24d06974750aa4e4b06b41861316dbd751c674a18a3ec4241614256f8557d",
+        "observed_sha256": "1db24d06974750aa4e4b06b41861316dbd751c674a18a3ec4241614256f8557d"
+      },
+      "verify-renewed": {
+        "canonical_bytes": 132096,
+        "documents": 129,
+        "event": "passed",
+        "expected_sha256": "1db24d06974750aa4e4b06b41861316dbd751c674a18a3ec4241614256f8557d",
+        "observed_sha256": "1db24d06974750aa4e4b06b41861316dbd751c674a18a3ec4241614256f8557d"
+      },
+      "verify-restarted": {
+        "canonical_bytes": 132096,
+        "documents": 129,
+        "event": "passed",
+        "expected_sha256": "1db24d06974750aa4e4b06b41861316dbd751c674a18a3ec4241614256f8557d",
+        "observed_sha256": "1db24d06974750aa4e4b06b41861316dbd751c674a18a3ec4241614256f8557d"
+      },
+      "verify-restored": {
+        "canonical_bytes": 132096,
+        "documents": 129,
+        "event": "passed",
+        "expected_sha256": "1db24d06974750aa4e4b06b41861316dbd751c674a18a3ec4241614256f8557d",
+        "observed_sha256": "1db24d06974750aa4e4b06b41861316dbd751c674a18a3ec4241614256f8557d"
+      }
+    },
+    "corpus_sha256": "1db24d06974750aa4e4b06b41861316dbd751c674a18a3ec4241614256f8557d",
+    "documents": 129,
+    "fencing_scope": "exclusive_local_installation",
+    "finished_at": "2026-09-09T03:34:05.189147+00:00",
+    "initial_load_full_corpus_verified": true,
+    "initial_load_journal_sha256": "7e6dd43b68619dfee45d4601dcf6f17d2e531fb4d24108c6af504df6b03ef79a",
+    "local_recovery_exact_request_and_profile_verified": true,
+    "local_recovery_phase": "finished",
+    "mcp_checks": [
+      {
+        "certificate_sha256": "d690238ab92996f57038c6ea33fb7a267d3ea0dd35db8b13fee0522b079c637c",
+        "file": "mcp-original-1.json",
+        "sha256": "c9b783445716b28edb0e33324fdc7233fd73a3aab429591f9be5d7735ac43cc4",
+        "tls": "TLSv1.3"
+      },
+      {
+        "certificate_sha256": "d690238ab92996f57038c6ea33fb7a267d3ea0dd35db8b13fee0522b079c637c",
+        "file": "mcp-original-2.json",
+        "sha256": "c3f513bbc4e5e2f1aea33b3785dcf0d8fb91422537661fe87aa333dafa8425ac",
+        "tls": "TLSv1.3"
+      },
+      {
+        "certificate_sha256": "d690238ab92996f57038c6ea33fb7a267d3ea0dd35db8b13fee0522b079c637c",
+        "file": "mcp-restored-1.json",
+        "sha256": "c9b783445716b28edb0e33324fdc7233fd73a3aab429591f9be5d7735ac43cc4",
+        "tls": "TLSv1.3"
+      },
+      {
+        "certificate_sha256": "d690238ab92996f57038c6ea33fb7a267d3ea0dd35db8b13fee0522b079c637c",
+        "file": "mcp-restored-2.json",
+        "sha256": "c3f513bbc4e5e2f1aea33b3785dcf0d8fb91422537661fe87aa333dafa8425ac",
+        "tls": "TLSv1.3"
+      }
+    ],
+    "old_resource_explicit_denial": "Unauthenticated",
+    "protected_readiness": {
+      "daemon-initial": {
+        "body_sha256": "47f243dd20c7f057a8f2497d53f8a28ff56652f1748489a9f6bacc68c8ad9835",
+        "certificate_sha256": "9b2b312f683d3320e6e15520be2ba6616be8354cac2f89294dbb1579de191e0f",
+        "observation_count": 1,
+        "status": 200,
+        "tls": "TLSv1.3"
+      },
+      "daemon-restarted": {
+        "body_sha256": "cada132a83c6e1284fcb7697fb3fef76b4908a712c0ee5dc14ca00bd76981774",
+        "certificate_sha256": "9b2b312f683d3320e6e15520be2ba6616be8354cac2f89294dbb1579de191e0f",
+        "observation_count": 1,
+        "status": 200,
+        "tls": "TLSv1.3"
+      },
+      "daemon-restored": {
+        "body_sha256": "931fe40f8ce01ba3a2d3280c713e2d0412b00cecdf24f7a473e8eb3491a1e6b7",
+        "certificate_sha256": "9b2b312f683d3320e6e15520be2ba6616be8354cac2f89294dbb1579de191e0f",
+        "observation_count": 1,
+        "status": 200,
+        "tls": "TLSv1.3"
+      }
+    },
+    "renewed_credential_file_changed": true,
+    "started_at": "2026-09-09T03:34:00.105105+00:00",
+    "status": "passed",
+    "steps": [
+      {
+        "exit_code": 0,
+        "forced_stop": false,
+        "name": "source-git-0",
+        "process_group_drained": true,
+        "seconds": 0.02381598699867027,
+        "status": "passed",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "c89780cefdcf15b15c14080443b5cc403e9ba2abd0f249d1894f6d090e3a40d8"
+      },
+      {
+        "exit_code": 0,
+        "forced_stop": false,
+        "name": "source-git-1",
+        "process_group_drained": true,
+        "seconds": 0.0026162110007135198,
+        "status": "passed",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "ea712d0720603a410b9bbd118f0017dbb9dfff8a222f12a28f6c1020cec56983"
+      },
+      {
+        "exit_code": 0,
+        "forced_stop": false,
+        "name": "source-git-2",
+        "process_group_drained": true,
+        "seconds": 0.010799598996527493,
+        "status": "passed",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "f42fec1f6e7232b1cd5e9c564cfff56dfec7634f2548eab7eb2096a0d0c17c78"
+      },
+      {
+        "exit_code": 0,
+        "forced_stop": false,
+        "name": "source-git-3",
+        "process_group_drained": true,
+        "seconds": 0.003242930004489608,
+        "status": "passed",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "f504dc71036b31fbf2c50e9d444940ad387b1a6ebeb4dbb97652614d320d45c1"
+      },
+      {
+        "exit_code": 0,
+        "forced_stop": false,
+        "name": "init",
+        "process_group_drained": true,
+        "seconds": 0.06834399000217672,
+        "status": "passed",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "9f657bd74581b72cf960b77263977b6e575b41e37a8c9a4821874c81237e6e8c"
+      },
+      {
+        "exit_code": 0,
+        "forced_stop": false,
+        "name": "check-config",
+        "process_group_drained": true,
+        "seconds": 0.0047558720034430735,
+        "status": "passed",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "d3bc5233a13a1bf0305f28beaa7bd91f6bbd448bec5e7eb79565578c1fe9985b"
+      },
+      {
+        "exit_code": 0,
+        "forced_stop": false,
+        "name": "daemon-initial",
+        "process_group_drained": true,
+        "seconds": 1.0899676040062332,
+        "status": "passed",
+        "stderr_sha256": "eaddf7c1809c7e10adcfd81fdf88d764406b2f1c76fc830016dcac5d93323688",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "exit_code": 0,
+        "forced_stop": false,
+        "name": "create-collection",
+        "process_group_drained": true,
+        "seconds": 0.019485996999719646,
+        "status": "passed",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "00e9ac6e942e786b4789df37839ef0545785edd9e105ea140aa0207e43c99fca"
+      },
+      {
+        "exit_code": 0,
+        "forced_stop": false,
+        "name": "load",
+        "process_group_drained": true,
+        "seconds": 0.27197955799783813,
+        "status": "passed",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "exit_code": 0,
+        "forced_stop": false,
+        "name": "renew",
+        "process_group_drained": true,
+        "seconds": 0.0399586339990492,
+        "status": "passed",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "325657d2ba6d5dbe28ae1b0ec958d2c134590035647ad95c55b11e95b0d696a1"
+      },
+      {
+        "exit_code": 0,
+        "forced_stop": false,
+        "name": "verify-renewed",
+        "process_group_drained": true,
+        "seconds": 0.2234654470012174,
+        "status": "passed",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "exit_code": 0,
+        "forced_stop": false,
+        "name": "backup-create",
+        "process_group_drained": true,
+        "seconds": 0.12091162800061284,
+        "status": "passed",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "0266f3767ad408a4d9fa35de9f1b58d9f660dc65bf9733da3c4f797d7312faf2"
+      },
+      {
+        "exit_code": 0,
+        "forced_stop": false,
+        "name": "backup-verify",
+        "process_group_drained": true,
+        "seconds": 0.17227170599653618,
+        "status": "passed",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "e42d6ecbe4f89be7ff030d4370da0c7761595744c8efff830ac4ce5f55fd4de6"
+      },
+      {
+        "exit_code": 0,
+        "forced_stop": false,
+        "name": "daemon-restarted",
+        "process_group_drained": true,
+        "seconds": 0.2962348809960531,
+        "status": "passed",
+        "stderr_sha256": "5269b6161d40f86dd5cda37e59b7d7fe159dcc3aea08c1c348b84c56310f9fe9",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "exit_code": 0,
+        "forced_stop": false,
+        "name": "verify-restarted",
+        "process_group_drained": true,
+        "seconds": 0.2177551799977664,
+        "status": "passed",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "exit_code": 0,
+        "forced_stop": false,
+        "name": "restore",
+        "process_group_drained": true,
+        "seconds": 1.8037591690008412,
+        "status": "passed",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "05dc242712e0f0e221f451ab9c77ce2d4c08c592b9a2a66f209e68747f5d9fff"
+      },
+      {
+        "exit_code": 0,
+        "forced_stop": false,
+        "name": "restore-status",
+        "process_group_drained": true,
+        "seconds": 0.018316141999093816,
+        "status": "passed",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "05dc242712e0f0e221f451ab9c77ce2d4c08c592b9a2a66f209e68747f5d9fff"
+      },
+      {
+        "exit_code": 0,
+        "forced_stop": false,
+        "name": "daemon-restored",
+        "process_group_drained": true,
+        "seconds": 0.853414935998444,
+        "status": "passed",
+        "stderr_sha256": "86b50bd301da8e7ef1f3e4cd83684b1a63bf93484890bddd7c323c2b3a05ed14",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "exit_code": 0,
+        "forced_stop": false,
+        "name": "verify-restored",
+        "process_group_drained": true,
+        "seconds": 0.22173573999316432,
+        "status": "passed",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "exit_code": 1,
+        "forced_stop": false,
+        "name": "old-resource-refused",
+        "process_group_drained": true,
+        "seconds": 0.03851289900194388,
+        "status": "passed_expected_authorization_rejection",
+        "stderr_sha256": "cc623a12215eae1961b7b97f0416fbb56b94470e0f46cd7b59e01ebfa66e0315",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "exit_code": 0,
+        "forced_stop": false,
+        "name": "verify-after-rejection",
+        "process_group_drained": true,
+        "seconds": 0.22024438199878205,
+        "status": "passed",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    ],
+    "timeouts_seconds": {
+      "command": 180,
+      "graceful_stop": 90,
+      "readiness": 90
+    }
+  },
+  "original_functional_status": "failed",
+  "privacy": "Allowlisted metadata and hashes only. No keys, tokens, configs, raw logs or inspections exported.",
+  "private_evidence_hashes": {
+    "checkpoint_json": "b167d2a33a30ea2a492031fead96b8930931b02fe96f9da2e76b1cb8bcb269c8",
+    "dispatch_json": "cb744257ce4891f4dfa9288bc7492d3196816a99c87e0b34cb8b101323f37e10",
+    "native_evidence_json": "0882a449e0ca3d03d6b1d4bc23e3559f628b8de835f64ab27926c9a11625eb92"
+  },
+  "release_acceptance": false,
+  "runners": {
+    "dispatch_sha256": "c4a1f230bdc8a83418675aa58283627b80a78bc5537480bd620a11b96987de0a",
+    "native_sha256": "d3d87af9491932a86faae1b8855c6a6c46a30caaad404fe6244f729b15488966"
+  },
+  "schema": 1,
+  "scope": "129 documents of 1024 canonical bytes; offline standalone diagnostic of frozen 3a8d512",
+  "source": {
+    "build_evidence_sha256": "41c9a17334c861ad20c560d6dd3cdd802b67bd307a1806fa1d83f9e6e5980545",
+    "commit": "3a8d5121e1ddee14ae8a6d938d12152eaa04e417",
+    "lockfile_sha256": "f42fec1f6e7232b1cd5e9c564cfff56dfec7634f2548eab7eb2096a0d0c17c78",
+    "toolchain": "1.97.1",
+    "tree": "44871b6470914c011ad56f374d416b7d0e742efe"
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "evidence_only_base_commit": "7915d28a8f0ab08426891d63417d75e097634384",
+  "files": {
+    "README.md": {
+      "bytes": 5547,
+      "sha256": "47caa1e91ae578eb6616d0de2788ac4cc47744f0908f889611112ba84ebc3410"
+    },
+    "dispatch-plan.md": {
+      "bytes": 4137,
+      "sha256": "d033ab4c7037f24f788ac742847528c7dceaada03fd26e5ffe029b418476d2f8"
+    },
+    "evidence.json": {
+      "bytes": 21471,
+      "sha256": "6857432b74ecfd4b92c767fbf6b1ebd597e07c6cbff03a327bd68238e1efa38e"
+    },
+    "extract-safe-evidence.py": {
+      "bytes": 16264,
+      "sha256": "6fe88ed9df32e20a6a24e50e2989266df9334d7011bbf1c3ac9e88f9334c1fa0"
+    },
+    "mock-dispatch-tests.py": {
+      "bytes": 7781,
+      "sha256": "0c3dc58cdf025071538f536184b4d12474c1e688f32d3f9b664d584507c26a51"
+    },
+    "native-runner.py": {
+      "bytes": 38916,
+      "sha256": "d3d87af9491932a86faae1b8855c6a6c46a30caaad404fe6244f729b15488966"
+    },
+    "vm-dispatch.py": {
+      "bytes": 25221,
+      "sha256": "c4a1f230bdc8a83418675aa58283627b80a78bc5537480bd620a11b96987de0a"
+    }
+  },
+  "schema": 1
+}
