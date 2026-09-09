@@ -132,16 +132,134 @@ class ReleaseGateTests(unittest.TestCase):
                 release_gate.run_gate("unowned", command, root, root, os.environ.copy())
             self.assertTrue((root / "unowned.log").is_file())
 
-    def test_cleanup_error_preserves_original_rejection_and_cleanup_failure(self):
+    def test_uncertain_cleanup_stops_before_parsing_or_hashing_artifacts(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             artifact = {"reason": "compiler-artifact", "executable": str(root / "unowned")}
             command = [sys.executable, "-c", "print(" + repr(json.dumps(artifact)) + ")"]
-            with patch("release_gate.os.killpg", side_effect=PermissionError("group cleanup denied")):
-                with self.assertRaises(ValueError) as raised:
+            uncertain = {"group": 123, "before": None, "after": None, "signals": [],
+                         "errors": ["group cleanup denied"], "drained": False,
+                         "process_returncode": 0}
+            with patch("gate_process.drain", return_value=uncertain):
+                with self.assertRaisesRegex(RuntimeError, "logs and artifacts remain unverified") as raised:
                     release_gate.run_gate("cleanup-error", command, root, root, os.environ.copy())
             self.assertTrue(any("cleanup denied" in note for note in raised.exception.__notes__))
             self.assertTrue((root / "cleanup-error.log").is_file())
+            receipt = json.loads((root / "cleanup-error-process.json").read_text())
+            self.assertEqual(receipt["status"], "failed")
+            self.assertFalse(receipt["cleanup"]["drained"])
+            self.assertFalse(receipt["outputs_stable"])
+
+    def test_silent_command_times_out_and_retains_exact_owned_cleanup(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            command = [sys.executable, "-c", "import time; time.sleep(30)"]
+            result = release_gate.run_gate("silent", command, root, root, os.environ.copy(), .15)
+            self.assertEqual(result["exit_code"], 124)
+            self.assertTrue(result["timed_out"])
+            self.assertTrue(result["process_cleanup"]["drained"])
+            receipt = json.loads((root / result["process"]).read_text())
+            self.assertEqual(receipt["command"], command)
+            self.assertEqual(receipt["timeout_seconds"], .15)
+            self.assertEqual(receipt["process_group"], result["process_cleanup"]["group"])
+            self.assertEqual(release_gate.sha256(root / result["process"]), result["process_sha256"])
+
+    def test_successful_leader_cannot_hide_a_surviving_child(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            command = [sys.executable, "-c",
+                       "import subprocess,sys; subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)'])"]
+            result = release_gate.run_gate("orphan", command, root, root, os.environ.copy(), 5)
+            self.assertEqual(result["exit_code"], 125)
+            self.assertTrue(result["process_cleanup"]["before"])
+            self.assertEqual(result["process_cleanup"]["after"], [])
+            self.assertTrue(result["process_cleanup"]["drained"])
+
+    def test_repeated_signals_drain_before_restoring_original_handlers(self):
+        import signal
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            previous = {number: signal.getsignal(number) for number in (signal.SIGINT, signal.SIGTERM)}
+            command = [sys.executable, "-c",
+                       "import os,signal,time; os.kill(os.getppid(),signal.SIGTERM); "
+                       "os.kill(os.getppid(),signal.SIGINT); time.sleep(30)"]
+            result = release_gate.run_gate("cancel", command, root, root, os.environ.copy(), 5)
+            self.assertNotEqual(result["exit_code"], 0)
+            self.assertIn(signal.SIGTERM, result["received_signals"])
+            self.assertIn(signal.SIGINT, result["received_signals"])
+            self.assertTrue(result["process_cleanup"]["drained"])
+            self.assertEqual(previous, {number: signal.getsignal(number) for number in previous})
+
+    def test_missing_process_inventory_still_terminates_live_owned_group(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            command = [sys.executable, "-c", "import time; time.sleep(30)"]
+            with patch("gate_process.group_members", side_effect=OSError("process inventory unavailable")):
+                with self.assertRaisesRegex(RuntimeError, "process custody is uncertain"):
+                    release_gate.run_gate("uncertain", command, root, root, os.environ.copy(), .15)
+            receipt = json.loads((root / "uncertain-process.json").read_text())
+            self.assertEqual(receipt["exit_code"], 124)
+            self.assertFalse(receipt["cleanup"]["drained"])
+            self.assertIsNone(receipt["cleanup"]["after"])
+            self.assertTrue(receipt["cleanup"]["errors"])
+            self.assertIn("SIGTERM", receipt["cleanup"]["signals"])
+            self.assertIsNotNone(receipt["cleanup"]["process_returncode"])
+            self.assertEqual(release_gate.gate_process.group_members(receipt["process_group"]), [])
+
+    def test_signal_before_popen_returns_cannot_lose_the_new_process_owner(self):
+        import signal
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = release_gate.gate_process.subprocess.Popen
+            owned = []
+
+            def interrupted_launch(*args, **kwargs):
+                child = original(*args, **kwargs)
+                owned.append(child)
+                signal.raise_signal(signal.SIGTERM)
+                return child
+
+            command = [sys.executable, "-c", "import time; time.sleep(30)"]
+            # Patch only the first launch; inspection's ps subprocesses must
+            # not send signals or become part of the tested ownership boundary.
+            def launch_once(*args, **kwargs):
+                return original(*args, **kwargs) if owned else interrupted_launch(*args, **kwargs)
+
+            with patch("gate_process.subprocess.Popen", side_effect=launch_once):
+                result = release_gate.run_gate("launch-cancel", command, root, root, os.environ.copy(), 5)
+            self.assertEqual(result["received_signals"], [signal.SIGTERM])
+            self.assertTrue(result["process_cleanup"]["drained"])
+            self.assertIsNotNone(owned[0].poll())
+
+    def test_executing_runner_and_helper_must_match_the_frozen_repository(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary)
+            (source / "scripts").mkdir()
+            for relative, original in (("release_gate.py", release_gate.__file__),
+                                       ("gate_process.py", release_gate.gate_process.__file__)):
+                (source / "scripts" / relative).write_bytes(Path(original).read_bytes())
+            inputs = release_gate.verify_runner_inputs(source)
+            self.assertEqual(set(inputs), {"scripts/release_gate.py", "scripts/gate_process.py"})
+            helper = source / "scripts/gate_process.py"
+            helper.write_bytes(helper.read_bytes() + b"\n# Different frozen input\n")
+            with self.assertRaisesRegex(ValueError, "executing release tool differs"):
+                release_gate.verify_runner_inputs(source)
+
+    def test_delayed_observation_cannot_accept_a_completion_after_original_deadline(self):
+        import time
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+
+            def observe(record):
+                if record["status"] == "running" and record["process_group"] is not None:
+                    time.sleep(.1)
+
+            with (root / "delayed.log").open("wb") as stream:
+                result = release_gate.gate_process.run([sys.executable, "-c", "pass"], root,
+                                                       os.environ.copy(), stream, .05, observe)
+            self.assertEqual(result["exit_code"], 124)
+            self.assertTrue(result["timed_out"])
+            self.assertTrue(result["cleanup"]["drained"])
 
 
 if __name__ == "__main__":

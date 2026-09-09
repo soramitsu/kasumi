@@ -63,6 +63,9 @@ def verify_evidence(directory):
     jobs = record.get("jobs")
     if type(jobs) is not int or not 1 <= jobs <= 64:
         raise ValueError("recorded functional concurrency is missing or invalid")
+    timeout = record.get("gate_timeout_seconds")
+    if type(timeout) is not int or not 1 <= timeout <= 86400:
+        raise ValueError("recorded functional timeout is missing or invalid")
     expected = dict(functional_gates(jobs))
     required = set(expected)
     if {g["name"] for g in gates} != required or len(gates) != len(required):
@@ -76,7 +79,13 @@ def verify_evidence(directory):
         if not gate.get("resources") or not gate.get("resources_sha256"):
             raise ValueError("gate resource evidence is missing; rerun frozen gates")
         verify_file(directory, gate["resources"], gate["resources_sha256"])
+        verify_process_receipt(directory, gate, timeout)
     source = directory / "source"
+    inputs = record.get("runner_inputs")
+    if not isinstance(inputs, dict) or set(inputs) != {"scripts/release_gate.py", "scripts/gate_process.py"}:
+        raise ValueError("executing release tool provenance is missing")
+    for relative, checksum in inputs.items():
+        verify_file(source, relative, checksum)
     source_files = verify_file(directory, "source-files.json", record["source_files_sha256"])
     if inventory(source) != json.loads(source_files.read_text()):
         raise ValueError("frozen source differs from its recorded inventory")
@@ -100,6 +109,29 @@ def verify_evidence(directory):
     if set(binaries) != BINARIES:
         raise ValueError("production executable set is incomplete")
     return record, production, hosts[0], binaries
+
+
+def verify_process_receipt(directory, gate, timeout):
+    if not gate.get("process") or not gate.get("process_sha256"):
+        raise ValueError("gate process evidence is missing; rerun frozen gates")
+    path = verify_file(directory, gate["process"], gate["process_sha256"])
+    process = json.loads(path.read_text())
+    cleanup = process.get("cleanup")
+    group = process.get("process_group")
+    if (process.get("status") != "passed" or process.get("outputs_stable") is not True
+            or process.get("command") != gate["command"]
+            or process.get("exit_code") != 0 or process.get("process_exit_code") != 0
+            or process.get("timeout_seconds") != timeout or gate.get("timeout_seconds") != timeout
+            or process.get("timed_out") is not False or gate.get("timed_out") is not False
+            or process.get("received_signals") != [] or gate.get("received_signals") != []
+            or "error" not in process or process["error"] is not None
+            or "process_error" not in gate or gate["process_error"] is not None
+            or type(group) is not int or group <= 0 or not isinstance(cleanup, dict)
+            or cleanup.get("group") != group or cleanup.get("drained") is not True
+            or cleanup.get("before") != [] or cleanup.get("after") != []
+            or cleanup.get("signals") != [] or cleanup.get("errors") != []
+            or cleanup.get("process_returncode") != 0 or gate.get("process_cleanup") != cleanup):
+        raise ValueError("gate process did not finish with exact drained ownership")
 
 
 def verify_architecture(path, target):
@@ -289,7 +321,7 @@ def main():
         parser.error("output must be absolute and outside frozen evidence")
     record, production, target, binaries = verify_evidence(evidence)
     source = evidence / "source"
-    for tool in ("package_release.py", "release_gate.py"):
+    for tool in ("package_release.py", "release_gate.py", "gate_process.py"):
         verify_file(source, "scripts/" + tool, sha256(Path(__file__).resolve().parent / tool))
     epoch = int(record["build_environment"]["SOURCE_DATE_EPOCH"])
     if not 0 <= epoch <= 0xFFFFFFFF:
