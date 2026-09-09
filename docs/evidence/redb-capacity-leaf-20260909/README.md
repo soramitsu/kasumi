@@ -18,6 +18,7 @@ production acceptance remain unfinished.
 | `5c2a3bf` | Three allocator-candidate tests passed in 8.148 s, then ten growth-admission tests passed in 5.726 s; none ignored. |
 | `11a06d0` | Compilation failed in 2.738 s: a new mutable-table assertion lacked its trait import under the selected feature graph. No tests ran. |
 | `76f79ac` | Three candidate tests passed in 7.451 s; growth tests then ran in 8.507 s with 13 passing and one failing in actual commit-preparation rollback. |
+| `97ae207` | Compilation failed in 1.071 s because the storage-failure Drop path retained the renamed namespace cleanup call. No tests ran. |
 
 In `ccf76d6`, the shared allocator/system-namespace state regression passed.
 Five tests failed at reopening their 512-byte-page fixture with a builder that
@@ -90,3 +91,10 @@ this evidence record. Failed executable SHA-256 is
 `336b585b2445a29ca0f1cbc7e72f404eab432fb7681056785fa53897769f0f5b`.
 All owned process groups drained, and each attempt's source/package/lock hashes
 remained unchanged. No whole-upstream or production acceptance claim follows.
+
+The `97ae207` retry stopped at compilation before either focused group ran. Its
+remaining old method call is in storage-failure transaction Drop, where namespace
+updates must be discarded without claiming successful rollback or releasing the
+I/O failure latch. Source, locks, and package inputs were unchanged; session 66221
+and owned group 57808 drained. The failing `76f79ac` executable remains preserved
+independently. This compile failure does not validate the abort-inventory fix.

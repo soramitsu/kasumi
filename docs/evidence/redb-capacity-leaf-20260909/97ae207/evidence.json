@@ -1,0 +1,75 @@
+{
+  "scope": "macOS ARM64 seventeen focused redb tests: three allocator candidate regressions plus fourteen growth/admitted-commit regressions. Frozen97ae207 source; prior76f correctness failure and11a compile failure preserved; prior76f failed binary preserved independently. Shared host ordinary correctness cohort, not a quiet performance measurement. No root dependency patch, Kasumi engine/store/server/Raft compilation, listener or provider. Shared host; full upstream just test, fuzzing, durable disk governor and production integration remain unrun.",
+  "source_before": {
+    "head": "97ae2074f7d8a62b60b6550cb36743f48b07581a",
+    "tree": "6e76e4d1ad1cff95420353d2920ff72011176eff",
+    "status": "",
+    "lock_sha256": "f42fec1f6e7232b1cd5e9c564cfff56dfec7634f2548eab7eb2096a0d0c17c78",
+    "leaf_lock_sha256": "bcccfce715a96865a7c82c4f97d64140b825ec90ea676d35c26e5deb048c0ce5",
+    "package_manifest_sha256": "d02f030c0c6558dfbd67004c7233eed3541c99aeb9c597727cbcdc1a783fa09f",
+    "patch_sha256": "7a25cf60597f83ea183b23f3e75fdcd5d61e16bc7f3321faac3d1ff66dd6c0c9",
+    "archive_sha256": "de6c3b63e007e90ce536ec2ae4690826136a20ec8dbbbb400daef1bb999d2e36"
+  },
+  "tools": {
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo": "7672ead309d505577c018fff2cafb3433601f073e38cbe87359ac1f7b944bbf5",
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc": "210df6794001b73ec3d453878707fa1e0bdcb63c427024a6e6574bbe5615a4da",
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustdoc": "aa94960b6a477441f6d1a797394daf4cafcc889d837550c8fa462b102e3fa5da"
+  },
+  "runner_sha256": "e78a337a7b110e1cad78c08fa67d93e932ad041c2492ae89a9e65f810e167610",
+  "runner_interpreter": {
+    "executable": "/Users/mtakemiya/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+    "version": "3.12.14 (main, Aug 25 2026, 13:50:33) [Clang 22.1.3 ]",
+    "sha256": "ac60cfe0268614638d0ffa35f3b0284fc7b3a11482723793455e17eeb278509e"
+  },
+  "per_gate_timeout_seconds": 300,
+  "gates": [
+    {
+      "name": "redb-allocator-candidate",
+      "command": [
+        "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+        "test",
+        "--manifest-path",
+        "vendor/redb-4.2.0/Cargo.toml",
+        "--locked",
+        "--offline",
+        "-j1",
+        "--features",
+        "experimental-precommit-growth-admission",
+        "--lib",
+        "tree_store::page_store::allocator_commit::tests",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "seconds": 1.071288333972916,
+      "process_group_id": 57808,
+      "process_exit_code": 101,
+      "exit_code": 101,
+      "problem": null,
+      "cleanup": {
+        "signals": [],
+        "process_returncode": 101,
+        "process_group_drained": true
+      },
+      "required_test": [
+        "tree_store::page_store::allocator_commit::tests::discard_preserves_live_allocator_and_only_copies_changed_regions",
+        "tree_store::page_store::allocator_commit::tests::publication_matches_prepared_quick_repair_bytes_and_preserves_other_pages",
+        "tree_store::page_store::allocator_commit::tests::shrinking_is_private_until_publication_and_cannot_discard_live_pages"
+      ],
+      "required_test_passed": false,
+      "compiled_features_match": false,
+      "log_sha256": "20bec87ee4c719d3bc1ab7517d2934c52af7df2f23d7bc26129b3cb73a40360a",
+      "artifacts": []
+    }
+  ],
+  "source_after": {
+    "head": "97ae2074f7d8a62b60b6550cb36743f48b07581a",
+    "tree": "6e76e4d1ad1cff95420353d2920ff72011176eff",
+    "status": "",
+    "lock_sha256": "f42fec1f6e7232b1cd5e9c564cfff56dfec7634f2548eab7eb2096a0d0c17c78",
+    "leaf_lock_sha256": "bcccfce715a96865a7c82c4f97d64140b825ec90ea676d35c26e5deb048c0ce5",
+    "package_manifest_sha256": "d02f030c0c6558dfbd67004c7233eed3541c99aeb9c597727cbcdc1a783fa09f",
+    "patch_sha256": "7a25cf60597f83ea183b23f3e75fdcd5d61e16bc7f3321faac3d1ff66dd6c0c9",
+    "archive_sha256": "de6c3b63e007e90ce536ec2ae4690826136a20ec8dbbbb400daef1bb999d2e36"
+  }
+}
