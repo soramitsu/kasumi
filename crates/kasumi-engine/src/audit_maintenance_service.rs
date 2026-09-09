@@ -2,7 +2,7 @@ use super::*;
 
 // The actual blocking preparation retains every owner even if its async caller
 // disappears. The proposal keeps its separate lane through the Raft outcome.
-struct Prepared {
+pub(super) struct Prepared {
     bytes: Option<Vec<u8>>,
     _engine: Arc<TenantEngine>,
     _pool: Arc<crate::audit_maintenance::NodeAuditMaintenance>,
@@ -30,48 +30,68 @@ impl Database {
         self.audit_worker_started.store(true, Ordering::Release);
         let weak = Arc::downgrade(self);
         let wake = self.audit_worker_wake.clone();
+        let mut stop = self.background_stop.subscribe();
+        let mut exit = BackgroundWorkerExit {
+            database: weak.clone(),
+            completed: false,
+        };
         let task = tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = wake.notified() => {},
-                    _ = tokio::time::sleep(Duration::from_millis(250)) => {},
-                }
-                let Some(database) = weak.upgrade() else {
-                    return;
-                };
-                #[cfg(test)]
-                {
-                    let pause = database.audit_worker_pause.lock().unwrap().take();
-                    if let Some(pause) = pause {
-                        pause.entered.notify_one();
-                        pause.release.notified().await;
+            let result = async {
+                loop {
+                    if *stop.borrow() {
+                        return Ok(());
                     }
-                }
-                if database.closing.load(Ordering::Acquire) {
-                    return;
-                }
-                let metrics = database.group.raft().metrics().borrow().clone();
-                if metrics.current_leader != Some(metrics.id) {
-                    continue;
-                }
-                let Ok(registration) = database.work.begin(QueryCancellation::default()) else {
-                    return;
-                };
-                let registration = Arc::new(registration);
-                match database.maintain_tenant_audit(registration).await {
-                    Ok(true) => {
-                        database
-                            .audit_worker_completed
-                            .fetch_add(1, Ordering::Relaxed);
+                    tokio::select! {
+                        _ = stop.changed() => return Ok(()),
+                        _ = wake.notified() => {},
+                        _ = tokio::time::sleep(Duration::from_millis(250)) => {},
                     }
-                    Ok(false) => {}
-                    Err(_) => {
-                        database
-                            .audit_worker_failures
-                            .fetch_add(1, Ordering::Relaxed);
+                    let Some(database) = weak.upgrade() else {
+                        return Ok(());
+                    };
+                    #[cfg(test)]
+                    {
+                        let pause = database.audit_worker_pause.lock().unwrap().take();
+                        if let Some(pause) = pause {
+                            pause.entered.notify_one();
+                            pause.release.notified().await;
+                        }
+                    }
+                    if database.closing.load(Ordering::Acquire) {
+                        return Ok(());
+                    }
+                    let metrics = database.group.raft().metrics().borrow().clone();
+                    if metrics.current_leader != Some(metrics.id) {
+                        continue;
+                    }
+                    let Ok(registration) = database.work.begin(QueryCancellation::default()) else {
+                        return Ok(());
+                    };
+                    let registration = Arc::new(registration);
+                    match database.maintain_tenant_audit(registration).await {
+                        Ok(true) => {
+                            database
+                                .audit_worker_completed
+                                .fetch_add(1, Ordering::Relaxed);
+                        }
+                        Ok(false) => {}
+                        Err(error) => {
+                            database
+                                .audit_worker_failures
+                                .fetch_add(1, Ordering::Relaxed);
+                            // Archive connectivity and proposal errors remain
+                            // retryable. An actual blocking worker panic/abort is a
+                            // terminal failure, retained intact in this task result.
+                            if let Ok(failure) = error.downcast::<DrainFailure>() {
+                                return Err(failure);
+                            }
+                        }
                     }
                 }
             }
+            .await;
+            exit.complete(&result);
+            result
         });
         *self
             .audit_worker
@@ -90,24 +110,49 @@ impl Database {
             .map_err(|_| anyhow::anyhow!("audit maintenance ownership unavailable"))?
             .clone()
             .ok_or_else(|| anyhow::anyhow!("audit maintenance not installed"))?;
-        let _serial = self.proposal_gate.clone().lock_owned().await;
-        let permit = pool.preparation.clone().acquire_owned().await?;
+        let mut stop = self.background_stop.subscribe();
+        if *stop.borrow() {
+            return Ok(false);
+        }
+        // No work has been dispatched while these capacities are awaited.
+        // Stop must release this registration even when another database owns
+        // the shared preparation permit in an abandoned completed child.
+        let _serial = tokio::select! {
+            biased;
+            _ = stop.changed() => return Ok(false),
+            guard = self.proposal_gate.clone().lock_owned() => guard,
+        };
+        #[cfg(test)]
+        self.worker_test_hooks.waiting_preparation.notify_one();
+        let permit = tokio::select! {
+            biased;
+            _ = stop.changed() => return Ok(false),
+            permit = pool.preparation.clone().acquire_owned() => permit?,
+        };
         if self.closing.load(Ordering::Acquire) {
             return Ok(false);
         }
         self.access()?;
         let engine = self.engine.clone();
-        let mut prepared = tokio::task::spawn_blocking(move || {
-            let bytes = engine.prepare_audit_prune_inner()?;
-            Ok::<_, anyhow::Error>(Prepared {
-                bytes,
-                _engine: engine,
-                _pool: pool,
-                _permit: permit,
-                _registration: registration,
+        #[cfg(test)]
+        let hook = self.worker_test_hooks.audit.lock().unwrap().take();
+        let mut prepared = self
+            .audit_preparation
+            .run(move || {
+                #[cfg(test)]
+                if let Some(hook) = hook {
+                    hook();
+                }
+                let bytes = engine.prepare_audit_prune_inner()?;
+                Ok::<_, anyhow::Error>(Prepared {
+                    bytes,
+                    _engine: engine,
+                    _pool: pool,
+                    _permit: permit,
+                    _registration: registration,
+                })
             })
-        })
-        .await??;
+            .await??;
         let Some(bytes) = prepared.bytes.take() else {
             return Ok(false);
         };

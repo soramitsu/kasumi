@@ -4,6 +4,11 @@ use crate::{SecurityAudit, SecurityEvent, SecurityEventKind, SecurityOutcome, Te
 mod audit_maintenance_service;
 #[path = "control_administration.rs"]
 pub(crate) mod control_administration;
+#[cfg(test)]
+#[path = "database_worker_outcome_tests.rs"]
+mod database_worker_outcome_tests;
+#[path = "database_workers.rs"]
+mod database_workers;
 use kasumi_clock::{LeaseClock, SystemLeaseClock};
 use kasumi_query::QueryCancellation;
 use kasumi_raft::RaftGroup;
@@ -389,16 +394,48 @@ pub struct Database {
     closing: AtomicBool,
     custody_detached: AtomicBool,
     shutdown_gate: tokio::sync::Mutex<DrainReport>,
-    seal_monitor: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
-    audit_worker: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    seal_monitor: tokio::sync::Mutex<Option<tokio::task::JoinHandle<DrainResult>>>,
+    audit_worker: tokio::sync::Mutex<Option<tokio::task::JoinHandle<DrainResult>>>,
+    monitor_check: database_workers::BlockingChild<bool>,
+    audit_preparation:
+        database_workers::BlockingChild<anyhow::Result<audit_maintenance_service::Prepared>>,
+    background_stop: tokio::sync::watch::Sender<bool>,
+    seal_monitor_wake: Arc<tokio::sync::Notify>,
     audit_worker_wake: Arc<tokio::sync::Notify>,
     #[cfg(test)]
     audit_worker_pause: Mutex<Option<Arc<audit_maintenance_service::WorkerPause>>>,
+    #[cfg(test)]
+    worker_test_hooks: database_worker_outcome_tests::BlockingHooks,
     audit_worker_started: AtomicBool,
     audit_worker_failures: AtomicU64,
     audit_worker_completed: AtomicU64,
     proposal_gate: Arc<tokio::sync::Mutex<()>>,
     command_clock: Mutex<Arc<dyn CommandClock>>,
+}
+
+/// An unexpected worker exit closes request admission even before an operator
+/// joins its handle. The handle retains the actual terminal cause; this guard
+/// contains only a Weak reference and does not create an owner/task cycle.
+struct BackgroundWorkerExit {
+    database: std::sync::Weak<Database>,
+    completed: bool,
+}
+impl BackgroundWorkerExit {
+    fn complete(&mut self, result: &DrainResult) {
+        self.completed = result.is_ok();
+    }
+}
+impl Drop for BackgroundWorkerExit {
+    fn drop(&mut self) {
+        if !self.completed {
+            if let Some(database) = self.database.upgrade() {
+                database.closing.store(true, Ordering::Release);
+                database.work.seal();
+                database.audit_work.seal();
+                database.background_stop.send_replace(true);
+            }
+        }
+    }
 }
 
 /// Extends an already authorized operation through adapter response encoding.
@@ -683,9 +720,15 @@ impl Database {
             shutdown_gate: tokio::sync::Mutex::new(DrainReport::default()),
             seal_monitor: tokio::sync::Mutex::new(None),
             audit_worker: tokio::sync::Mutex::new(None),
+            monitor_check: database_workers::BlockingChild::new("database retention check"),
+            audit_preparation: database_workers::BlockingChild::new("database audit preparation"),
+            background_stop: tokio::sync::watch::channel(false).0,
+            seal_monitor_wake: Arc::new(tokio::sync::Notify::new()),
             audit_worker_wake: Arc::new(tokio::sync::Notify::new()),
             #[cfg(test)]
             audit_worker_pause: Mutex::new(None),
+            #[cfg(test)]
+            worker_test_hooks: Default::default(),
             audit_worker_started: AtomicBool::new(false),
             audit_worker_failures: AtomicU64::new(0),
             audit_worker_completed: AtomicU64::new(0),
@@ -769,14 +812,23 @@ impl Database {
         self.closing.store(true, Ordering::Release);
         self.work.seal();
         self.audit_work.seal();
+        self.background_stop.send_replace(true);
         self.audit_worker_wake.notify_one();
         {
             let mut monitor = self.seal_monitor.lock().await;
             if let Some(task) = monitor.as_mut() {
-                task.abort();
-                let _ = task.await;
+                match task.await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(failure)) => report.merge(&failure),
+                    Err(error) => {
+                        report.record("database seal monitor", 0, error.into());
+                    }
+                }
                 monitor.take();
             }
+        }
+        if let Err(failure) = self.monitor_check.drain().await {
+            report.merge(&failure);
         }
         if let Err(error) = self.group.shutdown().await {
             retained = Some(DrainFailure::retained(report.record(
@@ -785,15 +837,24 @@ impl Database {
                 error,
             )));
         }
-        self.work.drain().await;
-        self.audit_work.drain().await;
         {
             let mut worker = self.audit_worker.lock().await;
             if let Some(task) = worker.as_mut() {
-                let _ = task.await;
+                match task.await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(failure)) => report.merge(&failure),
+                    Err(error) => {
+                        report.record("database audit worker", 0, error.into());
+                    }
+                }
                 worker.take();
             }
         }
+        if let Err(failure) = self.audit_preparation.drain().await {
+            report.merge(&failure);
+        }
+        self.work.drain().await;
+        self.audit_work.drain().await;
         if let Err(failure) = self.store.shutdown().await {
             report.merge(&failure);
             if failure.completion() == DrainCompletion::Retained {
@@ -882,52 +943,83 @@ impl Database {
     fn spawn_seal_monitor(self: &Arc<Self>) {
         let weak = Arc::downgrade(self);
         let mut notices = self.store.seal_notifications();
+        let mut stop = self.background_stop.subscribe();
+        let wake = self.seal_monitor_wake.clone();
+        let mut exit = BackgroundWorkerExit {
+            database: weak.clone(),
+            completed: false,
+        };
         let task = tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    changed = notices.changed() => { if changed.is_err() { break; } },
-                    _ = tokio::time::sleep(Duration::from_secs(1)) => {},
-                }
-                let Some(db) = weak.upgrade() else { break };
-                // Aborting the async monitor cannot abort a running blocking
-                // job. Its registration keeps shutdown draining until both the
-                // database owner and its retained roots are actually released.
-                let Ok(registration) = db.work.begin(QueryCancellation::default()) else {
-                    break;
-                };
-                struct RetentionCheck {
-                    database: Arc<Database>,
-                    _registration: WorkRegistration,
-                }
-                let work = RetentionCheck {
-                    database: db,
-                    _registration: registration,
-                };
-                let check = tokio::task::spawn_blocking(move || {
-                    let db = &work.database;
-                    let _ = db.access();
-                    if db.engine.generation().is_err() {
-                        db.work.seal();
+            let result = async {
+                loop {
+                    if *stop.borrow() {
+                        break;
                     }
-                    let pressured = db.admission.get().is_some_and(|node| {
-                        let status = node.snapshot();
-                        status.pressured || !status.sample_usable
-                    });
-                    let now = db.clock.now();
-                    db.cursors
+                    tokio::select! {
+                        _ = stop.changed() => break,
+                        _ = wake.notified() => {},
+                        changed = notices.changed() => { if changed.is_err() { break; } },
+                        _ = tokio::time::sleep(Duration::from_secs(1)) => {},
+                    }
+                    let Some(db) = weak.upgrade() else { break };
+                    // Explicit shutdown stops the idle loop and joins this actual
+                    // blocking child before discarding the monitor handle. The work
+                    // registration also retains roots if an external actor aborts it.
+                    let Ok(registration) = db.work.begin(QueryCancellation::default()) else {
+                        break;
+                    };
+                    struct RetentionCheck {
+                        database: Arc<Database>,
+                        _registration: WorkRegistration,
+                    }
+                    let work = RetentionCheck {
+                        database: db.clone(),
+                        _registration: registration,
+                    };
+                    #[cfg(test)]
+                    let hook = work
+                        .database
+                        .worker_test_hooks
+                        .monitor
                         .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .retain(|_, c| !pressured && now.saturating_sub(c.created) < c.ttl);
-                    let term = db.group.raft().metrics().borrow().current_term;
-                    db.engine.leases.expire_idle(pressured, term);
-                    let serving = db.engine.generation().is_ok();
-                    drop(work);
-                    serving
-                });
-                if !check.await.unwrap_or(false) {
-                    break;
+                        .unwrap()
+                        .take();
+                    let serving =
+                        db.monitor_check
+                            .run(move || {
+                                #[cfg(test)]
+                                if let Some(hook) = hook {
+                                    hook();
+                                }
+                                let db = &work.database;
+                                let _ = db.access();
+                                if db.engine.generation().is_err() {
+                                    db.work.seal();
+                                }
+                                let pressured = db.admission.get().is_some_and(|node| {
+                                    let status = node.snapshot();
+                                    status.pressured || !status.sample_usable
+                                });
+                                let now = db.clock.now();
+                                db.cursors.lock().unwrap_or_else(|p| p.into_inner()).retain(
+                                    |_, c| !pressured && now.saturating_sub(c.created) < c.ttl,
+                                );
+                                let term = db.group.raft().metrics().borrow().current_term;
+                                db.engine.leases.expire_idle(pressured, term);
+                                let serving = db.engine.generation().is_ok();
+                                drop(work);
+                                serving
+                            })
+                            .await?;
+                    if !serving {
+                        break;
+                    }
                 }
+                Ok(())
             }
+            .await;
+            exit.complete(&result);
+            result
         });
         *self
             .seal_monitor
