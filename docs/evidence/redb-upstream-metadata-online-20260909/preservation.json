@@ -1,0 +1,32 @@
+{
+  "evidence.json": {
+    "source": "/tmp/kasumi-redb-bdde797-metadata-online/evidence.json",
+    "sha256": "414244ca4689aa5edbbf7df987528ffb8514d9893717c0911e511be5f86f8473",
+    "bytes": 16864
+  },
+  "fuzz-Cargo.lock": {
+    "source": "/tmp/kasumi-redb-bdde797-metadata-online/fuzz-Cargo.lock",
+    "sha256": "4095adc5bd8218e8d8f72ad9476344ca3793d2f2996e795607910666f385ec3e",
+    "bytes": 7429
+  },
+  "upstream-Cargo.lock": {
+    "source": "/tmp/kasumi-redb-bdde797-metadata-online/upstream-Cargo.lock",
+    "sha256": "de059020b773066b6abc56c3efe207eb6e6106f19a9145eaa9f41c6ceff4bcaf",
+    "bytes": 58693
+  },
+  "fuzz.log": {
+    "source": "/tmp/kasumi-redb-bdde797-metadata-online/fuzz.log",
+    "sha256": "45ee4092cc89522b32638ec2951fcc8710797bca76b22f401610a7d15b49c6bd",
+    "bytes": 154464
+  },
+  "upstream.log": {
+    "source": "/tmp/kasumi-redb-bdde797-metadata-online/upstream.log",
+    "sha256": "71652a2e1d546a12c94597a96acb4438ce6ed6e9fe71f3cf026eaed640577621",
+    "bytes": 1086508
+  },
+  "kasumi-redb-bdde797-metadata-online.py": {
+    "source": "/tmp/kasumi-redb-bdde797-metadata-online.py",
+    "sha256": "4f7d8ff308fe1d3477b08a9dbec31b6409519c0285547b8f3989bc777f656733",
+    "bytes": 3705
+  }
+}
