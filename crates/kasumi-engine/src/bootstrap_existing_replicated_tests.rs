@@ -3,6 +3,8 @@ use kasumi_raft::InProcessRouter;
 use kasumi_store::{NodeStore, test_utils::LocalKeyProvider};
 use std::time::Duration;
 
+const NODE_STORE_ID: uuid::Uuid = uuid::Uuid::from_u128(0xa1f9_93e5_2727_480a_9e7c_6e39eb515f01);
+
 struct Replica {
     directory: tempfile::TempDir,
     node: Arc<NodeStore>,
@@ -12,8 +14,9 @@ struct Replica {
 impl Replica {
     async fn new() -> anyhow::Result<Self> {
         let directory = tempfile::tempdir()?;
-        let node = NodeStore::open(
+        let node = NodeStore::create_new(
             directory.path().join("node.redb"),
+            NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
         )?;
         let stores = TenantStorageSet::open_fixture(
@@ -34,6 +37,7 @@ impl Replica {
     async fn existing(directory: tempfile::TempDir) -> anyhow::Result<Self> {
         let node = NodeStore::open_existing(
             directory.path().join("node.redb"),
+            NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
         )?;
         let stores = TenantStorageSet::open_existing_fixture(
@@ -59,11 +63,13 @@ impl Replica {
         } else {
             TenantStore::open_fixture(node, crate::SECURITY_TENANT.into(), provider).await?
         };
-        SecurityAudit::open(
-            store,
-            Default::default(),
-            crate::admission::NodeAdmission::with_fixed_memory(Default::default(), 2 << 30, 0)?,
-        )
+        let admission =
+            crate::admission::NodeAdmission::with_fixed_memory(Default::default(), 2 << 30, 0)?;
+        if existing {
+            SecurityAudit::open(store, Default::default(), admission)
+        } else {
+            SecurityAudit::initialize(store, Default::default(), admission)
+        }
     }
     async fn close(self) -> tempfile::TempDir {
         self.stores.application().shutdown().await;

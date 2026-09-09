@@ -65,7 +65,7 @@ async fn target_monitor_and_outer_owner_survive_cancelled_shutdown_until_journal
         .await
         .unwrap();
         let audit =
-            SecurityAudit::open(audit_store, Default::default(), admission.clone()).unwrap();
+            SecurityAudit::initialize(audit_store, Default::default(), admission.clone()).unwrap();
         let cluster = ClusterNetwork::new(
             1,
             &tls,

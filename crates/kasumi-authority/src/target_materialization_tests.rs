@@ -12,21 +12,23 @@ use kasumi_store::{FilesystemBackupDestination, StorageAccess, TenantStorageSet,
 async fn audit(
     node: Arc<NodeStore>,
     admission: Arc<kasumi_engine::admission::NodeAdmission>,
+    existing: bool,
 ) -> Arc<kasumi_engine::SecurityAudit> {
-    let store = TenantStore::open_fixture(
-        node,
-        kasumi_engine::SECURITY_TENANT.into(),
-        Arc::new(LocalKeyProvider::new([0xa7; 32])),
-    )
-    .await
+    let provider = Arc::new(LocalKeyProvider::new([0xa7; 32]));
+    let store = if existing {
+        TenantStore::open_existing_fixture(node, kasumi_engine::SECURITY_TENANT.into(), provider)
+            .await
+    } else {
+        TenantStore::open_fixture(node, kasumi_engine::SECURITY_TENANT.into(), provider).await
+    }
     .unwrap();
     // These stores model distinct processes. Audit and database on each node
     // share one admission governor, rather than the test-process fallback.
-    kasumi_engine::SecurityAudit::open(
-        store,
-        kasumi_types::AuditRetentionBudget::default(),
-        admission,
-    )
+    if existing {
+        kasumi_engine::SecurityAudit::open(store, Default::default(), admission)
+    } else {
+        kasumi_engine::SecurityAudit::initialize(store, Default::default(), admission)
+    }
     .unwrap()
 }
 struct MaterialFixture {
@@ -52,7 +54,7 @@ impl MaterialFixture {
         .unwrap();
         let source_admission =
             kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap();
-        let security = audit(node.clone(), source_admission.clone()).await;
+        let security = audit(node.clone(), source_admission.clone(), false).await;
         let sourcekey = Arc::new(LocalKeyProvider::new([51; 32]));
         let app = TenantStore::open_fixture(node, "city".into(), sourcekey.clone())
             .await
@@ -293,8 +295,8 @@ impl MaterialFixture {
         // Production runner obtains this original operation before providers.
         // The helper's actual opener is under the same opaque gate; each tested
         // materialization still explicitly obtains its registered operation.
+        let first_creation = self.target_files.lock().unwrap().insert(id);
         let node = {
-            let first_creation = self.target_files.lock().unwrap().insert(id);
             let path = self.issuer._dir.path().join(format!("target-{id}.redb"));
             if first_creation {
                 NodeStore::create_new(path, node_store_id, kasumi_store::ScratchDisk::fixture())
@@ -303,7 +305,7 @@ impl MaterialFixture {
             }
             .unwrap()
         };
-        let security = audit(node.clone(), self.admissions[&id].clone()).await;
+        let security = audit(node.clone(), self.admissions[&id].clone(), !first_creation).await;
         let stores = TenantStorageSet::open(
             node,
             "city".into(),
@@ -1312,7 +1314,7 @@ async fn exact_actual_completion_is_required_for_issuer_and_target_activation() 
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();
-    let security = audit(node.clone(), f.admissions[&projected_node_id].clone()).await;
+    let security = audit(node.clone(), f.admissions[&projected_node_id].clone(), true).await;
     let stores = TenantStorageSet::open(
         node,
         "city".into(),
