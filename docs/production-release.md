@@ -19,6 +19,13 @@ tests remain **UNRUN**. The [prepared immutable cohort](evidence/first-release-3
 retains the original compiler, formatting, full-store and strict-store deadlines
 and requires 44 named store regressions. Preparation is not an execution result.
 
+Subsequent development integrates typed drain completion (`b02c60f`), retained
+startup owners across polling panics (`0f940a4`), and required immutable Control
+genesis (`2547bad`). The genesis tag replaces empty-Control startup creation and
+binds its encrypted baseline to enrollment. These changes and their new tests
+remain **UNRUN** and are excluded from the queued `3b932ee` cohort. Leaf worker
+failure propagation and standalone tenant staging are separate unfinished work.
+
 The latest [frozen compiler/store cohort](evidence/first-release-7a21995-check-20260909/README.md)
 passed workspace compilation and formatting, then failed one store identity
 assertion: 126 passed, one failed, two ignored. Strict store lint did not run after
@@ -115,7 +122,7 @@ gates above. Source-only changes and failed attempts remain explicitly identifie
 1. Validate the combined explicit singleton/pair creation and strict reopen paths,
    canonical administration, stopped-operator ownership and live configured-tenant
    enrollment. The generic singleton create-or-open API is removed. Complete
-   explicit immutable Control genesis, standalone tenant enrollment and permanent
+   validation of explicit immutable Control genesis, standalone tenant enrollment and permanent
    cleanup/replacement of incomplete HA creation without restoring creation rights.
 2. Close and validate stopped-operator ownership from first exclusive lock through
    every failure/cancellation. Propagate actual worker/core terminal failures;

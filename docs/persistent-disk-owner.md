@@ -83,19 +83,25 @@ The initial regression sources cover repeat census, service/Arc reopen without
 double charge, unused reservations, sparse extent retention, reserved-I/O drain,
 maintenance headroom, exact denial, clone-blocked reclamation, path substitution,
 cancelled/exhausted census, invalid/overlapping roots, bounded open metadata,
-shared scratch promises and shared poison. They have not been compiled or run.
+shared scratch promises and shared poison. All 13 NodeDisk tests and both
+DeviceDisk tests passed in the actual frozen `7a21995` store run on macOS ARM64.
+That [cohort failed a separate store identity assertion](evidence/first-release-7a21995-check-20260909/README.md):
+126 tests passed, one failed and two were ignored; strict store lint did not run.
+Its complete raw log retains each primitive test result. This is scoped primitive
+evidence on that source, not a passing store suite or production capacity gate.
 The two device tests exercise dropping every handle and reopening after both
 poison and abandoned uncertainty/pending promises. A deterministic file-close
 pause also checks that an old destructor cannot unregister a newer owner of the
 same inode, and a synthetic failed filesystem observation fences scratch until a
 complete drained census. All fixture waits have a finite failure deadline.
-Direct Rust 1.97.1 formatting and whitespace checks are source checks only.
+The same cohort passed workspace compilation and formatting with Rust 1.97.1.
+Later integration source still requires its own execution.
 
 Before production integration, the redb owner must cover creation, open/repair,
 ordinary writes, close checkpoints and compaction as well as the admitted
-transaction subset. Its current prototype `GrowthDenied` callback also needs a
-distinct owner-failure result so a poisoned or invalid descriptor cannot be
-reported as ordinary capacity exhaustion. Backup/archive publication and
+transaction subset. The separate, uninstalled redb prototype at `4f628637`
+distinguishes `CapacityDenied` from `OwnerFailed` and retains backend failure;
+the production dependency graph does not yet contain that change. Backup/archive publication and
 deletion must hold these exact owners through final directory synchronization;
 S3 objects need their separate installed capacity policy. Runtime configuration,
 health/readiness reporting, durable startup enrollment, cross-platform tests and
