@@ -1,0 +1,44 @@
+[
+  {
+    "path": "evidence.json",
+    "original": "/tmp/kasumi-b17eaf5-combined-remainder/evidence.json",
+    "sha256": "710840c8fef09f811594816754ff6125a4b98b45fca73fbc45db58d53223fc56",
+    "bytes": 1104688
+  },
+  {
+    "path": "guarded-4.log",
+    "original": "/tmp/kasumi-b17eaf5-combined-remainder/guarded-4.log",
+    "sha256": "37ad53984739648f9c5fe54451d03b09ae6b3081fbf0b73620f0d20f87996c10",
+    "bytes": 368640
+  },
+  {
+    "path": "guarded-5.log",
+    "original": "/tmp/kasumi-b17eaf5-combined-remainder/guarded-5.log",
+    "sha256": "b112c529b3a2a1dad042a37c640a3f768f268d5931fc1c3861e76d28f8b07833",
+    "bytes": 369138
+  },
+  {
+    "path": "plan.json",
+    "original": "/tmp/kasumi-b17eaf5-combined-remainder/plan.json",
+    "sha256": "be4c6717d5272d180456fbeb60ba5032553a0c2a49990085a3f3185e35336e66",
+    "bytes": 13676
+  },
+  {
+    "path": "point-read-admission.log",
+    "original": "/tmp/kasumi-b17eaf5-combined-remainder/point-read-admission.log",
+    "sha256": "3001d0b3b86e71cb73d0fb5ef52db020ebd48e025d4578fd603b93358a6a4eb3",
+    "bytes": 368515
+  },
+  {
+    "path": "runner.py",
+    "original": "/tmp/kasumi-b17eaf5-combined-remainder/runner.py",
+    "sha256": "ad3d647fbb73d9d32e04e4e202814f68aea2cb5aa80acbed03a10fa8a3855a6f",
+    "bytes": 10765
+  },
+  {
+    "path": "source-before.json",
+    "original": "/tmp/kasumi-b17eaf5-combined-remainder/source-before.json",
+    "sha256": "b48478cbee6bfee124eb8ffa35fdf94aede429b288fa1a738ca3c038d205a7cf",
+    "bytes": 304714
+  }
+]
