@@ -113,6 +113,7 @@ impl Generation {
     }
 }
 enum ResponseEvidence {
+    Receiver(Box<kasumi_engine::VerifiedTargetReceiver>),
     Materialized(Box<kasumi_engine::VerifiedTargetMaterialization>),
     Completed(Box<kasumi_engine::VerifiedTargetCompletion>),
     Activated(Box<kasumi_engine::VerifiedTargetActivation>),
@@ -140,6 +141,7 @@ impl TargetRuntimeReply {
             .await?;
         match &self.evidence {
             ResponseEvidence::Materialized(p) => p.release(&self.operation).await?,
+            ResponseEvidence::Receiver(p) => p.release(&self.operation).await?,
             ResponseEvidence::Completed(p) => p.release(&self.operation).await?,
             ResponseEvidence::Activated(p) => p.release(&self.operation).await?,
             ResponseEvidence::Inspected(p) => p.release(&self.operation).await?,
@@ -567,6 +569,12 @@ impl TargetRecoveryRuntime {
             }
             TargetRuntimeStep::Start(input) => match input {
                 TargetReplicaInput::Completion(i) => (LifecyclePhase::Complete, i.digest()?),
+                TargetReplicaInput::CompletionResolution(i) => {
+                    (LifecyclePhase::ResolveComplete, i.digest()?)
+                }
+                TargetReplicaInput::ResolutionBudget { input, .. } => {
+                    (LifecyclePhase::MaintainTarget, input.digest()?)
+                }
                 TargetReplicaInput::Inspection(i) => (LifecyclePhase::InspectTarget, i.digest()?),
                 TargetReplicaInput::Quorum(q) => {
                     let p = phase.original().observation().intent.request.phase;
@@ -578,7 +586,15 @@ impl TargetRecoveryRuntime {
                 }
             },
             TargetRuntimeStep::Initialize(q) => (LifecyclePhase::Initialize, q.digest()?),
-            TargetRuntimeStep::Complete(q) => (LifecyclePhase::Complete, q.digest()?),
+            TargetRuntimeStep::Complete(q) | TargetRuntimeStep::PrepareComplete(q) => {
+                (LifecyclePhase::Complete, q.digest()?)
+            }
+            TargetRuntimeStep::ResolveComplete(input) => {
+                (LifecyclePhase::ResolveComplete, input.digest()?)
+            }
+            TargetRuntimeStep::MaintainBudget { input, .. } => {
+                (LifecyclePhase::MaintainTarget, input.digest()?)
+            }
             TargetRuntimeStep::ConfirmActivation(signed) => {
                 verify_target_activation(&signed.observation.completion.origin, signed)?;
                 (
@@ -774,7 +790,18 @@ impl TargetRecoveryRuntime {
         }
         let input = match step {
             TargetRuntimeStep::Start(i) => i.clone(),
-            TargetRuntimeStep::Complete(q) => TargetReplicaInput::Completion(q.clone()),
+            TargetRuntimeStep::Complete(q) | TargetRuntimeStep::PrepareComplete(q) => {
+                TargetReplicaInput::Completion(q.clone())
+            }
+            TargetRuntimeStep::ResolveComplete(input) => {
+                TargetReplicaInput::CompletionResolution(input.clone())
+            }
+            TargetRuntimeStep::MaintainBudget { quorum, input } => {
+                TargetReplicaInput::ResolutionBudget {
+                    quorum: quorum.clone(),
+                    input: input.clone(),
+                }
+            }
             TargetRuntimeStep::Initialize(q)
             | TargetRuntimeStep::StartActivation { quorum: q, .. }
             | TargetRuntimeStep::Activate { quorum: q, .. } => {
@@ -850,6 +877,40 @@ impl TargetRecoveryRuntime {
                         self.signer.sign_completed(&proof, op).await?,
                     )),
                     ResponseEvidence::Completed(Box::new(proof)),
+                ))
+            }
+            TargetRuntimeStep::PrepareComplete(input) => {
+                let proof = replica
+                    .database()
+                    .prepare_target_completion(op, input.clone())
+                    .await?;
+                Ok((
+                    TargetRuntimeOutcome::PreparedCompletion(Box::new(
+                        self.signer.sign_completion_preparation(&proof, op).await?,
+                    )),
+                    ResponseEvidence::Receiver(Box::new(proof)),
+                ))
+            }
+            TargetRuntimeStep::ResolveComplete(input) => {
+                let proof = replica
+                    .database()
+                    .resolve_target_completion(op, *input.clone())
+                    .await?;
+                let signed = self.signer.sign_completion_resolution(&proof, op).await?;
+                Ok((
+                    TargetRuntimeOutcome::ResolvedCompletion(Box::new(signed)),
+                    ResponseEvidence::Receiver(Box::new(proof)),
+                ))
+            }
+            TargetRuntimeStep::MaintainBudget { input, .. } => {
+                let proof = replica
+                    .database()
+                    .maintain_target_resolution_budget(op, input.clone())
+                    .await?;
+                let signed = self.signer.sign_resolution_budget(&proof, op).await?;
+                Ok((
+                    TargetRuntimeOutcome::ResolutionBudget(Box::new(signed)),
+                    ResponseEvidence::Receiver(Box::new(proof)),
                 ))
             }
             TargetRuntimeStep::ConfirmActivation(expected) => {

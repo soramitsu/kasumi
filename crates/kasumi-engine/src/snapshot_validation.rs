@@ -235,7 +235,7 @@ impl ValidatedApplicationSnapshot {
                 "pending restore lacks authenticated origin"
             );
         }
-        let headroom = crate::accounting::staged_headroom(h)?
+        let headroom = crate::accounting::snapshot_headroom(&self.target_budget_state()?)?
             .checked_add(20 - h.revision.to_string().len() as u64)
             .context("snapshot headroom overflow")?;
         ensure!(
@@ -837,7 +837,7 @@ impl ValidatedApplicationSnapshot {
         let h = &self.header;
         h.audit_retention.validate()?;
         ensure!(
-            h.audit_retention.hot_bytes <= h.limits.audit_retention.hot_bytes
+            crate::accounting::audit_fits(&self.target_budget_state()?)
                 && h.audit_retention.archive_bytes <= h.limits.audit_retention.archive_bytes,
             "audit history exceeds configured byte budgets"
         );
@@ -895,8 +895,20 @@ impl ValidatedApplicationSnapshot {
             else {
                 unreachable!()
             };
-            state.target_lifecycle.insert(incarnation, *target);
+            state.target_lifecycle.insert(incarnation.clone(), *target);
             row.validate(&state)?;
+            let mut causal: crate::target_resolution::CausalHead =
+                get(&self.lineage, &("target-terminal-causal", &incarnation))?.unwrap_or_default();
+            crate::target_resolution::validate_causal(h, &row, &mut causal, |key| {
+                let Some(ordinal) = get::<u64>(&self.lineage, &("target-terminal-key", key))?
+                else {
+                    return Ok(None);
+                };
+                match self.index.get(22, &format!("{ordinal:020}"), "")? {
+                    Some(Record::TargetResolution(row)) => Ok(Some(*row)),
+                    _ => anyhow::bail!("target causal key redirected"),
+                }
+            })?;
             ensure!(
                 get::<u64>(&self.lineage, &("target-terminal-key", &row.key))?.is_none(),
                 "duplicate permanent target terminal identity"
@@ -907,6 +919,11 @@ impl ValidatedApplicationSnapshot {
                 &row.ordinal,
             )?;
             crate::target_resolution::advance(&mut selected, &row)?;
+            insert(
+                &self.lineage,
+                &("target-terminal-causal", &incarnation),
+                &causal,
+            )?;
             Ok(())
         })?;
         ensure!(
@@ -917,12 +934,18 @@ impl ValidatedApplicationSnapshot {
             self.index.framed_bytes(22)? <= selected.encoded_bytes,
             "target terminal table charge does not cover its snapshot framing"
         );
-        let mut current = h.as_ref().clone();
-        if let Some(Record::Target(_, target)) = self.index.get(17, &h.incarnation, "")? {
-            current
-                .target_lifecycle
-                .insert(h.incarnation.clone(), *target);
-        }
+        let current = self.target_budget_state()?;
+        let causal: crate::target_resolution::CausalHead =
+            get(&self.lineage, &("target-terminal-causal", &h.incarnation))?.unwrap_or_default();
+        crate::target_resolution::validate_causal_current(&current, &causal, |key| {
+            let Some(ordinal) = get::<u64>(&self.lineage, &("target-terminal-key", key))? else {
+                return Ok(None);
+            };
+            match self.index.get(22, &format!("{ordinal:020}"), "")? {
+                Some(Record::TargetResolution(row)) => Ok(Some(*row)),
+                _ => anyhow::bail!("target current causal key redirected"),
+            }
+        })?;
         crate::target_resolution::validate_current(&current, |key| {
             check()?;
             let Some(ordinal) = get::<u64>(&self.lineage, &("target-terminal-key", key))? else {
@@ -935,6 +958,16 @@ impl ValidatedApplicationSnapshot {
             };
             Ok(Some(*row))
         })
+    }
+
+    fn target_budget_state(&self) -> anyhow::Result<TenantState> {
+        let mut state = self.header.as_ref().clone();
+        if let Some(Record::Target(_, target)) = self.index.get(17, &state.incarnation, "")? {
+            state
+                .target_lifecycle
+                .insert(state.incarnation.clone(), *target);
+        }
+        Ok(state)
     }
 
     fn validate_targets(
@@ -1000,7 +1033,11 @@ impl ValidatedApplicationSnapshot {
                 .checked_add(1)
                 .context("target history count overflow")?;
             ensure!(
-                bytes <= MAX_TARGET_HISTORY_BYTES as u64,
+                bytes
+                    .checked_add(crate::accounting::target_completion_reserve(
+                        &self.target_budget_state()?
+                    ))
+                    .is_some_and(|bytes| bytes <= MAX_TARGET_HISTORY_BYTES as u64),
                 "target history bytes exceeded"
             );
             Ok(())

@@ -424,6 +424,15 @@ impl TenantEngine {
         let checkpoint = staged_digest(&("kasumi.staged-terminal-bootstrap.v1", digest))?.0;
         let reopen = crate::staged_terminal::View::checkpoint_exists(store, &checkpoint)
             .map_err(terminal_error)?;
+        if crate::target_resolution::View::checkpoint_exists(store, &checkpoint)
+            .map_err(terminal_error)?
+            != reopen
+        {
+            return Err(Error::new(
+                ErrorCode::Corruption,
+                "joint terminal bootstrap catalogs differ",
+            ));
+        }
         let installation = previous
             .terminals
             .prepare_install(store, &previous.state, &checkpoint, reopen)
@@ -487,10 +496,20 @@ impl TenantEngine {
             retirement_bytes: state.retirement_bytes,
             max_retirement_bytes: state.limits.max_retirement_bytes,
             audit_hot_bytes: state.audit_retention.hot_bytes,
-            max_audit_hot_bytes: state.limits.audit_retention.hot_bytes,
+            max_audit_hot_bytes: state
+                .limits
+                .audit_retention
+                .hot_bytes
+                .checked_sub(crate::accounting::target_audit_reserve(state))
+                .ok_or_else(|| {
+                    Error::new(
+                        ErrorCode::Corruption,
+                        "retained target audit reserve exceeds budget",
+                    )
+                })?,
             snapshot_bytes: generation.snapshot_bytes()? as u64,
             max_snapshot_bytes: state.limits.max_snapshot_bytes,
-            staged_outcome_headroom: crate::accounting::staged_headroom(state)?,
+            staged_outcome_headroom: crate::accounting::snapshot_headroom(state)?,
         })
     }
     /// A tenant bootstrap is trusted control-plane input, identical on all replicas.
@@ -702,7 +721,10 @@ impl TenantEngine {
                     "target genesis origin differs or incarnation reused",
                 ));
             }
-            state.target_completion_head = Some(TargetCompletionHead::empty(&origin)?);
+            state.target_completion_head = Some(TargetCompletionHead::empty(
+                &origin,
+                state.limits.max_target_resolution_bytes,
+            )?);
             state.target_lifecycle.insert(
                 state.incarnation.clone(),
                 TargetExecutionState {
@@ -1017,7 +1039,7 @@ impl TenantEngine {
                 },
             )?;
         }
-        if next.audit_retention.hot_bytes > next.limits.audit_retention.hot_bytes {
+        if !crate::accounting::audit_fits(&next) {
             let mut rejected = previous.state.clone();
             rejected.revision = revision;
             self.publish_generation(Some(Arc::new(Generation {
@@ -1564,7 +1586,51 @@ impl TenantEngine {
         target_resolutions
             .validate_state(&state)
             .map_err(terminal_error)?;
+        if !target::receiver::history_reserve_fits(&state)? {
+            return Err(Error::new(
+                ErrorCode::Corruption,
+                "target history lost reserved completion capacity",
+            ));
+        }
         if let Ok(current) = self.generation() {
+            if let Some(old_head) = &current.state.target_completion_head {
+                let incoming = state.target_completion_head.as_ref().ok_or_else(|| {
+                    Error::new(
+                        ErrorCode::Corruption,
+                        "snapshot removed current target completion head",
+                    )
+                })?;
+                if old_head.initial_budget_bytes != incoming.initial_budget_bytes {
+                    return Err(Error::new(
+                        ErrorCode::Corruption,
+                        "snapshot substituted initial target budget",
+                    ));
+                }
+                if let Some(active) = &old_head.active
+                    && incoming.active.as_ref() != Some(active)
+                {
+                    let key = format!(
+                        "completion/{}/{}",
+                        state.incarnation, active.intent.request.command_id
+                    );
+                    let row = target_resolutions
+                        .get(&key)
+                        .map_err(terminal_error)?
+                        .ok_or_else(|| {
+                            Error::new(
+                                ErrorCode::Corruption,
+                                "snapshot replaced an unsealed original completion attempt",
+                            )
+                        })?;
+                    if !matches!(row.record, TargetResolutionRecord::Completion(ref fact) if fact.input.attempt == *active)
+                    {
+                        return Err(Error::new(
+                            ErrorCode::Corruption,
+                            "snapshot terminal changed original active attempt",
+                        ));
+                    }
+                }
+            }
             let old = current.target_resolutions.head();
             if old.origin_incarnation != state.target_resolution_head.origin_incarnation
                 || old.count > state.target_resolution_head.count
@@ -2508,7 +2574,7 @@ pub(crate) fn append_audit(state: &mut TenantState, event: AuditEvent) -> Result
 }
 fn validate_audits(state: &TenantState) -> Result<()> {
     state.audit_retention.validate()?;
-    if state.audit_retention.hot_bytes > state.limits.audit_retention.hot_bytes
+    if !crate::accounting::audit_fits(state)
         || state.audit_retention.archive_bytes > state.limits.audit_retention.archive_bytes
     {
         return Err(Error::new(

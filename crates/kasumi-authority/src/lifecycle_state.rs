@@ -285,7 +285,10 @@ impl Backend {
                 && tenant.authority_epoch == i.source_authority_epoch;
             let activated = matches!(
                 i.phase,
-                LifecyclePhase::Activate | LifecyclePhase::InspectTarget
+                LifecyclePhase::Activate
+                    | LifecyclePhase::InspectTarget
+                    | LifecyclePhase::ResolveComplete
+                    | LifecyclePhase::MaintainTarget
             ) && tenant.incarnation == i.target_incarnation
                 && tenant.authority_epoch == i.source_authority_epoch + 1
                 && tenant.recovery_checkpoint.as_ref() == Some(&i.checkpoint);

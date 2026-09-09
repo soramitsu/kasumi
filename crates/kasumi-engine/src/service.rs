@@ -44,6 +44,8 @@ mod staged_reads;
 pub(crate) mod target_activation_service;
 #[path = "target_inspection_service.rs"]
 pub(crate) mod target_inspection_service;
+#[path = "target_receiver_service.rs"]
+pub(crate) mod target_receiver_service;
 #[path = "target_service.rs"]
 pub(crate) mod target_service;
 use std::{

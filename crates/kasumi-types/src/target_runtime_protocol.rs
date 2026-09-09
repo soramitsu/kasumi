@@ -21,6 +21,12 @@ pub enum TargetRuntimeStep {
     Start(TargetReplicaInput),
     Initialize(TargetQuorumInput),
     Complete(TargetCompletionInput),
+    PrepareComplete(TargetCompletionInput),
+    ResolveComplete(Box<TargetCompletionResolutionInput>),
+    MaintainBudget {
+        quorum: TargetQuorumInput,
+        input: TargetResolutionBudgetInput,
+    },
     /// Open one voter under the exact independently committed issuer winner.
     /// This does not propose or confirm target activation.
     StartActivation {
@@ -58,7 +64,14 @@ impl TargetRuntimeRequest {
             TargetRuntimeStep::Initialize(input) => {
                 input.digest()?;
             }
-            TargetRuntimeStep::Complete(input) => {
+            TargetRuntimeStep::Complete(input) | TargetRuntimeStep::PrepareComplete(input) => {
+                input.digest()?;
+            }
+            TargetRuntimeStep::ResolveComplete(input) => {
+                input.digest()?;
+            }
+            TargetRuntimeStep::MaintainBudget { quorum, input } => {
+                quorum.digest()?;
                 input.digest()?;
             }
             TargetRuntimeStep::StartActivation {
@@ -112,6 +125,10 @@ pub enum TargetRuntimeOutcome {
         origin_sha256: String,
     },
     Completed(Box<SignedTargetCompletion>),
+    /// A positive capacity reservation, never a completion/activation proof.
+    PreparedCompletion(Box<SignedTargetCompletionAttempt>),
+    ResolvedCompletion(Box<SignedTargetCompletionResolution>),
+    ResolutionBudget(Box<SignedTargetResolutionBudget>),
     Activated(Box<SignedTargetActivation>),
     Inspected(Box<SignedTargetInspection>),
     Stopped(Box<SignedLocalTargetCleanup>),

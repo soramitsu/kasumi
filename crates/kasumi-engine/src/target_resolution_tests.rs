@@ -33,7 +33,9 @@ fn state(origin: &TargetOrigin) -> TenantState {
             activation: None,
         },
     );
-    state.target_completion_head = Some(TargetCompletionHead::empty(origin).unwrap());
+    state.target_completion_head = Some(
+        TargetCompletionHead::empty(origin, state.limits.max_target_resolution_bytes).unwrap(),
+    );
     state
 }
 fn seal(state: &mut TenantState) -> TargetResolutionRecord {
@@ -206,7 +208,7 @@ async fn target_snapshot_catalog_reopens_only_its_exact_committed_prefix() {
     .unwrap();
     staged.push(&row, &next).unwrap();
     assert!(staged.push(&row, &next).is_err());
-    let staged = staged.finish(&next.target_resolution_head).unwrap();
+    let staged = staged.finish(&next).unwrap();
     let checkpoint = "29".repeat(32);
     assert!(
         staged
@@ -226,4 +228,96 @@ async fn target_snapshot_catalog_reopens_only_its_exact_committed_prefix() {
             .prepare_install(&store, &before, &checkpoint, true)
             .is_err()
     );
+}
+
+#[test]
+fn every_historical_terminal_requires_its_exact_earlier_seal() {
+    let mut state = state(&fixture::origin());
+    let mut record = seal(&mut state);
+    let TargetResolutionRecord::Completion(fact) = &mut record else {
+        unreachable!()
+    };
+    // All supplied records are internally consistent and have recomputed
+    // digests, but the claimed predecessor has never appeared in the prefix.
+    let mut missing = fact.sealed_reference().unwrap();
+    missing.original_command_id = uuid::Uuid::from_u128(999);
+    missing.resolution_command_id = uuid::Uuid::from_u128(998);
+    missing.resolution_control_revision = 2;
+    fact.input.attempt.input.predecessor = Some(missing);
+    fact.input.attempt.intent.request.phase_input_sha256 =
+        fact.input.attempt.input.digest().unwrap();
+    fact.input.attempt.intent.request_sha256 =
+        staged_digest(&fact.input.attempt.intent.request).unwrap().0;
+    fact.resolution_intent.request.phase_input_sha256 = fact.input.digest().unwrap();
+    fact.resolution_intent.request_sha256 =
+        staged_digest(&fact.resolution_intent.request).unwrap().0;
+    fact.validate().unwrap();
+    let row = Row::ordered(
+        &state.target_resolution_head,
+        record.clone(),
+        &position(&record),
+    )
+    .unwrap();
+    row.validate(&state).unwrap();
+    let mut builder = Builder::new(
+        &ScratchDisk::fixture(),
+        8 << 20,
+        &state.tenant,
+        &state.incarnation,
+    )
+    .unwrap();
+    assert!(builder.push(&row, &state).is_err());
+}
+
+#[test]
+fn current_selectors_cannot_omit_a_budget_effect_or_the_last_seal() {
+    let mut state = state(&fixture::origin());
+    let record = seal(&mut state);
+    let row = Row::ordered(
+        &state.target_resolution_head,
+        record.clone(),
+        &position(&record),
+    )
+    .unwrap();
+    let mut causal = CausalHead::default();
+    validate_causal(&state, &row, &mut causal, |_| Ok(None)).unwrap();
+    validate_causal_current(&state, &causal, |_| Ok(Some(row.clone()))).unwrap();
+    state.target_completion_head.as_mut().unwrap().predecessor = None;
+    assert!(validate_causal_current(&state, &causal, |_| Ok(Some(row.clone()))).is_err());
+    let mut state = self::state(&fixture::origin());
+    state.limits.max_target_resolution_bytes += 1;
+    assert!(validate_current(&state, |_| Ok(None)).is_err());
+    state
+        .target_completion_head
+        .as_mut()
+        .unwrap()
+        .budget_operation_id = Some(uuid::Uuid::from_u128(444));
+    assert!(validate_current(&state, |_| Ok(None)).is_err());
+}
+
+#[test]
+fn admitted_completion_reserves_hot_audit_and_resident_completion_space() {
+    let mut state = state(&fixture::origin());
+    let original = fixture::attempt(&fixture::origin(), None, 3, 1, 200, 500);
+    state.target_completion_head.as_mut().unwrap().active = Some(Box::new(original.clone()));
+    state.limits.audit_retention.hot_bytes = TARGET_COMPLETION_AUDIT_RESERVE_BYTES;
+    assert!(crate::accounting::audit_fits(&state));
+    let reserved = crate::accounting::snapshot_headroom(&state).unwrap();
+    state.audit_retention.hot_bytes = 1;
+    assert!(!crate::accounting::audit_fits(&state));
+    state.audit_retention.hot_bytes = MAX_AUDIT_EVENT_BYTES as u64;
+    state
+        .target_lifecycle
+        .get_mut(&state.incarnation)
+        .unwrap()
+        .completion = Some(fixture::completion(&original));
+    assert!(crate::accounting::audit_fits(&state));
+    assert_eq!(
+        reserved - crate::accounting::snapshot_headroom(&state).unwrap(),
+        MAX_TARGET_COMPLETION_RECORD_BYTES + MAX_AUDIT_EVENT_BYTES as u64
+    );
+    state.audit_retention.hot_bytes += 1;
+    assert!(!crate::accounting::audit_fits(&state));
+    state.target_completion_head.as_mut().unwrap().active = None;
+    assert!(crate::accounting::audit_fits(&state));
 }

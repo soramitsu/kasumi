@@ -446,6 +446,11 @@ impl TargetInspectionInput {
 pub enum TargetReplicaInput {
     Quorum(TargetQuorumInput),
     Completion(TargetCompletionInput),
+    CompletionResolution(Box<crate::TargetCompletionResolutionInput>),
+    ResolutionBudget {
+        quorum: TargetQuorumInput,
+        input: crate::TargetResolutionBudgetInput,
+    },
     Inspection(Box<TargetInspectionInput>),
 }
 impl TargetReplicaInput {
@@ -453,6 +458,8 @@ impl TargetReplicaInput {
         match self {
             Self::Quorum(value) => value,
             Self::Completion(value) => &value.quorum,
+            Self::CompletionResolution(value) => &value.attempt.input.quorum,
+            Self::ResolutionBudget { quorum, .. } => quorum,
             Self::Inspection(value) => &value.quorum,
         }
     }

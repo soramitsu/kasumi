@@ -9,7 +9,7 @@ use std::{
     sync::Arc,
 };
 
-const MAGIC: &[u8; 8] = b"KASUMIT3";
+const MAGIC: &[u8; 8] = b"KASUMIT4";
 const MAX_RECORD: usize = 32 << 20;
 pub(crate) const RECORD_KINDS: u8 = 23;
 
@@ -817,7 +817,7 @@ pub(crate) fn read(
         }
     };
     let target_resolutions = match target_resolutions {
-        Some(builder) => builder.finish(&state.target_resolution_head)?,
+        Some(builder) => builder.finish(&state)?,
         None => {
             let empty = crate::target_resolution::View::empty(
                 &state.tenant,

@@ -148,6 +148,8 @@ pub async fn open_target_replica(
             phase,
             LifecyclePhase::Initialize
                 | LifecyclePhase::Complete
+                | LifecyclePhase::ResolveComplete
+                | LifecyclePhase::MaintainTarget
                 | LifecyclePhase::Activate
                 | LifecyclePhase::InspectTarget
         ) && config.node_id == lease.signed().claims.request.target_node.node_id,
@@ -209,6 +211,12 @@ pub async fn open_target_replica(
                             TargetReplicaInput::Completion(completion) => {
                                 completion.validate(&origin, &intent)?;
                             }
+                            TargetReplicaInput::CompletionResolution(resolution) => {
+                                resolution.validate(&origin, &intent)?;
+                            }
+                            TargetReplicaInput::ResolutionBudget { input, .. } => {
+                                input.validate(&origin, &intent)?;
+                            }
                             TargetReplicaInput::Quorum(_) => anyhow::ensure!(
                                 matches!(
                                     phase,
@@ -224,6 +232,8 @@ pub async fn open_target_replica(
                                     LifecyclePhase::Activate
                                         | LifecyclePhase::InspectTarget
                                         | LifecyclePhase::Complete
+                                        | LifecyclePhase::ResolveComplete
+                                        | LifecyclePhase::MaintainTarget
                                 ) || input_copy.digest()? == intent.request.phase_input_sha256),
                             "target group phase input differs"
                         );

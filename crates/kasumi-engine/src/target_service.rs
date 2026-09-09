@@ -34,11 +34,16 @@ impl VerifiedTargetCompletion {
 }
 impl Database {
     fn target_access(&self, operation: &TargetOperation) -> Result<()> {
+        self.target_phase_access(operation, LifecyclePhase::Complete)
+    }
+    pub(super) fn target_phase_access(
+        &self,
+        operation: &TargetOperation,
+        phase: LifecyclePhase,
+    ) -> Result<()> {
         operation.check().map_err(denied)?;
         self.materialization_access()?;
-        operation
-            .invocation()
-            .check_target(&self.store, LifecyclePhase::Complete)?;
+        operation.invocation().check_target(&self.store, phase)?;
         let generation = self.engine.generation()?;
         let entry = generation
             .state
@@ -48,7 +53,7 @@ impl Database {
         let lease = operation.invocation().gate().current().map_err(denied)?;
         entry
             .origin
-            .accepts_phase(&lease.commitment().intent, LifecyclePhase::Complete)?;
+            .accepts_phase(&lease.commitment().intent, phase)?;
         Ok(())
     }
     async fn target_observation(
@@ -201,8 +206,31 @@ impl TargetProposal {
         let authorization =
             self.operation
                 .prepare(LifecyclePhase::Complete, &self.input.digest()?, now)?;
+        let prepared = TargetCommand::PrepareComplete {
+            authorization: authorization.clone(),
+            input: self.input.clone(),
+        };
+        let bytes = self.database.group.write(prepared.encode()?).await?;
+        match serde_json::from_slice::<Result<TargetOutcome>>(&bytes)? {
+            Ok(TargetOutcome::Prepared(_)) => {}
+            Ok(_) => return Ok(Err(unknown("target preparation response kind differs"))),
+            Err(error) => return Ok(Err(error)),
+        }
+        self.database
+            .target_access(&self.operation)
+            .map_err(unknown)?;
+        let now = self
+            .operation
+            .invocation()
+            .gate()
+            .admission_time_ms()
+            .map_err(unknown)?;
         let command = TargetCommand::Complete {
-            authorization,
+            authorization: self.operation.prepare(
+                LifecyclePhase::Complete,
+                &self.input.digest()?,
+                now,
+            )?,
             input: self.input.clone(),
         };
         // Ownership of the serialized gate, original work and byte reservation

@@ -293,24 +293,33 @@ pub struct SignedTargetCompletionResolution {
 pub struct TargetCompletionHead {
     pub origin_sha256: String,
     pub control_incarnation: Uuid,
+    pub initial_budget_bytes: u64,
+    #[serde(deserialize_with = "crate::require_explicit_option")]
+    pub budget_operation_id: Option<Uuid>,
     #[serde(deserialize_with = "crate::require_explicit_option")]
     pub predecessor: Option<TargetCompletionResolutionReference>,
     #[serde(deserialize_with = "crate::require_explicit_option")]
     pub active: Option<Box<TargetCompletionAttempt>>,
 }
 impl TargetCompletionHead {
-    pub fn empty(origin: &TargetOrigin) -> Result<Self> {
-        Ok(Self {
+    pub fn empty(origin: &TargetOrigin, initial_budget_bytes: u64) -> Result<Self> {
+        let head = Self {
             origin_sha256: origin.digest()?,
             control_incarnation: origin.materialization.control_incarnation,
+            initial_budget_bytes,
+            budget_operation_id: None,
             predecessor: None,
             active: None,
-        })
+        };
+        head.validate(origin)?;
+        Ok(head)
     }
     pub fn validate(&self, origin: &TargetOrigin) -> Result<()> {
         require(
             self.origin_sha256 == origin.digest()?
-                && self.control_incarnation == origin.materialization.control_incarnation,
+                && self.control_incarnation == origin.materialization.control_incarnation
+                && self.initial_budget_bytes >= TARGET_COMPLETION_RESERVE_BYTES
+                && self.budget_operation_id.is_none_or(|id| !id.is_nil()),
             "completion head belongs to another physical target or Control incarnation",
         )?;
         if let Some(predecessor) = &self.predecessor {

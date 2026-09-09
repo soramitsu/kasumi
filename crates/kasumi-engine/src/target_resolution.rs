@@ -382,6 +382,23 @@ pub(crate) fn validate_current(
     };
     let current = current.context("completion head has no current target origin")?;
     head.validate(&current.origin)?;
+    if let Some(id) = head.budget_operation_id {
+        let row = lookup(&format!("budget/{}/{id}", state.incarnation))?
+            .context("current target budget outcome is outside selected prefix")?;
+        row.validate(state)?;
+        let TargetResolutionRecord::Budget(fact) = row.record else {
+            anyhow::bail!("target budget selector names another record kind");
+        };
+        ensure!(
+            fact.input.maximum_bytes == state.limits.max_target_resolution_bytes,
+            "current target budget differs from its permanent maintenance outcome"
+        );
+    } else {
+        ensure!(
+            head.initial_budget_bytes == state.limits.max_target_resolution_bytes,
+            "target budget changed without typed maintenance"
+        );
+    }
     if let Some(predecessor) = &head.predecessor {
         let key = format!(
             "completion/{}/{}",
@@ -423,7 +440,137 @@ pub(crate) fn validate_current(
                 "active completed attempt differs from original completion"
             );
         }
+    } else if let Some(completed) = &current.completion {
+        let row = lookup(&format!(
+            "completion/{}/{}",
+            state.incarnation, completed.completion_intent.request.command_id
+        ))?
+        .context("completed target lost its active attempt or positive terminal outcome")?;
+        let TargetResolutionRecord::Completion(fact) = row.record else {
+            anyhow::bail!("completed target terminal kind differs");
+        };
+        ensure!(
+            matches!(fact.terminal, TargetCompletionTerminal::Committed(ref value) if value.as_ref() == completed),
+            "completed target differs from selected positive terminal outcome"
+        );
     }
+    Ok(())
+}
+
+/// Restore validation stores this bounded cursor per physical origin in an
+/// encrypted point index; it never builds a resident map of permanent facts.
+#[derive(Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CausalHead {
+    completion: Option<String>,
+    budget: Option<String>,
+    revision: u64,
+    term: u64,
+}
+pub(crate) fn validate_causal(
+    state: &TenantState,
+    row: &Row,
+    head: &mut CausalHead,
+    mut lookup: impl FnMut(&str) -> Result<Option<Row>>,
+) -> Result<()> {
+    ensure!(
+        row.record.revision() > head.revision && row.record.position().term >= head.term,
+        "target terminal actual applying order regressed"
+    );
+    let earlier = |key: &str, lookup: &mut dyn FnMut(&str) -> Result<Option<Row>>| -> Result<Row> {
+        let previous = lookup(key)?.context("target terminal causal predecessor absent")?;
+        ensure!(
+            previous.ordinal < row.ordinal && previous.record.origin() == row.record.origin(),
+            "target terminal predecessor changed physical origin or order"
+        );
+        Ok(previous)
+    };
+    match &row.record {
+        TargetResolutionRecord::Completion(fact) => {
+            match &head.completion {
+                None => ensure!(
+                    fact.input.attempt.input.predecessor.is_none(),
+                    "target terminal references a missing first predecessor"
+                ),
+                Some(key) => {
+                    let previous = earlier(key, &mut lookup)?;
+                    let TargetResolutionRecord::Completion(previous) = previous.record else {
+                        anyhow::bail!("target completion chain changed record kind");
+                    };
+                    ensure!(
+                        fact.input.attempt.input.predecessor.as_ref()
+                            == Some(&previous.sealed_reference()?)
+                            && fact.input.attempt.revision > previous.revision
+                            && fact.input.attempt.position.term >= previous.position.term,
+                        "target terminal did not preserve exact ordered sealed predecessor"
+                    );
+                }
+            }
+            head.completion = Some(row.key.clone());
+        }
+        TargetResolutionRecord::Budget(fact) => {
+            if let Some(key) = &head.budget {
+                let previous = earlier(key, &mut lookup)?;
+                let TargetResolutionRecord::Budget(previous) = previous.record else {
+                    anyhow::bail!("target budget chain changed record kind");
+                };
+                ensure!(
+                    fact.input.expected_bytes == previous.input.maximum_bytes
+                        && fact.revision > previous.revision
+                        && fact.position.term >= previous.position.term
+                        && fact.intent.revision > previous.intent.revision,
+                    "target budget compare-and-set or Control order changed"
+                );
+            } else if fact.origin.input.target_incarnation.to_string() == state.incarnation {
+                ensure!(
+                    state
+                        .target_completion_head
+                        .as_ref()
+                        .is_some_and(
+                            |current| current.initial_budget_bytes == fact.input.expected_bytes
+                        ),
+                    "target first budget effect changed its installed initial budget"
+                );
+            }
+            head.budget = Some(row.key.clone());
+        }
+    }
+    head.revision = row.record.revision();
+    head.term = row.record.position().term;
+    Ok(())
+}
+pub(crate) fn validate_causal_current(
+    state: &TenantState,
+    causal: &CausalHead,
+    mut lookup: impl FnMut(&str) -> Result<Option<Row>>,
+) -> Result<()> {
+    let Some(head) = &state.target_completion_head else {
+        return Ok(());
+    };
+    ensure!(
+        causal.budget
+            == head
+                .budget_operation_id
+                .map(|id| format!("budget/{}/{id}", state.incarnation)),
+        "current target budget selector omitted a later committed maintenance effect"
+    );
+    let expected_predecessor = match &causal.completion {
+        None => None,
+        Some(key) => {
+            let row = lookup(key)?.context("current completion chain head absent")?;
+            let TargetResolutionRecord::Completion(fact) = row.record else {
+                anyhow::bail!("current completion chain redirected");
+            };
+            match fact.terminal {
+                TargetCompletionTerminal::Sealed => Some(fact.sealed_reference()?),
+                TargetCompletionTerminal::Committed(_) => fact.input.attempt.input.predecessor,
+            }
+        }
+    };
+    ensure!(
+        head.predecessor == expected_predecessor,
+        "current target seal selector omitted a later committed completion"
+    );
     Ok(())
 }
 
@@ -431,6 +578,7 @@ pub(crate) fn validate_current(
 /// authenticated final head must match before this can become a restore input.
 pub(crate) struct Builder {
     table: Arc<EncryptedTable>,
+    causal: EncryptedTable,
     head: TargetResolutionPrefixHead,
 }
 impl Builder {
@@ -442,6 +590,7 @@ impl Builder {
     ) -> Result<Self> {
         Ok(Self {
             table: Arc::new(EncryptedTable::new(disk, limit)?),
+            causal: EncryptedTable::new(disk, limit)?,
             head: TargetResolutionPrefixHead::empty(tenant, origin)?,
         })
     }
@@ -451,6 +600,19 @@ impl Builder {
             self.table.get(&id_key(&row.key))?.is_none(),
             "duplicate target terminal point identity"
         );
+        let origin = row.record.origin().input.target_incarnation.to_string();
+        let mut causal: CausalHead = self
+            .causal
+            .get(origin.as_bytes())?
+            .map(|bytes| serde_json::from_slice(&bytes))
+            .transpose()?
+            .unwrap_or_default();
+        validate_causal(state, row, &mut causal, |key| {
+            self.table
+                .get(&id_key(key))?
+                .map(|bytes| serde_json::from_slice(&bytes).map_err(Into::into))
+                .transpose()
+        })?;
         advance(&mut self.head, row)?;
         let index = Ordinal {
             key: row.key.clone(),
@@ -460,11 +622,28 @@ impl Builder {
             .insert(&id_key(&row.key), &serde_json::to_vec(row)?)?;
         self.table
             .insert(&ordinal_key(row.ordinal), &serde_json::to_vec(&index)?)?;
+        self.causal
+            .insert(origin.as_bytes(), &serde_json::to_vec(&causal)?)?;
         Ok(())
     }
-    pub(crate) fn finish(self, expected: &TargetResolutionPrefixHead) -> Result<View> {
+    fn validate_current(&self, state: &TenantState) -> Result<()> {
+        let causal: CausalHead = self
+            .causal
+            .get(state.incarnation.as_bytes())?
+            .map(|bytes| serde_json::from_slice(&bytes))
+            .transpose()?
+            .unwrap_or_default();
+        validate_causal_current(state, &causal, |key| {
+            self.table
+                .get(&id_key(key))?
+                .map(|bytes| serde_json::from_slice(&bytes).map_err(Into::into))
+                .transpose()
+        })
+    }
+    pub(crate) fn finish(self, state: &TenantState) -> Result<View> {
+        self.validate_current(state)?;
         ensure!(
-            &self.head == expected,
+            self.head == state.target_resolution_head,
             "terminal stream final root/count/bytes differ"
         );
         Ok(View {

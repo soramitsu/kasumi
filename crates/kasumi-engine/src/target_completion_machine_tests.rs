@@ -198,7 +198,7 @@ pub(crate) fn applied(intent: LifecycleIntent, admitted_at_ms: u64, index: u64) 
         position: position(index),
     }
 }
-fn completion(original: &TargetCompletionAttempt) -> TargetCompletionFact {
+pub(crate) fn completion(original: &TargetCompletionAttempt) -> TargetCompletionFact {
     let fact = TargetCompletionFact {
         origin: original.origin.clone(),
         materialized: original.input.quorum.materialized.clone(),
@@ -231,7 +231,7 @@ fn machine<'a>(
 fn exact_preparation_replays_after_completion_without_replacing_its_reservation() {
     let origin = origin();
     let original = attempt(&origin, None, 3, 1, 200, 500);
-    let mut head = TargetCompletionHead::empty(&origin).unwrap();
+    let mut head = TargetCompletionHead::empty(&origin, TARGET_COMPLETION_RESERVE_BYTES).unwrap();
     machine(&origin, &mut head, None)
         .prepare(original.clone(), None, None)
         .unwrap();
@@ -252,7 +252,7 @@ fn only_an_expired_exact_prepared_attempt_can_be_sealed() {
     let origin = origin();
     let original = attempt(&origin, None, 3, 1, 200, 500);
     let (input, under) = resolution(&original, 4);
-    let mut head = TargetCompletionHead::empty(&origin).unwrap();
+    let mut head = TargetCompletionHead::empty(&origin, TARGET_COMPLETION_RESERVE_BYTES).unwrap();
     assert!(
         machine(&origin, &mut head, None)
             .resolve(input.clone(), applied(under.clone(), 500, 3), None)
@@ -282,7 +282,7 @@ fn only_an_expired_exact_prepared_attempt_can_be_sealed() {
 fn sealed_predecessor_orders_successor_and_rejects_a_late_original_complete() {
     let origin = origin();
     let original = attempt(&origin, None, 3, 1, 200, 500);
-    let mut head = TargetCompletionHead::empty(&origin).unwrap();
+    let mut head = TargetCompletionHead::empty(&origin, TARGET_COMPLETION_RESERVE_BYTES).unwrap();
     machine(&origin, &mut head, None)
         .prepare(original.clone(), None, None)
         .unwrap();
@@ -370,7 +370,7 @@ fn sealed_predecessor_orders_successor_and_rejects_a_late_original_complete() {
 fn committed_original_resolves_positively_and_cannot_authorize_a_successor() {
     let origin = origin();
     let original = attempt(&origin, None, 3, 1, 200, 500);
-    let mut head = TargetCompletionHead::empty(&origin).unwrap();
+    let mut head = TargetCompletionHead::empty(&origin, TARGET_COMPLETION_RESERVE_BYTES).unwrap();
     machine(&origin, &mut head, None)
         .prepare(original.clone(), None, None)
         .unwrap();
@@ -422,7 +422,7 @@ fn committed_original_resolves_positively_and_cannot_authorize_a_successor() {
 fn preparation_reserves_terminal_capacity_and_resolution_does_not_reacquire_it() {
     let origin = origin();
     let original = attempt(&origin, None, 3, 1, 200, 500);
-    let mut head = TargetCompletionHead::empty(&origin).unwrap();
+    let mut head = TargetCompletionHead::empty(&origin, TARGET_COMPLETION_RESERVE_BYTES).unwrap();
     let mut value = machine(&origin, &mut head, None);
     value.terminal_bytes = 1;
     assert_eq!(
@@ -454,7 +454,7 @@ fn preparation_reserves_terminal_capacity_and_resolution_does_not_reacquire_it()
 fn target_budget_changes_preserve_reserves_and_replay_the_first_outcome() {
     let origin = origin();
     let original = attempt(&origin, None, 3, 1, 200, 500);
-    let mut head = TargetCompletionHead::empty(&origin).unwrap();
+    let mut head = TargetCompletionHead::empty(&origin, TARGET_COMPLETION_RESERVE_BYTES).unwrap();
     machine(&origin, &mut head, None)
         .prepare(original, None, None)
         .unwrap();
@@ -573,7 +573,7 @@ fn terminal_proof_binds_original_target_order_and_distinct_signature_purpose() {
         observation: prepared,
     };
     kasumi_serving::verify_target_completion_attempt(&origin, &signed).unwrap();
-    let mut head = TargetCompletionHead::empty(&origin).unwrap();
+    let mut head = TargetCompletionHead::empty(&origin, TARGET_COMPLETION_RESERVE_BYTES).unwrap();
     machine(&origin, &mut head, None)
         .prepare(original.clone(), None, None)
         .unwrap();
