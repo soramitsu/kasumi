@@ -1,0 +1,12 @@
+test_content_modes_and_empty_directories_are_inputs (test_prepare.InventoryTests.test_content_modes_and_empty_directories_are_inputs) ... ok
+test_missing_root_and_traversal_errors_fail (test_prepare.InventoryTests.test_missing_root_and_traversal_errors_fail) ... ok
+test_removal_is_detected (test_prepare.InventoryTests.test_removal_is_detected) ... ok
+test_root_must_be_a_real_directory (test_prepare.InventoryTests.test_root_must_be_a_real_directory) ... ok
+test_source_requires_both_exact_locks_and_rejects_generated_state (test_prepare.InventoryTests.test_source_requires_both_exact_locks_and_rejects_generated_state) ... ok
+test_special_files_are_rejected_without_reading (test_prepare.InventoryTests.test_special_files_are_rejected_without_reading) ... ok
+test_symlinks_to_files_directories_and_absent_targets_are_rejected (test_prepare.InventoryTests.test_symlinks_to_files_directories_and_absent_targets_are_rejected) ... ok
+
+----------------------------------------------------------------------
+Ran 7 tests in 0.177s
+
+OK
