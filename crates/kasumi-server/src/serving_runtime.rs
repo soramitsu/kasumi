@@ -5,7 +5,7 @@ use anyhow::{Context, Result, ensure};
 use kasumi_client::{KasumiAuthorityPool, KasumiClientConfig};
 use kasumi_serving::{
     AuthorityManifest, AuthorityTrust, LeaseDiscovery, LeasePurpose, NodeIdentity, ServingBoot,
-    ServingGate,
+    ServingGate, VerifiedLease,
 };
 use kasumi_store::StorageAccess;
 use serde::{Deserialize, Serialize};
@@ -165,6 +165,52 @@ impl RuntimeLease {
         node_id: u64,
         purpose: LeasePurpose,
     ) -> Result<Arc<Self>> {
+        let (runtime, _) = Self::acquire_once(
+            config,
+            trust,
+            credential,
+            tenant,
+            incarnation,
+            node_id,
+            purpose,
+        )
+        .await?;
+        Self::start_renewal(&runtime)?;
+        Ok(runtime)
+    }
+
+    /// Explicit first enrollment retains this exact issuer-verified grant and
+    /// its original suspend-aware deadline. It starts no renewal worker and
+    /// cannot reauthorize a partial installation after the grant expires.
+    pub(crate) async fn acquire_for_enrollment(
+        config: &ServingAuthorityConfig,
+        trust: AuthorityTrust,
+        credential: CredentialSource,
+        tenant: &str,
+        incarnation: Uuid,
+        node_id: u64,
+    ) -> Result<(Arc<Self>, VerifiedLease)> {
+        Self::acquire_once(
+            config,
+            trust,
+            credential,
+            tenant,
+            incarnation,
+            node_id,
+            LeasePurpose::Serving,
+        )
+        .await
+    }
+
+    async fn acquire_once(
+        config: &ServingAuthorityConfig,
+        trust: AuthorityTrust,
+        credential: CredentialSource,
+        tenant: &str,
+        incarnation: Uuid,
+        node_id: u64,
+        purpose: LeasePurpose,
+    ) -> Result<(Arc<Self>, VerifiedLease)> {
         config.validate()?;
         let partition = config.manifest.partition(tenant)?;
         let endpoints = &config.endpoints[&partition];
@@ -224,7 +270,7 @@ impl RuntimeLease {
                 Duration::from_millis(config.manifest.max_lease_ms.min(5000)),
             )
             .await?;
-        let gate = ServingGate::new(lease)?;
+        let gate = ServingGate::new(lease.clone())?;
         let runtime = Arc::new(Self {
             gate,
             boot,
@@ -232,8 +278,7 @@ impl RuntimeLease {
             renewal: Default::default(),
             serving: AtomicBool::new(purpose == LeasePurpose::Serving),
         });
-        Self::start_renewal(&runtime)?;
-        Ok(runtime)
+        Ok((runtime, lease))
     }
     fn start_renewal(runtime: &Arc<Self>) -> Result<()> {
         let weak = Arc::downgrade(runtime);

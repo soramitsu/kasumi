@@ -419,6 +419,11 @@ pub struct VerifiedLease {
     signer: SignerGenerationFence,
 }
 impl VerifiedLease {
+    /// Exact immutable signed input retained by an explicitly authorized local
+    /// enrollment. This historical evidence does not create a new live grant.
+    pub fn signed(&self) -> &SignedLease {
+        &self.signed
+    }
     pub fn identity(&self) -> &ServingIdentity {
         &self.signed.claims.request.identity
     }

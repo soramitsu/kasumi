@@ -234,3 +234,25 @@ fn physical_verifier_substitution_cannot_reopen_a_serving_or_lifecycle_boot() {
     ServingBoot::with_test_clock(boot.trust.clone(), original.clone(), clock.clone()).unwrap();
     LifecycleBoot::with_clock(boot.trust.clone(), original.node, clock).unwrap();
 }
+
+#[test]
+fn retained_enrollment_grant_and_signed_input_do_not_follow_serving_renewal() {
+    let (signer, boot, clock) = fixture();
+    let original = boot.begin_acquisition().unwrap();
+    let response = signed(&signer, &boot, &original);
+    let original_bytes = serde_json::to_vec(&response).unwrap();
+    let enrollment = original.verify(response).unwrap();
+    let gate = ServingGate::new(enrollment.clone()).unwrap();
+    clock.0.store(900, Ordering::SeqCst);
+    let renewal = boot.begin_acquisition().unwrap();
+    gate.renew(renewal.verify(signed(&signer, &boot, &renewal)).unwrap())
+        .unwrap();
+    clock.0.store(1000, Ordering::SeqCst);
+    gate.check().unwrap();
+    assert!(enrollment.check().is_err());
+    assert!(enrollment.remaining().is_err());
+    assert_eq!(
+        serde_json::to_vec(enrollment.signed()).unwrap(),
+        original_bytes
+    );
+}
