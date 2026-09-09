@@ -55,3 +55,31 @@ async fn rejected_cold_audit_open_drains_storage_and_releases_the_standalone_ins
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn failed_runtime_shutdown_retains_owner_and_retries_without_reopening_audit() -> Result<()> {
+    let _gate = LIFECYCLE_GATE.lock().await;
+    let directory = tempfile::tempdir()?;
+    let installed =
+        crate::standalone::initialize(&directory.path().join("installed"), "acme").await?;
+    let mut config = RuntimeConfig::load(&installed.configuration)?;
+    let [mcp, native, admin] = listening_addresses();
+    config.mcp.listen = mcp;
+    config.native.listen = native;
+    config.admin.listen = admin;
+    config.mcp.protocol = McpConfig::new(format!("https://localhost:{}/mcp", mcp.port()))?;
+    let mut runtime = NodeRuntime::open(config.clone()).await?;
+    runtime.audit.seal();
+    assert!(runtime.shutdown().await.is_err());
+    assert!(!runtime.closed, "failed shutdown marked its owner closed");
+    assert!(crate::standalone::claim(&config).is_err());
+    // All remaining owners are retried, while the stopping audit is never
+    // submitted again to an already-sealed store. No new open is performed.
+    runtime.shutdown().await?;
+    assert!(runtime.closed);
+    drop(runtime);
+    NodeRuntime::drain_startups().await?;
+    let owner = crate::standalone::claim(&config)?;
+    drop(owner);
+    Ok(())
+}

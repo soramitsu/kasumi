@@ -905,6 +905,9 @@ pub struct NodeRuntime {
     cluster: Option<Arc<ClusterNetwork>>,
     local_certificate_pin: CertificatePin,
     closed: bool,
+    stopping_audit_started: bool,
+    stopping_audit_observed: bool,
+    shutdown_failure: Option<anyhow::Error>,
     administration: Option<Arc<crate::administration::Administration>>,
     target_recovery: Option<Arc<crate::target_runtime::TargetRecoveryRuntime>>,
     tls_reload: Option<crate::tls_reload::RuntimeTlsReload>,
@@ -1149,6 +1152,9 @@ impl NodeRuntime {
             cluster,
             local_certificate_pin,
             closed: false,
+            stopping_audit_started: false,
+            stopping_audit_observed: false,
+            shutdown_failure: None,
             #[cfg(test)]
             audit_release_gate: Arc::new(tokio::sync::Mutex::new(None)),
             administration: None,
@@ -1782,21 +1788,36 @@ impl NodeRuntime {
         if self.closed {
             return Ok(());
         }
-        let audit = self
-            .audit
-            .record(lifecycle(SecurityEventKind::NodeStopping))
-            .await;
-        let mut failure = audit.err();
+        if !self.stopping_audit_started {
+            self.stopping_audit_started = true;
+            let audit = self
+                .audit
+                .record(lifecycle(SecurityEventKind::NodeStopping))
+                .await;
+            self.stopping_audit_observed = true;
+            if let Err(error) = audit {
+                self.shutdown_failure.get_or_insert(error);
+            }
+        } else if !self.stopping_audit_observed {
+            self.stopping_audit_observed = true;
+            self.shutdown_failure.get_or_insert_with(|| {
+                anyhow::anyhow!(
+                    "stopping audit outcome was not observed before shutdown cancellation"
+                )
+            });
+        }
         for lease in &self.serving_leases {
             lease.close();
         }
         for lease in &self.serving_leases {
             if let Err(error) = lease.shutdown().await {
-                failure.get_or_insert(error);
+                self.shutdown_failure.get_or_insert(error);
             }
         }
         if let Some(manager) = &self.administration {
-            manager.shutdown().await;
+            if let Err(error) = manager.shutdown().await {
+                self.shutdown_failure.get_or_insert(error);
+            }
         }
         for tenant in std::iter::once(&self.control).chain(self.tenants.iter()) {
             let _ = self.registry.remove(tenant.store.tenant());
@@ -1808,7 +1829,7 @@ impl NodeRuntime {
                 ));
             }
             if let Err(error) = tenant.database.shutdown().await {
-                failure.get_or_insert(error);
+                self.shutdown_failure.get_or_insert(error);
             }
         }
         for source in &self.custody_sources {
@@ -1820,7 +1841,7 @@ impl NodeRuntime {
                 &source.source
             {
                 if let Err(error) = custody.shutdown().await {
-                    failure.get_or_insert(error);
+                    self.shutdown_failure.get_or_insert(error);
                 }
             } else {
                 source.store.store().shutdown().await;
@@ -1833,9 +1854,15 @@ impl NodeRuntime {
         if let Some(verifier) = &self.signer_verifier {
             verifier.shutdown().await;
         }
-        self.closed = true;
-        self.telemetry
-            .set_lifecycle(crate::observability::Lifecycle::Closed);
+        // An error is returned only after all reachable owners were attempted.
+        // Keep this exact runtime eligible for another drain; its initial audit
+        // attempt must not be repeated against the now-closed audit store.
+        let failure = self.shutdown_failure.take();
+        if failure.is_none() {
+            self.closed = true;
+            self.telemetry
+                .set_lifecycle(crate::observability::Lifecycle::Closed);
+        }
         failure.map_or(Ok(()), Err)
     }
 }

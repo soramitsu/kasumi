@@ -149,13 +149,42 @@ pub(crate) fn durable_directory(path: &Path) -> Result<()> {
     Ok(())
 }
 
+#[derive(Default)]
+struct InitializerRegistry {
+    handles: Vec<tokio::task::JoinHandle<()>>,
+    // A joined panic is still unreported while a cancelled drain has more
+    // owners to await. Keep that outcome with the surviving task registry.
+    failure: Option<anyhow::Error>,
+}
+impl InitializerRegistry {
+    async fn reap_finished(&mut self) -> Result<()> {
+        while let Some(index) = self
+            .handles
+            .iter()
+            .position(tokio::task::JoinHandle::is_finished)
+        {
+            let result = (&mut self.handles[index]).await;
+            drop(self.handles.swap_remove(index));
+            if let Err(error) = result {
+                self.failure.get_or_insert_with(|| error.into());
+            }
+        }
+        self.take_failure()
+    }
+    fn take_failure(&mut self) -> Result<()> {
+        self.failure.take().map_or(Ok(()), |error| {
+            Err(error.context("catalog initializer task failed"))
+        })
+    }
+}
+
 pub struct NodeStore {
     db: Database,
     scratch_disk: Arc<ScratchDisk>,
     path: Option<PathBuf>,
     tenants: AsyncMutex<HashMap<String, Arc<AsyncMutex<Weak<TenantStore>>>>>,
     // Retain initialization tasks through rejected/cancelled result delivery.
-    initializers: AsyncMutex<Vec<tokio::task::JoinHandle<()>>>,
+    initializers: AsyncMutex<InitializerRegistry>,
 }
 
 impl NodeStore {
@@ -268,7 +297,7 @@ impl NodeStore {
             scratch_disk,
             path,
             tenants: AsyncMutex::new(HashMap::new()),
-            initializers: AsyncMutex::new(Vec::new()),
+            initializers: AsyncMutex::new(InitializerRegistry::default()),
         })
     }
 

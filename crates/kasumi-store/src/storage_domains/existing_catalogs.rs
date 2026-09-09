@@ -117,13 +117,9 @@ pub(super) async fn open(
     }
     let (send, receive) = oneshot::channel();
     let mut tasks = node.initializers.lock().await;
-    while let Some(index) = tasks.iter().position(tokio::task::JoinHandle::is_finished) {
-        let result = (&mut tasks[index]).await;
-        drop(tasks.swap_remove(index));
-        result.context("prior catalog owner task failed")?;
-    }
+    tasks.reap_finished().await?;
     let owner = node.clone();
-    tasks.push(tokio::spawn(async move {
+    tasks.handles.push(tokio::spawn(async move {
         match prepare(owner, tenant, custody_provider, application, &send).await {
             Err(error) => {
                 let _ = send.send(Err(error));

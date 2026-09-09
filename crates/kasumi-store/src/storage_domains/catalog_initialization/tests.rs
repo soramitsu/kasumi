@@ -25,7 +25,59 @@ fn input(node: Arc<NodeStore>) -> Input {
 
 async fn drain(node: &NodeStore) -> Result<()> {
     tokio::time::timeout(Duration::from_secs(10), node.drain_initializers()).await??;
-    assert!(node.initializers.lock().await.is_empty());
+    assert!(node.initializers.lock().await.handles.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancelled_catalog_drain_preserves_a_joined_panic_while_another_owner_waits() -> Result<()>
+{
+    let (_directory, node) = node()?;
+    let (release, waiting) = oneshot::channel::<()>();
+    let owned = node.clone();
+    let pending = tokio::spawn(async move {
+        let _owned = owned;
+        waiting.await.unwrap();
+    });
+    let failed = tokio::spawn(async { panic!("catalog owner panic before cancelled drain") });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !failed.is_finished() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    node.initializers
+        .lock()
+        .await
+        .handles
+        .extend([pending, failed]);
+    let mut draining = Box::pin(node.drain_initializers());
+    std::future::poll_fn(|context| {
+        assert!(draining.as_mut().poll(context).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    drop(draining);
+    {
+        let registry = node.initializers.lock().await;
+        assert_eq!(registry.handles.len(), 1);
+        assert!(
+            registry
+                .failure
+                .as_ref()
+                .unwrap()
+                .to_string()
+                .contains("catalog owner panic before cancelled drain")
+        );
+    }
+    release.send(()).unwrap();
+    let error = tokio::time::timeout(Duration::from_secs(5), node.drain_initializers())
+        .await?
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("catalog owner panic before cancelled drain"));
+    let registry = node.initializers.lock().await;
+    assert!(registry.handles.is_empty());
+    assert!(registry.failure.is_none());
     Ok(())
 }
 

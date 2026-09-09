@@ -9,7 +9,14 @@ use std::{
 };
 use tokio::sync::{Mutex as AsyncMutex, Notify, oneshot};
 
-type Tasks = AsyncMutex<Vec<tokio::task::JoinHandle<Result<()>>>>;
+#[derive(Default)]
+struct Registry {
+    handles: Vec<tokio::task::JoinHandle<Result<()>>>,
+    // Joined failures must outlive a cancelled drain that is still awaiting
+    // another owner. Clear only when returning them to a caller without a yield.
+    failure: Option<anyhow::Error>,
+}
+type Tasks = AsyncMutex<Registry>;
 
 #[derive(Clone, Copy)]
 pub(crate) enum Kind {
@@ -28,12 +35,12 @@ fn tasks(kind: Kind) -> &'static Tasks {
 }
 
 struct Handoff<T> {
-    value: Mutex<Option<T>>,
+    value: Mutex<Option<Result<T>>>,
     decided: Notify,
 }
 struct Ticket<T>(Arc<Handoff<T>>);
 impl<T> Ticket<T> {
-    fn claim(self) -> T {
+    fn claim(self) -> Result<T> {
         self.0
             .value
             .lock()
@@ -78,51 +85,57 @@ where
 {
     let receive = begin(tasks(kind), opening).await?;
     // No await or fallible work between actual receipt and public ownership.
-    Ok(receive.await.context("startup owner stopped")??.claim())
+    receive.await.context("startup owner stopped")?.claim()
 }
 
-async fn begin<T, Opening>(
-    tasks: &Tasks,
-    opening: Opening,
-) -> Result<oneshot::Receiver<Result<Ticket<T>>>>
+async fn begin<T, Opening>(tasks: &Tasks, opening: Opening) -> Result<oneshot::Receiver<Ticket<T>>>
 where
     T: Runtime,
     Opening: Future<Output = Result<T>> + Send + 'static,
 {
     let (send, receive) = oneshot::channel();
     let mut tasks = tasks.lock().await;
-    while let Some(index) = tasks.iter().position(tokio::task::JoinHandle::is_finished) {
-        let result = (&mut tasks[index]).await;
-        drop(tasks.swap_remove(index));
-        result.context("prior startup owner panicked")??;
-    }
-    tasks.push(tokio::spawn(async move {
-        match Box::pin(opening).await {
-            Err(error) => match send.send(Err(error)) {
-                Ok(()) => Ok(()),
-                Err(Err(error)) => Err(error),
-                Err(Ok(_)) => unreachable!("startup error delivery cannot contain a runtime"),
-            },
-            Ok(runtime) => deliver(runtime, send).await,
+    while let Some(index) = tasks
+        .handles
+        .iter()
+        .position(tokio::task::JoinHandle::is_finished)
+    {
+        let result = (&mut tasks.handles[index]).await;
+        drop(tasks.handles.swap_remove(index));
+        if let Err(error) = result
+            .context("prior startup owner panicked")
+            .and_then(|value| value)
+        {
+            tasks.failure.get_or_insert(error);
         }
+    }
+    if let Some(error) = tasks.failure.take() {
+        return Err(error);
+    }
+    tasks.handles.push(tokio::spawn(async move {
+        // An error needs the same acknowledged handoff as a runtime. Sending
+        // into a receiver's buffer does not establish that anyone observed it.
+        deliver(Box::pin(opening).await, send).await
     }));
     Ok(receive)
 }
 
-async fn deliver<T: Runtime>(runtime: T, send: oneshot::Sender<Result<Ticket<T>>>) -> Result<()> {
+async fn deliver<T: Runtime>(outcome: Result<T>, send: oneshot::Sender<Ticket<T>>) -> Result<()> {
     let handoff = Arc::new(Handoff {
-        value: Mutex::new(Some(runtime)),
+        value: Mutex::new(Some(outcome)),
         decided: Notify::new(),
     });
-    let _ = send.send(Ok(Ticket(handoff.clone())));
+    let _ = send.send(Ticket(handoff.clone()));
     handoff.decided.notified().await;
     let abandoned = handoff
         .value
         .lock()
         .expect("startup handoff lock poisoned")
         .take();
-    if let Some(mut runtime) = abandoned {
-        finish(&mut runtime).await?;
+    match abandoned {
+        Some(Ok(mut runtime)) => finish(&mut runtime).await?,
+        Some(Err(error)) => return Err(error),
+        None => {}
     }
     Ok(())
 }
@@ -134,18 +147,17 @@ pub(crate) async fn drain(kind: Kind) -> Result<()> {
 }
 async fn drain_tasks(tasks: &Tasks) -> Result<()> {
     let mut tasks = tasks.lock().await;
-    let mut failure = None;
-    while let Some(task) = tasks.last_mut() {
+    while let Some(task) = tasks.handles.last_mut() {
         let result = task.await;
-        tasks.pop();
+        tasks.handles.pop();
         if let Err(error) = result
             .context("startup owner panicked")
             .and_then(|result| result)
         {
-            failure.get_or_insert(error);
+            tasks.failure.get_or_insert(error);
         }
     }
-    failure.map_or(Ok(()), Err)
+    tasks.failure.take().map_or(Ok(()), Err)
 }
 
 #[cfg(test)]
@@ -198,7 +210,7 @@ mod tests {
             fail_once: false,
         };
         let (send, receive) = oneshot::channel();
-        let delivery = deliver(candidate, send);
+        let delivery = deliver(Ok(candidate), send);
         tokio::pin!(delivery);
         std::future::poll_fn(|context| {
             assert!(delivery.as_mut().poll(context).is_pending());
@@ -229,8 +241,8 @@ mod tests {
             fail_once: false,
         };
         let receive = begin(&tasks, async move { Ok(candidate) }).await?;
-        let ticket = tokio::time::timeout(Duration::from_secs(5), receive).await???;
-        let mut runtime = ticket.claim();
+        let ticket = tokio::time::timeout(Duration::from_secs(5), receive).await??;
+        let mut runtime = ticket.claim()?;
         tokio::time::timeout(Duration::from_secs(5), drain_tasks(&tasks)).await??;
         assert_eq!(observation.attempts.load(Ordering::Acquire), 0);
         assert!(!observation.dropped.load(Ordering::Acquire));
@@ -275,7 +287,79 @@ mod tests {
         assert!(observation.attempts.load(Ordering::Acquire) >= 2);
         assert!(observation.closed.load(Ordering::Acquire));
         assert!(observation.dropped.load(Ordering::Acquire));
-        assert!(tasks.lock().await.is_empty());
+        assert!(tasks.lock().await.handles.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cancelled_drain_preserves_joined_failure_before_another_pending_owner() -> Result<()> {
+        let tasks = Tasks::default();
+        let (release, waiting) = oneshot::channel::<()>();
+        let pending = tokio::spawn(async move { waiting.await.map_err(Into::into) });
+        let failed = tokio::spawn(async { anyhow::bail!("first owner failed") });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !failed.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        tasks.lock().await.handles.extend([pending, failed]);
+        let mut draining = Box::pin(drain_tasks(&tasks));
+        std::future::poll_fn(|context| {
+            assert!(draining.as_mut().poll(context).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        // This actually drops the drain after it consumed the last failed
+        // handle, while its await still owns the pending handle in place.
+        drop(draining);
+        {
+            let registry = tasks.lock().await;
+            assert_eq!(registry.handles.len(), 1);
+            assert_eq!(
+                registry.failure.as_ref().unwrap().to_string(),
+                "first owner failed"
+            );
+        }
+        release.send(()).unwrap();
+        let error = tokio::time::timeout(Duration::from_secs(5), drain_tasks(&tasks))
+            .await?
+            .unwrap_err();
+        assert_eq!(error.to_string(), "first owner failed");
+        let registry = tasks.lock().await;
+        assert!(registry.handles.is_empty());
+        assert!(registry.failure.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn buffered_failed_open_requires_an_actual_recipient_before_forgetting_its_error()
+    -> Result<()> {
+        let (send, receive) = oneshot::channel();
+        let mut delivery = Box::pin(deliver::<Candidate>(
+            Err(anyhow::anyhow!("unobserved failed open")),
+            send,
+        ));
+        std::future::poll_fn(|context| {
+            assert!(delivery.as_mut().poll(context).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        drop(receive);
+        let error = tokio::time::timeout(Duration::from_secs(5), delivery)
+            .await?
+            .unwrap_err();
+        assert_eq!(error.to_string(), "unobserved failed open");
+
+        let tasks = Tasks::default();
+        let receive =
+            begin::<Candidate, _>(&tasks, async { anyhow::bail!("observed failed open") }).await?;
+        let ticket = tokio::time::timeout(Duration::from_secs(5), receive).await??;
+        assert_eq!(
+            ticket.claim().err().unwrap().to_string(),
+            "observed failed open"
+        );
+        tokio::time::timeout(Duration::from_secs(5), drain_tasks(&tasks)).await??;
         Ok(())
     }
 }

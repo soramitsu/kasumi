@@ -231,6 +231,8 @@ pub struct Administration {
     active: RwLock<BTreeMap<String, String>>,
     enabled: RwLock<BTreeSet<String>>,
     gate: tokio::sync::Mutex<()>,
+    // Retain observed failures if a caller cancels while another owner drains.
+    shutdown_failure: tokio::sync::Mutex<Option<anyhow::Error>>,
     admission: Arc<kasumi_engine::admission::NodeAdmission>,
     provider_factories: BTreeMap<String, ProviderFactory>,
     credential: crate::serving_runtime::CredentialSource,
@@ -466,6 +468,7 @@ impl Administration {
             active: RwLock::new(active),
             enabled: RwLock::new(BTreeSet::from([crate::runtime::CONTROL_TENANT.into()])),
             gate: tokio::sync::Mutex::new(()),
+            shutdown_failure: tokio::sync::Mutex::new(None),
             admission,
             provider_factories,
             credential,
@@ -2133,7 +2136,8 @@ impl Administration {
         }
         Ok(())
     }
-    pub(crate) async fn shutdown(&self) {
+    pub(crate) async fn shutdown(&self) -> Result<()> {
+        let mut failure = self.shutdown_failure.lock().await;
         let generations = self
             .generations
             .read()
@@ -2148,9 +2152,13 @@ impl Administration {
         }
         for tenant in generations {
             if let Some(lease) = &tenant.lease {
-                let _ = lease.shutdown().await;
+                if let Err(error) = lease.shutdown().await {
+                    failure.get_or_insert(error);
+                }
             }
-            let _ = tenant.database.shutdown().await;
+            if let Err(error) = tenant.database.shutdown().await {
+                failure.get_or_insert(error);
+            }
         }
         let custody = self
             .custody_generations
@@ -2160,8 +2168,11 @@ impl Administration {
             .cloned()
             .collect::<Vec<_>>();
         for source in custody {
-            let _ = source.shutdown().await;
+            if let Err(error) = source.shutdown().await {
+                failure.get_or_insert(error);
+            }
         }
+        failure.take().map_or(Ok(()), Err)
     }
 }
 pub(crate) fn generation_path(base: &Path, tenant: &str, incarnation: Uuid) -> PathBuf {

@@ -107,18 +107,16 @@ impl NodeStore {
     /// drain. Cancellation of this drain retains every unfinished task handle.
     pub async fn drain_initializers(&self) -> Result<()> {
         let mut tasks = self.initializers.lock().await;
-        let mut failure = None;
-        while let Some(task) = tasks.last_mut() {
+        while let Some(task) = tasks.handles.last_mut() {
             let result = task.await;
-            tasks.pop();
+            tasks.handles.pop();
             if let Err(error) = result {
-                failure.get_or_insert_with(|| anyhow::Error::new(error));
+                tasks
+                    .failure
+                    .get_or_insert_with(|| anyhow::Error::new(error));
             }
         }
-        match failure {
-            Some(error) => Err(error.context("catalog initializer task failed")),
-            None => Ok(()),
-        }
+        tasks.take_failure()
     }
 }
 
@@ -131,12 +129,8 @@ async fn begin(input: Input) -> Result<oneshot::Receiver<Result<Ticket>>> {
     let mut tasks = node.initializers.lock().await;
     // Reap only actual terminal tasks, so repeated installation does not retain
     // a lifetime history of JoinHandles. Unfinished owners stay registered.
-    while let Some(index) = tasks.iter().position(tokio::task::JoinHandle::is_finished) {
-        let result = (&mut tasks[index]).await;
-        drop(tasks.swap_remove(index));
-        result.context("prior catalog initializer task failed")?;
-    }
-    tasks.push(tokio::spawn(async move {
+    tasks.reap_finished().await?;
+    tasks.handles.push(tokio::spawn(async move {
         match prepare(input, &send).await {
             Err(error) => {
                 let _ = send.send(Err(error));
