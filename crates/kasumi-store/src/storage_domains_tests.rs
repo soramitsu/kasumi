@@ -22,7 +22,11 @@ async fn installed(node: Arc<NodeStore>) -> Result<Arc<TenantStorageSet>> {
 #[tokio::test]
 async fn domains_require_distinct_actual_wrapping_policies_and_same_node() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let node = NodeStore::open(dir.path().join("same.redb"), crate::ScratchDisk::fixture())?;
+    let node = NodeStore::create_new(
+        dir.path().join("same.redb"),
+        crate::test_utils::NODE_STORE_ID,
+        crate::ScratchDisk::fixture(),
+    )?;
     let provider = Arc::new(LocalKeyProvider::new([1; 32]));
     let app = TenantStore::open_fixture(node.clone(), "tenant".into(), provider.clone()).await?;
     let control =
@@ -30,14 +34,19 @@ async fn domains_require_distinct_actual_wrapping_policies_and_same_node() -> Re
     assert!(TenantStorageSet::install(app.clone(), control.clone()).is_err());
     assert!(control.get(BINDING_NS, BINDING_KEY)?.is_none());
     let other = TenantStore::open_fixture(
-        NodeStore::open(dir.path().join("other.redb"), crate::ScratchDisk::fixture())?,
+        NodeStore::create_new(
+            dir.path().join("other.redb"),
+            crate::test_utils::NODE_STORE_ID,
+            crate::ScratchDisk::fixture(),
+        )?,
         CustodyStore::catalog_name("tenant"),
         Arc::new(LocalKeyProvider::new([2; 32])),
     )
     .await?;
     assert!(TenantStorageSet::install(app, other).is_err());
-    let reserved = NodeStore::open(
+    let reserved = NodeStore::create_new(
         dir.path().join("reserved.redb"),
+        crate::test_utils::NODE_STORE_ID,
         crate::ScratchDisk::fixture(),
     )?;
     assert!(
@@ -63,7 +72,11 @@ async fn control_reopens_without_any_application_key_probe_after_revocation() ->
     let path = dir.path().join("revoked.redb");
     let app_provider = Arc::new(LocalKeyProvider::new([11; 32]));
     let control_provider = Arc::new(LocalKeyProvider::new([12; 32]));
-    let node = NodeStore::open(&path, crate::ScratchDisk::fixture())?;
+    let node = NodeStore::create_new(
+        &path,
+        crate::test_utils::NODE_STORE_ID,
+        crate::ScratchDisk::fixture(),
+    )?;
     let stores = TenantStorageSet::open_fixture(
         node.clone(),
         "tenant".into(),
@@ -97,7 +110,11 @@ async fn control_reopens_without_any_application_key_probe_after_revocation() ->
     drop(stores);
     drop(node);
     let reopened = CustodyStore::open(
-        NodeStore::open(&path, crate::ScratchDisk::fixture())?,
+        NodeStore::open_existing(
+            &path,
+            crate::test_utils::NODE_STORE_ID,
+            crate::ScratchDisk::fixture(),
+        )?,
         "tenant".into(),
         control_provider,
     )
@@ -221,8 +238,9 @@ async fn post_commit_domain_expiry_reports_uncertainty_and_retains_complete_writ
 #[tokio::test]
 async fn combined_quota_and_substituted_catalog_binding_fail_before_publication() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let node = NodeStore::open(
+    let node = NodeStore::create_new(
         dir.path().join("binding.redb"),
+        crate::test_utils::NODE_STORE_ID,
         crate::ScratchDisk::fixture(),
     )?;
     let stores = installed(node.clone()).await?;

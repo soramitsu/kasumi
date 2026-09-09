@@ -36,8 +36,9 @@ impl KeyProvider for WideReferences {
 #[tokio::test]
 async fn catalog_byte_quota_rejects_initialization_rotation_and_rewrap_before_persistence() {
     let directory = tempfile::tempdir().unwrap();
-    let node = NodeStore::open(
+    let node = NodeStore::create_new(
         directory.path().join("catalog.redb"),
+        crate::test_utils::NODE_STORE_ID,
         crate::ScratchDisk::fixture(),
     )
     .unwrap();
@@ -103,8 +104,9 @@ async fn catalog_byte_quota_rejects_initialization_rotation_and_rewrap_before_pe
 #[tokio::test]
 async fn exact_catalog_boundary_leaves_room_for_worst_case_manifest_tenant_encoding() {
     let directory = tempfile::tempdir().unwrap();
-    let node = NodeStore::open(
+    let node = NodeStore::create_new(
         directory.path().join("boundary.redb"),
+        crate::test_utils::NODE_STORE_ID,
         crate::ScratchDisk::fixture(),
     )
     .unwrap();

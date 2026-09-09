@@ -141,8 +141,9 @@ mod tests {
     {
         let directory = tempfile::tempdir().unwrap();
         let store = TenantStore::open_fixture(
-            crate::NodeStore::open(
+            crate::NodeStore::create_new(
                 directory.path().join("node.redb"),
+                crate::test_utils::NODE_STORE_ID,
                 crate::ScratchDisk::fixture(),
             )
             .unwrap(),

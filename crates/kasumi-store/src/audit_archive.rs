@@ -793,9 +793,24 @@ mod tests {
     use super::*;
     use crate::{NodeStore, test_utils::LocalKeyProvider};
 
-    async fn store(directory: &Path) -> Arc<TenantStore> {
+    async fn store(directory: &Path, create: bool) -> Arc<TenantStore> {
+        let path = directory.join("audit.redb");
+        let node = if create {
+            NodeStore::create_new(
+                &path,
+                crate::test_utils::NODE_STORE_ID,
+                crate::ScratchDisk::fixture(),
+            )
+        } else {
+            NodeStore::open_existing(
+                &path,
+                crate::test_utils::NODE_STORE_ID,
+                crate::ScratchDisk::fixture(),
+            )
+        }
+        .unwrap();
         TenantStore::open_fixture(
-            NodeStore::open(directory.join("audit.redb"), crate::ScratchDisk::fixture()).unwrap(),
+            node,
             "__kasumi_security".into(),
             Arc::new(LocalKeyProvider::new([73; 32])),
         )
@@ -812,7 +827,7 @@ mod tests {
         let external = Arc::new(
             FilesystemAuditArchive::open(directory.path().join("installed-external")).unwrap(),
         );
-        let original = store(directory.path()).await;
+        let original = store(directory.path(), true).await;
         original
             .install_tenant_audit_archive(cache.clone(), external.clone())
             .unwrap();
@@ -824,7 +839,7 @@ mod tests {
         original.shutdown().await;
         drop(original);
 
-        let reopened = store(directory.path()).await;
+        let reopened = store(directory.path(), false).await;
         assert!(
             reopened.tenant_audit_archive().is_err(),
             "missing destination must prevent replay"
@@ -846,7 +861,7 @@ mod tests {
     #[tokio::test]
     async fn verified_archive_is_private_immutable_contiguous_and_reopenable() {
         let directory = tempfile::tempdir().unwrap();
-        let store = store(directory.path()).await;
+        let store = store(directory.path(), true).await;
         let stream = Uuid::new_v4();
         let mut first = AuditSegmentBuilder::new(stream, 0, None).unwrap();
         assert!(first.push(0, b"secret audit record zero").unwrap());
@@ -907,7 +922,7 @@ mod tests {
     #[tokio::test]
     async fn segment_capacity_is_bounded_and_positions_use_checked_u64() {
         let directory = tempfile::tempdir().unwrap();
-        let store = store(directory.path()).await;
+        let store = store(directory.path(), true).await;
         let first = u64::from(u32::MAX) + 100;
         let previous = AuditArchiveLink {
             object_id: Uuid::new_v4(),
@@ -958,7 +973,7 @@ mod tests {
     #[tokio::test]
     async fn authentication_and_final_record_counts_precede_any_release() {
         let directory = tempfile::tempdir().unwrap();
-        let store = store(directory.path()).await;
+        let store = store(directory.path(), true).await;
         let mut builder = AuditSegmentBuilder::new(Uuid::new_v4(), 0, None).unwrap();
         builder.push(0, b"one").unwrap();
         // Model an authenticated but malformed producer: count claims two while
@@ -993,7 +1008,7 @@ mod tests {
     #[tokio::test]
     async fn object_symlink_cannot_read_or_overwrite_unrelated_files() {
         let directory = tempfile::tempdir().unwrap();
-        let store = store(directory.path()).await;
+        let store = store(directory.path(), true).await;
         let mut builder = AuditSegmentBuilder::new(Uuid::new_v4(), 0, None).unwrap();
         builder.push(0, b"one").unwrap();
         let segment = store.encrypt_audit_segment(builder).unwrap();
@@ -1020,8 +1035,9 @@ mod tests {
         let source =
             crate::StorageAccess::standalone(installation, "tenant", Uuid::new_v4()).unwrap();
         let store = TenantStore::open(
-            NodeStore::open(
+            NodeStore::create_new(
                 directory.path().join("source.redb"),
+                crate::test_utils::NODE_STORE_ID,
                 crate::ScratchDisk::fixture(),
             )
             .unwrap(),
@@ -1105,8 +1121,9 @@ mod tests {
         let access =
             crate::StorageAccess::standalone(Uuid::new_v4(), "tenant", Uuid::new_v4()).unwrap();
         let store = TenantStore::open(
-            NodeStore::open(
+            NodeStore::create_new(
                 directory.path().join("source.redb"),
+                crate::test_utils::NODE_STORE_ID,
                 crate::ScratchDisk::fixture(),
             )
             .unwrap(),
@@ -1189,8 +1206,9 @@ mod tests {
         let access =
             crate::StorageAccess::standalone(Uuid::new_v4(), "tenant", Uuid::new_v4()).unwrap();
         let store = TenantStore::open(
-            NodeStore::open(
+            NodeStore::create_new(
                 directory.path().join("source.redb"),
+                crate::test_utils::NODE_STORE_ID,
                 crate::ScratchDisk::fixture(),
             )
             .unwrap(),

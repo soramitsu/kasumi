@@ -787,7 +787,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let provider = Arc::new(LocalKeyProvider::new([17; 32]));
         let store = TenantStore::open_fixture_with_clock(
-            NodeStore::open(dir.path().join("db"), crate::ScratchDisk::fixture()).unwrap(),
+            NodeStore::create_new(
+                dir.path().join("db"),
+                crate::test_utils::NODE_STORE_ID,
+                crate::ScratchDisk::fixture(),
+            )
+            .unwrap(),
             "tenant".into(),
             provider.clone(),
             Arc::new(ManualClock::new()),
@@ -844,7 +849,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let provider = Arc::new(LocalKeyProvider::new([22; 32]));
         let store = TenantStore::open_fixture_with_clock(
-            NodeStore::open(dir.path().join("db"), crate::ScratchDisk::fixture()).unwrap(),
+            NodeStore::create_new(
+                dir.path().join("db"),
+                crate::test_utils::NODE_STORE_ID,
+                crate::ScratchDisk::fixture(),
+            )
+            .unwrap(),
             "t".into(),
             provider.clone(),
             Arc::new(ManualClock::new()),
@@ -868,7 +878,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let provider = Arc::new(LocalKeyProvider::new([31; 32]));
         let store = TenantStore::open_fixture_with_clock(
-            NodeStore::open(dir.path().join("db"), crate::ScratchDisk::fixture()).unwrap(),
+            NodeStore::create_new(
+                dir.path().join("db"),
+                crate::test_utils::NODE_STORE_ID,
+                crate::ScratchDisk::fixture(),
+            )
+            .unwrap(),
             "tenant".into(),
             provider.clone(),
             Arc::new(ManualClock::new()),
@@ -1126,8 +1141,12 @@ mod s3_tests {
         let directory = tempfile::tempdir().unwrap();
         let keys = Arc::new(crate::test_utils::LocalKeyProvider::new([77; 32]));
         let store = TenantStore::open_fixture(
-            crate::NodeStore::open(directory.path().join("db"), crate::ScratchDisk::fixture())
-                .unwrap(),
+            crate::NodeStore::create_new(
+                directory.path().join("db"),
+                crate::test_utils::NODE_STORE_ID,
+                crate::ScratchDisk::fixture(),
+            )
+            .unwrap(),
             "tenant".into(),
             keys.clone(),
         )

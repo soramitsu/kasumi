@@ -83,8 +83,9 @@ impl Fixture {
         };
         let clock = Arc::new(Clock(AtomicU64::new(0)));
         let store = TenantStore::open_with_clock(
-            NodeStore::open(
+            NodeStore::create_new(
                 directory.path().join("trust.redb"),
+                crate::test_utils::NODE_STORE_ID,
                 crate::ScratchDisk::fixture(),
             )
             .unwrap(),
@@ -538,8 +539,9 @@ async fn complete_file_reopen_retains_exact_trust_and_permanent_key_bindings() {
     store.shutdown().await;
     drop(store);
     let reopened = TenantStore::open(
-        NodeStore::open(
+        NodeStore::open_existing(
             directory.path().join("trust.redb"),
+            crate::test_utils::NODE_STORE_ID,
             crate::ScratchDisk::fixture(),
         )
         .unwrap(),
