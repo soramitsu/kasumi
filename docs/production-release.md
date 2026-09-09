@@ -99,8 +99,13 @@ integration; the final integrated source must then pass the complete gates above
    Source `8bf5e27` passed six point-prefix tests and one indexed-genesis test,
    then its two atomic-publication fault tests failed during fixture setup:
    the table's 1 MiB budget could not initialize redb. The [failed cohort](evidence/combined-prefix-8bf5e27-functional-20260909/README.md)
-   is retained. Successor `769b834` funds that fixture at 8 MiB; its actual fault
-   assertions still must pass before claiming publication safety.
+   is retained. Successor `769b834` funds that fixture at 8 MiB; both actual
+   fault tests pass in the later `b17eaf5` cohort. Its [remainder](evidence/combined-t5-b17eaf5-remainder-20260909/README.md)
+   passes point-read admission and missing-stop restart, then fails an obsolete
+   assertion that completed restored transactions remain in the resident map.
+   `5daf4d3` verifies exact permanent counts and public original-scope outcomes;
+   `deb8ead` reconciles the other staged terminal fixtures. Those successors
+   still need execution. Sixteen later remainder gates were unrun.
 4. Validate the combined KASUMIT5 format and restore admission checkpoint.
    `4dddb8d` replaces the prototype decoder directly, inspects typed frames with
    fixed scratch, and separates resident bytes from permanent history. It adds
@@ -114,7 +119,8 @@ integration; the final integrated source must then pass the complete gates above
    Its [functional cohort](evidence/combined-t5-b17eaf5-functional-20260909/README.md)
    accepted21 tests; two more worker-failure tests passed but expected panic
    output split the required-name line, so the evidence guard rejected the
-   cohort. The19 unrun gates continue with captured output. Independent review
+   cohort. The captured-output continuation and its later failure are retained
+   separately. Independent review
    found that external history chunks still need structural admission alongside
    retained logical indexes; that correction is a separate successor. Structural
    accounting and the resident/index estimator require actual capacity validation.
@@ -140,6 +146,12 @@ implemented before claiming configured node disk capacity or reserved import
 completion. A scratch-file budget or an application payload limit does not
 account for persistent databases, indexes, WALs, archived objects or retained
 versions. The exact reservation dependency is specified below.
+
+The source-frozen `f650b99` NodeDisk foundation passes store all-target
+compilation and [23 focused ownership/device/scratch tests](evidence/node-disk-f650b99-20260909/README.md).
+It retains closed-file charges, bounds descriptor metadata and shares filesystem
+promises with scratch storage. Production constructors and redb lifecycle paths
+remain unwired; this result does not close persistent capacity acceptance.
 
 ## Work ownership
 
