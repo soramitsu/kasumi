@@ -103,7 +103,7 @@ impl Administration {
         )
         .await?;
         let provider = configured.keys.provider(self.credential.clone())?;
-        let stores = TenantStorageSet::open(
+        let stores = TenantStorageSet::open_existing(
             self.node.clone(),
             tenant.to_owned(),
             provider.clone(),
@@ -124,7 +124,7 @@ impl Administration {
             )?;
             let database = if let Some(bootstrap) = &bootstrap {
                 let network = self.cluster.as_ref().context("replication unavailable")?;
-                let database = kasumi_engine::open_replicated(
+                let database = kasumi_engine::open_existing_replicated(
                     self.config
                         .replication
                         .as_ref()
@@ -160,10 +160,8 @@ impl Administration {
                 registered = true;
                 database
             } else {
-                kasumi_engine::open_local_with_incarnation(
+                kasumi_engine::open_existing_local(
                     stores.clone(),
-                    configured.initial_policy.clone(),
-                    configured.initial_limits.clone(),
                     self.audit.clone(),
                     Uuid::parse_str(incarnation)?,
                 )

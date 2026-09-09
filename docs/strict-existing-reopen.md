@@ -50,8 +50,25 @@ can require strict reopen throughout. Operator recovery, selected restored
 generations, activated-target recovery and original-serving readmission are
 existing-installation paths. Activated-target serving recovery now uses strict
 node and domain opens; its engine path already requires the published bootstrap.
-Original HA readmission still needs a strict replicated bootstrap mode as well
-as strict catalogs, because ordinary replicated open can create genesis when its
-manifest is absent. HA first enrollment and administrative tenant creation
-require separately explicit installation handling. This checkpoint does not
-claim all production callers use strict reopen.
+Original serving readmission now uses strict catalog opens and selects
+`open_existing_replicated` or the local existing-only path. Strict replicated
+open requires the exact immutable deployment in both domains, a published
+bootstrap and custody digest, the decoded incarnation, and the retained physical
+Raft node/group identity before engine installation. A live HA gate must bind
+that exact node and incarnation too. The initial three-voter placement and
+failure domains stay immutable, while current operational membership is
+recovered by Raft and is never reset to the initial placement on reopen.
+
+The explicit first-enrollment branch remains separate from existing-only mode.
+Four additional source tests cover missing bootstrap/consensus identity,
+corrupt manifest/body/custody commitment and authenticated wrong incarnation,
+initial placement/policy/capacity substitution, and an encrypted three-replica
+full close/reopen preserving committed state and membership using in-process
+transport. No compiler or functional gate has run on this source yet.
+
+HA first enrollment and administrative tenant creation still require their
+explicit installation handling. The separate node-file opener review also
+tracks redb writable-open effects on unrelated files; the regressions here
+assert logical row non-mutation on rejection, not arbitrary file-byte
+preservation. This checkpoint does not claim all production callers use strict
+reopen or certify the unresolved persistent-disk integration.

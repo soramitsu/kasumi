@@ -37,6 +37,9 @@ const CHUNK: usize = 4 << 20;
 static BOOTSTRAP_GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[cfg(test)]
+#[path = "bootstrap_existing_replicated_tests.rs"]
+mod existing_replicated_tests;
+#[cfg(test)]
 #[path = "bootstrap_existing_tests.rs"]
 mod existing_tests;
 
@@ -203,7 +206,10 @@ pub async fn prepare_replicated_restore(
 
 impl ReplicatedBootstrap {
     pub fn validate(&self) -> anyhow::Result<()> {
-        uuid::Uuid::parse_str(&self.incarnation)?;
+        anyhow::ensure!(
+            !uuid::Uuid::parse_str(&self.incarnation)?.is_nil(),
+            "nil replicated incarnation"
+        );
         anyhow::ensure!(
             self.voters.len() == 3,
             "replicated mode requires exactly three initial voters"
@@ -285,9 +291,49 @@ pub async fn open_replicated(
         transport,
         config,
         security_audit,
-        true,
+        ReplicaRuntime::FirstEnrollment,
     )
     .await
+}
+
+/// Reopen only an installed replicated bootstrap and its exact physical Raft
+/// identity. The installed initial placement is immutable; operational
+/// membership is recovered by Raft, never reconstructed from these defaults.
+pub async fn open_existing_replicated(
+    node_id: u64,
+    stores: Arc<TenantStorageSet>,
+    bootstrap: &ReplicatedBootstrap,
+    transport: Arc<dyn RaftTransport>,
+    config: Config,
+    security_audit: Arc<SecurityAudit>,
+) -> anyhow::Result<Arc<Database>> {
+    open_replicated_inner(
+        node_id,
+        stores,
+        bootstrap,
+        transport,
+        config,
+        security_audit,
+        ReplicaRuntime::Existing,
+    )
+    .await
+}
+
+#[derive(Clone, Copy)]
+enum ReplicaRuntime {
+    FirstEnrollment,
+    Existing,
+    #[cfg(any(test, feature = "test-utils"))]
+    FixtureEnrollment,
+}
+impl ReplicaRuntime {
+    fn maintenance(self) -> bool {
+        match self {
+            Self::FirstEnrollment | Self::Existing => true,
+            #[cfg(any(test, feature = "test-utils"))]
+            Self::FixtureEnrollment => false,
+        }
+    }
 }
 
 async fn open_replicated_inner(
@@ -297,7 +343,7 @@ async fn open_replicated_inner(
     transport: Arc<dyn RaftTransport>,
     config: Config,
     security_audit: Arc<SecurityAudit>,
-    maintenance: bool,
+    runtime: ReplicaRuntime,
 ) -> anyhow::Result<Arc<Database>> {
     let store = stores.application().clone();
     anyhow::ensure!(
@@ -307,18 +353,27 @@ async fn open_replicated_inner(
     bootstrap.validate()?;
     if let Some(gate) = store.storage_access().serving_gate() {
         anyhow::ensure!(
-            gate.identity().incarnation.to_string() == bootstrap.incarnation,
-            "replicated incarnation differs from its signed serving authority"
+            gate.identity().incarnation.to_string() == bootstrap.incarnation
+                && gate.identity().node.node_id == node_id,
+            "replicated node or incarnation differs from its signed serving authority"
         );
     }
     anyhow::ensure!(node_id > 0, "node ID must be positive");
     let _gate = BOOTSTRAP_GATE.lock().await;
     reject_retired_serving_open(&stores)?;
     let binding = serde_json::to_vec(&("replicated", bootstrap))?;
-    bind_deployment(&stores, &binding)?;
+    if matches!(runtime, ReplicaRuntime::Existing) {
+        require_deployment(&stores, &binding)?;
+    } else {
+        bind_deployment(&stores, &binding)?;
+    }
     let bytes = match load(&store)? {
         Some(bytes) => bytes,
         None => {
+            anyhow::ensure!(
+                !matches!(runtime, ReplicaRuntime::Existing),
+                "replicated bootstrap is not initialized"
+            );
             let engine = TenantEngine::new(
                 store.tenant().into(),
                 bootstrap.incarnation.clone(),
@@ -332,17 +387,26 @@ async fn open_replicated_inner(
     };
     validate_bootstrap_control(&stores, &bytes)?;
     let engine = Arc::new(TenantEngine::from_bootstrap(store.tenant(), &bytes)?);
-    engine.install_storage_access(&store)?;
-    engine
-        .verify_bootstrap_dependencies_owned(security_audit.admission().clone())
-        .await?;
-    if maintenance {
-        engine.install_audit_maintenance(security_audit.admission())?;
-    }
     anyhow::ensure!(
         engine.generation()?.state.incarnation == bootstrap.incarnation,
         "replicated incarnation differs from bootstrap"
     );
+    if matches!(runtime, ReplicaRuntime::Existing) {
+        let installed = kasumi_raft::ControlLog::installed(stores.custody().clone())?
+            .ok_or_else(|| anyhow::anyhow!("replicated consensus identity is not initialized"))?;
+        anyhow::ensure!(
+            installed.node_id() == node_id
+                && installed.group() == format!("{}/{}", store.tenant(), bootstrap.incarnation),
+            "replicated consensus identity differs from installed configuration"
+        );
+    }
+    engine.install_storage_access(&store)?;
+    engine
+        .verify_bootstrap_dependencies_owned(security_audit.admission().clone())
+        .await?;
+    if runtime.maintenance() {
+        engine.install_audit_maintenance(security_audit.admission())?;
+    }
     let group = RaftGroup::open(
         node_id,
         format!("{}/{}", store.tenant(), bootstrap.incarnation),
@@ -352,7 +416,7 @@ async fn open_replicated_inner(
         config,
     )
     .await?;
-    Ok(if maintenance {
+    Ok(if runtime.maintenance() {
         Database::new_with_admission(
             engine,
             group,

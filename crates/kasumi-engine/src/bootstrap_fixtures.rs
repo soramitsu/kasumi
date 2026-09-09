@@ -60,7 +60,16 @@ pub async fn open_fixture_replicated(
     audit: Arc<SecurityAudit>,
 ) -> anyhow::Result<Arc<Database>> {
     check(&stores)?;
-    open_replicated_inner(node_id, stores, bootstrap, transport, config, audit, false).await
+    open_replicated_inner(
+        node_id,
+        stores,
+        bootstrap,
+        transport,
+        config,
+        audit,
+        ReplicaRuntime::FixtureEnrollment,
+    )
+    .await
 }
 
 #[cfg(test)]
