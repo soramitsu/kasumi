@@ -15,7 +15,10 @@ The synchronous caller must retain its installation authorization, storage owner
 and blocking-work admission through commit and acknowledgement. This primitive
 is not an application authorization grant or a physical disk budget.
 
-The three new store regressions exercise unknown records in both domains,
+Only nonempty Put-only operation slices are accepted, so a successful
+publication cannot leave either domain pristine through deletes of absent keys.
+
+The four new store regressions exercise unknown records in both domains,
 concurrent initial publication with one matching winner in both domains, and
-missing/substituted custody bindings. They are source-only and unexecuted; no
+missing/substituted custody bindings, and rejection of delete-only initial state. They are source-only and unexecuted; no
 production authority caller is wired in this foundation commit.

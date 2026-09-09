@@ -388,3 +388,34 @@ async fn initial_state_requires_the_exact_retained_custody_binding() -> Result<(
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn initial_state_rejects_delete_only_publications_without_consuming_initialization()
+-> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let stores = installed(NodeStore::create_new(
+        directory.path().join("empty-initialization.redb"),
+        crate::test_utils::NODE_STORE_ID,
+        ScratchDisk::fixture(),
+    )?)
+    .await?;
+    let put = [WriteOp::put("genesis", b"head", b"initial")];
+    let delete = [WriteOp::delete("genesis", b"head")];
+    for (app, custody) in [(&delete, &delete), (&delete, &put), (&put, &delete)] {
+        assert!(stores.initialize_state(app, custody).is_err());
+        assert!(stores.application().get("genesis", b"head")?.is_none());
+        assert!(stores.custody().store().get("genesis", b"head")?.is_none());
+    }
+    stores.initialize_state(&put, &put)?;
+    assert_eq!(
+        stores.application().get("genesis", b"head")?.unwrap(),
+        b"initial"
+    );
+    assert_eq!(
+        stores.custody().store().get("genesis", b"head")?.unwrap(),
+        b"initial"
+    );
+    stores.application().shutdown().await;
+    stores.custody().store().shutdown().await;
+    Ok(())
+}

@@ -324,6 +324,13 @@ impl TenantStorageSet {
             !application_ops.is_empty() && !custody_ops.is_empty(),
             "initial publication requires state in both domains"
         );
+        ensure!(
+            application_ops
+                .iter()
+                .chain(custody_ops)
+                .all(|operation| matches!(operation, WriteOp::Put { .. })),
+            "initial publication accepts only inserted state"
+        );
         for operation in custody_ops {
             let namespace = match operation {
                 WriteOp::Put { namespace, .. } | WriteOp::Delete { namespace, .. } => namespace,
