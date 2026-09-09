@@ -18,6 +18,15 @@ functional results. Its [44 macOS and 20 Linux Python checks](evidence/release-p
 passed after preserving and correcting a failed deadline/cleanup counterexample.
 Those tool checks do not replace any database acceptance gate.
 
+The [frozen first-release workspace check](evidence/first-release-1ff2fe2-check-20260909/README.md)
+failed at compilation with ten distinct import and replaced-API call-site errors.
+The source, raw failure and full process drain are retained. No Rust tests ran;
+formatting was skipped by the original stop-on-failure plan. The source corrections
+use explicit existing-state reopen calls and add no compatibility path. Subsequent
+combined compiler, functional and strict gates remain open. Canonical management
+removal and the retained startup/existing-catalog owners are separate checkpoints;
+the real TLS coordinator fixture and their integrated validation are unfinished.
+
 ## Contract
 
 - Self-hosted standalone and replicated HA, Apache-2.0, Rust 1.97.1.
