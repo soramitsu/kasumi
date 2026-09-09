@@ -42,15 +42,22 @@ runtime test retains real backup verification, key rotation and response-release
 policy revocation; its obsolete restore rejection now occurs at wire decoding.
 All these Rust assertions are unrun.
 
-The replicated runtime fixture still references the removed management restore
-family in this source checkpoint and therefore requires the separately owned
-canonical fixture rewrite before an all-target build can pass. That rewrite must
-retain actual encrypted backup, all-voter preparation before initialization,
-quorum-loss completion refusal, independently verified source retirement, target
-activation and route publication, source isolation, daemon restart and staged
-tenant/peer provisioning. It must use real issuer admission and independent
-source application, custody, Control, issuer and target credentials. No assertion
-has been waived or replaced by an earlier fixture pass.
+The replicated runtime fixture has now been converted in source (f7fa592) to
+actual issuer/Control/target services and independent source application, custody,
+Control, issuer and target credentials. Its assertions retain actual encrypted
+backup, all-voter preparation before initialization, quorum-loss completion
+refusal, source retirement, target activation/route publication, source isolation,
+daemon restart and tenant/peer provisioning. An admitted source Status fence
+survives through the route change and must reject release afterward. No compiler
+or Rust runtime test has run on this combined source.
+
+A production enrollment gap remains: a newly configured tenant is strictly opened
+on restart before the management prepare operation can explicitly create its
+catalog/bootstrap. The fixture retains the onboarding assertions and is expected
+to fail there until an authorized explicit enrollment path exists. Source review
+also records its immutable issuer signing fixture and explicit outer target-owner
+restart boundaries. See the [coverage map and erratum](evidence/canonical-runtime-f7fa592-source-20260909/README.md).
+No earlier branch pass or removed assertion replaces these open acceptance gates.
 
 The deleted private generation path tests exercised a removed file-creation API.
 Canonical node-envelope, target journal and standalone generation tests retain

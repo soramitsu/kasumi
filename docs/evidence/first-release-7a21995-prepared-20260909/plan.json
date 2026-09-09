@@ -1,0 +1,107 @@
+{
+  "source": "/tmp/kasumi-first-release-7a21995-check",
+  "target": "/tmp/kasumi-production-root-target",
+  "expected_head": "7a21995b7488980f63cf100dbd90eb0d0680c520",
+  "expected_tree": "f5506136b3650fca75e728e70270a53cdfe29862",
+  "output": "/tmp/kasumi-7a21995-first-release-check",
+  "scope": "Combined first-release compiler, formatting, full store library and strict store check after actual frozen1ff2fe2 compilation failure. Includes its minimal6995711 import/reopen corrections, actual target operational-membership/suspension identity fix0ef62e0, retained startupda4c8c3 and existing-cataloge9c76e7 owners, and cancelled drain outcome correction63abded. Retains original900s workspace and300s formatting deadlines. Replaces the UNRUN d5fb231 store-only cohort with the same full900s library/600s strict store scope on integrated source; all20 original required regression names plus12 new catalog ownership/drain names are mandatory. Stop at first failure and retain all raw failures/source/runner/process provenance. No canonical management524d752/8f081a0 or new coordinator fixture, no pending explicit local/target catalog lifecycle, no later authority-request drain, no foreign ordered_seek work. Store tests are focused evidence, not final workspace/production/Linux/native/capacity/endurance acceptance.",
+  "gates": [
+    {
+      "name": "workspace-all-targets-check",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "check",
+        "--locked",
+        "--offline",
+        "--keep-going",
+        "-j1",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--message-format=json-render-diagnostics"
+      ],
+      "required_tests": []
+    },
+    {
+      "name": "workspace-format",
+      "timeout_seconds": 300,
+      "cargo_args": [
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "required_tests": []
+    },
+    {
+      "name": "complete-store-library",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-store",
+        "--all-features",
+        "--lib",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "node_file::tests::unrelated_clean_and_unclean_redb_rejection_is_byte_exact",
+        "node_file::tests::recognized_store_recovers_after_actual_process_exit_without_close",
+        "node_file::tests::partial_envelopes_are_never_adopted_or_reinitialized",
+        "node_file::tests::existing_header_requires_exact_canonical_fields_and_checksum",
+        "node_file::tests::initialization_requires_exact_journal_owned_empty_inode",
+        "node_file::tests::offset_io_preserves_header_and_retained_backend_cannot_outlive_close",
+        "node_file::tests::canonical_header_rejects_nil_identity_without_creating_a_file",
+        "node_file::tests::validated_descriptor_handoff_never_reopens_a_substituted_path",
+        "node_file::tests::cleanup_custody_accepts_only_exact_recognized_headers_and_holds_the_inode_lock",
+        "node_store_ids::tests::immutable_identity_derivations_are_stable_and_domain_separated",
+        "storage_domains::existing_tests::missing_catalogs_and_authenticated_binding_never_provision_during_reopen",
+        "storage_domains::existing_tests::existing_catalog_admission_cannot_provision_after_waiting_for_the_open_gate",
+        "storage_domains::existing_tests::corrupt_or_authenticated_wrong_binding_is_never_repaired_by_reopen",
+        "storage_domains::existing_tests::exact_standalone_binding_reopens_after_both_domains_close_and_drain",
+        "node_file::tests::reads_enforce_payload_bounds_even_for_empty_buffers",
+        "node_file::tests::resize_drains_a_write_after_its_extent_check_before_truncating",
+        "storage_domains::tests::initial_state_rejects_unknown_records_in_either_complete_domain",
+        "storage_domains::tests::initial_state_checks_and_joint_publication_have_one_concurrent_winner",
+        "storage_domains::tests::initial_state_requires_the_exact_retained_custody_binding",
+        "storage_domains::tests::initial_state_rejects_delete_only_publications_without_consuming_initialization",
+        "storage_domains::catalog_initialization::tests::cancelled_catalog_drain_preserves_a_joined_panic_while_another_owner_waits",
+        "storage_domains::catalog_initialization::tests::buffered_unclaimed_ticket_drains_only_unpublished_new_owners",
+        "storage_domains::catalog_initialization::tests::committed_pair_handoff_preserves_a_concurrent_borrower_through_initializer_drain",
+        "storage_domains::catalog_initialization::tests::fresh_pair_rejects_shared_partial_and_orphan_domains_without_mutation",
+        "storage_domains::catalog_initialization::tests::cancelled_receiver_keeps_preparation_registered_until_actual_provider_work_drains",
+        "storage_domains::existing_catalogs::tests::application_failure_drains_new_custody_without_changing_existing_bytes",
+        "storage_domains::existing_catalogs::tests::application_failure_preserves_borrowed_custody_and_original_deadline",
+        "storage_domains::existing_catalogs::tests::caller_cancellation_drains_only_new_domains_after_active_provider_work",
+        "storage_domains::existing_catalogs::tests::caller_cancellation_never_closes_a_borrowed_custody_owner",
+        "storage_domains::existing_catalogs::tests::buffered_existing_pair_ticket_publishes_nothing_and_drains_its_new_workers",
+        "storage_domains::existing_catalogs::tests::missing_binding_rejects_new_custody_and_leaves_every_existing_byte_unchanged",
+        "storage_domains::existing_catalogs::tests::unclaimed_borrowed_pair_and_changed_binding_never_close_its_cached_owners"
+      ]
+    },
+    {
+      "name": "strict-store",
+      "timeout_seconds": 600,
+      "cargo_args": [
+        "clippy",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-store",
+        "--all-targets",
+        "--all-features",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "required_tests": []
+    }
+  ]
+}
