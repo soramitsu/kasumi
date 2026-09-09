@@ -1149,7 +1149,7 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
         staged.current,
         "an issuer-local abort cannot undo the committed global winner"
     );
-    let publication_bearer = dir.path().join("publication.bearer");
+    let publication_bearer = signer_directory.join("publication.bearer");
     kasumi_store::private_files::create(&publication_bearer, operator.as_bytes()).unwrap();
     let publication_transport = Arc::new(CoverageTransport {
         config: config.clone(),
