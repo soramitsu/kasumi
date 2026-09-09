@@ -152,7 +152,8 @@ async fn native_sdk_query_feed_schema_preserve_literal_values_and_admission() {
         payload["decimal"].to_string(),
         "90071992547409931234567890.123456789"
     );
-    assert_eq!(payload["exponent"].to_string(), "1e400");
+    // Number parsing canonicalizes the exponent sign without losing precision.
+    assert_eq!(payload["exponent"].to_string(), "1e+400");
     let schema = json!({"type":"object","properties":{"payload":{"const":payload}},
         "required":["payload","n"]});
     let schema_request = ReadSchema {
