@@ -1,0 +1,417 @@
+{
+  "source": "/tmp/kasumi-production-drain-validation",
+  "target": "/tmp/kasumi-production-root-target",
+  "expected_head": "61b5f0b09b8f0e96114b7a94e0b8216bb76f22ae",
+  "expected_tree": "271705933834141133a6877e4d195f500ef2cdb8",
+  "output": "/tmp/kasumi-61b5f0b-combined-remainder",
+  "scope": "Focused macOS ARM64 combined checks after indexed staged-original-lineage fix61b5f0b. Prior27b retained19+5+4 passes and zero-selection then real indexed-validation failures. This successor repeats affected snapshot module and executes the remaining20 gates. No capacity/performance/endurance or finalrelease acceptance.",
+  "gates": [
+    {
+      "name": "snapshot-receipts",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--lib",
+        "snapshot_validation",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "state::snapshot_validation::tests::receipt_original_scope_and_position_are_checked_in_both_snapshot_paths"
+      ]
+    },
+    {
+      "name": "shutdown-integration",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--test",
+        "shutdown",
+        "full_shutdown_reopens_immediately_with_receipts_and_retained_plaintext",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "full_shutdown_reopens_immediately_with_receipts_and_retained_plaintext"
+      ]
+    },
+    {
+      "name": "restore-receipts",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--test",
+        "contracts",
+        "logical_backup_restores_suspended_with_new_incarnation_and_increasing_revisions",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "logical_backup_restores_suspended_with_new_incarnation_and_increasing_revisions"
+      ]
+    },
+    {
+      "name": "target-materialization",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-authority",
+        "--lib",
+        "target_materialization_tests",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "target_materialization_tests::dropping_target_on_non_runtime_thread_retains_shutdown_work_until_real_drain"
+      ]
+    },
+    {
+      "name": "target-worker-ownership",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--lib",
+        "target_runtime::shutdown_tests",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "target_runtime::shutdown_tests::target_monitor_and_outer_owner_survive_cancelled_shutdown_until_journal_reopens"
+      ]
+    },
+    {
+      "name": "signer-worker-ownership",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--lib",
+        "signer_runtime::tests",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "signer_runtime::tests::verifier_shutdown_joins_renewal_after_setup_owner_is_dropped"
+      ]
+    },
+    {
+      "name": "native-mcp-receipts",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--lib",
+        "native_and_mcp_",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "api::tests::native_and_mcp_lost_committed_responses_resolve_without_reapplying"
+      ]
+    },
+    {
+      "name": "rejected-native-receipt",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--lib",
+        "long_schema_property_errors_match_native_mcp_and_durable_receipts",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "api::tests::long_schema_property_errors_match_native_mcp_and_durable_receipts"
+      ]
+    },
+    {
+      "name": "runtime-restart",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--lib",
+        "three_runtime_nodes_replicate_with_control_quorum_over_audited_pinned_mtls",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "runtime::lifecycle_tests::three_runtime_nodes_replicate_with_control_quorum_over_audited_pinned_mtls"
+      ]
+    },
+    {
+      "name": "native-sdk-literal",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--lib",
+        "api::tests::native_sdk_query_feed_schema_preserve_literal_values_and_admission",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "api::tests::native_sdk_query_feed_schema_preserve_literal_values_and_admission"
+      ]
+    },
+    {
+      "name": "native-pool",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--lib",
+        "api::tests::native_pool_replays_uncertain_batches_and_never_moves_historical_pages",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "api::tests::native_pool_replays_uncertain_batches_and_never_moves_historical_pages"
+      ]
+    },
+    {
+      "name": "guarded-sdk",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--lib",
+        "api::tests::guarded_stop_secure_sdk_preserves_exact_identity_and_native_authority",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "api::tests::guarded_stop_secure_sdk_preserves_exact_identity_and_native_authority"
+      ]
+    },
+    {
+      "name": "local-recovery",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--lib",
+        "local_recovery::tests::local_recovery_resumes_each_phase_and_fences_old_resources_after_activation",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "local_recovery::tests::local_recovery_resumes_each_phase_and_fences_old_resources_after_activation"
+      ]
+    },
+    {
+      "name": "tls-listener",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--test",
+        "tls_listener",
+        "native_grpc_channel_uses_pinned_tls13_and_http2_with_no_plaintext_fallback",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "native_grpc_channel_uses_pinned_tls13_and_http2_with_no_plaintext_fallback"
+      ]
+    },
+    {
+      "name": "tls-reload",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--lib",
+        "api::tests::native_listener_reloads_complete_tls_and_rejects_invalid_replacement",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "api::tests::native_listener_reloads_complete_tls_and_rejects_invalid_replacement"
+      ]
+    },
+    {
+      "name": "audit-tls",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--lib",
+        "runtime::audit_tests::audit_native_tls_fixed_history_and_original_authorization_release",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "runtime::audit_tests::audit_native_tls_fixed_history_and_original_authorization_release"
+      ]
+    },
+    {
+      "name": "literal-snapshot",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--lib",
+        "snapshot_codec::literal_tests::literal_marker_documents_schema_and_staged_records_survive_canonical_snapshots",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "snapshot_codec::literal_tests::literal_marker_documents_schema_and_staged_records_survive_canonical_snapshots"
+      ]
+    },
+    {
+      "name": "literal-native-mcp-codecs",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--lib",
+        "json_literal_tests",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "json_literal_tests::native_mutation_query_and_canonical_command_keep_literal_values",
+        "json_literal_tests::rmcp_earliest_message_decode_and_typed_arguments_preserve_literals",
+        "json_literal_tests::history_chunk_documents_keep_the_original_body_digest"
+      ]
+    },
+    {
+      "name": "workspace-strict",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "clippy",
+        "--locked",
+        "--offline",
+        "-j1",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "-D",
+        "warnings"
+      ]
+    },
+    {
+      "name": "production-check",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "check",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--no-default-features",
+        "--bins",
+        "--message-format=json-render-diagnostics"
+      ]
+    },
+    {
+      "name": "format",
+      "timeout_seconds": 300,
+      "cargo_args": [
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ]
+    }
+  ]
+}
