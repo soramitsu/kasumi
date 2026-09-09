@@ -1,0 +1,37 @@
+{
+  "source": "/tmp/kasumi-strict-startup-validation",
+  "target": "/tmp/kasumi-production-root-target",
+  "expected_head": "fb7e478870c413d06e67ed7e712a3797753f0cde",
+  "expected_tree": "008c42aa8d59a269744beb0ec6b9963d8d4c2ad9",
+  "output": "/tmp/kasumi-fb7e478-strict-startup-check",
+  "scope": "First combined all-target/all-feature compilation and formatting of strict node UUID/envelope/I/O, explicit standalone provisioning, target journal original file intent/open custody, authenticated immutable replicated genesis and service audit head APIs/caller fixtures. Compilation only; no claim of functionality, cold HA explicit enrollment, complete owner cancellation handoff, permanent ordinary receipt storage or final release readiness. Each command retains original deadline and exact process/source provenance.",
+  "gates": [
+    {
+      "name": "workspace-all-targets-check",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "check",
+        "--locked",
+        "--offline",
+        "--keep-going",
+        "-j1",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--message-format=json-render-diagnostics"
+      ],
+      "required_tests": []
+    },
+    {
+      "name": "workspace-format",
+      "timeout_seconds": 300,
+      "cargo_args": [
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "required_tests": []
+    }
+  ]
+}

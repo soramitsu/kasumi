@@ -1,0 +1,112 @@
+{
+  "source": "/tmp/kasumi-production-followon-integration",
+  "target": "/tmp/kasumi-production-root-target",
+  "expected_head": "19c3746ae6c23338d2aa030eb2b7b39db835c2f3",
+  "expected_tree": "5f58cf22978fae99e3b3eba8f4c4bcbd7fb25541",
+  "output": "/tmp/kasumi-19c3746-native-continuation",
+  "scope": "Correct the actual native issuer fixture private-parent failure and execute four previouslyunrun native Control signer/lineage/lease/strict gates. Source19c3746 merges main evidence into the bd42 branch and applies d37 fixture-only path fix; every crates/Cargo source file matches d37 byte-for-byte. No production permission weakening, no changed original deadlines or acceptance assertions. Preserve prior failures, exact tests/features/executables and complete process drain. No validation of later strict initialization/node-envelope source.",
+  "gates": [
+    {
+      "name": "native-issuer-signer-coverage",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--lib",
+        "--all-features",
+        "rpc::authority_tests::actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_recovery",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "rpc::authority_tests::actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_recovery"
+      ]
+    },
+    {
+      "name": "native-control-signer-coverage",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--lib",
+        "--all-features",
+        "rpc::lifecycle_tests::pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong_resource_and_partition",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "rpc::lifecycle_tests::pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong_resource_and_partition"
+      ]
+    },
+    {
+      "name": "indexed-snapshot-lineage",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--lib",
+        "--all-features",
+        "state::snapshot_validation::tests::",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "state::snapshot_validation::tests::receipt_original_scope_and_position_are_checked_in_both_snapshot_paths"
+      ]
+    },
+    {
+      "name": "lease-retention-with-target-owner",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--lib",
+        "--all-features",
+        "state::lease_retention::tests::",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "state::lease_retention::tests::publication_expires_full_roots_while_two_inflight_selections_keep_only_bounded_pages"
+      ]
+    },
+    {
+      "name": "workspace-strict",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "clippy",
+        "--locked",
+        "--offline",
+        "-j1",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "required_tests": []
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+[
+  {
+    "file": "kasumi-7dc2f27-node-envelope-plan.json",
+    "sha256": "91ae89dc58201898cfe7b50d6120039ae4ee5680c59cd3393dc851ece42c498a",
+    "status": "not_run"
+  },
+  {
+    "file": "kasumi-19c3746-native-continuation-plan.json",
+    "sha256": "58df4d6595389ef32bde48508ee8236ac2bfbc7ecb5c79876e66ee436901ea9e",
+    "status": "not_run"
+  },
+  {
+    "file": "kasumi-fb7e478-strict-startup-check-plan.json",
+    "sha256": "2d4fefdf06cfebce065744147f95c971eafd658038e0572a5b2ebaab3efbc60c",
+    "status": "not_run"
+  }
+]
