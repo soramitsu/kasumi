@@ -1,0 +1,36 @@
+{
+  "source": "/tmp/kasumi-production-next-reconcile",
+  "target": "/tmp/kasumi-production-root-target",
+  "expected_head": "743754d0b76548be15daf108d9f513d880b50867",
+  "expected_tree": "8a161c2fd0a55cf8c449b8f7e757fd7cbd3aa908",
+  "output": "/tmp/kasumi-743754d-prefix-check",
+  "scope": "Compile-only and formatting validation of reconciled prepared/terminal point prefixes, exact target completion receiver/status/Control digest and signer dispatch. No functional/recovery/capacity/finalrelease claim. Source-only branch integrated from individually preserved checkpoints; this is first compilation of the combination.",
+  "gates": [
+    {
+      "name": "combined-all-targets-check",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "check",
+        "--locked",
+        "--offline",
+        "-j1",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--message-format=json-render-diagnostics"
+      ],
+      "required_tests": []
+    },
+    {
+      "name": "format",
+      "timeout_seconds": 60,
+      "cargo_args": [
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "required_tests": []
+    }
+  ]
+}
