@@ -1,5 +1,5 @@
 use super::*;
-use kasumi_store::{ScratchDisk, StorageAccess, test_utils::LocalKeyProvider};
+use kasumi_store::{NodeStore, ScratchDisk, StorageAccess, test_utils::LocalKeyProvider};
 
 async fn fixture() -> Result<(tempfile::TempDir, Arc<NodeStore>, Arc<TenantStore>, Input)> {
     let directory = tempfile::tempdir()?;

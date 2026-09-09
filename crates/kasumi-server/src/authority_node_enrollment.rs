@@ -20,7 +20,7 @@ pub(crate) async fn initialize(config: AuthorityRuntimeConfig) -> Result<()> {
     // before completion, so a lost successful CLI reply cannot lose live scopes.
     tokio::spawn(async move {
         let admission = kasumi_engine::admission::NodeAdmission::new(Default::default())?;
-        crate::node_provision::create(
+        let (node, audit) = crate::node_provision::create(
             &config.database_path,
             config.database_id,
             &config.scratch_disk,
@@ -30,15 +30,6 @@ pub(crate) async fn initialize(config: AuthorityRuntimeConfig) -> Result<()> {
         .await?;
         let credential: crate::serving_runtime::CredentialSource =
             Arc::new(crate::runtime::file_secret);
-        let (node, audit) = crate::node_enrollment::audit_after_creation(
-            &config.database_path,
-            config.database_id,
-            &config.scratch_disk,
-            &config.security_audit,
-            admission,
-            credential.clone(),
-        )
-        .await?;
         let mut pair = None;
         let mut verifier = None;
         let result = async {

@@ -265,7 +265,7 @@ pub struct RuntimeConfig {
 impl RuntimeConfig {
     /// Explicit first HA node enrollment. All local catalogs and immutable
     /// genesis are installed under the original captured serving grants.
-    pub async fn provision_node_file(&self) -> Result<()> {
+    pub async fn provision_node(&self) -> Result<()> {
         crate::data_node_enrollment::initialize(self.clone()).await
     }
 

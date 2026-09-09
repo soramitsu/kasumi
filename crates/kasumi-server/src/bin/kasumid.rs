@@ -47,7 +47,7 @@ async fn run(arguments: &[String]) -> Result<()> {
             Ok(())
         }
         [command, path] if command == "provision-node" => {
-            RuntimeConfig::load(path)?.provision_node_file().await?;
+            RuntimeConfig::load(path)?.provision_node().await?;
             println!(
                 "Enrolled the configured HA node, audit and immutable Control/application genesis. Membership initializes only after the original voters verify their retained fingerprints."
             );

@@ -8,6 +8,10 @@ application/custody pairs, and persist immutable local genesis. These commands
 bind no public listeners and do not initialize Raft membership. Repeating the
 command cannot adopt an existing or incomplete node file.
 
+The original physical NodeStore and audit owner stay live from exclusive file
+creation through enrollment and terminal drain. No close/reopen interval allows
+a second owner between audit creation and genesis publication.
+
 The encrypted `node.enrollment` input commits the exact original configuration
 and physical database UUID. Its head is incomplete until local provisioning
 finishes. A data tenant captures one finite original issuer grant, records the
@@ -60,9 +64,12 @@ cold open calls, not complete startup acceptance. The following remain open:
 
 Direct Rust 1.97.1 rustfmt and Git whitespace checks passed. No Cargo,
 compiler, native process, provider service or listener ran for this checkpoint.
-Two new source tests under `node_enrollment::tests` cover exact complete input,
+Two source tests under `node_enrollment::tests` cover exact complete input,
 incomplete/corrupt/missing records, rejection without logical mutation and
-strict metadata reopen. The existing runtime fixture helper now provisions
+strict metadata reopen. A production-file-keyring regression under
+`node_provision::tests` covers exclusive file ownership during provisioning,
+rejection of another creator/opener and strict audit/data reopen after drain.
+The existing runtime fixture helper now provisions
 its local domains explicitly before the first startup.
 
 After the coordinated lane opens, validate the combined dependency graph first,

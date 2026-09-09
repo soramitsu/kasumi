@@ -1,7 +1,7 @@
 //! Explicit node enrollment records. Normal startup only verifies completed input;
 //! it never repairs a partial installation or reacquires a grant to finish one.
 use anyhow::{Context, Result, ensure};
-use kasumi_store::{NodeStore, TenantStore, WriteOp};
+use kasumi_store::{TenantStore, WriteOp};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
@@ -147,37 +147,6 @@ pub(crate) fn require_complete(
         "node enrollment input identity differs"
     );
     Ok(())
-}
-
-/// Reopen only the node and audit just created by the explicit one-shot operation.
-/// This helper is private; a normal daemon cannot use it to complete a partial node.
-pub(crate) async fn audit_after_creation(
-    path: &std::path::Path,
-    database_id: Uuid,
-    scratch: &kasumi_store::ScratchDiskConfig,
-    security: &crate::runtime::SecurityAuditConfig,
-    admission: Arc<kasumi_engine::admission::NodeAdmission>,
-    credential: crate::serving_runtime::CredentialSource,
-) -> Result<(Arc<NodeStore>, Arc<kasumi_engine::SecurityAudit>)> {
-    let node = NodeStore::open_existing(
-        path,
-        database_id,
-        kasumi_store::ScratchDisk::open(scratch.clone())?,
-    )?;
-    let store = TenantStore::open_existing(
-        node.clone(),
-        kasumi_engine::SECURITY_TENANT.into(),
-        security.keys.provider(credential)?,
-        kasumi_store::StorageAccess::security_audit(),
-    )
-    .await?;
-    match security.open(store.clone(), admission) {
-        Ok(audit) => Ok((node, audit)),
-        Err(error) => {
-            store.shutdown().await;
-            Err(error)
-        }
-    }
 }
 
 #[cfg(test)]

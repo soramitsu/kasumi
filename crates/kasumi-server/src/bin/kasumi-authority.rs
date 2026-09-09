@@ -36,9 +36,7 @@ async fn run(args: &[String]) -> Result<()> {
             Ok(())
         }
         [command, path] if command == "provision-node" => {
-            AuthorityRuntimeConfig::load(path)?
-                .provision_node_file()
-                .await?;
+            AuthorityRuntimeConfig::load(path)?.provision_node().await?;
             println!(
                 "Enrolled the configured authority node, audit, independent catalogs and immutable issuer genesis. Membership uses the retained original voter handshake."
             );

@@ -22,7 +22,7 @@ pub(crate) async fn initialize(config: RuntimeConfig) -> Result<()> {
     // operation and its exclusive physical ownership through actual shutdown.
     tokio::spawn(async move {
         let admission = kasumi_engine::admission::NodeAdmission::new(config.admission.clone())?;
-        crate::node_provision::create(
+        let (node, audit) = crate::node_provision::create(
             &config.database_path,
             config.database_id,
             &config.scratch_disk,
@@ -31,15 +31,6 @@ pub(crate) async fn initialize(config: RuntimeConfig) -> Result<()> {
         )
         .await?;
         let credential: CredentialSource = Arc::new(crate::runtime::file_secret);
-        let (node, audit) = crate::node_enrollment::audit_after_creation(
-            &config.database_path,
-            config.database_id,
-            &config.scratch_disk,
-            &config.security_audit,
-            admission,
-            credential.clone(),
-        )
-        .await?;
         let result = provision(&config, node.clone(), audit.clone(), credential).await;
         audit.shutdown().await;
         drop(audit);

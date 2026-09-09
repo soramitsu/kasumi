@@ -57,7 +57,7 @@ pub struct AuthorityRuntimeConfig {
 impl AuthorityRuntimeConfig {
     /// Explicit local issuer enrollment creates its node, audit, domain pair and
     /// immutable authority genesis before any normal startup or Raft handshake.
-    pub async fn provision_node_file(&self) -> Result<()> {
+    pub async fn provision_node(&self) -> Result<()> {
         crate::authority_node_enrollment::initialize(self.clone()).await
     }
 
