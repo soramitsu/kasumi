@@ -172,10 +172,13 @@ pub(crate) struct ManagedTenant {
     pub bootstrap: Option<ReplicatedBootstrap>,
     pub lease: Option<Arc<crate::serving_runtime::RuntimeLease>>,
 }
+#[path = "configured_tenant_enrollment.rs"]
+mod configured_tenant_enrollment;
 #[path = "administration_observability.rs"]
 mod observability;
 #[path = "original_serving_runtime.rs"]
 mod original_serving_runtime;
+use configured_tenant_enrollment::ProvisionSelection;
 
 pub struct Administration {
     pub(crate) config: RuntimeConfig,
@@ -190,8 +193,9 @@ pub struct Administration {
     // Original configured owners only; canonical recovery targets belong to their runner.
     generations: RwLock<BTreeMap<(String, String), ManagedTenant>>,
     custody_generations: RwLock<BTreeMap<(String, String), Arc<kasumi_engine::RetiredCustody>>>,
-    active: RwLock<BTreeMap<String, String>>,
-    gate: tokio::sync::Mutex<()>,
+    gate: Arc<tokio::sync::Mutex<()>>,
+    // Closure and enrollment publication take this same synchronous boundary.
+    enrollment_closed: std::sync::Mutex<bool>,
     // Retain observed failures if a caller cancels while another owner drains.
     shutdown_failure: tokio::sync::Mutex<Option<anyhow::Error>>,
     admission: Arc<kasumi_engine::admission::NodeAdmission>,
@@ -213,12 +217,15 @@ impl SelectedTenant {
 
 /// One immutable selection is shared by execution and final response release.
 /// Reconciliation cannot redirect an admitted request to a fresh serving owner.
+#[derive(Clone)]
 pub struct ManagementInvocation {
     manager: Arc<Administration>,
     context: RequestContext,
     command: ManagementCommand,
     source: SelectedTenant,
-    provisioning: Option<ManagedTenant>,
+    provisioning: Option<ProvisionSelection>,
+    enrollment_deadline: Option<kasumi_clock::ElapsedDeadline>,
+    prepared_selection: Arc<std::sync::Mutex<Option<SelectedTenant>>>,
 }
 impl ManagementInvocation {
     pub fn response_fence(&self) -> kasumi_types::Result<ManagementResponseFence<'_>> {
@@ -232,6 +239,13 @@ impl ManagementInvocation {
         })
     }
     pub async fn execute(&self) -> kasumi_types::Result<serde_json::Value> {
+        if matches!(self.command, ManagementCommand::PrepareTenant { .. }) {
+            return self
+                .manager
+                .clone()
+                .prepare_configured_tenant(self.clone())
+                .await;
+        }
         self.manager.execute_selected(self).await
     }
 }
@@ -251,11 +265,29 @@ impl ManagementResponseFence<'_> {
             .database
             .engine()
             .authorize(&selected.context, None, Action::Admin)?;
-        if let Some(target) = &selected.provisioning {
+        if let Some(ProvisionSelection::Resident(target)) = &selected.provisioning {
             target.store.check_access().map_err(|_| {
                 kasumi_types::Error::new(
                     kasumi_types::ErrorCode::Sealed,
                     "provisioned tenant key access expired",
+                )
+            })?;
+        }
+        if let Some(target) = selected
+            .prepared_selection
+            .lock()
+            .map_err(|_| {
+                kasumi_types::Error::new(
+                    kasumi_types::ErrorCode::Sealed,
+                    "enrollment response selection unavailable",
+                )
+            })?
+            .as_ref()
+        {
+            target.store.check_access().map_err(|_| {
+                kasumi_types::Error::new(
+                    kasumi_types::ErrorCode::Sealed,
+                    "prepared tenant access expired before response release",
                 )
             })?;
         }
@@ -337,7 +369,15 @@ impl Administration {
             .engine()
             .authorize(&context, None, Action::Admin)?;
         let provisioning = provisioning_tenant(&command)
-            .map(|name| self.provision_target(name))
+            .map(|name| match &command {
+                ManagementCommand::ApproveTenant { .. }
+                | ManagementCommand::PrepareTenant { .. } => self
+                    .enrollment_proposal(name)
+                    .map(ProvisionSelection::Proposal),
+                _ => self
+                    .provision_target(name)
+                    .map(ProvisionSelection::Resident),
+            })
             .transpose()
             .map_err(|_| {
                 kasumi_types::Error::new(
@@ -348,7 +388,21 @@ impl Administration {
         if provisioning.is_some() || matches!(command, ManagementCommand::ApprovePeerPool { .. }) {
             require_control(&context)?;
         }
+        let enrollment_deadline = if matches!(command, ManagementCommand::PrepareTenant { .. }) {
+            Some(
+                configured_tenant_enrollment::capture_deadline().map_err(|error| {
+                    kasumi_types::Error::new(
+                        kasumi_types::ErrorCode::Unavailable,
+                        error.to_string(),
+                    )
+                })?,
+            )
+        } else {
+            None
+        };
         Ok(ManagementInvocation {
+            enrollment_deadline,
+            prepared_selection: Arc::new(std::sync::Mutex::new(None)),
             manager: self.clone(),
             context,
             command,
@@ -385,7 +439,6 @@ impl Administration {
         credential: crate::serving_runtime::CredentialSource,
     ) -> Result<Arc<Self>> {
         let mut generations = BTreeMap::new();
-        let mut active = BTreeMap::new();
         for tenant in tenants {
             registry.install_retirement_source(
                 kasumi_engine::InstalledRetirementSource::Serving(tenant.database.clone()),
@@ -398,7 +451,6 @@ impl Administration {
             let state = tenant.database.engine().generation()?;
             let name = state.state.tenant.clone();
             let incarnation = state.state.incarnation.clone();
-            active.insert(name.clone(), incarnation.clone());
             generations.insert((name, incarnation), tenant);
         }
         let control_context = crate::runtime::configured_control_context(&config.control)?;
@@ -414,8 +466,8 @@ impl Administration {
             destinations,
             generations: RwLock::new(generations),
             custody_generations: RwLock::new(BTreeMap::new()),
-            active: RwLock::new(active),
-            gate: tokio::sync::Mutex::new(()),
+            gate: Arc::new(tokio::sync::Mutex::new(())),
+            enrollment_closed: std::sync::Mutex::new(false),
             shutdown_failure: tokio::sync::Mutex::new(None),
             admission,
             credential,
@@ -443,16 +495,24 @@ impl Administration {
         Ok(SelectedTenant::new(database))
     }
     fn configured(&self, tenant: &str) -> Result<ManagedTenant> {
-        let incarnation = self
-            .active
+        let generations = self
+            .generations
             .read()
-            .map_err(|_| anyhow::anyhow!("generation registry unavailable"))?
-            .get(tenant)
-            .cloned()
-            .ok_or_else(|| {
-                kasumi_types::Error::new(kasumi_types::ErrorCode::Forbidden, "tenant access denied")
-            })?;
-        self.generation(tenant, &incarnation)
+            .map_err(|_| anyhow::anyhow!("generation registry unavailable"))?;
+        let mut matching = generations.iter().filter(|((name, _), _)| name == tenant);
+        let selected = matching
+            .next()
+            .map(|(_, value)| value.clone())
+            .context("tenant has no installed original owner")?;
+        ensure!(
+            matching.next().is_none(),
+            "tenant has multiple original owners"
+        );
+        Ok(selected)
+    }
+    #[cfg(test)]
+    pub(crate) fn node_for_enrollment_test(&self) -> Arc<NodeStore> {
+        self.node.clone()
     }
     #[cfg(test)]
     pub(crate) fn test_generation(&self, tenant: &str, incarnation: &str) -> Arc<Database> {
@@ -587,7 +647,7 @@ impl Administration {
         context: &RequestContext,
         command: ManagementCommand,
         source: &SelectedTenant,
-        provisioning: Option<&ManagedTenant>,
+        provisioning: Option<&ProvisionSelection>,
     ) -> Result<serde_json::Value> {
         self.authorized(source, context, false).await?;
         let _maintenance = match &command {
@@ -618,25 +678,23 @@ impl Administration {
                 self.approve_tenant(
                     context,
                     &tenant,
-                    provisioning.context("selected provisioning owner absent")?,
+                    provisioning
+                        .context("selected provisioning owner absent")?
+                        .proposal()?,
                 )
                 .await
             }
-            ManagementCommand::PrepareTenant { tenant } => {
-                require_control(context)?;
-                self.prepare_tenant(
-                    context,
-                    &tenant,
-                    provisioning.context("selected provisioning owner absent")?,
-                )
-                .await
+            ManagementCommand::PrepareTenant { .. } => {
+                anyhow::bail!("tenant preparation requires its retained enrollment owner")
             }
             ManagementCommand::InitializeTenant { tenant } => {
                 require_control(context)?;
                 self.initialize_tenant(
                     context,
                     &tenant,
-                    provisioning.context("selected provisioning owner absent")?,
+                    provisioning
+                        .context("selected provisioning owner absent")?
+                        .resident()?,
                 )
                 .await
             }
@@ -648,7 +706,9 @@ impl Administration {
                 self.activate_tenant(
                     context,
                     &tenant,
-                    provisioning.context("selected provisioning owner absent")?,
+                    provisioning
+                        .context("selected provisioning owner absent")?
+                        .resident()?,
                     expected_topology_version,
                 )
                 .await
@@ -988,73 +1048,12 @@ impl Administration {
         })
     }
     fn provision_hash(&self, tenant: &str, target: &ManagedTenant) -> Result<String> {
-        let configuration = self
-            .config
-            .tenants
-            .iter()
-            .find(|t| t.tenant == tenant)
-            .context("tenant not configured")?;
-        let generation = target.database.engine().generation()?;
-        // Local reopen deliberately ignores changed bootstrap configuration for
-        // existing databases. A staged tenant must therefore prove the proposed
-        // policy/limits are the ones actually resident before approval.
-        if !self.committed_topology()?.tenants.contains_key(tenant) {
-            ensure!(
-                serde_json::to_value(&generation.state.policy)?
-                    == serde_json::to_value(&configuration.initial_policy)?
-                    && serde_json::to_value(&generation.state.limits)?
-                        == serde_json::to_value(&configuration.initial_limits)?,
-                "staged resident policy/limits differ from configured bootstrap"
-            );
-        }
-        let route = self.provision_route(target)?;
-        let configured_nodes = self.configured_nodes()?;
-        let approved = self.committed_topology()?;
-        let nodes = route
-            .voters
-            .iter()
-            .map(|id| {
-                let node = configured_nodes
-                    .get(id)
-                    .context("configured voter absent")?;
-                ensure!(
-                    approved.nodes.get(id) == Some(node),
-                    "voter identity/pins not approved in control metadata"
-                );
-                Ok((*id, node.clone()))
-            })
-            .collect::<Result<BTreeMap<_, _>>>()?;
-        let mut check = approved;
-        check.tenants.insert(tenant.into(), route.clone());
-        check.validate()?;
-        // No credentials, local paths, node-specific token env names, or mutable
-        // state enter the fingerprint. All immutable policy/schema limits and
-        // voter identities must match, including the configured wrapping key.
-        let settings = &configuration.keys;
-        let custody = &configuration.custody_keys;
-        let bytes = serde_json::to_vec(&serde_json::json!({
-            "format":1,"tenant":tenant,"route":route,"nodes":nodes,
-            "initial_policy":configuration.initial_policy,"initial_limits":configuration.initial_limits,
-            "custody_keys":custody.identity_descriptor()?,
-            "keys":settings.identity_descriptor()?
-        }))?;
-        Ok(format!("provision-v1-{}", hex_digest(&bytes)))
+        let proposal = self.enrollment_proposal(tenant)?;
+        self.require_resident_proposal(target, &proposal)?;
+        proposal.digest()
     }
     fn provision_approval(&self, tenant: &str) -> Result<String> {
-        self.control.raft_group().check_access()?;
-        let generation = self.control.engine().generation()?;
-        let document = generation
-            .state
-            .collections
-            .get("tenant_provisioning")
-            .and_then(|c| c.documents.get(tenant))
-            .context("tenant has no committed control approval")?;
-        document
-            .body
-            .get("bootstrap_sha256")
-            .and_then(|v| v.as_str())
-            .map(str::to_owned)
-            .context("invalid provisioning approval")
+        self.approved_enrollment(tenant)?.digest()
     }
     async fn approve_peer_pool(
         &self,
@@ -1108,114 +1107,6 @@ impl Administration {
         )
         .await?;
         Ok(serde_json::json!({"approved":true}))
-    }
-    async fn approve_tenant(
-        &self,
-        context: &RequestContext,
-        tenant: &str,
-        target: &ManagedTenant,
-    ) -> Result<serde_json::Value> {
-        self.authorized(&self.current(&self.control_context)?, context, true)
-            .await?;
-        ensure!(
-            !self.committed_topology()?.tenants.contains_key(tenant),
-            "tenant already has a serving route"
-        );
-        let hash = self.provision_hash(tenant, target)?;
-        let definition = kasumi_types::CollectionDefinition {
-            retention_class: kasumi_types::CollectionRetentionClass::Operational,
-            write_mode: kasumi_types::CollectionWriteMode::Mutable,
-            name: "tenant_provisioning".into(),
-            schema: serde_json::json!({"type":"object","required":["bootstrap_sha256"],"additionalProperties":false,
-                "properties":{"bootstrap_sha256":{"type":"string","pattern":"^provision-v1-[a-f0-9]{64}$"}}}),
-            indexes: vec![],
-            strict_read_audit: true,
-        };
-        let existing = self
-            .control
-            .engine()
-            .generation()?
-            .state
-            .collections
-            .get("tenant_provisioning")
-            .map(|c| c.definition.clone());
-        if let Some(existing) = existing {
-            ensure!(
-                serde_json::to_value(existing)? == serde_json::to_value(&definition)?,
-                "provisioning schema mismatch"
-            );
-        } else {
-            self.control
-                .administer(context.clone(), Operation::CreateCollection(definition))
-                .await?;
-        }
-        if let Ok(approved) = self.provision_approval(tenant) {
-            ensure!(
-                approved == hash,
-                "tenant was approved with another immutable bootstrap"
-            );
-        } else {
-            self.control
-                .mutate(
-                    context.clone(),
-                    kasumi_types::MutationBatch {
-                        read_set: Vec::new(),
-                        idempotency_key: format!(
-                            "approve-tenant-{}",
-                            hex_digest(format!("{tenant}/{hash}").as_bytes())
-                        ),
-                        operations: vec![kasumi_types::Mutation::Put {
-                            collection: "tenant_provisioning".into(),
-                            id: tenant.into(),
-                            body: serde_json::json!({"bootstrap_sha256":hash}),
-                            expected: Precondition::Absent,
-                        }],
-                    },
-                )
-                .await?;
-        }
-        self.event(
-            context,
-            SecurityEventKind::Administration,
-            SecurityOutcome::Succeeded,
-        )
-        .await?;
-        target.store.check_access()?;
-        Ok(serde_json::json!({"approved":true,"tenant":tenant,"bootstrap_sha256":hash}))
-    }
-    async fn prepare_tenant(
-        &self,
-        context: &RequestContext,
-        tenant: &str,
-        target: &ManagedTenant,
-    ) -> Result<serde_json::Value> {
-        let hash = self.provision_hash(tenant, target)?;
-        ensure!(
-            self.provision_approval(tenant)? == hash,
-            "approved bootstrap differs from this replica"
-        );
-        target.store.check_access()?;
-        self.event(
-            context,
-            SecurityEventKind::Administration,
-            SecurityOutcome::Started,
-        )
-        .await?;
-        target.store.write_batch(&[WriteOp::put(
-            "runtime.provisioning",
-            b"prepared",
-            hash.as_bytes(),
-        )])?;
-        self.event(
-            context,
-            SecurityEventKind::Administration,
-            SecurityOutcome::Succeeded,
-        )
-        .await?;
-        Ok(
-            serde_json::json!({"prepared":true,"tenant":tenant,"bootstrap_sha256":hash,
-            "incarnation":target.database.engine().generation()?.state.incarnation}),
-        )
     }
     async fn verify_provision_peers(
         &self,
@@ -1395,16 +1286,8 @@ impl Administration {
             if !control.is_retired()? {
                 continue;
             }
-            let active = self
-                .active
-                .read()
-                .map_err(|_| anyhow::anyhow!("source routing unavailable"))?
-                .get(&tenant)
-                .cloned();
-            if active.as_deref() == Some(&incarnation) {
-                self.registry
-                    .detach_target_generation(&tenant, &incarnation, &source.database)?;
-            }
+            self.registry
+                .detach_target_generation(&tenant, &incarnation, &source.database)?;
             // Publish an explicit closed transition before sealing/draining the
             // old handle. Concurrent native callers can retry unavailable
             // custody; none observes a stale Serving route to a sealed engine.
@@ -1508,6 +1391,11 @@ impl Administration {
         Ok(())
     }
     pub(crate) async fn shutdown(&self) -> Result<()> {
+        *self
+            .enrollment_closed
+            .lock()
+            .map_err(|_| anyhow::anyhow!("enrollment publication lock poisoned"))? = true;
+        crate::startup_owner::drain(crate::startup_owner::Kind::TenantEnrollment).await?;
         let mut failure = self.shutdown_failure.lock().await;
         let generations = self
             .generations
@@ -1522,6 +1410,29 @@ impl Administration {
             }
         }
         for tenant in generations {
+            if let Some(network) = &self.cluster {
+                let incarnation = tenant
+                    .bootstrap
+                    .as_ref()
+                    .map(|bootstrap| bootstrap.incarnation.clone())
+                    .or_else(|| {
+                        tenant
+                            .database
+                            .engine()
+                            .generation()
+                            .ok()
+                            .map(|state| state.state.incarnation.clone())
+                    });
+                if let Some(incarnation) = incarnation {
+                    if let Err(error) = network.unregister_group(&format!(
+                        "{}/{}",
+                        tenant.store.tenant(),
+                        incarnation
+                    )) {
+                        failure.get_or_insert(error);
+                    }
+                }
+            }
             if let Some(lease) = &tenant.lease {
                 if let Err(error) = lease.shutdown().await {
                     failure.get_or_insert(error);
@@ -1542,6 +1453,9 @@ impl Administration {
             if let Err(error) = source.shutdown().await {
                 failure.get_or_insert(error);
             }
+        }
+        if let Err(error) = self.node.drain_initializers().await {
+            failure.get_or_insert(error);
         }
         failure.take().map_or(Ok(()), Err)
     }

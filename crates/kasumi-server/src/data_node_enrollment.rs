@@ -75,6 +75,7 @@ pub(crate) async fn provision(
     audit: Arc<SecurityAudit>,
     credential: CredentialSource,
 ) -> Result<()> {
+    config.validate_selected_key_domains(&config.tenants.iter().collect::<Vec<_>>())?;
     let enrollment = Enrollment::begin(
         audit.store(),
         &Input::Data {
@@ -214,7 +215,19 @@ pub(crate) async fn provision(
             if let Some(lease) = &lease {
                 lease.shutdown().await?;
             }
-            opened?;
+            let fingerprint = opened?;
+            if let Some(grant) = &grant {
+                grant.check()?;
+            }
+            enrollment.record_genesis_tenant(
+                audit.store(),
+                &tenant.tenant,
+                incarnation,
+                fingerprint,
+            )?;
+            if let Some(grant) = &grant {
+                grant.check()?;
+            }
         }
         enrollment.complete(audit.store())
     }
@@ -241,7 +254,7 @@ async fn initialize_domain(
     access: StorageAccess,
     grant: Option<&VerifiedLease>,
     credential: CredentialSource,
-) -> Result<()> {
+) -> Result<String> {
     let mut retained: Option<Arc<TenantStorageSet>> = None;
     let mut database: Option<Arc<Database>> = None;
     let result = async {
@@ -282,7 +295,7 @@ async fn initialize_domain(
         if let Some(grant) = grant {
             grant.check()?;
         }
-        Ok::<_, anyhow::Error>(())
+        crate::runtime::persisted_bootstrap_fingerprint(&app)
     }
     .await;
     let drained = match database {
@@ -294,11 +307,11 @@ async fn initialize_domain(
         stores.custody().store().shutdown().await;
     }
     let initializers = node.drain_initializers().await;
-    result?;
+    let fingerprint = result?;
     initializers?;
     drained?;
     if let Some(grant) = grant {
         grant.check()?;
     }
-    Ok(())
+    Ok(fingerprint)
 }

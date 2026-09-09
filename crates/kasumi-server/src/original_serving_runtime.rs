@@ -12,6 +12,15 @@ impl Administration {
         else {
             return Ok(());
         };
+        if self.config.mode == crate::runtime::DeploymentMode::Replicated {
+            let enrolled = crate::node_enrollment::tenant_record(self.audit.store(), tenant)?
+                .context("routed original tenant has no enrollment")?;
+            ensure!(
+                enrolled.stage == crate::node_enrollment::Stage::Prepared
+                    && enrolled.incarnation == Uuid::parse_str(incarnation)?,
+                "routed original enrollment is incomplete or substituted"
+            );
+        }
         let context = RequestContext {
             tenant: tenant.to_owned(),
             ..self.control_context.clone()
@@ -204,10 +213,6 @@ impl Administration {
             .write()
             .map_err(|_| anyhow::anyhow!("generation registry unavailable"))?
             .insert((tenant.to_owned(), incarnation.to_owned()), current.clone());
-        self.active
-            .write()
-            .map_err(|_| anyhow::anyhow!("active registry unavailable"))?
-            .insert(tenant.to_owned(), incarnation.to_owned());
         self.registry.install_retirement_source(
             kasumi_engine::InstalledRetirementSource::Serving(current.database.clone()),
         )?;

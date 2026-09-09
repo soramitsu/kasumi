@@ -51,12 +51,14 @@ daemon restart and tenant/peer provisioning. An admitted source Status fence
 survives through the route change and must reject release afterward. No compiler
 or Rust runtime test has run on this combined source.
 
-A production enrollment gap remains: a newly configured tenant is strictly opened
-on restart before the management prepare operation can explicitly create its
-catalog/bootstrap. The fixture retains the onboarding assertions and is expected
-to fail there until an authorized explicit enrollment path exists. Source review
-also records its immutable issuer signing fixture and explicit outer target-owner
-restart boundaries. See the [coverage map and erratum](evidence/canonical-runtime-f7fa592-source-20260909/README.md).
+Configured HA tenant enrollment now has an explicit source implementation: a typed
+Control proposal precedes one recorded catalog/bootstrap creation, and startup
+keeps unrecorded configuration templates dormant. The existing onboarding and
+mismatched-voter assertions remain. See [configured tenant enrollment](configured-tenant-enrollment.md)
+for exact ownership, the required new ledger format, unrun regression sources and
+remaining partial-abort/standalone/Control-genesis gaps. The immutable issuer signing
+fixture and explicit outer target-owner restart boundaries are still recorded in
+the [coverage map and erratum](evidence/canonical-runtime-f7fa592-source-20260909/README.md).
 No earlier branch pass or removed assertion replaces these open acceptance gates.
 
 The deleted private generation path tests exercised a removed file-creation API.

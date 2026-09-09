@@ -23,16 +23,19 @@ pub(crate) enum Kind {
     Data,
     Authority,
     LocalOperator,
+    TenantEnrollment,
 }
 
 fn tasks(kind: Kind) -> &'static Tasks {
     static DATA: OnceLock<Tasks> = OnceLock::new();
     static AUTHORITY: OnceLock<Tasks> = OnceLock::new();
     static LOCAL_OPERATOR: OnceLock<Tasks> = OnceLock::new();
+    static TENANT_ENROLLMENT: OnceLock<Tasks> = OnceLock::new();
     match kind {
         Kind::Data => &DATA,
         Kind::Authority => &AUTHORITY,
         Kind::LocalOperator => &LOCAL_OPERATOR,
+        Kind::TenantEnrollment => &TENANT_ENROLLMENT,
     }
     .get_or_init(Default::default)
 }
@@ -42,12 +45,15 @@ struct Handoff<T> {
     decided: Notify,
 }
 struct Ticket<T>(Arc<Handoff<T>>);
-impl<T> Ticket<T> {
+impl<T: Runtime> Ticket<T> {
     fn claim(self) -> Result<T> {
-        self.0
-            .value
-            .lock()
-            .expect("startup handoff lock poisoned")
+        let mut outcome = self.0.value.lock().expect("startup handoff lock poisoned");
+        if let Some(Ok(runtime)) = outcome.as_mut() {
+            // A failed publication leaves the actual owner in its ticket, so the
+            // retained task joins cleanup even if this error is then abandoned.
+            runtime.handoff()?;
+        }
+        outcome
             .take()
             .expect("private startup ticket is consumed only once")
     }
@@ -59,6 +65,9 @@ impl<T> Drop for Ticket<T> {
 }
 
 pub(crate) trait Runtime: Send + 'static {
+    fn handoff(&mut self) -> Result<()> {
+        Ok(())
+    }
     fn close(&mut self) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>>;
 }
 
@@ -363,6 +372,52 @@ mod tests {
             "observed failed open"
         );
         tokio::time::timeout(Duration::from_secs(5), drain_tasks(&tasks)).await??;
+        Ok(())
+    }
+
+    struct RejectedPublication {
+        candidate: Candidate,
+        handed: Arc<std::sync::atomic::AtomicUsize>,
+    }
+    impl Runtime for RejectedPublication {
+        fn handoff(&mut self) -> Result<()> {
+            self.handed.fetch_add(1, Ordering::AcqRel);
+            anyhow::bail!("publication fence rejected the actual recipient")
+        }
+        fn close(&mut self) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
+            self.candidate.close()
+        }
+    }
+    #[tokio::test]
+    async fn rejected_actual_recipient_handoff_retains_owner_until_cancelled_drain_is_joined()
+    -> Result<()> {
+        let tasks = Tasks::default();
+        let observation = Arc::new(Observation::default());
+        let handed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let candidate = RejectedPublication {
+            candidate: Candidate {
+                observation: observation.clone(),
+                fail_once: false,
+            },
+            handed: handed.clone(),
+        };
+        let ticket = begin(&tasks, async move { Ok(candidate) }).await?.await?;
+        assert_eq!(handed.load(Ordering::Acquire), 0);
+        assert!(ticket.claim().is_err());
+        assert_eq!(handed.load(Ordering::Acquire), 1);
+        tokio::time::timeout(Duration::from_secs(5), observation.entered.notified()).await?;
+        let mut drain = Box::pin(drain_tasks(&tasks));
+        std::future::poll_fn(|cx| {
+            assert!(drain.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        drop(drain);
+        assert!(!observation.dropped.load(Ordering::Acquire));
+        observation.release.notify_one();
+        tokio::time::timeout(Duration::from_secs(5), drain_tasks(&tasks)).await??;
+        assert!(observation.closed.load(Ordering::Acquire));
+        assert!(observation.dropped.load(Ordering::Acquire));
         Ok(())
     }
 }

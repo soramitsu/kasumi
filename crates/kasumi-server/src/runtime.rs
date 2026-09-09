@@ -94,7 +94,10 @@ impl KeyProviderSettings {
     pub(crate) fn validate(&self) -> Result<String> {
         match self {
             Self::Transit(settings) => settings.validate(),
-            Self::File { path } => Ok(kasumi_store::FileKeyProvider::open(path)?.key_ref().into()),
+            Self::File { path } => {
+                ensure!(path.is_absolute(), "file keyring path must be absolute");
+                Ok(format!("file:{}", path.display()))
+            }
         }
     }
     pub(crate) fn provider(
@@ -470,6 +473,28 @@ impl RuntimeConfig {
                     ))?;
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// Compare actual provider identities only for domains selected by explicit
+    /// creation or the authenticated installed-tenant ledger. Staged templates
+    /// must not load file keyrings during general configuration validation.
+    pub(crate) fn validate_selected_key_domains(&self, tenants: &[&TenantConfig]) -> Result<()> {
+        let mut identities = BTreeSet::new();
+        for settings in std::iter::once(&self.security_audit.keys)
+            .chain([&self.control.keys, &self.control.custody_keys])
+            .chain(self.signer_verifier.iter().map(|verifier| &verifier.keys))
+            .chain(
+                tenants
+                    .iter()
+                    .flat_map(|tenant| [&tenant.keys, &tenant.custody_keys]),
+            )
+        {
+            ensure!(
+                identities.insert(serde_json::to_string(&settings.identity_descriptor()?)?),
+                "installed key domains share a wrapping identity"
+            );
         }
         Ok(())
     }
@@ -1075,6 +1100,11 @@ impl NodeRuntime {
                 return Err(error);
             }
         }
+        let selected_tenants = config.tenants.iter().map(|tenant| {
+            let installed = config.mode != DeploymentMode::Replicated || crate::node_enrollment::tenant_record(&security_store, &tenant.tenant)?.is_some_and(|record| record.stage == crate::node_enrollment::Stage::Prepared);
+            Ok(installed.then_some(tenant))
+        }).collect::<Result<Vec<_>>>()?.into_iter().flatten().collect::<Vec<_>>();
+        config.validate_selected_key_domains(&selected_tenants)?;
         let audit = config
             .security_audit
             .open(security_store, admission.clone())?;
@@ -1159,6 +1189,21 @@ impl NodeRuntime {
                 lease: None,
             }];
             for configured_tenant in &config.tenants {
+                if config.mode == DeploymentMode::Replicated {
+                    let enrolled = crate::node_enrollment::tenant_record(runtime.audit.store(), &configured_tenant.tenant)?;
+                    if enrolled.as_ref().is_none_or(|record| record.stage != crate::node_enrollment::Stage::Prepared) {
+                        let state = runtime.control.database.engine().generation()?;
+                        if let Some(document) = state.state.collections.get("topology").and_then(|collection| collection.documents.get("current")) {
+                            let topology: kasumi_engine::control::ControlTopology = serde_json::from_value(document.body.clone())?;
+                            ensure!(!topology.tenants.contains_key(&configured_tenant.tenant), "routed tenant has no completed local enrollment");
+                        }
+                        // Configuration is a staging template. This classification
+                        // reads only the required ledger, before provider/grant/catalog work.
+                        continue;
+                    }
+                    let enrolled = enrolled.expect("checked completed enrollment");
+                    ensure!(configured_tenant.incarnation.as_deref().map(uuid::Uuid::parse_str).transpose()? == Some(enrolled.incarnation), "configured enrolled tenant incarnation differs");
+                }
                 let active = if config.mode == DeploymentMode::Standalone {
                     crate::local_recovery::active_generation(&config, runtime.audit.store(), &configured_tenant.tenant)?
                 } else { None };
@@ -1218,6 +1263,10 @@ impl NodeRuntime {
                     provider.clone(), custody_provider.clone(), storage_access).await?;
                 runtime.startup_stores.push(stores.application().clone());
                 runtime.startup_stores.push(stores.custody().store().clone());
+                if config.mode == DeploymentMode::Replicated {
+                    let enrolled = crate::node_enrollment::tenant_record(runtime.audit.store(), &tenant.tenant)?.context("enrollment disappeared during startup")?;
+                    ensure!(enrolled.bootstrap_sha256.as_ref() == Some(&persisted_bootstrap_fingerprint(stores.application())?), "installed bootstrap differs from its enrollment receipt");
+                }
                 let opened = Self::open_database(
                     &config,
                     stores,
@@ -1344,6 +1393,15 @@ impl NodeRuntime {
         outcome
     }
 
+    #[cfg(test)]
+    pub(crate) fn administration_for_enrollment_test(
+        &self,
+    ) -> Arc<crate::administration::Administration> {
+        self.administration
+            .as_ref()
+            .expect("installed test Administration")
+            .clone()
+    }
     #[allow(clippy::too_many_arguments)]
     async fn open_database(
         config: &RuntimeConfig,
@@ -4388,6 +4446,24 @@ mod lifecycle_tests {
             }
             config.tenants.push(mismatched);
             let runtime = NodeRuntime::open_using(config, file_secret).await.unwrap();
+            for tenant in ["beta", "mismatched"] {
+                assert!(
+                    crate::node_enrollment::tenant_record(runtime.audit.store(), tenant)
+                        .unwrap()
+                        .is_none()
+                );
+                assert!(
+                    !kasumi_store::CustodyStore::catalog_installed(
+                        &runtime
+                            .administration
+                            .as_ref()
+                            .unwrap()
+                            .node_for_enrollment_test(),
+                        tenant
+                    )
+                    .unwrap()
+                );
+            }
             second_recovery_handles.push(recovery_fixture::Handles::capture(&runtime));
             second_registries.push(runtime.registry.clone());
             second_managers.push(runtime.administration.clone().unwrap());

@@ -9,6 +9,9 @@ use uuid::Uuid;
 
 const NS: &str = "node.enrollment";
 const MAX_INPUT: usize = 2 << 20;
+#[path = "tenant_enrollment_record.rs"]
+mod tenants;
+pub(crate) use tenants::{Origin, Proposal, Stage, dispatch_tenant, tenant_record, update_tenant};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -61,7 +64,7 @@ impl Enrollment {
             anyhow::bail!("node enrollment has already begun")
         })?;
         let head = Head {
-            format: 1,
+            format: 2,
             kind,
             database_id,
             input_sha256: hex::encode(Sha256::digest(&bytes)),
@@ -110,6 +113,8 @@ impl Enrollment {
             hex::encode(Sha256::digest(&input)) == self.head.input_sha256,
             "node enrollment input changed"
         );
+        let decoded: Input = serde_json::from_slice(&input)?;
+        require_genesis_tenants(store, &decoded, &self.head.input_sha256)?;
         let mut head = self.head;
         head.complete = true;
         store.write_batch(&[WriteOp::put(NS, b"head", serde_json::to_vec(&head)?)])
@@ -127,7 +132,7 @@ pub(crate) fn require_complete(
             "node enrollment is absent or incomplete; explicit provisioning is required",
         )?)?;
     ensure!(
-        head.format == 1
+        head.format == 2
             && head.complete
             && head.database_id == database_id
             && !database_id.is_nil()
@@ -146,6 +151,28 @@ pub(crate) fn require_complete(
         input.identity() == (kind, database_id),
         "node enrollment input identity differs"
     );
+    require_genesis_tenants(store, &input, &head.input_sha256)?;
+    Ok(())
+}
+
+fn require_genesis_tenants(store: &TenantStore, input: &Input, digest: &str) -> Result<()> {
+    if let Input::Data { configuration } = input {
+        for tenant in &configuration.tenants {
+            let record = tenant_record(store, &tenant.tenant)?
+                .context("genesis tenant enrollment is missing")?;
+            ensure!(
+                record.stage == Stage::Prepared
+                    && matches!(&record.origin, Origin::Genesis { input_sha256 } if input_sha256 == digest),
+                "genesis tenant enrollment differs"
+            );
+            if let Some(incarnation) = &tenant.incarnation {
+                ensure!(
+                    record.incarnation == Uuid::parse_str(incarnation)?,
+                    "genesis tenant incarnation differs"
+                );
+            }
+        }
+    }
     Ok(())
 }
 
