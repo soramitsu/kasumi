@@ -1,0 +1,12 @@
+{
+  "status": "preflight_failed_no_cargo",
+  "plan": "/tmp/kasumi-redb-4f62863-leaf-plan.json",
+  "plan_sha256": "0730b941faa2a77c0c642a21b621c70a5bd4687476e1f629b3ff57d98a8b110f",
+  "runner_sha256": "ad3d647fbb73d9d32e04e4e202814f68aea2cb5aa80acbed03a10fa8a3855a6f",
+  "error": "FileNotFoundError: /private/tmp/kasumi-redb-admission-owner-failure/scripts/gate_process.py",
+  "exit_code": 1,
+  "compiler_dispatched": false,
+  "successor_plan": "/tmp/kasumi-redb-4f62863-leaf-b-plan.json",
+  "successor_plan_sha256": "9715e04ec006806c26d6208ce78ba029fc4e222f6a0c7c8a88e39a1e3f90aac8",
+  "successor_runner_sha256": "5a6306f42bb8ef91f9943a3f0c4c33901d841ef51cce1d66d29a6b49c48040c8"
+}

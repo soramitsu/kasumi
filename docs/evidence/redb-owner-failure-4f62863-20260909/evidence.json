@@ -1,0 +1,1430 @@
+{
+  "scope": "Frozen redb prototype: allocator candidate3 plus growth admission17. Typed permanent owner failure now distinct from ordinary rollback-safe capacity. Exact required names, allpass summaries, source/tree/lock/compiled feature/executable custody and owned process drain. Standalone leaf only, no Kasumi engine/store/server/Raft compilation or production patch. Does not satisfy upstream just test/fuzz or full lifecycle disk admission. Captured libtest output.",
+  "status": "passed",
+  "source": "4f628637f35439a51c0b63faf98534800c5a5f85",
+  "tree": "5687fdc784d60083fac736fddc6e9f6ab585dc9f",
+  "source_manifest_sha256": "2356fdc5f9777da8016ad04af62ab05c39c87356fda44df1ce540853c0c00c41",
+  "lock_sha256": "f42fec1f6e7232b1cd5e9c564cfff56dfec7634f2548eab7eb2096a0d0c17c78",
+  "runner_sha256": "5a6306f42bb8ef91f9943a3f0c4c33901d841ef51cce1d66d29a6b49c48040c8",
+  "process_helper": "/private/tmp/kasumi-production-recovery-followon/scripts/gate_process.py",
+  "process_helper_sha256": "6c8b255e5a69aa8985da8d70f5baa73337bcaeac7098bd756c4d6cc6472e58de",
+  "plan_sha256": "9715e04ec006806c26d6208ce78ba029fc4e222f6a0c7c8a88e39a1e3f90aac8",
+  "target": "/private/tmp/kasumi-redb-capacity-target",
+  "started_at": "2026-09-09T05:45:40.412209+00:00",
+  "tools": {
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo": "7672ead309d505577c018fff2cafb3433601f073e38cbe87359ac1f7b944bbf5",
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc": "210df6794001b73ec3d453878707fa1e0bdcb63c427024a6e6574bbe5615a4da",
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustdoc": "aa94960b6a477441f6d1a797394daf4cafcc889d837550c8fa462b102e3fa5da"
+  },
+  "gates": [
+    {
+      "name": "redb-allocator-candidate",
+      "timeout_seconds": 300,
+      "cargo_args": [
+        "test",
+        "--manifest-path",
+        "vendor/redb-4.2.0/Cargo.toml",
+        "--locked",
+        "--offline",
+        "-j1",
+        "--features",
+        "experimental-precommit-growth-admission",
+        "--lib",
+        "tree_store::page_store::allocator_commit::tests",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "tree_store::page_store::allocator_commit::tests::discard_preserves_live_allocator_and_only_copies_changed_regions",
+        "tree_store::page_store::allocator_commit::tests::publication_matches_prepared_quick_repair_bytes_and_preserves_other_pages",
+        "tree_store::page_store::allocator_commit::tests::shrinking_is_private_until_publication_and_cannot_discard_live_pages"
+      ],
+      "status": "passed",
+      "command": [
+        "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+        "test",
+        "--manifest-path",
+        "vendor/redb-4.2.0/Cargo.toml",
+        "--locked",
+        "--offline",
+        "-j1",
+        "--features",
+        "experimental-precommit-growth-admission",
+        "--lib",
+        "tree_store::page_store::allocator_commit::tests",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "process_record": {
+        "status": "passed",
+        "command": [
+          "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+          "test",
+          "--manifest-path",
+          "vendor/redb-4.2.0/Cargo.toml",
+          "--locked",
+          "--offline",
+          "-j1",
+          "--features",
+          "experimental-precommit-growth-admission",
+          "--lib",
+          "tree_store::page_store::allocator_commit::tests",
+          "--message-format=json-render-diagnostics",
+          "--",
+          "--test-threads=1"
+        ],
+        "timeout_seconds": 300,
+        "process_group": 67547,
+        "process_exit_code": 0,
+        "exit_code": 0,
+        "timed_out": false,
+        "received_signals": [],
+        "error": null,
+        "cleanup": {
+          "group": 67547,
+          "before": [],
+          "after": [],
+          "signals": [],
+          "errors": [],
+          "drained": true,
+          "process_returncode": 0
+        },
+        "duration_seconds": 8.19
+      },
+      "process_group": 67547,
+      "duration_seconds": 8.191,
+      "process_exit_code": 0,
+      "error": null,
+      "cleanup": {
+        "group": 67547,
+        "before": [],
+        "after": [],
+        "signals": [],
+        "errors": [],
+        "drained": true,
+        "process_returncode": 0,
+        "remaining_after_command": false
+      },
+      "log": "redb-allocator-candidate.log",
+      "log_sha256": "876e37ec416d0fa713442809a85597c0d7c490b38ee2e854d1af7c3dd13139d8",
+      "source_unchanged": true,
+      "executables": {
+        "debug/deps/redb-ba841ece6df4e8b1": {
+          "sha256": "af3c11663a8da6f05d2e5daa4e0b0a710260bde3aedd6b34b819275a983047ed",
+          "bytes": 7137720,
+          "preserved_path": "/private/tmp/kasumi-redb-4f62863-leaf/preserved-executables/af3c11663a8da6f05d2e5daa4e0b0a710260bde3aedd6b34b819275a983047ed-redb-ba841ece6df4e8b1",
+          "package_id": "path+file:///private/tmp/kasumi-redb-admission-owner-failure/vendor/redb-4.2.0#redb@4.2.0",
+          "features": [
+            "default",
+            "experimental-precommit-growth-admission",
+            "std"
+          ],
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 2,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          }
+        }
+      },
+      "compiled_packages": {
+        "registry+https://github.com/rust-lang/crates.io-index#libc@0.2.186": [
+          {
+            "features": [
+              "default",
+              "std"
+            ],
+            "target": {
+              "kind": [
+                "custom-build"
+              ],
+              "crate_types": [
+                "bin"
+              ],
+              "name": "build-script-build",
+              "src_path": "/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libc-0.2.186/build.rs",
+              "edition": "2021",
+              "doc": false,
+              "doctest": false,
+              "test": false
+            },
+            "profile": {
+              "opt_level": "0",
+              "debuginfo": 0,
+              "debug_assertions": true,
+              "overflow_checks": true,
+              "test": false
+            }
+          },
+          {
+            "features": [
+              "default",
+              "std"
+            ],
+            "target": {
+              "kind": [
+                "lib"
+              ],
+              "crate_types": [
+                "lib"
+              ],
+              "name": "libc",
+              "src_path": "/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libc-0.2.186/src/lib.rs",
+              "edition": "2021",
+              "doc": true,
+              "doctest": true,
+              "test": true
+            },
+            "profile": {
+              "opt_level": "0",
+              "debuginfo": 2,
+              "debug_assertions": true,
+              "overflow_checks": true,
+              "test": false
+            }
+          }
+        ],
+        "registry+https://github.com/rust-lang/crates.io-index#getrandom@0.4.3": [
+          {
+            "features": [
+              "std",
+              "sys_rng"
+            ],
+            "target": {
+              "kind": [
+                "custom-build"
+              ],
+              "crate_types": [
+                "bin"
+              ],
+              "name": "build-script-build",
+              "src_path": "/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.4.3/build.rs",
+              "edition": "2024",
+              "doc": false,
+              "doctest": false,
+              "test": false
+            },
+            "profile": {
+              "opt_level": "0",
+              "debuginfo": 0,
+              "debug_assertions": true,
+              "overflow_checks": true,
+              "test": false
+            }
+          },
+          {
+            "features": [
+              "std",
+              "sys_rng"
+            ],
+            "target": {
+              "kind": [
+                "lib"
+              ],
+              "crate_types": [
+                "lib"
+              ],
+              "name": "getrandom",
+              "src_path": "/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.4.3/src/lib.rs",
+              "edition": "2024",
+              "doc": true,
+              "doctest": true,
+              "test": true
+            },
+            "profile": {
+              "opt_level": "0",
+              "debuginfo": 2,
+              "debug_assertions": true,
+              "overflow_checks": true,
+              "test": false
+            }
+          }
+        ],
+        "registry+https://github.com/rust-lang/crates.io-index#cfg-if@1.0.4": [
+          {
+            "features": [],
+            "target": {
+              "kind": [
+                "lib"
+              ],
+              "crate_types": [
+                "lib"
+              ],
+              "name": "cfg_if",
+              "src_path": "/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cfg-if-1.0.4/src/lib.rs",
+              "edition": "2018",
+              "doc": true,
+              "doctest": true,
+              "test": true
+            },
+            "profile": {
+              "opt_level": "0",
+              "debuginfo": 2,
+              "debug_assertions": true,
+              "overflow_checks": true,
+              "test": false
+            }
+          }
+        ],
+        "registry+https://github.com/rust-lang/crates.io-index#rand_core@0.10.1": [
+          {
+            "features": [],
+            "target": {
+              "kind": [
+                "lib"
+              ],
+              "crate_types": [
+                "lib"
+              ],
+              "name": "rand_core",
+              "src_path": "/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.10.1/src/lib.rs",
+              "edition": "2024",
+              "doc": true,
+              "doctest": true,
+              "test": true
+            },
+            "profile": {
+              "opt_level": "0",
+              "debuginfo": 2,
+              "debug_assertions": true,
+              "overflow_checks": true,
+              "test": false
+            }
+          }
+        ],
+        "registry+https://github.com/rust-lang/crates.io-index#rustix@1.1.4": [
+          {
+            "features": [
+              "alloc",
+              "default",
+              "fs",
+              "std"
+            ],
+            "target": {
+              "kind": [
+                "custom-build"
+              ],
+              "crate_types": [
+                "bin"
+              ],
+              "name": "build-script-build",
+              "src_path": "/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustix-1.1.4/build.rs",
+              "edition": "2021",
+              "doc": false,
+              "doctest": false,
+              "test": false
+            },
+            "profile": {
+              "opt_level": "0",
+              "debuginfo": 0,
+              "debug_assertions": true,
+              "overflow_checks": true,
+              "test": false
+            }
+          },
+          {
+            "features": [
+              "alloc",
+              "default",
+              "fs",
+              "std"
+            ],
+            "target": {
+              "kind": [
+                "lib"
+              ],
+              "crate_types": [
+                "lib"
+              ],
+              "name": "rustix",
+              "src_path": "/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustix-1.1.4/src/lib.rs",
+              "edition": "2021",
+              "doc": true,
+              "doctest": true,
+              "test": true
+            },
+            "profile": {
+              "opt_level": "0",
+              "debuginfo": 2,
+              "debug_assertions": true,
+              "overflow_checks": true,
+              "test": false
+            }
+          }
+        ],
+        "registry+https://github.com/rust-lang/crates.io-index#errno@0.3.14": [
+          {
+            "features": [
+              "std"
+            ],
+            "target": {
+              "kind": [
+                "lib"
+              ],
+              "crate_types": [
+                "lib"
+              ],
+              "name": "errno",
+              "src_path": "/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/errno-0.3.14/src/lib.rs",
+              "edition": "2018",
+              "doc": true,
+              "doctest": true,
+              "test": true
+            },
+            "profile": {
+              "opt_level": "0",
+              "debuginfo": 2,
+              "debug_assertions": true,
+              "overflow_checks": true,
+              "test": false
+            }
+          }
+        ],
+        "registry+https://github.com/rust-lang/crates.io-index#redb@2.6.0": [
+          {
+            "features": [],
+            "target": {
+              "kind": [
+                "custom-build"
+              ],
+              "crate_types": [
+                "bin"
+              ],
+              "name": "build-script-build",
+              "src_path": "/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/redb-2.6.0/build.rs",
+              "edition": "2024",
+              "doc": false,
+              "doctest": false,
+              "test": false
+            },
+            "profile": {
+              "opt_level": "0",
+              "debuginfo": 0,
+              "debug_assertions": true,
+              "overflow_checks": true,
+              "test": false
+            }
+          },
+          {
+            "features": [],
+            "target": {
+              "kind": [
+                "cdylib",
+                "rlib"
+              ],
+              "crate_types": [
+                "cdylib",
+                "rlib"
+              ],
+              "name": "redb",
+              "src_path": "/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/redb-2.6.0/src/lib.rs",
+              "edition": "2024",
+              "doc": true,
+              "doctest": true,
+              "test": true
+            },
+            "profile": {
+              "opt_level": "0",
+              "debuginfo": 2,
+              "debug_assertions": true,
+              "overflow_checks": true,
+              "test": false
+            }
+          }
+        ],
+        "registry+https://github.com/rust-lang/crates.io-index#bitflags@2.13.1": [
+          {
+            "features": [
+              "std"
+            ],
+            "target": {
+              "kind": [
+                "lib"
+              ],
+              "crate_types": [
+                "lib"
+              ],
+              "name": "bitflags",
+              "src_path": "/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.13.1/src/lib.rs",
+              "edition": "2021",
+              "doc": true,
+              "doctest": true,
+              "test": true
+            },
+            "profile": {
+              "opt_level": "0",
+              "debuginfo": 2,
+              "debug_assertions": true,
+              "overflow_checks": true,
+              "test": false
+            }
+          }
+        ],
+        "registry+https://github.com/rust-lang/crates.io-index#chacha20@0.10.1": [
+          {
+            "features": [
+              "rng"
+            ],
+            "target": {
+              "kind": [
+                "lib"
+              ],
+              "crate_types": [
+                "lib"
+              ],
+              "name": "chacha20",
+              "src_path": "/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/chacha20-0.10.1/src/lib.rs",
+              "edition": "2024",
+              "doc": true,
+              "doctest": true,
+              "test": true
+            },
+            "profile": {
+              "opt_level": "0",
+              "debuginfo": 2,
+              "debug_assertions": true,
+              "overflow_checks": true,
+              "test": false
+            }
+          }
+        ],
+        "registry+https://github.com/rust-lang/crates.io-index#once_cell@1.21.4": [
+          {
+            "features": [
+              "alloc",
+              "race",
+              "std"
+            ],
+            "target": {
+              "kind": [
+                "lib"
+              ],
+              "crate_types": [
+                "lib"
+              ],
+              "name": "once_cell",
+              "src_path": "/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/once_cell-1.21.4/src/lib.rs",
+              "edition": "2021",
+              "doc": true,
+              "doctest": true,
+              "test": true
+            },
+            "profile": {
+              "opt_level": "0",
+              "debuginfo": 2,
+              "debug_assertions": true,
+              "overflow_checks": true,
+              "test": false
+            }
+          }
+        ],
+        "path+file:///private/tmp/kasumi-redb-admission-owner-failure/vendor/redb-4.2.0#redb@4.2.0": [
+          {
+            "features": [
+              "default",
+              "experimental-precommit-growth-admission",
+              "std"
+            ],
+            "target": {
+              "kind": [
+                "custom-build"
+              ],
+              "crate_types": [
+                "bin"
+              ],
+              "name": "build-script-build",
+              "src_path": "/private/tmp/kasumi-redb-admission-owner-failure/vendor/redb-4.2.0/build.rs",
+              "edition": "2024",
+              "doc": false,
+              "doctest": false,
+              "test": false
+            },
+            "profile": {
+              "opt_level": "0",
+              "debuginfo": 0,
+              "debug_assertions": true,
+              "overflow_checks": true,
+              "test": false
+            }
+          },
+          {
+            "features": [
+              "default",
+              "experimental-precommit-growth-admission",
+              "std"
+            ],
+            "target": {
+              "kind": [
+                "lib"
+              ],
+              "crate_types": [
+                "lib"
+              ],
+              "name": "redb",
+              "src_path": "/private/tmp/kasumi-redb-admission-owner-failure/vendor/redb-4.2.0/src/lib.rs",
+              "edition": "2024",
+              "doc": true,
+              "doctest": true,
+              "test": true
+            },
+            "profile": {
+              "opt_level": "0",
+              "debuginfo": 2,
+              "debug_assertions": true,
+              "overflow_checks": true,
+              "test": true
+            }
+          }
+        ],
+        "registry+https://github.com/rust-lang/crates.io-index#fastrand@2.4.1": [
+          {
+            "features": [
+              "alloc",
+              "default",
+              "std"
+            ],
+            "target": {
+              "kind": [
+                "lib"
+              ],
+              "crate_types": [
+                "lib"
+              ],
+              "name": "fastrand",
+              "src_path": "/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fastrand-2.4.1/src/lib.rs",
+              "edition": "2018",
+              "doc": true,
+              "doctest": true,
+              "test": true
+            },
+            "profile": {
+              "opt_level": "0",
+              "debuginfo": 2,
+              "debug_assertions": true,
+              "overflow_checks": true,
+              "test": false
+            }
+          }
+        ],
+        "registry+https://github.com/rust-lang/crates.io-index#tempfile@3.27.0": [
+          {
+            "features": [
+              "default",
+              "getrandom"
+            ],
+            "target": {
+              "kind": [
+                "lib"
+              ],
+              "crate_types": [
+                "lib"
+              ],
+              "name": "tempfile",
+              "src_path": "/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tempfile-3.27.0/src/lib.rs",
+              "edition": "2021",
+              "doc": true,
+              "doctest": true,
+              "test": true
+            },
+            "profile": {
+              "opt_level": "0",
+              "debuginfo": 2,
+              "debug_assertions": true,
+              "overflow_checks": true,
+              "test": false
+            }
+          }
+        ],
+        "registry+https://github.com/rust-lang/crates.io-index#rand@0.10.2": [
+          {
+            "features": [
+              "alloc",
+              "default",
+              "std",
+              "std_rng",
+              "sys_rng",
+              "thread_rng"
+            ],
+            "target": {
+              "kind": [
+                "lib"
+              ],
+              "crate_types": [
+                "lib"
+              ],
+              "name": "rand",
+              "src_path": "/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand-0.10.2/src/lib.rs",
+              "edition": "2024",
+              "doc": true,
+              "doctest": true,
+              "test": true
+            },
+            "profile": {
+              "opt_level": "0",
+              "debuginfo": 2,
+              "debug_assertions": true,
+              "overflow_checks": true,
+              "test": false
+            }
+          }
+        ],
+        "registry+https://github.com/rust-lang/crates.io-index#uuid@1.24.0": [
+          {
+            "features": [
+              "default",
+              "rng",
+              "std",
+              "v4"
+            ],
+            "target": {
+              "kind": [
+                "lib"
+              ],
+              "crate_types": [
+                "lib"
+              ],
+              "name": "uuid",
+              "src_path": "/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/uuid-1.24.0/src/lib.rs",
+              "edition": "2021",
+              "doc": true,
+              "doctest": true,
+              "test": true
+            },
+            "profile": {
+              "opt_level": "0",
+              "debuginfo": 2,
+              "debug_assertions": true,
+              "overflow_checks": true,
+              "test": false
+            }
+          }
+        ]
+      },
+      "required_tests_passed": true,
+      "test_summaries": [
+        [
+          "ok",
+          "3",
+          "0",
+          "0"
+        ]
+      ]
+    },
+    {
+      "name": "redb-growth-admission",
+      "timeout_seconds": 300,
+      "cargo_args": [
+        "test",
+        "--manifest-path",
+        "vendor/redb-4.2.0/Cargo.toml",
+        "--locked",
+        "--offline",
+        "-j1",
+        "--features",
+        "experimental-precommit-growth-admission",
+        "--lib",
+        "transactions::growth_admission_tests",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "transactions::growth_admission_tests::denied_growth_never_calls_resize_and_caught_error_cannot_commit",
+        "transactions::growth_admission_tests::split_failures_preserve_pinned_roots_and_successful_extent_charges",
+        "transactions::growth_admission_tests::replacement_denial_aborts_all_tables_and_retains_original_value",
+        "transactions::growth_admission_tests::explicit_abort_and_drop_after_capacity_denial_leave_database_usable",
+        "transactions::growth_admission_tests::actual_backend_failures_still_latch_and_never_claim_capacity_abort",
+        "transactions::growth_admission_tests::allocator_clones_and_system_namespace_share_the_capacity_abort_state",
+        "transactions::growth_admission_tests::admitted_commit_preparation_denial_rolls_back_without_latching",
+        "transactions::growth_admission_tests::prepared_freed_records_are_rollback_valid_before_capacity_denial",
+        "transactions::growth_admission_tests::deferred_frees_survive_quick_repair_and_pinned_reader_reopen",
+        "transactions::growth_admission_tests::failed_root_io_discards_allocator_candidate_without_exposing_frees",
+        "transactions::growth_admission_tests::admitted_modes_reject_non_durable_and_restore_before_changing_state",
+        "transactions::growth_admission_tests::admitted_begin_rejects_volatile_state_without_adoption_and_releases_writer",
+        "transactions::growth_admission_tests::admitted_begin_rejects_an_ordinary_post_commit_epilogue_without_adoption",
+        "transactions::growth_admission_tests::admitted_durable_publication_has_no_volatile_epilogue_or_unreserved_trim",
+        "transactions::growth_admission_tests::failed_admission_owner_closes_cached_access_and_new_work_without_resizing",
+        "transactions::growth_admission_tests::commit_preparation_owner_failure_never_claims_capacity_rollback",
+        "transactions::growth_admission_tests::ordinary_capacity_denials_keep_exact_rollback_and_allow_later_growth"
+      ],
+      "status": "passed",
+      "command": [
+        "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+        "test",
+        "--manifest-path",
+        "vendor/redb-4.2.0/Cargo.toml",
+        "--locked",
+        "--offline",
+        "-j1",
+        "--features",
+        "experimental-precommit-growth-admission",
+        "--lib",
+        "transactions::growth_admission_tests",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "process_record": {
+        "status": "passed",
+        "command": [
+          "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+          "test",
+          "--manifest-path",
+          "vendor/redb-4.2.0/Cargo.toml",
+          "--locked",
+          "--offline",
+          "-j1",
+          "--features",
+          "experimental-precommit-growth-admission",
+          "--lib",
+          "transactions::growth_admission_tests",
+          "--message-format=json-render-diagnostics",
+          "--",
+          "--test-threads=1"
+        ],
+        "timeout_seconds": 300,
+        "process_group": 67714,
+        "process_exit_code": 0,
+        "exit_code": 0,
+        "timed_out": false,
+        "received_signals": [],
+        "error": null,
+        "cleanup": {
+          "group": 67714,
+          "before": [],
+          "after": [],
+          "signals": [],
+          "errors": [],
+          "drained": true,
+          "process_returncode": 0
+        },
+        "duration_seconds": 8.023
+      },
+      "process_group": 67714,
+      "duration_seconds": 8.025,
+      "process_exit_code": 0,
+      "error": null,
+      "cleanup": {
+        "group": 67714,
+        "before": [],
+        "after": [],
+        "signals": [],
+        "errors": [],
+        "drained": true,
+        "process_returncode": 0,
+        "remaining_after_command": false
+      },
+      "log": "redb-growth-admission.log",
+      "log_sha256": "18a9e93ffcd686f03069f63361bcfea482c712ca25e38777fee4aa431dd5f835",
+      "source_unchanged": true,
+      "executables": {
+        "debug/deps/redb-ba841ece6df4e8b1": {
+          "sha256": "af3c11663a8da6f05d2e5daa4e0b0a710260bde3aedd6b34b819275a983047ed",
+          "bytes": 7137720,
+          "preserved_path": "/private/tmp/kasumi-redb-4f62863-leaf/preserved-executables/af3c11663a8da6f05d2e5daa4e0b0a710260bde3aedd6b34b819275a983047ed-redb-ba841ece6df4e8b1",
+          "package_id": "path+file:///private/tmp/kasumi-redb-admission-owner-failure/vendor/redb-4.2.0#redb@4.2.0",
+          "features": [
+            "default",
+            "experimental-precommit-growth-admission",
+            "std"
+          ],
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 2,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          }
+        }
+      },
+      "compiled_packages": {
+        "registry+https://github.com/rust-lang/crates.io-index#libc@0.2.186": [
+          {
+            "features": [
+              "default",
+              "std"
+            ],
+            "target": {
+              "kind": [
+                "custom-build"
+              ],
+              "crate_types": [
+                "bin"
+              ],
+              "name": "build-script-build",
+              "src_path": "/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libc-0.2.186/build.rs",
+              "edition": "2021",
+              "doc": false,
+              "doctest": false,
+              "test": false
+            },
+            "profile": {
+              "opt_level": "0",
+              "debuginfo": 0,
+              "debug_assertions": true,
+              "overflow_checks": true,
+              "test": false
+            }
+          },
+          {
+            "features": [
+              "default",
+              "std"
+            ],
+            "target": {
+              "kind": [
+                "lib"
+              ],
+              "crate_types": [
+                "lib"
+              ],
+              "name": "libc",
+              "src_path": "/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libc-0.2.186/src/lib.rs",
+              "edition": "2021",
+              "doc": true,
+              "doctest": true,
+              "test": true
+            },
+            "profile": {
+              "opt_level": "0",
+              "debuginfo": 2,
+              "debug_assertions": true,
+              "overflow_checks": true,
+              "test": false
+            }
+          }
+        ],
+        "registry+https://github.com/rust-lang/crates.io-index#cfg-if@1.0.4": [
+          {
+            "features": [],
+            "target": {
+              "kind": [
+                "lib"
+              ],
+              "crate_types": [
+                "lib"
+              ],
+              "name": "cfg_if",
+              "src_path": "/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cfg-if-1.0.4/src/lib.rs",
+              "edition": "2018",
+              "doc": true,
+              "doctest": true,
+              "test": true
+            },
+            "profile": {
+              "opt_level": "0",
+              "debuginfo": 2,
+              "debug_assertions": true,
+              "overflow_checks": true,
+              "test": false
+            }
+          }
+        ],
+        "registry+https://github.com/rust-lang/crates.io-index#getrandom@0.4.3": [
+          {
+            "features": [
+              "std",
+              "sys_rng"
+            ],
+            "target": {
+              "kind": [
+                "custom-build"
+              ],
+              "crate_types": [
+                "bin"
+              ],
+              "name": "build-script-build",
+              "src_path": "/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.4.3/build.rs",
+              "edition": "2024",
+              "doc": false,
+              "doctest": false,
+              "test": false
+            },
+            "profile": {
+              "opt_level": "0",
+              "debuginfo": 0,
+              "debug_assertions": true,
+              "overflow_checks": true,
+              "test": false
+            }
+          },
+          {
+            "features": [
+              "std",
+              "sys_rng"
+            ],
+            "target": {
+              "kind": [
+                "lib"
+              ],
+              "crate_types": [
+                "lib"
+              ],
+              "name": "getrandom",
+              "src_path": "/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.4.3/src/lib.rs",
+              "edition": "2024",
+              "doc": true,
+              "doctest": true,
+              "test": true
+            },
+            "profile": {
+              "opt_level": "0",
+              "debuginfo": 2,
+              "debug_assertions": true,
+              "overflow_checks": true,
+              "test": false
+            }
+          }
+        ],
+        "registry+https://github.com/rust-lang/crates.io-index#rand_core@0.10.1": [
+          {
+            "features": [],
+            "target": {
+              "kind": [
+                "lib"
+              ],
+              "crate_types": [
+                "lib"
+              ],
+              "name": "rand_core",
+              "src_path": "/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.10.1/src/lib.rs",
+              "edition": "2024",
+              "doc": true,
+              "doctest": true,
+              "test": true
+            },
+            "profile": {
+              "opt_level": "0",
+              "debuginfo": 2,
+              "debug_assertions": true,
+              "overflow_checks": true,
+              "test": false
+            }
+          }
+        ],
+        "registry+https://github.com/rust-lang/crates.io-index#rustix@1.1.4": [
+          {
+            "features": [
+              "alloc",
+              "default",
+              "fs",
+              "std"
+            ],
+            "target": {
+              "kind": [
+                "custom-build"
+              ],
+              "crate_types": [
+                "bin"
+              ],
+              "name": "build-script-build",
+              "src_path": "/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustix-1.1.4/build.rs",
+              "edition": "2021",
+              "doc": false,
+              "doctest": false,
+              "test": false
+            },
+            "profile": {
+              "opt_level": "0",
+              "debuginfo": 0,
+              "debug_assertions": true,
+              "overflow_checks": true,
+              "test": false
+            }
+          },
+          {
+            "features": [
+              "alloc",
+              "default",
+              "fs",
+              "std"
+            ],
+            "target": {
+              "kind": [
+                "lib"
+              ],
+              "crate_types": [
+                "lib"
+              ],
+              "name": "rustix",
+              "src_path": "/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustix-1.1.4/src/lib.rs",
+              "edition": "2021",
+              "doc": true,
+              "doctest": true,
+              "test": true
+            },
+            "profile": {
+              "opt_level": "0",
+              "debuginfo": 2,
+              "debug_assertions": true,
+              "overflow_checks": true,
+              "test": false
+            }
+          }
+        ],
+        "registry+https://github.com/rust-lang/crates.io-index#errno@0.3.14": [
+          {
+            "features": [
+              "std"
+            ],
+            "target": {
+              "kind": [
+                "lib"
+              ],
+              "crate_types": [
+                "lib"
+              ],
+              "name": "errno",
+              "src_path": "/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/errno-0.3.14/src/lib.rs",
+              "edition": "2018",
+              "doc": true,
+              "doctest": true,
+              "test": true
+            },
+            "profile": {
+              "opt_level": "0",
+              "debuginfo": 2,
+              "debug_assertions": true,
+              "overflow_checks": true,
+              "test": false
+            }
+          }
+        ],
+        "registry+https://github.com/rust-lang/crates.io-index#bitflags@2.13.1": [
+          {
+            "features": [
+              "std"
+            ],
+            "target": {
+              "kind": [
+                "lib"
+              ],
+              "crate_types": [
+                "lib"
+              ],
+              "name": "bitflags",
+              "src_path": "/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.13.1/src/lib.rs",
+              "edition": "2021",
+              "doc": true,
+              "doctest": true,
+              "test": true
+            },
+            "profile": {
+              "opt_level": "0",
+              "debuginfo": 2,
+              "debug_assertions": true,
+              "overflow_checks": true,
+              "test": false
+            }
+          }
+        ],
+        "registry+https://github.com/rust-lang/crates.io-index#redb@2.6.0": [
+          {
+            "features": [],
+            "target": {
+              "kind": [
+                "custom-build"
+              ],
+              "crate_types": [
+                "bin"
+              ],
+              "name": "build-script-build",
+              "src_path": "/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/redb-2.6.0/build.rs",
+              "edition": "2024",
+              "doc": false,
+              "doctest": false,
+              "test": false
+            },
+            "profile": {
+              "opt_level": "0",
+              "debuginfo": 0,
+              "debug_assertions": true,
+              "overflow_checks": true,
+              "test": false
+            }
+          },
+          {
+            "features": [],
+            "target": {
+              "kind": [
+                "cdylib",
+                "rlib"
+              ],
+              "crate_types": [
+                "cdylib",
+                "rlib"
+              ],
+              "name": "redb",
+              "src_path": "/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/redb-2.6.0/src/lib.rs",
+              "edition": "2024",
+              "doc": true,
+              "doctest": true,
+              "test": true
+            },
+            "profile": {
+              "opt_level": "0",
+              "debuginfo": 2,
+              "debug_assertions": true,
+              "overflow_checks": true,
+              "test": false
+            }
+          }
+        ],
+        "registry+https://github.com/rust-lang/crates.io-index#chacha20@0.10.1": [
+          {
+            "features": [
+              "rng"
+            ],
+            "target": {
+              "kind": [
+                "lib"
+              ],
+              "crate_types": [
+                "lib"
+              ],
+              "name": "chacha20",
+              "src_path": "/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/chacha20-0.10.1/src/lib.rs",
+              "edition": "2024",
+              "doc": true,
+              "doctest": true,
+              "test": true
+            },
+            "profile": {
+              "opt_level": "0",
+              "debuginfo": 2,
+              "debug_assertions": true,
+              "overflow_checks": true,
+              "test": false
+            }
+          }
+        ],
+        "path+file:///private/tmp/kasumi-redb-admission-owner-failure/vendor/redb-4.2.0#redb@4.2.0": [
+          {
+            "features": [
+              "default",
+              "experimental-precommit-growth-admission",
+              "std"
+            ],
+            "target": {
+              "kind": [
+                "custom-build"
+              ],
+              "crate_types": [
+                "bin"
+              ],
+              "name": "build-script-build",
+              "src_path": "/private/tmp/kasumi-redb-admission-owner-failure/vendor/redb-4.2.0/build.rs",
+              "edition": "2024",
+              "doc": false,
+              "doctest": false,
+              "test": false
+            },
+            "profile": {
+              "opt_level": "0",
+              "debuginfo": 0,
+              "debug_assertions": true,
+              "overflow_checks": true,
+              "test": false
+            }
+          },
+          {
+            "features": [
+              "default",
+              "experimental-precommit-growth-admission",
+              "std"
+            ],
+            "target": {
+              "kind": [
+                "lib"
+              ],
+              "crate_types": [
+                "lib"
+              ],
+              "name": "redb",
+              "src_path": "/private/tmp/kasumi-redb-admission-owner-failure/vendor/redb-4.2.0/src/lib.rs",
+              "edition": "2024",
+              "doc": true,
+              "doctest": true,
+              "test": true
+            },
+            "profile": {
+              "opt_level": "0",
+              "debuginfo": 2,
+              "debug_assertions": true,
+              "overflow_checks": true,
+              "test": true
+            }
+          }
+        ],
+        "registry+https://github.com/rust-lang/crates.io-index#fastrand@2.4.1": [
+          {
+            "features": [
+              "alloc",
+              "default",
+              "std"
+            ],
+            "target": {
+              "kind": [
+                "lib"
+              ],
+              "crate_types": [
+                "lib"
+              ],
+              "name": "fastrand",
+              "src_path": "/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fastrand-2.4.1/src/lib.rs",
+              "edition": "2018",
+              "doc": true,
+              "doctest": true,
+              "test": true
+            },
+            "profile": {
+              "opt_level": "0",
+              "debuginfo": 2,
+              "debug_assertions": true,
+              "overflow_checks": true,
+              "test": false
+            }
+          }
+        ],
+        "registry+https://github.com/rust-lang/crates.io-index#once_cell@1.21.4": [
+          {
+            "features": [
+              "alloc",
+              "race",
+              "std"
+            ],
+            "target": {
+              "kind": [
+                "lib"
+              ],
+              "crate_types": [
+                "lib"
+              ],
+              "name": "once_cell",
+              "src_path": "/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/once_cell-1.21.4/src/lib.rs",
+              "edition": "2021",
+              "doc": true,
+              "doctest": true,
+              "test": true
+            },
+            "profile": {
+              "opt_level": "0",
+              "debuginfo": 2,
+              "debug_assertions": true,
+              "overflow_checks": true,
+              "test": false
+            }
+          }
+        ],
+        "registry+https://github.com/rust-lang/crates.io-index#tempfile@3.27.0": [
+          {
+            "features": [
+              "default",
+              "getrandom"
+            ],
+            "target": {
+              "kind": [
+                "lib"
+              ],
+              "crate_types": [
+                "lib"
+              ],
+              "name": "tempfile",
+              "src_path": "/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tempfile-3.27.0/src/lib.rs",
+              "edition": "2021",
+              "doc": true,
+              "doctest": true,
+              "test": true
+            },
+            "profile": {
+              "opt_level": "0",
+              "debuginfo": 2,
+              "debug_assertions": true,
+              "overflow_checks": true,
+              "test": false
+            }
+          }
+        ],
+        "registry+https://github.com/rust-lang/crates.io-index#rand@0.10.2": [
+          {
+            "features": [
+              "alloc",
+              "default",
+              "std",
+              "std_rng",
+              "sys_rng",
+              "thread_rng"
+            ],
+            "target": {
+              "kind": [
+                "lib"
+              ],
+              "crate_types": [
+                "lib"
+              ],
+              "name": "rand",
+              "src_path": "/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand-0.10.2/src/lib.rs",
+              "edition": "2024",
+              "doc": true,
+              "doctest": true,
+              "test": true
+            },
+            "profile": {
+              "opt_level": "0",
+              "debuginfo": 2,
+              "debug_assertions": true,
+              "overflow_checks": true,
+              "test": false
+            }
+          }
+        ],
+        "registry+https://github.com/rust-lang/crates.io-index#uuid@1.24.0": [
+          {
+            "features": [
+              "default",
+              "rng",
+              "std",
+              "v4"
+            ],
+            "target": {
+              "kind": [
+                "lib"
+              ],
+              "crate_types": [
+                "lib"
+              ],
+              "name": "uuid",
+              "src_path": "/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/uuid-1.24.0/src/lib.rs",
+              "edition": "2021",
+              "doc": true,
+              "doctest": true,
+              "test": true
+            },
+            "profile": {
+              "opt_level": "0",
+              "debuginfo": 2,
+              "debug_assertions": true,
+              "overflow_checks": true,
+              "test": false
+            }
+          }
+        ]
+      },
+      "required_tests_passed": true,
+      "test_summaries": [
+        [
+          "ok",
+          "17",
+          "0",
+          "0"
+        ]
+      ]
+    }
+  ],
+  "finished_at": "2026-09-09T05:45:57.400902+00:00",
+  "source_unchanged": true,
+  "process_helper_unchanged": true
+}

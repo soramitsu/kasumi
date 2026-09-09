@@ -1,0 +1,42 @@
+{
+  "evidence.json": {
+    "source": "/tmp/kasumi-redb-4f62863-leaf/evidence.json",
+    "sha256": "372bfaf5539f42a4a8cd49a378e12e96bd5580935ed4849c9f079d5189d782c8",
+    "bytes": 45261
+  },
+  "runner.py": {
+    "source": "/tmp/kasumi-redb-4f62863-leaf/runner.py",
+    "sha256": "5a6306f42bb8ef91f9943a3f0c4c33901d841ef51cce1d66d29a6b49c48040c8",
+    "bytes": 11201
+  },
+  "plan.json": {
+    "source": "/tmp/kasumi-redb-4f62863-leaf/plan.json",
+    "sha256": "9715e04ec006806c26d6208ce78ba029fc4e222f6a0c7c8a88e39a1e3f90aac8",
+    "bytes": 4369
+  },
+  "source-before.json": {
+    "source": "/tmp/kasumi-redb-4f62863-leaf/source-before.json",
+    "sha256": "2356fdc5f9777da8016ad04af62ab05c39c87356fda44df1ce540853c0c00c41",
+    "bytes": 257741
+  },
+  "redb-allocator-candidate.log": {
+    "source": "/tmp/kasumi-redb-4f62863-leaf/redb-allocator-candidate.log",
+    "sha256": "876e37ec416d0fa713442809a85597c0d7c490b38ee2e854d1af7c3dd13139d8",
+    "bytes": 18148
+  },
+  "redb-growth-admission.log": {
+    "source": "/tmp/kasumi-redb-4f62863-leaf/redb-growth-admission.log",
+    "sha256": "18a9e93ffcd686f03069f63361bcfea482c712ca25e38777fee4aa431dd5f835",
+    "bytes": 19663
+  },
+  "kasumi-redb-4f62863-leaf-preflight-failure.json": {
+    "source": "/tmp/kasumi-redb-4f62863-leaf-preflight-failure.json",
+    "sha256": "a3405328d44fa34e2e47c6d588d78ba4e3e49756340e13085eca09d53afa7ed4",
+    "bytes": 682
+  },
+  "kasumi-redb-4f62863-leaf-plan.json": {
+    "source": "/tmp/kasumi-redb-4f62863-leaf-plan.json",
+    "sha256": "0730b941faa2a77c0c642a21b621c70a5bd4687476e1f629b3ff57d98a8b110f",
+    "bytes": 4186
+  }
+}
