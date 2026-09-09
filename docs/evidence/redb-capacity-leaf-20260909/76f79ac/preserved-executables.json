@@ -1,0 +1,14 @@
+[
+  {
+    "path": "/tmp/kasumi-redb-76f79ac-leaf/preserved-executables/redb-allocator-candidate-redb-ba841ece6df4e8b1",
+    "sha256": "336b585b2445a29ca0f1cbc7e72f404eab432fb7681056785fa53897769f0f5b",
+    "bytes": 7096744,
+    "gate": "redb-allocator-candidate"
+  },
+  {
+    "path": "/tmp/kasumi-redb-76f79ac-leaf/preserved-executables/redb-growth-admission-redb-ba841ece6df4e8b1",
+    "sha256": "336b585b2445a29ca0f1cbc7e72f404eab432fb7681056785fa53897769f0f5b",
+    "bytes": 7096744,
+    "gate": "redb-growth-admission"
+  }
+]

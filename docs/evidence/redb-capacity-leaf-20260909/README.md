@@ -16,6 +16,8 @@ production acceptance remain unfinished.
 | `2886774` | All seven focused tests passed, none ignored; 86 unrelated tests filtered out. Total 6.031 s. |
 | `5c2a3bf-preflight` | The runner failed before Cargo because system Python lacked its hash helper. No compilation or tests ran. |
 | `5c2a3bf` | Three allocator-candidate tests passed in 8.148 s, then ten growth-admission tests passed in 5.726 s; none ignored. |
+| `11a06d0` | Compilation failed in 2.738 s: a new mutable-table assertion lacked its trait import under the selected feature graph. No tests ran. |
+| `76f79ac` | Three candidate tests passed in 7.451 s; growth tests then ran in 8.507 s with 13 passing and one failing in actual commit-preparation rollback. |
 
 In `ccf76d6`, the shared allocator/system-namespace state regression passed.
 Five tests failed at reopening their 512-byte-page fixture with a builder that
@@ -70,3 +72,21 @@ commit outcomes and supported modes. It has no result in this record and cannot
 reuse these 13 passing tests as its own validation. Full upstream tests/fuzzing,
 all-mode preparation, database-wide disk ownership, and production acceptance
 remain open.
+
+The admitted subset's first two attempts are retained separately. `11a06d0`
+failed before tests because `ReadableTable` was conditionally imported even though
+its new mutable-table assertion requires it in the default graph. The successor
+made that import unconditional without changing assertions. Both attempts used
+bundled Python 3.12 and the same pinned Rust/default/std/growth feature graph.
+
+On `76f79ac`, the actual rollback test failed with `Page tracker is closed`:
+preparation had sealed/transferred the namespace inventory, and abort attempted
+the same strict close again. That is a real ownership defect. The other 16 tests
+passed, including typed mode rejection and durable-publication cases, but the
+17-test cohort failed. The source-only correction at `97ae207` introduces an
+explicit abort-discard path while keeping normal close and subsequent tracker
+mutation strict. It changes no regression assertion and has not been rerun in
+this evidence record. Failed executable SHA-256 is
+`336b585b2445a29ca0f1cbc7e72f404eab432fb7681056785fa53897769f0f5b`.
+All owned process groups drained, and each attempt's source/package/lock hashes
+remained unchanged. No whole-upstream or production acceptance claim follows.

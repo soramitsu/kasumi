@@ -1,0 +1,1829 @@
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -1,0 +2,11 @@
++
++## Kasumi unintegrated capacity prototype
++* Add a durable admitted subset with prepared header publication and rollback of
++  commit-preparation capacity denial. Reject volatile adoption, non-durable mode,
++  and savepoint restore; admitted commits neither trim nor allocate an epilogue.
++* Prepare durable page reclamation and shrink changes in private allocator candidates;
++  publish them only with the committed roots, including matching quick-repair bitmaps.
++  Full commit-time rollback and database-wide disk admission remain incomplete.
++* Add opt-in transaction growth admission and an explicit rollback outcome for
++  capacity denials encountered before commit. Commit-time and maintenance capacity
++  admission remain incomplete; this is not a production storage-capacity contract.
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -31,0 +32 @@
++experimental-precommit-growth-admission = []
+--- a/src/db.rs
++++ b/src/db.rs
+@@ -727 +727 @@
+-            self.mem.commit(
++            self.mem.commit(crate::tree_store::CommitRequest {
+@@ -730,4 +730,6 @@
+-                next_transaction_id,
+-                true,
+-                ShrinkPolicy::Never,
+-            )?;
++                transaction_id: next_transaction_id,
++                two_phase: true,
++                shrink_policy: ShrinkPolicy::Never,
++                freed_pages: &[],
++                growth: &crate::growth_admission::GrowthState::default(),
++            })?;
+@@ -1185 +1187 @@
+-            mem.commit(
++            mem.commit(crate::tree_store::CommitRequest {
+@@ -1188,4 +1190,6 @@
+-                next_transaction_id,
+-                true,
+-                ShrinkPolicy::Never,
+-            )?;
++                transaction_id: next_transaction_id,
++                two_phase: true,
++                shrink_policy: ShrinkPolicy::Never,
++                freed_pages: &[],
++                growth: &crate::growth_admission::GrowthState::default(),
++            })?;
+@@ -1213 +1217,2 @@
+-                    | SavepointError::ImmediateDurabilityRequired => unreachable!(),
++                    | SavepointError::ImmediateDurabilityRequired
++                    | SavepointError::UnsupportedGrowthAdmission(_) => unreachable!(),
+@@ -1273,0 +1279,20 @@
++    /// Begins an experimental growth-admitted transaction.
++    ///
++    /// Uses immediate durability with prepared header publication. It does not run an
++    /// allocating post-commit epilogue or trim the file. Unsupported pending volatile
++    /// state is rejected before admitting the writer. Non-durable mode and savepoint
++    /// restore are rejected by their respective operations.
++    /// See [`crate::GrowthAdmission`] for the remaining database-wide capacity gaps.
++    #[cfg(feature = "experimental-precommit-growth-admission")]
++    pub fn begin_write_with_growth_admission(
++        &self,
++        admission: Arc<dyn crate::GrowthAdmission>,
++    ) -> Result<WriteTransaction, TransactionError> {
++        begin_write_with_admission(
++            &self.transaction_tracker,
++            &self.mem,
++            AllocationPolicy::Default,
++            Some(admission),
++        )
++    }
++
+@@ -1297,0 +1323,9 @@
++) -> Result<WriteTransaction, TransactionError> {
++    begin_write_with_admission(transaction_tracker, mem, allocation_policy, None)
++}
++
++fn begin_write_with_admission(
++    transaction_tracker: &Arc<TransactionTracker>,
++    mem: &Arc<TransactionalMemory>,
++    allocation_policy: AllocationPolicy,
++    admission: Option<Arc<dyn crate::growth_admission::GrowthAdmission>>,
+@@ -1315,0 +1350,5 @@
++    if admission.is_some() && mem.has_volatile_state() {
++        return Err(TransactionError::UnsupportedGrowthAdmission(
++            crate::UnsupportedGrowthAdmission::VolatileState,
++        ));
++    }
+@@ -1320,0 +1360 @@
++        Arc::new(crate::growth_admission::GrowthState::new(admission)),
+--- a/src/error.rs
++++ b/src/error.rs
+@@ -4 +4 @@
+-use crate::{ReadTransaction, TypeName};
++use crate::{CapacityExceeded, ReadTransaction, TypeName, UnsupportedGrowthAdmission};
+@@ -14,0 +15,2 @@
++    /// Growth was denied before resize. Only `CommitError::CapacityAborted` establishes rollback.
++    CapacityExceeded(CapacityExceeded),
+@@ -42,0 +45 @@
++            StorageError::CapacityExceeded(failure) => Error::CapacityExceeded(failure),
+@@ -57,0 +61 @@
++            StorageError::CapacityExceeded(failure) => failure.fmt(f),
+@@ -291,0 +296,2 @@
++    /// This mode has no rollback-valid growth-admitted plan.
++    UnsupportedGrowthAdmission(UnsupportedGrowthAdmission),
+@@ -309,0 +316,3 @@
++            SavepointError::UnsupportedGrowthAdmission(mode) => {
++                Error::UnsupportedGrowthAdmission(mode)
++            }
+@@ -325,0 +335 @@
++            SavepointError::UnsupportedGrowthAdmission(mode) => mode.fmt(f),
+@@ -404,0 +415,2 @@
++    /// This mode has no rollback-valid growth-admitted plan.
++    UnsupportedGrowthAdmission(UnsupportedGrowthAdmission),
+@@ -411,0 +424,3 @@
++            SetDurabilityError::UnsupportedGrowthAdmission(mode) => {
++                Error::UnsupportedGrowthAdmission(mode)
++            }
+@@ -419,0 +435 @@
++            SetDurabilityError::UnsupportedGrowthAdmission(mode) => mode.fmt(f),
+@@ -435,0 +452,2 @@
++    /// This mode has no rollback-valid growth-admitted plan.
++    UnsupportedGrowthAdmission(UnsupportedGrowthAdmission),
+@@ -453,0 +472,3 @@
++            TransactionError::UnsupportedGrowthAdmission(mode) => {
++                Error::UnsupportedGrowthAdmission(mode)
++            }
+@@ -470,0 +492 @@
++            TransactionError::UnsupportedGrowthAdmission(mode) => mode.fmt(f),
+@@ -484,0 +507,2 @@
++    /// A pre-commit growth denial caused this transaction to be rolled back.
++    CapacityAborted(CapacityExceeded),
+@@ -493,0 +518 @@
++            CommitError::CapacityAborted(failure) => StorageError::CapacityExceeded(failure),
+@@ -502,0 +528 @@
++            CommitError::CapacityAborted(failure) => Error::CapacityAborted(failure),
+@@ -517,0 +544,3 @@
++            CommitError::CapacityAborted(failure) => {
++                write!(f, "Transaction rolled back: {failure}")
++            }
+@@ -531,0 +561,6 @@
++    /// This mode has no rollback-valid growth-admitted plan.
++    UnsupportedGrowthAdmission(UnsupportedGrowthAdmission),
++    /// Growth was denied before resize; this alone does not establish rollback.
++    CapacityExceeded(CapacityExceeded),
++    /// A pre-commit growth denial caused the transaction to be rolled back.
++    CapacityAborted(CapacityExceeded),
+@@ -607,0 +643,3 @@
++            Error::UnsupportedGrowthAdmission(mode) => mode.fmt(f),
++            Error::CapacityExceeded(failure) => failure.fmt(f),
++            Error::CapacityAborted(failure) => write!(f, "Transaction rolled back: {failure}"),
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -107,0 +108,4 @@
++mod growth_admission;
++pub use growth_admission::{CapacityExceeded, UnsupportedGrowthAdmission};
++#[cfg(feature = "experimental-precommit-growth-admission")]
++pub use growth_admission::{GrowthAdmission, GrowthDenied};
+--- a/src/transactions.rs
++++ b/src/transactions.rs
+@@ -911,0 +912 @@
++    publication_started: bool,
+@@ -913,0 +915 @@
++    growth: Arc<crate::growth_admission::GrowthState>,
+@@ -932,0 +935 @@
++        growth: Arc<crate::growth_admission::GrowthState>,
+@@ -940 +943 @@
+-        let page_allocator = PageAllocator::new(mem.clone(), allocation_policy);
++        let page_allocator = PageAllocator::new(mem.clone(), allocation_policy, growth.clone());
+@@ -943,0 +947 @@
++        let admitted = growth.is_admitted();
+@@ -951,0 +956 @@
++            publication_started: false,
+@@ -953,0 +959 @@
++            growth,
+@@ -957 +963,5 @@
+-            post_commit_free: PostCommitFree::Enabled,
++            post_commit_free: if admitted {
++                PostCommitFree::Disabled
++            } else {
++                PostCommitFree::Enabled
++            },
+@@ -959 +969,5 @@
+-            shrink_policy: ShrinkPolicy::Default,
++            shrink_policy: if admitted {
++                ShrinkPolicy::Never
++            } else {
++                ShrinkPolicy::Default
++            },
+@@ -1284,0 +1299,5 @@
++        if self.growth.is_admitted() {
++            return Err(SavepointError::UnsupportedGrowthAdmission(
++                crate::UnsupportedGrowthAdmission::SavepointRestore,
++            ));
++        }
+@@ -1430,0 +1450,5 @@
++        if self.growth.is_admitted() && !matches!(durability, Durability::Immediate) {
++            return Err(SetDurabilityError::UnsupportedGrowthAdmission(
++                crate::UnsupportedGrowthAdmission::NonDurable,
++            ));
++        }
+@@ -1541 +1565 @@
+-        if self.is_poisoned() {
++        if self.is_poisoned() || self.growth.failure().is_some() {
+@@ -1634,0 +1659,5 @@
++    /// Returns [`CommitError::CapacityAborted`] after rolling back a transaction whose
++    /// growth was denied before this call or during the private preparation of an
++    /// admitted durable commit. The database remains usable. Once publication starts,
++    /// errors do not establish rollback.
++    ///
+@@ -1645,0 +1675,4 @@
++        if let Some(failure) = self.growth.failure() {
++            self.abort_inner()?;
++            return Err(CommitError::CapacityAborted(failure));
++        }
+@@ -1655,0 +1689,9 @@
++        } else if self.growth.is_admitted()
++            && !self.publication_started
++            && let Err(CommitError::Storage(StorageError::CapacityExceeded(failure))) = &result
++            && self.growth.failure() == Some(*failure)
++        {
++            let failure = *failure;
++            self.abort_inner()?;
++            latch.disarm();
++            return Err(CommitError::CapacityAborted(failure));
+@@ -1675,3 +1717,3 @@
+-        // From here a durable commit is irreversible: it either completes or leaves the allocator
+-        // state invalidated, so nothing rolls back what it claims. That is what lets it take over
+-        // the epilogue's pages, which no durable root names and it is about to supersede.
++        // The ordinary mode cannot abort after adopting an epilogue's pages. Admitted
++        // transactions reject volatile state before admission and never create an epilogue;
++        // this set is empty for them, preserving their private preparation boundary.
+@@ -1795,3 +1837,3 @@
+-    // previously unpersisted allocations that are now becoming durable. Must be called AFTER
+-    // `process_freed_pages` so that pages reclaimed during this commit are already dropped from
+-    // the in-memory `unpersisted_allocations` map and not written to disk as stale records.
++    // previously unpersisted allocations that are now becoming durable. Eligible durable
++    // frees stay allocated until publication; admitted transactions have no unpersisted
++    // allocation records to adopt.
+@@ -1931,4 +1973,4 @@
+-        self.process_freed_pages(free_until_transaction)?;
+-        // Flush allocated pages (including previously unpersisted allocations that are now
+-        // becoming durable) AFTER process_freed_pages, so that any pages reclaimed here have
+-        // already been dropped from the in-memory `unpersisted_allocations` map.
++        let (prepared_frees, processed_transactions) =
++            self.prepare_freed_pages(free_until_transaction)?;
++        // Eligible durable frees remain allocated until root publication. Previously
++        // unpersisted allocations are still persisted by this transaction.
+@@ -1964 +2006,5 @@
+-                            if self.mem.try_save_allocator_state(tree, num_regions)? {
++                            if self.mem.try_save_allocator_state(
++                                tree,
++                                num_regions,
++                                &prepared_frees,
++                            )? {
+@@ -1986,2 +2032,4 @@
+-        self.mem.commit(
+-            user_root,
++        self.growth.check()?;
++        self.publication_started = true;
++        self.mem.commit(crate::tree_store::CommitRequest {
++            data_root: user_root,
+@@ -1989,4 +2037,8 @@
+-            self.transaction_id,
+-            self.two_phase_commit,
+-            self.shrink_policy,
+-        )?;
++            transaction_id: self.transaction_id,
++            two_phase: self.two_phase_commit,
++            shrink_policy: self.shrink_policy,
++            freed_pages: &prepared_frees,
++            growth: &self.growth,
++        })?;
++        self.transaction_tracker
++            .mark_non_durable_freed_pages_processed(processed_transactions);
+@@ -1994 +2046 @@
+-        let _ = page_allocator.take_allocated_since_commit();
++        page_allocator.mark_committed();
+@@ -2052 +2104 @@
+-                    // See process_freed_pages(): free_until excludes pages that are still needed
++                    // See prepare_freed_pages(): free_until excludes pages that are still needed
+@@ -2236 +2288,4 @@
+-    fn process_freed_pages(&mut self, free_until: TransactionId) -> Result {
++    fn prepare_freed_pages(
++        &mut self,
++        free_until: TransactionId,
++    ) -> Result<(Vec<PageNumber>, Vec<TransactionId>)> {
+@@ -2240 +2295 @@
+-        let page_allocator = self.page_allocator();
++        let mut pages = Vec::new();
+@@ -2247 +2302 @@
+-            page_allocator.free(page, &PageTracker::ignore());
++            pages.push(page);
+@@ -2266,4 +2321 @@
+-        self.transaction_tracker
+-            .mark_non_durable_freed_pages_processed(extracted_transactions);
+-
+-        Ok(())
++        Ok((pages, extracted_transactions))
+@@ -2860,0 +2913,4 @@
++
++#[cfg(all(test, feature = "experimental-precommit-growth-admission"))]
++#[path = "growth_admission_tests.rs"]
++mod growth_admission_tests;
+--- a/src/tree_store/btree.rs
++++ b/src/tree_store/btree.rs
+@@ -1447 +1447,2 @@
+-        let page_allocator = PageAllocator::new(mem.clone(), AllocationPolicy::Default);
++        let page_allocator =
++            PageAllocator::new(mem.clone(), AllocationPolicy::Default, Default::default());
+--- a/src/tree_store/btree_base.rs
++++ b/src/tree_store/btree_base.rs
+@@ -2273 +2273 @@
+-        PageAllocator::new(Arc::new(mem), AllocationPolicy::Default)
++        PageAllocator::new(Arc::new(mem), AllocationPolicy::Default, Default::default())
+--- a/src/tree_store/btree_cursor.rs
++++ b/src/tree_store/btree_cursor.rs
+@@ -2443 +2443 @@
+-        PageAllocator::new(Arc::new(mem), AllocationPolicy::Default)
++        PageAllocator::new(Arc::new(mem), AllocationPolicy::Default, Default::default())
+--- a/src/tree_store/btree_mutator.rs
++++ b/src/tree_store/btree_mutator.rs
+@@ -1834 +1834 @@
+-        PageAllocator::new(Arc::new(mem), AllocationPolicy::Default)
++        PageAllocator::new(Arc::new(mem), AllocationPolicy::Default, Default::default())
+--- a/src/tree_store/mod.rs
++++ b/src/tree_store/mod.rs
+@@ -30,3 +30,3 @@
+-    AllocationPolicy, FILE_FORMAT_VERSION3, MAX_PAIR_LENGTH, MAX_VALUE_LENGTH, PAGE_SIZE, Page,
+-    PageAllocator, PageHint, PageNumber, PageNumberHashMap, PageNumberHashSet, PageResolver,
+-    PageTracker, SerializedSavepoint, ShrinkPolicy, TransactionalMemory,
++    AllocationPolicy, CommitRequest, FILE_FORMAT_VERSION3, MAX_PAIR_LENGTH, MAX_VALUE_LENGTH,
++    PAGE_SIZE, Page, PageAllocator, PageHint, PageNumber, PageNumberHashMap, PageNumberHashSet,
++    PageResolver, PageTracker, SerializedSavepoint, ShrinkPolicy, TransactionalMemory,
+--- a/src/tree_store/page_store/bitmap.rs
++++ b/src/tree_store/page_store/bitmap.rs
+@@ -8,0 +9 @@
++#[derive(Clone)]
+@@ -231,0 +233 @@
++#[derive(Clone)]
+--- a/src/tree_store/page_store/buddy_allocator.rs
++++ b/src/tree_store/page_store/buddy_allocator.rs
+@@ -31,0 +32 @@
++#[derive(Clone)]
+--- a/src/tree_store/page_store/cached_file.rs
++++ b/src/tree_store/page_store/cached_file.rs
+@@ -2,0 +3 @@
++use crate::tree_store::page_store::header::DB_HEADER_SIZE;
+@@ -25,0 +27,19 @@
++}
++
++pub(super) struct PreparedHeaderPublication<'a> {
++    storage: &'a PagedCachedFile,
++    secondary: [u8; DB_HEADER_SIZE],
++    primary: [u8; DB_HEADER_SIZE],
++    two_phase: bool,
++}
++
++impl PreparedHeaderPublication<'_> {
++    // No cache insertion or buffer allocation may follow publication of the primary slot.
++    pub(super) fn publish(self) -> Result {
++        self.storage.file.write(0, &self.secondary)?;
++        if self.two_phase {
++            self.storage.file.sync_data()?;
++        }
++        self.storage.file.write(0, &self.primary)?;
++        self.storage.file.sync_data()
++    }
+@@ -469,0 +490,8 @@
++        self.resize_with_admission(len, &crate::growth_admission::GrowthState::default())
++    }
++
++    pub(super) fn resize_with_admission(
++        &self,
++        len: u64,
++        growth: &crate::growth_admission::GrowthState,
++    ) -> Result {
+@@ -476,0 +505,3 @@
++        if len > old_len {
++            growth.reserve(old_len, len)?;
++        }
+@@ -500,0 +532,18 @@
++    }
++
++    pub(super) fn prepare_header_publication(
++        &self,
++        secondary: [u8; DB_HEADER_SIZE],
++        primary: [u8; DB_HEADER_SIZE],
++        two_phase: bool,
++    ) -> Result<PreparedHeaderPublication<'_>> {
++        // The transaction owns every writer. Finish allocating read-cache promotion
++        // and remove the old header before returning the fixed-size publication plan.
++        self.flush_write_buffer()?;
++        self.invalidate_cache(0, DB_HEADER_SIZE);
++        Ok(PreparedHeaderPublication {
++            storage: self,
++            secondary,
++            primary,
++            two_phase,
++        })
+--- a/src/tree_store/page_store/mod.rs
++++ b/src/tree_store/page_store/mod.rs
+@@ -0,0 +1 @@
++mod allocator_commit;
+@@ -25,2 +26,2 @@
+-    AllocationPolicy, FILE_FORMAT_VERSION3, PageAllocator, PageResolver, ShrinkPolicy,
+-    TransactionalMemory, xxh3_checksum,
++    AllocationPolicy, CommitRequest, FILE_FORMAT_VERSION3, PageAllocator, PageResolver,
++    ShrinkPolicy, TransactionalMemory, xxh3_checksum,
+--- a/src/tree_store/page_store/page_manager.rs
++++ b/src/tree_store/page_store/page_manager.rs
+@@ -0,0 +1 @@
++use crate::growth_admission::GrowthState;
+@@ -5,0 +7 @@
++use crate::tree_store::page_store::allocator_commit::AllocatorCommitCandidate;
+@@ -152,0 +155,6 @@
++    fn clear(&self) {
++        for shard in &self.shards {
++            shard.0.lock().unwrap().clear();
++        }
++    }
++
+@@ -169,0 +178 @@
++    growth: Arc<GrowthState>,
+@@ -174 +183,5 @@
+-    pub(crate) fn new(mem: Arc<TransactionalMemory>, policy: AllocationPolicy) -> Self {
++    pub(crate) fn new(
++        mem: Arc<TransactionalMemory>,
++        policy: AllocationPolicy,
++        growth: Arc<GrowthState>,
++    ) -> Self {
+@@ -177,0 +191 @@
++            growth,
+@@ -191,0 +206,4 @@
++    }
++
++    pub(crate) fn mark_committed(&self) {
++        self.allocated_since_commit.clear();
+@@ -215,0 +234 @@
++        self.growth.check()?;
+@@ -217,2 +236,2 @@
+-            AllocationPolicy::Default => self.mem.allocate(size, allocated)?,
+-            AllocationPolicy::Lowest => self.mem.allocate_lowest(size, allocated)?,
++            AllocationPolicy::Default => self.mem.allocate(size, allocated, &self.growth)?,
++            AllocationPolicy::Lowest => self.mem.allocate_lowest(size, allocated, &self.growth)?,
+@@ -232 +251,2 @@
+-        let page = self.mem.allocate_lowest(size, allocated)?;
++        self.growth.check()?;
++        let page = self.mem.allocate_lowest(size, allocated, &self.growth)?;
+@@ -272,0 +293 @@
++        self.growth.check()?;
+@@ -290,0 +312,10 @@
++}
++
++pub(crate) struct CommitRequest<'a> {
++    pub(crate) data_root: Option<BtreeHeader>,
++    pub(crate) system_root: Option<BtreeHeader>,
++    pub(crate) transaction_id: TransactionId,
++    pub(crate) two_phase: bool,
++    pub(crate) shrink_policy: ShrinkPolicy,
++    pub(crate) freed_pages: &'a [PageNumber],
++    pub(crate) growth: &'a GrowthState,
+@@ -374,0 +406,8 @@
++    fn is_empty(&self) -> bool {
++        self.pages.is_empty()
++            && self.allocations.is_empty()
++            && self.allocation_txn.is_empty()
++            && self.data_freed.is_empty()
++            && self.post_commit_allocations.is_empty()
++    }
++
+@@ -824,0 +864,5 @@
++    pub(crate) fn has_volatile_state(&self) -> bool {
++        let secondary = self.state.lock().unwrap().read_from_secondary;
++        secondary || !self.unpersisted.lock().unwrap().is_empty()
++    }
++
+@@ -925,0 +970 @@
++        freed_pages: &[PageNumber],
+@@ -928 +973 @@
+-        let state = self.state.lock().unwrap();
++        let mut state = self.state.lock().unwrap();
+@@ -933 +978 @@
+-        let allocators = state.allocators();
++        let allocators = AllocatorCommitCandidate::new(state.allocators_mut(), freed_pages);
+@@ -935 +980 @@
+-            let region_bytes = &allocators.region_allocators[i as usize].to_vec();
++            let region_bytes = &allocators.region(i).to_vec();
+@@ -949 +994 @@
+-        let region_tracker_bytes = allocators.region_tracker.to_vec();
++        let region_tracker_bytes = allocators.tracker().to_vec();
+@@ -1033,8 +1078,15 @@
+-    pub(crate) fn commit(
+-        &self,
+-        data_root: Option<BtreeHeader>,
+-        system_root: Option<BtreeHeader>,
+-        transaction_id: TransactionId,
+-        two_phase: bool,
+-        shrink_policy: ShrinkPolicy,
+-    ) -> Result {
++    pub(crate) fn commit(&self, request: CommitRequest<'_>) -> Result {
++        let CommitRequest {
++            data_root,
++            system_root,
++            transaction_id,
++            two_phase,
++            shrink_policy,
++            freed_pages,
++            growth,
++        } = request;
++        let admitted = growth.is_admitted();
++        if admitted {
++            assert!(matches!(shrink_policy, ShrinkPolicy::Never));
++        }
++        growth.check()?;
+@@ -1048,3 +1100,5 @@
+-        // Trim surplus file space, before finalizing the commit
+-        let shrunk = if !matches!(shrink_policy, ShrinkPolicy::Never) {
+-            Self::try_shrink(&mut state, matches!(shrink_policy, ShrinkPolicy::Maximum))?
++        let mut header = state.header.clone();
++        let mut candidate = AllocatorCommitCandidate::new(state.allocators_mut(), freed_pages);
++        let old_layout = header.layout();
++        let layout = if matches!(shrink_policy, ShrinkPolicy::Never) {
++            old_layout
+@@ -1052 +1106 @@
+-            false
++            candidate.shrink(old_layout, matches!(shrink_policy, ShrinkPolicy::Maximum))
+@@ -1054,5 +1108,3 @@
+-        // Copy the header so that we can release the state lock, while we flush the file
+-        let mut header = state.header.clone();
+-        drop(state);
+-
+-        let old_transaction_id = header.secondary_slot().transaction_id;
++        let shrunk = layout.len() != old_layout.len();
++        header.set_layout(layout);
++
+@@ -1061,4 +1113,16 @@
+-        self.write_header(&header)?;
+-
+-        // Use 2-phase commit, if checksums are disabled
+-        if two_phase {
++        if admitted {
++            let secondary = header.to_bytes(true);
++            header.swap_primary_slot();
++            header.two_phase_commit = two_phase;
++            let primary = header.to_bytes(true);
++            self.storage
++                .prepare_header_publication(secondary, primary, two_phase)?
++                .publish()?;
++        } else {
++            self.write_header(&header)?;
++            if two_phase {
++                self.storage.flush()?;
++            }
++            header.swap_primary_slot();
++            header.two_phase_commit = two_phase;
++            self.write_header(&header)?;
+@@ -1067,9 +1130,0 @@
+-
+-        // Make our new commit the primary, and record whether it was a 2-phase commit.
+-        // These two bits need to be written atomically
+-        header.swap_primary_slot();
+-        header.two_phase_commit = two_phase;
+-
+-        // Write the new header to disk
+-        self.write_header(&header)?;
+-        self.storage.flush()?;
+@@ -1080,9 +1135,12 @@
+-        // Everything this stood in for is now durable: durable_commit() flushed the allocation
+-        // records to DATA_ALLOCATED_TABLE before reaching here.
+-        self.unpersisted.lock().unwrap().clear();
+-
+-        let mut state = self.state.lock().unwrap();
+-        assert_eq!(
+-            state.header.secondary_slot().transaction_id,
+-            old_transaction_id
+-        );
++        // Hold the allocator owner until both the exact roots and their allocator candidate
++        // publish. Failure before this point drops the candidate without exposing its frees.
++        for page in freed_pages {
++            #[cfg(debug_assertions)]
++            {
++                assert!(!self.read_page_ref_counts.lock().unwrap().contains_key(page));
++                assert!(!self.open_dirty_pages.lock().unwrap().contains(page));
++                assert!(self.allocated_pages.lock().unwrap().remove(page));
++            }
++            self.discard_freed_page_cache(*page);
++        }
++        candidate.publish();
+@@ -1091,0 +1150,8 @@
++
++        // Admitted transactions never adopt volatile state. The other path has now
++        // persisted it and retains its original cleanup behavior.
++        if admitted {
++            assert!(self.unpersisted.lock().unwrap().is_empty());
++        } else {
++            self.unpersisted.lock().unwrap().clear();
++        }
+@@ -1286,0 +1353,4 @@
++        self.discard_freed_page_cache(page);
++    }
++
++    fn discard_freed_page_cache(&self, page: PageNumber) {
+@@ -1425,0 +1496 @@
++        growth: &GrowthState,
+@@ -1430,0 +1502,2 @@
++        // Another allocator clone may have been denied while this one waited.
++        growth.check()?;
+@@ -1437 +1510 @@
+-            self.grow(&mut state, required_order)?;
++            self.grow(&mut state, required_order, growth)?;
+@@ -1516,31 +1589,6 @@
+-    fn try_shrink(state: &mut InMemoryState, force: bool) -> Result<bool> {
+-        let layout = state.header.layout();
+-        let last_region_index = layout.num_regions() - 1;
+-        let last_allocator = state.get_region(last_region_index);
+-        let trailing_free = last_allocator.trailing_free_pages();
+-        let last_allocator_len = last_allocator.len();
+-        if trailing_free == 0 {
+-            return Ok(false);
+-        }
+-        if trailing_free < last_allocator_len / 2 && !force {
+-            return Ok(false);
+-        }
+-        let reduce_by = if layout.num_regions() > 1 && trailing_free == last_allocator_len {
+-            trailing_free
+-        } else if force {
+-            // Do not shrink the database to zero size
+-            min(last_allocator_len - 1, trailing_free)
+-        } else {
+-            trailing_free / 2
+-        };
+-
+-        let mut new_layout = layout;
+-        new_layout.reduce_last_region(reduce_by);
+-        state.allocators_mut().resize_to(new_layout);
+-        assert!(new_layout.len() <= layout.len());
+-        state.header.set_layout(new_layout);
+-
+-        Ok(true)
+-    }
+-
+-    fn grow(&self, state: &mut InMemoryState, required_order_allocation: u8) -> Result<()> {
++    fn grow(
++        &self,
++        state: &mut InMemoryState,
++        required_order_allocation: u8,
++        growth: &GrowthState,
++    ) -> Result<()> {
+@@ -1583 +1631,2 @@
+-        self.storage.resize(new_layout.len())?;
++        self.storage
++            .resize_with_admission(new_layout.len(), growth)?;
+@@ -1600,0 +1650 @@
++        growth: &GrowthState,
+@@ -1602 +1652 @@
+-        let result = self.allocate_helper(allocation_size, false);
++        let result = self.allocate_helper(allocation_size, false, growth);
+@@ -1612,0 +1663 @@
++        growth: &GrowthState,
+@@ -1614 +1665 @@
+-        let result = self.allocate_helper(allocation_size, true);
++        let result = self.allocate_helper(allocation_size, true, growth);
+@@ -1670,0 +1722 @@
++    use crate::growth_admission::GrowthState;
+@@ -1828 +1880,3 @@
+-        let valid = mem.allocate_helper(1, false).unwrap();
++        let valid = mem
++            .allocate_helper(1, false, &GrowthState::default())
++            .unwrap();
+@@ -1877 +1931,3 @@
+-            let page = mem.allocate_helper(1, false).unwrap();
++            let page = mem
++                .allocate_helper(1, false, &GrowthState::default())
++                .unwrap();
+@@ -1904 +1960,3 @@
+-        let reused = mem.allocate_helper(2 * page_size, false).unwrap();
++        let reused = mem
++            .allocate_helper(2 * page_size, false, &GrowthState::default())
++            .unwrap();
+--- a/src/tree_store/page_store/region.rs
++++ b/src/tree_store/page_store/region.rs
+@@ -12,0 +13 @@
++#[derive(Clone)]
+--- /dev/null
++++ b/src/growth_admission.rs
+@@ -0,0 +1,119 @@
++use crate::sync::Mutex;
++use crate::{Result, StorageError};
++use alloc::sync::Arc;
++use core::fmt::{Debug, Display, Formatter};
++
++/// The exact file extent whose growth was denied, before the resize was issued.
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub struct CapacityExceeded {
++    pub current_len: u64,
++    pub requested_len: u64,
++}
++
++impl Display for CapacityExceeded {
++    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
++        write!(
++            f,
++            "File growth from {} to {} bytes was denied",
++            self.current_len, self.requested_len
++        )
++    }
++}
++
++/// A mode whose shared effects do not yet have a rollback-valid admitted plan.
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub enum UnsupportedGrowthAdmission {
++    /// A pending non-durable commit or post-commit epilogue owns volatile state.
++    VolatileState,
++    /// Admitted writes currently require immediate durability.
++    NonDurable,
++    /// Savepoint restore is not supported in an admitted transaction.
++    SavepointRestore,
++}
++
++impl Display for UnsupportedGrowthAdmission {
++    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
++        f.write_str(match self {
++            Self::VolatileState => {
++                "Growth admission cannot adopt pending volatile transaction state"
++            }
++            Self::NonDurable => "Growth admission requires immediate durability",
++            Self::SavepointRestore => "Growth admission does not support savepoint restore",
++        })
++    }
++}
++
++/// The admission owner did not reserve the requested extent.
++#[derive(Clone, Copy, Debug)]
++pub struct GrowthDenied;
++
++/// Experimental transaction growth admission, not a complete disk-capacity contract.
++///
++/// Called before a transaction extends its file, including allocations during commit.
++/// `Ok(())` must reserve the exact extension before returning. The owner must retain
++/// that charge independently of this transaction and database handle. redb never
++/// releases it on abort, drop, or an uncertain backend failure. Reclamation requires
++/// separately verified physical truncation/deletion and ownership drain.
++///
++/// Open, close, repair, compaction, and transactions started with `begin_write` do
++/// not use this owner. Admitted transactions support immediate durability, including
++/// quick repair, and roll back capacity denials during private commit preparation.
++/// They reject pending volatile state, non-durable mode, and savepoint restore.
++/// Reclamation is prepared by a later durable transaction rather than an allocating
++/// epilogue; admitted commits do not trim the file. Actual I/O or publication failures
++/// still require reopening. Callbacks must not panic or reenter redb.
++/// This API is a prototype and must not be used as production disk admission.
++pub trait GrowthAdmission: Debug + Send + Sync + 'static {
++    fn reserve_growth(
++        &self,
++        current_len: u64,
++        requested_len: u64,
++    ) -> core::result::Result<(), GrowthDenied>;
++}
++
++#[derive(Default)]
++pub(crate) struct GrowthState {
++    admission: Option<Arc<dyn GrowthAdmission>>,
++    failure: Mutex<Option<CapacityExceeded>>,
++}
++
++impl GrowthState {
++    pub(crate) fn new(admission: Option<Arc<dyn GrowthAdmission>>) -> Self {
++        Self {
++            admission,
++            failure: Mutex::new(None),
++        }
++    }
++
++    pub(crate) fn is_admitted(&self) -> bool {
++        self.admission.is_some()
++    }
++
++    pub(crate) fn failure(&self) -> Option<CapacityExceeded> {
++        *self.failure.lock().unwrap()
++    }
++
++    pub(crate) fn check(&self) -> Result {
++        match self.failure() {
++            Some(failure) => Err(StorageError::CapacityExceeded(failure)),
++            None => Ok(()),
++        }
++    }
++
++    pub(crate) fn reserve(&self, current_len: u64, requested_len: u64) -> Result {
++        self.check()?;
++        if let Some(admission) = &self.admission
++            && admission
++                .reserve_growth(current_len, requested_len)
++                .is_err()
++        {
++            let failure = CapacityExceeded {
++                current_len,
++                requested_len,
++            };
++            *self.failure.lock().unwrap() = Some(failure);
++            return Err(StorageError::CapacityExceeded(failure));
++        }
++        Ok(())
++    }
++}
+--- /dev/null
++++ b/src/growth_admission_tests.rs
+@@ -0,0 +1,826 @@
++#[cfg(feature = "experimental-api-5")]
++use crate::ReadableTable;
++use crate::backends::FileBackend;
++use crate::{
++    CapacityExceeded, CommitError, Database, GrowthAdmission, GrowthDenied, ReadableDatabase,
++    ReadableTableMetadata, StorageBackend, StorageError, TableDefinition, TransactionError,
++};
++use std::io;
++use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
++use std::sync::{Arc, Mutex};
++
++const DATA: TableDefinition<u64, &[u8]> = TableDefinition::new("data");
++const OTHER: TableDefinition<u64, &[u8]> = TableDefinition::new("other");
++const BASE_ROWS: u64 = 128;
++const PAGE_BYTES: usize = 512;
++const REGION_BYTES: u64 = 1024 * 1024;
++const SPLIT_REGION_BYTES: u64 = 16 * 1024;
++const INSERT_KEY_LIMIT: u64 = 20_000;
++const REPLACEMENT_REGION_BYTES: u64 = 16 * 1024 * 1024;
++const MAX_REPLACEMENT_BYTES: usize = 8 * 1024 * 1024;
++const VALUE: [u8; 80] = [0x35; 80];
++const SET_LEN: u8 = 1;
++const SYNC: u8 = 2;
++const WRITE: u8 = 3;
++
++#[derive(Debug, Default)]
++struct Probe {
++    physical_len: AtomicU64,
++    reserved_extent: AtomicU64,
++    enforce: AtomicBool,
++    fail: AtomicU8,
++    extensions: Mutex<Vec<(u64, u64)>>,
++}
++
++#[derive(Debug)]
++struct ObservedBackend {
++    file: FileBackend,
++    probe: Arc<Probe>,
++}
++
++impl ObservedBackend {
++    fn fail_if(&self, operation: u8) -> io::Result<()> {
++        if self.probe.fail.load(Ordering::SeqCst) == operation {
++            Err(io::Error::other("injected actual backend failure"))
++        } else {
++            Ok(())
++        }
++    }
++}
++
++impl StorageBackend for ObservedBackend {
++    fn len(&self) -> io::Result<u64> {
++        self.file.len()
++    }
++
++    fn read(&self, offset: u64, out: &mut [u8]) -> io::Result<()> {
++        self.file.read(offset, out)
++    }
++
++    fn set_len(&self, len: u64) -> io::Result<()> {
++        let old = self.file.len()?;
++        if len > old {
++            if self.probe.enforce.load(Ordering::SeqCst) {
++                assert!(self.probe.reserved_extent.load(Ordering::SeqCst) >= len);
++            }
++            self.probe.extensions.lock().unwrap().push((old, len));
++        }
++        self.fail_if(SET_LEN)?;
++        self.file.set_len(len)?;
++        self.probe.physical_len.store(len, Ordering::SeqCst);
++        Ok(())
++    }
++
++    fn sync_data(&self) -> io::Result<()> {
++        self.fail_if(SYNC)?;
++        self.file.sync_data()
++    }
++
++    fn write(&self, offset: u64, data: &[u8]) -> io::Result<()> {
++        self.fail_if(WRITE)?;
++        self.file.write(offset, data)
++    }
++
++    fn close(&self) -> io::Result<()> {
++        self.file.close()
++    }
++}
++
++#[derive(Debug)]
++struct Admission {
++    probe: Arc<Probe>,
++    permits_left: AtomicUsize,
++    approved: Mutex<Vec<(u64, u64)>>,
++    denied: Mutex<Vec<CapacityExceeded>>,
++}
++
++impl Admission {
++    fn new(probe: Arc<Probe>, permits: usize) -> Arc<Self> {
++        probe
++            .reserved_extent
++            .store(probe.physical_len.load(Ordering::SeqCst), Ordering::SeqCst);
++        probe.extensions.lock().unwrap().clear();
++        probe.enforce.store(true, Ordering::SeqCst);
++        Arc::new(Self {
++            probe,
++            permits_left: AtomicUsize::new(permits),
++            approved: Mutex::new(Vec::new()),
++            denied: Mutex::new(Vec::new()),
++        })
++    }
++}
++
++impl GrowthAdmission for Admission {
++    fn reserve_growth(&self, current_len: u64, requested_len: u64) -> Result<(), GrowthDenied> {
++        assert_eq!(current_len, self.probe.physical_len.load(Ordering::SeqCst));
++        assert!(requested_len > current_len);
++        if self
++            .permits_left
++            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
++                left.checked_sub(1)
++            })
++            .is_err()
++        {
++            self.denied.lock().unwrap().push(CapacityExceeded {
++                current_len,
++                requested_len,
++            });
++            return Err(GrowthDenied);
++        }
++        self.approved
++            .lock()
++            .unwrap()
++            .push((current_len, requested_len));
++        self.probe
++            .reserved_extent
++            .fetch_max(requested_len, Ordering::SeqCst);
++        Ok(())
++    }
++}
++
++fn fixture() -> (Database, tempfile::TempPath, Arc<Probe>) {
++    fixture_with_region(REGION_BYTES)
++}
++
++fn fixture_with_region(region_bytes: u64) -> (Database, tempfile::TempPath, Arc<Probe>) {
++    let (file, path) = crate::create_tempfile().into_parts();
++    let probe = Arc::new(Probe::default());
++    let db = Database::builder()
++        .set_page_size(PAGE_BYTES)
++        .set_region_size(region_bytes)
++        .set_cache_size(1024 * 1024)
++        .create_with_backend(ObservedBackend {
++            file: FileBackend::new(file).unwrap(),
++            probe: probe.clone(),
++        })
++        .unwrap();
++    let mut tx = db.begin_write().unwrap();
++    tx.disable_post_commit_free();
++    {
++        let mut table = tx.open_table(DATA).unwrap();
++        for key in 0..BASE_ROWS {
++            table.insert(key, VALUE.as_slice()).unwrap();
++        }
++        assert!(table.stats().unwrap().branch_pages() > 0);
++        tx.open_table(OTHER)
++            .unwrap()
++            .insert(0, VALUE.as_slice())
++            .unwrap();
++    }
++    tx.commit().unwrap();
++    (db, path, probe)
++}
++
++fn reopen(path: &std::path::Path, region_bytes: u64) -> Database {
++    Database::builder()
++        .set_page_size(PAGE_BYTES)
++        .set_region_size(region_bytes)
++        .open(path)
++        .unwrap()
++}
++
++fn assert_baseline(db: &Database) {
++    let read = db.begin_read().unwrap();
++    let table = read.open_table(DATA).unwrap();
++    assert_eq!(table.len().unwrap(), BASE_ROWS);
++    for key in 0..BASE_ROWS {
++        assert_eq!(table.get(key).unwrap().unwrap().value(), VALUE);
++    }
++    let other = read.open_table(OTHER).unwrap();
++    assert_eq!(other.len().unwrap(), 1);
++    assert_eq!(other.get(0).unwrap().unwrap().value(), VALUE);
++}
++
++fn fill_until_denied(table: &mut crate::Table<'_, u64, &[u8]>) -> CapacityExceeded {
++    for key in BASE_ROWS..INSERT_KEY_LIMIT {
++        match table.insert(key, VALUE.as_slice()) {
++            Ok(_) => {}
++            Err(StorageError::CapacityExceeded(failure)) => return failure,
++            Err(error) => panic!("unexpected mutation failure: {error}"),
++        }
++    }
++    panic!("bounded split workload did not reach its growth limit");
++}
++
++#[test]
++fn denied_growth_never_calls_resize_and_caught_error_cannot_commit() {
++    let (db, path, probe) = fixture();
++    let admission = Admission::new(probe.clone(), 0);
++    let before = probe.physical_len.load(Ordering::SeqCst);
++    let tx = db
++        .begin_write_with_growth_admission(admission.clone())
++        .unwrap();
++    let failure;
++    {
++        let mut table = tx.open_table(DATA).unwrap();
++        failure = fill_until_denied(&mut table);
++    }
++    assert_eq!(failure.current_len, before);
++    assert!(probe.extensions.lock().unwrap().is_empty());
++    assert_eq!(probe.physical_len.load(Ordering::SeqCst), before);
++    assert!(matches!(tx.commit(), Err(CommitError::CapacityAborted(actual)) if actual == failure));
++    assert_baseline(&db);
++    probe.enforce.store(false, Ordering::SeqCst);
++    // The denial is transaction-local: new writes remain available before reopen.
++    let tx = db.begin_write().unwrap();
++    tx.open_table(DATA)
++        .unwrap()
++        .insert(0, VALUE.as_slice())
++        .unwrap();
++    tx.commit().unwrap();
++    drop(db);
++    assert_baseline(&reopen(&path, REGION_BYTES));
++}
++
++#[test]
++fn split_failures_preserve_pinned_roots_and_successful_extent_charges() {
++    // Deny different later growth points in a branching tree after successful splits.
++    for allowed in 1..=4 {
++        let (db, path, probe) = fixture_with_region(SPLIT_REGION_BYTES);
++        let initial_extent = probe.physical_len.load(Ordering::SeqCst);
++        assert!(initial_extent >= SPLIT_REGION_BYTES + u64::try_from(PAGE_BYTES).unwrap());
++        // With a full region already present, grow() adds at most two regions.
++        // Even ignoring all keys/metadata, the bounded workload's values cannot
++        // fit after any of these permitted extensions.
++        let maximum_extent = initial_extent
++            .checked_add(
++                SPLIT_REGION_BYTES
++                    .checked_mul(2)
++                    .unwrap()
++                    .checked_mul(u64::try_from(allowed).unwrap())
++                    .unwrap(),
++            )
++            .unwrap();
++        let workload_bytes = (INSERT_KEY_LIMIT - BASE_ROWS)
++            .checked_mul(u64::try_from(VALUE.len()).unwrap())
++            .unwrap();
++        assert!(maximum_extent < workload_bytes);
++        let pinned = db.begin_read().unwrap();
++        let pinned_table = pinned.open_table(DATA).unwrap();
++        let admission = Admission::new(probe.clone(), allowed);
++        let tx = db
++            .begin_write_with_growth_admission(admission.clone())
++            .unwrap();
++        let failure = fill_until_denied(&mut tx.open_table(DATA).unwrap());
++        assert_eq!(admission.approved.lock().unwrap().len(), allowed);
++        assert_eq!(
++            *probe.extensions.lock().unwrap(),
++            *admission.approved.lock().unwrap()
++        );
++        let grown = probe.physical_len.load(Ordering::SeqCst);
++        assert_eq!(grown, failure.current_len);
++        assert!(grown <= maximum_extent);
++        assert_eq!(probe.reserved_extent.load(Ordering::SeqCst), grown);
++        assert!(
++            matches!(tx.commit(), Err(CommitError::CapacityAborted(actual)) if actual == failure)
++        );
++        assert_eq!(probe.physical_len.load(Ordering::SeqCst), grown);
++        assert_eq!(probe.reserved_extent.load(Ordering::SeqCst), grown);
++        assert_eq!(pinned_table.len().unwrap(), BASE_ROWS);
++        for key in 0..BASE_ROWS {
++            assert_eq!(pinned_table.get(key).unwrap().unwrap().value(), VALUE);
++        }
++        assert_baseline(&db);
++        drop(pinned_table);
++        drop(pinned);
++        probe.enforce.store(false, Ordering::SeqCst);
++        drop(db);
++        // Closing can physically trim through the unresolved maintenance path;
++        // dropping the transaction or database never releases the external charge.
++        assert_eq!(probe.reserved_extent.load(Ordering::SeqCst), grown);
++        assert_baseline(&reopen(&path, SPLIT_REGION_BYTES));
++        assert_eq!(probe.reserved_extent.load(Ordering::SeqCst), grown);
++    }
++}
++
++#[test]
++fn replacement_denial_aborts_all_tables_and_retains_original_value() {
++    let (db, path, probe) = fixture_with_region(REPLACEMENT_REGION_BYTES);
++    let admission = Admission::new(probe.clone(), usize::MAX);
++    let tx = db
++        .begin_write_with_growth_admission(admission.clone())
++        .unwrap();
++    let failure;
++    {
++        let mut other = tx.open_table(OTHER).unwrap();
++        other.insert(0, b"tentative".as_slice()).unwrap();
++        admission.permits_left.store(0, Ordering::SeqCst);
++        let mut data = tx.open_table(DATA).unwrap();
++        // A single replacement larger than the actual file cannot fit in any
++        // currently allocated extent. Bound the fixture before allocating it.
++        let replacement_bytes = usize::try_from(
++            probe
++                .physical_len
++                .load(Ordering::SeqCst)
++                .checked_add(1)
++                .unwrap(),
++        )
++        .unwrap();
++        assert!(replacement_bytes <= MAX_REPLACEMENT_BYTES);
++        let replacement = vec![0x61; replacement_bytes];
++        failure = match data.insert(0, replacement.as_slice()) {
++            Err(StorageError::CapacityExceeded(failure)) => failure,
++            Err(error) => panic!("unexpected replacement error: {error}"),
++            Ok(_) => panic!("expected replacement growth denial"),
++        };
++        // This page is already dirty. The mutable-page path must observe the
++        // same failure as the allocator for the other table.
++        assert!(
++            matches!(other.insert(0, b"changed".as_slice()), Err(StorageError::CapacityExceeded(actual)) if actual == failure)
++        );
++    }
++    assert!(matches!(tx.commit(), Err(CommitError::CapacityAborted(actual)) if actual == failure));
++    probe.enforce.store(false, Ordering::SeqCst);
++    assert_baseline(&db);
++    drop(db);
++    assert_baseline(&reopen(&path, REPLACEMENT_REGION_BYTES));
++}
++
++#[test]
++fn explicit_abort_and_drop_after_capacity_denial_leave_database_usable() {
++    for explicit in [false, true] {
++        let (db, path, probe) = fixture();
++        let admission = Admission::new(probe.clone(), 1);
++        let tx = db.begin_write_with_growth_admission(admission).unwrap();
++        fill_until_denied(&mut tx.open_table(DATA).unwrap());
++        let extent = probe.reserved_extent.load(Ordering::SeqCst);
++        if explicit {
++            tx.abort().unwrap();
++        } else {
++            drop(tx);
++        }
++        assert_eq!(probe.reserved_extent.load(Ordering::SeqCst), extent);
++        assert_baseline(&db);
++        probe.enforce.store(false, Ordering::SeqCst);
++        db.begin_write().unwrap().abort().unwrap();
++        drop(db);
++        assert_baseline(&reopen(&path, REGION_BYTES));
++    }
++}
++
++#[test]
++fn actual_backend_failures_still_latch_and_never_claim_capacity_abort() {
++    for operation in [SET_LEN, SYNC, WRITE] {
++        let (db, path, probe) = fixture();
++        let admission = Admission::new(probe.clone(), usize::MAX);
++        let tx = db
++            .begin_write_with_growth_admission(admission.clone())
++            .unwrap();
++        probe.fail.store(operation, Ordering::SeqCst);
++        let mut mutation_io_failed = false;
++        {
++            let mut table = tx.open_table(DATA).unwrap();
++            for key in BASE_ROWS..INSERT_KEY_LIMIT {
++                match table.insert(key, VALUE.as_slice()) {
++                    Ok(_) => {}
++                    Err(StorageError::Io(_)) => {
++                        mutation_io_failed = true;
++                        break;
++                    }
++                    Err(error) => panic!("unexpected failure: {error}"),
++                }
++            }
++        }
++        let result = tx.commit();
++        assert!(matches!(
++            result,
++            Err(CommitError::Storage(
++                StorageError::Io(_) | StorageError::PreviousIo
++            ))
++        ));
++        assert!(mutation_io_failed || operation == WRITE);
++        assert!(admission.denied.lock().unwrap().is_empty());
++        probe.fail.store(0, Ordering::SeqCst);
++        assert!(matches!(
++            db.begin_write(),
++            Err(TransactionError::Storage(StorageError::PreviousIo))
++        ));
++        probe.enforce.store(false, Ordering::SeqCst);
++        drop(db);
++        assert_baseline(&reopen(&path, REGION_BYTES));
++    }
++}
++
++#[test]
++fn allocator_clones_and_system_namespace_share_the_capacity_abort_state() {
++    let (db, _path, probe) = fixture();
++    let admission = Admission::new(probe.clone(), 0);
++    let tx = db.begin_write_with_growth_admission(admission).unwrap();
++    let data_allocator = tx.page_allocator();
++    let system_allocator = tx
++        .system_tables
++        .lock()
++        .unwrap()
++        .table_tree
++        .page_allocator()
++        .clone();
++    let failure = fill_until_denied(&mut tx.open_table(DATA).unwrap());
++    for allocator in [data_allocator.clone(), system_allocator] {
++        std::thread::scope(|scope| {
++            scope.spawn(move || {
++                assert!(matches!(allocator.allocate(512, &crate::tree_store::PageTracker::ignore()), Err(StorageError::CapacityExceeded(actual)) if actual == failure));
++                assert!(matches!(allocator.allocate_lowest(512, &crate::tree_store::PageTracker::ignore()), Err(StorageError::CapacityExceeded(actual)) if actual == failure));
++            }).join().unwrap();
++        });
++    }
++    drop(data_allocator);
++    assert!(matches!(tx.commit(), Err(CommitError::CapacityAborted(actual)) if actual == failure));
++    probe.enforce.store(false, Ordering::SeqCst);
++    assert_baseline(&db);
++}
++
++#[test]
++fn admitted_commit_preparation_denial_rolls_back_without_latching() {
++    let (db, path, probe) = fixture();
++    let admission = Admission::new(probe.clone(), usize::MAX);
++    let tx = db
++        .begin_write_with_growth_admission(admission.clone())
++        .unwrap();
++    tx.open_table(DATA)
++        .unwrap()
++        .insert(0, b"tentative".as_slice())
++        .unwrap();
++    // Consume only already available pages, without triggering a denial. The
++    // pending table-root publication must allocate during commit preparation.
++    let allocator = tx.page_allocator();
++    let free = tx.mem.count_free_pages().unwrap();
++    for _ in 0..free {
++        drop(
++            allocator
++                .allocate(512, &crate::tree_store::PageTracker::ignore())
++                .unwrap(),
++        );
++    }
++    assert_eq!(tx.mem.count_free_pages().unwrap(), 0);
++    assert!(admission.denied.lock().unwrap().is_empty());
++    admission.permits_left.store(0, Ordering::SeqCst);
++    drop(allocator);
++    assert!(matches!(tx.commit(), Err(CommitError::CapacityAborted(_))));
++    assert_eq!(admission.denied.lock().unwrap().len(), 1);
++    assert_baseline(&db);
++    let followup = db
++        .begin_write_with_growth_admission(Admission::new(probe.clone(), 0))
++        .unwrap();
++    followup.abort().unwrap();
++    probe.enforce.store(false, Ordering::SeqCst);
++    drop(db);
++    assert_baseline(&reopen(&path, REGION_BYTES));
++}
++
++#[test]
++fn prepared_freed_records_are_rollback_valid_before_capacity_denial() {
++    let (db, path, probe) = fixture_with_region(SPLIT_REGION_BYTES);
++    let pinned = db.begin_read().unwrap();
++    let mut change = db.begin_write().unwrap();
++    change.post_commit_free = super::PostCommitFree::Disabled;
++    change
++        .open_table(DATA)
++        .unwrap()
++        .insert(0, b"current".as_slice())
++        .unwrap();
++    change.commit().unwrap();
++    assert_eq!(
++        pinned
++            .open_table(DATA)
++            .unwrap()
++            .get(0)
++            .unwrap()
++            .unwrap()
++            .value(),
++        VALUE
++    );
++    drop(pinned);
++
++    let admission = Admission::new(probe.clone(), 0);
++    let mut tx = db.begin_write_with_growth_admission(admission).unwrap();
++    // Exercise only the rollback-valid preparation primitive, before commit_inner's
++    // still-irreversible tracker/adoption paths. This is not a commit-time abort claim.
++    let (pages, transactions) = tx.prepare_freed_pages(tx.transaction_id).unwrap();
++    assert!(!pages.is_empty());
++    assert!(!transactions.is_empty());
++    let failure = fill_until_denied(&mut tx.open_table(DATA).unwrap());
++    assert!(matches!(tx.commit(), Err(CommitError::CapacityAborted(actual)) if actual == failure));
++    probe.enforce.store(false, Ordering::SeqCst);
++    assert_eq!(
++        db.begin_read()
++            .unwrap()
++            .open_table(DATA)
++            .unwrap()
++            .get(0)
++            .unwrap()
++            .unwrap()
++            .value(),
++        b"current"
++    );
++    drop(db);
++    let mut reopened = reopen(&path, SPLIT_REGION_BYTES);
++    assert!(reopened.check_integrity().unwrap());
++    let read = reopened.begin_read().unwrap();
++    assert_eq!(read.open_table(DATA).unwrap().len().unwrap(), BASE_ROWS);
++    assert_eq!(
++        read.open_table(DATA)
++            .unwrap()
++            .get(0)
++            .unwrap()
++            .unwrap()
++            .value(),
++        b"current"
++    );
++}
++
++#[test]
++fn deferred_frees_survive_quick_repair_and_pinned_reader_reopen() {
++    for quick_repair in [false, true] {
++        let (db, path, _) = fixture_with_region(SPLIT_REGION_BYTES);
++        let pinned = db.begin_read().unwrap();
++        let mut change = db.begin_write().unwrap();
++        change.set_quick_repair(quick_repair);
++        change.post_commit_free = super::PostCommitFree::Disabled;
++        {
++            let mut table = change.open_table(DATA).unwrap();
++            for key in 0..BASE_ROWS / 2 {
++                table.remove(key).unwrap();
++            }
++        }
++        change.commit().unwrap();
++        assert_eq!(pinned.open_table(DATA).unwrap().len().unwrap(), BASE_ROWS);
++        assert_eq!(
++            pinned
++                .open_table(DATA)
++                .unwrap()
++                .get(0)
++                .unwrap()
++                .unwrap()
++                .value(),
++            VALUE
++        );
++        drop(pinned);
++        let mut maintenance = db.begin_write().unwrap();
++        maintenance.set_quick_repair(quick_repair);
++        maintenance.post_commit_free = super::PostCommitFree::Disabled;
++        maintenance.commit().unwrap();
++        drop(db);
++
++        let mut reopened = reopen(&path, SPLIT_REGION_BYTES);
++        assert!(reopened.check_integrity().unwrap());
++        let read = reopened.begin_read().unwrap();
++        let table = read.open_table(DATA).unwrap();
++        assert_eq!(table.len().unwrap(), BASE_ROWS / 2);
++        for key in 0..BASE_ROWS {
++            let value = table.get(key).unwrap();
++            if key < BASE_ROWS / 2 {
++                assert!(value.is_none());
++            } else {
++                assert_eq!(value.unwrap().value(), VALUE);
++            }
++        }
++    }
++}
++
++#[test]
++fn failed_root_io_discards_allocator_candidate_without_exposing_frees() {
++    for operation in [WRITE, SYNC] {
++        let (db, path, probe) = fixture();
++        let pinned = db.begin_read().unwrap();
++        let mut change = db.begin_write().unwrap();
++        change.post_commit_free = super::PostCommitFree::Disabled;
++        change
++            .open_table(DATA)
++            .unwrap()
++            .insert(0, b"current".as_slice())
++            .unwrap();
++        change.commit().unwrap();
++        drop(pinned);
++        let mut tx = db.begin_write().unwrap();
++        let (pages, _) = tx.prepare_freed_pages(tx.transaction_id).unwrap();
++        assert!(!pages.is_empty());
++        let hash = tx.mem.allocator_hash();
++        let roots = [tx.mem.get_data_root(), tx.mem.get_system_root()];
++        probe.fail.store(operation, Ordering::SeqCst);
++        let result = tx.mem.commit(crate::tree_store::CommitRequest {
++            data_root: roots[0],
++            system_root: roots[1],
++            transaction_id: tx.transaction_id,
++            two_phase: true,
++            shrink_policy: crate::tree_store::ShrinkPolicy::Maximum,
++            freed_pages: &pages,
++            growth: &tx.growth,
++        });
++        assert!(matches!(result, Err(StorageError::Io(_))));
++        assert_eq!(tx.mem.allocator_hash(), hash);
++        drop(tx);
++        probe.fail.store(0, Ordering::SeqCst);
++        drop(db);
++        let mut reopened = reopen(&path, REGION_BYTES);
++        assert!(reopened.check_integrity().unwrap());
++        assert_eq!(
++            reopened
++                .begin_read()
++                .unwrap()
++                .open_table(DATA)
++                .unwrap()
++                .get(0)
++                .unwrap()
++                .unwrap()
++                .value(),
++            b"current"
++        );
++    }
++}
++
++#[test]
++fn admitted_modes_reject_non_durable_and_restore_before_changing_state() {
++    let (db, _path, probe) = fixture();
++    let mut tx = db
++        .begin_write_with_growth_admission(Admission::new(probe.clone(), 0))
++        .unwrap();
++    let savepoint = tx.ephemeral_savepoint().unwrap();
++    assert!(matches!(
++        tx.set_durability(crate::Durability::None),
++        Err(crate::SetDurabilityError::UnsupportedGrowthAdmission(
++            crate::UnsupportedGrowthAdmission::NonDurable
++        ))
++    ));
++    assert_eq!(tx.durability, super::InternalDurability::Immediate);
++    tx.open_table(DATA)
++        .unwrap()
++        .insert(0, b"retained".as_slice())
++        .unwrap();
++    let allocator_hash = tx.mem.allocator_hash();
++    assert!(matches!(
++        tx.restore_savepoint(&savepoint),
++        Err(crate::SavepointError::UnsupportedGrowthAdmission(
++            crate::UnsupportedGrowthAdmission::SavepointRestore
++        ))
++    ));
++    assert_eq!(tx.mem.allocator_hash(), allocator_hash);
++    assert!(tx.restored_transaction.is_none());
++    assert_eq!(
++        tx.open_table(DATA)
++            .unwrap()
++            .get(0)
++            .unwrap()
++            .unwrap()
++            .value(),
++        b"retained"
++    );
++    tx.commit().unwrap();
++    assert_eq!(
++        db.begin_read()
++            .unwrap()
++            .open_table(DATA)
++            .unwrap()
++            .get(0)
++            .unwrap()
++            .unwrap()
++            .value(),
++        b"retained"
++    );
++    probe.enforce.store(false, Ordering::SeqCst);
++}
++
++#[test]
++fn admitted_begin_rejects_volatile_state_without_adoption_and_releases_writer() {
++    let (db, _path, probe) = fixture();
++    let mut pending = db.begin_write().unwrap();
++    pending.set_durability(crate::Durability::None).unwrap();
++    pending
++        .open_table(DATA)
++        .unwrap()
++        .insert(0, b"volatile".as_slice())
++        .unwrap();
++    pending.commit().unwrap();
++    let read = db.begin_read().unwrap();
++    assert_eq!(
++        read.open_table(DATA)
++            .unwrap()
++            .get(0)
++            .unwrap()
++            .unwrap()
++            .value(),
++        b"volatile"
++    );
++    let result = db.begin_write_with_growth_admission(Admission::new(probe.clone(), 0));
++    assert!(matches!(
++        result,
++        Err(TransactionError::UnsupportedGrowthAdmission(
++            crate::UnsupportedGrowthAdmission::VolatileState
++        ))
++    ));
++    assert_eq!(
++        read.open_table(DATA)
++            .unwrap()
++            .get(0)
++            .unwrap()
++            .unwrap()
++            .value(),
++        b"volatile"
++    );
++    drop(read);
++    // Only an ordinary explicit durable checkpoint may resolve that unsupported state.
++    probe.enforce.store(false, Ordering::SeqCst);
++    let mut checkpoint = db.begin_write().unwrap();
++    checkpoint.disable_post_commit_free();
++    checkpoint.commit().unwrap();
++    let admitted = db
++        .begin_write_with_growth_admission(Admission::new(probe.clone(), 0))
++        .unwrap();
++    admitted.abort().unwrap();
++    probe.enforce.store(false, Ordering::SeqCst);
++}
++
++#[test]
++fn admitted_begin_rejects_an_ordinary_post_commit_epilogue_without_adoption() {
++    let (db, _path, probe) = fixture();
++    let ordinary = db.begin_write().unwrap();
++    let mem = ordinary.mem.clone();
++    ordinary
++        .open_table(DATA)
++        .unwrap()
++        .insert(0, b"ordinary".as_slice())
++        .unwrap();
++    ordinary.commit().unwrap();
++    assert!(mem.has_volatile_state());
++    let hash = mem.allocator_hash();
++    let roots = [mem.get_data_root(), mem.get_system_root()];
++    assert!(matches!(
++        db.begin_write_with_growth_admission(Admission::new(probe.clone(), 0)),
++        Err(TransactionError::UnsupportedGrowthAdmission(
++            crate::UnsupportedGrowthAdmission::VolatileState
++        ))
++    ));
++    assert_eq!(mem.allocator_hash(), hash);
++    assert_eq!([mem.get_data_root(), mem.get_system_root()], roots);
++    assert!(mem.has_volatile_state());
++    assert_eq!(
++        db.begin_read()
++            .unwrap()
++            .open_table(DATA)
++            .unwrap()
++            .get(0)
++            .unwrap()
++            .unwrap()
++            .value(),
++        b"ordinary"
++    );
++    probe.enforce.store(false, Ordering::SeqCst);
++}
++
++#[test]
++fn admitted_durable_publication_has_no_volatile_epilogue_or_unreserved_trim() {
++    for quick_repair in [false, true] {
++        for two_phase in [false, true] {
++            let (db, path, probe) = fixture_with_region(SPLIT_REGION_BYTES);
++            let pinned = db.begin_read().unwrap();
++            let original_len = probe.physical_len.load(Ordering::SeqCst);
++            for generation in 0..4_u8 {
++                let admission = Admission::new(probe.clone(), usize::MAX);
++                let mut tx = db
++                    .begin_write_with_growth_admission(admission.clone())
++                    .unwrap();
++                tx.set_quick_repair(quick_repair);
++                tx.set_two_phase_commit(two_phase);
++                assert!(tx.post_commit_free == super::PostCommitFree::Disabled);
++                let mem = tx.mem.clone();
++                tx.open_table(DATA)
++                    .unwrap()
++                    .insert(0, [generation; 80].as_slice())
++                    .unwrap();
++                tx.commit().unwrap();
++                assert!(!mem.has_volatile_state());
++                assert_eq!(
++                    probe.physical_len.load(Ordering::SeqCst),
++                    probe.reserved_extent.load(Ordering::SeqCst)
++                );
++                assert!(probe.physical_len.load(Ordering::SeqCst) >= original_len);
++                assert_eq!(
++                    pinned
++                        .open_table(DATA)
++                        .unwrap()
++                        .get(0)
++                        .unwrap()
++                        .unwrap()
++                        .value(),
++                    VALUE
++                );
++            }
++            drop(pinned);
++            probe.enforce.store(false, Ordering::SeqCst);
++            drop(db);
++            let mut reopened = reopen(&path, SPLIT_REGION_BYTES);
++            assert!(reopened.check_integrity().unwrap());
++            assert_eq!(
++                reopened
++                    .begin_read()
++                    .unwrap()
++                    .open_table(DATA)
++                    .unwrap()
++                    .get(0)
++                    .unwrap()
++                    .unwrap()
++                    .value(),
++                [3; 80]
++            );
++        }
++    }
++}
+--- /dev/null
++++ b/src/tree_store/page_store/allocator_commit.rs
+@@ -0,0 +1,190 @@
++use super::buddy_allocator::BuddyAllocator;
++use super::layout::DatabaseLayout;
++use super::region::{Allocators, RegionTracker};
++use crate::tree_store::PageNumber;
++use alloc::collections::BTreeMap;
++use core::cmp::min;
++
++// The exclusive borrow pins the exact allocator state used by preparation. Only changed
++// regions are copied; dropping a candidate leaves every live bitmap unchanged.
++pub(super) struct AllocatorCommitCandidate<'a> {
++    live: &'a mut Allocators,
++    regions: BTreeMap<u32, BuddyAllocator>,
++    tracker: RegionTracker,
++    region_count: usize,
++}
++
++#[cfg(test)]
++mod tests {
++    use super::AllocatorCommitCandidate;
++    use crate::tree_store::PageNumber;
++    use crate::tree_store::page_store::buddy_allocator::BuddyAllocator;
++    use crate::tree_store::page_store::layout::{DatabaseLayout, RegionLayout};
++    use crate::tree_store::page_store::region::Allocators;
++
++    fn fixture() -> (Allocators, DatabaseLayout, [PageNumber; 3]) {
++        let region = RegionLayout::new(16, 0, 512);
++        let layout = DatabaseLayout::new(3, region, None);
++        let mut live = Allocators::new(layout);
++        let pages = [
++            PageNumber {
++                region: 0,
++                page_index: 0,
++                page_order: 2,
++            },
++            PageNumber {
++                region: 0,
++                page_index: 1,
++                page_order: 2,
++            },
++            PageNumber {
++                region: 1,
++                page_index: 0,
++                page_order: 0,
++            },
++        ];
++        for page in pages {
++            assert!(
++                live.region_allocators[page.region as usize]
++                    .record_alloc(page.page_index, page.page_order)
++            );
++        }
++        (live, layout, pages)
++    }
++
++    #[test]
++    fn discard_preserves_live_allocator_and_only_copies_changed_regions() {
++        let (mut live, _, pages) = fixture();
++        let hash = live.xxh3_hash();
++        let tracker = live.region_tracker.to_vec();
++        {
++            let candidate = AllocatorCommitCandidate::new(&mut live, &pages[..2]);
++            assert_eq!(candidate.regions.len(), 1);
++            assert_eq!(candidate.live.xxh3_hash(), hash);
++            assert_eq!(candidate.live.region_tracker.to_vec(), tracker);
++            assert_eq!(candidate.region(0).count_free_pages(), 16);
++        }
++        assert_eq!(live.xxh3_hash(), hash);
++        assert_eq!(live.region_tracker.to_vec(), tracker);
++        // A dropped candidate cannot make either retired block reusable.
++        assert!(!live.region_allocators[0].record_alloc(0, 2));
++        assert!(!live.region_allocators[0].record_alloc(1, 2));
++    }
++
++    #[test]
++    fn publication_matches_prepared_quick_repair_bytes_and_preserves_other_pages() {
++        let (mut live, _, pages) = fixture();
++        let candidate = AllocatorCommitCandidate::new(&mut live, &pages[..2]);
++        let prepared = candidate.region(0).to_vec();
++        let tracker = candidate.tracker().to_vec();
++        let untouched = candidate.region(1).to_vec();
++        let mut decoded = BuddyAllocator::from_bytes(&prepared);
++        assert!(decoded.record_alloc(0, 3));
++        candidate.publish();
++        assert_eq!(live.region_allocators[0].to_vec(), prepared);
++        assert_eq!(live.region_tracker.to_vec(), tracker);
++        assert_eq!(live.region_allocators[1].to_vec(), untouched);
++        assert!(live.region_allocators[0].record_alloc(0, 3));
++        assert!(!live.region_allocators[1].record_alloc(0, 0));
++    }
++
++    #[test]
++    fn shrinking_is_private_until_publication_and_cannot_discard_live_pages() {
++        let (mut live, layout, pages) = fixture();
++        let hash = live.xxh3_hash();
++        let mut candidate = AllocatorCommitCandidate::new(&mut live, &pages[..1]);
++        let smaller = candidate.shrink(layout, true);
++        assert_eq!(smaller.num_regions(), 2);
++        assert_eq!(candidate.live.region_allocators.len(), 3);
++        assert_eq!(candidate.live.xxh3_hash(), hash);
++        drop(candidate);
++        assert_eq!(live.region_allocators.len(), 3);
++        assert_eq!(live.xxh3_hash(), hash);
++
++        let mut candidate = AllocatorCommitCandidate::new(&mut live, &[]);
++        let smaller = candidate.shrink(layout, true);
++        let smaller = candidate.shrink(smaller, true);
++        assert_eq!(smaller.num_regions(), 2);
++        assert_eq!(smaller.region_layout(1).num_pages(), 1);
++        candidate.publish();
++        assert_eq!(live.region_allocators.len(), 2);
++        assert_eq!(live.region_allocators[1].len(), 1);
++        assert!(!live.region_allocators[1].record_alloc(0, 0));
++    }
++}
++
++impl<'a> AllocatorCommitCandidate<'a> {
++    pub(super) fn new(live: &'a mut Allocators, freed: &[PageNumber]) -> Self {
++        let tracker = live.region_tracker.clone();
++        let region_count = live.region_allocators.len();
++        let mut result = Self {
++            live,
++            regions: BTreeMap::new(),
++            tracker,
++            region_count,
++        };
++        for page in freed {
++            let order = result
++                .region_mut(page.region)
++                .free(page.page_index, page.page_order);
++            result.tracker.mark_free(order, page.region);
++        }
++        result
++    }
++
++    pub(super) fn region(&self, region: u32) -> &BuddyAllocator {
++        assert!((region as usize) < self.region_count);
++        self.regions
++            .get(&region)
++            .unwrap_or(&self.live.region_allocators[region as usize])
++    }
++
++    fn region_mut(&mut self, region: u32) -> &mut BuddyAllocator {
++        assert!((region as usize) < self.region_count);
++        self.regions
++            .entry(region)
++            .or_insert_with(|| self.live.region_allocators[region as usize].clone())
++    }
++
++    pub(super) fn tracker(&self) -> &RegionTracker {
++        &self.tracker
++    }
++
++    pub(super) fn shrink(&mut self, layout: DatabaseLayout, force: bool) -> DatabaseLayout {
++        let last_region = layout.num_regions() - 1;
++        let allocator = self.region(last_region);
++        let trailing_free = allocator.trailing_free_pages();
++        let old_len = allocator.len();
++        if trailing_free == 0 || (trailing_free < old_len / 2 && !force) {
++            return layout;
++        }
++        let reduce_by = if layout.num_regions() > 1 && trailing_free == old_len {
++            trailing_free
++        } else if force {
++            min(old_len - 1, trailing_free)
++        } else {
++            trailing_free / 2
++        };
++        let mut result = layout;
++        result.reduce_last_region(reduce_by);
++        if result.num_regions() < layout.num_regions() {
++            self.regions.remove(&last_region);
++            self.tracker.mark_full(0, last_region);
++            self.region_count -= 1;
++        } else {
++            self.region_mut(last_region)
++                .resize(result.region_layout(last_region).num_pages());
++        }
++        result
++    }
++
++    // Preparation allocated every replacement. Publishing only moves owners and drops
++    // superseded storage; it cannot allocate, perform I/O, or discover capacity exhaustion.
++    pub(super) fn publish(self) {
++        for (region, allocator) in self.regions {
++            self.live.region_allocators[region as usize] = allocator;
++        }
++        self.live.region_allocators.truncate(self.region_count);
++        self.live.region_tracker = self.tracker;
++    }
++}

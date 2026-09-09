@@ -1,0 +1,75 @@
+{
+  "scope": "macOS ARM64 seventeen focused redb tests: three allocator candidate regressions plus fourteen growth/admitted-commit regressions. Frozen11a06d0 source; prior5c2a13PASS binary preserved independently. Shared host ordinary correctness cohort, not a quiet performance measurement. No root dependency patch, Kasumi engine/store/server/Raft compilation, listener or provider. Shared host; full upstream just test, fuzzing, durable disk governor and production integration remain unrun.",
+  "source_before": {
+    "head": "11a06d03c65ba6e20701ae194023da9c6f709266",
+    "tree": "aa9e742ab9a39791526840f59b2b99db205aec5d",
+    "status": "",
+    "lock_sha256": "f42fec1f6e7232b1cd5e9c564cfff56dfec7634f2548eab7eb2096a0d0c17c78",
+    "leaf_lock_sha256": "bcccfce715a96865a7c82c4f97d64140b825ec90ea676d35c26e5deb048c0ce5",
+    "package_manifest_sha256": "f71df1f4b21c11770773b2902bf00ab6cbd3ad751c311acb2f32c0e530f408da",
+    "patch_sha256": "8e907d6c24dee7b3f438a31aa5aef0e7c6d95a47edc98fbade5e47474c37673e",
+    "archive_sha256": "de6c3b63e007e90ce536ec2ae4690826136a20ec8dbbbb400daef1bb999d2e36"
+  },
+  "tools": {
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo": "7672ead309d505577c018fff2cafb3433601f073e38cbe87359ac1f7b944bbf5",
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc": "210df6794001b73ec3d453878707fa1e0bdcb63c427024a6e6574bbe5615a4da",
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustdoc": "aa94960b6a477441f6d1a797394daf4cafcc889d837550c8fa462b102e3fa5da"
+  },
+  "runner_sha256": "4fd62546814ea7c10b18d375764d3bcc55ac43b3299aba749085e46604bb9fc9",
+  "runner_interpreter": {
+    "executable": "/Users/mtakemiya/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+    "version": "3.12.14 (main, Aug 25 2026, 13:50:33) [Clang 22.1.3 ]",
+    "sha256": "ac60cfe0268614638d0ffa35f3b0284fc7b3a11482723793455e17eeb278509e"
+  },
+  "per_gate_timeout_seconds": 300,
+  "gates": [
+    {
+      "name": "redb-allocator-candidate",
+      "command": [
+        "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+        "test",
+        "--manifest-path",
+        "vendor/redb-4.2.0/Cargo.toml",
+        "--locked",
+        "--offline",
+        "-j1",
+        "--features",
+        "experimental-precommit-growth-admission",
+        "--lib",
+        "tree_store::page_store::allocator_commit::tests",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "seconds": 2.738146667019464,
+      "process_group_id": 54090,
+      "process_exit_code": 101,
+      "exit_code": 101,
+      "problem": null,
+      "cleanup": {
+        "signals": [],
+        "process_returncode": 101,
+        "process_group_drained": true
+      },
+      "required_test": [
+        "tree_store::page_store::allocator_commit::tests::discard_preserves_live_allocator_and_only_copies_changed_regions",
+        "tree_store::page_store::allocator_commit::tests::publication_matches_prepared_quick_repair_bytes_and_preserves_other_pages",
+        "tree_store::page_store::allocator_commit::tests::shrinking_is_private_until_publication_and_cannot_discard_live_pages"
+      ],
+      "required_test_passed": false,
+      "compiled_features_match": false,
+      "log_sha256": "cdd2ac05300b9f5c6d89314d1a2b6179da81191e2f4fb430147a72ce1b773a1b",
+      "artifacts": []
+    }
+  ],
+  "source_after": {
+    "head": "11a06d03c65ba6e20701ae194023da9c6f709266",
+    "tree": "aa9e742ab9a39791526840f59b2b99db205aec5d",
+    "status": "",
+    "lock_sha256": "f42fec1f6e7232b1cd5e9c564cfff56dfec7634f2548eab7eb2096a0d0c17c78",
+    "leaf_lock_sha256": "bcccfce715a96865a7c82c4f97d64140b825ec90ea676d35c26e5deb048c0ce5",
+    "package_manifest_sha256": "f71df1f4b21c11770773b2902bf00ab6cbd3ad751c311acb2f32c0e530f408da",
+    "patch_sha256": "8e907d6c24dee7b3f438a31aa5aef0e7c6d95a47edc98fbade5e47474c37673e",
+    "archive_sha256": "de6c3b63e007e90ce536ec2ae4690826136a20ec8dbbbb400daef1bb999d2e36"
+  }
+}
