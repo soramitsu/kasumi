@@ -281,6 +281,24 @@ impl VerifiedState {
     > {
         match self {
             Self::Indexed(state) => Ok(Box::new(state.index().cursor(kind, primary)?)),
+            Self::Captured(generation) if kind == 21 => {
+                let primary = primary.map(str::to_owned);
+                Ok(Box::new(
+                    generation
+                        .terminals
+                        .records()
+                        .map(|row| {
+                            row.map(|row| crate::snapshot_codec::Record::Terminal(Box::new(row)))
+                        })
+                        .filter(move |record| {
+                            primary.as_ref().is_none_or(|key| {
+                                record
+                                    .as_ref()
+                                    .map_or(true, |record| record.order().1 == *key)
+                            })
+                        }),
+                ))
+            }
             _ => crate::snapshot_codec::records(self.metadata(), kind, primary),
         }
     }

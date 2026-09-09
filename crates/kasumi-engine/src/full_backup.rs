@@ -86,8 +86,12 @@ struct StreamWork {
 
 impl StreamWork {
     fn run(mut self) -> Result<(u64, String)> {
-        crate::snapshot_codec::write(&self.generation.state, &mut self.writer)
-            .map_err(|_| Error::new(ErrorCode::Unavailable, "backup state stream failed"))?;
+        crate::snapshot_codec::write(
+            &self.generation.state,
+            &self.generation.terminals,
+            &mut self.writer,
+        )
+        .map_err(|_| Error::new(ErrorCode::Unavailable, "backup state stream failed"))?;
         self.writer
             .finish()
             .map_err(|_| Error::new(ErrorCode::Unavailable, "backup state stream incomplete"))

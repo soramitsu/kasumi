@@ -255,19 +255,21 @@ impl TenantStorageSet {
     /// Both leases are held through actual fsync, including on caller cancellation.
     /// The synchronous call must be owned by the caller's tracked blocking worker.
     pub fn write_batch(&self, application_ops: &[WriteOp], custody_ops: &[WriteOp]) -> Result<()> {
-        self.write_batch_replacing_custody(application_ops, custody_ops, &[])
+        self.write_batch_replacing(application_ops, custody_ops, &[], &[])
     }
 
-    /// Stream verified custody tables while publishing the application manifest,
-    /// custody head and applied position in the same durable domain transaction.
-    pub fn write_batch_replacing_custody(
+    /// Stream verified application and custody tables while publishing their
+    /// manifests, namespace bindings and applied position in one durable commit.
+    pub fn write_batch_replacing(
         &self,
         application_ops: &[WriteOp],
         custody_ops: &[WriteOp],
-        replacements: &[(&str, &EncryptedTable)],
+        application_replacements: &[(&str, &EncryptedTable)],
+        custody_replacements: &[(&str, &EncryptedTable)],
     ) -> Result<()> {
         validate_batch(&[application_ops, custody_ops])?;
-        crate::read_view::validate_replacements(replacements, custody_ops)?;
+        crate::read_view::validate_replacements(application_replacements, application_ops)?;
+        crate::read_view::validate_replacements(custody_replacements, custody_ops)?;
         let application = &self.application;
         let custody = &self.custody.store;
         let _app_access = AccessGuard(application);
@@ -291,13 +293,14 @@ impl TenantStorageSet {
         let mut tx = application.node.db.begin_write()?;
         tx.set_durability(Durability::Immediate)?;
         tx.set_two_phase_commit(true);
+        crate::read_view::replace_domain(&tx, application, application_replacements)?;
         {
             let state = application.state.read();
             application.require_access(&state)?;
             let catalog = application.catalog.read();
             write_domain(&tx, application, &state, &catalog, application_ops)?;
         }
-        crate::read_view::replace_domain(&tx, custody, replacements)?;
+        crate::read_view::replace_domain(&tx, custody, custody_replacements)?;
         {
             let state = custody.state.read();
             custody.require_access(&state)?;

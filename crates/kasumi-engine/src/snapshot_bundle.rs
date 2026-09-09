@@ -452,7 +452,7 @@ pub(super) fn read(engine: &TenantEngine, reader: &mut dyn Read) -> Result<Gener
         short: false,
         ended: false,
     };
-    let generation = engine.prepare_snapshot_reader(&mut logical)?;
+    let generation = engine.prepare_snapshot_reader(store.scratch_disk(), &mut logical)?;
     ensure!(logical.ended, "logical snapshot end missing");
     authorize_root(&generation.state, &source, store.storage_access().purpose())?;
     let retention = &generation.state.audit_retention;
@@ -594,9 +594,11 @@ mod tests {
         state.audit_retention.next_sequence = 3;
         state.audit_retention.pruned_before = 3;
         state.audit_retention.archive_head = references.last().cloned();
-        engine
-            .current
-            .store(Some(Arc::new(engine.prepare_state(state).unwrap())));
+        engine.current.store(Some(Arc::new(
+            engine
+                .prepare_state(state, engine.generation().unwrap().terminals.clone())
+                .unwrap(),
+        )));
         references
     }
     async fn capture(engine: Arc<TenantEngine>) -> Result<Vec<u8>> {
@@ -611,7 +613,29 @@ mod tests {
     }
     async fn restore(engine: Arc<TenantEngine>, bytes: Vec<u8>) -> Result<()> {
         tokio::task::spawn_blocking(move || {
-            StateMachineBackend::restore(engine.as_ref(), &mut bytes.as_slice())
+            // These bundle fixtures remain at genesis (no applied Raft entry).
+            // Exercise prepared validation and atomic namespace publication;
+            // the Raft crate separately tests the joint custody/cursor commit.
+            let store = engine
+                .snapshot_store
+                .get()
+                .context("fixture snapshot storage absent")?;
+            let image = kasumi_store::SnapshotImage::from_bytes(store.scratch_disk(), &bytes)?;
+            let context = kasumi_raft::SnapshotRestoreContext {
+                mode: kasumi_raft::SnapshotRestoreMode::Install,
+                backend_sha256: image.sha256().into(),
+                meta: kasumi_raft::SnapshotMeta {
+                    last_log_id: None,
+                    last_membership: Default::default(),
+                    snapshot_id: uuid::Uuid::new_v4().to_string(),
+                },
+            };
+            let prepared = engine.prepare_restore(&context, &mut image.reader())?;
+            store.replace_namespaces(
+                &prepared.application_replacements(),
+                prepared.application_writes(),
+            )?;
+            prepared.publish()
         })
         .await?
     }
@@ -729,15 +753,19 @@ mod tests {
         let references = install_chain(&source, &source_store);
         let mut state = source.generation().unwrap().state.clone();
         state.audit_retention.archive_bytes += 1;
-        source
-            .current
-            .store(Some(Arc::new(source.prepare_state(state).unwrap())));
+        source.current.store(Some(Arc::new(
+            source
+                .prepare_state(state, source.generation().unwrap().terminals.clone())
+                .unwrap(),
+        )));
         assert!(capture(source.clone()).await.is_err());
         let mut state = source.generation().unwrap().state.clone();
         state.audit_retention.archive_bytes -= 1;
-        source
-            .current
-            .store(Some(Arc::new(source.prepare_state(state).unwrap())));
+        source.current.store(Some(Arc::new(
+            source
+                .prepare_state(state, source.generation().unwrap().terminals.clone())
+                .unwrap(),
+        )));
         // The source cache directory is fixed to this private installation.
         let cache = source_store
             .durable_directory()

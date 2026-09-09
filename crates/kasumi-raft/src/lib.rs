@@ -35,7 +35,7 @@ use lifetime::StorageDrain;
 pub use network::{
     InProcessRouter, RaftTransport, RpcPayloadTooLarge, RpcRequest, RpcResponse, dispatch_rpc,
 };
-pub use openraft::{BasicNode, Config, LogId, SnapshotPolicy, StoredMembership};
+pub use openraft::{BasicNode, Config, LogId, SnapshotMeta, SnapshotPolicy, StoredMembership};
 pub use snapshot_buffer::SnapshotBuffer;
 pub use snapshot_state::RetiredSnapshotState;
 use std::{
@@ -94,6 +94,8 @@ type SnapshotWriter = dyn Fn(&mut dyn std::io::Write) -> Result<()> + Send + Syn
 pub struct CapturedSnapshot {
     pub retirement: Option<RetiredSnapshotState>,
     writer: Box<SnapshotWriter>,
+    checkpoint_writes:
+        Box<dyn Fn(&SnapshotRestoreContext) -> Result<Vec<kasumi_store::WriteOp>> + Send + Sync>,
 }
 impl CapturedSnapshot {
     pub fn new(
@@ -103,7 +105,24 @@ impl CapturedSnapshot {
         Self {
             retirement,
             writer: Box::new(writer),
+            checkpoint_writes: Box::new(|_| Ok(Vec::new())),
         }
+    }
+    pub fn with_checkpoint_writes(
+        mut self,
+        writes: impl Fn(&SnapshotRestoreContext) -> Result<Vec<kasumi_store::WriteOp>>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.checkpoint_writes = Box::new(writes);
+        self
+    }
+    pub(crate) fn checkpoint_writes(
+        &self,
+        context: &SnapshotRestoreContext,
+    ) -> Result<Vec<kasumi_store::WriteOp>> {
+        (self.checkpoint_writes)(context)
     }
     pub fn write(&self, writer: &mut dyn std::io::Write) -> Result<()> {
         (self.writer)(writer)
@@ -113,6 +132,50 @@ impl CapturedSnapshot {
 /// Only the Raft adapter may call mutation methods after the group starts.
 /// `apply` must publish the complete command atomically; business errors belong in
 /// its returned bytes. `restore` must validate before atomically replacing state.
+/// Validated backend state held unpublished while Raft durably installs its
+/// encrypted tables and the matching snapshot/applied cursor. The borrowed
+/// lifetime keeps the backend's mutation lock and tracked storage owner alive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapshotRestoreMode {
+    Reopen,
+    Install,
+}
+/// Authenticated enclosing position supplied by the Raft adapter. Reopen selects
+/// an existing checkpoint namespace; installation prepares a new atomic binding.
+pub struct SnapshotRestoreContext {
+    pub mode: SnapshotRestoreMode,
+    pub backend_sha256: String,
+    pub meta: openraft::SnapshotMeta<u64, BasicNode>,
+}
+impl SnapshotRestoreContext {
+    pub fn checkpoint_sha256(&self) -> Result<String> {
+        use sha2::Digest;
+        ensure!(
+            self.backend_sha256.len() == 64
+                && self
+                    .backend_sha256
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+            "invalid backend snapshot digest"
+        );
+        Ok(hex::encode(sha2::Sha256::digest(serde_json::to_vec(&(
+            "kasumi.backend-checkpoint.v1",
+            &self.backend_sha256,
+            &self.meta.last_log_id,
+            &self.meta.last_membership,
+        ))?)))
+    }
+}
+
+pub trait PreparedStateMachineRestore {
+    fn retirement(&self) -> Option<RetiredSnapshotState>;
+    fn application_replacements(&self) -> Vec<(&str, &kasumi_store::EncryptedTable)>;
+    fn application_writes(&self) -> &[kasumi_store::WriteOp];
+    /// Called only after durable publication succeeds. A release failure seals
+    /// the replica; restart must recover the already committed snapshot exactly.
+    fn publish(self: Box<Self>) -> Result<()>;
+}
+
 pub trait StateMachineBackend: Send + Sync + 'static {
     fn apply(&self, position: &AppliedEntryContext, command: &[u8]) -> Result<AppliedResponse>;
     fn capture_snapshot(&self) -> Result<CapturedSnapshot>;
@@ -128,7 +191,11 @@ pub trait StateMachineBackend: Send + Sync + 'static {
         &self,
         bytes: &mut dyn std::io::Read,
     ) -> Result<Option<RetiredSnapshotState>>;
-    fn restore(&self, bytes: &mut dyn std::io::Read) -> Result<()>;
+    fn prepare_restore<'a>(
+        &'a self,
+        context: &SnapshotRestoreContext,
+        bytes: &mut dyn std::io::Read,
+    ) -> Result<Box<dyn PreparedStateMachineRestore + 'a>>;
     /// Irreversibly evict resident application material before publishing an
     /// installed closed custody snapshot. This cannot grant data access.
     fn close_application(&self);
@@ -169,8 +236,12 @@ impl StateMachineBackend for OwnedBackend {
     ) -> Result<Option<RetiredSnapshotState>> {
         self.inner.validate_snapshot(bytes)
     }
-    fn restore(&self, bytes: &mut dyn std::io::Read) -> Result<()> {
-        self.inner.restore(bytes)
+    fn prepare_restore<'a>(
+        &'a self,
+        context: &SnapshotRestoreContext,
+        bytes: &mut dyn std::io::Read,
+    ) -> Result<Box<dyn PreparedStateMachineRestore + 'a>> {
+        self.inner.prepare_restore(context, bytes)
     }
 }
 

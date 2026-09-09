@@ -316,6 +316,7 @@ impl TenantEngine {
             previous.indexes.clone()
         };
         self.publish_generation(Some(Arc::new(Generation {
+            terminals: previous.terminals.clone(),
             state: next,
             indexes,
             receipt_expiry: previous.receipt_expiry.clone(),

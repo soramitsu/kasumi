@@ -1082,8 +1082,7 @@ async fn control_rejects_unfinishable_byte_budget_and_substituted_authenticated_
     .await
     .unwrap();
     let original = db.engine().fixture_snapshot().unwrap();
-    let mut state: TenantState =
-        kasumi_engine::test_utils::decode_snapshot_candidate(&original).unwrap();
+    let mut state = kasumi_engine::test_utils::decode_snapshot_candidate(&original).unwrap();
     let retained = state
         .lifecycle_control
         .as_mut()

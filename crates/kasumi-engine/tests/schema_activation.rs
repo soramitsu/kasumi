@@ -464,8 +464,7 @@ fn schema_shape_immutable_mode_snapshot_validation_and_retained_quota() {
     let recovered = engine(Limits::default());
     recovered.fixture_restore(&bytes).unwrap();
     assert_eq!(bytes, recovered.fixture_snapshot().unwrap());
-    let mut state: TenantState =
-        kasumi_engine::test_utils::decode_snapshot_candidate(&bytes).unwrap();
+    let mut state = kasumi_engine::test_utils::decode_snapshot_candidate(&bytes).unwrap();
     state.schema_activation_bytes += 1;
     assert_eq!(
         recovered

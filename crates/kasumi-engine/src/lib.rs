@@ -38,6 +38,7 @@ pub mod security_audit;
 mod service;
 mod snapshot_codec;
 mod snapshot_index;
+mod staged_terminal;
 mod state;
 pub use bootstrap::{
     LocalRestoreRequest, MaterializedTargetReplica, PreparedReplicaRestore, ReplicaPlacement,
