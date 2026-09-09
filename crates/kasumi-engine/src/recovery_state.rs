@@ -713,7 +713,9 @@ pub(crate) fn expected_intent(
             completion::completion_input(state, operation)?.digest()?,
             None,
         ),
-        LifecyclePhase::ResolveComplete | LifecyclePhase::MaintainTarget => {
+        LifecyclePhase::ResolveComplete
+        | LifecyclePhase::MaintainTarget
+        | LifecyclePhase::InspectCompletionAttempt => {
             return Err(conflict(
                 "target terminal coordinator phase is not installed",
             ));
@@ -1429,6 +1431,7 @@ fn advance(
                 .ok_or_else(|| conflict("target voter missing"))?;
             match response.outcome {
                 TargetRuntimeOutcome::PreparedCompletion(_)
+                | TargetRuntimeOutcome::CompletionAttemptStatus(_)
                 | TargetRuntimeOutcome::ResolvedCompletion(_)
                 | TargetRuntimeOutcome::ResolutionBudget(_) => {
                     return Err(conflict(

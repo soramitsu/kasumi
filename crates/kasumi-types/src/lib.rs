@@ -11,6 +11,8 @@ mod target;
 pub use target::*;
 mod target_completion;
 pub use target_completion::*;
+mod target_completion_status;
+pub use target_completion_status::*;
 mod authority_protocol;
 pub use authority_protocol::*;
 mod target_runtime_protocol;

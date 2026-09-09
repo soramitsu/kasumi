@@ -8,7 +8,7 @@ use uuid::Uuid;
 fn key(node: u64) -> Ed25519KeyPair {
     Ed25519KeyPair::from_seed_unchecked(&[u8::try_from(node).unwrap(); 32]).unwrap()
 }
-fn sign(value: &impl serde::Serialize, domain: &str, node: u64) -> String {
+pub(crate) fn sign(value: &impl serde::Serialize, domain: &str, node: u64) -> String {
     hex::encode(
         key(node)
             .sign(&serde_json::to_vec(&(domain, value)).unwrap())
@@ -93,7 +93,7 @@ pub(crate) fn origin() -> TargetOrigin {
     value.validate().unwrap();
     value
 }
-fn intent(
+pub(crate) fn intent(
     origin: &TargetOrigin,
     phase: LifecyclePhase,
     input: String,

@@ -364,6 +364,40 @@ impl View {
     pub(crate) fn records(&self) -> impl Iterator<Item = Result<Row>> + Send + '_ {
         (1..=self.head.count).map(|ordinal| self.row(ordinal))
     }
+    /// Positive original reservation only. Unpublished physical rows remain
+    /// invisible, and absence carries no negative or successor authority.
+    pub(crate) fn prepared_attempt(
+        &self,
+        state: &TenantState,
+        command_id: uuid::Uuid,
+    ) -> Result<Option<Box<TargetCompletionAttempt>>> {
+        ensure!(
+            self.head == state.target_resolution_head,
+            "preparation status prefix differs"
+        );
+        let key = format!("completion/{}/{command_id}", state.incarnation);
+        if let Some(row) = self.get(&key)? {
+            row.validate(state)?;
+            let TargetResolutionRecord::Completion(fact) = row.record else {
+                anyhow::bail!("preparation status terminal kind differs");
+            };
+            return Ok(Some(fact.input.attempt));
+        }
+        let Some(head) = &state.target_completion_head else {
+            return Ok(None);
+        };
+        let origin = &state
+            .target_lifecycle
+            .get(&state.incarnation)
+            .context("preparation status current physical origin absent")?
+            .origin;
+        head.validate(origin)?;
+        Ok(head
+            .active
+            .as_ref()
+            .filter(|attempt| attempt.intent.request.command_id == command_id)
+            .cloned())
+    }
 }
 
 pub(crate) fn validate_current(

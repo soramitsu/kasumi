@@ -23,6 +23,8 @@ mod backup_format;
 mod backup_proof;
 mod backup_verify;
 mod target_completion_machine;
+#[cfg(test)]
+mod target_completion_status_tests;
 mod target_invocation;
 mod target_signer;
 pub use backup_proof::VerifiedBackupCheckpoint;

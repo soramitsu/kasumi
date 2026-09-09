@@ -106,6 +106,29 @@ async fn exact_target_terminal_prefix_hides_unpublished_rows_and_rejects_changed
     .unwrap();
     let advanced = pending.persist().unwrap();
     assert!(selected.get(&record.key()).unwrap().is_none());
+    let TargetResolutionRecord::Completion(fact) = &record else {
+        unreachable!()
+    };
+    let original = fact.input.attempt.intent.request.command_id;
+    assert!(
+        selected
+            .prepared_attempt(&before, original)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        advanced
+            .prepared_attempt(&next, original)
+            .unwrap()
+            .as_deref(),
+        Some(fact.input.attempt.as_ref())
+    );
+    assert!(
+        advanced
+            .prepared_attempt(&next, uuid::Uuid::from_u128(998))
+            .unwrap()
+            .is_none()
+    );
     assert_eq!(advanced.get(&record.key()).unwrap().unwrap().record, record);
     advanced.validate_state(&next).unwrap();
 

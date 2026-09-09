@@ -452,6 +452,7 @@ pub enum TargetReplicaInput {
         input: crate::TargetResolutionBudgetInput,
     },
     Inspection(Box<TargetInspectionInput>),
+    CompletionAttemptStatus(Box<crate::TargetCompletionAttemptStatusInput>),
 }
 impl TargetReplicaInput {
     pub fn quorum(&self) -> &TargetQuorumInput {
@@ -461,6 +462,7 @@ impl TargetReplicaInput {
             Self::CompletionResolution(value) => &value.attempt.input.quorum,
             Self::ResolutionBudget { quorum, .. } => quorum,
             Self::Inspection(value) => &value.quorum,
+            Self::CompletionAttemptStatus(value) => &value.original_input.quorum,
         }
     }
 }

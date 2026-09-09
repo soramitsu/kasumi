@@ -10,6 +10,52 @@ pub struct TargetSigner {
     key: Ed25519KeyPair,
 }
 impl TargetSigner {
+    pub async fn sign_completion_attempt_status(
+        &self,
+        proof: &crate::VerifiedTargetReceiver,
+        operation: &TargetOperation,
+    ) -> Result<SignedTargetCompletionAttemptStatus> {
+        proof.release(operation).await?;
+        let observation = proof.attempt_status()?;
+        self.check(&observation.attempt.origin, operation)
+            .map_err(|_| {
+                Error::new(
+                    ErrorCode::Forbidden,
+                    "installed preparation status signer differs",
+                )
+            })?;
+        if observation.observer_node_id != self.node.node_id {
+            return Err(Error::new(
+                ErrorCode::Forbidden,
+                "preparation status observer is another leader",
+            ));
+        }
+        let signature = hex::encode(
+            self.key
+                .sign(
+                    &serde_json::to_vec(&(
+                        "kasumi.target-completion-attempt-status-observation.v1",
+                        &observation,
+                    ))
+                    .map_err(|_| {
+                        Error::new(ErrorCode::Unavailable, "preparation status encoding failed")
+                    })?,
+                )
+                .as_ref(),
+        );
+        proof.release(operation).await?;
+        self.check(&observation.attempt.origin, operation)
+            .map_err(|_| {
+                Error::new(
+                    ErrorCode::Unavailable,
+                    "preparation status signer changed during release",
+                )
+            })?;
+        Ok(SignedTargetCompletionAttemptStatus {
+            observation,
+            signature,
+        })
+    }
     pub async fn sign_completion_preparation(
         &self,
         proof: &crate::VerifiedTargetReceiver,

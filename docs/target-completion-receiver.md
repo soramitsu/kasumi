@@ -36,16 +36,28 @@ compare-and-set with bounded encrypted per-origin cursors. Both target terminal
 storage and canonical snapshot formats replace the preceding development format
 directly (`KASUMI_TARGET_V2`, `KASUMIT4`). No preceding decoder is retained.
 
+A distinct `InspectCompletionAttempt` phase recovers a positive original
+preparation after a lost reply, including after the original credential and
+dispatch cap expire. Its input binds the original intent, quorum input and
+unchanged dispatch cap; its signed observation includes the exact original
+applying position. The phase requires a later current Control revision and its
+own finite authorization. A selected active attempt or selected terminal point
+can supply the original fact; unpublished physical rows remain invisible.
+Absence returns `UnknownOutcome`. This phase cannot propose consensus mutations,
+create an original preparation observation, authorize a successor, or change the
+activation winner. Current quorum, original request, storage and signing fences
+remain held through response encoding and release.
+
 Six source prefix/accounting tests accompany the existing eight pure transition
-tests. No automatic Control successor is enabled. If a Prepare reply is lost and
-its original phase expires, a distinct fresh current-Control preparation-status
-observation is still required to recover its exact applying position before
-Control can freeze the Resolve input. Absence remains unknown. That observation,
-namespace reclamation, physical disk ownership and capacity, receiver/native
-crash tests, and the linked Control successor remain open. Public full-snapshot
-restore still charges three times the complete logical stream for resident
-admission; separating permanent point-row spans from that admission estimate is
-also required before claiming sustainable unlimited terminal-history recovery.
+tests and three positive-status protocol/signature tests. The prefix visibility
+test also covers status lookup before and after logical publication. No automatic
+Control successor is enabled: persisting and consuming the status observation
+in the coordinator remains a subsequent phase. Namespace reclamation, physical
+disk ownership and capacity, receiver/status native crash tests, and the linked
+Control successor remain open. Public full-snapshot restore still charges three
+times the complete logical stream for resident admission; separating permanent
+point-row spans from that admission estimate is also required before claiming
+sustainable unlimited terminal-history recovery.
 
 Only direct Rust 1.97.1 rustfmt and whitespace checks have been run for this
 source. Compilation and all functional tests require the scheduled frozen

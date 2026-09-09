@@ -40,6 +40,7 @@ pub enum TargetRuntimeStep {
     ConfirmActivation(Box<SignedTargetActivation>),
     ConfirmInspection(Box<SignedTargetInspection>),
     Inspect(Box<TargetInspectionInput>),
+    InspectCompletionAttempt(Box<TargetCompletionAttemptStatusInput>),
     Stop(TargetStopReference),
 }
 impl TargetRuntimeRequest {
@@ -97,6 +98,9 @@ impl TargetRuntimeRequest {
             TargetRuntimeStep::Inspect(input) => {
                 input.digest()?;
             }
+            TargetRuntimeStep::InspectCompletionAttempt(input) => {
+                input.digest()?;
+            }
             TargetRuntimeStep::Stop(reference) => {
                 reference.validate()?;
                 ensure!(reference.tenant == self.tenant, "target stop route differs");
@@ -131,6 +135,7 @@ pub enum TargetRuntimeOutcome {
     ResolutionBudget(Box<SignedTargetResolutionBudget>),
     Activated(Box<SignedTargetActivation>),
     Inspected(Box<SignedTargetInspection>),
+    CompletionAttemptStatus(Box<SignedTargetCompletionAttemptStatus>),
     Stopped(Box<SignedLocalTargetCleanup>),
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

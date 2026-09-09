@@ -7,6 +7,7 @@ use crate::{TargetOperation, target_invocation::TargetReleaseFence};
 #[derive(Clone)]
 enum Request {
     Prepare(TargetCompletionInput),
+    Inspect(Box<TargetCompletionAttemptStatusInput>),
     Resolve(Box<TargetCompletionResolutionInput>),
     Budget(TargetResolutionBudgetInput),
 }
@@ -14,6 +15,7 @@ impl Request {
     fn phase(&self) -> LifecyclePhase {
         match self {
             Self::Prepare(_) => LifecyclePhase::Complete,
+            Self::Inspect(_) => LifecyclePhase::InspectCompletionAttempt,
             Self::Resolve(_) => LifecyclePhase::ResolveComplete,
             Self::Budget(_) => LifecyclePhase::MaintainTarget,
         }
@@ -21,6 +23,7 @@ impl Request {
     fn digest(&self) -> Result<String> {
         match self {
             Self::Prepare(value) => value.digest(),
+            Self::Inspect(value) => value.digest(),
             Self::Resolve(value) => value.digest(),
             Self::Budget(value) => value.digest(),
         }
@@ -28,8 +31,9 @@ impl Request {
     fn command(
         &self,
         authorization: crate::target_invocation::PreparedTargetAuthorization,
-    ) -> TargetCommand {
-        match self {
+    ) -> Result<TargetCommand> {
+        Ok(match self {
+            Self::Inspect(_) => return Err(denied("preparation status cannot propose mutations")),
             Self::Prepare(input) => TargetCommand::PrepareComplete {
                 authorization,
                 input: input.clone(),
@@ -42,7 +46,7 @@ impl Request {
                 authorization,
                 input: input.clone(),
             },
-        }
+        })
     }
 }
 #[derive(Clone, PartialEq, Eq)]
@@ -64,7 +68,29 @@ pub struct VerifiedTargetReceiver {
 }
 impl VerifiedTargetReceiver {
     pub fn preparation(&self) -> Result<TargetCompletionAttemptObservation> {
+        if !matches!(&self.request, Request::Prepare(_)) {
+            return Err(invalid(
+                "a status proof cannot become an original preparation observation",
+            ));
+        }
         let observation = TargetCompletionAttemptObservation {
+            attempt: self.prepared()?.clone(),
+            observer_node_id: self.node,
+            observed_revision: self.revision,
+            observed_term: self.term,
+        };
+        observation.validate()?;
+        Ok(observation)
+    }
+    pub fn attempt_status(&self) -> Result<TargetCompletionAttemptStatusObservation> {
+        let Request::Inspect(input) = &self.request else {
+            return Err(invalid(
+                "receiver proof is not a preparation status observation",
+            ));
+        };
+        let observation = TargetCompletionAttemptStatusObservation {
+            input: *input.clone(),
+            status_intent: self.intent.clone(),
             attempt: self.prepared()?.clone(),
             observer_node_id: self.node,
             observed_revision: self.revision,
@@ -159,6 +185,19 @@ impl Database {
                 .map_err(unknown)
         };
         match request {
+            Request::Inspect(input) => {
+                input.validate(origin, intent)?;
+                let attempt = generation
+                    .target_resolutions
+                    .prepared_attempt(state, input.original_intent.request.command_id)
+                    .map_err(unknown)?;
+                if let Some(attempt) = attempt {
+                    input.matches(&attempt)?;
+                    Ok(Some(Fact::Prepared(attempt)))
+                } else {
+                    Ok(None)
+                }
+            }
             Request::Prepare(input) => {
                 input.validate(origin, intent)?;
                 let active = state
@@ -285,6 +324,9 @@ impl Database {
                 if attempt.revision > proof.revision || attempt.position.term > proof.term {
                     return Err(unknown("prepared target position exceeds current quorum"));
                 }
+                if matches!(&proof.request, Request::Inspect(_)) {
+                    proof.attempt_status()?;
+                }
             }
             Fact::Resolved(_) => {
                 proof.resolution()?;
@@ -336,6 +378,19 @@ impl Database {
         self.receiver_request(operation, Request::Prepare(input))
             .await
     }
+    /// Positive read-only recovery of the exact original reservation under a
+    /// distinct current Control phase. Absence returns UnknownOutcome.
+    pub async fn inspect_target_completion_attempt(
+        self: &Arc<Self>,
+        operation: &TargetOperation,
+        input: TargetCompletionAttemptStatusInput,
+    ) -> Result<VerifiedTargetReceiver> {
+        let proof = self
+            .receiver_observation(operation, Request::Inspect(Box::new(input)))
+            .await?;
+        proof.release(operation).await?;
+        Ok(proof)
+    }
     pub async fn resolve_target_completion(
         self: &Arc<Self>,
         operation: &TargetOperation,
@@ -375,7 +430,7 @@ impl Proposal {
         let bytes = self
             .database
             .group
-            .write(self.request.command(authorization).encode()?)
+            .write(self.request.command(authorization)?.encode()?)
             .await?;
         let outcome = serde_json::from_slice::<Result<TargetOutcome>>(&bytes)?;
         match (&self.request, outcome) {

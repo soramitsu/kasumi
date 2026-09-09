@@ -152,6 +152,7 @@ pub async fn open_target_replica(
                 | LifecyclePhase::MaintainTarget
                 | LifecyclePhase::Activate
                 | LifecyclePhase::InspectTarget
+                | LifecyclePhase::InspectCompletionAttempt
         ) && config.node_id == lease.signed().claims.request.target_node.node_id,
         "target group startup phase or node differs"
     );
@@ -208,6 +209,9 @@ pub async fn open_target_replica(
                             TargetReplicaInput::Inspection(inspection) => {
                                 inspection.validate(&origin, &intent)?;
                             }
+                            TargetReplicaInput::CompletionAttemptStatus(input) => {
+                                input.validate(&origin, &intent)?;
+                            }
                             TargetReplicaInput::Completion(completion) => {
                                 completion.validate(&origin, &intent)?;
                             }
@@ -231,6 +235,7 @@ pub async fn open_target_replica(
                                     phase,
                                     LifecyclePhase::Activate
                                         | LifecyclePhase::InspectTarget
+                                        | LifecyclePhase::InspectCompletionAttempt
                                         | LifecyclePhase::Complete
                                         | LifecyclePhase::ResolveComplete
                                         | LifecyclePhase::MaintainTarget

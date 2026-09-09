@@ -366,6 +366,45 @@ pub fn verify_target_completion_attempt(
 }
 
 #[derive(Clone)]
+pub struct AuthenticatedTargetCompletionAttemptStatus {
+    signed: kasumi_types::SignedTargetCompletionAttemptStatus,
+}
+impl AuthenticatedTargetCompletionAttemptStatus {
+    pub fn signed(&self) -> &kasumi_types::SignedTargetCompletionAttemptStatus {
+        &self.signed
+    }
+}
+/// A positive exact preparation fact observed under a distinct Control phase.
+/// This proves neither an absent original effect nor permission for a successor.
+pub fn verify_target_completion_attempt_status(
+    expected: &kasumi_types::TargetCompletionAttemptStatusInput,
+    signed: &kasumi_types::SignedTargetCompletionAttemptStatus,
+) -> Result<AuthenticatedTargetCompletionAttemptStatus> {
+    signed.observation.validate()?;
+    ensure!(
+        &signed.observation.input == expected,
+        "preparation status input differs"
+    );
+    let origin = &signed.observation.attempt.origin;
+    verify_target_materializations(origin, &expected.original_input.quorum.materialized)?;
+    let node = origin
+        .materialization
+        .request
+        .target_nodes
+        .get(&signed.observation.observer_node_id)
+        .ok_or_else(|| anyhow::anyhow!("preparation status observer is not installed"))?;
+    verify(
+        &node.attestation_public_key,
+        "kasumi.target-completion-attempt-status-observation.v1",
+        &signed.observation,
+        &signed.signature,
+    )?;
+    Ok(AuthenticatedTargetCompletionAttemptStatus {
+        signed: signed.clone(),
+    })
+}
+
+#[derive(Clone)]
 pub struct AuthenticatedTargetCompletionResolution {
     signed: kasumi_types::SignedTargetCompletionResolution,
 }
