@@ -977,6 +977,7 @@ impl NodeRuntime {
         config.validate()?;
         pending.standalone_lock = crate::standalone::claim(&config)?;
         let scratch_disk = kasumi_store::ScratchDisk::open(config.scratch_disk.clone())?;
+        let admission = kasumi_engine::admission::NodeAdmission::new(config.admission.clone())?;
         let signer_verifier = if let Some(verifier) = &config.signer_verifier {
             let mut domains = BTreeMap::new();
             for authority in config.serving_authorities.values() {
@@ -1007,7 +1008,6 @@ impl NodeRuntime {
                 ))
             })
             .collect::<Result<BTreeMap<_, _>>>()?;
-        let admission = kasumi_engine::admission::NodeAdmission::new(config.admission.clone())?;
         let lifecycle_signer = config
             .control
             .lifecycle

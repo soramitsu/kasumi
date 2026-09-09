@@ -38,6 +38,7 @@ pub struct AuthorityRuntimeConfig {
     pub installation: AuthorityInstallation,
     pub bootstrap: AuthorityBootstrap,
     pub resource_budget_bytes: u64,
+    pub admission: kasumi_engine::admission::AdmissionConfig,
     pub database_path: PathBuf,
     pub database_id: Uuid,
     pub scratch_disk: kasumi_store::ScratchDiskConfig,
@@ -110,6 +111,7 @@ impl AuthorityRuntimeConfig {
         )?;
 
         self.scratch_disk.validate()?;
+        self.admission.validate()?;
         if let Some(publications) = &self.signer_publications {
             publications.validate()?;
         }
@@ -246,6 +248,7 @@ impl AuthorityRuntime {
         let outcome = crate::startup_preparation::capture("authority runtime", async {
             config.validate()?;
             let scratch_disk = kasumi_store::ScratchDisk::open(config.scratch_disk.clone())?;
+            let admission = kasumi_engine::admission::NodeAdmission::new(config.admission.clone())?;
             let auth = Authenticator::new(config.auth.clone())?;
             let native_tls = kasumi_transport::ReloadableServerConfig::new(config.native.load()?);
             let identity = config.replication.listener.tls.load()?;
@@ -317,10 +320,9 @@ impl AuthorityRuntime {
             ) {
                 return Err(error);
             }
-            let audit = config.security_audit.open(
-                audit_store.clone(),
-                kasumi_engine::admission::NodeAdmission::new(Default::default())?,
-            )?;
+            let audit = config
+                .security_audit
+                .open(audit_store.clone(), admission.clone())?;
             pending.audits.push(audit.clone());
             auth.install_audit(audit.clone())?;
             network.install_audit(audit.clone())?;
