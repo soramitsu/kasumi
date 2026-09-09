@@ -22,6 +22,7 @@ pub use backup_sessions::{
 mod device_disk;
 mod keys;
 mod node_disk;
+mod node_file;
 mod read_view;
 pub use node_disk::{
     CensusCancellation, DiskWork, NodeDisk, NodeDiskConfig, NodeDiskFile, NodeDiskPhase,
@@ -154,47 +155,73 @@ pub struct NodeStore {
 }
 
 impl NodeStore {
-    pub fn open(path: impl AsRef<Path>, scratch_disk: Arc<ScratchDisk>) -> Result<Arc<Self>> {
-        let path = path.as_ref();
-        let parent = path
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
-        durable_directory(parent).context("creating database directory")?;
-        let file = private_files::open_database(path).context("opening private database file")?;
-        let db = Database::builder()
-            .create_file(file)
-            .context("opening durable database")?;
-        let node = Self::from_database(db, Some(std::fs::canonicalize(path)?), scratch_disk)?;
-        // redb synchronizes file contents; a new directory entry needs its own
-        // persistence before any acknowledged first write can be crash durable.
-        std::fs::File::open(parent)?
-            .sync_all()
-            .context("syncing database directory entry")?;
-        Ok(node)
-    }
-
-    /// Reopen an installed database without creating directories or an absent
-    /// file. Validation and redb operate on the same owner-only descriptor.
-    pub fn open_existing(
+    /// Initialize a new, exclusively created inode. Its parent must exist.
+    /// The caller durably chooses `node_store_id` before creating the file and
+    /// retains responsibility for exact partial/uncertain initialization cleanup.
+    pub fn create_new(
         path: impl AsRef<Path>,
+        node_store_id: Uuid,
         scratch_disk: Arc<ScratchDisk>,
     ) -> Result<Arc<Self>> {
-        let path = path.as_ref();
-        let file = private_files::open_existing_database(path)?;
-        let db = Database::builder().create_file(file)?;
-        // A valid unrelated redb file is not an initialized Kasumi store.
+        Self::initialize(
+            node_file::NodeFile::create_new(path.as_ref(), node_store_id)?,
+            scratch_disk,
+        )
+    }
+
+    /// Initialize the exact empty inode already durably owned by an installation
+    /// or recovery journal. A populated/partial file is never adopted or reset.
+    pub fn initialize_owned_empty(
+        path: impl AsRef<Path>,
+        expected_file: &private_files::FileIdentity,
+        node_store_id: Uuid,
+        scratch_disk: Arc<ScratchDisk>,
+    ) -> Result<Arc<Self>> {
+        Self::initialize(
+            node_file::NodeFile::initialize_owned_empty(
+                path.as_ref(),
+                expected_file,
+                node_store_id,
+            )?,
+            scratch_disk,
+        )
+    }
+
+    fn initialize(
+        file: Arc<node_file::NodeFile>,
+        scratch_disk: Arc<ScratchDisk>,
+    ) -> Result<Arc<Self>> {
+        let db = Database::builder().create_with_backend(file.backend())?;
+        Self::initialize_tables(&db)?;
+        file.publish_ready()?;
+        Ok(Self::installed(
+            db,
+            Some(file.path().to_owned()),
+            scratch_disk,
+        ))
+    }
+
+    /// Reject unknown/partial files and a different installed UUID before redb
+    /// can write. The exact locked descriptor survives validation and recovery.
+    /// A recognized owned payload may need redb recovery bookkeeping even if a
+    /// later table, tenant, or bootstrap check rejects its logical contents.
+    pub fn open_existing(
+        path: impl AsRef<Path>,
+        expected_id: Uuid,
+        scratch_disk: Arc<ScratchDisk>,
+    ) -> Result<Arc<Self>> {
+        let file = node_file::NodeFile::open_existing(path.as_ref(), expected_id)?;
+        let db = Database::builder().create_with_backend(file.backend())?;
         {
             let tx = db.begin_read()?;
             tx.open_table(CATALOG)?;
             tx.open_table(RECORDS)?;
         }
-        Ok(Arc::new(Self {
+        Ok(Self::installed(
             db,
+            Some(file.path().to_owned()),
             scratch_disk,
-            path: Some(std::fs::canonicalize(path)?),
-            tenants: AsyncMutex::new(HashMap::new()),
-        }))
+        ))
     }
 
     #[cfg(any(test, feature = "test-utils"))]
@@ -202,11 +229,9 @@ impl NodeStore {
         backend: impl redb::StorageBackend,
         scratch_disk: Arc<ScratchDisk>,
     ) -> Result<Arc<Self>> {
-        Self::from_database(
-            Database::builder().create_with_backend(backend)?,
-            None,
-            scratch_disk,
-        )
+        let db = Database::builder().create_with_backend(backend)?;
+        Self::initialize_tables(&db)?;
+        Ok(Self::installed(db, None, scratch_disk))
     }
 
     /// Every temporary image/table on this node shares this explicit owner.
@@ -214,11 +239,7 @@ impl NodeStore {
         &self.scratch_disk
     }
 
-    fn from_database(
-        db: Database,
-        path: Option<PathBuf>,
-        scratch_disk: Arc<ScratchDisk>,
-    ) -> Result<Arc<Self>> {
+    fn initialize_tables(db: &Database) -> Result<()> {
         let mut tx = db.begin_write()?;
         tx.set_durability(Durability::Immediate)?;
         tx.set_two_phase_commit(true);
@@ -227,12 +248,16 @@ impl NodeStore {
             tx.open_table(RECORDS)?;
         }
         tx.commit()?;
-        Ok(Arc::new(Self {
+        Ok(())
+    }
+
+    fn installed(db: Database, path: Option<PathBuf>, scratch_disk: Arc<ScratchDisk>) -> Arc<Self> {
+        Arc::new(Self {
             db,
             scratch_disk,
             path,
             tenants: AsyncMutex::new(HashMap::new()),
-        }))
+        })
     }
 
     fn catalog(&self, tenant: &str) -> Result<Option<KeyCatalog>> {
