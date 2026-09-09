@@ -14,6 +14,8 @@ production acceptance remain unfinished.
 | `ccf76d6` | Compilation passed; seven focused tests ran, one passed and six failed. Total 9.888 s. |
 | `dad7479` | Exact fixture geometry and observed replacement extent corrected; six tests passed, one split-workload test failed. Total 7.380 s. |
 | `2886774` | All seven focused tests passed, none ignored; 86 unrelated tests filtered out. Total 6.031 s. |
+| `5c2a3bf-preflight` | The runner failed before Cargo because system Python lacked its hash helper. No compilation or tests ran. |
+| `5c2a3bf` | Three allocator-candidate tests passed in 8.148 s, then ten growth-admission tests passed in 5.726 s; none ignored. |
 
 In `ccf76d6`, the shared allocator/system-namespace state regression passed.
 Five tests failed at reopening their 512-byte-page fixture with a builder that
@@ -45,3 +47,26 @@ hashes. Preserved local executable copies are listed separately.
 The older redb dependency belongs only to the unmodified upstream development
 graph. It adds no Kasumi legacy storage decoder or compatibility mode. The
 first-release design continues to reject unsupported Kasumi formats directly.
+
+`5c2a3bf` is the first private allocator-candidate increment. Its candidate view
+covers deferred durable frees, matching quick-repair bitmaps, shrink preparation,
+and publication by moving prepared regional owners. This focused cohort ran in
+session 59420 with groups 47316 and 47414; both exited zero and drained. The exact
+compiled features were `default`, `std`, and
+`experimental-precommit-growth-admission`, with one Cargo job and one test thread.
+Source, both locks, package input manifest, archive, and complete patch hashes
+stayed unchanged. The executable SHA-256 is
+`2cadf445c05085bd04fda43b8846d5b0d5a44502d4250f7e447b77510b7ef179`.
+Executable files remain outside the repository; only verified paths/hashes are
+retained here. The older 288 executable was verified and copied before target reuse.
+
+The failed preflight runner and corrected actual runner are separate evidence.
+The actual run used system Python with the corrected streaming helper; its
+executable/version/hash is explicitly recorded as post-execution metadata. The
+later instruction to use bundled Python did not retroactively change this run.
+
+The subsequent admitted durable subset at `11a06d0` is source-only and changes
+commit outcomes and supported modes. It has no result in this record and cannot
+reuse these 13 passing tests as its own validation. Full upstream tests/fuzzing,
+all-mode preparation, database-wide disk ownership, and production acceptance
+remain open.

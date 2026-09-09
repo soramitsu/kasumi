@@ -1,0 +1,9 @@
+{
+  "kind": "runner preflight failure before output-directory creation or Cargo dispatch",
+  "source": "5c2a3bfc553acf21a5d11c046bbf76fc6e5a0d0a",
+  "process_exit": 1,
+  "error": "AttributeError: module 'hashlib' has no attribute 'file_digest'",
+  "runner_sha256": "28e7453cc15f393d8dbcbd067f7e64a5345d4e4a4c98e38c00ba47861826f4e4",
+  "cargo_started": false,
+  "test_count": 0
+}

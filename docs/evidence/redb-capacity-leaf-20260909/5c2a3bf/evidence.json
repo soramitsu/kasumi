@@ -1,0 +1,158 @@
+{
+  "scope": "macOS ARM64 thirteen focused redb tests: original seven growth admission regressions plus six allocator candidate regressions. Frozen5c2a3bf source only; prior288 baseline preserved independently. No root dependency patch, Kasumi engine/store/server/Raft compilation, listener or provider. Shared host; full upstream just test, fuzzing, durable disk governor and production integration remain unrun.",
+  "source_before": {
+    "head": "5c2a3bfc553acf21a5d11c046bbf76fc6e5a0d0a",
+    "tree": "3c4a914d0ff978472688b97054b6d49c08bd9a83",
+    "status": "",
+    "lock_sha256": "f42fec1f6e7232b1cd5e9c564cfff56dfec7634f2548eab7eb2096a0d0c17c78",
+    "leaf_lock_sha256": "bcccfce715a96865a7c82c4f97d64140b825ec90ea676d35c26e5deb048c0ce5",
+    "package_manifest_sha256": "9706d7765244fe93184518201bb57a2756eb9589a64becf884ec2af565dfc050",
+    "patch_sha256": "15e39ed569a336dc9c6bdb0bdf752cd72fa800401946c6e3521209731d73b0a4",
+    "archive_sha256": "de6c3b63e007e90ce536ec2ae4690826136a20ec8dbbbb400daef1bb999d2e36"
+  },
+  "tools": {
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo": "7672ead309d505577c018fff2cafb3433601f073e38cbe87359ac1f7b944bbf5",
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc": "210df6794001b73ec3d453878707fa1e0bdcb63c427024a6e6574bbe5615a4da",
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustdoc": "aa94960b6a477441f6d1a797394daf4cafcc889d837550c8fa462b102e3fa5da"
+  },
+  "runner_sha256": "0b0deecdaf6ac5e63e2c9ac86c4957c54ac276f866374b48517fa6a25fc96a06",
+  "per_gate_timeout_seconds": 300,
+  "gates": [
+    {
+      "name": "redb-allocator-candidate",
+      "command": [
+        "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+        "test",
+        "--manifest-path",
+        "vendor/redb-4.2.0/Cargo.toml",
+        "--locked",
+        "--offline",
+        "-j1",
+        "--features",
+        "experimental-precommit-growth-admission",
+        "--lib",
+        "tree_store::page_store::allocator_commit::tests",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "seconds": 8.147860459,
+      "process_group_id": 47316,
+      "process_exit_code": 0,
+      "exit_code": 0,
+      "problem": null,
+      "cleanup": {
+        "signals": [],
+        "process_returncode": 0,
+        "process_group_drained": true
+      },
+      "required_test": [
+        "tree_store::page_store::allocator_commit::tests::discard_preserves_live_allocator_and_only_copies_changed_regions",
+        "tree_store::page_store::allocator_commit::tests::publication_matches_prepared_quick_repair_bytes_and_preserves_other_pages",
+        "tree_store::page_store::allocator_commit::tests::shrinking_is_private_until_publication_and_cannot_discard_live_pages"
+      ],
+      "required_test_passed": true,
+      "compiled_features_match": true,
+      "log_sha256": "65221102824a262844d03b843ba7d288f89e2109ac287431228293f292a70c1c",
+      "artifacts": [
+        {
+          "path": "/tmp/kasumi-redb-capacity-target/debug/deps/redb-ba841ece6df4e8b1",
+          "sha256": "2cadf445c05085bd04fda43b8846d5b0d5a44502d4250f7e447b77510b7ef179",
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 2,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": [
+            "default",
+            "experimental-precommit-growth-admission",
+            "std"
+          ],
+          "preserved_path": "/tmp/kasumi-redb-5c2a3bf-leaf/preserved-executables/redb-allocator-candidate-redb-ba841ece6df4e8b1"
+        }
+      ]
+    },
+    {
+      "name": "redb-growth-admission",
+      "command": [
+        "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+        "test",
+        "--manifest-path",
+        "vendor/redb-4.2.0/Cargo.toml",
+        "--locked",
+        "--offline",
+        "-j1",
+        "--features",
+        "experimental-precommit-growth-admission",
+        "--lib",
+        "transactions::growth_admission_tests",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "seconds": 5.725871790999999,
+      "process_group_id": 47414,
+      "process_exit_code": 0,
+      "exit_code": 0,
+      "problem": null,
+      "cleanup": {
+        "signals": [],
+        "process_returncode": 0,
+        "process_group_drained": true
+      },
+      "required_test": [
+        "transactions::growth_admission_tests::denied_growth_never_calls_resize_and_caught_error_cannot_commit",
+        "transactions::growth_admission_tests::split_failures_preserve_pinned_roots_and_successful_extent_charges",
+        "transactions::growth_admission_tests::replacement_denial_aborts_all_tables_and_retains_original_value",
+        "transactions::growth_admission_tests::explicit_abort_and_drop_after_capacity_denial_leave_database_usable",
+        "transactions::growth_admission_tests::actual_backend_failures_still_latch_and_never_claim_capacity_abort",
+        "transactions::growth_admission_tests::allocator_clones_and_system_namespace_share_the_capacity_abort_state",
+        "transactions::growth_admission_tests::commit_time_denial_keeps_failed_commit_latch_instead_of_claiming_rollback",
+        "transactions::growth_admission_tests::prepared_freed_records_are_rollback_valid_before_capacity_denial",
+        "transactions::growth_admission_tests::deferred_frees_survive_quick_repair_and_pinned_reader_reopen",
+        "transactions::growth_admission_tests::failed_root_io_discards_allocator_candidate_without_exposing_frees"
+      ],
+      "required_test_passed": true,
+      "compiled_features_match": true,
+      "log_sha256": "679dcad78fb3c7c99fce801c02991735ca9bda5ccb37708d79cfe9c7c97bc595",
+      "artifacts": [
+        {
+          "path": "/tmp/kasumi-redb-capacity-target/debug/deps/redb-ba841ece6df4e8b1",
+          "sha256": "2cadf445c05085bd04fda43b8846d5b0d5a44502d4250f7e447b77510b7ef179",
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 2,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": [
+            "default",
+            "experimental-precommit-growth-admission",
+            "std"
+          ],
+          "preserved_path": "/tmp/kasumi-redb-5c2a3bf-leaf/preserved-executables/redb-growth-admission-redb-ba841ece6df4e8b1"
+        }
+      ]
+    }
+  ],
+  "source_after": {
+    "head": "5c2a3bfc553acf21a5d11c046bbf76fc6e5a0d0a",
+    "tree": "3c4a914d0ff978472688b97054b6d49c08bd9a83",
+    "status": "",
+    "lock_sha256": "f42fec1f6e7232b1cd5e9c564cfff56dfec7634f2548eab7eb2096a0d0c17c78",
+    "leaf_lock_sha256": "bcccfce715a96865a7c82c4f97d64140b825ec90ea676d35c26e5deb048c0ce5",
+    "package_manifest_sha256": "9706d7765244fe93184518201bb57a2756eb9589a64becf884ec2af565dfc050",
+    "patch_sha256": "15e39ed569a336dc9c6bdb0bdf752cd72fa800401946c6e3521209731d73b0a4",
+    "archive_sha256": "de6c3b63e007e90ce536ec2ae4690826136a20ec8dbbbb400daef1bb999d2e36"
+  },
+  "runner_interpreter_recorded_after_execution": {
+    "invocation": "python3 /tmp/kasumi-redb-5c2a3bf-leaf-gates.py",
+    "executable": "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/bin/python3.9",
+    "version": "3.9.6 (default, May 22 2026, 11:13:45) \n[Clang 21.0.0 (clang-2100.1.1.101)]",
+    "sha256": "bdea59019a38eb6600cc9e71e984a97fedadc406448431281e7657030f54987e",
+    "note": "Same interpreter used by this cohort. Parent bundled-Python instruction arrived after dispatch; cohort was already terminal before it was read. No rerun performed."
+  }
+}
