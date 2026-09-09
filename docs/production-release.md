@@ -88,6 +88,11 @@ integration; the final integrated source must then pass the complete gates above
    lease renewals and target phase renewals, then repeat the three-node restored
    restart that failed on Linux. A source-level ownership counterexample does
    not establish the sole cause of that observed failure.
+   Combined `27b0ebc` passed the verifier, audit, tenant-audit and memory-admission
+   gates (19 tests). An obsolete lease test filter then selected zero tests;
+   the runner rejected it and stopped with all process groups drained. The
+   [failed initial cohort](evidence/combined-27b0ebc-initial-20260909/README.md)
+   remains preserved; the corrected selection and later native gates are pending.
 2. Integrate original mutation receipt scope and digest verification, including
    restored lineage intervals, native/MCP lost-response resolution and the
    finite original SDK deadline. The prepared receipt checkpoint passes client

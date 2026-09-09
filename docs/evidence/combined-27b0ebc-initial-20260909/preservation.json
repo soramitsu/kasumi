@@ -1,0 +1,56 @@
+[
+  {
+    "path": "audit-workers.log",
+    "original": "/tmp/kasumi-27b0ebc-combined-gates/audit-workers.log",
+    "sha256": "beb65d1ce4d9482ff4b412d0c2a09a530de8faf9f2edc7a920ba93d1773baf80",
+    "bytes": 370255
+  },
+  {
+    "path": "evidence.json",
+    "original": "/tmp/kasumi-27b0ebc-combined-gates/evidence.json",
+    "sha256": "142617569221f9ddd367b24f451b16e2b735ca37d656b65b031cdbd8901f1988",
+    "bytes": 1555820
+  },
+  {
+    "path": "lease-retention.log",
+    "original": "/tmp/kasumi-27b0ebc-combined-gates/lease-retention.log",
+    "sha256": "12dfee9b75f4608313cf9d15242109987cd24acdfc6406f4a1f53fe0e6f4ca6e",
+    "bytes": 368506
+  },
+  {
+    "path": "memory-admission.log",
+    "original": "/tmp/kasumi-27b0ebc-combined-gates/memory-admission.log",
+    "sha256": "05b1531c353219e0609957c83d697edda05ca9f5b35f6736644c90d577b96250",
+    "bytes": 369586
+  },
+  {
+    "path": "plan.json",
+    "original": "/tmp/kasumi-27b0ebc-combined-gates/plan.json",
+    "sha256": "900fa88e4cd35db220e0b975854e6a90b83efd0828b7373a876eaa65031703da",
+    "bytes": 13697
+  },
+  {
+    "path": "runner.py",
+    "original": "/tmp/kasumi-27b0ebc-combined-gates/runner.py",
+    "sha256": "ad3d647fbb73d9d32e04e4e202814f68aea2cb5aa80acbed03a10fa8a3855a6f",
+    "bytes": 10765
+  },
+  {
+    "path": "source-before.json",
+    "original": "/tmp/kasumi-27b0ebc-combined-gates/source-before.json",
+    "sha256": "0c5f81012fb74887ce0c3438be0820b35c52387a8923b341fba12acc09655fab",
+    "bytes": 301217
+  },
+  {
+    "path": "tenant-audit-worker.log",
+    "original": "/tmp/kasumi-27b0ebc-combined-gates/tenant-audit-worker.log",
+    "sha256": "17a0e8ebf212c3ad9899a2534305c02e1094e7d701ed9ec9cb74d03dfc956bf7",
+    "bytes": 368746
+  },
+  {
+    "path": "verifier-worker-registration.log",
+    "original": "/tmp/kasumi-27b0ebc-combined-gates/verifier-worker-registration.log",
+    "sha256": "692789ca7314eaab90ae5b986952fc508b8616bd97487c5034a99e857910fb45",
+    "bytes": 87799
+  }
+]
