@@ -43,6 +43,7 @@ impl AuthorityTrust {
             }
             kasumi_types::LifecyclePhase::InspectTarget
             | kasumi_types::LifecyclePhase::InspectCompletionAttempt
+            | kasumi_types::LifecyclePhase::InspectCompletionResolution
             | kasumi_types::LifecyclePhase::ResolveComplete
             | kasumi_types::LifecyclePhase::MaintainTarget => c.application_purpose.is_some(),
             _ => c.application_purpose == Some(LeasePurpose::RestorePreparation),

@@ -487,3 +487,53 @@ pub fn verify_target_resolution_budget(
         signed: signed.clone(),
     })
 }
+
+#[derive(Clone)]
+pub struct AuthenticatedTargetCompletionTerminalStatus {
+    signed: kasumi_types::SignedTargetCompletionTerminalStatus,
+}
+impl AuthenticatedTargetCompletionTerminalStatus {
+    pub fn signed(&self) -> &kasumi_types::SignedTargetCompletionTerminalStatus {
+        &self.signed
+    }
+}
+/// Exact original positive resolver fact only; absence and new resolver grants
+/// cannot be represented by this signature domain.
+pub fn verify_target_completion_terminal_status(
+    expected: &kasumi_types::TargetCompletionTerminalStatusInput,
+    signed: &kasumi_types::SignedTargetCompletionTerminalStatus,
+) -> Result<AuthenticatedTargetCompletionTerminalStatus> {
+    signed.observation.validate()?;
+    ensure!(
+        &signed.observation.input == expected,
+        "terminal status input differs"
+    );
+    let origin = &signed.observation.fact.input.attempt.origin;
+    let bootstrap = verify_target_materializations(
+        origin,
+        &expected.original_input.attempt.input.quorum.materialized,
+    )?;
+    if let kasumi_types::TargetCompletionTerminal::Committed(completion) =
+        &signed.observation.fact.terminal
+    {
+        ensure!(
+            completion.bootstrap_sha256 == bootstrap,
+            "terminal status completion bootstrap differs"
+        );
+    }
+    let node = origin
+        .materialization
+        .request
+        .target_nodes
+        .get(&signed.observation.observer_node_id)
+        .ok_or_else(|| anyhow::anyhow!("terminal status observer is not installed"))?;
+    verify(
+        &node.attestation_public_key,
+        "kasumi.target-completion-terminal-status-observation.v1",
+        &signed.observation,
+        &signed.signature,
+    )?;
+    Ok(AuthenticatedTargetCompletionTerminalStatus {
+        signed: signed.clone(),
+    })
+}

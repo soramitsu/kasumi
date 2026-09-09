@@ -83,6 +83,44 @@ pub(crate) fn resolution_input(
         attempt: Box::new(preparation(state, operation)?.clone()),
     })
 }
+pub(crate) fn terminal_status_input(
+    state: &TenantState,
+    operation: &RecoveryRecord,
+) -> Result<TargetCompletionTerminalStatusInput> {
+    let original = phase(
+        state,
+        operation,
+        operation
+            .completion_resolution_attempt
+            .ok_or_else(|| conflict("original resolver dispatch absent"))?,
+    )?;
+    let (_, request) = target_request(original)?;
+    let TargetRuntimeStep::ResolveComplete(input) = &request.step else {
+        return Err(conflict("original resolver step differs"));
+    };
+    if **input != resolution_input(state, operation)? {
+        return Err(conflict("original resolver input differs"));
+    }
+    let original_intent = state
+        .lifecycle_control
+        .as_ref()
+        .and_then(|c| c.intents.get(&request.command_id))
+        .ok_or_else(|| conflict("original resolver Control identity absent"))?;
+    let value = TargetCompletionTerminalStatusInput {
+        original_intent: original_intent.clone(),
+        original_input: *input.clone(),
+        original_dispatch_not_after_ms: request.not_after_ms,
+    };
+    value.digest()?;
+    Ok(value)
+}
+fn terminal_response(response: &TargetRuntimeResponse) -> Result<&TargetCompletionResolutionFact> {
+    match &response.outcome {
+        TargetRuntimeOutcome::ResolvedCompletion(signed) => Ok(&signed.observation.fact),
+        TargetRuntimeOutcome::CompletionTerminalStatus(signed) => Ok(&signed.observation.fact),
+        _ => Err(conflict("terminal evidence response kind differs")),
+    }
+}
 pub(crate) fn terminal<'a>(
     state: &'a TenantState,
     operation: &RecoveryRecord,
@@ -99,13 +137,11 @@ pub(crate) fn terminal<'a>(
             "terminal completion evidence is not a native outcome",
         ));
     };
-    let TargetRuntimeOutcome::ResolvedCompletion(signed) = &response.outcome else {
-        return Err(conflict("terminal completion evidence kind differs"));
-    };
-    if signed.observation.fact.input != resolution_input(state, operation)? {
+    let fact = terminal_response(response)?;
+    if fact.input != resolution_input(state, operation)? {
         return Err(conflict("terminal completion changed the prepared attempt"));
     }
-    Ok(&signed.observation.fact)
+    Ok(fact)
 }
 pub(crate) fn fresh_phase(
     state: &TenantState,
@@ -121,10 +157,7 @@ pub(crate) fn fresh_phase(
         };
     }
     if operation.completion_resolution_attempt.is_some() {
-        return Err(error(
-            ErrorCode::Unavailable,
-            "original terminal resolution is unresolved; fresh terminal-only observation is not installed",
-        ));
+        return Ok(LifecyclePhase::InspectCompletionResolution);
     }
     if operation.completion_preparation.is_some() {
         return Ok(LifecyclePhase::ResolveComplete);
@@ -142,6 +175,8 @@ pub(crate) fn is_step(step: &TargetRuntimeStep) -> bool {
         TargetRuntimeStep::PrepareComplete(_)
             | TargetRuntimeStep::InspectCompletionAttempt(_)
             | TargetRuntimeStep::ResolveComplete(_)
+            | TargetRuntimeStep::InspectCompletionResolution(_)
+            | TargetRuntimeStep::Start(TargetReplicaInput::CompletionTerminalStatus(_))
             | TargetRuntimeStep::Start(TargetReplicaInput::CompletionAttemptStatus(_))
             | TargetRuntimeStep::Start(TargetReplicaInput::CompletionResolution(_))
     )
@@ -175,6 +210,13 @@ pub(crate) fn validate_step(
         | TargetRuntimeStep::InspectCompletionAttempt(input) => {
             if **input != status_input(state, operation)? {
                 return Err(conflict("preparation status input differs"));
+            }
+            input.validate(&origin(state, operation)?, current)?;
+        }
+        TargetRuntimeStep::Start(TargetReplicaInput::CompletionTerminalStatus(input))
+        | TargetRuntimeStep::InspectCompletionResolution(input) => {
+            if **input != terminal_status_input(state, operation)? {
+                return Err(conflict("terminal status changed its original resolver"));
             }
             input.validate(&origin(state, operation)?, current)?;
         }
@@ -266,6 +308,26 @@ pub(crate) fn validate_outcome(
             }
         }
         (
+            TargetRuntimeStep::InspectCompletionResolution(input),
+            TargetRuntimeOutcome::CompletionTerminalStatus(signed),
+        ) => {
+            kasumi_serving::verify_target_completion_terminal_status(input, signed)
+                .map_err(|_| conflict("terminal-only status signature or quorum differs"))?;
+            if signed.observation.status_intent != *current
+                || signed.observation.observer_node_id != node
+            {
+                return Err(conflict("terminal-only status current identity differs"));
+            }
+            let original = phase(
+                state,
+                operation,
+                operation.completion_resolution_attempt.unwrap(),
+            )?;
+            if original.prepared_revision >= prepared.prepared_revision {
+                return Err(conflict("terminal-only status precedes original resolver"));
+            }
+        }
+        (
             TargetRuntimeStep::ResolveComplete(input),
             TargetRuntimeOutcome::ResolvedCompletion(signed),
         ) => {
@@ -316,6 +378,11 @@ pub(crate) fn next(
         LifecyclePhase::ResolveComplete => {
             TargetReplicaInput::CompletionResolution(Box::new(resolution_input(state, operation)?))
         }
+        LifecyclePhase::InspectCompletionResolution => {
+            TargetReplicaInput::CompletionTerminalStatus(Box::new(terminal_status_input(
+                state, operation,
+            )?))
+        }
         _ => return Err(conflict("current receiver phase differs")),
     };
     let mut missing = None;
@@ -339,6 +406,9 @@ pub(crate) fn next(
                 }
                 TargetReplicaInput::CompletionResolution(input) => {
                     TargetRuntimeStep::ResolveComplete(input)
+                }
+                TargetReplicaInput::CompletionTerminalStatus(input) => {
+                    TargetRuntimeStep::InspectCompletionResolution(input)
                 }
                 _ => unreachable!(),
             },
@@ -379,34 +449,35 @@ pub(crate) fn validate_link(
         return Err(conflict("receiver resolution phase is not causally later"));
     }
     validate_outcome(state, operation, linked, response)?;
-    match (&old_request.step, &response.outcome, terminal_link) {
-        (
-            TargetRuntimeStep::PrepareComplete(input),
-            TargetRuntimeOutcome::CompletionAttemptStatus(signed),
-            false,
-        ) if signed.observation.attempt.input == *input
-            && signed.observation.attempt.intent.request.command_id == old_request.command_id
-            && signed.observation.attempt.dispatch_not_after_ms == old_request.not_after_ms => {}
-        (
-            TargetRuntimeStep::Complete(input),
-            TargetRuntimeOutcome::ResolvedCompletion(signed),
-            true,
-        ) if signed.observation.fact.input.attempt.input == *input
-            && signed
-                .observation
-                .fact
-                .input
-                .attempt
-                .intent
-                .request
-                .command_id
-                == old_request.command_id
-            && signed.observation.fact.input.attempt.dispatch_not_after_ms
-                == old_request.not_after_ms => {}
-        _ => {
-            return Err(conflict(
-                "receiver resolution substituted its original dispatch",
-            ));
+    if terminal_link {
+        let TargetRuntimeStep::Complete(input) = &old_request.step else {
+            return Err(conflict("terminal link original operation differs"));
+        };
+        let fact = terminal_response(response)?;
+        if fact.input.attempt.input != *input
+            || fact.input.attempt.intent.request.command_id != old_request.command_id
+            || fact.input.attempt.dispatch_not_after_ms != old_request.not_after_ms
+        {
+            return Err(conflict("terminal link changed original Complete dispatch"));
+        }
+    } else {
+        let TargetRuntimeStep::PrepareComplete(input) = &old_request.step else {
+            return Err(conflict("preparation link original operation differs"));
+        };
+        let attempt = match &response.outcome {
+            TargetRuntimeOutcome::CompletionAttemptStatus(signed) => &signed.observation.attempt,
+            TargetRuntimeOutcome::PreparedCompletion(signed) => &signed.observation.attempt,
+            _ => {
+                return Err(conflict(
+                    "preparation link outcome is not positive evidence",
+                ));
+            }
+        };
+        if attempt.input != *input
+            || attempt.intent.request.command_id != old_request.command_id
+            || attempt.dispatch_not_after_ms != old_request.not_after_ms
+        {
+            return Err(conflict("preparation link changed original dispatch"));
         }
     }
     Ok(())
@@ -418,15 +489,20 @@ pub(crate) fn resolve_prior(
     response: &TargetRuntimeResponse,
 ) -> Result<()> {
     let (id, terminal_link) = match &response.outcome {
-        TargetRuntimeOutcome::CompletionAttemptStatus(_) => {
+        TargetRuntimeOutcome::CompletionAttemptStatus(_)
+        | TargetRuntimeOutcome::PreparedCompletion(_) => {
             (operation.completion_preparation_attempt, false)
         }
-        TargetRuntimeOutcome::ResolvedCompletion(_) => (operation.completion_attempt, true),
+        TargetRuntimeOutcome::ResolvedCompletion(_)
+        | TargetRuntimeOutcome::CompletionTerminalStatus(_) => (operation.completion_attempt, true),
         _ => return Ok(()),
     };
     let Some(id) = id else {
         return Ok(());
     };
+    if id == observed.phase_id {
+        return Ok(());
+    }
     let mut previous = phase(state, operation, id)?.clone();
     if previous.outcome.is_some() {
         return Ok(());
@@ -535,6 +611,60 @@ pub(crate) fn validate_inspected_terminal(
             "positive completion inspection disagrees with its permanent terminal",
         )),
     }
+}
+
+pub(crate) fn validate_resolver_link(
+    state: &TenantState,
+    operation: &RecoveryRecord,
+    original: &RecoveryPhaseRecord,
+    status_phase: Uuid,
+) -> Result<()> {
+    let linked = phase(state, operation, status_phase)?;
+    let (_, request) = target_request(original)?;
+    let TargetRuntimeStep::ResolveComplete(input) = &request.step else {
+        return Err(conflict("terminal observation original resolver differs"));
+    };
+    let Some(RecoveryDispatchOutcome::Target(response)) = &linked.outcome else {
+        return Err(conflict("positive terminal observation absent"));
+    };
+    let TargetRuntimeOutcome::CompletionTerminalStatus(signed) = &response.outcome else {
+        return Err(conflict("terminal observation kind differs"));
+    };
+    if linked.prepared_revision <= original.prepared_revision
+        || linked.resolved_revision != original.resolved_revision
+        || signed.observation.input.original_input != **input
+        || signed.observation.input.original_intent.request.command_id != request.command_id
+        || signed.observation.input.original_dispatch_not_after_ms != request.not_after_ms
+    {
+        return Err(conflict(
+            "terminal observation changed original resolver or causal order",
+        ));
+    }
+    validate_outcome(state, operation, linked, response)
+}
+pub(crate) fn resolve_resolver(
+    state: &mut TenantState,
+    operation: &RecoveryRecord,
+    observed: &RecoveryPhaseRecord,
+) -> Result<()> {
+    let id = operation
+        .completion_resolution_attempt
+        .ok_or_else(|| conflict("original resolver absent"))?;
+    let mut original = phase(state, operation, id)?.clone();
+    if original.outcome.is_some() {
+        return Ok(());
+    }
+    original.resolved_revision = Some(state.revision);
+    validate_resolver_link(state, operation, &original, observed.phase_id)?;
+    original.outcome = Some(RecoveryDispatchOutcome::TerminalObserved {
+        status_phase: observed.phase_id,
+    });
+    original.validate()?;
+    state
+        .recovery_control
+        .phases
+        .insert(phase_key(operation.request.operation_id, id), original);
+    Ok(())
 }
 
 #[cfg(test)]

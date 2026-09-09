@@ -110,6 +110,11 @@ async fn exact_target_terminal_prefix_hides_unpublished_rows_and_rejects_changed
         unreachable!()
     };
     let original = fact.input.attempt.intent.request.command_id;
+    assert!(selected.terminal_fact(&before, original).unwrap().is_none());
+    assert_eq!(
+        advanced.terminal_fact(&next, original).unwrap().as_deref(),
+        Some(fact.as_ref())
+    );
     assert!(
         selected
             .prepared_attempt(&before, original)

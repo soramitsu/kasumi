@@ -495,6 +495,7 @@ fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Result<RecoveryR
                             | TargetRuntimeStep::Complete(_)
                             | TargetRuntimeStep::PrepareComplete(_)
                             | TargetRuntimeStep::InspectCompletionAttempt(_)
+                            | TargetRuntimeStep::InspectCompletionResolution(_)
                             | TargetRuntimeStep::ResolveComplete(_)
                             | TargetRuntimeStep::Inspect(_)
                                 if operation.phase == RecoveryPhase::Complete =>
@@ -689,7 +690,9 @@ fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Result<RecoveryR
                 && matches!(
                     response.outcome,
                     TargetRuntimeOutcome::CompletionAttemptStatus(_)
+                        | TargetRuntimeOutcome::PreparedCompletion(_)
                         | TargetRuntimeOutcome::ResolvedCompletion(_)
+                        | TargetRuntimeOutcome::CompletionTerminalStatus(_)
                 )
             {
                 prepared.outcome = Some(outcome.as_ref().clone());
@@ -699,6 +702,12 @@ fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Result<RecoveryR
                     .phases
                     .insert(key.clone(), prepared.clone());
                 receiver::resolve_prior(state, &operation, &prepared, response)?;
+                if matches!(
+                    response.outcome,
+                    TargetRuntimeOutcome::CompletionTerminalStatus(_)
+                ) {
+                    receiver::resolve_resolver(state, &operation, &prepared)?;
+                }
             }
             if matches!((&prepared.input, outcome.as_ref()), (RecoveryDispatch::Target { request, .. }, RecoveryDispatchOutcome::Target(response)) if matches!(request.step, TargetRuntimeStep::Inspect(_)) && matches!(response.outcome, TargetRuntimeOutcome::Inspected(_)))
             {
@@ -752,6 +761,10 @@ pub(crate) fn expected_intent(
         }
         LifecyclePhase::ResolveComplete => (
             receiver::resolution_input(state, operation)?.digest()?,
+            None,
+        ),
+        LifecyclePhase::InspectCompletionResolution => (
+            receiver::terminal_status_input(state, operation)?.digest()?,
             None,
         ),
         LifecyclePhase::MaintainTarget => {
@@ -924,6 +937,7 @@ fn validate_input(
                 phase,
                 LifecyclePhase::InspectTarget
                     | LifecyclePhase::InspectCompletionAttempt
+                    | LifecyclePhase::InspectCompletionResolution
                     | LifecyclePhase::ResolveComplete
             ) {
                 let current = intent(
@@ -1245,6 +1259,12 @@ fn validate_outcome(
             receiver::validate_link(state, operation, prepared, *resolution_phase, true)?;
         }
         (
+            RecoveryDispatch::Target { .. },
+            RecoveryDispatchOutcome::TerminalObserved { status_phase },
+        ) => {
+            receiver::validate_resolver_link(state, operation, prepared, *status_phase)?;
+        }
+        (
             RecoveryDispatch::Target { node_id, request },
             RecoveryDispatchOutcome::Target(response),
         ) => {
@@ -1507,7 +1527,8 @@ fn advance(
                         operation.completion_preparation = Some(prepared.phase_id);
                     }
                 }
-                TargetRuntimeOutcome::ResolvedCompletion(_) => {
+                TargetRuntimeOutcome::ResolvedCompletion(_)
+                | TargetRuntimeOutcome::CompletionTerminalStatus(_) => {
                     if operation.completion_terminal.is_none() {
                         operation.completion_terminal = Some(prepared.phase_id);
                     }
@@ -2021,6 +2042,7 @@ fn validate_frozen_input(
                         LifecyclePhase::Complete
                             | LifecyclePhase::InspectTarget
                             | LifecyclePhase::InspectCompletionAttempt
+                            | LifecyclePhase::InspectCompletionResolution
                             | LifecyclePhase::ResolveComplete
                     )
                     | (

@@ -405,6 +405,7 @@ impl Database {
                     TargetRuntimeStep::Complete(_)
                         | TargetRuntimeStep::PrepareComplete(_)
                         | TargetRuntimeStep::InspectCompletionAttempt(_)
+                        | TargetRuntimeStep::InspectCompletionResolution(_)
                         | TargetRuntimeStep::ResolveComplete(_)
                         | TargetRuntimeStep::Inspect(_)
                         | TargetRuntimeStep::Activate { .. }
@@ -455,6 +456,7 @@ impl Database {
                         | TargetRuntimeStep::Complete(_)
                         | TargetRuntimeStep::PrepareComplete(_)
                         | TargetRuntimeStep::InspectCompletionAttempt(_)
+                        | TargetRuntimeStep::InspectCompletionResolution(_)
                         | TargetRuntimeStep::ResolveComplete(_)
                         | TargetRuntimeStep::Inspect(_)
                             if operation.phase == RecoveryPhase::Complete =>
@@ -651,6 +653,7 @@ impl Database {
                                 && matches!(
                                     current.request.phase,
                                     LifecyclePhase::InspectCompletionAttempt
+                                        | LifecyclePhase::InspectCompletionResolution
                                         | LifecyclePhase::ResolveComplete
                                 )
                                 && now < current.original_credential_expires_at_ms =>

@@ -288,6 +288,7 @@ impl Backend {
                 LifecyclePhase::Activate
                     | LifecyclePhase::InspectTarget
                     | LifecyclePhase::InspectCompletionAttempt
+                    | LifecyclePhase::InspectCompletionResolution
                     | LifecyclePhase::ResolveComplete
                     | LifecyclePhase::MaintainTarget
             ) && tenant.incarnation == i.target_incarnation

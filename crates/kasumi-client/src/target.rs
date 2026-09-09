@@ -265,6 +265,17 @@ impl KasumiTargetClient {
                 );
                 verify_target_completion_attempt_status(input, signed)?;
             }
+            (
+                TargetRuntimeStep::InspectCompletionResolution(input),
+                TargetRuntimeOutcome::CompletionTerminalStatus(signed),
+            ) => {
+                ensure!(
+                    signed.observation.status_intent == *intent
+                        && signed.observation.observer_node_id == self.node_id,
+                    "terminal status current phase differs"
+                );
+                verify_target_completion_terminal_status(input, signed)?;
+            }
             (TargetRuntimeStep::Stop(reference), TargetRuntimeOutcome::Stopped(signed)) => {
                 ensure!(
                     signed.fact.stopped.observation.reference == *reference,
@@ -334,6 +345,10 @@ fn validate_request_phase(
         TargetRuntimeStep::Start(TargetReplicaInput::CompletionAttemptStatus(i)) => {
             (LifecyclePhase::InspectCompletionAttempt, Some(i.digest()?))
         }
+        TargetRuntimeStep::Start(TargetReplicaInput::CompletionTerminalStatus(i)) => (
+            LifecyclePhase::InspectCompletionResolution,
+            Some(i.digest()?),
+        ),
         TargetRuntimeStep::ConfirmActivation(signed) => {
             verify_target_activation(&signed.observation.completion.origin, signed)?;
             signed
@@ -369,6 +384,10 @@ fn validate_request_phase(
         TargetRuntimeStep::InspectCompletionAttempt(i) => {
             (LifecyclePhase::InspectCompletionAttempt, Some(i.digest()?))
         }
+        TargetRuntimeStep::InspectCompletionResolution(i) => (
+            LifecyclePhase::InspectCompletionResolution,
+            Some(i.digest()?),
+        ),
         TargetRuntimeStep::Initialize(i) => (LifecyclePhase::Initialize, Some(i.digest()?)),
         TargetRuntimeStep::Complete(i) | TargetRuntimeStep::PrepareComplete(i) => {
             (LifecyclePhase::Complete, Some(i.digest()?))

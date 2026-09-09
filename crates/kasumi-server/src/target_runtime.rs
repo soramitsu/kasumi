@@ -579,6 +579,9 @@ impl TargetRecoveryRuntime {
                 TargetReplicaInput::CompletionAttemptStatus(i) => {
                     (LifecyclePhase::InspectCompletionAttempt, i.digest()?)
                 }
+                TargetReplicaInput::CompletionTerminalStatus(i) => {
+                    (LifecyclePhase::InspectCompletionResolution, i.digest()?)
+                }
                 TargetReplicaInput::Quorum(q) => {
                     let p = phase.original().observation().intent.request.phase;
                     ensure!(
@@ -621,6 +624,9 @@ impl TargetRecoveryRuntime {
             TargetRuntimeStep::Inspect(i) => (LifecyclePhase::InspectTarget, i.digest()?),
             TargetRuntimeStep::InspectCompletionAttempt(i) => {
                 (LifecyclePhase::InspectCompletionAttempt, i.digest()?)
+            }
+            TargetRuntimeStep::InspectCompletionResolution(i) => {
+                (LifecyclePhase::InspectCompletionResolution, i.digest()?)
             }
             TargetRuntimeStep::StartActivation {
                 issuer_command_id, ..
@@ -826,6 +832,9 @@ impl TargetRecoveryRuntime {
             TargetRuntimeStep::InspectCompletionAttempt(i) => {
                 TargetReplicaInput::CompletionAttemptStatus(i.clone())
             }
+            TargetRuntimeStep::InspectCompletionResolution(i) => {
+                TargetReplicaInput::CompletionTerminalStatus(i.clone())
+            }
             _ => unreachable!(),
         };
         let first = input
@@ -911,6 +920,20 @@ impl TargetRecoveryRuntime {
                     .await?;
                 Ok((
                     TargetRuntimeOutcome::CompletionAttemptStatus(Box::new(signed)),
+                    ResponseEvidence::Receiver(Box::new(proof)),
+                ))
+            }
+            TargetRuntimeStep::InspectCompletionResolution(input) => {
+                let proof = replica
+                    .database()
+                    .inspect_target_completion_terminal(op, *input.clone())
+                    .await?;
+                let signed = self
+                    .signer
+                    .sign_completion_terminal_status(&proof, op)
+                    .await?;
+                Ok((
+                    TargetRuntimeOutcome::CompletionTerminalStatus(Box::new(signed)),
                     ResponseEvidence::Receiver(Box::new(proof)),
                 ))
             }

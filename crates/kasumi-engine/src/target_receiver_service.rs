@@ -8,6 +8,7 @@ use crate::{TargetOperation, target_invocation::TargetReleaseFence};
 enum Request {
     Prepare(TargetCompletionInput),
     Inspect(Box<TargetCompletionAttemptStatusInput>),
+    InspectTerminal(Box<TargetCompletionTerminalStatusInput>),
     Resolve(Box<TargetCompletionResolutionInput>),
     Budget(TargetResolutionBudgetInput),
 }
@@ -16,6 +17,7 @@ impl Request {
         match self {
             Self::Prepare(_) => LifecyclePhase::Complete,
             Self::Inspect(_) => LifecyclePhase::InspectCompletionAttempt,
+            Self::InspectTerminal(_) => LifecyclePhase::InspectCompletionResolution,
             Self::Resolve(_) => LifecyclePhase::ResolveComplete,
             Self::Budget(_) => LifecyclePhase::MaintainTarget,
         }
@@ -24,6 +26,7 @@ impl Request {
         match self {
             Self::Prepare(value) => value.digest(),
             Self::Inspect(value) => value.digest(),
+            Self::InspectTerminal(value) => value.digest(),
             Self::Resolve(value) => value.digest(),
             Self::Budget(value) => value.digest(),
         }
@@ -33,7 +36,9 @@ impl Request {
         authorization: crate::target_invocation::PreparedTargetAuthorization,
     ) -> Result<TargetCommand> {
         Ok(match self {
-            Self::Inspect(_) => return Err(denied("preparation status cannot propose mutations")),
+            Self::Inspect(_) | Self::InspectTerminal(_) => {
+                return Err(denied("receiver status cannot propose mutations"));
+            }
             Self::Prepare(input) => TargetCommand::PrepareComplete {
                 authorization,
                 input: input.clone(),
@@ -106,12 +111,33 @@ impl VerifiedTargetReceiver {
         }
     }
     pub fn resolution(&self) -> Result<TargetCompletionResolutionObservation> {
+        if !matches!(&self.request, Request::Resolve(_)) {
+            return Err(invalid(
+                "terminal status cannot become a resolver observation",
+            ));
+        }
         let Fact::Resolved(fact) = &self.fact else {
             return Err(invalid("receiver proof is not terminal resolution"));
         };
         let observation = TargetCompletionResolutionObservation {
             fact: *fact.clone(),
             observation_intent: self.intent.clone(),
+            observer_node_id: self.node,
+            observed_revision: self.revision,
+            observed_term: self.term,
+        };
+        observation.validate()?;
+        Ok(observation)
+    }
+    pub fn terminal_status(&self) -> Result<TargetCompletionTerminalStatusObservation> {
+        let (Request::InspectTerminal(input), Fact::Resolved(fact)) = (&self.request, &self.fact)
+        else {
+            return Err(invalid("receiver proof is not a terminal-only status"));
+        };
+        let observation = TargetCompletionTerminalStatusObservation {
+            input: *input.clone(),
+            status_intent: self.intent.clone(),
+            fact: *fact.clone(),
             observer_node_id: self.node,
             observed_revision: self.revision,
             observed_term: self.term,
@@ -185,6 +211,22 @@ impl Database {
                 .map_err(unknown)
         };
         match request {
+            Request::InspectTerminal(input) => {
+                input.validate(origin, intent)?;
+                let selected = generation
+                    .target_resolutions
+                    .terminal_fact(
+                        state,
+                        input.original_input.attempt.intent.request.command_id,
+                    )
+                    .map_err(unknown)?;
+                if let Some(fact) = selected {
+                    input.matches(&fact)?;
+                    Ok(Some(Fact::Resolved(fact)))
+                } else {
+                    Ok(None)
+                }
+            }
             Request::Inspect(input) => {
                 input.validate(origin, intent)?;
                 let attempt = generation
@@ -329,7 +371,11 @@ impl Database {
                 }
             }
             Fact::Resolved(_) => {
-                proof.resolution()?;
+                if matches!(&proof.request, Request::InspectTerminal(_)) {
+                    proof.terminal_status()?;
+                } else {
+                    proof.resolution()?;
+                }
             }
             Fact::Budget(_) => {
                 proof.budget()?;
@@ -387,6 +433,19 @@ impl Database {
     ) -> Result<VerifiedTargetReceiver> {
         let proof = self
             .receiver_observation(operation, Request::Inspect(Box::new(input)))
+            .await?;
+        proof.release(operation).await?;
+        Ok(proof)
+    }
+    /// Fresh read-only recovery of an exact positive original resolver fact.
+    /// Absence is UnknownOutcome and never dispatches another resolver.
+    pub async fn inspect_target_completion_terminal(
+        self: &Arc<Self>,
+        operation: &TargetOperation,
+        input: TargetCompletionTerminalStatusInput,
+    ) -> Result<VerifiedTargetReceiver> {
+        let proof = self
+            .receiver_observation(operation, Request::InspectTerminal(Box::new(input)))
             .await?;
         proof.release(operation).await?;
         Ok(proof)

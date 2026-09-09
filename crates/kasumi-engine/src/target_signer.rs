@@ -10,6 +10,45 @@ pub struct TargetSigner {
     key: Ed25519KeyPair,
 }
 impl TargetSigner {
+    pub async fn sign_completion_terminal_status(
+        &self,
+        proof: &crate::VerifiedTargetReceiver,
+        operation: &TargetOperation,
+    ) -> Result<SignedTargetCompletionTerminalStatus> {
+        proof.release(operation).await?;
+        let observation = proof.terminal_status()?;
+        self.check(&observation.fact.input.attempt.origin, operation)
+            .map_err(|_| {
+                Error::new(
+                    ErrorCode::Forbidden,
+                    "installed terminal status signer differs",
+                )
+            })?;
+        if observation.observer_node_id != self.node.node_id {
+            return Err(Error::new(
+                ErrorCode::Forbidden,
+                "terminal status observer is another leader",
+            ));
+        }
+        let bytes = serde_json::to_vec(&(
+            "kasumi.target-completion-terminal-status-observation.v1",
+            &observation,
+        ))
+        .map_err(|_| Error::new(ErrorCode::Unavailable, "terminal status encoding failed"))?;
+        let signature = hex::encode(self.key.sign(&bytes).as_ref());
+        proof.release(operation).await?;
+        self.check(&observation.fact.input.attempt.origin, operation)
+            .map_err(|_| {
+                Error::new(
+                    ErrorCode::Unavailable,
+                    "terminal status signer changed during release",
+                )
+            })?;
+        Ok(SignedTargetCompletionTerminalStatus {
+            observation,
+            signature,
+        })
+    }
     pub async fn sign_completion_attempt_status(
         &self,
         proof: &crate::VerifiedTargetReceiver,

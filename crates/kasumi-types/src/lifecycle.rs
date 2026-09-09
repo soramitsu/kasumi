@@ -123,6 +123,8 @@ pub enum LifecyclePhase {
     InspectTarget,
     /// Fresh read-only authority for a positively persisted original reservation.
     InspectCompletionAttempt,
+    /// Fresh read-only authority for an exact positively persisted resolver fact.
+    InspectCompletionResolution,
     StopLocal,
 }
 

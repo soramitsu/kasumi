@@ -178,6 +178,7 @@ impl StorageAccess {
                     kasumi_types::LifecyclePhase::Activate
                         | kasumi_types::LifecyclePhase::InspectTarget
                         | kasumi_types::LifecyclePhase::InspectCompletionAttempt
+                        | kasumi_types::LifecyclePhase::InspectCompletionResolution
                         | kasumi_types::LifecyclePhase::ResolveComplete
                         | kasumi_types::LifecyclePhase::MaintainTarget
                 ),
@@ -318,6 +319,7 @@ impl StorageAccess {
                     gate.current()?.commitment().intent.request.phase,
                     kasumi_types::LifecyclePhase::InspectTarget
                         | kasumi_types::LifecyclePhase::InspectCompletionAttempt
+                        | kasumi_types::LifecyclePhase::InspectCompletionResolution
                 ),
                 "target inspection cannot admit consensus mutations"
             );

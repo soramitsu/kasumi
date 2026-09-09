@@ -365,6 +365,28 @@ impl View {
     pub(crate) fn records(&self) -> impl Iterator<Item = Result<Row>> + Send + '_ {
         (1..=self.head.count).map(|ordinal| self.row(ordinal))
     }
+    pub(crate) fn terminal_fact(
+        &self,
+        state: &TenantState,
+        original_command_id: uuid::Uuid,
+    ) -> Result<Option<Box<TargetCompletionResolutionFact>>> {
+        ensure!(
+            self.head == state.target_resolution_head,
+            "terminal status prefix differs"
+        );
+        let Some(row) = self.get(&format!(
+            "completion/{}/{original_command_id}",
+            state.incarnation
+        ))?
+        else {
+            return Ok(None);
+        };
+        row.validate(state)?;
+        let TargetResolutionRecord::Completion(fact) = row.record else {
+            anyhow::bail!("terminal status point kind differs");
+        };
+        Ok(Some(fact))
+    }
     /// Positive original reservation only. Unpublished physical rows remain
     /// invisible, and absence carries no negative or successor authority.
     pub(crate) fn prepared_attempt(

@@ -415,3 +415,184 @@ fn sealed_terminal_is_retained_distinctly_and_cannot_enter_activation_inspection
     operation.activation_attempt = Some(Uuid::from_u128(900));
     assert!(validate_progress(&state, &operation).is_err());
 }
+
+#[test]
+fn expired_unknown_resolver_uses_only_exact_positive_terminal_status() {
+    for committed in [false, true] {
+        let (mut state, mut operation, attempt) = fixture_state();
+        observe(&mut state, &mut operation, &attempt);
+        let input = resolution_input(&state, &operation).unwrap();
+        let intent = fixture::intent(
+            &attempt.origin,
+            LifecyclePhase::ResolveComplete,
+            input.digest().unwrap(),
+            30,
+            1100,
+            2000,
+        );
+        control(&mut state, &operation, intent.clone());
+        let resolver_id = Uuid::from_u128(850);
+        let resolver = retained(
+            &mut state,
+            &operation,
+            resolver_id,
+            RecoveryDispatch::Target {
+                node_id: 1,
+                request: Box::new(TargetRuntimeRequest {
+                    tenant: operation.request.tenant.clone(),
+                    command_id: intent.request.command_id,
+                    not_after_ms: 1900,
+                    step: TargetRuntimeStep::ResolveComplete(Box::new(input.clone())),
+                }),
+            },
+            None,
+            31,
+        );
+        operation.completion_resolution_attempt = Some(resolver_id);
+        operation.current_intent = Some(intent.request.command_id);
+        assert_eq!(
+            fresh_phase(&state, &operation).unwrap(),
+            LifecyclePhase::InspectCompletionResolution
+        );
+        assert!(terminal(&state, &operation).is_err());
+        let status_input = terminal_status_input(&state, &operation).unwrap();
+        let status = fixture::intent(
+            &attempt.origin,
+            LifecyclePhase::InspectCompletionResolution,
+            status_input.digest().unwrap(),
+            40,
+            2500,
+            4000,
+        );
+        control(&mut state, &operation, status.clone());
+        let fact = TargetCompletionResolutionFact {
+            input,
+            resolution_intent: intent,
+            admitted_at_ms: 1101,
+            dispatch_not_after_ms: 1900,
+            revision: 14,
+            position: TargetCommitPosition {
+                index: 3,
+                term: 1,
+                leader_node_id: 1,
+                command_sha256: "44".repeat(32),
+            },
+            terminal: if committed {
+                TargetCompletionTerminal::Committed(Box::new(fixture::completion(&attempt)))
+            } else {
+                TargetCompletionTerminal::Sealed
+            },
+        };
+        let observation = TargetCompletionTerminalStatusObservation {
+            input: status_input.clone(),
+            status_intent: status.clone(),
+            fact: fact.clone(),
+            observer_node_id: 1,
+            observed_revision: 14,
+            observed_term: 1,
+        };
+        let signed = SignedTargetCompletionTerminalStatus {
+            signature: fixture::sign(
+                &observation,
+                "kasumi.target-completion-terminal-status-observation.v1",
+                1,
+            ),
+            observation,
+        };
+        kasumi_serving::verify_target_completion_terminal_status(&status_input, &signed).unwrap();
+        let response = TargetRuntimeResponse {
+            command_id: status.request.command_id,
+            node_id: 1,
+            outcome: TargetRuntimeOutcome::CompletionTerminalStatus(Box::new(signed.clone())),
+        };
+        let status_id = Uuid::from_u128(860);
+        let observed = retained(
+            &mut state,
+            &operation,
+            status_id,
+            RecoveryDispatch::Target {
+                node_id: 1,
+                request: Box::new(TargetRuntimeRequest {
+                    tenant: operation.request.tenant.clone(),
+                    command_id: status.request.command_id,
+                    not_after_ms: 3500,
+                    step: TargetRuntimeStep::InspectCompletionResolution(Box::new(
+                        status_input.clone(),
+                    )),
+                }),
+            },
+            Some(RecoveryDispatchOutcome::Target(Box::new(response.clone()))),
+            41,
+        );
+        validate_outcome(&state, &operation, &observed, &response).unwrap();
+        state.revision = 42;
+        resolve_resolver(&mut state, &operation, &observed).unwrap();
+        let resolved = phase(&state, &operation, resolver_id).unwrap().clone();
+        assert_eq!(resolved.input, resolver.input);
+        assert_eq!(
+            resolved.original_credential_expires_at_ms,
+            resolver.original_credential_expires_at_ms
+        );
+        assert_eq!(
+            resolved.outcome,
+            Some(RecoveryDispatchOutcome::TerminalObserved {
+                status_phase: status_id
+            })
+        );
+        operation.completion_terminal = Some(status_id);
+        validate_progress(&state, &operation).unwrap();
+        assert_eq!(terminal(&state, &operation).unwrap(), &fact);
+        if committed {
+            assert_eq!(
+                fresh_phase(&state, &operation).unwrap(),
+                LifecyclePhase::InspectTarget
+            );
+            validate_inspected_terminal(&state, &operation, &fixture::completion(&attempt))
+                .unwrap();
+        } else {
+            assert!(fresh_phase(&state, &operation).is_err());
+        }
+        let mut changed = signed.clone();
+        changed.observation.fact.dispatch_not_after_ms += 1;
+        changed.signature = fixture::sign(
+            &changed.observation,
+            "kasumi.target-completion-terminal-status-observation.v1",
+            1,
+        );
+        assert!(
+            kasumi_serving::verify_target_completion_terminal_status(&status_input, &changed)
+                .is_err()
+        );
+        let mut wrong_domain = signed;
+        wrong_domain.signature = fixture::sign(
+            &wrong_domain.observation,
+            "kasumi.resolved-target-completion-observation.v1",
+            1,
+        );
+        assert!(
+            kasumi_serving::verify_target_completion_terminal_status(&status_input, &wrong_domain)
+                .is_err()
+        );
+        let mut earlier = observed;
+        earlier.prepared_revision = resolver.prepared_revision;
+        state
+            .recovery_control
+            .phases
+            .insert(status_id.to_string(), earlier);
+        assert!(validate_resolver_link(&state, &operation, &resolved, status_id).is_err());
+    }
+}
+
+#[test]
+fn terminal_status_absence_or_new_resolver_identity_has_no_valid_evidence_form() {
+    assert!(
+        serde_json::from_value::<SignedTargetCompletionTerminalStatus>(
+            serde_json::json!({"absent": true})
+        )
+        .is_err()
+    );
+    let (mut state, mut operation, attempt) = fixture_state();
+    observe(&mut state, &mut operation, &attempt);
+    assert!(terminal_status_input(&state, &operation).is_err());
+    assert!(terminal(&state, &operation).is_err());
+}

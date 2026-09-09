@@ -63,10 +63,19 @@ recovery fixture now includes explicit Prepare and positive terminal phases.
 All of these added/changed tests remain unexecuted in this source checkpoint.
 
 No automatic Control successor is enabled. If the first Resolve itself expires
-with an unknown outcome, this coordinator keeps that phase unavailable. A distinct
-fresh terminal-only observation must recover a positive exact retained original
-resolver fact before this outage boundary is usable; absence cannot authorize a
-new resolver identity or deadline. Namespace reclamation, physical
+with an unknown outcome, the coordinator freezes a distinct
+`InspectCompletionResolution` intent. This read-only phase can return only the
+selected terminal point matching the original resolver intent, exact input,
+dispatch cap and applying position. The signed Committed/Sealed observation is
+persisted before the original resolver receives a typed `TerminalObserved`
+reference. Absence remains unknown and cannot dispatch a new resolver. Separate
+signature domains prevent status proofs becoming mutating resolver proofs.
+The terminal response budget admits one bounded fact and its original/current
+Control inputs; it does not allocate an aggregate history buffer. Two additional
+pure fixtures cover expired resolver status for both outcomes, changed caps,
+wrong signature domains, causal substitution and absence. These are source-only
+regressions; actual receiver/Control crash and response-fence gates remain pending.
+Namespace reclamation, physical
 disk ownership and capacity, receiver/status native crash tests, and the linked
 Control successor remain open. Public full-snapshot restore still charges three
 times the complete logical stream for resident admission; separating permanent

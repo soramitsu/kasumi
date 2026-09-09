@@ -252,13 +252,17 @@ pub enum RecoveryDispatchOutcome {
     CompletionResolution {
         inspection_phase: Uuid,
     },
-    /// Positive persisted preparation observed under a later read-only phase.
+    /// Positive original preparation observed by exact retry or fresh read-only status.
     PreparationObserved {
         status_phase: Uuid,
     },
     /// Exact ordered committed-or-sealed terminal; never an absence inference.
     CompletionTerminal {
         resolution_phase: Uuid,
+    },
+    /// Positive exact original resolver terminal observed under fresh authority.
+    TerminalObserved {
+        status_phase: Uuid,
     },
     SourceRetired(Box<RetirementReceipt>),
     RoutePublished {
