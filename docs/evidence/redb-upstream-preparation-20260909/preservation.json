@@ -1,0 +1,17 @@
+{
+  "kasumi-redb-bdde797-verification-source.json": {
+    "source": "/tmp/kasumi-redb-bdde797-verification-source.json",
+    "sha256": "9b1fcce10eafffb74bf97a48f28c106297232a66bf8c6913ecebe46fd9af4ae8",
+    "bytes": 15946
+  },
+  "kasumi-redb-4f62863-upstream-overlay.patch": {
+    "source": "/tmp/kasumi-redb-4f62863-upstream-overlay.patch",
+    "sha256": "974df895ab92d76de4621d2269dbda8c4e4f443a3de75b055d66413ec5a8672b",
+    "bytes": 113346
+  },
+  "kasumi-redb-4f62863-root-review.md": {
+    "source": "/tmp/kasumi-redb-4f62863-root-review.md",
+    "sha256": "cb008471dd32dd020aa40dd04619a8c213065bde70ae801547c43e5d88f91e57",
+    "bytes": 1273
+  }
+}
