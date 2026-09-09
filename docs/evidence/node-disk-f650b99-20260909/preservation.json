@@ -1,0 +1,50 @@
+[
+  {
+    "path": "device_disk-tests.log",
+    "original": "/tmp/kasumi-f650b99-node-disk-functional/device_disk-tests.log",
+    "sha256": "c7497174f65fca1bab8395970a1981585b22e456a3deb6542eb9130ec43010f2",
+    "bytes": 162770
+  },
+  {
+    "path": "evidence.json",
+    "original": "/tmp/kasumi-f650b99-node-disk-functional/evidence.json",
+    "sha256": "e7f3e34b0dad593cea4302ca2d9ca19ae6996b6e66f405217b2c7d885b223957",
+    "bytes": 673222
+  },
+  {
+    "path": "node_disk-tests.log",
+    "original": "/tmp/kasumi-f650b99-node-disk-functional/node_disk-tests.log",
+    "sha256": "e9ae99d7c75cabf85edf7a5d01824d62bc543c7af4d77b1557fa57e3bff8b1d4",
+    "bytes": 164289
+  },
+  {
+    "path": "plan.json",
+    "original": "/tmp/kasumi-f650b99-node-disk-functional/plan.json",
+    "sha256": "da3d5c7eeeed9ece36abc9da0fbd6e30ce308f71887f31a0375e6d5098376a7a",
+    "bytes": 4633
+  },
+  {
+    "path": "runner.py",
+    "original": "/tmp/kasumi-f650b99-node-disk-functional/runner.py",
+    "sha256": "ad3d647fbb73d9d32e04e4e202814f68aea2cb5aa80acbed03a10fa8a3855a6f",
+    "bytes": 10765
+  },
+  {
+    "path": "scratch_disk-tests.log",
+    "original": "/tmp/kasumi-f650b99-node-disk-functional/scratch_disk-tests.log",
+    "sha256": "6e185178e693fd505f81cc8c45a4eaa57362eb8a6e70ab4d4507bacb9fe064a3",
+    "bytes": 163326
+  },
+  {
+    "path": "source-before.json",
+    "original": "/tmp/kasumi-f650b99-node-disk-functional/source-before.json",
+    "sha256": "2214eb87c4b99ea47ed6f07c4789f55bcd8560871f5049ecffad618dbfc593dc",
+    "bytes": 292951
+  },
+  {
+    "path": "store-all-targets-check.log",
+    "original": "/tmp/kasumi-f650b99-node-disk-functional/store-all-targets-check.log",
+    "sha256": "8324cee552d5808be9db977cbec5fbbf6c1100eadd0e1221bfc1a72e2ea2d39f",
+    "bytes": 152144
+  }
+]

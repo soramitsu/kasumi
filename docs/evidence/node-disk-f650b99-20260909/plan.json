@@ -1,0 +1,109 @@
+{
+  "source": "/tmp/kasumi-persistent-disk-owner",
+  "target": "/tmp/kasumi-production-root-target",
+  "expected_head": "f650b991558c7535d1c49bee28f1b3d0f401829b",
+  "expected_tree": "dd3286ece3b09b7125909a2596a356f1edd86037",
+  "output": "/tmp/kasumi-f650b99-node-disk-functional",
+  "scope": "First source-frozen storealltargets compilation and23focusedNodeDisk/Device/Scratch regressions of unwiredpersistentextentprimitive. Capturedlibtestoutput, exactrequirednames, jobs1/testthreads1/900s deadlines/source+lock+PGguards. No native server, no productionredbpatch, no actualpersistentquota productclaim; constructorwiring/upstreamredb/fuzz/finalplatformcapacity remainopen. Independentreadonlyreviewfoundnoadditionalconfirmedrace; this isnotexecutionproof untilgatespass.",
+  "gates": [
+    {
+      "name": "store-all-targets-check",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "check",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-store",
+        "--all-targets",
+        "--all-features",
+        "--message-format=json-render-diagnostics"
+      ],
+      "required_tests": []
+    },
+    {
+      "name": "node_disk-tests",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-store",
+        "--all-features",
+        "--lib",
+        "node_disk::tests",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "node_disk::tests::census_counts_closed_files_and_repeated_cursors_start_at_the_beginning",
+        "node_disk::tests::dropped_unmaterialized_growth_is_retained_until_exclusive_reconciliation",
+        "node_disk::tests::pause_seals_new_reservations_but_drains_reserved_io_and_retains_sparse_promises",
+        "node_disk::tests::maintenance_has_reserved_capacity_and_denial_changes_no_extent_or_charge",
+        "node_disk::tests::physical_reclaim_requires_sole_owner_and_releases_only_verified_extent",
+        "node_disk::tests::substitution_closes_shared_admission_and_does_not_delete_the_replacement",
+        "node_disk::tests::cancelled_or_work_exhausted_census_publishes_no_partial_owner",
+        "node_disk::tests::symlinks_hardlinks_and_overlapping_roots_cannot_duplicate_census_charge",
+        "node_disk::tests::open_file_metadata_budget_is_bounded_and_close_returns_only_metadata_capacity",
+        "node_disk::tests::persistent_and_scratch_cannot_spend_the_same_filesystem_promise",
+        "node_disk::tests::poisoned_shared_promises_cannot_be_reopened_by_either_owner",
+        "node_disk::tests::a_closed_predecessor_cannot_unregister_the_new_owner_of_the_same_inode",
+        "node_disk::tests::unknown_filesystem_observation_fences_scratch_until_a_drained_census"
+      ]
+    },
+    {
+      "name": "device_disk-tests",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-store",
+        "--all-features",
+        "--lib",
+        "device_disk::tests",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "device_disk::tests::poisoned_device_stays_closed_after_all_registration_handles_drop",
+        "device_disk::tests::abandoned_uncertainty_or_pending_bytes_cannot_be_released_by_drop"
+      ]
+    },
+    {
+      "name": "scratch_disk-tests",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-store",
+        "--all-features",
+        "--lib",
+        "scratch_disk::tests",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "scratch_disk::tests::physical_directory_reopens_share_budget_and_cannot_change_it",
+        "scratch_disk::tests::pending_files_share_filesystem_promises_and_keep_recovery_reserve",
+        "scratch_disk::tests::separate_governors_cannot_double_spend_filesystem_promises",
+        "scratch_disk::tests::pinned_directory_survives_path_substitution_without_using_replacement",
+        "scratch_disk::tests::rejects_symlinks_and_overflowing_configuration",
+        "scratch_disk::tests::concurrent_spools_cannot_each_spend_the_aggregate_budget",
+        "scratch_disk::tests::immutable_image_readers_retain_capacity_until_the_last_owner_drains",
+        "scratch_disk::tests::truncation_and_rejected_growth_preserve_exact_file_charges"
+      ]
+    }
+  ]
+}
