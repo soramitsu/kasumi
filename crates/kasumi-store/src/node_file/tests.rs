@@ -2,7 +2,8 @@ use super::*;
 use crate::{NodeStore, ScratchDisk};
 use redb::{Database, Durability, ReadableDatabase, TableDefinition};
 use std::{
-    process::{Child, Command},
+    io::Read,
+    process::{Child, Command, Stdio},
     time::{Duration, Instant},
 };
 
@@ -233,6 +234,8 @@ impl Drop for OwnedChild {
 }
 
 fn run_child(path: &Path, mode: &str) {
+    let log_path = path.with_extension("node-child.log");
+    let log = options().create_new(true).open(&log_path).unwrap();
     let mut child = OwnedChild(
         Command::new(std::env::current_exe().unwrap())
             .args([
@@ -243,21 +246,46 @@ fn run_child(path: &Path, mode: &str) {
             ])
             .env("KASUMI_NODE_FILE_CHILD_PATH", path)
             .env("KASUMI_NODE_FILE_CHILD_MODE", mode)
+            // Child libtest lines must not interleave with the parent's test
+            // result protocol. A regular file cannot deadlock on pipe capacity.
+            .stdout(Stdio::from(log.try_clone().unwrap()))
+            .stderr(Stdio::from(log))
             .spawn()
             .unwrap(),
     );
     let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        if let Some(status) = child.0.try_wait().unwrap() {
-            assert_eq!(status.code(), Some(77));
-            return;
+    let outcome = loop {
+        match child.0.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Ok(None) => {
+                break Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "node crash child deadline elapsed",
+                ));
+            }
+            Err(error) => break Err(error),
         }
-        assert!(
-            Instant::now() < deadline,
-            "node crash child did not reach its durable checkpoint"
-        );
-        std::thread::sleep(Duration::from_millis(10));
+    };
+    if outcome
+        .as_ref()
+        .is_ok_and(|status| status.code() == Some(77))
+    {
+        return;
     }
+    // Drain before reading diagnostics. Drop still owns a second cleanup attempt
+    // if either syscall fails or reading the bounded log itself panics.
+    let kill = child.0.kill();
+    let drain = child.0.wait();
+    let mut diagnostic = Vec::new();
+    let read =
+        File::open(&log_path).and_then(|file| file.take(16 << 10).read_to_end(&mut diagnostic));
+    panic!(
+        "node crash child failed: {outcome:?}; kill={kill:?}; drain={drain:?}; log={log_path:?}; read={read:?}; first16KiB={}",
+        String::from_utf8_lossy(&diagnostic)
+    );
 }
 
 #[test]
