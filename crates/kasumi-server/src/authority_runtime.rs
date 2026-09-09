@@ -214,7 +214,7 @@ impl AuthorityRuntime {
 
     async fn open_owned(config: AuthorityRuntimeConfig) -> Result<Self> {
         let mut pending = crate::startup_resources::Resources::default();
-        let outcome = async {
+        let outcome = crate::startup_preparation::capture("authority runtime", async {
             config.validate()?;
             let scratch_disk = kasumi_store::ScratchDisk::open(config.scratch_disk.clone())?;
             let auth = Authenticator::new(config.auth.clone())?;
@@ -286,8 +286,6 @@ impl AuthorityRuntime {
                 config.database_id,
                 crate::node_enrollment::Kind::Authority,
             ) {
-                audit_store.shutdown().await;
-                signer_verifier.shutdown().await;
                 return Err(error);
             }
             let audit = config.security_audit.open(
@@ -379,7 +377,7 @@ impl AuthorityRuntime {
                 native_tls,
                 auth,
             })
-        }
+        })
         .await;
         if outcome.is_err()
             && let Err(cleanup) = crate::startup_owner::finish(&mut pending).await

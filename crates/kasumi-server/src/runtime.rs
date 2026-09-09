@@ -967,7 +967,8 @@ impl NodeRuntime {
         credential: crate::serving_runtime::CredentialSource,
     ) -> Result<Self> {
         let mut pending = crate::startup_resources::Resources::default();
-        let outcome = async {
+        let mut retained_runtime: Option<Self> = None;
+        let outcome = crate::startup_preparation::capture("data runtime", async {
         config.validate()?;
         pending.standalone_lock = crate::standalone::claim(&config)?;
         let scratch_disk = kasumi_store::ScratchDisk::open(config.scratch_disk.clone())?;
@@ -1085,10 +1086,11 @@ impl NodeRuntime {
         )
         .await?;
         pending.stores.push(security_store.clone());
+        #[cfg(test)]
+        crate::startup_preparation::checkpoint(config.database_id, "data-security");
         if config.mode == DeploymentMode::Standalone
             && let Err(error) = crate::local_recovery::require_runtime_ready(&security_store)
         {
-            security_store.shutdown().await;
             return Err(error);
         }
         if config.mode == DeploymentMode::Replicated {
@@ -1097,7 +1099,6 @@ impl NodeRuntime {
                 config.database_id,
                 crate::node_enrollment::Kind::Data,
             ) {
-                security_store.shutdown().await;
                 return Err(error);
             }
         }
@@ -1141,20 +1142,17 @@ impl NodeRuntime {
                 config.control.incarnation.as_deref(),
                 cluster.as_ref(),
                 audit.clone(),
+                &mut pending,
             )
             .await
         }
         .await;
         let control = match control {
             Ok(control) => control,
-            Err(error) => {
-                audit.shutdown().await;
-                return Err(error);
-            }
+            Err(error) => return Err(error),
         };
-        pending.databases.push(control.database.clone());
         control.database.install_admission(admission.clone())?;
-        let mut runtime = Self {
+        retained_runtime = Some(Self {
             telemetry: crate::observability::Telemetry::new(),
             _standalone_lock: None,
             startup_stores: pending.stores.iter().filter(|store| store.tenant() != SECURITY_TENANT).cloned().collect(),
@@ -1182,7 +1180,10 @@ impl NodeRuntime {
             administration: None,
             target_recovery: None,
             tls_reload: None,
-        };
+        });
+        let runtime = retained_runtime.as_mut().expect("runtime owner just retained");
+        #[cfg(test)]
+        crate::startup_preparation::checkpoint(config.database_id, "data-runtime");
         let result = async {
             let mut managed = vec![crate::administration::ManagedTenant {
                 database: runtime.control.database.clone(),
@@ -1277,9 +1278,9 @@ impl NodeRuntime {
                     tenant.incarnation.as_deref(),
                     runtime.cluster.as_ref(),
                     runtime.audit.clone(),
+                    &mut pending,
                 )
                 .await?;
-                pending.databases.push(opened.database.clone());
                 if let Some(active) = active {
                     let generation = opened.database.engine().generation()?;
                     if generation.state.restored_from.as_ref() != Some(&active.checkpoint) || generation.state.pending_restore.is_some() {
@@ -1373,26 +1374,29 @@ impl NodeRuntime {
             Ok::<_, anyhow::Error>(())
         }
         .await;
-        if let Err(error) = result {
-            let drained = crate::startup_owner::finish(&mut runtime).await;
-            return Err(match drained {
-                Ok(()) => error,
-                Err(cleanup) => error.context(format!("startup drain failed before completion: {cleanup:#}")),
-            });
+        result?;
+        Ok(())
+        }).await;
+        match outcome {
+            Ok(()) => {
+                let mut runtime = retained_runtime
+                    .take()
+                    .expect("successful preparation retained its runtime");
+                runtime._standalone_lock = pending.standalone_lock.take();
+                Ok(runtime)
+            }
+            Err(mut error) => {
+                if let Some(runtime) = retained_runtime.as_mut()
+                    && let Err(cleanup) = crate::startup_owner::finish(runtime).await
+                {
+                    error = error.context(format!("partial runtime drain failed: {cleanup:#}"));
+                }
+                if let Err(cleanup) = crate::startup_owner::finish(&mut pending).await {
+                    error = error.context(format!("startup resource drain failed: {cleanup:#}"));
+                }
+                Err(error)
+            }
         }
-        runtime._standalone_lock = pending.standalone_lock.take();
-        Ok(runtime)
-        }.await;
-        if outcome.is_err()
-            && let Err(cleanup) = crate::startup_owner::finish(&mut pending).await
-        {
-            return outcome.map_err(|error| {
-                error.context(format!(
-                    "startup drain failed before completion: {cleanup:#}"
-                ))
-            });
-        }
-        outcome
     }
 
     #[cfg(test)]
@@ -1413,9 +1417,9 @@ impl NodeRuntime {
         installed_incarnation: Option<&str>,
         cluster: Option<&Arc<ClusterNetwork>>,
         audit: Arc<SecurityAudit>,
+        pending: &mut crate::startup_resources::Resources,
     ) -> Result<OpenedTenant> {
-        let retained_stores = stores.clone();
-        let opened = async {
+        async {
             let store = stores.application().clone();
             config.install_tenant_audit_archive(&store, None)?;
             let mut bootstrap = None;
@@ -1438,6 +1442,9 @@ impl NodeRuntime {
                     audit,
                 )
                 .await?;
+                pending.databases.push(opened.database.clone());
+                #[cfg(test)]
+                crate::startup_preparation::checkpoint(config.database_id, "data-database");
                 let group = format!("{}/{}", store.tenant(), opened.bootstrap.incarnation);
                 let bootstrap_store = store.clone();
                 if let Err(error) = network.register_group_with_bootstrap(
@@ -1447,7 +1454,6 @@ impl NodeRuntime {
                     fingerprint,
                     Arc::new(move || bootstrap_store.check_access()),
                 ) {
-                    let _ = opened.database.shutdown().await;
                     return Err(error);
                 }
                 bootstrap = Some(opened.bootstrap);
@@ -1476,18 +1482,18 @@ impl NodeRuntime {
                     None => kasumi_engine::open_local(stores, policy, limits, audit).await?,
                 }
             };
+            if config.mode != DeploymentMode::Replicated {
+                pending.databases.push(database.clone());
+                #[cfg(test)]
+                crate::startup_preparation::checkpoint(config.database_id, "data-database");
+            }
             Ok(OpenedTenant {
                 database,
                 store,
                 bootstrap,
             })
         }
-        .await;
-        if opened.is_err() {
-            retained_stores.application().shutdown().await;
-            retained_stores.custody().store().shutdown().await;
-        }
-        opened
+        .await
     }
 
     pub fn registry(&self) -> &DatabaseRegistry {
