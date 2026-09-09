@@ -310,6 +310,32 @@ impl TenantStorageSet {
         self.write_batch_replacing(application_ops, custody_ops, &[], &[])
     }
 
+    /// Publish first application state only into a pristine installed domain
+    /// pair. The complete physical tenant prefixes are checked under the same
+    /// mutation owners and transaction as publication, including unknown record
+    /// namespaces. Custody may contain only its exact storage-domain binding.
+    /// The caller owns authorization and the blocking operation through fsync.
+    pub fn initialize_state(
+        &self,
+        application_ops: &[WriteOp],
+        custody_ops: &[WriteOp],
+    ) -> Result<()> {
+        ensure!(
+            !application_ops.is_empty() && !custody_ops.is_empty(),
+            "initial publication requires state in both domains"
+        );
+        for operation in custody_ops {
+            let namespace = match operation {
+                WriteOp::Put { namespace, .. } | WriteOp::Delete { namespace, .. } => namespace,
+            };
+            ensure!(
+                namespace != BINDING_NS,
+                "initial state cannot replace its domain binding"
+            );
+        }
+        self.publish(application_ops, custody_ops, &[], &[], true)
+    }
+
     /// Stream verified application and custody tables while publishing their
     /// manifests, namespace bindings and applied position in one durable commit.
     pub fn write_batch_replacing(
@@ -318,6 +344,23 @@ impl TenantStorageSet {
         custody_ops: &[WriteOp],
         application_replacements: &[(&str, &EncryptedTable)],
         custody_replacements: &[(&str, &EncryptedTable)],
+    ) -> Result<()> {
+        self.publish(
+            application_ops,
+            custody_ops,
+            application_replacements,
+            custody_replacements,
+            false,
+        )
+    }
+
+    fn publish(
+        &self,
+        application_ops: &[WriteOp],
+        custody_ops: &[WriteOp],
+        application_replacements: &[(&str, &EncryptedTable)],
+        custody_replacements: &[(&str, &EncryptedTable)],
+        initialize: bool,
     ) -> Result<()> {
         validate_batch(&[application_ops, custody_ops])?;
         crate::read_view::validate_replacements(application_replacements, application_ops)?;
@@ -345,6 +388,11 @@ impl TenantStorageSet {
         let mut tx = application.node.db.begin_write()?;
         tx.set_durability(Durability::Immediate)?;
         tx.set_two_phase_commit(true);
+        if initialize {
+            require_pristine_domain(&tx, application, None)?;
+            let binding = serde_json::to_vec(&self.custody.binding)?;
+            require_pristine_domain(&tx, custody, Some(&binding))?;
+        }
         crate::read_view::replace_domain(&tx, application, application_replacements)?;
         {
             let state = application.state.read();
@@ -366,6 +414,52 @@ impl TenantStorageSet {
             "domain transaction committed; access expired before acknowledgment; outcome unknown",
         )
     }
+}
+
+fn require_pristine_domain(
+    tx: &redb::WriteTransaction,
+    store: &TenantStore,
+    binding: Option<&[u8]>,
+) -> Result<()> {
+    let state = store.state.read();
+    store.require_access(&state)?;
+    let prefix = tenant_hash(&store.tenant);
+    let table = tx.open_table(RECORDS)?;
+    let mut records = table.range(prefix.as_slice()..)?;
+    let first = records.next().transpose()?;
+    let first = first.filter(|(key, _)| key.value().starts_with(&prefix));
+    if let Some(expected) = binding {
+        let (key, value) = first.context("initial custody domain binding absent")?;
+        let index = state.keys.get(INDEX_KEY).context("index key missing")?;
+        let expected_key = record_key(&store.tenant, BINDING_NS, BINDING_KEY, index);
+        ensure!(
+            key.value() == expected_key,
+            "initial custody domain is not pristine"
+        );
+        check_encrypted_record_budget(
+            value.value(),
+            BINDING_NS.len(),
+            BINDING_KEY.len(),
+            expected.len(),
+        )?;
+        let record = store.decode_record(key.value(), value.value(), &state)?;
+        ensure!(
+            record.namespace == BINDING_NS && record.key == BINDING_KEY && record.value == expected,
+            "initial custody domain binding differs"
+        );
+        if let Some((key, _)) = records.next().transpose()? {
+            ensure!(
+                !key.value().starts_with(&prefix),
+                "initial custody domain is not pristine"
+            );
+        }
+    } else {
+        ensure!(
+            first.is_none(),
+            "initial application domain is not pristine"
+        );
+    }
+    store.require_access(&state)
 }
 
 fn wrapping_policies(catalog: &KeyCatalog) -> Result<BTreeSet<String>> {

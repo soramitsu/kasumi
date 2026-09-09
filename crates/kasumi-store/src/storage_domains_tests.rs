@@ -255,3 +255,136 @@ async fn combined_quota_and_substituted_catalog_binding_fail_before_publication(
     assert!(result.is_err());
     Ok(())
 }
+
+#[tokio::test]
+async fn initial_state_rejects_unknown_records_in_either_complete_domain() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    for custody in [false, true] {
+        let node = NodeStore::create_new(
+            directory.path().join(format!("unknown-{custody}.redb")),
+            crate::test_utils::NODE_STORE_ID,
+            ScratchDisk::fixture(),
+        )?;
+        let stores = installed(node).await?;
+        let domain = if custody {
+            stores.custody().store()
+        } else {
+            stores.application()
+        };
+        domain.write_batch(&[WriteOp::put(
+            "unsupported.application.v99",
+            b"retained",
+            b"never-overwrite",
+        )])?;
+        assert!(
+            stores
+                .initialize_state(
+                    &[WriteOp::put("genesis", b"head", b"new")],
+                    &[WriteOp::put("genesis", b"head", b"new")],
+                )
+                .is_err()
+        );
+        assert_eq!(
+            domain
+                .get("unsupported.application.v99", b"retained")?
+                .unwrap(),
+            b"never-overwrite"
+        );
+        assert!(stores.application().get("genesis", b"head")?.is_none());
+        assert!(stores.custody().store().get("genesis", b"head")?.is_none());
+        stores.application().shutdown().await;
+        stores.custody().store().shutdown().await;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn initial_state_checks_and_joint_publication_have_one_concurrent_winner() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let stores = installed(NodeStore::create_new(
+        directory.path().join("first-publication.redb"),
+        crate::test_utils::NODE_STORE_ID,
+        ScratchDisk::fixture(),
+    )?)
+    .await?;
+    let barrier = std::sync::Barrier::new(2);
+    let results = std::thread::scope(|scope| {
+        let left = scope.spawn(|| {
+            barrier.wait();
+            stores.initialize_state(
+                &[WriteOp::put("genesis", b"head", b"left")],
+                &[WriteOp::put("genesis", b"head", b"left")],
+            )
+        });
+        let right = scope.spawn(|| {
+            barrier.wait();
+            stores.initialize_state(
+                &[WriteOp::put("genesis", b"head", b"right")],
+                &[WriteOp::put("genesis", b"head", b"right")],
+            )
+        });
+        (left.join().unwrap(), right.join().unwrap())
+    });
+    assert_ne!(results.0.is_ok(), results.1.is_ok());
+    let expected = if results.0.is_ok() {
+        b"left".as_slice()
+    } else {
+        b"right".as_slice()
+    };
+    assert_eq!(
+        stores.application().get("genesis", b"head")?.unwrap(),
+        expected
+    );
+    assert_eq!(
+        stores.custody().store().get("genesis", b"head")?.unwrap(),
+        expected
+    );
+    assert!(
+        stores
+            .initialize_state(
+                &[WriteOp::put("genesis", b"head", expected)],
+                &[WriteOp::put("genesis", b"head", expected)],
+            )
+            .is_err(),
+        "even exact initialization replay is existing state, not permission to publish genesis"
+    );
+    stores.application().shutdown().await;
+    stores.custody().store().shutdown().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn initial_state_requires_the_exact_retained_custody_binding() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    for missing in [false, true] {
+        let stores = installed(NodeStore::create_new(
+            directory.path().join(format!("binding-{missing}.redb")),
+            crate::test_utils::NODE_STORE_ID,
+            ScratchDisk::fixture(),
+        )?)
+        .await?;
+        let damage = if missing {
+            WriteOp::delete(BINDING_NS, BINDING_KEY)
+        } else {
+            WriteOp::put(BINDING_NS, BINDING_KEY, b"unrelated")
+        };
+        stores.custody().store().write_batch(&[damage])?;
+        let before = stores.custody().store().get(BINDING_NS, BINDING_KEY)?;
+        assert!(
+            stores
+                .initialize_state(
+                    &[WriteOp::put("genesis", b"head", b"new")],
+                    &[WriteOp::put("genesis", b"head", b"new")],
+                )
+                .is_err()
+        );
+        assert_eq!(
+            stores.custody().store().get(BINDING_NS, BINDING_KEY)?,
+            before
+        );
+        assert!(stores.application().get("genesis", b"head")?.is_none());
+        stores.application().shutdown().await;
+        stores.custody().store().shutdown().await;
+    }
+    Ok(())
+}
