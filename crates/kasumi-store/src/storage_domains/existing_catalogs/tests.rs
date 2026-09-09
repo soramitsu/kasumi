@@ -162,7 +162,15 @@ async fn interrupted_after_custody(borrowed: bool, cancel: bool) -> Result<()> {
     if cancel {
         provider.release.notify_one();
     }
-    tokio::time::timeout(Duration::from_secs(5), fixture.node.drain_initializers()).await??;
+    let drained =
+        tokio::time::timeout(Duration::from_secs(5), fixture.node.drain_initializers()).await?;
+    if cancel {
+        let error = drained.unwrap_err();
+        assert!(format!("{error:#}").contains("existing catalog receiver closed"));
+        fixture.node.drain_initializers().await?;
+    } else {
+        drained?;
+    }
     assert!(!provider.active.load(Ordering::Acquire));
     assert_eq!(fixture.contents()?, before);
     if let Some(custody) = custody {
@@ -215,7 +223,7 @@ async fn buffered_existing_pair_ticket_publishes_nothing_and_drains_its_new_work
     assert!(prepared.application.as_ref().unwrap().ownership == Ownership::New);
     let custody = prepared.custody.store.clone();
     let application = prepared.application.as_ref().unwrap().store.clone();
-    let delivery = deliver(prepared, send);
+    let delivery = deliver(Ok(prepared), send);
     tokio::pin!(delivery);
     std::future::poll_fn(|context| {
         assert!(delivery.as_mut().poll(context).is_pending());
@@ -223,7 +231,7 @@ async fn buffered_existing_pair_ticket_publishes_nothing_and_drains_its_new_work
     })
     .await;
     drop(receive);
-    tokio::time::timeout(Duration::from_secs(5), delivery).await?;
+    tokio::time::timeout(Duration::from_secs(5), delivery).await??;
     assert!(custody.background.lock().await.handles.is_empty());
     assert!(application.background.lock().await.handles.is_empty());
     assert!(custody.check_access().is_err());
@@ -300,7 +308,7 @@ async fn unclaimed_borrowed_pair_and_changed_binding_never_close_its_cached_owne
         assert!(prepared.custody.ownership == Ownership::Borrowed);
         assert!(prepared.application.as_ref().unwrap().ownership == Ownership::Borrowed);
         assert!(!unused.entered_once.load(Ordering::Acquire));
-        let delivery = deliver(prepared, send);
+        let delivery = deliver(Ok(prepared), send);
         tokio::pin!(delivery);
         std::future::poll_fn(|context| {
             assert!(delivery.as_mut().poll(context).is_pending());
@@ -313,8 +321,8 @@ async fn unclaimed_borrowed_pair_and_changed_binding_never_close_its_cached_owne
                 .store
                 .write_batch(&[WriteOp::delete(BINDING_NS, BINDING_KEY)])?;
             let before = fixture.contents()?;
-            assert!(receive.await??.claim().is_err());
-            tokio::time::timeout(Duration::from_secs(5), delivery).await?;
+            assert!(receive.await?.claim().is_err());
+            tokio::time::timeout(Duration::from_secs(5), delivery).await??;
             assert_eq!(fixture.contents()?, before);
             original.custody.store.write_batch(&[WriteOp::put(
                 BINDING_NS,
@@ -324,7 +332,7 @@ async fn unclaimed_borrowed_pair_and_changed_binding_never_close_its_cached_owne
         } else {
             let before = fixture.contents()?;
             drop(receive);
-            tokio::time::timeout(Duration::from_secs(5), delivery).await?;
+            tokio::time::timeout(Duration::from_secs(5), delivery).await??;
             assert_eq!(fixture.contents()?, before);
         }
         original.check_access()?;
@@ -345,4 +353,86 @@ async fn unclaimed_borrowed_pair_and_changed_binding_never_close_its_cached_owne
     original.custody.store.shutdown().await;
     drop(original);
     fixture.reopened_after_release().await
+}
+
+#[tokio::test]
+async fn buffered_existing_preparation_failure_requires_claim_and_preserves_borrowed_owners()
+-> Result<()> {
+    for borrowed in [false, true] {
+        for claim in [false, true] {
+            let fixture = Fixture::new().await?;
+            let custody = if borrowed {
+                Some(fixture.custody().await?)
+            } else {
+                None
+            };
+            let deadline = custody
+                .as_ref()
+                .map(|value| value.store.state.read().deadline);
+            let before = fixture.contents()?;
+            let (send, receive) = oneshot::channel();
+            let buffered = Arc::new(Notify::new());
+            let sent = buffered.clone();
+            let node = fixture.node.clone();
+            let task = tokio::spawn(async move {
+                let outcome = prepare(
+                    node,
+                    "existing".into(),
+                    Arc::new(LocalKeyProvider::new([62; 32])),
+                    Some((
+                        Arc::new(LocalKeyProvider::new([97; 32])),
+                        StorageAccess::fixture(),
+                    )),
+                    &send,
+                )
+                .await
+                .map_err(|error| error.context("buffered existing application failure"));
+                assert!(
+                    outcome.is_err(),
+                    "wrong application wrapping key must fail preparation"
+                );
+                let delivery = deliver(outcome, send);
+                tokio::pin!(delivery);
+                std::future::poll_fn(|context| {
+                    assert!(delivery.as_mut().poll(context).is_pending());
+                    Poll::Ready(())
+                })
+                .await;
+                sent.notify_one();
+                delivery.await
+            });
+            fixture.node.initializers.lock().await.handles.push(task);
+            tokio::time::timeout(Duration::from_secs(5), buffered.notified()).await?;
+            if claim {
+                let error = receive.await?.claim().err().expect("preparation must fail");
+                assert!(format!("{error:#}").contains("buffered existing application failure"));
+            } else {
+                drop(receive);
+            }
+            let outcome =
+                tokio::time::timeout(Duration::from_secs(5), fixture.node.drain_initializers())
+                    .await?;
+            if claim {
+                outcome?;
+            } else {
+                assert!(
+                    format!("{:#}", outcome.unwrap_err())
+                        .contains("buffered existing application failure")
+                );
+            }
+            fixture.node.drain_initializers().await?;
+            assert_eq!(fixture.contents()?, before);
+            if let Some(custody) = custody {
+                custody.store.check_access()?;
+                assert_eq!(Some(custody.store.state.read().deadline), deadline);
+                let same = fixture.custody().await?;
+                assert!(Arc::ptr_eq(same.store(), custody.store()));
+                drop(same);
+                custody.store.shutdown().await;
+                drop(custody);
+            }
+            fixture.reopened_after_release().await?;
+        }
+    }
+    Ok(())
 }

@@ -49,6 +49,14 @@ later retry succeeds. It does not reopen files, acquire new credentials, or
 replace a runtime. This correction preserves that contract; it does not interpret
 suppressed failures from lower-level APIs as evidence of success.
 
+The catalog outcome handoff was subsequently completed at the source level in
+`docs/catalog-outcome-handoff.md`. Fresh and existing preparation failures now
+use the same acknowledged ticket as successful owners. Unclaimed ordinary errors
+return through registered `Result<()>` tasks and survive a cancelled node drain;
+claimed errors are consumed synchronously by their actual recipient. This removes
+former remaining item 5 without changing any public constructor contract. These
+new regressions remain unrun.
+
 ## Remaining concrete structural work
 
 1. **Return worker outcomes from leaf drains.** `TenantStore::shutdown`
@@ -91,13 +99,7 @@ suppressed failures from lower-level APIs as evidence of success.
    work. Shutdown must close admission, await those actual registrations without
    holding the proposal lock, and then drain Raft/storage. Test an admitted job
    paused before proposal-lock registration and a cancelled initiating request.
-5. **Unobserved catalog errors need their own outcome handoff.** The narrow
-   NodeStore change preserves JoinErrors only. Fresh/existing catalog tasks
-   still send ordinary preparation errors through an unacknowledged channel
-   and return `()`. Extend their private ticket to carry preparation failure and
-   make registered tasks return a typed result, preserving unobserved errors
-   without ever publishing an unclaimed store. This should be implemented in
-   the catalog owner protocol, not by an outer global cache sweep.
+
 
 None of these APIs should use Arc counts to guess ownership or close borrowed
 cached handles. Runtime/authority serving-loop cancellation and the ordering of

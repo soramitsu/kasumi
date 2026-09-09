@@ -151,8 +151,8 @@ pub(crate) fn durable_directory(path: &Path) -> Result<()> {
 
 #[derive(Default)]
 struct InitializerRegistry {
-    handles: Vec<tokio::task::JoinHandle<()>>,
-    // A joined panic is still unreported while a cancelled drain has more
+    handles: Vec<tokio::task::JoinHandle<Result<()>>>,
+    // A joined failure is still unreported while a cancelled drain has more
     // owners to await. Keep that outcome with the surviving task registry.
     failure: Option<anyhow::Error>,
 }
@@ -165,8 +165,11 @@ impl InitializerRegistry {
         {
             let result = (&mut self.handles[index]).await;
             drop(self.handles.swap_remove(index));
-            if let Err(error) = result {
-                self.failure.get_or_insert_with(|| error.into());
+            if let Err(error) = result
+                .context("catalog initializer task join failed")
+                .and_then(|outcome| outcome)
+            {
+                self.failure.get_or_insert(error);
             }
         }
         self.take_failure()

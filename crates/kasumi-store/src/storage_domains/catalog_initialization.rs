@@ -24,7 +24,7 @@ struct Prepared {
 }
 
 struct Handoff {
-    prepared: Mutex<Option<Prepared>>,
+    outcome: Mutex<Option<Result<Prepared>>>,
     decided: Notify,
 }
 
@@ -34,20 +34,30 @@ struct Ticket(Arc<Handoff>);
 
 impl Ticket {
     fn claim(self) -> Result<Arc<TenantStorageSet>> {
-        let mut pending = self.0.prepared.lock();
-        pending
+        let mut pending = self.0.outcome.lock();
+        match pending
             .as_ref()
             .context("catalog initialization handoff already consumed")?
-            .stores
-            .check_access()?;
-        let Prepared {
+        {
+            Ok(candidate) => candidate.stores.check_access()?,
+            Err(_) => {
+                let Some(Err(error)) = pending.take() else {
+                    unreachable!("checked private catalog error ticket")
+                };
+                return Err(error);
+            }
+        }
+        let Some(Ok(Prepared {
             stores,
             mut application_slot,
             mut custody_slot,
             application_weak,
             custody_weak,
             activate,
-        } = pending.take().expect("checked prepared catalog handoff");
+        })) = pending.take()
+        else {
+            unreachable!("checked prepared catalog handoff")
+        };
         // No await, allocation or fallible operation from the first publication
         // through returned-handle ownership. Both gates remain held throughout.
         *custody_slot = custody_weak;
@@ -95,7 +105,7 @@ impl TenantStorageSet {
         // (including an already buffered ticket) remains unpublished cleanup.
         receive
             .await
-            .context("catalog initializer stopped")??
+            .context("catalog initializer stopped")?
             .claim()
     }
 }
@@ -110,17 +120,18 @@ impl NodeStore {
         while let Some(task) = tasks.handles.last_mut() {
             let result = task.await;
             tasks.handles.pop();
-            if let Err(error) = result {
-                tasks
-                    .failure
-                    .get_or_insert_with(|| anyhow::Error::new(error));
+            if let Err(error) = result
+                .context("catalog initializer task join failed")
+                .and_then(|outcome| outcome)
+            {
+                tasks.failure.get_or_insert(error);
             }
         }
         tasks.take_failure()
     }
 }
 
-async fn begin(input: Input) -> Result<oneshot::Receiver<Result<Ticket>>> {
+async fn begin(input: Input) -> Result<oneshot::Receiver<Ticket>> {
     validate_application_tenant(&input.tenant)?;
     input.application_access.validate_tenant(&input.tenant)?;
     input.application_access.check()?;
@@ -131,34 +142,37 @@ async fn begin(input: Input) -> Result<oneshot::Receiver<Result<Ticket>>> {
     // a lifetime history of JoinHandles. Unfinished owners stay registered.
     tasks.reap_finished().await?;
     tasks.handles.push(tokio::spawn(async move {
-        match prepare(input, &send).await {
-            Err(error) => {
-                let _ = send.send(Err(error));
-            }
-            Ok(prepared) => deliver(prepared, send).await,
-        }
+        // A buffered preparation error is not observed until the recipient
+        // claims its ticket. Abandonment returns it to the node's task registry.
+        let outcome = prepare(input, &send).await;
+        deliver(outcome, send).await
     }));
     Ok(receive)
 }
 
-async fn deliver(prepared: Prepared, send: oneshot::Sender<Result<Ticket>>) {
+async fn deliver(outcome: Result<Prepared>, send: oneshot::Sender<Ticket>) -> Result<()> {
     let handoff = Arc::new(Handoff {
-        prepared: Mutex::new(Some(prepared)),
+        outcome: Mutex::new(Some(outcome)),
         decided: Notify::new(),
     });
     // Drop a rejected/buffered result through Ticket::drop as well.
-    let _ = send.send(Ok(Ticket(handoff.clone())));
+    let _ = send.send(Ticket(handoff.clone()));
     handoff.decided.notified().await;
-    let abandoned = handoff.prepared.lock().take();
-    if let Some(prepared) = abandoned {
-        prepared.stores.application.shutdown().await;
-        prepared.stores.custody.store.shutdown().await;
-        // Open gates remain owned until both new workers are joined.
-        drop(prepared);
+    let abandoned = handoff.outcome.lock().take();
+    match abandoned {
+        Some(Ok(prepared)) => {
+            prepared.stores.application.shutdown().await;
+            prepared.stores.custody.store.shutdown().await;
+            // Open gates remain owned until both new workers are joined.
+            drop(prepared);
+        }
+        Some(Err(error)) => return Err(error),
+        None => {}
     }
+    Ok(())
 }
 
-async fn prepare(input: Input, receiver: &oneshot::Sender<Result<Ticket>>) -> Result<Prepared> {
+async fn prepare(input: Input, receiver: &oneshot::Sender<Ticket>) -> Result<Prepared> {
     let Input {
         node,
         tenant,

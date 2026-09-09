@@ -28,6 +28,14 @@ handles are not shut down and their snapshot/capability deadlines are not moved.
 tasks. Stop admitting new catalog work before final drain. Cancelled drains retain
 unfinished handles; completed tasks are joined/reaped on the next acquisition.
 A successful pair handoff transfers normal shutdown responsibility to its caller.
+Ordinary preparation errors use that same private acknowledgement ticket. Sending
+an error into a receiver's buffer does not consume it: only a synchronous claim
+by the actual recipient does. Abandoned errors return through the registered
+catalog task and remain reportable by node drain or the next admission reaper,
+including after a drain is cancelled while waiting for another owner. No new
+store is published on failure, and borrowed owners remain untouched. See
+`catalog-outcome-handoff.md` for source-only regression coverage.
+
 
 The pair create-or-open API has been removed. Fresh callers use
 `initialize_catalogs`; existing callers use `open_existing`. See

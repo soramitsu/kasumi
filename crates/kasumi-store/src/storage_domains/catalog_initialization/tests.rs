@@ -38,8 +38,10 @@ async fn cancelled_catalog_drain_preserves_a_joined_panic_while_another_owner_wa
     let pending = tokio::spawn(async move {
         let _owned = owned;
         waiting.await.unwrap();
+        Ok(())
     });
-    let failed = tokio::spawn(async { panic!("catalog owner panic before cancelled drain") });
+    let failed: tokio::task::JoinHandle<Result<()>> =
+        tokio::spawn(async { panic!("catalog owner panic before cancelled drain") });
     tokio::time::timeout(Duration::from_secs(5), async {
         while !failed.is_finished() {
             tokio::task::yield_now().await;
@@ -62,11 +64,7 @@ async fn cancelled_catalog_drain_preserves_a_joined_panic_while_another_owner_wa
         let registry = node.initializers.lock().await;
         assert_eq!(registry.handles.len(), 1);
         assert!(
-            registry
-                .failure
-                .as_ref()
-                .unwrap()
-                .to_string()
+            format!("{:#}", registry.failure.as_ref().unwrap())
                 .contains("catalog owner panic before cancelled drain")
         );
     }
@@ -113,7 +111,7 @@ async fn buffered_unclaimed_ticket_drains_only_unpublished_new_owners() -> Resul
     let (send, receive) = oneshot::channel();
     let prepared = prepare(input(node.clone()), &send).await?;
     let observed = prepared.stores.clone();
-    let delivery = deliver(prepared, send);
+    let delivery = deliver(Ok(prepared), send);
     tokio::pin!(delivery);
     // Execute the successful send and stop while the ticket is still buffered;
     // this models a caller cancelled before its receive future polls again.
@@ -131,7 +129,7 @@ async fn buffered_unclaimed_ticket_drains_only_unpublished_new_owners() -> Resul
         2
     );
     drop(receive);
-    tokio::time::timeout(Duration::from_secs(10), delivery).await?;
+    tokio::time::timeout(Duration::from_secs(10), delivery).await??;
     assert_unpublished(&node).await;
     assert!(observed.application.check_access().is_err());
     assert!(observed.custody.store.check_access().is_err());
@@ -176,8 +174,8 @@ async fn buffered_unclaimed_ticket_drains_only_unpublished_new_owners() -> Resul
 async fn committed_pair_handoff_preserves_a_concurrent_borrower_through_initializer_drain()
 -> Result<()> {
     let (_directory, node) = node()?;
-    let ticket = tokio::time::timeout(Duration::from_secs(10), begin(input(node.clone())).await?)
-        .await???;
+    let ticket =
+        tokio::time::timeout(Duration::from_secs(10), begin(input(node.clone())).await?).await??;
     let opening = TenantStore::open_existing_fixture(
         node.clone(),
         "new-tenant".into(),
@@ -241,6 +239,7 @@ async fn fresh_pair_rejects_shared_partial_and_orphan_domains_without_mutation()
         assert!(
             tokio::time::timeout(Duration::from_secs(10), receive)
                 .await??
+                .claim()
                 .is_err()
         );
         drain(&node).await?;
@@ -253,6 +252,7 @@ async fn fresh_pair_rejects_shared_partial_and_orphan_domains_without_mutation()
         assert!(
             tokio::time::timeout(Duration::from_secs(10), receive)
                 .await??
+                .claim()
                 .is_err()
         );
         drain(&node).await?;
@@ -268,6 +268,7 @@ async fn fresh_pair_rejects_shared_partial_and_orphan_domains_without_mutation()
     assert!(
         tokio::time::timeout(Duration::from_secs(10), receive)
             .await??
+            .claim()
             .is_err()
     );
     drain(&node).await?;
@@ -326,7 +327,11 @@ async fn cancelled_receiver_keeps_preparation_registered_until_actual_provider_w
     provider.resume.notify_one();
     tokio::time::timeout(Duration::from_secs(10), provider.entered.notified()).await?;
     provider.resume.notify_one();
-    tokio::time::timeout(Duration::from_secs(10), draining).await??;
+    let error = tokio::time::timeout(Duration::from_secs(10), draining)
+        .await?
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("catalog initialization receiver closed"));
+    drain(&node).await?;
     assert!(!provider.active.load(Ordering::Acquire));
     assert!(node.catalog("new-tenant")?.is_none());
     assert!(
@@ -335,4 +340,192 @@ async fn cancelled_receiver_keeps_preparation_registered_until_actual_provider_w
     );
     assert_unpublished(&node).await;
     Ok(())
+}
+
+#[derive(Debug)]
+struct PreparationFailure;
+impl std::fmt::Display for PreparationFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("injected fresh catalog preparation failure")
+    }
+}
+impl std::error::Error for PreparationFailure {}
+struct FailingProvider;
+#[async_trait::async_trait]
+impl KeyProvider for FailingProvider {
+    async fn generate_key(&self, _: &str) -> Result<GeneratedKey> {
+        Err(PreparationFailure.into())
+    }
+    async fn unwrap_key(&self, _: &str, _: &WrappedKey) -> Result<SecretKey> {
+        anyhow::bail!("fresh preparation unexpectedly reached unwrap")
+    }
+    async fn rewrap_key(&self, _: &str, _: &WrappedKey) -> Result<WrappedKey> {
+        anyhow::bail!("fresh preparation unexpectedly reached rewrap")
+    }
+}
+
+/// Register the real preparation/delivery work, then stop after its channel send
+/// while the error ticket is still buffered. Only the test's notification is new.
+async fn buffered_failure(node: &Arc<NodeStore>) -> Result<oneshot::Receiver<Ticket>> {
+    let (send, receive) = oneshot::channel();
+    let buffered = Arc::new(Notify::new());
+    let sent = buffered.clone();
+    let mut request = input(node.clone());
+    request.application_provider = Arc::new(FailingProvider);
+    let task = tokio::spawn(async move {
+        let outcome = prepare(request, &send).await;
+        assert!(outcome.as_ref().err().unwrap().is::<PreparationFailure>());
+        let delivery = deliver(outcome, send);
+        tokio::pin!(delivery);
+        std::future::poll_fn(|context| {
+            assert!(delivery.as_mut().poll(context).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        sent.notify_one();
+        delivery.await
+    });
+    node.initializers.lock().await.handles.push(task);
+    tokio::time::timeout(Duration::from_secs(5), buffered.notified()).await?;
+    assert!(
+        !node
+            .initializers
+            .lock()
+            .await
+            .handles
+            .last()
+            .unwrap()
+            .is_finished()
+    );
+    Ok(receive)
+}
+
+#[tokio::test]
+async fn buffered_preparation_error_requires_claim_before_registry_forgets_it() -> Result<()> {
+    for claim in [false, true] {
+        let (_directory, node) = node()?;
+        let before = contents(&node)?;
+        let receive = buffered_failure(&node).await?;
+        if claim {
+            let error = receive.await?.claim().err().expect("preparation must fail");
+            assert!(error.is::<PreparationFailure>());
+        } else {
+            drop(receive);
+        }
+        let result =
+            tokio::time::timeout(Duration::from_secs(5), node.drain_initializers()).await?;
+        if claim {
+            result?;
+        } else {
+            assert!(result.unwrap_err().is::<PreparationFailure>());
+        }
+        drain(&node).await?;
+        assert_unpublished(&node).await;
+        assert!(node.catalog("new-tenant")?.is_none());
+        assert!(
+            node.catalog(&CustodyStore::catalog_name("new-tenant"))?
+                .is_none()
+        );
+        assert_eq!(contents(&node)?, before);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancelled_catalog_drain_preserves_unclaimed_preparation_error() -> Result<()> {
+    let (_directory, node) = node()?;
+    let receive = buffered_failure(&node).await?;
+    let (release, waiting) = oneshot::channel::<()>();
+    let owned = node.clone();
+    let pending = tokio::spawn(async move {
+        let _owned = owned;
+        waiting.await?;
+        Ok(())
+    });
+    node.initializers.lock().await.handles.insert(0, pending);
+    drop(receive);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if node
+                .initializers
+                .lock()
+                .await
+                .handles
+                .last()
+                .unwrap()
+                .is_finished()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    let mut draining = Box::pin(node.drain_initializers());
+    std::future::poll_fn(|context| {
+        assert!(draining.as_mut().poll(context).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    drop(draining);
+    {
+        let registry = node.initializers.lock().await;
+        assert_eq!(registry.handles.len(), 1);
+        assert!(
+            registry
+                .failure
+                .as_ref()
+                .unwrap()
+                .is::<PreparationFailure>()
+        );
+    }
+    release.send(()).unwrap();
+    let error = tokio::time::timeout(Duration::from_secs(5), node.drain_initializers())
+        .await?
+        .unwrap_err();
+    assert!(error.is::<PreparationFailure>());
+    drain(&node).await?;
+    assert_unpublished(&node).await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn admission_reaper_reports_unclaimed_preparation_failure_before_new_work() -> Result<()> {
+    let (_directory, node) = node()?;
+    let before = contents(&node)?;
+    drop(buffered_failure(&node).await?);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if node
+                .initializers
+                .lock()
+                .await
+                .handles
+                .iter()
+                .all(tokio::task::JoinHandle::is_finished)
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    let error = begin(input(node.clone()))
+        .await
+        .err()
+        .expect("reaper must report retained failure");
+    assert!(error.is::<PreparationFailure>());
+    assert_eq!(contents(&node)?, before);
+    drain(&node).await?;
+    let stores = TenantStorageSet::initialize_catalogs(
+        node.clone(),
+        "new-tenant".into(),
+        Arc::new(LocalKeyProvider::new([51; 32])),
+        Arc::new(LocalKeyProvider::new([52; 32])),
+        StorageAccess::fixture(),
+    )
+    .await?;
+    stores.application.shutdown().await;
+    stores.custody.store.shutdown().await;
+    drain(&node).await
 }

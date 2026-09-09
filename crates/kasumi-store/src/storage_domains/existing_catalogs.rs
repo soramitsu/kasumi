@@ -51,7 +51,7 @@ struct Prepared {
     activate: watch::Sender<bool>,
 }
 struct Handoff {
-    prepared: Mutex<Option<Prepared>>,
+    outcome: Mutex<Option<Result<Prepared>>>,
     decided: Notify,
 }
 struct Ticket(Arc<Handoff>);
@@ -62,10 +62,19 @@ impl Drop for Ticket {
 }
 impl Ticket {
     fn claim(self) -> Result<Opened> {
-        let mut pending = self.0.prepared.lock();
-        let candidate = pending
+        let mut pending = self.0.outcome.lock();
+        let candidate = match pending
             .as_ref()
-            .context("existing catalog ticket consumed")?;
+            .context("existing catalog ticket consumed")?
+        {
+            Ok(candidate) => candidate,
+            Err(_) => {
+                let Some(Err(error)) = pending.take() else {
+                    unreachable!("checked private existing catalog error ticket")
+                };
+                return Err(error);
+            }
+        };
         let binding = validate(
             &candidate.custody.store,
             candidate.application.as_ref().map(|held| &held.store),
@@ -83,9 +92,9 @@ impl Ticket {
             "existing binding changed before handoff"
         );
         candidate.value.check()?;
-        let mut prepared = pending
-            .take()
-            .expect("checked private existing catalog ticket");
+        let Some(Ok(mut prepared)) = pending.take() else {
+            unreachable!("checked private existing catalog ticket")
+        };
         // Borrowed slots are never changed. Weak handles and dormant workers were
         // prepared before delivery; no await/allocation/failure follows publication.
         if prepared.custody.ownership == Ownership::New {
@@ -120,36 +129,37 @@ pub(super) async fn open(
     tasks.reap_finished().await?;
     let owner = node.clone();
     tasks.handles.push(tokio::spawn(async move {
-        match prepare(owner, tenant, custody_provider, application, &send).await {
-            Err(error) => {
-                let _ = send.send(Err(error));
-            }
-            Ok(prepared) => deliver(prepared, send).await,
-        }
+        let outcome = prepare(owner, tenant, custody_provider, application, &send).await;
+        deliver(outcome, send).await
     }));
     drop(tasks);
     receive
         .await
-        .context("existing catalog owner stopped")??
+        .context("existing catalog owner stopped")?
         .claim()
 }
 
-async fn deliver(prepared: Prepared, send: oneshot::Sender<Result<Ticket>>) {
+async fn deliver(outcome: Result<Prepared>, send: oneshot::Sender<Ticket>) -> Result<()> {
     let handoff = Arc::new(Handoff {
-        prepared: Mutex::new(Some(prepared)),
+        outcome: Mutex::new(Some(outcome)),
         decided: Notify::new(),
     });
-    let _ = send.send(Ok(Ticket(handoff.clone())));
+    let _ = send.send(Ticket(handoff.clone()));
     handoff.decided.notified().await;
-    let abandoned = handoff.prepared.lock().take();
-    if let Some(prepared) = abandoned {
-        if let Some(application) = &prepared.application {
-            application.close_unpublished().await;
+    let abandoned = handoff.outcome.lock().take();
+    match abandoned {
+        Some(Ok(prepared)) => {
+            if let Some(application) = &prepared.application {
+                application.close_unpublished().await;
+            }
+            prepared.custody.close_unpublished().await;
+            // Every relevant open gate remains held until only our new workers drain.
+            drop(prepared);
         }
-        prepared.custody.close_unpublished().await;
-        // Every relevant open gate remains held until only our new workers drain.
-        drop(prepared);
+        Some(Err(error)) => return Err(error),
+        None => {}
     }
+    Ok(())
 }
 
 async fn select(
@@ -226,7 +236,7 @@ async fn prepare(
     tenant: String,
     custody_provider: Arc<dyn KeyProvider>,
     application_input: Option<Application>,
-    receiver: &oneshot::Sender<Result<Ticket>>,
+    receiver: &oneshot::Sender<Ticket>,
 ) -> Result<Prepared> {
     let custody_name = CustodyStore::catalog_name(&tenant);
     let (custody_gate, application_gate) = {
