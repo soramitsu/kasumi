@@ -4,28 +4,39 @@ This is the active implementation and acceptance ledger for the approved first
 release. An unchecked gate is unfinished. The September 5 baseline and later
 branch evidence remain historical records; they do not certify this integration.
 
-The explicit release goal remains active. Current integration adds atomic recovery
-route publication, issuer-local activation tied to the global winner, and byte
-budgets for permanent staged outcomes. Permanent point-table migration, native
-resource reservations, persistent disk admission and the final live/capacity/
-endurance gates remain open. The Linux reference VM has 16 GiB memory. Its latest
-frozen run (`3a8d512`, 15 GiB container limit) failed the restored-runtime restart
-test while all other gates passed. Earlier failures remain retained in full.
+The explicit release goal remains active. The working integration is
+`/tmp/kasumi-production-strict-reconcile`; the main checkout is preserved for
+separate ongoing ordered-seek work. First-release API removal, permanent
+point-addressed receipts, explicit physical/catalog creation, retained startup and
+request owners, and canonical planned recovery are integrated in source. Persistent
+disk admission, native reservations, complete HA/local lifecycle, and final live,
+capacity, platform, endurance and artifact gates remain open.
 
-Release tooling now requires original command deadlines, verified process-group
-drain and exact executing runner/helper provenance before accepting or packaging
-functional results. Its [44 macOS and 20 Linux Python checks](evidence/release-process-abc8794-20260909/README.md)
-passed after preserving and correcting a failed deadline/cleanup counterexample.
-Those tool checks do not replace any database acceptance gate.
+The latest [frozen compiler/store cohort](evidence/first-release-7a21995-check-20260909/README.md)
+passed workspace compilation and formatting, then failed one store identity
+assertion: 126 passed, one failed, two ignored. Strict store lint did not run after
+the original stop-on-failure rule. All owned processes drained and source stayed
+unchanged. This source excludes the later canonical administration and ownership
+changes. The failed assertion concerns an obsolete administrative-generation API
+already removed in the newer source; only a new actual run can validate that source.
+The [preceding compilation failure](evidence/first-release-1ff2fe2-check-20260909/README.md)
+and its exact inputs remain retained.
 
-The [frozen first-release workspace check](evidence/first-release-1ff2fe2-check-20260909/README.md)
-failed at compilation with ten distinct import and replaced-API call-site errors.
-The source, raw failure and full process drain are retained. No Rust tests ran;
-formatting was skipped by the original stop-on-failure plan. The source corrections
-use explicit existing-state reopen calls and add no compatibility path. Subsequent
-combined compiler, functional and strict gates remain open. Canonical management
-removal and the retained startup/existing-catalog owners are separate checkpoints;
-the real TLS coordinator fixture and their integrated validation are unfinished.
+The canonical administration fixture now uses actual encrypted backup data,
+separate pinned TLS issuer/Control/data groups, target materialization, quorum loss,
+source retirement, activation and restart assertions. It remains **UNRUN** and has
+an identified missing live enrollment path for newly configured tenants. Its
+[source coverage and corrected review note](evidence/canonical-runtime-f7fa592-source-20260909/README.md)
+distinguish fixture-owned target/signing services from full production lifecycle.
+
+Release tooling requires original deadlines, verified process-group drain and exact
+runner/helper provenance. Its [44 macOS and 20 Linux Python checks](evidence/release-process-abc8794-20260909/README.md)
+passed after preserving a failed cleanup counterexample. The separate redb prototype
+[outer containment harness](evidence/redb-outer-92a6a94-guards-20260909/README.md)
+passed 14 Python guard tests; its actual VM/container build, full upstream suite and
+fuzz runs are unrun. Neither tool result replaces a database gate. The latest
+historical Linux reference run (`3a8d512`) failed restored-runtime restart and is
+not evidence for this integration.
 
 ## Contract
 
@@ -89,43 +100,30 @@ it does not make their interfaces or formats part of the release contract.
 ## Next integration checkpoints
 
 These are concrete steps toward the active release goal, not separate release
-approvals. Implementation branches must pass their stated regressions before
-integration; the final integrated source must then pass the complete gates above.
+approvals. Source integration does not accept an implementation milestone. Each change must
+pass its stated regressions on the combined source, followed by the complete final
+gates above. Source-only changes and failed attempts remain explicitly identified.
 
-1. Close storage ownership across completed, cancelled and retried shutdowns.
-   Validate security and tenant audit workers, recovery supervisors, serving
-   lease renewals and target phase renewals, then repeat the three-node restored
-   restart that failed on Linux. A source-level ownership counterexample does
-   not establish the sole cause of that observed failure.
-2. Integrate original mutation receipt scope and digest verification, including
-   restored lineage intervals, native/MCP lost-response resolution and the
-   finite original SDK deadline. The prepared receipt checkpoint passes client
-   and driver tests plus strict workspace lint; engine and native functional
-   checks remain pending. Ordinary receipt lifetime and permanent table
-   migration remain separate work.
-3. Validate staged terminal records in encrypted point-addressed storage,
-   including cancellation after physical publication, exact applied-prefix
-   selection and restore publication. The prepared branch compiles; crash and
-   functional regressions have not yet passed. Reuse the validated storage
-   primitive for authority and recovery terminal facts only after these checks.
-4. Add explicit SDK snapshot transport/decode admission, exact returned snapshot
-   semantics and response ownership through cancellation. Enforce caller byte,
-   depth and node limits before the corresponding owned DTO allocation, and
-   preserve member routing and the original deadline. Document SDK-accounted
-   capacity separately from transport buffers and process RSS. Preserve literal
-   document keys throughout native, MCP, durable command and snapshot decoding:
-   the locked JSON dependency can interpret its private number/raw-value marker
-   keys as internal representations. The source audit below identifies these
-   paths; a bounded literal SDK parser alone does not fix server ingress.
-5. Complete signer coverage and exact authority reopen, then install prepared
-   target completion reservations, terminal resolution and linked Control
-   successors. An absent Complete remains unknown until the exact durable
-   terminal protocol proves otherwise.
-6. Run a small offline standalone diagnostic with the actual fixture-free Linux
-   binaries: private initialization, native and MCP access, renewal, encrypted
-   backup, restart and stopped local restore. Preserve its exact source and
-   executable hashes. This diagnostic does not replace the full credential,
-   rotation, recovery, 3 GiB, HA or endurance acceptance gates.
+1. Validate the combined explicit catalog creation/reopen paths and canonical
+   administration. Remove the remaining generic singleton create-or-open surface;
+   add explicit live enrollment for configured HA tenants while leaving unopened
+   templates dormant. Preserve exact original identities and mismatch rejection.
+2. Close and validate stopped-operator ownership from first exclusive lock through
+   every failure/cancellation. Propagate actual worker/core terminal failures;
+   joined errors must survive cancelled drains, and elapsed deadlines never prove
+   owner release. Repeat the restored-runtime restart failure on final source.
+3. Run full store and authority regressions for acknowledged catalog outcomes,
+   admitted-request/fence retention and exact signer authorization reuse. Follow
+   with the real TLS canonical coordinator and source-unavailable phase faults.
+4. Complete persistent node disk admission and native reservations, then validate
+   T6 permanent receipts, history archival and streaming snapshots/restores under
+   actual 3 GiB pressure. Scratch or payload limits do not establish disk capacity.
+5. Complete standalone and HA maintenance, secure credential/key/TLS lifecycle,
+   actual provider interoperability and replacement-member recovery. Earlier
+   small standalone and native branch diagnostics remain historical evidence.
+6. Execute all final-source platform/performance/endurance gates and generate
+   source/configuration/dependency/executable-bound installation artifacts. Preserve
+   failed attempts and do not shorten the genuine 24-hour soak.
 
 Persistent disk admission and native durable resource reservations must be
 implemented before claiming configured node disk capacity or reserved import
@@ -142,8 +140,10 @@ epoch metadata before constructing schema bodies. Source and all owned process
 groups closed cleanly. [The retained evidence](evidence/sdk-metadata-e17a5eb-20260909/README.md)
 does not certify the server TLS regression, which remains pending execution.
 
-The integration checkout is `/Users/mtakemiya/dev/kasumi`. Implementation branches
-use separate worktrees for streaming storage, standalone runtime and HA runtime.
+The current integration checkout is `/tmp/kasumi-production-strict-reconcile`.
+The main `/Users/mtakemiya/dev/kasumi` checkout contains separately owned active
+ordered-seek changes and must not be overwritten. Implementation branches use
+separate worktrees for storage, standalone and HA runtime changes.
 The existing `/private/tmp/kasumi-target-runner` remains preserved. Unrelated
 untracked files in the integration checkout are not release inputs.
 
