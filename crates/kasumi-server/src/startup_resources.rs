@@ -6,13 +6,15 @@ use std::sync::Arc;
 
 #[derive(Default)]
 pub(crate) struct Resources {
-    pub(crate) standalone_lock: Option<kasumi_store::private_files::ExclusiveLock>,
     pub(crate) nodes: Vec<Arc<kasumi_store::NodeStore>>,
     pub(crate) stores: Vec<Arc<kasumi_store::TenantStore>>,
     pub(crate) audits: Vec<Arc<kasumi_engine::SecurityAudit>>,
     pub(crate) verifiers: Vec<Arc<crate::signer_runtime::InstalledSignerVerifier>>,
     pub(crate) databases: Vec<Arc<kasumi_engine::Database>>,
     pub(crate) authorities: Vec<Arc<kasumi_authority::IndependentAuthority>>,
+    // Fields drop in declaration order: exclusive installation ownership must
+    // outlive every retained worker and physical node handle.
+    pub(crate) standalone_lock: Option<kasumi_store::private_files::ExclusiveLock>,
 }
 impl Resources {
     pub(crate) async fn close(&self) -> Result<()> {

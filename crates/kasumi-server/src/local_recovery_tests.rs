@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     runtime::NodeRuntime,
-    standalone::{ClientProfile, initialize},
+    standalone::{ClientProfile, drain_operations, initialize},
 };
 use kasumi_types::*;
 use std::collections::BTreeSet;
@@ -173,7 +173,7 @@ async fn local_recovery_resumes_each_phase_and_fences_old_resources_after_activa
         LocalRecoveryPhase::Activate,
         LocalRecoveryPhase::Publish,
     ] {
-        let operator = Operator::open(&configuration).await.unwrap();
+        let mut operator = Operator::open(&configuration).await.unwrap();
         let mut journal = record(operator.store(), request.operation_id).unwrap();
         let old_phase = journal.status.phase_id;
         operator.step(&mut journal).await.unwrap();
@@ -185,7 +185,7 @@ async fn local_recovery_resumes_each_phase_and_fences_old_resources_after_activa
                 .unwrap()
                 .is_some()
         );
-        operator.audit.shutdown().await;
+        crate::startup_owner::finish(&mut operator).await.unwrap();
         drop(operator);
         assert_eq!(
             status(&configuration, request.operation_id)
@@ -302,7 +302,7 @@ async fn local_stop_persists_identity_before_cleanup_and_rejects_unrelated_files
     let root = tempfile::tempdir().unwrap();
     let (configuration, request, _) = backup(root.path()).await;
     start(&configuration, request.clone()).await.unwrap();
-    let operator = Operator::open(&configuration).await.unwrap();
+    let mut operator = Operator::open(&configuration).await.unwrap();
     let mut journal = record(operator.store(), request.operation_id).unwrap();
     operator.step(&mut journal).await.unwrap();
     let target = journal.target_directory.clone();
@@ -321,7 +321,7 @@ async fn local_stop_persists_identity_before_cleanup_and_rejects_unrelated_files
     let cache_directory = target.join("tenant-audit-archives");
     let archive = cache_directory.join(format!("{}.audit", segment.reference.object.object_id));
     drop(cache);
-    operator.audit.shutdown().await;
+    crate::startup_owner::finish(&mut operator).await.unwrap();
     drop(operator);
     let unrelated = target.join("unrelated.txt");
     private_files::create(&unrelated, b"must remain").unwrap();
@@ -371,7 +371,7 @@ async fn local_stop_persists_identity_before_cleanup_and_rejects_unrelated_files
         shared.read_blocking(&segment.reference.object).unwrap(),
         segment.ciphertext
     );
-    let operator = Operator::open(&configuration).await.unwrap();
+    let mut operator = Operator::open(&configuration).await.unwrap();
     let ownership_key = [
         request.operation_id.as_bytes().as_slice(),
         segment.reference.object.object_id.as_bytes().as_slice(),
@@ -384,7 +384,7 @@ async fn local_stop_persists_identity_before_cleanup_and_rejects_unrelated_files
             .unwrap()
             .is_some()
     );
-    operator.audit.shutdown().await;
+    crate::startup_owner::finish(&mut operator).await.unwrap();
     drop(operator);
     assert_eq!(
         stop(&configuration, request.operation_id)
@@ -467,6 +467,9 @@ async fn create_catalogs(operator: &Operator, journal: &mut Journal) {
 #[tokio::test]
 async fn cancelled_local_operator_retains_exclusive_installation_until_joined_drain() {
     use std::{future::Future, task::Poll};
+    let _serial = crate::standalone::ownership_tests::drain_serial()
+        .lock()
+        .await;
     let root = tempfile::tempdir().unwrap();
     let (configuration, request, _) = backup(root.path()).await;
     start(&configuration, request.clone()).await.unwrap();
@@ -710,13 +713,7 @@ async fn activated_local_recovery_never_recreates_missing_control_topology() {
     let activation = active_generation(&operator.config, operator.store(), &request.tenant)
         .unwrap()
         .unwrap();
-    let control = crate::standalone::operator_control(
-        &operator.config,
-        operator.node.clone(),
-        operator.audit.clone(),
-    )
-    .await
-    .unwrap();
+    let control = operator.state.control().await.unwrap();
     let context = crate::standalone::offline_context(&control).unwrap();
     let plane = kasumi_engine::control::ControlPlane::new(control.clone()).unwrap();
     let topology = plane.topology(&context).await.unwrap().unwrap();
@@ -737,7 +734,7 @@ async fn activated_local_recovery_never_recreates_missing_control_topology() {
         .unwrap();
     assert!(plane.topology(&context).await.unwrap().is_none());
     drop(plane);
-    control.shutdown().await.unwrap();
+    // The enclosing operator owns Control until its final drain.
     drop(control);
     let failure = operator.step(&mut journal).await.unwrap_err();
     assert!(format!("{failure:#}").contains("installed standalone Control topology is missing"));
@@ -750,18 +747,12 @@ async fn activated_local_recovery_never_recreates_missing_control_topology() {
         .unwrap();
     assert_eq!(current.operation_id, activation.operation_id);
     assert_eq!(current.incarnation, activation.incarnation);
-    let control = crate::standalone::operator_control(
-        &operator.config,
-        operator.node.clone(),
-        operator.audit.clone(),
-    )
-    .await
-    .unwrap();
+    let control = operator.state.control().await.unwrap();
     let context = crate::standalone::offline_context(&control).unwrap();
     let plane = kasumi_engine::control::ControlPlane::new(control.clone()).unwrap();
     assert!(plane.topology(&context).await.unwrap().is_none());
     drop(plane);
-    control.shutdown().await.unwrap();
+    // The enclosing operator owns Control until its final drain.
     drop(control);
     crate::startup_owner::finish(&mut operator).await.unwrap();
     drop(operator);

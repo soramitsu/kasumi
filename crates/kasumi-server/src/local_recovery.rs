@@ -325,27 +325,21 @@ impl crate::startup_owner::Runtime for DrainedStatus {
         Box::pin(async { Ok(()) })
     }
 }
-/// Stop admitting operator calls before joining outstanding local operations.
-/// Committed status results contain no worker, key or storage owner.
-pub async fn drain_operations() -> Result<()> {
-    crate::startup_owner::drain(crate::startup_owner::Kind::LocalOperator).await
-}
 
 struct Operator {
-    config: RuntimeConfig,
-    node: Arc<kasumi_store::NodeStore>,
-    audit: Arc<kasumi_engine::SecurityAudit>,
-    credentials: Arc<crate::local_auth::LocalCredentials>,
-    _lock: private_files::ExclusiveLock,
+    state: crate::standalone::OperatorState,
+}
+impl std::ops::Deref for Operator {
+    type Target = crate::standalone::OperatorState;
+    fn deref(&self) -> &Self::Target {
+        &self.state
+    }
 }
 impl crate::startup_owner::Runtime for Operator {
     fn close(
         &mut self,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + '_>> {
-        Box::pin(async {
-            self.audit.shutdown().await;
-            self.node.drain_initializers().await
-        })
+        crate::startup_owner::Runtime::close(&mut self.state)
     }
 }
 
@@ -370,14 +364,8 @@ impl LocalTarget {
 impl Operator {
     async fn open(configuration: &Path) -> Result<Self> {
         let config = RuntimeConfig::load(configuration)?;
-        let (lock, node, audit, credentials) = crate::standalone::operator_state(&config).await?;
-        let owner = Self {
-            config,
-            node,
-            audit,
-            credentials,
-            _lock: lock,
-        };
+        let state = crate::standalone::OperatorState::open(&config).await?;
+        let owner = Self { state };
         #[cfg(test)]
         tests::pause_open(configuration).await;
         Ok(owner)
@@ -1308,14 +1296,7 @@ impl Operator {
                 && active.incarnation == journal.status.request.target_incarnation,
             "another local activation has won"
         );
-        let control = crate::standalone::operator_control(
-            &self.config,
-            self.node.clone(),
-            self.audit.clone(),
-        )
-        .await?;
-        let mut control_resources = crate::startup_resources::Resources::default();
-        control_resources.databases.push(control.clone());
+        let control = self.state.control().await?;
         let result = async {
             let administrator = crate::standalone::offline_context(&control)?;
             let context = self
@@ -1388,11 +1369,9 @@ impl Operator {
             Ok::<_, anyhow::Error>(())
         }
         .await;
-        let drained = crate::startup_owner::finish(&mut control_resources).await;
-        drop(control_resources);
+        // The shared operator retains Control through the complete operation.
         drop(control);
         result?;
-        drained?;
         let mut target = self.target(journal, TargetOpen::Existing).await?;
         let result = async {
             let request = &journal.status.request;

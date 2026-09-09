@@ -12,17 +12,19 @@ async fn initialization_provisions_control_topology_and_application_before_compl
     let mut substituted = config.clone();
     substituted.database_id = Uuid::new_v4();
     ensure!(
-        operator_state(&substituted).await.is_err(),
+        OperatorState::open(&substituted).await.is_err(),
         "different configured physical database identity was accepted"
     );
     substituted = config.clone();
     substituted.control.incarnation = Some(Uuid::new_v4().to_string());
     ensure!(
-        operator_state(&substituted).await.is_err(),
+        OperatorState::open(&substituted).await.is_err(),
         "different configured immutable Control identity was accepted"
     );
-    let (lock, node, audit, credentials) = operator_state(&config).await?;
-    let control = operator_control(&config, node.clone(), audit.clone()).await?;
+    let mut owner = OperatorState::open(&config).await?;
+    let node = owner.node.clone();
+    let audit = owner.audit.clone();
+    let control = owner.control().await?;
     let plane = ControlPlane::new(control.clone())?;
     let context = crate::runtime::configured_control_context(&config.control)?;
     plane.require_initialized(&context).await?;
@@ -81,11 +83,10 @@ async fn initialization_provisions_control_topology_and_application_before_compl
     drop(plane);
     control.shutdown().await?;
     drop(control);
-    drop(credentials);
     audit.shutdown().await;
     drop(audit);
     drop(node);
-    drop(lock);
+    owner.finish(Ok(())).await?;
     Ok(())
 }
 
@@ -134,7 +135,9 @@ async fn stopped_operator_reopen_never_recreates_missing_control_bootstrap() -> 
     let root = tempfile::tempdir()?;
     let installed = initialize(&root.path().join("database"), "documents").await?;
     let config = RuntimeConfig::load(&installed.configuration)?;
-    let (_lock, node, audit, credentials) = operator_state(&config).await?;
+    let mut owner = OperatorState::open(&config).await?;
+    let node = owner.node.clone();
+    let audit = owner.audit.clone();
     let source = Arc::new(crate::runtime::file_secret);
     let stores = TenantStorageSet::open_existing(
         node.clone(),
@@ -184,7 +187,9 @@ async fn stopped_operator_reopen_never_recreates_missing_control_bootstrap() -> 
     stores.application().shutdown().await;
     stores.custody().store().shutdown().await;
     drop(stores);
-    drop(credentials);
     audit.shutdown().await;
+    drop(audit);
+    drop(node);
+    owner.finish(Ok(())).await?;
     Ok(())
 }

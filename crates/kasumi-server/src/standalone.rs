@@ -152,62 +152,14 @@ pub struct InitializedInstallation {
     pub tenant_profile: PathBuf,
 }
 
-pub(crate) async fn operator_state(
-    config: &RuntimeConfig,
-) -> Result<(
-    private_files::ExclusiveLock,
-    Arc<NodeStore>,
-    Arc<kasumi_engine::SecurityAudit>,
-    Arc<LocalCredentials>,
-)> {
-    config.validate()?;
-    let lock = claim(config)?.context("operator recovery requires standalone mode")?;
-    let AuthKeySource::Local { signer_file } = &config.auth.source else {
-        anyhow::bail!("operator recovery requires a local issuer");
-    };
-    let node = NodeStore::open_existing(
-        &config.database_path,
-        config.database_id,
-        kasumi_store::ScratchDisk::open(config.scratch_disk.clone())?,
-    )?;
-    let store = TenantStore::open_existing(
-        node.clone(),
-        kasumi_engine::SECURITY_TENANT.into(),
-        config
-            .security_audit
-            .keys
-            .provider(Arc::new(crate::runtime::file_secret))?,
-        StorageAccess::security_audit(),
-    )
-    .await?;
-    let opened = (|| {
-        config.security_audit.open(
-            store.clone(),
-            kasumi_engine::admission::NodeAdmission::new(config.admission.clone())?,
-        )
-    })();
-    let audit = match opened {
-        Ok(audit) => audit,
-        Err(error) => {
-            store.shutdown().await;
-            return Err(error);
-        }
-    };
-    let credentials = LocalCredentials::open(
-        store.clone(),
-        signer_file.clone(),
-        config.auth.issuer.clone(),
-        config.auth.audience.clone(),
-    );
-    let credentials = match credentials {
-        Ok(credentials) => credentials,
-        Err(error) => {
-            audit.shutdown().await;
-            store.shutdown().await;
-            return Err(error);
-        }
-    };
-    Ok((lock, node, audit, credentials))
+#[path = "standalone_operator.rs"]
+mod operator;
+pub(crate) use operator::OperatorState;
+
+/// Join local initialization, recovery and key-maintenance operations after
+/// admission has stopped. Completed replies contain no storage owners.
+pub async fn drain_operations() -> Result<()> {
+    crate::startup_owner::drain(crate::startup_owner::Kind::LocalOperator).await
 }
 
 fn operator_event(
@@ -221,43 +173,6 @@ fn operator_event(
         request_id: request_id.into(),
         outcome,
     }
-}
-
-pub(crate) async fn operator_control(
-    config: &RuntimeConfig,
-    node: Arc<NodeStore>,
-    audit: Arc<kasumi_engine::SecurityAudit>,
-) -> Result<Arc<kasumi_engine::Database>> {
-    let source = Arc::new(crate::runtime::file_secret);
-    let stores = kasumi_store::TenantStorageSet::open_existing(
-        node,
-        crate::runtime::CONTROL_TENANT.into(),
-        config.control.keys.provider(source.clone())?,
-        config.control.custody_keys.provider(source)?,
-        StorageAccess::node_control(),
-    )
-    .await?;
-    let opened = async {
-        config.install_tenant_audit_archive(stores.application(), None)?;
-        kasumi_engine::open_existing_local(
-            stores.clone(),
-            audit,
-            Uuid::parse_str(
-                config
-                    .control
-                    .incarnation
-                    .as_deref()
-                    .context("control incarnation missing")?,
-            )?,
-        )
-        .await
-    }
-    .await;
-    if opened.is_err() {
-        stores.application().shutdown().await;
-        stores.custody().store().shutdown().await;
-    }
-    opened
 }
 
 pub(crate) fn offline_context(
@@ -291,7 +206,7 @@ type OperatorTenants = (
 fn operator_tenants(
     config: &RuntimeConfig,
     store: &TenantStore,
-    node: &Arc<NodeStore>,
+    owner: &OperatorState,
 ) -> Result<OperatorTenants> {
     let mut tenants = config.tenants.clone();
     let mut nodes = std::collections::BTreeMap::new();
@@ -303,11 +218,12 @@ fn operator_tenants(
                     NodeStore::open_existing(
                         active.directory.join("node.redb"),
                         active.database_id(config, &tenant.tenant)?,
-                        node.scratch_disk().clone(),
+                        owner.node.scratch_disk().clone(),
                     )?
                 }
-                None => node.clone(),
+                None => owner.node.clone(),
             };
+        owner.retain_node(selected.clone());
         nodes.insert(tenant.tenant.clone(), selected);
     }
     Ok((tenants, nodes))
@@ -317,27 +233,44 @@ fn operator_tenants(
 /// Policy validation requires such an administrator, even when every token is
 /// lost or expired. No policy bypass is installed in the running server.
 pub async fn recover_administrator(configuration: &Path, output: &Path) -> Result<Vec<PathBuf>> {
+    let configuration = configuration.to_owned();
+    let output = output.to_owned();
+    operator::run(async move { recover_administrator_owned(&configuration, &output).await }).await
+}
+
+async fn recover_administrator_owned(configuration: &Path, output: &Path) -> Result<Vec<PathBuf>> {
     let mut config = RuntimeConfig::load(configuration)?;
-    let (_lock, node, audit, credentials) = operator_state(&config).await?;
-    if let Err(error) = crate::local_recovery::require_runtime_ready(audit.store()) {
-        audit.shutdown().await;
-        return Err(error);
-    }
-    let (effective_tenants, generation_nodes) = operator_tenants(&config, audit.store(), &node)?;
-    private_files::create_directory(output)?;
-    let operation_id = Uuid::new_v4().to_string();
-    audit
-        .record(operator_event(
-            &operation_id,
-            kasumi_engine::SecurityOutcome::Started,
-        ))
-        .await?;
-    let root = installation_root(&config)?;
-    let source_profile = ClientProfile::load(&root.join("profiles/control.json"))?;
-    let mut recovered = Vec::new();
-    let mut recovered_control_principal = None;
-    for (_name, tenant, _policy, _limits, incarnation, application, custody, access, resource) in
-        std::iter::once((
+    let mut owner = OperatorState::open(&config).await?;
+    let result = async {
+        let node = owner.node.clone();
+        let audit = owner.audit.clone();
+        let credentials = owner.credentials.clone();
+        crate::local_recovery::require_runtime_ready(audit.store())?;
+        let (effective_tenants, generation_nodes) =
+            operator_tenants(&config, audit.store(), &owner)?;
+        private_files::create_directory(output)?;
+        let operation_id = Uuid::new_v4().to_string();
+        audit
+            .record(operator_event(
+                &operation_id,
+                kasumi_engine::SecurityOutcome::Started,
+            ))
+            .await?;
+        let root = installation_root(&config)?;
+        let source_profile = ClientProfile::load(&root.join("profiles/control.json"))?;
+        let mut recovered = Vec::new();
+        let mut recovered_control_principal = None;
+        for (
+            _name,
+            tenant,
+            _policy,
+            _limits,
+            incarnation,
+            application,
+            custody,
+            access,
+            resource,
+        ) in std::iter::once((
             "control",
             crate::runtime::CONTROL_TENANT,
             &config.control.initial_policy,
@@ -381,339 +314,403 @@ pub async fn recover_administrator(configuration: &Path, output: &Path) -> Resul
                     .expect("validated standalone"),
                 CredentialResource::Database { incarnation: uuid },
             )
-        }))
-    {
-        let source = Arc::new(crate::runtime::file_secret);
-        let stores = kasumi_store::TenantStorageSet::open_existing(
-            generation_nodes
-                .get(tenant)
-                .cloned()
-                .unwrap_or_else(|| node.clone()),
-            tenant.into(),
-            application.provider(source.clone())?,
-            custody.provider(source)?,
-            access,
-        )
-        .await?;
-        config.install_tenant_audit_archive(stores.application(), None)?;
-        let database = kasumi_engine::open_existing_local(
-            stores,
-            audit.clone(),
-            Uuid::parse_str(incarnation)?,
-        )
-        .await?;
-        let generation = database.engine().generation()?;
-        let principal = generation
-            .state
-            .policy
-            .grants
-            .iter()
-            .find(|grant| grant.collection.is_none() && grant.actions.contains(&Action::Admin))
-            .context("installed administrator is missing")?
-            .principal
-            .clone();
-        if tenant == crate::runtime::CONTROL_TENANT {
-            recovered_control_principal = Some(principal.clone());
-        }
-        let issued = credentials.create(
-            CreateCredential {
-                family_id: Uuid::new_v4(),
-                principal,
+        })) {
+            let source = Arc::new(crate::runtime::file_secret);
+            let stores = kasumi_store::TenantStorageSet::open_existing(
+                generation_nodes
+                    .get(tenant)
+                    .cloned()
+                    .unwrap_or_else(|| node.clone()),
+                tenant.into(),
+                application.provider(source.clone())?,
+                custody.provider(source)?,
+                access,
+            )
+            .await?;
+            owner.retain_stores(&stores);
+            config.install_tenant_audit_archive(stores.application(), None)?;
+            let database = kasumi_engine::open_existing_local(
+                stores,
+                audit.clone(),
+                Uuid::parse_str(incarnation)?,
+            )
+            .await?;
+            owner.retain_database(database.clone());
+            let generation = database.engine().generation()?;
+            let principal = generation
+                .state
+                .policy
+                .grants
+                .iter()
+                .find(|grant| grant.collection.is_none() && grant.actions.contains(&Action::Admin))
+                .context("installed administrator is missing")?
+                .principal
+                .clone();
+            if tenant == crate::runtime::CONTROL_TENANT {
+                recovered_control_principal = Some(principal.clone());
+            }
+            let issued = credentials.create(
+                CreateCredential {
+                    family_id: Uuid::new_v4(),
+                    principal,
+                    tenant: tenant.into(),
+                    resource: resource.clone(),
+                    scopes: BTreeSet::from([
+                        Action::Read,
+                        Action::Write,
+                        Action::Admin,
+                        Action::Audit,
+                    ]),
+                    lifetime_seconds: 3600,
+                },
+                "offline-administrator-recovery",
+            )?;
+            let name = if tenant == crate::runtime::CONTROL_TENANT {
+                "control".to_owned()
+            } else {
+                format!("database-{incarnation}")
+            };
+            let token_path = output.join(format!("{name}.token"));
+            private_files::create(&token_path, issued.token.as_bytes())?;
+            let profile = ClientProfile {
                 tenant: tenant.into(),
-                resource: resource.clone(),
-                scopes: BTreeSet::from([Action::Read, Action::Write, Action::Admin, Action::Audit]),
-                lifetime_seconds: 3600,
-            },
-            "offline-administrator-recovery",
-        )?;
-        let name = if tenant == crate::runtime::CONTROL_TENANT {
-            "control".to_owned()
-        } else {
-            format!("database-{incarnation}")
-        };
-        let token_path = output.join(format!("{name}.token"));
-        private_files::create(&token_path, issued.token.as_bytes())?;
-        let profile = ClientProfile {
-            tenant: tenant.into(),
-            resource,
-            family_id: issued.family_id,
-            bearer_file: token_path,
-            ..source_profile.clone()
-        };
-        let profile_path = output.join(format!("{name}.json"));
-        private_files::create(&profile_path, &serde_json::to_vec_pretty(&profile)?)?;
-        recovered.push(profile_path);
-        drop(generation);
-        database.shutdown().await?;
+                resource,
+                family_id: issued.family_id,
+                bearer_file: token_path,
+                ..source_profile.clone()
+            };
+            let profile_path = output.join(format!("{name}.json"));
+            private_files::create(&profile_path, &serde_json::to_vec_pretty(&profile)?)?;
+            recovered.push(profile_path);
+            drop(generation);
+            database.shutdown().await?;
+        }
+        config.control.startup_principal = recovered_control_principal;
+        private_files::replace(configuration, &serde_json::to_vec_pretty(&config)?)?;
+        audit
+            .record(operator_event(
+                &operation_id,
+                kasumi_engine::SecurityOutcome::Succeeded,
+            ))
+            .await?;
+
+        Ok(recovered)
     }
-    config.control.startup_principal = recovered_control_principal;
-    private_files::replace(configuration, &serde_json::to_vec_pretty(&config)?)?;
-    audit
-        .record(operator_event(
-            &operation_id,
-            kasumi_engine::SecurityOutcome::Succeeded,
-        ))
-        .await?;
-    audit.shutdown().await;
-    Ok(recovered)
+    .await;
+    owner.finish(result).await
 }
 
 pub async fn rotate_wrapping_keys(configuration: &Path) -> Result<()> {
+    let configuration = configuration.to_owned();
+    operator::run(async move { rotate_wrapping_keys_owned(&configuration).await }).await
+}
+
+async fn rotate_wrapping_keys_owned(configuration: &Path) -> Result<()> {
     let config = RuntimeConfig::load(configuration)?;
-    let (_lock, node, audit, _credentials) = operator_state(&config).await?;
-    if let Err(error) = crate::local_recovery::require_runtime_ready(audit.store()) {
-        audit.shutdown().await;
-        return Err(error);
-    }
-    let (effective_tenants, generation_nodes) = operator_tenants(&config, audit.store(), &node)?;
-    let operation = Uuid::new_v4().to_string();
-    audit
-        .record(operator_event(
-            &operation,
-            kasumi_engine::SecurityOutcome::Started,
+    let mut owner = OperatorState::open(&config).await?;
+    let result = async {
+        let node = owner.node.clone();
+        let audit = owner.audit.clone();
+        crate::local_recovery::require_runtime_ready(audit.store())?;
+        let (effective_tenants, generation_nodes) =
+            operator_tenants(&config, audit.store(), &owner)?;
+        let operation = Uuid::new_v4().to_string();
+        audit
+            .record(operator_event(
+                &operation,
+                kasumi_engine::SecurityOutcome::Started,
+            ))
+            .await?;
+        for settings in [
+            &config.security_audit.keys,
+            &config.control.keys,
+            &config.control.custody_keys,
+        ]
+        .into_iter()
+        .chain(
+            config
+                .tenants
+                .iter()
+                .flat_map(|tenant| [&tenant.keys, &tenant.custody_keys]),
+        ) {
+            let KeyProviderSettings::File { path } = settings else {
+                anyhow::bail!("local wrapping rotation requires file keyrings");
+            };
+            FileKeyProvider::open(path)?.rotate()?;
+        }
+        audit.store().rewrap_keys().await?;
+        for (tenant, application, custody, access) in std::iter::once((
+            crate::runtime::CONTROL_TENANT,
+            &config.control.keys,
+            &config.control.custody_keys,
+            StorageAccess::node_control(),
         ))
-        .await?;
-    for settings in [
-        &config.security_audit.keys,
-        &config.control.keys,
-        &config.control.custody_keys,
-    ]
-    .into_iter()
-    .chain(
-        config
-            .tenants
-            .iter()
-            .flat_map(|tenant| [&tenant.keys, &tenant.custody_keys]),
-    ) {
-        let KeyProviderSettings::File { path } = settings else {
-            anyhow::bail!("local wrapping rotation requires file keyrings");
-        };
-        FileKeyProvider::open(path)?.rotate()?;
-    }
-    audit.store().rewrap_keys().await?;
-    for (tenant, application, custody, access) in std::iter::once((
-        crate::runtime::CONTROL_TENANT,
-        &config.control.keys,
-        &config.control.custody_keys,
-        StorageAccess::node_control(),
-    ))
-    .chain(effective_tenants.iter().map(|tenant| {
-        let TenantServingConfig::Standalone { installation_id } = tenant.serving else {
-            unreachable!("claim validated standalone")
-        };
-        (
-            tenant.tenant.as_str(),
-            &tenant.keys,
-            &tenant.custody_keys,
-            StorageAccess::standalone(
-                installation_id,
-                &tenant.tenant,
-                Uuid::parse_str(
-                    tenant
-                        .incarnation
-                        .as_deref()
-                        .expect("validated incarnation"),
+        .chain(effective_tenants.iter().map(|tenant| {
+            let TenantServingConfig::Standalone { installation_id } = tenant.serving else {
+                unreachable!("claim validated standalone")
+            };
+            (
+                tenant.tenant.as_str(),
+                &tenant.keys,
+                &tenant.custody_keys,
+                StorageAccess::standalone(
+                    installation_id,
+                    &tenant.tenant,
+                    Uuid::parse_str(
+                        tenant
+                            .incarnation
+                            .as_deref()
+                            .expect("validated incarnation"),
+                    )
+                    .expect("validated incarnation"),
                 )
-                .expect("validated incarnation"),
+                .expect("validated standalone"),
             )
-            .expect("validated standalone"),
-        )
-    })) {
-        let source = Arc::new(crate::runtime::file_secret);
-        let stores = kasumi_store::TenantStorageSet::open_existing(
-            generation_nodes
-                .get(tenant)
-                .cloned()
-                .unwrap_or_else(|| node.clone()),
-            tenant.into(),
-            application.provider(source.clone())?,
-            custody.provider(source)?,
-            access,
-        )
-        .await?;
-        config.install_tenant_audit_archive(stores.application(), None)?;
-        stores.application().rewrap_keys().await?;
-        stores.custody().store().rewrap_keys().await?;
-        stores.application().shutdown().await;
-        stores.custody().store().shutdown().await;
+        })) {
+            let source = Arc::new(crate::runtime::file_secret);
+            let stores = kasumi_store::TenantStorageSet::open_existing(
+                generation_nodes
+                    .get(tenant)
+                    .cloned()
+                    .unwrap_or_else(|| node.clone()),
+                tenant.into(),
+                application.provider(source.clone())?,
+                custody.provider(source)?,
+                access,
+            )
+            .await?;
+            owner.retain_stores(&stores);
+            config.install_tenant_audit_archive(stores.application(), None)?;
+            stores.application().rewrap_keys().await?;
+            stores.custody().store().rewrap_keys().await?;
+            stores.application().shutdown().await;
+            stores.custody().store().shutdown().await;
+        }
+        audit
+            .record(operator_event(
+                &operation,
+                kasumi_engine::SecurityOutcome::Succeeded,
+            ))
+            .await?;
+
+        Ok(())
     }
-    audit
-        .record(operator_event(
-            &operation,
-            kasumi_engine::SecurityOutcome::Succeeded,
-        ))
-        .await?;
-    audit.shutdown().await;
-    Ok(())
+    .await;
+    owner.finish(result).await
 }
 
 pub async fn rotate_signing_key(configuration: &Path) -> Result<u64> {
+    let configuration = configuration.to_owned();
+    operator::run(async move { rotate_signing_key_owned(&configuration).await }).await
+}
+
+async fn rotate_signing_key_owned(configuration: &Path) -> Result<u64> {
     let config = RuntimeConfig::load(configuration)?;
-    let (_lock, _node, audit, _credentials) = operator_state(&config).await?;
-    let operation = Uuid::new_v4().to_string();
-    audit
-        .record(operator_event(
-            &operation,
-            kasumi_engine::SecurityOutcome::Started,
-        ))
-        .await?;
-    let AuthKeySource::Local { signer_file } = &config.auth.source else {
-        unreachable!("operator state validated local issuer")
-    };
-    let generation = crate::local_auth::rotate_signer(signer_file)?;
-    audit
-        .record(operator_event(
-            &operation,
-            kasumi_engine::SecurityOutcome::Succeeded,
-        ))
-        .await?;
-    audit.shutdown().await;
-    Ok(generation)
+    let mut owner = OperatorState::open(&config).await?;
+    let result = async {
+        let audit = owner.audit.clone();
+        let operation = Uuid::new_v4().to_string();
+        audit
+            .record(operator_event(
+                &operation,
+                kasumi_engine::SecurityOutcome::Started,
+            ))
+            .await?;
+        let AuthKeySource::Local { signer_file } = &config.auth.source else {
+            unreachable!("operator state validated local issuer")
+        };
+        let generation = crate::local_auth::rotate_signer(signer_file)?;
+        audit
+            .record(operator_event(
+                &operation,
+                kasumi_engine::SecurityOutcome::Succeeded,
+            ))
+            .await?;
+
+        Ok(generation)
+    }
+    .await;
+    owner.finish(result).await
 }
 
 /// Offline certificate/key replacement keeps the installed CA identity. Local
 /// generated profiles are updated to the exact new native/admin leaf pins.
 pub async fn rotate_certificates(configuration: &Path) -> Result<serde_json::Value> {
+    let configuration = configuration.to_owned();
+    operator::run(async move { rotate_certificates_owned(&configuration).await }).await
+}
+
+async fn rotate_certificates_owned(configuration: &Path) -> Result<serde_json::Value> {
     let config = RuntimeConfig::load(configuration)?;
-    let (_lock, node, audit, _credentials) = operator_state(&config).await?;
-    if let Err(error) = crate::local_recovery::require_runtime_ready(audit.store()) {
-        audit.shutdown().await;
-        return Err(error);
-    }
-    let operation = Uuid::new_v4().to_string();
-    audit
-        .record(operator_event(
-            &operation,
-            kasumi_engine::SecurityOutcome::Started,
-        ))
-        .await?;
+    let mut owner = OperatorState::open(&config).await?;
     let result = async {
-    let root = installation_root(&config)?;
-    let ca_key_pem = private_files::read(&root.join("operator/ca-key.pem"), 1 << 20)?;
-    let ca_pem = private_files::read(&root.join("tls/ca.pem"), 1 << 20)?;
-    // Rustls checks the certificate's public key against the private key before
-    // any leaf is generated or replaced. Parsing two PEM files is insufficient.
-    let ca_identity = kasumi_transport::TlsIdentity::from_pem(&ca_pem, &ca_key_pem)?;
-    kasumi_transport::server_config(&ca_identity, kasumi_transport::ClientAuthentication::OAuth)?;
-    let ca_key = rcgen::KeyPair::from_pem(std::str::from_utf8(&ca_key_pem)?)?;
-    let issuer = rcgen::Issuer::from_ca_cert_pem(std::str::from_utf8(&ca_pem)?, &ca_key)?;
-    let client = TlsFiles {
-        certificate: root.join("profiles/client.pem"),
-        private_key: root.join("profiles/client-key.pem"),
-    };
-    let mut replacements = Vec::with_capacity(4);
-    for (name, files, client_auth) in [
-        ("mcp", &config.mcp.tls, false),
-        ("native", &config.native.tls, false),
-        ("admin", &config.admin.tls, false),
-        ("client", &client, true),
-    ] {
-        let key = rcgen::KeyPair::generate()?;
-        let mut parameters = parameters(name, 365)?;
-        parameters.key_usages = vec![rcgen::KeyUsagePurpose::DigitalSignature];
-        parameters.extended_key_usages = vec![if client_auth {
-            rcgen::ExtendedKeyUsagePurpose::ClientAuth
-        } else {
-            rcgen::ExtendedKeyUsagePurpose::ServerAuth
-        }];
-        let certificate = parameters.signed_by(&key, &issuer)?;
-        let key_pem = zeroize::Zeroizing::new(key.serialize_pem());
-        let certificate_pem = certificate.pem();
-        let identity = kasumi_transport::TlsIdentity::from_pem(certificate_pem.as_bytes(), key_pem.as_bytes())?;
-        kasumi_transport::server_config(&identity, kasumi_transport::ClientAuthentication::OAuth)?;
-        replacements.push((files.clone(), key_pem, certificate_pem));
-    }
-    for (files, key_pem, certificate_pem) in replacements {
-        private_files::replace(&files.private_key, key_pem.as_bytes())?;
-        private_files::replace(&files.certificate, certificate_pem.as_bytes())?;
-    }
-    let native_pin = hex::encode(config.native.tls.load()?.certificate_pin());
-    let admin_pin = hex::encode(config.admin.tls.load()?.certificate_pin());
-    let control = operator_control(&config, node, audit.clone()).await?;
-    let control_result = async {
-    let context = offline_context(&control)?;
-    let plane = kasumi_engine::control::ControlPlane::new(control.clone())?;
-    plane.require_initialized(&context).await?;
-    {
-        let mut topology = plane.topology(&context).await?.context("installed Control topology is missing")?;
-        let node = topology
-            .topology
-            .nodes
-            .get_mut(&1)
-            .context("standalone control node is missing")?;
-        node.certificate_pins =
-            BTreeSet::from([hex::encode(config.mcp.tls.load()?.certificate_pin())]);
-        plane
-            .replace_topology(
-                context,
-                topology.topology,
-                kasumi_types::Precondition::Version(topology.version),
-                format!("certificate-rotation-{operation}"),
-            )
+        let audit = owner.audit.clone();
+        crate::local_recovery::require_runtime_ready(audit.store())?;
+        let operation = Uuid::new_v4().to_string();
+        audit
+            .record(operator_event(
+                &operation,
+                kasumi_engine::SecurityOutcome::Started,
+            ))
             .await?;
-    }
-    Ok::<_, anyhow::Error>(())
-    }.await;
-    control.shutdown().await?;
-    control_result?;
-    for entry in std::fs::read_dir(root.join("profiles"))? {
-        let path = entry?.path();
-        if path
-            .extension()
-            .is_some_and(|extension| extension == "json")
-            && let Ok(mut profile) = ClientProfile::load(&path)
-        {
-            profile.native_certificate_pin = native_pin.clone();
-            profile.admin_certificate_pin = admin_pin.clone();
-            private_files::replace(&path, &serde_json::to_vec_pretty(&profile)?)?;
+        let result = async {
+            let root = installation_root(&config)?;
+            let ca_key_pem = private_files::read(&root.join("operator/ca-key.pem"), 1 << 20)?;
+            let ca_pem = private_files::read(&root.join("tls/ca.pem"), 1 << 20)?;
+            // Rustls checks the certificate's public key against the private key before
+            // any leaf is generated or replaced. Parsing two PEM files is insufficient.
+            let ca_identity = kasumi_transport::TlsIdentity::from_pem(&ca_pem, &ca_key_pem)?;
+            kasumi_transport::server_config(
+                &ca_identity,
+                kasumi_transport::ClientAuthentication::OAuth,
+            )?;
+            let ca_key = rcgen::KeyPair::from_pem(std::str::from_utf8(&ca_key_pem)?)?;
+            let issuer = rcgen::Issuer::from_ca_cert_pem(std::str::from_utf8(&ca_pem)?, &ca_key)?;
+            let client = TlsFiles {
+                certificate: root.join("profiles/client.pem"),
+                private_key: root.join("profiles/client-key.pem"),
+            };
+            let mut replacements = Vec::with_capacity(4);
+            for (name, files, client_auth) in [
+                ("mcp", &config.mcp.tls, false),
+                ("native", &config.native.tls, false),
+                ("admin", &config.admin.tls, false),
+                ("client", &client, true),
+            ] {
+                let key = rcgen::KeyPair::generate()?;
+                let mut parameters = parameters(name, 365)?;
+                parameters.key_usages = vec![rcgen::KeyUsagePurpose::DigitalSignature];
+                parameters.extended_key_usages = vec![if client_auth {
+                    rcgen::ExtendedKeyUsagePurpose::ClientAuth
+                } else {
+                    rcgen::ExtendedKeyUsagePurpose::ServerAuth
+                }];
+                let certificate = parameters.signed_by(&key, &issuer)?;
+                let key_pem = zeroize::Zeroizing::new(key.serialize_pem());
+                let certificate_pem = certificate.pem();
+                let identity = kasumi_transport::TlsIdentity::from_pem(
+                    certificate_pem.as_bytes(),
+                    key_pem.as_bytes(),
+                )?;
+                kasumi_transport::server_config(
+                    &identity,
+                    kasumi_transport::ClientAuthentication::OAuth,
+                )?;
+                replacements.push((files.clone(), key_pem, certificate_pem));
+            }
+            for (files, key_pem, certificate_pem) in replacements {
+                private_files::replace(&files.private_key, key_pem.as_bytes())?;
+                private_files::replace(&files.certificate, certificate_pem.as_bytes())?;
+            }
+            let native_pin = hex::encode(config.native.tls.load()?.certificate_pin());
+            let admin_pin = hex::encode(config.admin.tls.load()?.certificate_pin());
+            let control = owner.control().await?;
+            let control_result = async {
+                let context = offline_context(&control)?;
+                let plane = kasumi_engine::control::ControlPlane::new(control.clone())?;
+                plane.require_initialized(&context).await?;
+                {
+                    let mut topology = plane
+                        .topology(&context)
+                        .await?
+                        .context("installed Control topology is missing")?;
+                    let node = topology
+                        .topology
+                        .nodes
+                        .get_mut(&1)
+                        .context("standalone control node is missing")?;
+                    node.certificate_pins =
+                        BTreeSet::from([hex::encode(config.mcp.tls.load()?.certificate_pin())]);
+                    plane
+                        .replace_topology(
+                            context,
+                            topology.topology,
+                            kasumi_types::Precondition::Version(topology.version),
+                            format!("certificate-rotation-{operation}"),
+                        )
+                        .await?;
+                }
+                Ok::<_, anyhow::Error>(())
+            }
+            .await;
+            control.shutdown().await?;
+            control_result?;
+            for entry in std::fs::read_dir(root.join("profiles"))? {
+                let path = entry?.path();
+                if path
+                    .extension()
+                    .is_some_and(|extension| extension == "json")
+                    && let Ok(mut profile) = ClientProfile::load(&path)
+                {
+                    profile.native_certificate_pin = native_pin.clone();
+                    profile.admin_certificate_pin = admin_pin.clone();
+                    private_files::replace(&path, &serde_json::to_vec_pretty(&profile)?)?;
+                }
+            }
+            Ok::<_, anyhow::Error>(serde_json::json!({
+                "native_certificate_pin": native_pin,
+                "admin_certificate_pin": admin_pin,
+            }))
         }
-    }
-    Ok::<_, anyhow::Error>(serde_json::json!({"native_certificate_pin":native_pin,"admin_certificate_pin":admin_pin}))
-    }.await;
-    let recorded = audit
-        .record(operator_event(
-            &operation,
-            if result.is_ok() {
-                kasumi_engine::SecurityOutcome::Succeeded
-            } else {
-                kasumi_engine::SecurityOutcome::Failed
-            },
-        ))
         .await;
-    audit.shutdown().await;
-    recorded?;
-    result
+        let recorded = audit
+            .record(operator_event(
+                &operation,
+                if result.is_ok() {
+                    kasumi_engine::SecurityOutcome::Succeeded
+                } else {
+                    kasumi_engine::SecurityOutcome::Failed
+                },
+            ))
+            .await;
+
+        recorded?;
+        result
+    }
+    .await;
+    owner.finish(result).await
 }
 
 pub async fn backup_operator_keys(configuration: &Path, output: &Path) -> Result<()> {
+    let configuration = configuration.to_owned();
+    let output = output.to_owned();
+    operator::run(async move { backup_operator_keys_owned(&configuration, &output).await }).await
+}
+
+async fn backup_operator_keys_owned(configuration: &Path, output: &Path) -> Result<()> {
     let config = RuntimeConfig::load(configuration)?;
-    let (_lock, _node, audit, _credentials) = operator_state(&config).await?;
-    let operation = Uuid::new_v4().to_string();
-    audit
-        .record(operator_event(
-            &operation,
-            kasumi_engine::SecurityOutcome::Started,
-        ))
-        .await?;
-    let result = crate::standalone_key_backup::create(&config, output);
-    if let Err(error) = result {
-        let _ = audit
+    let mut owner = OperatorState::open(&config).await?;
+    let result = async {
+        let audit = owner.audit.clone();
+        let operation = Uuid::new_v4().to_string();
+        audit
             .record(operator_event(
                 &operation,
-                kasumi_engine::SecurityOutcome::Failed,
+                kasumi_engine::SecurityOutcome::Started,
             ))
-            .await;
-        audit.shutdown().await;
-        return Err(error);
+            .await?;
+        let result = crate::standalone_key_backup::create(&config, output);
+        if let Err(error) = result {
+            let _ = audit
+                .record(operator_event(
+                    &operation,
+                    kasumi_engine::SecurityOutcome::Failed,
+                ))
+                .await;
+
+            return Err(error);
+        }
+        audit
+            .record(operator_event(
+                &operation,
+                kasumi_engine::SecurityOutcome::Succeeded,
+            ))
+            .await?;
+
+        Ok(())
     }
-    audit
-        .record(operator_event(
-            &operation,
-            kasumi_engine::SecurityOutcome::Succeeded,
-        ))
-        .await?;
-    audit.shutdown().await;
-    Ok(())
+    .await;
+    owner.finish(result).await
 }
 
 /// Creates an exclusive private directory. Failure leaves a visibly incomplete
@@ -724,10 +721,10 @@ pub async fn initialize(directory: &Path, tenant: &str) -> Result<InitializedIns
     // durable marker written only after those owners have drained.
     let directory = directory.to_owned();
     let tenant = tenant.to_owned();
-    tokio::spawn(async move {
+    operator::run(async move {
         initialize_owned(&directory, &tenant, InitializationOptions::default()).await
     })
-    .await?
+    .await
 }
 #[derive(Default)]
 struct InitializationOptions {
@@ -759,214 +756,224 @@ async fn initialize_owned(
     let operator = directory.join("operator");
     let tls = directory.join("tls");
     let profiles = directory.join("profiles");
-    let _lock = private_files::ExclusiveLock::acquire(&data.join("installation.lock"))?;
-    let installation_id = Uuid::new_v4();
-    let control_incarnation = Uuid::new_v4();
-    let tenant_incarnation = Uuid::new_v4();
-    let database_path = data.join("node.redb");
-    let installation = Installation {
-        format: 2,
-        installation_id,
-        control_incarnation,
-        database_id: Uuid::new_v4(),
-        database_path: database_path.clone(),
-    };
-    // Freeze physical ownership before the database inode may be created. The
-    // separate completion marker never authorizes adoption of an interrupted init.
-    private_files::create(
-        &data.join("initialization.json"),
-        &serde_json::to_vec(&installation)?,
-    )?;
+    let mut pending = crate::startup_resources::Resources::default();
+    pending.standalone_lock = Some(private_files::ExclusiveLock::acquire(
+        &data.join("installation.lock"),
+    )?);
+    let prepared = async {
+        let installation_id = Uuid::new_v4();
+        let control_incarnation = Uuid::new_v4();
+        let tenant_incarnation = Uuid::new_v4();
+        let database_path = data.join("node.redb");
+        let installation = Installation {
+            format: 2,
+            installation_id,
+            control_incarnation,
+            database_id: Uuid::new_v4(),
+            database_path: database_path.clone(),
+        };
+        // Freeze physical ownership before the database inode may be created. The
+        // separate completion marker never authorizes adoption of an interrupted init.
+        private_files::create(
+            &data.join("initialization.json"),
+            &serde_json::to_vec(&installation)?,
+        )?;
 
-    for domain in [
-        "application",
-        "custody",
-        "control",
-        "control-custody",
-        "security",
-    ] {
-        FileKeyProvider::initialize(&operator.join(format!("{domain}-keys.json")), domain)?;
-    }
-    let signer = operator.join("signers.json");
-    initialize_signer(&signer)?;
-    let (ca, ca_key) = generate_ca()?;
-    private_files::create(
-        &operator.join("ca-key.pem"),
-        ca_key.serialize_pem().as_bytes(),
-    )?;
-    private_files::create(&tls.join("ca.pem"), ca.pem().as_bytes())?;
-    let mut identities = std::collections::BTreeMap::new();
-    for name in ["mcp", "native", "admin"] {
-        identities.insert(name, generate_identity(&tls, name, &ca, &ca_key, false)?);
-    }
-    let client_identity = generate_identity(&profiles, "client", &ca, &ca_key, true)?;
-    let native_pin = hex::encode(identities["native"].load()?.certificate_pin());
-    let admin_pin = hex::encode(identities["admin"].load()?.certificate_pin());
-    let policy = Policy {
-        grants: vec![Grant {
-            principal: "administrator".into(),
-            collection: None,
-            actions: BTreeSet::from([Action::Read, Action::Write, Action::Admin, Action::Audit]),
-        }],
-        strict_read_audit: false,
-    };
-    let provider = |domain: &str| KeyProviderSettings::File {
-        path: operator.join(format!("{domain}-keys.json")),
-    };
-    let mut config = example_config();
-    config.mode = DeploymentMode::Standalone;
-    config.serving_authorities.clear();
-    config.signer_verifier = None;
-    config.replication = None;
-    config.database_path = database_path.clone();
-    config.database_id = installation.database_id;
-    config.scratch_disk.directory = data.join("scratch");
-    config.backup_destinations = std::collections::BTreeMap::from([(
-        "local".into(),
-        crate::administration::DestinationConfig::Filesystem {
-            directory: directory.join("backups"),
-            max_bytes: kasumi_store::MAX_BACKUP_BUNDLE_BYTES,
-        },
-    )]);
-    config.auth = AuthConfig {
-        issuer: format!("https://localhost/kasumi/{installation_id}"),
-        audience: format!("https://localhost/kasumi/{installation_id}/api"),
-        source: AuthKeySource::Local {
-            signer_file: signer.clone(),
-        },
-        algorithms: vec![jsonwebtoken::Algorithm::EdDSA],
-        access_token_types: BTreeSet::from(["at+jwt".into()]),
-    };
-    config.mcp.listen = "127.0.0.1:9443".parse()?;
-    config.mcp.tls = identities["mcp"].clone();
-    config.mcp.protocol = crate::mcp::McpConfig::new("https://localhost:9443/mcp".into())?;
-    config.native.listen = "127.0.0.1:9444".parse()?;
-    config.native.tls = identities["native"].clone();
-    config.native.client_ca = tls.join("ca.pem");
-    config.admin.listen = "127.0.0.1:9445".parse()?;
-    config.admin.tls = identities["admin"].clone();
-    config.admin.client_ca = tls.join("ca.pem");
-    config.control.keys = provider("control");
-    config.control.custody_keys = provider("control-custody");
-    config.control.initial_policy = policy.clone();
-    config.control.incarnation = Some(control_incarnation.to_string());
-    config.security_audit.keys = provider("security");
-    config.tenants[0].tenant = tenant.into();
-    config.tenants[0].serving = TenantServingConfig::Standalone { installation_id };
-    config.tenants[0].keys = provider("application");
-    config.tenants[0].custody_keys = provider("custody");
-    config.tenants[0].initial_policy = policy;
-    config.tenants[0].incarnation = Some(tenant_incarnation.to_string());
-    config.validate()?;
-    let node = NodeStore::create_new(
-        database_path,
-        installation.database_id,
-        kasumi_store::ScratchDisk::open(config.scratch_disk.clone())?,
-    )?;
-    let security_store = TenantStore::open(
-        node.clone(),
-        kasumi_engine::SECURITY_TENANT.into(),
-        config
-            .security_audit
-            .keys
-            .provider(Arc::new(crate::runtime::file_secret))?,
-        StorageAccess::security_audit(),
-    )
-    .await?;
-    let opened = (|| {
-        config.security_audit.initialize(
+        for domain in [
+            "application",
+            "custody",
+            "control",
+            "control-custody",
+            "security",
+        ] {
+            FileKeyProvider::initialize(&operator.join(format!("{domain}-keys.json")), domain)?;
+        }
+        let signer = operator.join("signers.json");
+        initialize_signer(&signer)?;
+        let (ca, ca_key) = generate_ca()?;
+        private_files::create(
+            &operator.join("ca-key.pem"),
+            ca_key.serialize_pem().as_bytes(),
+        )?;
+        private_files::create(&tls.join("ca.pem"), ca.pem().as_bytes())?;
+        let mut identities = std::collections::BTreeMap::new();
+        for name in ["mcp", "native", "admin"] {
+            identities.insert(name, generate_identity(&tls, name, &ca, &ca_key, false)?);
+        }
+        let client_identity = generate_identity(&profiles, "client", &ca, &ca_key, true)?;
+        let native_pin = hex::encode(identities["native"].load()?.certificate_pin());
+        let admin_pin = hex::encode(identities["admin"].load()?.certificate_pin());
+        let policy = Policy {
+            grants: vec![Grant {
+                principal: "administrator".into(),
+                collection: None,
+                actions: BTreeSet::from([
+                    Action::Read,
+                    Action::Write,
+                    Action::Admin,
+                    Action::Audit,
+                ]),
+            }],
+            strict_read_audit: false,
+        };
+        let provider = |domain: &str| KeyProviderSettings::File {
+            path: operator.join(format!("{domain}-keys.json")),
+        };
+        let mut config = example_config();
+        config.mode = DeploymentMode::Standalone;
+        config.serving_authorities.clear();
+        config.signer_verifier = None;
+        config.replication = None;
+        config.database_path = database_path.clone();
+        config.database_id = installation.database_id;
+        config.scratch_disk.directory = data.join("scratch");
+        config.backup_destinations = std::collections::BTreeMap::from([(
+            "local".into(),
+            crate::administration::DestinationConfig::Filesystem {
+                directory: directory.join("backups"),
+                max_bytes: kasumi_store::MAX_BACKUP_BUNDLE_BYTES,
+            },
+        )]);
+        config.auth = AuthConfig {
+            issuer: format!("https://localhost/kasumi/{installation_id}"),
+            audience: format!("https://localhost/kasumi/{installation_id}/api"),
+            source: AuthKeySource::Local {
+                signer_file: signer.clone(),
+            },
+            algorithms: vec![jsonwebtoken::Algorithm::EdDSA],
+            access_token_types: BTreeSet::from(["at+jwt".into()]),
+        };
+        config.mcp.listen = "127.0.0.1:9443".parse()?;
+        config.mcp.tls = identities["mcp"].clone();
+        config.mcp.protocol = crate::mcp::McpConfig::new("https://localhost:9443/mcp".into())?;
+        config.native.listen = "127.0.0.1:9444".parse()?;
+        config.native.tls = identities["native"].clone();
+        config.native.client_ca = tls.join("ca.pem");
+        config.admin.listen = "127.0.0.1:9445".parse()?;
+        config.admin.tls = identities["admin"].clone();
+        config.admin.client_ca = tls.join("ca.pem");
+        config.control.keys = provider("control");
+        config.control.custody_keys = provider("control-custody");
+        config.control.initial_policy = policy.clone();
+        config.control.incarnation = Some(control_incarnation.to_string());
+        config.security_audit.keys = provider("security");
+        config.tenants[0].tenant = tenant.into();
+        config.tenants[0].serving = TenantServingConfig::Standalone { installation_id };
+        config.tenants[0].keys = provider("application");
+        config.tenants[0].custody_keys = provider("custody");
+        config.tenants[0].initial_policy = policy;
+        config.tenants[0].incarnation = Some(tenant_incarnation.to_string());
+        config.validate()?;
+        let node = NodeStore::create_new(
+            &database_path,
+            installation.database_id,
+            kasumi_store::ScratchDisk::open(config.scratch_disk.clone())?,
+        )?;
+        pending.nodes.push(node.clone());
+        #[cfg(test)]
+        ownership_tests::checkpoint(&database_path, "initialize-node").await?;
+        let security_store = TenantStore::initialize_catalog(
+            node.clone(),
+            kasumi_engine::SECURITY_TENANT.into(),
+            config
+                .security_audit
+                .keys
+                .provider(Arc::new(crate::runtime::file_secret))?,
+            StorageAccess::security_audit(),
+        )
+        .await?;
+        pending.stores.push(security_store.clone());
+        let audit = config.security_audit.initialize(
             security_store.clone(),
             kasumi_engine::admission::NodeAdmission::new(config.admission.clone())?,
-        )
-    })();
-    let audit = match opened {
-        Ok(audit) => audit,
-        Err(error) => {
-            security_store.shutdown().await;
-            return Err(error);
-        }
-    };
-    let provisioned = provision_databases(&config, node.clone(), audit.clone()).await;
-    if let Err(error) = provisioned {
-        audit.shutdown().await;
-        security_store.shutdown().await;
-        return Err(error);
-    }
-    let result = async {
-        #[cfg(test)]
-        if options.obstruct_profile_publication {
-            // Inject a real exclusive-file publication failure after every
-            // database has been initialized and drained.
-            private_files::create(&profiles.join("control.token"), b"blocked")?;
-        }
-        let credentials = LocalCredentials::open(
-            security_store.clone(),
-            signer,
-            config.auth.issuer.clone(),
-            config.auth.audience.clone(),
         )?;
-        for (name, tenant, resource) in [
-            (
-                "control",
-                crate::runtime::CONTROL_TENANT,
-                CredentialResource::Control {
-                    incarnation: control_incarnation,
-                },
-            ),
-            (
-                "default",
-                tenant,
-                CredentialResource::Database {
-                    incarnation: tenant_incarnation,
-                },
-            ),
-        ] {
-            let issued = credentials.create(
-                CreateCredential {
-                    family_id: Uuid::new_v4(),
-                    principal: "administrator".into(),
+        pending.audits.push(audit.clone());
+        #[cfg(test)]
+        ownership_tests::checkpoint(&database_path, "initialize-audit").await?;
+        provision_databases(&config, node.clone(), audit.clone()).await?;
+        let result = async {
+            #[cfg(test)]
+            if options.obstruct_profile_publication {
+                // Inject a real exclusive-file publication failure after every
+                // database has been initialized and drained.
+                private_files::create(&profiles.join("control.token"), b"blocked")?;
+            }
+            let credentials = LocalCredentials::open(
+                security_store.clone(),
+                signer,
+                config.auth.issuer.clone(),
+                config.auth.audience.clone(),
+            )?;
+            for (name, tenant, resource) in [
+                (
+                    "control",
+                    crate::runtime::CONTROL_TENANT,
+                    CredentialResource::Control {
+                        incarnation: control_incarnation,
+                    },
+                ),
+                (
+                    "default",
+                    tenant,
+                    CredentialResource::Database {
+                        incarnation: tenant_incarnation,
+                    },
+                ),
+            ] {
+                let issued = credentials.create(
+                    CreateCredential {
+                        family_id: Uuid::new_v4(),
+                        principal: "administrator".into(),
+                        tenant: tenant.into(),
+                        resource: resource.clone(),
+                        scopes: BTreeSet::from([
+                            Action::Read,
+                            Action::Write,
+                            Action::Admin,
+                            Action::Audit,
+                        ]),
+                        lifetime_seconds: 3600,
+                    },
+                    "initializer",
+                )?;
+                let bearer_file = profiles.join(format!("{name}.token"));
+                private_files::create(&bearer_file, issued.token.as_bytes())?;
+                let profile = ClientProfile {
+                    format: 1,
+                    family_id: issued.family_id,
                     tenant: tenant.into(),
-                    resource: resource.clone(),
-                    scopes: BTreeSet::from([
-                        Action::Read,
-                        Action::Write,
-                        Action::Admin,
-                        Action::Audit,
-                    ]),
-                    lifetime_seconds: 3600,
-                },
-                "initializer",
-            )?;
-            let bearer_file = profiles.join(format!("{name}.token"));
-            private_files::create(&bearer_file, issued.token.as_bytes())?;
-            let profile = ClientProfile {
-                format: 1,
-                family_id: issued.family_id,
-                tenant: tenant.into(),
-                resource,
-                native_endpoint: "https://localhost:9444".into(),
-                admin_endpoint: "https://localhost:9445".into(),
-                mcp_endpoint: "https://localhost:9443/mcp".into(),
-                identity: client_identity.clone(),
-                server_ca: tls.join("ca.pem"),
-                native_certificate_pin: native_pin.clone(),
-                admin_certificate_pin: admin_pin.clone(),
-                bearer_file,
-            };
-            private_files::create(
-                &profiles.join(format!("{name}.json")),
-                &serde_json::to_vec_pretty(&profile)?,
-            )?;
+                    resource,
+                    native_endpoint: "https://localhost:9444".into(),
+                    admin_endpoint: "https://localhost:9445".into(),
+                    mcp_endpoint: "https://localhost:9443/mcp".into(),
+                    identity: client_identity.clone(),
+                    server_ca: tls.join("ca.pem"),
+                    native_certificate_pin: native_pin.clone(),
+                    admin_certificate_pin: admin_pin.clone(),
+                    bearer_file,
+                };
+                private_files::create(
+                    &profiles.join(format!("{name}.json")),
+                    &serde_json::to_vec_pretty(&profile)?,
+                )?;
+            }
+            Ok::<_, anyhow::Error>(())
         }
-        Ok::<_, anyhow::Error>(())
+        .await;
+
+        result?;
+        drop(audit);
+        drop(security_store);
+        drop(node);
+        Ok::<_, anyhow::Error>((config, installation))
     }
     .await;
-    audit.shutdown().await;
-    security_store.shutdown().await;
-    result?;
-    drop(audit);
-    drop(security_store);
-    drop(node);
+    let (config, installation) = operator::finish_resources(&mut pending, prepared).await?;
+    // Drop every drained resource before publication, retaining the exclusive lock.
+    pending.databases.clear();
+    pending.audits.clear();
+    pending.stores.clear();
+    pending.nodes.clear();
     let configuration = directory.join("kasumi.json");
     private_files::create(&configuration, &serde_json::to_vec_pretty(&config)?)?;
     private_files::create(
@@ -984,8 +991,8 @@ async fn initialize_owned(
 pub(crate) async fn configure_test_topology(config: &RuntimeConfig) {
     // Tests allocate fresh private listener ports after init. Change the already
     // installed topology with an explicit stopped-operator CAS, never restart genesis.
-    let (_lock, node, audit, credentials) = operator_state(config).await.unwrap();
-    let database = operator_control(config, node, audit.clone()).await.unwrap();
+    let mut owner = OperatorState::open(config).await.unwrap();
+    let database = owner.control().await.unwrap();
     let plane = kasumi_engine::control::ControlPlane::new(database.clone()).unwrap();
     let context = crate::runtime::configured_control_context(&config.control).unwrap();
     let current = plane.topology(&context).await.unwrap().unwrap();
@@ -1003,8 +1010,7 @@ pub(crate) async fn configure_test_topology(config: &RuntimeConfig) {
     drop(plane);
     database.shutdown().await.unwrap();
     drop(database);
-    drop(credentials);
-    audit.shutdown().await;
+    owner.finish(Ok(())).await.unwrap();
 }
 
 fn initial_topology(config: &RuntimeConfig) -> Result<kasumi_engine::control::ControlTopology> {
@@ -1197,3 +1203,7 @@ mod backup_cli_tests;
 #[cfg(test)]
 #[path = "standalone_provision_tests.rs"]
 mod provision_tests;
+
+#[cfg(test)]
+#[path = "standalone_operator_tests.rs"]
+pub(crate) mod ownership_tests;
