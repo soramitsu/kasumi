@@ -22,9 +22,8 @@ impl IndependentAuthority {
         self.backend.authorize_admin(&context)?;
         let service = self.clone();
         let job = tokio::spawn(async move {
-            let _permit = permit;
             service
-                .execute_lifecycle_owned(signer, context, request)
+                .execute_lifecycle_owned(permit, signer, context, request)
                 .await
         });
         tokio::time::timeout(Duration::from_secs(5), job)
@@ -34,6 +33,7 @@ impl IndependentAuthority {
     }
     async fn execute_lifecycle_owned(
         self: Arc<Self>,
+        permit: RequestPermit,
         signer: Arc<AuthoritySigner>,
         context: RequestContext,
         request: LifecycleAuthorityRequest,
@@ -58,7 +58,7 @@ impl IndependentAuthority {
                 ));
             }
             return self
-                .release_lifecycle(signer.clone(), context, retained, epoch, term, false)
+                .release_lifecycle(permit, signer.clone(), context, retained, epoch, term)
                 .await;
         }
         let admitted_at_ms = self.clock.now_ms().map_err(unavailable)?;
@@ -80,36 +80,29 @@ impl IndependentAuthority {
             .await?;
         let receipt: Result<LifecycleAuthorityReceipt> =
             serde_json::from_slice(&bytes).map_err(unknown)?;
-        self.release_lifecycle(signer.clone(), context, receipt?, epoch, term, true)
+        self.release_lifecycle(permit, signer.clone(), context, receipt?, epoch, term)
             .await
+            .map_err(unknown)
     }
     async fn release_lifecycle(
         self: &Arc<Self>,
+        permit: RequestPermit,
         signer: Arc<AuthoritySigner>,
         context: RequestContext,
         receipt: LifecycleAuthorityReceipt,
         epoch: u64,
         term: u64,
-        accepted: bool,
     ) -> Result<(SignedLifecycleAuthorityReceipt, AuthorityResponseFence)> {
-        let outcome = async {
-            if self.barrier(&context).await? != term {
-                return Err(unavailable("control receipt release term changed"));
-            }
-            let fence = self.fence(signer.clone(), context, Some(epoch), None, term);
-            fence.check()?;
-            let signed = signer
-                .sign_lifecycle_receipt(receipt)
-                .map_err(unavailable)?;
-            fence.check()?;
-            Ok((signed, fence))
+        if self.barrier(&context).await? != term {
+            return Err(unavailable("control receipt release term changed"));
         }
-        .await;
-        if accepted {
-            outcome.map_err(unknown)
-        } else {
-            outcome
-        }
+        let fence = self.fence(permit, signer.clone(), context, Some(epoch), None, term);
+        fence.check()?;
+        let signed = signer
+            .sign_lifecycle_receipt(receipt)
+            .map_err(unavailable)?;
+        fence.check()?;
+        Ok((signed, fence))
     }
     pub async fn read_lifecycle_receipt(
         self: &Arc<Self>,
@@ -119,7 +112,7 @@ impl IndependentAuthority {
         Option<SignedLifecycleAuthorityReceipt>,
         AuthorityResponseFence,
     )> {
-        let _permit = self.permit()?;
+        let permit = self.permit()?;
         let signer = self.request_signer()?;
         reference.validate().map_err(unavailable)?;
         let term = self.barrier(&context).await?;
@@ -130,7 +123,7 @@ impl IndependentAuthority {
             .map_err(unavailable)?
             .map(|value| signer.sign_lifecycle_receipt(value).map_err(unavailable))
             .transpose()?;
-        let fence = self.fence(signer.clone(), context, Some(epoch), None, term);
+        let fence = self.fence(permit, signer.clone(), context, Some(epoch), None, term);
         fence.release().await?;
         Ok((receipt, fence))
     }
@@ -139,7 +132,7 @@ impl IndependentAuthority {
         context: RequestContext,
         reference: LifecycleAuthorityReference,
     ) -> Result<(SignedControlEpochStop, AuthorityResponseFence)> {
-        let _permit = self.permit()?;
+        let permit = self.permit()?;
         let signer = self.request_signer()?;
         reference.validate().map_err(unavailable)?;
         if !matches!(reference.identity, LifecycleAuthorityIdentity::EpochStop) {
@@ -160,7 +153,7 @@ impl IndependentAuthority {
         };
         let witness = format!("control/{}", receipt.request_sha256);
         self.require_drain(&witness, term)?;
-        let fence = self.fence(signer.clone(), context, Some(epoch), None, term);
+        let fence = self.fence(permit, signer.clone(), context, Some(epoch), None, term);
         fence.release().await?;
         self.require_drain(&witness, term)?;
         let observation = ControlEpochStopObservation {
@@ -186,7 +179,7 @@ impl IndependentAuthority {
         caller: AuthenticatedNode,
         request: LifecycleLeaseRequest,
     ) -> Result<(SignedLifecycleLease, AuthorityResponseFence)> {
-        let _permit = self.permit()?;
+        let permit = self.permit()?;
         let signer = self.request_signer()?;
         request
             .validate()
@@ -250,7 +243,7 @@ impl IndependentAuthority {
                 credential_lifetime_ms: max.min(remaining),
             })
             .map_err(unavailable)?;
-        let mut fence = self.fence(signer.clone(), context, None, None, term);
+        let mut fence = self.fence(permit, signer.clone(), context, None, None, term);
         fence.lifecycle_lease = Some(request);
         fence.release().await?;
         Ok((signed, fence))

@@ -14,7 +14,7 @@ async fn signer_directive_is_ordered_exact_finite_and_preserved_in_encrypted_sna
         action: SignerTrustAction::Stage { certificate: certificate.clone() },
     };
     let context = f.context("operator");
-    assert!(service.commit_signer_directive(&context, &verifier, &domain, &command).await.is_err());
+    assert!(commit_directive(&service, &context, &verifier, &domain, &command).await.is_err());
     for member in f.bootstrap.membership.members.values() {
         let enrollment = f.maintenance_command(AuthorityMaintenanceAction::EnrollSignerVerifier { enrollment: SignerVerifierEnrollment {
             verifier: member.verifier.clone(), endpoint: format!("{}/", member.endpoint), certificate_pins: member.certificate_pins.clone(),
@@ -26,9 +26,9 @@ async fn signer_directive_is_ordered_exact_finite_and_preserved_in_encrypted_sna
     let mut stop = command.clone();
     stop.operation_id = Uuid::new_v4();
     stop.action = SignerTrustAction::StopStage { staged_operation_id: command.operation_id };
-    assert!(service.commit_signer_directive(&context, &verifier, &domain, &stop).await.is_err());
+    assert!(commit_directive(&service, &context, &verifier, &domain, &stop).await.is_err());
     assert!(service.backend.maintenance_status(stop.operation_id).unwrap().is_none());
-    let accepted = service.commit_signer_directive(&context, &verifier, &domain, &command).await.unwrap();
+    let accepted = commit_directive(&service, &context, &verifier, &domain, &command).await.unwrap();
     accepted.check().unwrap();
     assert_eq!(accepted.status().phase, AuthorityMaintenancePhase::Completed);
     assert!(matches!(&accepted.status().command.action,
@@ -44,11 +44,11 @@ async fn signer_directive_is_ordered_exact_finite_and_preserved_in_encrypted_sna
     assert!(serde_json::from_value::<IssuerSignerDirective>(missing_origin).is_err());
     // This is permission for dispatch, not an observation of local publication.
     service.request_signer().unwrap().check().unwrap();
-    assert_eq!(service.commit_signer_directive(&context, &verifier, &domain, &command).await.unwrap().status(), accepted.status());
+    assert_eq!(commit_directive(&service, &context, &verifier, &domain, &command).await.unwrap().status(), accepted.status());
     let mut changed = command.clone();
     changed.not_after_ms -= 1;
-    assert!(service.commit_signer_directive(&context, &verifier, &domain, &changed).await.is_err());
-    assert!(service.signer_directive(&f.context("intruder"), &verifier, &domain, command.operation_id).await.is_err());
+    assert!(commit_directive(&service, &context, &verifier, &domain, &changed).await.is_err());
+    assert!(read_directive(&service, &f.context("intruder"), &verifier, &domain, command.operation_id).await.is_err());
     // General authority maintenance may retain a structurally valid rejection;
     // its uninstalled physical verifier must not make valid snapshots unrecoverable.
     let mut invalid = command.clone();
@@ -75,7 +75,7 @@ async fn signer_directive_is_ordered_exact_finite_and_preserved_in_encrypted_sna
             },
         },
     };
-    assert!(service.commit_signer_directive(&context, &verifier, &domain, &activation).await.is_err());
+    assert!(commit_directive(&service, &context, &verifier, &domain, &activation).await.is_err());
     assert!(service.backend.maintenance_status(activation.operation_id).unwrap().is_none());
     let winner = f.maintenance_command(AuthorityMaintenanceAction::ActivateSignerGeneration {
         stage_operation_id: global.operation_id,
@@ -91,8 +91,8 @@ async fn signer_directive_is_ordered_exact_finite_and_preserved_in_encrypted_sna
     fence.release().await.unwrap();
     assert_eq!(won.status.unwrap().phase, AuthorityMaintenancePhase::Completed);
     accepted.check().unwrap(); // An original stage may finish forward after the global winner.
-    assert!(service.commit_signer_directive(&context, &verifier, &domain, &stop).await.is_err());
-    let activated = service.commit_signer_directive(&context, &verifier, &domain, &activation).await.unwrap();
+    assert!(commit_directive(&service, &context, &verifier, &domain, &stop).await.is_err());
+    let activated = commit_directive(&service, &context, &verifier, &domain, &activation).await.unwrap();
     activated.check().unwrap();
     assert!(matches!(&activated.status().command.action,
         AuthorityMaintenanceAction::AuthorizeSignerTrust { directive }
@@ -102,7 +102,7 @@ async fn signer_directive_is_ordered_exact_finite_and_preserved_in_encrypted_sna
     if let SignerTrustAction::Activate { staged_operation_id, .. } = &mut substituted_activation.action {
         *staged_operation_id = Uuid::new_v4();
     }
-    assert!(service.commit_signer_directive(&context, &verifier, &domain, &substituted_activation).await.is_err());
+    assert!(commit_directive(&service, &context, &verifier, &domain, &substituted_activation).await.is_err());
     let current = f.leader().await;
     let mut snapshot = Vec::new();
     current.backend.snapshot(&mut snapshot).unwrap();
@@ -127,7 +127,7 @@ async fn signer_directive_is_ordered_exact_finite_and_preserved_in_encrypted_sna
     });
     assert!(current.backend.prepare_restore(&crate::state::restore_test_context(&substituted), &mut substituted.as_slice()).is_err());
 
-    assert_eq!(current.signer_directive(&context, &verifier, &domain, command.operation_id).await.unwrap().unwrap(), *accepted.status());
+    assert_eq!(read_directive(&current, &context, &verifier, &domain, command.operation_id).await.unwrap().unwrap(), *accepted.status());
     let activation_key = format!("maintenance/{}", activation.operation_id);
     let wrong_winner = crate::state::snapshot::rewrite_for_test(&snapshot, |value| {
         if value["type"] == "Entry" && value["value"][0] == activation_key {
@@ -139,18 +139,23 @@ async fn signer_directive_is_ordered_exact_finite_and_preserved_in_encrypted_sna
     });
     assert!(current.backend.prepare_restore(&crate::state::restore_test_context(&wrong_winner), &mut wrong_winner.as_slice()).is_err());
     let exact_permission = activated.status().clone();
-    service.shutdown().await.unwrap();
+    let mut closing = Box::pin(service.shutdown());
+    std::future::poll_fn(|cx| {
+        assert!(std::future::Future::poll(closing.as_mut(), cx).is_pending());
+        std::task::Poll::Ready(())
+    }).await;
     assert!(accepted.check().is_err(), "a closed source owner cannot authorize publication during reopen");
     // Physical ownership cannot reopen while any old response still retains its
     // database handle. Sealing the guard precedes the complete ownership drain.
     drop(accepted);
     drop(activated);
     drop(fence);
+    tokio::time::timeout(Duration::from_secs(10), closing).await.unwrap().unwrap();
     drop(current);
     drop(service);
     f.reopen().await;
     let reopened = f.leader().await;
-    assert_eq!(reopened.signer_directive(&context, &verifier, &domain, activation.operation_id).await.unwrap().unwrap(), exact_permission);
+    assert_eq!(read_directive(&reopened, &context, &verifier, &domain, activation.operation_id).await.unwrap().unwrap(), exact_permission);
     assert_eq!(reopened.backend.signing_head().unwrap().retirement.unwrap().activation_operation_id, winner.operation_id);
     // A fresh identity must not first commit after its immutable admission bound.
     f.clock.0.store(60_000, Ordering::SeqCst);
@@ -158,7 +163,7 @@ async fn signer_directive_is_ordered_exact_finite_and_preserved_in_encrypted_sna
     expired.operation_id = Uuid::new_v4();
     let current = f.leader().await;
     let current_verifier = f.settings.installed_members[&current.local_node_id].verifier.clone();
-    assert!(current.commit_signer_directive(&context, &current_verifier, &domain, &expired).await.is_err());
+    assert!(commit_directive(&current, &context, &current_verifier, &domain, &expired).await.is_err());
     assert!(current.backend.maintenance_status(expired.operation_id).unwrap().is_none());
     f.close().await;
 }
@@ -194,7 +199,7 @@ async fn issuer_permission_retains_original_policy_while_current_admin_can_read_
         operation_id: Uuid::new_v4(), expected_revision: 0, not_after_ms: 1_050_000,
         action: SignerTrustAction::Stage { certificate },
     };
-    let permission = service.commit_signer_directive(&context, &verifier, &domain, &command).await.unwrap();
+    let permission = commit_directive(&service, &context, &verifier, &domain, &command).await.unwrap();
     permission.check().unwrap();
     let policy = f.command(AuthorityAction::ReplaceAdministrators {
         administrators: BTreeSet::from(["operator".into(), "successor".into()]),
@@ -203,13 +208,15 @@ async fn issuer_permission_retains_original_policy_while_current_admin_can_read_
     assert!(permission.check().is_err(), "a retained old-policy permission cannot authorize first publication");
     let current = f.leader().await;
     let successor = f.context("successor");
-    assert_eq!(current.signer_directive(&successor, &verifier, &domain, command.operation_id).await.unwrap().unwrap(),
+    assert_eq!(read_directive(&current, &successor, &verifier, &domain, command.operation_id).await.unwrap().unwrap(),
         *permission.status());
     // Renewing authorization preserves the original operation and its policy;
     // it cannot convert historical dispatch permission into a new grant.
-    let renewed = service.commit_signer_directive(&successor, &verifier, &domain, &command).await.unwrap();
+    let renewed = commit_directive(&service, &successor, &verifier, &domain, &command).await.unwrap();
     assert_eq!(renewed.status(), permission.status());
     assert!(renewed.check().is_err());
+    drop(permission);
+    drop(renewed);
     f.close().await;
 }
 

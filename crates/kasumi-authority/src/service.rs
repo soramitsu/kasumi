@@ -13,7 +13,7 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{OwnedRwLockReadGuard, OwnedSemaphorePermit, RwLock, Semaphore};
 use uuid::Uuid;
 #[path = "lifecycle_service.rs"]
 mod lifecycle_service;
@@ -42,6 +42,13 @@ struct Drain {
     term: u64,
     started: Duration,
     last: Duration,
+}
+
+// Capacity and lifetime move together from admission through the returned
+// response fence. Closing admission does not release an existing owner.
+struct RequestPermit {
+    _capacity: OwnedSemaphorePermit,
+    _owner: OwnedRwLockReadGuard<()>,
 }
 
 /// Node credential constructed at the authenticated transport boundary. Raw
@@ -80,6 +87,7 @@ pub struct AuthorityResponseFence {
     lease: Option<LeaseRequest>,
     lifecycle_lease: Option<LifecycleLeaseRequest>,
     term: u64,
+    _permit: RequestPermit,
 }
 impl AuthorityResponseFence {
     pub async fn release(&self) -> Result<()> {
@@ -89,6 +97,7 @@ impl AuthorityResponseFence {
         self.check()
     }
     pub fn check(&self) -> Result<()> {
+        self.authority.check_open()?;
         self.context.authorization.check_live()?;
         self.authority.check_active_signer(&self.signer)?;
         if self.lease.is_some() || self.lifecycle_lease.is_some() {
@@ -130,7 +139,7 @@ impl AuthorityResponseFence {
                 ));
             }
         }
-        Ok(())
+        self.authority.check_open()
     }
 }
 
@@ -142,6 +151,7 @@ pub struct IndependentAuthority {
     elapsed: Arc<dyn LeaseClock>,
     proposal: tokio::sync::Mutex<()>,
     requests: Arc<Semaphore>,
+    request_owners: Arc<RwLock<()>>,
     drains: Mutex<BTreeMap<String, Drain>>,
     settings: AuthorityNodeSettings,
     local_node_id: u64,
@@ -273,6 +283,7 @@ impl IndependentAuthority {
             clock,
             proposal: tokio::sync::Mutex::new(()),
             requests: Arc::new(Semaphore::new(32)),
+            request_owners: Arc::new(RwLock::new(())),
             drains: Mutex::new(BTreeMap::new()),
             settings,
             local_node_id: node_id,
@@ -289,6 +300,7 @@ impl IndependentAuthority {
     /// Trusted bootstrap orchestration invokes this only after authenticated
     /// peer fingerprints agree. Other voters never manufacture local membership.
     pub async fn initialize(&self) -> anyhow::Result<()> {
+        let _permit = self.permit()?;
         if self.group.raft().metrics().borrow().id
             == *self
                 .voters
@@ -297,9 +309,11 @@ impl IndependentAuthority {
                 .0
             && !self.group.raft().is_initialized().await?
         {
+            self.check_open()?;
             self.backend.require_genesis(&self.bootstrap)?;
             self.group.initialize(self.voters.clone()).await?;
         }
+        self.check_open()?;
         Ok(())
     }
     pub fn raft_group(&self) -> &RaftGroup {
@@ -311,15 +325,50 @@ impl IndependentAuthority {
     fn term(&self) -> u64 {
         self.group.raft().metrics().borrow().current_term
     }
-    fn permit(&self) -> Result<OwnedSemaphorePermit> {
-        self.requests.clone().try_acquire_owned().map_err(|_| {
-            Error::new(
-                ErrorCode::ResourceExhausted,
-                "independent authority request limit reached",
-            )
+    fn check_open(&self) -> Result<()> {
+        if self.requests.is_closed() {
+            return Err(unavailable("independent authority is shutting down"));
+        }
+        Ok(())
+    }
+    fn permit(&self) -> Result<RequestPermit> {
+        self.check_open()?;
+        let capacity = self
+            .requests
+            .clone()
+            .try_acquire_owned()
+            .map_err(|error| match error {
+                tokio::sync::TryAcquireError::Closed => {
+                    unavailable("authority request admission closed")
+                }
+                tokio::sync::TryAcquireError::NoPermits => Error::new(
+                    ErrorCode::ResourceExhausted,
+                    "independent authority request limit reached",
+                ),
+            })?;
+        let owner = self.operation_owner()?;
+        Ok(RequestPermit {
+            _capacity: capacity,
+            _owner: owner,
         })
     }
+    // Synchronous pinned peer/installation callbacks have no public response
+    // fence. Track their work without consuming native request capacity: Raft
+    // traffic must still progress when every public request slot is occupied.
+    fn operation_owner(&self) -> Result<OwnedRwLockReadGuard<()>> {
+        self.check_open()?;
+        let owner = self
+            .request_owners
+            .clone()
+            .try_read_owned()
+            .map_err(unavailable)?;
+        // Shutdown can close admission between the two synchronous acquisitions.
+        // Such a contender must release both guards without becoming admitted.
+        self.check_open()?;
+        Ok(owner)
+    }
     async fn barrier(&self, context: &RequestContext) -> Result<u64> {
+        self.check_open()?;
         context.authorization.check_live()?;
         self.check_installed_configuration().map_err(unavailable)?;
         self.group
@@ -327,6 +376,7 @@ impl IndependentAuthority {
             .await
             .map_err(unavailable)?;
         context.authorization.check_live()?;
+        self.check_open()?;
         Ok(self.term())
     }
     /// Bound the acknowledgement owner after dispatch. OpenRaft still owns any
@@ -334,6 +384,7 @@ impl IndependentAuthority {
     /// back the entry nor releases the group's tracked storage ownership. An
     /// uncertain caller resolves the same permanent command or phase identity.
     async fn write_proposal(&self, command: Vec<u8>, term: u64) -> Result<Vec<u8>> {
+        self.check_open()?;
         let mut metrics = self.group.raft().metrics();
         let response = self.group.write(command);
         tokio::pin!(response);
@@ -404,6 +455,7 @@ impl IndependentAuthority {
     }
     fn fence(
         self: &Arc<Self>,
+        permit: RequestPermit,
         signer: Arc<AuthoritySigner>,
         context: RequestContext,
         policy_epoch: Option<u64>,
@@ -418,6 +470,7 @@ impl IndependentAuthority {
             lease,
             lifecycle_lease: None,
             term,
+            _permit: permit,
         }
     }
     pub async fn discover(
@@ -425,7 +478,7 @@ impl IndependentAuthority {
         caller: AuthenticatedNode,
         request: LeaseDiscovery,
     ) -> Result<(ServingIdentity, AuthorityResponseFence)> {
-        let _permit = self.permit()?;
+        let permit = self.permit()?;
         let signer = self.request_signer()?;
         request
             .validate()
@@ -465,7 +518,14 @@ impl IndependentAuthority {
         if self.barrier(&context).await? != term {
             return Err(unavailable("discovery term changed"));
         }
-        let fence = self.fence(signer.clone(), context, None, Some(observation), term);
+        let fence = self.fence(
+            permit,
+            signer.clone(),
+            context,
+            None,
+            Some(observation),
+            term,
+        );
         fence.check()?;
         Ok((identity, fence))
     }
@@ -474,7 +534,7 @@ impl IndependentAuthority {
         caller: AuthenticatedNode,
         request: LeaseRequest,
     ) -> Result<(SignedLease, AuthorityResponseFence)> {
-        let _permit = self.permit()?;
+        let permit = self.permit()?;
         let signer = self.request_signer()?;
         request
             .validate()
@@ -529,7 +589,7 @@ impl IndependentAuthority {
         if self.barrier(&context).await? != term {
             return Err(unavailable("lease term changed"));
         }
-        let fence = self.fence(signer.clone(), context, None, Some(request), term);
+        let fence = self.fence(permit, signer.clone(), context, None, Some(request), term);
         fence.check()?;
         Ok((signed, fence))
     }
@@ -540,7 +600,7 @@ impl IndependentAuthority {
         tenant: &str,
         command_id: Uuid,
     ) -> Result<(Option<SignedAuthorityReceipt>, AuthorityResponseFence)> {
-        let _permit = self.permit()?;
+        let permit = self.permit()?;
         let signer = self.request_signer()?;
         self.route(tenant)?;
         let term = self.barrier(&context).await?;
@@ -554,7 +614,7 @@ impl IndependentAuthority {
         if self.barrier(&context).await? != term {
             return Err(unavailable("receipt term changed"));
         }
-        let fence = self.fence(signer.clone(), context, Some(epoch), None, term);
+        let fence = self.fence(permit, signer.clone(), context, Some(epoch), None, term);
         fence.check()?;
         Ok((receipt, fence))
     }
@@ -575,8 +635,9 @@ impl IndependentAuthority {
         // when the caller drops this future or receives an unknown outcome.
         let service = self.clone();
         let job = tokio::spawn(async move {
-            let _permit = permit;
-            service.execute_owned(signer, context, command).await
+            service
+                .execute_owned(permit, signer, context, command)
+                .await
         });
         tokio::time::timeout(Duration::from_secs(5), job)
             .await
@@ -585,6 +646,7 @@ impl IndependentAuthority {
     }
     async fn execute_owned(
         self: Arc<Self>,
+        permit: RequestPermit,
         signer: Arc<AuthoritySigner>,
         context: RequestContext,
         command: AuthorityCommand,
@@ -604,7 +666,7 @@ impl IndependentAuthority {
                 ));
             }
             return self
-                .release(signer.clone(), context, retained, epoch, term, false)
+                .release(permit, signer.clone(), context, retained, epoch, term)
                 .await;
         }
         let drained_fence = match &command.action {
@@ -668,8 +730,9 @@ impl IndependentAuthority {
             )
             .await?;
         let receipt: Result<AuthorityReceipt> = serde_json::from_slice(&bytes).map_err(unknown)?;
-        self.release(signer.clone(), context, receipt?, epoch, term, true)
+        self.release(permit, signer.clone(), context, receipt?, epoch, term)
             .await
+            .map_err(unknown)
     }
     fn require_drain(&self, digest: &str, term: u64) -> Result<()> {
         let mut drains = self.drains.lock().map_err(unavailable)?;
@@ -693,32 +756,28 @@ impl IndependentAuthority {
     }
     async fn release(
         self: &Arc<Self>,
+        permit: RequestPermit,
         signer: Arc<AuthoritySigner>,
         context: RequestContext,
         receipt: AuthorityReceipt,
         epoch: u64,
         term: u64,
-        accepted: bool,
     ) -> Result<(SignedAuthorityReceipt, AuthorityResponseFence)> {
-        let result = async {
-            if self.barrier(&context).await? != term {
-                return Err(unavailable("authority response term changed"));
-            }
-            let fence = self.fence(signer.clone(), context, Some(epoch), None, term);
-            fence.check()?;
-            let signed = signer.sign_receipt(receipt).map_err(unavailable)?;
-            fence.check()?;
-            Ok((signed, fence))
+        if self.barrier(&context).await? != term {
+            return Err(unavailable("authority response term changed"));
         }
-        .await;
-        if accepted {
-            result.map_err(unknown)
-        } else {
-            result
-        }
+        let fence = self.fence(permit, signer.clone(), context, Some(epoch), None, term);
+        fence.check()?;
+        let signed = signer.sign_receipt(receipt).map_err(unavailable)?;
+        fence.check()?;
+        Ok((signed, fence))
     }
     pub async fn shutdown(&self) -> anyhow::Result<()> {
         self.requests.close();
+        // Never hold proposal while draining admitted jobs: a detached accepted
+        // job may still be waiting to acquire it. Cancelling this waiter leaves
+        // every original read owner installed until its work/fence is dropped.
+        let _owners = self.request_owners.write().await;
         let _gate = self.proposal.lock().await;
         self.group.shutdown().await
     }

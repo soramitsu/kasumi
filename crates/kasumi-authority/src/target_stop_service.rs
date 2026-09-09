@@ -8,7 +8,7 @@ impl IndependentAuthority {
         context: RequestContext,
         reference: TargetStopReference,
     ) -> Result<(SignedTargetStop, AuthorityResponseFence)> {
-        let _permit = self.permit()?;
+        let permit = self.permit()?;
         let signer = self.request_signer()?;
         reference
             .validate()
@@ -25,7 +25,7 @@ impl IndependentAuthority {
         if self.barrier(&context).await? != term {
             return Err(unavailable("target drain term changed"));
         }
-        let fence = self.fence(signer.clone(), context, Some(epoch), None, term);
+        let fence = self.fence(permit, signer.clone(), context, Some(epoch), None, term);
         fence.check()?;
         let current = self
             .backend

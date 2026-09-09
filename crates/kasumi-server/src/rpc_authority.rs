@@ -275,7 +275,7 @@ impl kasumi_authority_server::KasumiAuthority for NativeAuthority {
                     &context,
                     self.authority
                         .signer_directive(
-                            &context,
+                            fence.clone(),
                             &body.verifier,
                             &body.domain_sha256,
                             *operation_id,
@@ -291,7 +291,7 @@ impl kasumi_authority_server::KasumiAuthority for NativeAuthority {
                             &context,
                             self.authority
                                 .commit_signer_directive(
-                                    &context,
+                                    fence.clone(),
                                     &body.verifier,
                                     &body.domain_sha256,
                                     command,

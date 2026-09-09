@@ -12,6 +12,37 @@ use std::{
     time::Duration,
 };
 use uuid::Uuid;
+
+async fn commit_directive(
+    authority: &Arc<IndependentAuthority>,
+    context: &RequestContext,
+    verifier: &TrustVerifierIdentity,
+    domain: &str,
+    command: &SignerTrustCommand,
+) -> Result<CommittedSignerDirective> {
+    let authorization = authority
+        .authorize_signer_maintenance(context.clone())
+        .await?;
+    authority
+        .commit_signer_directive(authorization, verifier, domain, command)
+        .await
+}
+
+async fn read_directive(
+    authority: &Arc<IndependentAuthority>,
+    context: &RequestContext,
+    verifier: &TrustVerifierIdentity,
+    domain: &str,
+    operation_id: Uuid,
+) -> Result<Option<AuthorityMaintenanceStatus>> {
+    let authorization = authority
+        .authorize_signer_maintenance(context.clone())
+        .await?;
+    authority
+        .signer_directive(authorization, verifier, domain, operation_id)
+        .await
+}
+
 struct Clock(AtomicU64);
 impl LeaseClock for Clock {
     fn now(&self) -> Duration {
@@ -477,6 +508,7 @@ async fn independent_quorum_fence_drains_original_lease_and_competing_activation
         .await
         .check()
         .unwrap();
+    drop(accepted);
     fixture.close().await;
 }
 
@@ -1105,3 +1137,6 @@ include!("signer_coverage_tests.rs");
 
 #[path = "bootstrap_open_tests.rs"]
 mod bootstrap_open_tests;
+
+#[path = "request_drain_tests.rs"]
+mod request_drain_tests;

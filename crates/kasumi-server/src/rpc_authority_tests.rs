@@ -1459,6 +1459,7 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
         "replacing a key cannot re-sign an already encoded response"
     );
     assert!(source_response.release().await.is_err());
+    drop(source_response);
     assert!(retained.check().is_err());
     let fresh_boot = ServingBoot::new(trust.clone(), boot.identity().clone()).unwrap();
     let fresh_attempt = fresh_boot.begin_acquisition().unwrap();

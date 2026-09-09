@@ -11,10 +11,11 @@ pub struct ControlSignerObservationFence {
     term: u64,
     deadline: kasumi_clock::ElapsedDeadline,
     closed: AtomicBool,
-    _permit: OwnedSemaphorePermit,
+    _permit: RequestPermit,
 }
 impl ControlSignerObservationFence {
     pub fn check(&self) -> Result<()> {
+        self.authority.check_open()?;
         if self.closed.load(Ordering::SeqCst) {
             return Err(unavailable("remote observation closed"));
         }
@@ -44,7 +45,8 @@ impl ControlSignerObservationFence {
         if self.closed.load(Ordering::SeqCst) {
             return Err(unavailable("remote observation closed"));
         }
-        checked
+        checked?;
+        self.authority.check_open()
     }
     pub async fn release(&self) -> Result<()> {
         struct Attempt<'a>(&'a AtomicBool, bool);

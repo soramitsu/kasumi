@@ -58,8 +58,7 @@ async fn coverage_dispatch_precedes_permission_and_survives_exact_encrypted_rest
             certificate: certificate.clone(),
         },
     };
-    let stage_permission = authority
-        .commit_signer_directive(&context, &physical, &domain, &local_stage)
+    let stage_permission = commit_directive(&authority, &context, &physical, &domain, &local_stage)
         .await
         .unwrap();
     stage_permission.check().unwrap();

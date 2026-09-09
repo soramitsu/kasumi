@@ -46,6 +46,7 @@ impl IndependentAuthority {
         &self,
         transport: Arc<dyn SignerPublicationTransport>,
     ) -> anyhow::Result<()> {
+        let _owner = self.operation_owner()?;
         self.signer_publication_transport
             .set(transport)
             .map_err(|_| anyhow::anyhow!("signer publication transport already installed"))

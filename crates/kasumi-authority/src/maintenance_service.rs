@@ -6,6 +6,7 @@ impl IndependentAuthority {
         &self,
         transport: Arc<dyn AuthorityMaintenanceTransport>,
     ) -> anyhow::Result<()> {
+        let _owner = self.operation_owner()?;
         self.maintenance_transport
             .set(transport)
             .map_err(|_| anyhow::anyhow!("authority maintenance transport already installed"))
@@ -19,6 +20,7 @@ impl IndependentAuthority {
         required_state_bytes: u64,
         command: &AuthorityMaintenanceCommand,
     ) -> anyhow::Result<()> {
+        let _owner = self.operation_owner()?;
         anyhow::ensure!(
             bootstrap_sha256 == self.bootstrap_digest,
             "authority maintenance bootstrap differs"
@@ -36,7 +38,9 @@ impl IndependentAuthority {
             }
             _ => required_state_bytes,
         };
+        self.check_open()?;
         self.backend.reserve_node_resources(required)?;
+        self.check_open()?;
         Ok(())
     }
     async fn preflight_maintenance(&self, command: &AuthorityMaintenanceCommand) -> Result<()> {
@@ -82,11 +86,13 @@ impl IndependentAuthority {
     /// Trusted transport callback. Approved endpoints alone do not override a
     /// member identity permanently revoked in applied operational state.
     pub fn peer_allowed(&self, node_id: u64) -> anyhow::Result<()> {
+        let _owner = self.operation_owner()?;
         let member = self.backend.peer_member(node_id)?;
         anyhow::ensure!(
             self.settings.installed_members.get(&node_id) == Some(&member),
             "installed peer trust differs from committed authority membership"
         );
+        self.check_open()?;
         Ok(())
     }
     pub(super) fn check_installed_configuration(&self) -> anyhow::Result<()> {
@@ -126,7 +132,7 @@ impl IndependentAuthority {
                     .map_err(unavailable)?;
                 return Ok((
                     AuthorityMaintenanceResponse::Configuration { configuration },
-                    self.fence(signer.clone(), context, Some(epoch), None, term),
+                    self.fence(permit, signer.clone(), context, Some(epoch), None, term),
                 ));
             }
             AuthorityMaintenanceRequest::Status { operation_id } => {
@@ -142,7 +148,7 @@ impl IndependentAuthority {
                     })?;
                 return Ok((
                     AuthorityMaintenanceResponse::Operation { status },
-                    self.fence(signer.clone(), context, Some(epoch), None, term),
+                    self.fence(permit, signer.clone(), context, Some(epoch), None, term),
                 ));
             }
             _ => {}
@@ -151,8 +157,9 @@ impl IndependentAuthority {
         // Own accepted work through cancellation and remote response loss. The
         // exact phase journal precedes every external membership operation.
         let job = tokio::spawn(async move {
-            let _permit = permit;
-            service.maintenance_owned(signer, context, request).await
+            service
+                .maintenance_owned(permit, signer, context, request)
+                .await
         });
         tokio::time::timeout(Duration::from_secs(35), job)
             .await
@@ -161,6 +168,7 @@ impl IndependentAuthority {
     }
     async fn maintenance_owned(
         self: Arc<Self>,
+        permit: RequestPermit,
         signer: Arc<AuthoritySigner>,
         context: RequestContext,
         request: AuthorityMaintenanceRequest,
@@ -208,7 +216,7 @@ impl IndependentAuthority {
                         )
                         .await?;
                     return self
-                        .release_maintenance(signer.clone(), context, stopped, term)
+                        .release_maintenance(permit, signer.clone(), context, stopped, term)
                         .await;
                 }
                 status
@@ -334,7 +342,7 @@ impl IndependentAuthority {
                     .await?;
             }
         }
-        self.release_maintenance(signer.clone(), context, status, term)
+        self.release_maintenance(permit, signer.clone(), context, status, term)
             .await
     }
     fn validate_installed_maintenance(&self, command: &AuthorityMaintenanceCommand) -> Result<()> {
@@ -384,6 +392,7 @@ impl IndependentAuthority {
     }
     async fn release_maintenance(
         self: &Arc<Self>,
+        permit: RequestPermit,
         signer: Arc<AuthoritySigner>,
         context: RequestContext,
         status: AuthorityMaintenanceStatus,
@@ -395,7 +404,7 @@ impl IndependentAuthority {
             ));
         }
         let epoch = self.backend.authorize_admin(&context)?;
-        let fence = self.fence(signer.clone(), context, Some(epoch), None, term);
+        let fence = self.fence(permit, signer.clone(), context, Some(epoch), None, term);
         fence.check()?;
         Ok((AuthorityMaintenanceResponse::Operation { status }, fence))
     }
