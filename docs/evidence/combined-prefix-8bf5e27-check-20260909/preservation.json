@@ -1,0 +1,38 @@
+[
+  {
+    "path": "combined-all-targets-check.log",
+    "original": "/tmp/kasumi-8bf5e27-prefix-check/combined-all-targets-check.log",
+    "sha256": "c3f3d31e94f7a9a7bcb848fb462b4303bb2006e38ab2a2668b7da5e137a8c439",
+    "bytes": 476674
+  },
+  {
+    "path": "evidence.json",
+    "original": "/tmp/kasumi-8bf5e27-prefix-check/evidence.json",
+    "sha256": "ee70e4da7421c6735c8ed4818eeab2c5e03e00053eeca57a0070512fe325527f",
+    "bytes": 509372
+  },
+  {
+    "path": "format.log",
+    "original": "/tmp/kasumi-8bf5e27-prefix-check/format.log",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  {
+    "path": "plan.json",
+    "original": "/tmp/kasumi-8bf5e27-prefix-check/plan.json",
+    "sha256": "b763f1bc95e9265f182b44a41db373002afdbfd09a1b92672622ae031264d259",
+    "bytes": 1321
+  },
+  {
+    "path": "runner.py",
+    "original": "/tmp/kasumi-8bf5e27-prefix-check/runner.py",
+    "sha256": "ad3d647fbb73d9d32e04e4e202814f68aea2cb5aa80acbed03a10fa8a3855a6f",
+    "bytes": 10765
+  },
+  {
+    "path": "source-before.json",
+    "original": "/tmp/kasumi-8bf5e27-prefix-check/source-before.json",
+    "sha256": "5a51f954f551bbb84918f97774d328cd48a4eaa8f7a988f644a8e9ad7ad89e4f",
+    "bytes": 304106
+  }
+]
