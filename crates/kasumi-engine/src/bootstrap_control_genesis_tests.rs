@@ -234,10 +234,9 @@ async fn control_genesis_rejects_wrong_storage_purpose_before_deployment_publica
         .is_err()
     );
     assert_eq!(retained(&pair)?, before);
-    pair.application().shutdown().await;
-    pair.custody().store().shutdown().await;
+    pair.shutdown().await?;
     node.drain_initializers().await?;
-    first_audit.shutdown().await;
+    first_audit.shutdown().await?;
     drop(first_audit);
     drop(pair);
     drop(node);
@@ -264,10 +263,9 @@ async fn control_genesis_rejects_wrong_storage_purpose_before_deployment_publica
         .is_err()
     );
     assert_eq!(retained(&pair)?, before);
-    pair.application().shutdown().await;
-    pair.custody().store().shutdown().await;
+    pair.shutdown().await?;
     node.drain_initializers().await?;
-    second_audit.shutdown().await;
+    second_audit.shutdown().await?;
     Ok(())
 }
 
@@ -307,9 +305,8 @@ async fn strict_control_reopen_rejects_partial_genesis_without_catalog_or_raft_m
     assert!(format!("{error:#}").contains("immutable genesis"));
     assert_eq!(retained(&pair)?, before);
     assert!(kasumi_raft::ControlLog::installed(pair.custody().clone())?.is_none());
-    pair.application().shutdown().await;
-    pair.custody().store().shutdown().await;
+    pair.shutdown().await?;
     node.drain_initializers().await?;
-    audit.shutdown().await;
+    audit.shutdown().await?;
     Ok(())
 }

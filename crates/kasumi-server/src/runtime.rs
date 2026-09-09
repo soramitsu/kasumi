@@ -2318,8 +2318,8 @@ async fn create_fixture_node(config: &RuntimeConfig) {
     } else {
         provision_local_fixture_domains(config, node.clone(), audit.clone(), credential).await
     };
-    audit.shutdown().await;
-    store.shutdown().await;
+    audit.shutdown().await.unwrap();
+    store.shutdown().await.unwrap();
     drop(audit);
     drop(store);
     drop(node);
@@ -2613,7 +2613,7 @@ mod tests {
                 .await
                 .is_ok()
         );
-        audit.shutdown().await;
+        audit.shutdown().await.unwrap();
         drop(audit);
         drop(service);
         drop(tenant);

@@ -223,9 +223,8 @@ async fn cancelled_ha_genesis_retains_actual_node_and_error_until_acknowledged_d
             .get("engine.bootstrap", b"manifest")?
             .is_some()
     );
-    stores.application().shutdown().await;
-    stores.custody().store().shutdown().await;
-    security.shutdown().await;
+    stores.shutdown().await?;
+    security.shutdown().await?;
     node.drain_initializers().await?;
     Ok(())
 }
@@ -268,9 +267,8 @@ async fn failed_control_genesis_drains_actual_pair_before_returning_enrollment_e
             .get("engine.bootstrap", b"manifest")?
             .is_none()
     );
-    stores.application().shutdown().await;
-    stores.custody().store().shutdown().await;
-    security.shutdown().await;
+    stores.shutdown().await?;
+    security.shutdown().await?;
     node.drain_initializers().await?;
     Ok(())
 }
@@ -353,10 +351,9 @@ async fn panicked_ha_enrollment_drains_nested_node_audit_pair_and_database_owner
                         .is_some(),
                     index == 5
                 );
-                stores.application().shutdown().await;
-                stores.custody().store().shutdown().await;
+                stores.shutdown().await?;
             }
-            security.shutdown().await;
+            security.shutdown().await?;
         }
         node.drain_initializers().await?;
     }
