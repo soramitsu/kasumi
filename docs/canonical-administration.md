@@ -56,7 +56,9 @@ Control proposal precedes one recorded catalog/bootstrap creation, and startup
 keeps unrecorded configuration templates dormant. The existing onboarding and
 mismatched-voter assertions remain. See [configured tenant enrollment](configured-tenant-enrollment.md)
 for exact ownership, the required new ledger format, unrun regression sources and
-remaining partial-abort/standalone/Control-genesis gaps. The immutable issuer signing
+remaining partial-abort/standalone gaps. [Explicit Control genesis](explicit-control-genesis.md)
+now installs the reserved state and binds its original encrypted bootstrap during
+HA enrollment; its validation gates remain unrun. The immutable issuer signing
 fixture and explicit outer target-owner restart boundaries are still recorded in
 the [coverage map and erratum](evidence/canonical-runtime-f7fa592-source-20260909/README.md).
 No earlier branch pass or removed assertion replaces these open acceptance gates.

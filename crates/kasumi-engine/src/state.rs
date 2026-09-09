@@ -548,11 +548,20 @@ impl TenantEngine {
         policy: Policy,
         limits: Limits,
     ) -> Result<Self> {
+        Self::new_genesis(tenant, incarnation, policy, limits, None)
+    }
+    pub(crate) fn new_genesis(
+        tenant: String,
+        incarnation: String,
+        policy: Policy,
+        limits: Limits,
+        control: Option<&crate::ControlGenesis>,
+    ) -> Result<Self> {
         validate_name(&tenant)?;
         validate_name(&incarnation)?;
         validate_limits(&limits)?;
         validate_policy(&policy, &limits)?;
-        let state = TenantState {
+        let mut state = TenantState {
             tenant: tenant.clone(),
             incarnation: incarnation.clone(),
             revision: 0,
@@ -597,6 +606,12 @@ impl TenantEngine {
             )),
             audits: imbl::Vector::new(),
         };
+        if let Some(control) = control {
+            control.seed(&mut state)?;
+            validate_metadata_budget(&state.collections, &state.limits)?;
+            lifecycle::validate(&state)?;
+        }
+        let revision_base = state.revision_base;
         let indexes = Arc::new(QueryIndexes::build(&state.collections)?);
         let snapshot_accounting = SnapshotAccounting::rebuild(&state)?;
         if !snapshot_accounting.fits(&state)? {
@@ -632,7 +647,7 @@ impl TenantEngine {
             apply_lock: Mutex::new(()),
             tenant,
             incarnation,
-            revision_base: 0,
+            revision_base,
         })
     }
 

@@ -133,6 +133,7 @@ impl Replica {
 
 fn bootstrap() -> ReplicatedBootstrap {
     ReplicatedBootstrap {
+        genesis: crate::ReplicatedGenesis::Application,
         incarnation: uuid::Uuid::new_v4().to_string(),
         initial_policy: Policy {
             grants: vec![Grant {

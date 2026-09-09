@@ -31,6 +31,10 @@ pub use target::{
 mod target_quorum;
 pub use target_quorum::{TargetReplica, TargetReplicaConfig, open_target_replica};
 
+#[path = "bootstrap_control_genesis.rs"]
+mod control_genesis;
+pub use control_genesis::{ControlGenesis, ControlLifecycleGenesis, ReplicatedGenesis};
+
 const NS: &str = "engine.bootstrap";
 const CHUNK: usize = 4 << 20;
 // Only bootstraps are serialized here, never data operations. A node owns its
@@ -58,6 +62,7 @@ pub struct ReplicaPlacement {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReplicatedBootstrap {
+    pub genesis: ReplicatedGenesis,
     pub incarnation: String,
     pub initial_policy: Policy,
     pub initial_limits: Limits,
@@ -146,6 +151,7 @@ pub async fn prepare_replicated_restore(
         "restore requires a fresh incarnation"
     );
     let bootstrap = ReplicatedBootstrap {
+        genesis: ReplicatedGenesis::Application,
         incarnation: replica.incarnation.to_string(),
         initial_policy: original.policy.clone(),
         initial_limits: original.limits.clone(),
@@ -208,6 +214,7 @@ pub async fn prepare_replicated_restore(
 
 impl ReplicatedBootstrap {
     pub fn validate(&self) -> anyhow::Result<()> {
+        self.genesis.validate(&self.incarnation)?;
         crate::state::validate_limits(&self.initial_limits)?;
         crate::state::validate_policy(&self.initial_policy, &self.initial_limits)?;
         anyhow::ensure!(
@@ -229,6 +236,20 @@ impl ReplicatedBootstrap {
                 domains.insert(&placement.failure_domain),
                 "replicated voters must occupy independent failure domains"
             );
+            if let ReplicatedGenesis::Control(control) = &self.genesis {
+                let node =
+                    control.topology.nodes.get(id).ok_or_else(|| {
+                        anyhow::anyhow!("Control genesis initial voter is missing")
+                    })?;
+                anyhow::ensure!(
+                    url::Url::parse(&placement.address)?
+                        .origin()
+                        .ascii_serialization()
+                        == node.endpoint
+                        && placement.failure_domain == node.failure_domain,
+                    "Control genesis voter identity differs from replicated placement"
+                );
+            }
         }
         Ok(())
     }
@@ -416,6 +437,7 @@ async fn open_replicated_inner<'a>(
     if !matches!(runtime, ReplicaRuntime::Existing(_)) {
         bootstrap.validate()?;
     }
+    bootstrap.genesis.require_domain(&store)?;
     if let Some(gate) = store.storage_access().serving_gate() {
         anyhow::ensure!(
             gate.identity().incarnation.to_string() == bootstrap.incarnation
@@ -436,17 +458,13 @@ async fn open_replicated_inner<'a>(
                 !matches!(runtime, ReplicaRuntime::Existing(_)),
                 "replicated bootstrap is not initialized"
             );
-            let engine = TenantEngine::new(
-                store.tenant().into(),
-                bootstrap.incarnation.clone(),
-                bootstrap.initial_policy.clone(),
-                bootstrap.initial_limits.clone(),
-            )?;
+            let engine = bootstrap.genesis.engine(store.tenant(), &bootstrap)?;
             let bytes = engine.logical_snapshot(store.scratch_disk())?;
             persist_new(&stores, &bytes)?;
             bytes
         }
     };
+    bootstrap.genesis.verify_image(&store, &bootstrap, &bytes)?;
     validate_bootstrap_control(&stores, &bytes)?;
     let engine = Arc::new(TenantEngine::from_bootstrap(store.tenant(), &bytes)?);
     anyhow::ensure!(

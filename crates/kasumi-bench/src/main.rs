@@ -337,6 +337,7 @@ impl Databases {
                         .as_ref()
                         .map(|values| values[tenant].clone())
                         .unwrap_or_else(|| ReplicatedBootstrap {
+                            genesis: kasumi_engine::ReplicatedGenesis::Application,
                             incarnation: uuid::Uuid::new_v4().to_string(),
                             initial_policy: policy(),
                             initial_limits: workload_limits.clone(),

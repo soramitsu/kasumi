@@ -147,7 +147,7 @@ async fn complete_recovery(
     inspect_completion: bool,
 ) -> Option<RoutePublicationFixture> {
     let mut f = if activation_outcome == Some(true) {
-        Fixture::with_topology().await
+        Fixture::new().await
     } else {
         Fixture::new().await
     };

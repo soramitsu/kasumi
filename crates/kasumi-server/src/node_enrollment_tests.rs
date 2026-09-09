@@ -29,6 +29,14 @@ async fn fixture() -> Result<(tempfile::TempDir, Arc<NodeStore>, Arc<TenantStore
 
 fn record_genesis(enrollment: &Enrollment, store: &TenantStore, input: &Input) -> Result<()> {
     if let Input::Data { configuration } = input {
+        if configuration.mode == crate::runtime::DeploymentMode::Replicated {
+            enrollment.record_genesis_tenant(
+                store,
+                crate::runtime::CONTROL_TENANT,
+                Uuid::parse_str(configuration.control.incarnation.as_deref().unwrap())?,
+                "22".repeat(32),
+            )?;
+        }
         for tenant in &configuration.tenants {
             enrollment.record_genesis_tenant(
                 store,

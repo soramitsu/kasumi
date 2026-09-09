@@ -43,6 +43,7 @@ impl ServingFixture {
             scopes: BTreeSet::from([Action::Read, Action::Write, Action::Admin]),
         };
         let bootstrap = crate::ReplicatedBootstrap {
+            genesis: crate::ReplicatedGenesis::Application,
             incarnation: uuid::Uuid::new_v4().to_string(),
             initial_policy: Policy {
                 grants: vec![Grant {

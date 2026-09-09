@@ -39,12 +39,9 @@ impl Fixture {
         Self::limits(Limits::default(), 8 << 20).await
     }
     async fn limits(limits: Limits, max_state_bytes: usize) -> Self {
-        Self::configured(limits, max_state_bytes, false).await
+        Self::configured(limits, max_state_bytes).await
     }
-    async fn with_topology() -> Self {
-        Self::configured(Limits::default(), 8 << 20, true).await
-    }
-    async fn configured(limits: Limits, max_state_bytes: usize, install_topology: bool) -> Self {
+    async fn configured(limits: Limits, max_state_bytes: usize) -> Self {
         let root = tempfile::tempdir().unwrap();
         let incarnation = Uuid::new_v4();
         let pkcs8 = Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new()).unwrap();
@@ -107,7 +104,29 @@ impl Fixture {
             max_changes: 10,
             max_state_bytes,
         };
+        let installation_command_id = Uuid::new_v4();
         let bootstrap = ReplicatedBootstrap {
+            genesis: kasumi_engine::ReplicatedGenesis::Control(kasumi_engine::ControlGenesis {
+                topology: kasumi_engine::control::ControlTopology {
+                    nodes: (1..=3)
+                        .map(|id| {
+                            (
+                                id,
+                                kasumi_engine::control::ControlNode {
+                                    endpoint: format!("https://node-{id}.example"),
+                                    failure_domain: format!("zone-{id}"),
+                                    certificate_pins: BTreeSet::from([format!("{id:064x}")]),
+                                },
+                            )
+                        })
+                        .collect(),
+                    tenants: BTreeMap::new(),
+                },
+                lifecycle: kasumi_engine::ControlLifecycleGenesis::Installed {
+                    command_id: installation_command_id,
+                    installation: installation.clone(),
+                },
+            }),
             incarnation: incarnation.to_string(),
             initial_policy: policy("owner"),
             initial_limits: limits,
@@ -116,7 +135,7 @@ impl Fixture {
                     (
                         id,
                         ReplicaPlacement {
-                            address: format!("node-{id}"),
+                            address: format!("https://node-{id}.example"),
                             failure_domain: format!("zone-{id}"),
                         },
                     )
@@ -134,25 +153,38 @@ impl Fixture {
             installation,
         };
         result.open(true).await;
-        if install_topology {
-            kasumi_engine::control::ControlPlane::new(result.leader().await)
-                .unwrap()
-                .initialize(result.context("owner"))
-                .await
-                .unwrap();
-        }
+        kasumi_engine::control::ControlPlane::new(result.leader().await)
+            .unwrap()
+            .require_initialized(&result.context("owner"))
+            .await
+            .unwrap();
         result
             .leader()
             .await
             .lifecycle_control(
                 result.context("owner"),
                 LifecycleControlCommand::Install {
-                    command_id: Uuid::new_v4(),
+                    command_id: installation_command_id,
                     installation: result.installation.clone(),
                 },
             )
             .await
             .unwrap();
+        let leader = result.leader().await;
+        assert!(
+            leader
+                .raft_group()
+                .raft()
+                .metrics()
+                .borrow()
+                .last_applied
+                .is_some()
+        );
+        let generation = leader.engine().generation().unwrap();
+        assert_eq!(generation.state.revision_base, 1);
+        assert!(generation.state.revision > generation.state.revision_base);
+        drop(generation);
+        drop(leader);
         result
     }
     async fn open(&mut self, create: bool) {
@@ -177,17 +209,19 @@ impl Fixture {
                 common::existing_security_audit(node.clone()).await
             };
             let store = (if create {
-                TenantStore::initialize_catalog_fixture(
+                TenantStore::initialize_catalog_fixture_with_access(
                     node,
                     "__kasumi_control".into(),
                     Arc::new(LocalKeyProvider::new([43; 32])),
+                    kasumi_store::StorageAccess::node_control(),
                 )
                 .await
             } else {
-                TenantStore::open_existing_fixture(
+                TenantStore::open_existing_fixture_with_access(
                     node,
                     "__kasumi_control".into(),
                     Arc::new(LocalKeyProvider::new([43; 32])),
+                    kasumi_store::StorageAccess::node_control(),
                 )
                 .await
             })

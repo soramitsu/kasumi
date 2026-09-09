@@ -212,7 +212,29 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
         }],
         strict_read_audit: true,
     };
+    let installation_command_id = Uuid::new_v4();
     let bootstrap = ReplicatedBootstrap {
+        genesis: kasumi_engine::ReplicatedGenesis::Control(kasumi_engine::ControlGenesis {
+            topology: kasumi_engine::control::ControlTopology {
+                nodes: (1..=3)
+                    .map(|id| {
+                        (
+                            id,
+                            kasumi_engine::control::ControlNode {
+                                endpoint: format!("https://control-{id}.example"),
+                                failure_domain: format!("zone-{id}"),
+                                certificate_pins: BTreeSet::from([format!("{id:064x}")]),
+                            },
+                        )
+                    })
+                    .collect(),
+                tenants: BTreeMap::new(),
+            },
+            lifecycle: kasumi_engine::ControlLifecycleGenesis::Installed {
+                command_id: installation_command_id,
+                installation: installation.clone(),
+            },
+        }),
         incarnation: incarnation.to_string(),
         initial_policy: policy.clone(),
         initial_limits: Limits::default(),
@@ -221,7 +243,7 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
                 (
                     id,
                     ReplicaPlacement {
-                        address: format!("control-{id}"),
+                        address: format!("https://control-{id}.example"),
                         failure_domain: format!("zone-{id}"),
                     },
                 )
@@ -344,7 +366,7 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
         "kasumi:read",
     );
     let install = LifecycleControlCommand::Install {
-        command_id: Uuid::new_v4(),
+        command_id: installation_command_id,
         installation: installation.clone(),
     };
     assert!(client.execute(&data, &install).await.is_err());

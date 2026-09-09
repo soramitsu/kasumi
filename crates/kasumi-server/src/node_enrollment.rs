@@ -157,18 +157,28 @@ pub(crate) fn require_complete(
 
 fn require_genesis_tenants(store: &TenantStore, input: &Input, digest: &str) -> Result<()> {
     if let Input::Data { configuration } = input {
-        for tenant in &configuration.tenants {
-            let record = tenant_record(store, &tenant.tenant)?
-                .context("genesis tenant enrollment is missing")?;
+        let control =
+            (configuration.mode == crate::runtime::DeploymentMode::Replicated).then_some((
+                crate::runtime::CONTROL_TENANT,
+                configuration.control.incarnation.as_ref(),
+            ));
+        for (tenant, incarnation) in control.into_iter().chain(
+            configuration
+                .tenants
+                .iter()
+                .map(|tenant| (tenant.tenant.as_str(), tenant.incarnation.as_ref())),
+        ) {
+            let record = tenant_record(store, tenant)?
+                .context("genesis tenant or Control enrollment is missing")?;
             ensure!(
                 record.stage == Stage::Prepared
                     && matches!(&record.origin, Origin::Genesis { input_sha256 } if input_sha256 == digest),
-                "genesis tenant enrollment differs"
+                "genesis tenant or Control enrollment differs"
             );
-            if let Some(incarnation) = &tenant.incarnation {
+            if let Some(incarnation) = incarnation {
                 ensure!(
                     record.incarnation == Uuid::parse_str(incarnation)?,
-                    "genesis tenant incarnation differs"
+                    "genesis incarnation differs"
                 );
             }
         }

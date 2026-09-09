@@ -23,6 +23,7 @@ fn context() -> RequestContext {
 }
 fn bootstrap() -> ReplicatedBootstrap {
     ReplicatedBootstrap {
+        genesis: kasumi_engine::ReplicatedGenesis::Application,
         incarnation: uuid::Uuid::new_v4().to_string(),
         initial_policy: Policy {
             grants: vec![Grant {

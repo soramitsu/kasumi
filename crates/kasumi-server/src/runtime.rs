@@ -513,6 +513,7 @@ impl RuntimeConfig {
             .as_ref()
             .context("replication configuration missing")?;
         Ok(Some(ReplicatedBootstrap {
+            genesis: kasumi_engine::ReplicatedGenesis::Application,
             incarnation: incarnation
                 .context("replicated tenant/control incarnation missing")?
                 .into(),
@@ -1134,6 +1135,12 @@ impl NodeRuntime {
             .await?;
             pending.stores.push(control_stores.application().clone());
             pending.stores.push(control_stores.custody().store().clone());
+            if config.mode == DeploymentMode::Replicated {
+                let enrolled = crate::node_enrollment::tenant_record(audit.store(), CONTROL_TENANT)?
+                    .context("Control enrollment receipt is missing")?;
+                ensure!(enrolled.bootstrap_sha256.as_ref() == Some(&persisted_bootstrap_fingerprint(control_stores.application())?),
+                    "installed Control bootstrap differs from its enrollment receipt");
+            }
             Self::open_database(
                 &config,
                 control_stores,
@@ -1725,7 +1732,7 @@ impl NodeRuntime {
     }
 
     async fn publish_control(&self) -> Result<bool> {
-        use kasumi_engine::control::{ControlPlane, ControlTopology};
+        use kasumi_engine::control::ControlPlane;
         let plane = ControlPlane::new(self.control.database.clone())?;
         let context = configured_control_context(&self.config.control)?;
         let expected = self.expected_topology()?;
@@ -1745,33 +1752,16 @@ impl NodeRuntime {
                 .clone();
             if metrics.current_leader == Some(metrics.id) {
                 let result = async {
-                    if self._standalone_lock.is_some() {
-                        plane.require_initialized(&context).await?;
-                    } else {
-                        plane.initialize(context.clone()).await?;
-                    }
-                    if let Some(current) = plane.topology(&context).await? {
-                        validate_configured_topology(&current.topology, &expected)?;
-                    } else {
-                        ensure!(
-                            self._standalone_lock.is_none(),
-                            "provisioned standalone topology is missing"
-                        );
-                        plane
-                            .replace_topology(
-                                context.clone(),
-                                expected.clone(),
-                                Precondition::Absent,
-                                "runtime-topology-bootstrap".into(),
-                            )
-                            .await?;
-                    }
-                    crate::lifecycle_runtime::publish(
-                        &self.control.database,
-                        &context,
+                    plane.require_initialized(&context).await?;
+                    let current = plane
+                        .topology(&context)
+                        .await?
+                        .context("installed Control topology is missing")?;
+                    validate_configured_topology(&current.topology, &expected)?;
+                    crate::lifecycle_runtime::require_applied(
+                        &self.control.database.engine().generation()?.state,
                         self.config.control.lifecycle.as_ref(),
-                    )
-                    .await?;
+                    )?;
                     Ok::<_, anyhow::Error>(())
                 }
                 .await;
@@ -1791,27 +1781,18 @@ impl NodeRuntime {
                             }) => {}
                     Err(error) => return Err(error),
                 }
-            } else {
-                // A follower may activate its data endpoint only after its own
-                // committed control state has applied the expected signed topology.
-                // It never manufactures a quorum read or initializes membership.
+            } else if metrics.current_leader.is_some() && metrics.last_applied.is_some() {
+                // Genesis alone does not establish readiness. A follower must
+                // observe an actual leader and applied Raft state, then validate
+                // its own current Control state. This is not a quorum read.
                 let generation = self.control.database.engine().generation()?;
-                if let Some(document) = generation
-                    .state
-                    .collections
-                    .get("topology")
-                    .and_then(|collection| collection.documents.get("current"))
-                {
-                    let current: ControlTopology = serde_json::from_value(document.body.clone())?;
-                    current.validate()?;
-                    validate_configured_topology(&current, &expected)?;
-                    if crate::lifecycle_runtime::applied(
-                        &generation.state,
-                        self.config.control.lifecycle.as_ref(),
-                    )? {
-                        return Ok(true);
-                    }
-                }
+                let current = ControlPlane::applied_topology(&generation.state)?;
+                validate_configured_topology(&current.topology, &expected)?;
+                crate::lifecycle_runtime::require_applied(
+                    &generation.state,
+                    self.config.control.lifecycle.as_ref(),
+                )?;
+                return Ok(true);
             }
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
@@ -2289,65 +2270,109 @@ async fn provision_local_fixture_domains(
     audit: Arc<SecurityAudit>,
     credential: crate::serving_runtime::CredentialSource,
 ) -> Result<()> {
-    let entries = std::iter::once((
-        CONTROL_TENANT,
-        &config.control.initial_policy,
-        &config.control.initial_limits,
-        &config.control.keys,
-        &config.control.custody_keys,
-        config.control.incarnation.as_deref(),
-        kasumi_store::StorageAccess::node_control(),
-    ))
-    .chain(config.tenants.iter().map(|tenant| {
-        (
-            tenant.tenant.as_str(),
-            &tenant.initial_policy,
-            &tenant.initial_limits,
-            &tenant.keys,
-            &tenant.custody_keys,
-            tenant.incarnation.as_deref(),
-            kasumi_store::StorageAccess::fixture(),
-        )
-    }));
-    for (tenant, policy, limits, application, custody, incarnation, access) in entries {
-        let stores = TenantStorageSet::initialize_catalogs(
-            node.clone(),
-            tenant.into(),
-            application.provider(credential.clone())?,
-            custody.provider(credential.clone())?,
-            access,
-        )
-        .await?;
-        let opened = match incarnation {
-            Some(incarnation) => {
-                kasumi_engine::open_local_with_incarnation(
-                    stores.clone(),
-                    policy.clone(),
-                    limits.clone(),
-                    audit.clone(),
-                    uuid::Uuid::parse_str(incarnation)?,
-                )
-                .await
+    let mut pending = crate::startup_resources::Resources::default();
+    pending.nodes.push(node.clone());
+    let mut control = None;
+    let mut routes = BTreeMap::new();
+    let outcome = async {
+        let entries = std::iter::once((
+            CONTROL_TENANT,
+            &config.control.initial_policy,
+            &config.control.initial_limits,
+            &config.control.keys,
+            &config.control.custody_keys,
+            config.control.incarnation.as_deref(),
+            kasumi_store::StorageAccess::node_control(),
+        ))
+        .chain(config.tenants.iter().map(|tenant| {
+            (
+                tenant.tenant.as_str(),
+                &tenant.initial_policy,
+                &tenant.initial_limits,
+                &tenant.keys,
+                &tenant.custody_keys,
+                tenant.incarnation.as_deref(),
+                kasumi_store::StorageAccess::fixture(),
+            )
+        }));
+        for (tenant, policy, limits, application, custody, incarnation, access) in entries {
+            let stores = TenantStorageSet::initialize_catalogs(
+                node.clone(),
+                tenant.into(),
+                application.provider(credential.clone())?,
+                custody.provider(credential.clone())?,
+                access,
+            )
+            .await?;
+            pending.stores.push(stores.application().clone());
+            pending.stores.push(stores.custody().store().clone());
+            let opened = match incarnation {
+                Some(incarnation) => {
+                    kasumi_engine::open_local_with_incarnation(
+                        stores.clone(),
+                        policy.clone(),
+                        limits.clone(),
+                        audit.clone(),
+                        uuid::Uuid::parse_str(incarnation)?,
+                    )
+                    .await
+                }
+                None => {
+                    kasumi_engine::open_local(
+                        stores.clone(),
+                        policy.clone(),
+                        limits.clone(),
+                        audit.clone(),
+                    )
+                    .await
+                }
+            };
+            let database = opened?;
+            pending.databases.push(database.clone());
+            if tenant == CONTROL_TENANT {
+                control = Some(database);
+            } else {
+                routes.insert(
+                    tenant.to_owned(),
+                    kasumi_engine::control::TenantRoute {
+                        incarnation: database.engine().generation()?.state.incarnation.clone(),
+                        mode: kasumi_engine::control::DeploymentMode::Local,
+                        voters: BTreeSet::from([1]),
+                    },
+                );
             }
-            None => {
-                kasumi_engine::open_local(
-                    stores.clone(),
-                    policy.clone(),
-                    limits.clone(),
-                    audit.clone(),
-                )
-                .await
-            }
-        };
-        let result = match opened {
-            Ok(database) => database.shutdown().await,
-            Err(error) => Err(error),
-        };
-        stores.application().shutdown().await;
-        stores.custody().store().shutdown().await;
-        result?;
+        }
+        let plane =
+            kasumi_engine::control::ControlPlane::new(control.context("fixture Control missing")?)?;
+        let context = configured_control_context(&config.control)?;
+        plane.initialize(context.clone()).await?;
+        plane
+            .replace_topology(
+                context,
+                kasumi_engine::control::ControlTopology {
+                    nodes: BTreeMap::from([(
+                        1,
+                        kasumi_engine::control::ControlNode {
+                            endpoint: url::Url::parse(&config.mcp.protocol.public_url)?
+                                .origin()
+                                .ascii_serialization(),
+                            failure_domain: "local".into(),
+                            certificate_pins: BTreeSet::from([format_certificate_pin(
+                                &config.mcp.tls.load()?.certificate_pin(),
+                            )]),
+                        },
+                    )]),
+                    tenants: routes,
+                },
+                Precondition::Absent,
+                "fixture-installation-topology".into(),
+            )
+            .await?;
+        Ok::<_, anyhow::Error>(())
     }
-    Ok(())
+    .await;
+    let drained = crate::startup_owner::finish(&mut pending).await;
+    outcome.and(drained)
 }
 
 #[cfg(test)]

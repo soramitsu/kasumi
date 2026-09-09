@@ -6,7 +6,7 @@ use crate::{
     serving_runtime::{CredentialSource, RuntimeLease, TenantServingConfig},
 };
 use anyhow::{Context, Result, ensure};
-use kasumi_engine::{Database, ReplicatedBootstrap, SecurityAudit};
+use kasumi_engine::{ReplicatedBootstrap, SecurityAudit};
 use kasumi_serving::{AuthorityTrust, VerifiedLease};
 use kasumi_store::{NodeStore, StorageAccess, TenantStorageSet};
 use std::{collections::BTreeMap, sync::Arc};
@@ -18,26 +18,48 @@ pub(crate) async fn initialize(config: RuntimeConfig) -> Result<()> {
         config.mode == DeploymentMode::Replicated,
         "HA node enrollment requires replicated mode"
     );
-    // Only an explicit invocation creates a node. Lost replies retain this
-    // operation and its exclusive physical ownership through actual shutdown.
-    tokio::spawn(async move {
+    crate::startup_owner::open(crate::startup_owner::Kind::Data, initialize_owned(config)).await?;
+    Ok(())
+}
+
+// Only an actually drained result may cross the acknowledged startup handoff.
+struct Enrolled;
+impl crate::startup_owner::Runtime for Enrolled {
+    fn close(
+        &mut self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = kasumi_types::drain::DrainResult> + Send + '_>,
+    > {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+async fn initialize_owned(config: RuntimeConfig) -> Result<Enrolled> {
+    let mut pending = crate::startup_resources::Resources::default();
+    let result = async {
         let admission = kasumi_engine::admission::NodeAdmission::new(config.admission.clone())?;
         let (node, audit) = crate::node_provision::create(
             &config.database_path,
             config.database_id,
             &config.scratch_disk,
             &config.security_audit,
-            admission.clone(),
+            admission,
         )
         .await?;
+        pending.nodes.push(node.clone());
+        pending.audits.push(audit.clone());
         let credential: CredentialSource = Arc::new(crate::runtime::file_secret);
-        let result = provision(&config, node.clone(), audit.clone(), credential).await;
-        audit.shutdown().await;
-        drop(audit);
-        drop(node);
-        result
-    })
-    .await?
+        provision(&config, node, audit, credential).await
+    }
+    .await;
+    let drained = crate::startup_owner::finish(&mut pending).await;
+    match (result, drained) {
+        (Ok(()), Ok(())) => Ok(Enrolled),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Err(error), Err(drain)) => {
+            Err(error.context(format!("node enrollment drain failed: {drain:#}")))
+        }
+    }
 }
 
 pub(crate) fn network(
@@ -119,14 +141,9 @@ pub(crate) async fn provision(
             .as_ref()
             .context("replication configuration missing")?;
         let network = network(replication)?;
-        let control = config
-            .bootstrap(
-                &config.control.initial_policy,
-                &config.control.initial_limits,
-                config.control.incarnation.as_deref(),
-            )?
-            .context("Control genesis missing")?;
-        initialize_domain(
+        let control = crate::control_genesis::bootstrap(config)?;
+        let control_incarnation = Uuid::parse_str(&control.incarnation)?;
+        let control_fingerprint = initialize_domain(
             config,
             node.clone(),
             audit.clone(),
@@ -140,6 +157,12 @@ pub(crate) async fn provision(
             credential.clone(),
         )
         .await?;
+        enrollment.record_genesis_tenant(
+            audit.store(),
+            CONTROL_TENANT,
+            control_incarnation,
+            control_fingerprint,
+        )?;
         for tenant in &config.tenants {
             let incarnation = Uuid::parse_str(
                 tenant
@@ -255,8 +278,8 @@ async fn initialize_domain(
     grant: Option<&VerifiedLease>,
     credential: CredentialSource,
 ) -> Result<String> {
-    let mut retained: Option<Arc<TenantStorageSet>> = None;
-    let mut database: Option<Arc<Database>> = None;
+    let mut pending = crate::startup_resources::Resources::default();
+    pending.nodes.push(node.clone());
     let result = async {
         if let Some(grant) = grant {
             grant.check()?;
@@ -271,45 +294,45 @@ async fn initialize_domain(
             access,
         )
         .await?;
-        retained = Some(stores.clone());
+        pending.stores.push(stores.application().clone());
+        pending.stores.push(stores.custody().store().clone());
         let app = stores.application().clone();
         config.install_tenant_audit_archive(&app, None)?;
         if let Some(grant) = grant {
             grant.check()?;
         }
-        database = Some(
-            kasumi_engine::open_replicated(
-                config
-                    .replication
-                    .as_ref()
-                    .context("replication missing")?
-                    .node_id,
-                stores,
-                &bootstrap,
-                network,
-                kasumi_raft::server_config(),
-                audit,
-            )
-            .await?,
-        );
+        let database = kasumi_engine::open_replicated(
+            config
+                .replication
+                .as_ref()
+                .context("replication missing")?
+                .node_id,
+            stores,
+            &bootstrap,
+            network,
+            kasumi_raft::server_config(),
+            audit,
+        )
+        .await?;
+        pending.databases.push(database);
+        #[cfg(test)]
+        if tenant == CONTROL_TENANT {
+            crate::control_genesis::tests::checkpoint(&config.database_path).await?;
+        }
         if let Some(grant) = grant {
             grant.check()?;
         }
         crate::runtime::persisted_bootstrap_fingerprint(&app)
     }
     .await;
-    let drained = match database {
-        Some(database) => database.shutdown().await,
-        None => Ok(()),
+    let drained = crate::startup_owner::finish(&mut pending).await;
+    let fingerprint = match (result, drained) {
+        (Ok(fingerprint), Ok(())) => fingerprint,
+        (Err(error), Ok(())) | (Ok(_), Err(error)) => return Err(error),
+        (Err(error), Err(drain)) => {
+            return Err(error.context(format!("domain enrollment drain failed: {drain:#}")));
+        }
     };
-    if let Some(stores) = retained {
-        stores.application().shutdown().await;
-        stores.custody().store().shutdown().await;
-    }
-    let initializers = node.drain_initializers().await;
-    let fingerprint = result?;
-    initializers?;
-    drained?;
     if let Some(grant) = grant {
         grant.check()?;
     }

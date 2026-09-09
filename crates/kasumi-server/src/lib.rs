@@ -9,6 +9,7 @@ mod authority_node_enrollment;
 pub mod authority_runtime;
 mod backup_cli;
 pub mod cluster;
+mod control_genesis;
 mod data_node_enrollment;
 #[cfg(test)]
 mod json_literal_tests;

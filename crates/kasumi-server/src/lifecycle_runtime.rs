@@ -2,8 +2,8 @@
 //! cannot silently replace signer, partition membership or an accepted command.
 use crate::runtime::{DeploymentMode, read_private_file};
 use anyhow::{Result, ensure};
-use kasumi_engine::{Database, LifecycleSigner};
-use kasumi_types::{LifecycleControlCommand, LifecycleInstallation, RequestContext, TenantState};
+use kasumi_engine::LifecycleSigner;
+use kasumi_types::{LifecycleInstallation, TenantState};
 use serde::{Deserialize, Serialize};
 use std::{path::PathBuf, sync::Arc};
 use uuid::Uuid;
@@ -71,27 +71,13 @@ pub(crate) fn applied(
         }
     }
 }
-pub(crate) async fn publish(
-    database: &Database,
-    context: &RequestContext,
+pub(crate) fn require_applied(
+    state: &TenantState,
     configured: Option<&LifecycleRuntimeConfig>,
 ) -> Result<()> {
-    if applied(&database.engine().generation()?.state, configured)? {
-        return Ok(());
-    }
-    let configured = configured.ok_or_else(|| anyhow::anyhow!("control installation missing"))?;
-    database
-        .lifecycle_control(
-            context.clone(),
-            LifecycleControlCommand::Install {
-                command_id: configured.command_id,
-                installation: configured.installation.clone(),
-            },
-        )
-        .await?;
     ensure!(
-        applied(&database.engine().generation()?.state, Some(configured))?,
-        "control installation not applied"
+        applied(state, configured)?,
+        "installed lifecycle Control state is missing"
     );
     Ok(())
 }

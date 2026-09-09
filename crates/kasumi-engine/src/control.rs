@@ -171,7 +171,7 @@ impl ControlPlane {
             Err(error) => Err(error),
         }
     }
-    fn topology_definition() -> CollectionDefinition {
+    pub(crate) fn topology_definition() -> CollectionDefinition {
         CollectionDefinition {
             retention_class: kasumi_types::CollectionRetentionClass::Operational,
             write_mode: kasumi_types::CollectionWriteMode::Mutable,
@@ -184,6 +184,32 @@ impl ControlPlane {
             indexes: vec![],
             strict_read_audit: true,
         }
+    }
+    /// Inspect a replica's actual local state without implying a quorum read.
+    /// Missing or substituted reserved state is corruption, never provisioning.
+    pub fn applied_topology(state: &TenantState) -> Result<VersionedTopology> {
+        let corrupt = |message| Error::new(ErrorCode::Corruption, message);
+        if state.tenant != CONTROL_TENANT {
+            return Err(corrupt("Control state has the wrong namespace"));
+        }
+        let collection = state
+            .collections
+            .get(COLLECTION)
+            .ok_or_else(|| corrupt("installed Control topology schema is missing"))?;
+        if collection.definition != Self::topology_definition() {
+            return Err(corrupt("installed Control topology schema differs"));
+        }
+        let document = collection
+            .documents
+            .get(DOCUMENT)
+            .ok_or_else(|| corrupt("installed Control topology is missing"))?;
+        let topology: ControlTopology = serde_json::from_value(document.body.clone())
+            .map_err(|_| corrupt("installed Control topology is invalid"))?;
+        topology.validate()?;
+        Ok(VersionedTopology {
+            version: document.version,
+            topology,
+        })
     }
     /// An established installation must retain its reserved schema. This read
     /// never interprets a missing schema as permission to initialize it.
