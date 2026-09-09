@@ -18,7 +18,7 @@ gate), strict Clippy, the production dependency feature
 graph and production binaries. Production graphs containing Kasumi fixture
 features fail. The production gate must report all three executable targets.
 
-Each local command has its own process group and an original four-hour timeout.
+Each functional gate has its own process group and an original four-hour timeout.
 Use `--gate-timeout-seconds` to set an explicit per-gate timeout between one second
 and 24 hours; the chosen value is recorded before dispatch. Silent output does
 not suspend that deadline. Timeout, SIGINT and SIGTERM trigger owned-group
