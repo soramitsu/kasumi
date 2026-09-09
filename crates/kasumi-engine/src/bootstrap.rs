@@ -537,7 +537,9 @@ pub async fn open_local(
 pub async fn open_existing_local(
     stores: Arc<TenantStorageSet>,
     security_audit: Arc<SecurityAudit>,
+    expected_incarnation: uuid::Uuid,
 ) -> anyhow::Result<Arc<Database>> {
+    anyhow::ensure!(!expected_incarnation.is_nil(), "nil local incarnation");
     anyhow::ensure!(
         stores
             .application()
@@ -556,6 +558,7 @@ pub async fn open_existing_local(
         &bytes,
         LocalRuntime::Production(None),
         security_audit,
+        Some(expected_incarnation),
     )
     .await
 }
@@ -658,14 +661,7 @@ async fn open_local_inner(
             bytes
         }
     };
-    if let Some(expected) = incarnation {
-        let state = crate::snapshot_codec::read(bytes.disk(), &mut bytes.reader())?.state;
-        anyhow::ensure!(
-            state.incarnation == expected.to_string(),
-            "local incarnation differs from installed identity"
-        );
-    }
-    start(stores, &bytes, runtime, security_audit).await
+    start(stores, &bytes, runtime, security_audit, incarnation).await
 }
 
 async fn start(
@@ -673,12 +669,19 @@ async fn start(
     bytes: &SnapshotImage,
     runtime: LocalRuntime,
     security_audit: Arc<SecurityAudit>,
+    expected_incarnation: Option<uuid::Uuid>,
 ) -> anyhow::Result<Arc<Database>> {
     validate_bootstrap_control(&stores, bytes)?;
     let engine = Arc::new(TenantEngine::from_bootstrap(
         stores.application().tenant(),
         bytes,
     )?);
+    if let Some(expected) = expected_incarnation {
+        anyhow::ensure!(
+            engine.generation()?.state.incarnation == expected.to_string(),
+            "local incarnation differs from installed identity"
+        );
+    }
     if let kasumi_store::StoragePurpose::Standalone {
         tenant,
         incarnation,

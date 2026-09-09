@@ -14,7 +14,8 @@ the strict catalog path. The default-off `test-utils` conveniences
 `TenantStorageSet::open_existing_fixture` delegate to these same strict paths.
 They do not expose fixture authority in production builds.
 
-`open_existing_local(stores, audit)` accepts no initial policy, capacity defaults
+`open_existing_local(stores, audit, expected_incarnation)` requires a non-nil
+installed incarnation and accepts no initial policy, capacity defaults
 or newly selected incarnation. Both domains must retain the exact local
 deployment binding, the authenticated bootstrap manifest and all chunks must
 exist, and the custody bootstrap commitment must match before startup. Missing,
@@ -27,11 +28,17 @@ must also equal the authenticated storage purpose before engine installation or
 Raft startup. An otherwise valid authenticated bootstrap cannot substitute a
 different standalone generation.
 
-Eight source regressions cover partial catalogs, a catalog disappearing while
+The required expected incarnation is checked for every local purpose, including
+Control whose storage purpose does not itself contain an incarnation. This
+comparison uses the already decoded generation before startup. No second
+whole-state decode or compatibility wrapper is used.
+
+Nine source regressions cover partial catalogs, a catalog disappearing while
 an existing-only opener waits, missing/corrupt/authenticated-wrong domain
 binding, exact standalone domain reopen after both stores drain, missing or
 wrong local deployment, corrupt bootstrap manifest/body/custody commitment,
-an authenticated bootstrap naming another standalone incarnation, and the same
+an authenticated bootstrap naming another standalone incarnation, a nil or
+mismatched configured Control incarnation, and the same
 committed local database reopening after complete shutdown.
 These are uncompiled source tests until the scheduled frozen-source gates run.
 

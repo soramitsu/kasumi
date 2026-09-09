@@ -114,9 +114,13 @@ async fn existing_local_requires_both_local_bindings_and_an_initialized_bootstra
         fixture.stores.write_batch(&[op(app)], &[op(custody)])?;
         let before = retained(&fixture.stores)?;
         assert!(
-            open_existing_local(fixture.stores.clone(), fixture.audit.clone())
-                .await
-                .is_err()
+            open_existing_local(
+                fixture.stores.clone(),
+                fixture.audit.clone(),
+                fixture.incarnation
+            )
+            .await
+            .is_err()
         );
         assert_eq!(retained(&fixture.stores)?, before);
         assert!(load(fixture.stores.application())?.is_none());
@@ -138,9 +142,13 @@ async fn existing_local_rejects_corrupt_manifest_body_and_custody_commitment_wit
         store.write_batch(&[WriteOp::put(NS, b"manifest", malformed)])?;
         let before = retained(&fixture.stores)?;
         assert!(
-            open_existing_local(fixture.stores.clone(), fixture.audit.clone())
-                .await
-                .is_err()
+            open_existing_local(
+                fixture.stores.clone(),
+                fixture.audit.clone(),
+                fixture.incarnation
+            )
+            .await
+            .is_err()
         );
         assert_eq!(retained(&fixture.stores)?, before);
     }
@@ -151,9 +159,13 @@ async fn existing_local_rejects_corrupt_manifest_body_and_custody_commitment_wit
     store.write_batch(&[WriteOp::put(NS, 0u64.to_be_bytes(), wrong)])?;
     let before = retained(&fixture.stores)?;
     assert!(
-        open_existing_local(fixture.stores.clone(), fixture.audit.clone())
-            .await
-            .is_err()
+        open_existing_local(
+            fixture.stores.clone(),
+            fixture.audit.clone(),
+            fixture.incarnation
+        )
+        .await
+        .is_err()
     );
     assert_eq!(retained(&fixture.stores)?, before);
     store.write_batch(&[WriteOp::put(NS, 0u64.to_be_bytes(), saved_chunk)])?;
@@ -168,9 +180,13 @@ async fn existing_local_rejects_corrupt_manifest_body_and_custody_commitment_wit
         )])?;
     let before = retained(&fixture.stores)?;
     assert!(
-        open_existing_local(fixture.stores.clone(), fixture.audit.clone())
-            .await
-            .is_err()
+        open_existing_local(
+            fixture.stores.clone(),
+            fixture.audit.clone(),
+            fixture.incarnation
+        )
+        .await
+        .is_err()
     );
     assert_eq!(retained(&fixture.stores)?, before);
     fixture.shutdown().await;
@@ -194,9 +210,13 @@ async fn authenticated_bootstrap_cannot_change_the_standalone_catalog_incarnatio
     )?;
     let before = retained(&fixture.stores)?;
     assert!(
-        open_existing_local(fixture.stores.clone(), fixture.audit.clone())
-            .await
-            .is_err()
+        open_existing_local(
+            fixture.stores.clone(),
+            fixture.audit.clone(),
+            fixture.incarnation
+        )
+        .await
+        .is_err()
     );
     assert_eq!(retained(&fixture.stores)?, before);
     fixture.shutdown().await;
@@ -274,7 +294,7 @@ async fn existing_local_reopens_the_same_committed_standalone_after_complete_shu
         Default::default(),
         crate::admission::NodeAdmission::with_fixed_memory(Default::default(), 2 << 30, 0)?,
     )?;
-    let reopened = open_existing_local(stores.clone(), audit.clone()).await?;
+    let reopened = open_existing_local(stores.clone(), audit.clone(), incarnation).await?;
     let generation = reopened.engine().generation()?;
     assert_eq!(generation.state.incarnation, incarnation.to_string());
     assert_eq!(generation.state.revision, expected_revision);
@@ -285,5 +305,50 @@ async fn existing_local_reopens_the_same_committed_standalone_after_complete_shu
     stores.application().shutdown().await;
     stores.custody().store().shutdown().await;
     audit.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn existing_control_requires_the_non_nil_configured_incarnation_before_startup()
+-> anyhow::Result<()> {
+    let fixture = Installation::new().await?;
+    let stores = TenantStorageSet::open(
+        fixture.node.clone(),
+        "__kasumi_control".into(),
+        Arc::new(LocalKeyProvider::new([24; 32])),
+        Arc::new(LocalKeyProvider::new([25; 32])),
+        StorageAccess::node_control(),
+    )
+    .await?;
+    let actual = uuid::Uuid::new_v4();
+    bind_deployment(&stores, b"local-v1")?;
+    let engine = TenantEngine::new(
+        "__kasumi_control".into(),
+        actual.to_string(),
+        policy(),
+        Limits::default(),
+    )?;
+    persist_new(
+        &stores,
+        &engine.logical_snapshot(fixture.node.scratch_disk())?,
+    )?;
+    let before = retained(&stores)?;
+    for (expected, message) in [
+        (uuid::Uuid::nil(), "nil local incarnation"),
+        (
+            uuid::Uuid::new_v4(),
+            "local incarnation differs from installed identity",
+        ),
+    ] {
+        let error = open_existing_local(stores.clone(), fixture.audit.clone(), expected)
+            .await
+            .err()
+            .expect("mismatched Control identity must fail");
+        assert!(error.to_string().contains(message));
+        assert_eq!(retained(&stores)?, before);
+    }
+    stores.application().shutdown().await;
+    stores.custody().store().shutdown().await;
+    fixture.shutdown().await;
     Ok(())
 }
