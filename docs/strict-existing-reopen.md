@@ -41,6 +41,10 @@ startup still creates initial Control and application state. Initial creation
 must move into that explicit initialization boundary before standalone startup
 can require strict reopen throughout. Operator recovery, selected restored
 generations, activated-target recovery and original-serving readmission are
-existing-installation paths. HA first enrollment and administrative tenant
-creation require separately explicit installation handling. This checkpoint
-adds the strict primitive; it does not yet claim all production callers use it.
+existing-installation paths. Activated-target serving recovery now uses strict
+node and domain opens; its engine path already requires the published bootstrap.
+Original HA readmission still needs a strict replicated bootstrap mode as well
+as strict catalogs, because ordinary replicated open can create genesis when its
+manifest is absent. HA first enrollment and administrative tenant creation
+require separately explicit installation handling. This checkpoint does not
+claim all production callers use strict reopen.

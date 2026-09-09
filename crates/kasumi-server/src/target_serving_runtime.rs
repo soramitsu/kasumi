@@ -159,7 +159,7 @@ impl TargetRecoveryRuntime {
         );
         let path = self.path(&key)?;
         ensure!(path.is_file(), "activated target file is missing");
-        g.node = Some(NodeStore::open(
+        g.node = Some(NodeStore::open_existing(
             path,
             self.audit.store().scratch_disk().clone(),
         )?);
@@ -247,7 +247,7 @@ impl TargetRecoveryRuntime {
         let custody = template.custody_keys.provider(self.credential.clone())?;
         projection.check(lease.gate())?;
         g.stores = Some(
-            TenantStorageSet::open(
+            TenantStorageSet::open_existing(
                 g.node.as_ref().unwrap().clone(),
                 tenant.into(),
                 app,
