@@ -1626,7 +1626,7 @@ impl NodeRuntime {
             return Err(error);
         }
         if matches!(startup, Ok(false)) {
-            let drain = tasks.shutdown().await;
+            let drain = tasks.shutdown().await.map_err(Into::into);
             let cleanup = crate::startup_owner::finish(&mut self).await;
             return crate::runtime_drain::combine(drain, cleanup);
         }
@@ -1657,7 +1657,7 @@ impl NodeRuntime {
         };
         self.telemetry
             .set_lifecycle(crate::observability::Lifecycle::Draining);
-        let drain = tasks.shutdown().await;
+        let drain = tasks.shutdown().await.map_err(Into::into);
         let cleanup = crate::startup_owner::finish(&mut self).await;
         crate::runtime_drain::combine(crate::runtime_drain::combine(result, drain), cleanup)
     }
