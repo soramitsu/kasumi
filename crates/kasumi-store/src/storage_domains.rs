@@ -149,7 +149,10 @@ impl TenantStorageSet {
 
     /// Trusted installation boundary, useful for explicitly clocked embeddings.
     /// Existing bindings are immutable; these are not caller-selected namespaces.
-    pub fn install(application: Arc<TenantStore>, custody: Arc<TenantStore>) -> Result<Arc<Self>> {
+    pub(crate) fn install(
+        application: Arc<TenantStore>,
+        custody: Arc<TenantStore>,
+    ) -> Result<Arc<Self>> {
         validate_application_tenant(&application.tenant)?;
         ensure!(
             Arc::ptr_eq(&application.node, &custody.node),
