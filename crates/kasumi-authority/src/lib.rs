@@ -1,4 +1,5 @@
 //! A separate replicated storage authority, never a municipality quorum.
+mod bootstrap;
 mod installation;
 mod service;
 mod state;

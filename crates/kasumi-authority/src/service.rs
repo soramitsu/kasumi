@@ -1,5 +1,7 @@
 use crate::state::{Backend, PreparedCommand, PreparedOperation};
-use crate::{AuthorityInstallation, AuthorityMaintenanceTransport, AuthorityNodeSettings};
+use crate::{
+    AuthorityBootstrap, AuthorityInstallation, AuthorityMaintenanceTransport, AuthorityNodeSettings,
+};
 use anyhow::{Context, ensure};
 use kasumi_clock::{EpochClock, LeaseClock};
 use kasumi_raft::{BasicNode, Config, RaftGroup, RaftTransport};
@@ -144,14 +146,31 @@ pub struct IndependentAuthority {
     settings: AuthorityNodeSettings,
     local_node_id: u64,
     voters: BTreeMap<u64, BasicNode>,
+    bootstrap: AuthorityBootstrap,
     bootstrap_digest: String,
     maintenance_transport: OnceLock<Arc<dyn AuthorityMaintenanceTransport>>,
     signer_publication_transport: OnceLock<Arc<dyn SignerPublicationTransport>>,
 }
 impl IndependentAuthority {
+    /// Explicit first enrollment under exclusive installation ownership. This
+    /// synchronous operation atomically publishes both authenticated domain
+    /// identities, original genesis, local physical identity and resource floor.
+    /// Existing, partial and unrelated state is never adopted or overwritten.
+    pub fn initialize_storage(
+        stores: &TenantStorageSet,
+        installation: &AuthorityInstallation,
+        bootstrap: &AuthorityBootstrap,
+        verifier: &TrustVerifierIdentity,
+    ) -> anyhow::Result<()> {
+        crate::bootstrap::initialize(stores, installation, bootstrap, verifier)
+    }
+
+    pub fn bootstrap(&self) -> &AuthorityBootstrap {
+        &self.bootstrap
+    }
     /// The authority is an explicitly installed three-voter trust root. It has
     /// no local/downgrade opener and never uses a municipality data group.
-    pub async fn open_replicated(
+    pub async fn open_existing_replicated(
         stores: Arc<TenantStorageSet>,
         installation: AuthorityInstallation,
         signer: Arc<AuthoritySigner>,
@@ -160,7 +179,7 @@ impl IndependentAuthority {
         transport: Arc<dyn RaftTransport>,
         config: Config,
     ) -> anyhow::Result<Arc<Self>> {
-        Self::open_with_clock(
+        Self::open_existing_with_clock(
             stores,
             installation,
             signer,
@@ -173,7 +192,7 @@ impl IndependentAuthority {
         .await
     }
     #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn open_with_clock(
+    pub(crate) async fn open_existing_with_clock(
         stores: Arc<TenantStorageSet>,
         installation: AuthorityInstallation,
         signer: Arc<AuthoritySigner>,
@@ -189,7 +208,10 @@ impl IndependentAuthority {
             settings.installed_members[&node_id].verifier == signer.verifier_identity()?,
             "operational signer physical verifier differs from installed authority member"
         );
-        let voters = settings.bootstrap.voters();
+        let installed =
+            crate::bootstrap::load(&stores, &installation, &signer.verifier_identity()?)?;
+        let bootstrap = installed.bootstrap;
+        let voters = bootstrap.voters();
         let partition = installation
             .manifest
             .partitions
@@ -202,81 +224,38 @@ impl IndependentAuthority {
                     .signing_domain(installation.partition)?,
             "installed operational signer differs from authority installation root"
         );
-        settings.bootstrap.initial_signer_certificate.verify(
-            &installation
-                .manifest
-                .signing_domain(installation.partition)?,
-        )?;
         ensure!(
             signer.certificate().identity.generation != 1
-                || *signer.certificate() == settings.bootstrap.initial_signer_certificate,
+                || *signer.certificate() == bootstrap.initial_signer_certificate,
             "generation-one signer differs from immutable bootstrap certificate"
         );
         signer.check()?;
-        let binding = serde_json::to_vec(&(
-            "kasumi.independent-authority.v2",
-            &installation,
-            &settings.bootstrap,
-        ))?;
-        match stores
-            .application()
-            .get("authority.installation", b"binding")?
-        {
-            Some(bytes) => ensure!(bytes == binding, "authority voters or installation changed"),
-            None => stores
-                .application()
-                .write_batch(&[kasumi_store::WriteOp::put(
-                    "authority.installation",
-                    b"binding",
-                    binding.clone(),
-                )])?,
-        }
-        let local_binding = serde_json::to_vec(&("kasumi.authority-member.v1", node_id))?;
-        match stores
-            .application()
-            .get("authority.installation", b"local-member")?
-        {
-            Some(bytes) => ensure!(
-                bytes == local_binding,
-                "authority storage cannot reopen under another member identity"
-            ),
-            None => stores
-                .application()
-                .write_batch(&[kasumi_store::WriteOp::put(
-                    "authority.installation",
-                    b"local-member",
-                    local_binding,
-                )])?,
-        }
-        let required_bytes = stores
-            .application()
-            .get_bounded("authority.installation", b"resource-floor", 32)?
-            .map(|bytes| serde_json::from_slice::<u64>(&bytes))
-            .transpose()?
-            .unwrap_or(settings.bootstrap.capacity.max_state_bytes);
         ensure!(
-            settings.resource_budget_bytes >= required_bytes,
+            settings.resource_budget_bytes >= installed.resource_floor,
             "authority resource budget is below its durably acknowledged maintenance floor"
         );
-        let backend = Backend::install(
+        let backend = Backend::open_existing(
             stores.application().clone(),
             installation.clone(),
-            &settings,
+            &bootstrap,
+            settings.resource_budget_bytes,
         )?;
+        let current = backend.operational_configuration()?;
         ensure!(
-            backend
-                .operational_configuration()?
-                .capacity
-                .max_state_bytes
-                <= settings.resource_budget_bytes,
+            current.capacity.max_state_bytes <= settings.resource_budget_bytes,
             "configured authority node resources cannot fit current durable capacity"
         );
-        for (id, member) in backend.operational_configuration()?.membership.members {
+        for (id, member) in current.membership.members {
             ensure!(
                 settings.installed_members.get(&id) == Some(&member),
                 "installed peer trust differs from committed authority membership"
             );
         }
+        let bootstrap_digest = digest(&(
+            "kasumi.authority-bootstrap.v1",
+            &installation,
+            &installed.binding,
+        ))?;
         let group = RaftGroup::open(
             node_id,
             partition.group.clone(),
@@ -298,9 +277,10 @@ impl IndependentAuthority {
             settings,
             local_node_id: node_id,
             voters,
+            bootstrap,
             maintenance_transport: OnceLock::new(),
             signer_publication_transport: OnceLock::new(),
-            bootstrap_digest: digest(&("kasumi.authority-bootstrap.v1", &installation, &binding))?,
+            bootstrap_digest,
         }))
     }
     pub fn bootstrap_digest(&self) -> &str {
@@ -317,6 +297,7 @@ impl IndependentAuthority {
                 .0
             && !self.group.raft().is_initialized().await?
         {
+            self.backend.require_genesis(&self.bootstrap)?;
             self.group.initialize(self.voters.clone()).await?;
         }
         Ok(())

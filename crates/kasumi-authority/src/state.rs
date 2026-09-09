@@ -27,7 +27,7 @@ const NS: &str = "kasumi.independent-authority";
 const META: &[u8] = b"meta";
 const MAX_RECORD_BYTES: usize = 256 << 10;
 
-use crate::installation::{AuthorityInstallation, AuthorityNodeSettings};
+use crate::installation::{AuthorityBootstrap, AuthorityInstallation};
 
 #[path = "maintenance_state.rs"]
 pub(crate) mod maintenance_state;
@@ -180,11 +180,7 @@ fn unavailable(error: impl std::fmt::Display) -> Error {
     Error::new(ErrorCode::Unavailable, error.to_string())
 }
 impl Backend {
-    pub fn install(
-        store: Arc<TenantStore>,
-        installation: AuthorityInstallation,
-        settings: &AuthorityNodeSettings,
-    ) -> Result<Arc<Self>> {
+    fn validate_store(store: &TenantStore, installation: &AuthorityInstallation) -> Result<()> {
         installation.validate()?;
         ensure!(
             store.tenant() == installation.tenant(),
@@ -199,57 +195,110 @@ impl Backend {
                 .purpose(),
             "independent authority requires its exact installed storage root"
         );
-        if let Some(bytes) = store.get_bounded(NS, META, MAX_RECORD_BYTES)? {
-            let meta: Meta = serde_json::from_slice(&bytes)?;
-            ensure!(
-                meta.installation == installation
-                    && meta.signing.initial == settings.bootstrap.initial_signer_certificate,
-                "authority installation or initial signer differs from durable genesis"
-            );
-            meta.signing.validate()?;
-        } else {
-            let meta = Meta {
-                coverage_dispatches: 0,
-                coverage_acknowledgments: 0,
-                coverage_permissions: 0,
-                signer_rosters: 0,
-                signer_verifiers: 0,
-                signer_controls: 0,
-                signing: AuthoritySigningHead::initial(
-                    settings.bootstrap.initial_signer_certificate.clone(),
-                )?,
-                administrators: settings.bootstrap.administrators.clone(),
-                operational: OperationalState {
-                    revision: 0,
-                    membership: settings.bootstrap.membership.clone(),
-                    capacity: settings.bootstrap.capacity.clone(),
-                    pending_operation: None,
-                },
-                maintenance_receipts: 0,
-                member_revocations: 0,
-                installation: installation.clone(),
-                policy_epoch: 1,
+        Ok(())
+    }
+    fn genesis(
+        installation: &AuthorityInstallation,
+        bootstrap: &AuthorityBootstrap,
+    ) -> Result<Meta> {
+        Ok(Meta {
+            coverage_dispatches: 0,
+            coverage_acknowledgments: 0,
+            coverage_permissions: 0,
+            signer_rosters: 0,
+            signer_verifiers: 0,
+            signer_controls: 0,
+            signing: AuthoritySigningHead::initial(bootstrap.initial_signer_certificate.clone())?,
+            administrators: bootstrap.administrators.clone(),
+            operational: OperationalState {
                 revision: 0,
-                tenants: 0,
-                receipts: 0,
-                state_bytes: 0,
-                active_fences: 0,
-                preparations: 0,
-                incarnations: 0,
-                target_stops: 0,
-                lifecycle_receipts: 0,
-                lifecycle_epochs: 0,
-                open_control_epochs: 0,
-            };
-            store.write_batch(&[WriteOp::put(NS, META, serde_json::to_vec(&meta)?)])?;
+                membership: bootstrap.membership.clone(),
+                capacity: bootstrap.capacity.clone(),
+                pending_operation: None,
+            },
+            maintenance_receipts: 0,
+            member_revocations: 0,
+            installation: installation.clone(),
+            policy_epoch: 1,
+            revision: 0,
+            tenants: 0,
+            receipts: 0,
+            state_bytes: 0,
+            active_fences: 0,
+            preparations: 0,
+            incarnations: 0,
+            target_stops: 0,
+            lifecycle_receipts: 0,
+            lifecycle_epochs: 0,
+            open_control_epochs: 0,
+        })
+    }
+    pub(crate) fn initial_state(
+        store: &TenantStore,
+        installation: &AuthorityInstallation,
+        bootstrap: &AuthorityBootstrap,
+    ) -> Result<WriteOp> {
+        Self::validate_store(store, installation)?;
+        let bytes = serde_json::to_vec(&Self::genesis(installation, bootstrap)?)?;
+        ensure!(
+            bytes.len() <= MAX_RECORD_BYTES,
+            "authority genesis exceeds record budget"
+        );
+        Ok(WriteOp::put(NS, META, bytes))
+    }
+    pub fn open_existing(
+        store: Arc<TenantStore>,
+        installation: AuthorityInstallation,
+        bootstrap: &AuthorityBootstrap,
+        resource_budget_bytes: u64,
+    ) -> Result<Arc<Self>> {
+        Self::validate_store(&store, &installation)?;
+        let bytes = store
+            .get_bounded(NS, META, MAX_RECORD_BYTES)?
+            .context("authority metadata absent")?;
+        let meta: Meta = serde_json::from_slice(&bytes)?;
+        ensure!(
+            meta.installation == installation
+                && meta.signing.initial == bootstrap.initial_signer_certificate,
+            "authority installation or initial signer differs from durable genesis"
+        );
+        ensure!(
+            meta.policy_epoch > 0
+                && !meta.administrators.is_empty()
+                && meta.administrators.len() <= 64,
+            "invalid retained authority policy"
+        );
+        for principal in &meta.administrators {
+            kasumi_types::validate_name(principal)?;
         }
+        meta.signing.validate()?;
+        meta.operational.membership.validate()?;
+        meta.operational.capacity.validate()?;
         Ok(Arc::new(Self {
             store,
             installation,
-            initial_signer_certificate: settings.bootstrap.initial_signer_certificate.clone(),
-            resource_budget_bytes: settings.resource_budget_bytes,
+            initial_signer_certificate: bootstrap.initial_signer_certificate.clone(),
+            resource_budget_bytes,
             mutation: Mutex::new(()),
         }))
+    }
+    pub(crate) fn require_genesis(&self, bootstrap: &AuthorityBootstrap) -> Result<()> {
+        let _lock = self
+            .mutation
+            .lock()
+            .map_err(|_| anyhow::anyhow!("authority state poisoned"))?;
+        let expected = serde_json::to_vec(&Self::genesis(&self.installation, bootstrap)?)?;
+        let mut found = false;
+        self.store.visit(NS, MAX_RECORD_BYTES, |key, bytes| {
+            ensure!(
+                !found && key == META && bytes == expected,
+                "uninitialized consensus cannot reuse non-genesis authority state"
+            );
+            found = true;
+            Ok(())
+        })?;
+        ensure!(found, "authority metadata absent");
+        Ok(())
     }
     pub fn installation(&self) -> &AuthorityInstallation {
         &self.installation

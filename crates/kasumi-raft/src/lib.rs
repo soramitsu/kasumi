@@ -27,7 +27,9 @@ use anyhow::{Context, Result, ensure};
 pub use command::{
     MAX_RETIREMENT_SEED_BYTES, RaftCommand, RetirementLogSeed, RetirementReplayState,
 };
-pub use control::{AppliedEntryContext, CommittedRetirementSeed, ControlLog};
+pub use control::{
+    AppliedEntryContext, CommittedRetirementSeed, ControlLog, initial_storage_identity,
+};
 pub use custody_command::{CustodyCommand, MAX_CUSTODY_COMMAND_BYTES};
 pub use custody_group::{CustodyRaftConfig, CustodyRaftGroup, CustodyView};
 use kasumi_store::TenantStorageSet;

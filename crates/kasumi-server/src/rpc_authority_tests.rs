@@ -258,35 +258,35 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
         .with_live_verifiers(BTreeMap::from([(0, live_owners[3].clone())]))
         .unwrap();
     let router = Arc::new(kasumi_raft::InProcessRouter::default());
-    let settings = kasumi_authority::AuthorityNodeSettings {
-        bootstrap: kasumi_authority::AuthorityBootstrap {
-            initial_signer_certificate: certificate.clone(),
-            administrators: BTreeSet::from(["operator".into()]),
-            capacity: kasumi_serving::AuthorityCapacity {
-                max_tenants: 10,
-                max_state_bytes: 4 << 20,
-                maintenance_reserve_bytes: 1 << 20,
-            },
-            membership: kasumi_serving::AuthorityMembership {
-                voters: BTreeSet::from([1, 2, 3]),
-                members: (1..=3)
-                    .map(|n| {
-                        (
-                            n,
-                            kasumi_serving::AuthorityMember {
-                                verifier: kasumi_serving::TrustVerifierIdentity {
-                                    installation_id: verifier_installation,
-                                    node_id: n,
-                                },
-                                endpoint: format!("https://authority-{n}.test"),
-                                failure_domain: format!("domain-{n}"),
-                                certificate_pins: BTreeSet::from([format!("{n:064x}")]),
-                            },
-                        )
-                    })
-                    .collect(),
-            },
+    let bootstrap = kasumi_authority::AuthorityBootstrap {
+        initial_signer_certificate: certificate.clone(),
+        administrators: BTreeSet::from(["operator".into()]),
+        capacity: kasumi_serving::AuthorityCapacity {
+            max_tenants: 10,
+            max_state_bytes: 4 << 20,
+            maintenance_reserve_bytes: 1 << 20,
         },
+        membership: kasumi_serving::AuthorityMembership {
+            voters: BTreeSet::from([1, 2, 3]),
+            members: (1..=3)
+                .map(|n| {
+                    (
+                        n,
+                        kasumi_serving::AuthorityMember {
+                            verifier: kasumi_serving::TrustVerifierIdentity {
+                                installation_id: verifier_installation,
+                                node_id: n,
+                            },
+                            endpoint: format!("https://authority-{n}.test"),
+                            failure_domain: format!("domain-{n}"),
+                            certificate_pins: BTreeSet::from([format!("{n:064x}")]),
+                        },
+                    )
+                })
+                .collect(),
+        },
+    };
+    let settings = kasumi_authority::AuthorityNodeSettings {
         resource_budget_bytes: 4 << 20,
         installed_members: (1..=3)
             .map(|n| {
@@ -323,7 +323,14 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
         )
         .await
         .unwrap();
-        let service = IndependentAuthority::open_replicated(
+        IndependentAuthority::initialize_storage(
+            &storage,
+            &installation,
+            &bootstrap,
+            &settings.installed_members[&id].verifier,
+        )
+        .unwrap();
+        let service = IndependentAuthority::open_existing_replicated(
             storage.clone(),
             installation.clone(),
             Arc::new(AuthoritySigner::new(

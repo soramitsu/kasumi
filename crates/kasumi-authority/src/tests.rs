@@ -34,6 +34,7 @@ struct Fixture {
     installation: AuthorityInstallation,
     trust: AuthorityTrust,
     settings: AuthorityNodeSettings,
+    bootstrap: crate::AuthorityBootstrap,
     signing: kasumi_serving::test_utils::FixtureAuthority,
     signing_root: InstallationSigningRoot,
     readiness: Arc<TestMaintenanceTransport>,
@@ -105,7 +106,8 @@ impl Fixture {
         };
         let clock = Arc::new(Clock(AtomicU64::new(0)));
         let epoch = Arc::new(EpochClock::new(clock.clone(), Arc::new(Wall)).unwrap());
-        let settings = test_settings(ordinary_state_bytes, signing.signer.certificate().clone());
+        let (bootstrap, settings) =
+            test_settings(ordinary_state_bytes, signing.signer.certificate().clone());
         let readiness = Arc::new(TestMaintenanceTransport::default());
         let mut services = Vec::new();
         let mut stores = Vec::new();
@@ -129,7 +131,14 @@ impl Fixture {
             )
             .await
             .unwrap();
-            let service = IndependentAuthority::open_with_clock(
+            IndependentAuthority::initialize_storage(
+                &store,
+                &installation,
+                &bootstrap,
+                &settings.installed_members[&id].verifier,
+            )
+            .unwrap();
+            let service = IndependentAuthority::open_existing_with_clock(
                 store.clone(),
                 installation.clone(),
                 signing
@@ -171,6 +180,7 @@ impl Fixture {
             installation,
             trust,
             settings,
+            bootstrap,
             signing,
             signing_root,
             readiness,
@@ -278,7 +288,7 @@ impl Fixture {
                 kasumi_store::ScratchDisk::fixture(),
             )
             .unwrap();
-            let stores = TenantStorageSet::open(
+            let stores = TenantStorageSet::open_existing(
                 node,
                 self.installation.tenant(),
                 Arc::new(LocalKeyProvider::new([id as u8; 32])),
@@ -291,7 +301,7 @@ impl Fixture {
             )
             .await
             .unwrap();
-            let service = IndependentAuthority::open_with_clock(
+            let service = IndependentAuthority::open_existing_with_clock(
                 stores.clone(),
                 self.installation.clone(),
                 self.signing
@@ -1023,7 +1033,7 @@ mod issuer_tests;
 fn test_settings(
     ordinary_state_bytes: u64,
     initial_signer_certificate: SigningCertificate,
-) -> AuthorityNodeSettings {
+) -> (crate::AuthorityBootstrap, AuthorityNodeSettings) {
     let installed_members: BTreeMap<_, _> = (1..=4)
         .map(|id| {
             (
@@ -1037,27 +1047,28 @@ fn test_settings(
             )
         })
         .collect();
-    AuthorityNodeSettings {
-        bootstrap: crate::AuthorityBootstrap {
-            initial_signer_certificate,
-            administrators: BTreeSet::from(["operator".into()]),
-            capacity: AuthorityCapacity {
-                max_tenants: 100,
-                max_state_bytes: ordinary_state_bytes + (1 << 20),
-                maintenance_reserve_bytes: 1 << 20,
-            },
-            membership: AuthorityMembership {
-                voters: BTreeSet::from([1, 2, 3]),
-                members: installed_members
-                    .iter()
-                    .filter(|(id, _)| **id <= 3)
-                    .map(|(id, m)| (*id, m.clone()))
-                    .collect(),
-            },
+    let bootstrap = crate::AuthorityBootstrap {
+        initial_signer_certificate,
+        administrators: BTreeSet::from(["operator".into()]),
+        capacity: AuthorityCapacity {
+            max_tenants: 100,
+            max_state_bytes: ordinary_state_bytes + (1 << 20),
+            maintenance_reserve_bytes: 1 << 20,
         },
+        membership: AuthorityMembership {
+            voters: BTreeSet::from([1, 2, 3]),
+            members: installed_members
+                .iter()
+                .filter(|(id, _)| **id <= 3)
+                .map(|(id, m)| (*id, m.clone()))
+                .collect(),
+        },
+    };
+    let settings = AuthorityNodeSettings {
         resource_budget_bytes: 64 << 20,
         installed_members,
-    }
+    };
+    (bootstrap, settings)
 }
 #[derive(Default)]
 struct TestMaintenanceTransport(
@@ -1091,3 +1102,6 @@ include!("maintenance_tests.rs");
 include!("signer_directive_tests.rs");
 
 include!("signer_coverage_tests.rs");
+
+#[path = "bootstrap_open_tests.rs"]
+mod bootstrap_open_tests;

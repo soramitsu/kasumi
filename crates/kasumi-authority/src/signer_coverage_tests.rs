@@ -8,7 +8,7 @@ async fn coverage_dispatch_precedes_permission_and_survives_exact_encrypted_rest
     let physical = fixture.settings.installed_members[&authority.local_node_id]
         .verifier
         .clone();
-    for member in fixture.settings.bootstrap.membership.members.values() {
+    for member in fixture.bootstrap.membership.members.values() {
         let command = fixture
             .maintenance_command(AuthorityMaintenanceAction::EnrollSignerVerifier {
                 enrollment: SignerVerifierEnrollment {
@@ -289,7 +289,6 @@ async fn coverage_dispatch_precedes_permission_and_survives_exact_encrypted_rest
                 operation_id: local.operation_id,
                 retired_generation: 1,
                 retired_certificate_sha256: fixture
-                    .settings
                     .bootstrap
                     .initial_signer_certificate
                     .digest()

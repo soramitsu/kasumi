@@ -107,7 +107,39 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
         )
         .await
         .unwrap();
-        let issuer = kasumi_authority::IndependentAuthority::open_replicated(
+        let bootstrap = kasumi_authority::AuthorityBootstrap {
+            initial_signer_certificate: issuer_signing.signer.certificate().clone(),
+            administrators: BTreeSet::from(["operator".into()]),
+            capacity: kasumi_serving::AuthorityCapacity {
+                max_tenants: 10,
+                max_state_bytes: 4 << 20,
+                maintenance_reserve_bytes: 1 << 20,
+            },
+            membership: kasumi_serving::AuthorityMembership {
+                voters: BTreeSet::from([1, 2, 3]),
+                members: (1..=3)
+                    .map(|n| {
+                        (
+                            n,
+                            kasumi_serving::AuthorityMember {
+                                verifier: kasumi_serving::test_utils::fixture_verifier(n),
+                                endpoint: format!("https://authority-{n}.test"),
+                                failure_domain: format!("domain-{n}"),
+                                certificate_pins: BTreeSet::from([format!("{n:064x}")]),
+                            },
+                        )
+                    })
+                    .collect(),
+            },
+        };
+        kasumi_authority::IndependentAuthority::initialize_storage(
+            &stores,
+            &issuer_install,
+            &bootstrap,
+            &kasumi_serving::test_utils::fixture_verifier(id),
+        )
+        .unwrap();
+        let issuer = kasumi_authority::IndependentAuthority::open_existing_replicated(
             stores,
             issuer_install.clone(),
             issuer_signing
@@ -116,31 +148,6 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
                 .signer,
             id,
             kasumi_authority::AuthorityNodeSettings {
-                bootstrap: kasumi_authority::AuthorityBootstrap {
-                    initial_signer_certificate: issuer_signing.signer.certificate().clone(),
-                    administrators: BTreeSet::from(["operator".into()]),
-                    capacity: kasumi_serving::AuthorityCapacity {
-                        max_tenants: 10,
-                        max_state_bytes: 4 << 20,
-                        maintenance_reserve_bytes: 1 << 20,
-                    },
-                    membership: kasumi_serving::AuthorityMembership {
-                        voters: BTreeSet::from([1, 2, 3]),
-                        members: (1..=3)
-                            .map(|n| {
-                                (
-                                    n,
-                                    kasumi_serving::AuthorityMember {
-                                        verifier: kasumi_serving::test_utils::fixture_verifier(n),
-                                        endpoint: format!("https://authority-{n}.test"),
-                                        failure_domain: format!("domain-{n}"),
-                                        certificate_pins: BTreeSet::from([format!("{n:064x}")]),
-                                    },
-                                )
-                            })
-                            .collect(),
-                    },
-                },
                 resource_budget_bytes: 4 << 20,
                 installed_members: (1..=3)
                     .map(|n| {

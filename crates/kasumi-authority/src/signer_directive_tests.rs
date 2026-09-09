@@ -15,7 +15,7 @@ async fn signer_directive_is_ordered_exact_finite_and_preserved_in_encrypted_sna
     };
     let context = f.context("operator");
     assert!(service.commit_signer_directive(&context, &verifier, &domain, &command).await.is_err());
-    for member in f.settings.bootstrap.membership.members.values() {
+    for member in f.bootstrap.membership.members.values() {
         let enrollment = f.maintenance_command(AuthorityMaintenanceAction::EnrollSignerVerifier { enrollment: SignerVerifierEnrollment {
             verifier: member.verifier.clone(), endpoint: format!("{}/", member.endpoint), certificate_pins: member.certificate_pins.clone(),
         }}).await;
@@ -168,7 +168,7 @@ async fn issuer_permission_retains_original_policy_while_current_admin_can_read_
     use ring::signature::KeyPair;
     let f = Fixture::new().await;
     let service = f.leader().await;
-    for member in f.settings.bootstrap.membership.members.values() {
+    for member in f.bootstrap.membership.members.values() {
         let command = f.maintenance_command(AuthorityMaintenanceAction::EnrollSignerVerifier {
             enrollment: SignerVerifierEnrollment {
                 verifier: member.verifier.clone(),
@@ -249,7 +249,7 @@ async fn replicated_signer_head_fences_unchanged_local_keys_and_rejects_snapshot
     let request = |action| AuthoritySigningRequest {
         observation_id: Uuid::new_v4(), domain_sha256: domain.digest().unwrap(), action,
     };
-    for member in fixture.settings.bootstrap.membership.members.values() {
+    for member in fixture.bootstrap.membership.members.values() {
         let command = fixture.maintenance_command(AuthorityMaintenanceAction::EnrollSignerVerifier {enrollment: SignerVerifierEnrollment {
             verifier: member.verifier.clone(), endpoint: format!("{}/", member.endpoint), certificate_pins: member.certificate_pins.clone(),
         }}).await;
@@ -327,7 +327,7 @@ async fn frozen_signer_roster_cannot_be_bypassed_by_source_unavailable_activatio
     let f = Fixture::new().await;
     let service = f.leader().await;
     let source = f.enroll(&service).await;
-    for member in f.settings.bootstrap.membership.members.values() {
+    for member in f.bootstrap.membership.members.values() {
         let command = f.maintenance_command(AuthorityMaintenanceAction::EnrollSignerVerifier {enrollment: SignerVerifierEnrollment {
             verifier: member.verifier.clone(), endpoint: format!("{}/", member.endpoint), certificate_pins: member.certificate_pins.clone(),
         }}).await;

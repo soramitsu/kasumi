@@ -77,7 +77,7 @@ impl Backend {
             .get_bounded("authority.installation", b"resource-floor", 32)?
             .map(|bytes| serde_json::from_slice::<u64>(&bytes))
             .transpose()?
-            .unwrap_or(0);
+            .context("authority resource floor absent")?;
         if required > previous {
             self.store.write_batch(&[WriteOp::put(
                 "authority.installation",

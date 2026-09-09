@@ -203,6 +203,19 @@ impl CommittedRetirementSeed {
     }
 }
 
+/// Canonical identity rows for an explicit first installation. This prepares no
+/// membership and performs no writes. The caller must atomically publish these
+/// custody rows with application genesis using `TenantStorageSet::initialize_state`,
+/// which rejects all pre-existing domain state, including unknown namespaces.
+pub fn initial_storage_identity(node_id: u64, group: &str) -> Result<[WriteOp; 2]> {
+    ensure!(node_id > 0, "initial consensus node identity is zero");
+    kasumi_types::validate_name(group)?;
+    Ok([
+        WriteOp::put(META, b"node_id", serde_json::to_vec(&node_id)?),
+        WriteOp::put(META, b"group", serde_json::to_vec(group)?),
+    ])
+}
+
 /// Metadata-only recovery reader. It cannot read application log bodies or
 /// initialize a serving state machine. Native source custody routing is separate.
 pub struct ControlLog {

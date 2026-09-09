@@ -224,7 +224,14 @@ async fn actual_tls_peer_readiness_enrolls_replaces_and_fences_revoked_member() 
         )
         .await
         .unwrap();
-        let service = IndependentAuthority::open_replicated(
+        IndependentAuthority::initialize_storage(
+            &store,
+            &installation,
+            &bootstrap,
+            &members[&id].verifier,
+        )
+        .unwrap();
+        let service = IndependentAuthority::open_existing_replicated(
             store.clone(),
             installation.clone(),
             signing
@@ -233,7 +240,6 @@ async fn actual_tls_peer_readiness_enrolls_replaces_and_fences_revoked_member() 
                 .signer,
             id,
             AuthorityNodeSettings {
-                bootstrap: bootstrap.clone(),
                 resource_budget_bytes: 64 << 20,
                 installed_members: members.clone(),
             },

@@ -57,7 +57,14 @@ impl Fixture {
         )
         .await
         .unwrap();
-        let service = IndependentAuthority::open_with_clock(
+        IndependentAuthority::initialize_storage(
+            &stores,
+            &self.installation,
+            &self.bootstrap,
+            &settings.installed_members[&id].verifier,
+        )
+        .unwrap();
+        let service = IndependentAuthority::open_existing_with_clock(
             stores.clone(),
             self.installation.clone(),
             self.signing
@@ -435,6 +442,14 @@ async fn maintenance_replaces_voter_then_permanently_revokes_and_restarts_full_d
     );
     drop(leader);
     fixture.reopen().await;
+    for service in &fixture.services {
+        assert_eq!(
+            service.bootstrap(),
+            &fixture.bootstrap,
+            "current voter replacement must not rewrite immutable genesis"
+        );
+    }
+
     assert_eq!(
         fixture
             .maintenance(AuthorityMaintenanceRequest::Resume {
@@ -498,7 +513,7 @@ async fn maintenance_replaces_voter_then_permanently_revokes_and_restarts_full_d
 #[tokio::test]
 async fn maintenance_store_cannot_reopen_as_another_member_identity() {
     let fixture = Fixture::new().await;
-    let result = IndependentAuthority::open_with_clock(
+    let result = IndependentAuthority::open_existing_with_clock(
         fixture.stores[0].clone(),
         fixture.installation.clone(),
         fixture
@@ -602,7 +617,7 @@ async fn maintenance_resource_acknowledgement_survives_lost_reply_before_admissi
     );
     let mut smaller = fixture.settings.clone();
     smaller.resource_budget_bytes = 8 << 20;
-    let result = IndependentAuthority::open_with_clock(
+    let result = IndependentAuthority::open_existing_with_clock(
         fixture.stores[0].clone(),
         fixture.installation.clone(),
         member.request_signer().unwrap(),
@@ -753,7 +768,7 @@ async fn authority_signer_cannot_substitute_another_physical_verifier_with_the_s
     let mut verifier = fixture.settings.installed_members[&1].verifier.clone();
     verifier.installation_id = Uuid::new_v4();
     let substituted = fixture.signing.for_verifier(verifier).unwrap();
-    let result = IndependentAuthority::open_with_clock(
+    let result = IndependentAuthority::open_existing_with_clock(
         fixture.stores[0].clone(),
         fixture.installation.clone(),
         substituted.signer,
