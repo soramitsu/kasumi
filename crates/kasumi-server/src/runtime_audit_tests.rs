@@ -84,6 +84,7 @@ async fn audit_native_tls_fixed_history_and_original_authorization_release() {
         &serde_json::to_vec(&control).unwrap(),
     )
     .unwrap();
+    crate::standalone::configure_test_topology(&config).await;
     drop(listeners);
     let runtime = NodeRuntime::open(config.clone()).await.unwrap();
     let audit = runtime.audit.clone();

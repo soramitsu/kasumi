@@ -47,6 +47,7 @@ async fn backup_cli_persists_session_before_connect_and_resolves_original_comple
         &serde_json::to_vec(&control).unwrap(),
     )
     .unwrap();
+    crate::standalone::configure_test_topology(&config).await;
     drop(listeners);
     let output = installation
         .tenant_profile

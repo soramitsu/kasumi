@@ -747,18 +747,32 @@ impl Operator {
             );
         }
         let source = Arc::new(crate::runtime::file_secret);
-        let stores = kasumi_store::TenantStorageSet::open(
-            kasumi_store::NodeStore::open(&path, self.store().scratch_disk().clone())?,
-            request.tenant.clone(),
-            tenant.keys.provider(source.clone())?,
-            tenant.custody_keys.provider(source)?,
-            kasumi_store::StorageAccess::standalone(
-                journal.installation_id,
-                &request.tenant,
-                request.target_incarnation,
-            )?,
-        )
-        .await?;
+        let application = tenant.keys.provider(source.clone())?;
+        let custody = tenant.custody_keys.provider(source)?;
+        let access = kasumi_store::StorageAccess::standalone(
+            journal.installation_id,
+            &request.tenant,
+            request.target_incarnation,
+        )?;
+        let stores = if materialize {
+            kasumi_store::TenantStorageSet::open(
+                kasumi_store::NodeStore::open(&path, self.store().scratch_disk().clone())?,
+                request.tenant.clone(),
+                application,
+                custody,
+                access,
+            )
+            .await?
+        } else {
+            kasumi_store::TenantStorageSet::open_existing(
+                kasumi_store::NodeStore::open_existing(&path, self.store().scratch_disk().clone())?,
+                request.tenant.clone(),
+                application,
+                custody,
+                access,
+            )
+            .await?
+        };
         self.config.install_tenant_audit_archive(
             stores.application(),
             Some(self.observed_archives(journal)?),
@@ -773,10 +787,8 @@ impl Operator {
         );
         let admission = self.audit.admission().clone();
         let database = if initialized {
-            kasumi_engine::open_local_with_incarnation(
+            kasumi_engine::open_existing_local(
                 stores.clone(),
-                tenant.initial_policy.clone(),
-                tenant.initial_limits.clone(),
                 self.audit.clone(),
                 request.target_incarnation,
             )

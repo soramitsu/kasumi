@@ -57,6 +57,7 @@ async fn initialized_standalone_serves_native_mcp_and_durable_credential_lifecyc
         &serde_json::to_vec_pretty(&tenant).unwrap(),
     )
     .unwrap();
+    crate::standalone::configure_test_topology(&config).await;
     drop(listeners);
     let runtime = NodeRuntime::open(config.clone()).await.unwrap();
     assert!(NodeRuntime::open(config.clone()).await.is_err());
@@ -369,6 +370,7 @@ async fn offline_maintenance_and_administrator_recovery_require_exclusive_owners
         profile.admin_endpoint = format!("https://localhost:{}", config.admin.listen.port());
         private_files::replace(path, &serde_json::to_vec_pretty(&profile).unwrap()).unwrap();
     }
+    crate::standalone::configure_test_topology(&config).await;
     drop(listeners);
     let runtime = NodeRuntime::open(config.clone()).await.unwrap();
     let registry = runtime.registry().clone();

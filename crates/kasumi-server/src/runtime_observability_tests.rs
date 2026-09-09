@@ -86,6 +86,7 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release() {
         profile.native_endpoint = format!("https://localhost:{}", config.native.listen.port());
         profile.admin_endpoint = format!("https://localhost:{}", config.admin.listen.port());
     }
+    crate::standalone::configure_test_topology(&config).await;
     drop(listeners);
     let runtime = NodeRuntime::open(config.clone()).await.unwrap();
     let telemetry = runtime.telemetry.clone();

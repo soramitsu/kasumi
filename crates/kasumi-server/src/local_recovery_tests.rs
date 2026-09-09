@@ -43,6 +43,7 @@ async fn backup(root: &Path) -> (PathBuf, LocalRecoveryStart, ClientProfile) {
         &serde_json::to_vec_pretty(&profile).unwrap(),
     )
     .unwrap();
+    crate::standalone::configure_test_topology(&config).await;
     drop(listeners);
     let runtime = NodeRuntime::open(config.clone()).await.unwrap();
     let registry = runtime.registry().clone();

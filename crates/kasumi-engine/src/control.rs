@@ -145,18 +145,7 @@ impl ControlPlane {
         self.database
             .engine()
             .authorize(&context, None, Action::Admin)?;
-        let definition = CollectionDefinition {
-            retention_class: kasumi_types::CollectionRetentionClass::Operational,
-            write_mode: kasumi_types::CollectionWriteMode::Mutable,
-            name: COLLECTION.into(),
-            schema: json!({
-                "$schema":"https://json-schema.org/draft/2020-12/schema", "type":"object",
-                "required":["nodes","tenants"], "additionalProperties":false,
-                "properties":{"nodes":{"type":"object"},"tenants":{"type":"object"}}
-            }),
-            indexes: vec![],
-            strict_read_audit: true,
-        };
+        let definition = Self::topology_definition();
         let existing = self
             .database
             .collections(&context)
@@ -181,6 +170,50 @@ impl ControlPlane {
             Err(error) if error.code == ErrorCode::AlreadyExists => Ok(()),
             Err(error) => Err(error),
         }
+    }
+    fn topology_definition() -> CollectionDefinition {
+        CollectionDefinition {
+            retention_class: kasumi_types::CollectionRetentionClass::Operational,
+            write_mode: kasumi_types::CollectionWriteMode::Mutable,
+            name: COLLECTION.into(),
+            schema: json!({
+                "$schema":"https://json-schema.org/draft/2020-12/schema", "type":"object",
+                "required":["nodes","tenants"], "additionalProperties":false,
+                "properties":{"nodes":{"type":"object"},"tenants":{"type":"object"}}
+            }),
+            indexes: vec![],
+            strict_read_audit: true,
+        }
+    }
+    /// An established installation must retain its reserved schema. This read
+    /// never interprets a missing schema as permission to initialize it.
+    pub async fn require_initialized(&self, context: &RequestContext) -> Result<()> {
+        self.database
+            .engine()
+            .authorize(context, None, Action::Admin)?;
+        let existing = self
+            .database
+            .collections(context)
+            .await?
+            .into_iter()
+            .find(|collection| collection.name == COLLECTION)
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorCode::Corruption,
+                    "installed Control topology schema is missing",
+                )
+            })?;
+        if serde_json::to_value(existing)
+            .map_err(|_| Error::new(ErrorCode::Corruption, "invalid installed Control schema"))?
+            != serde_json::to_value(Self::topology_definition())
+                .map_err(|_| Error::new(ErrorCode::Corruption, "invalid Control schema contract"))?
+        {
+            return Err(Error::new(
+                ErrorCode::Corruption,
+                "installed Control topology schema differs",
+            ));
+        }
+        Ok(())
     }
     pub async fn topology(&self, context: &RequestContext) -> Result<Option<VersionedTopology>> {
         self.database
