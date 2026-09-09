@@ -141,6 +141,9 @@ pub struct RecoveryVoterProgress {
     pub materialization: Option<Uuid>,
     #[serde(deserialize_with = "crate::require_explicit_option")]
     pub started: Option<Uuid>,
+    /// Latest exact startup dispatch, including an uncertain effect.
+    #[serde(deserialize_with = "crate::require_explicit_option")]
+    pub start_attempt: Option<Uuid>,
     #[serde(deserialize_with = "crate::require_explicit_option")]
     pub confirmation: Option<Uuid>,
     #[serde(deserialize_with = "crate::require_explicit_option")]

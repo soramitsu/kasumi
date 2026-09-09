@@ -53,6 +53,33 @@ impl VerifiedRecoveryPhase {
             .ok_or_else(|| error(ErrorCode::NotFound, "recovery operation absent"))?;
         recovery::dispatch_limit(operation, &self.record)
     }
+    /// Current finite wait allowance, measured using the same installed clock as
+    /// dispatch admission. It never changes a recorded target command deadline.
+    pub async fn dispatch_remaining(&self) -> Result<std::time::Duration> {
+        self.admit_dispatch().await?;
+        let limit = self.dispatch_limit().await?.min(
+            self.context.authorization.expires_at_ms().ok_or_else(|| {
+                error(
+                    ErrorCode::Forbidden,
+                    "recovery dispatch requires finite authorization",
+                )
+            })?,
+        );
+        let limit = match &self.record.input {
+            RecoveryDispatch::Authority(command) => limit.min(command.not_after_ms),
+            RecoveryDispatch::Target { request, .. } => limit.min(request.not_after_ms),
+            RecoveryDispatch::RetireSource(request) => limit.min(request.not_after_ms),
+            _ => limit,
+        };
+        let remaining = limit.saturating_sub(self.database.lifecycle_now()?);
+        if remaining == 0 {
+            return Err(error(
+                ErrorCode::Conflict,
+                "original recovery dispatch expired",
+            ));
+        }
+        Ok(std::time::Duration::from_millis(remaining))
+    }
     pub async fn admit_dispatch(&self) -> Result<()> {
         self.release().await?;
         let current = self.database.engine.generation()?;
@@ -400,24 +427,28 @@ impl Database {
                     RecoveryPhase::Complete | RecoveryPhase::Confirm
                 )
                 && now < request.not_after_ms
-                && matches!(
-                    request.step,
-                    TargetRuntimeStep::Complete(_)
-                        | TargetRuntimeStep::PrepareComplete(_)
-                        | TargetRuntimeStep::InspectCompletionAttempt(_)
-                        | TargetRuntimeStep::InspectCompletionResolution(_)
-                        | TargetRuntimeStep::ResolveComplete(_)
-                        | TargetRuntimeStep::Inspect(_)
-                        | TargetRuntimeStep::Activate { .. }
-                )
+                && (recovery::quorum::established_effect(&request.step)
+                    || (operation.phase == RecoveryPhase::Complete
+                        && recovery::quorum::established_start(&request.step))
+                    || matches!(request.step, TargetRuntimeStep::Activate { .. }))
             {
-                let next = operation
-                    .voters
-                    .keys()
-                    .copied()
-                    .find(|id| id > node_id)
-                    .or_else(|| operation.voters.keys().next().copied())
-                    .ok_or_else(|| error(ErrorCode::Corruption, "recovery voters absent"))?;
+                let next = if operation.phase == RecoveryPhase::Complete {
+                    recovery::quorum::retry_destination(
+                        state,
+                        operation,
+                        request.command_id,
+                        *node_id,
+                        &request.step,
+                    )?
+                } else {
+                    operation
+                        .voters
+                        .keys()
+                        .copied()
+                        .find(|id| id > node_id)
+                        .or_else(|| operation.voters.keys().next().copied())
+                        .ok_or_else(|| error(ErrorCode::Corruption, "recovery voters absent"))?
+                };
                 return Ok(Some(RecoveryDispatch::Target {
                     node_id: next,
                     request: request.clone(),
@@ -671,8 +702,23 @@ impl Database {
                         }
                         Some(current) if now < current.original_credential_expires_at_ms => {
                             let quorum = recovery::quorum_input(state, operation)?;
-                            let mut missing = None;
-                            for id in operation.voters.keys() {
+                            let (preferred_observer, mut missing) = if kind
+                                == LifecyclePhase::Complete
+                            {
+                                let (node, startup) = recovery::quorum::established_destination(
+                                    state,
+                                    operation,
+                                    current.request.command_id,
+                                )?;
+                                (Some(node), startup.then_some(node))
+                            } else {
+                                (None, None)
+                            };
+                            for id in operation
+                                .voters
+                                .keys()
+                                .filter(|_| kind == LifecyclePhase::Initialize)
+                            {
                                 if !recovery::started_for(
                                     state,
                                     operation,
@@ -697,9 +743,11 @@ impl Database {
                                     }),
                                 )
                             } else {
-                                let first = *operation.voters.keys().next().ok_or_else(|| {
-                                    error(ErrorCode::Corruption, "recovery voters absent")
-                                })?;
+                                let first = preferred_observer
+                                    .or_else(|| operation.voters.keys().next().copied())
+                                    .ok_or_else(|| {
+                                        error(ErrorCode::Corruption, "recovery voters absent")
+                                    })?;
                                 (
                                     first,
                                     if kind == LifecyclePhase::Initialize {

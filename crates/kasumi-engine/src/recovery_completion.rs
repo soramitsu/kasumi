@@ -67,10 +67,13 @@ pub(crate) fn validate_step(
             }
         }
         TargetRuntimeStep::Inspect(actual) if **actual == input => {
-            if admission && !quorum::all_started(state, operation, current.request.command_id)? {
-                return Err(conflict(
-                    "inspection requires every target started under its exact phase",
-                ));
+            if admission {
+                quorum::require_eligible_observer(
+                    state,
+                    operation,
+                    current.request.command_id,
+                    node,
+                )?;
             }
         }
         _ => return Err(conflict("completion inspection input differs")),
@@ -190,27 +193,12 @@ pub(crate) fn next_inspection(
 ) -> Result<RecoveryDispatch> {
     let input = inspection_input(state, operation)?;
     input.validate(&origin(state, operation)?, current)?;
-    let mut missing = None;
-    for node in operation.voters.keys() {
-        if !started_for(state, operation, *node, current.request.command_id)? {
-            missing = Some(*node);
-            break;
-        }
-    }
-    let (node_id, step) = if let Some(node) = missing {
-        (
-            node,
-            TargetRuntimeStep::Start(TargetReplicaInput::Inspection(Box::new(input))),
-        )
+    let (node_id, startup) =
+        quorum::established_destination(state, operation, current.request.command_id)?;
+    let step = if startup {
+        TargetRuntimeStep::Start(TargetReplicaInput::Inspection(Box::new(input)))
     } else {
-        (
-            *operation
-                .voters
-                .keys()
-                .next()
-                .ok_or_else(|| conflict("inspection voters absent"))?,
-            TargetRuntimeStep::Inspect(Box::new(input)),
-        )
+        TargetRuntimeStep::Inspect(Box::new(input))
     };
     Ok(RecoveryDispatch::Target {
         node_id,

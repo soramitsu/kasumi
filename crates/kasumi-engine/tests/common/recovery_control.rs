@@ -453,8 +453,14 @@ async fn exercise_completed_recovery(
     )
     .await;
     assert_eq!(complete_under.request.phase, LifecyclePhase::Complete);
-    // Prior Initialize startup replies cannot satisfy the new Complete phase.
-    for node_id in 1..=3 {
+    // A fresh Start sent to the first installed voter has no response. Keep it
+    // unknown and retry the unchanged phase on the two other installed voters.
+    let (missing_start, missing_dispatch) = prepare_next(&f, &db, id).await;
+    assert!(
+        matches!(&missing_dispatch, RecoveryDispatch::Target { node_id: 1, request }
+        if matches!(request.step, TargetRuntimeStep::Start(TargetReplicaInput::Completion(_))))
+    );
+    for node_id in 2..=3 {
         let (phase_id, input) = prepare_next(&f, &db, id).await;
         let RecoveryDispatch::Target {
             node_id: actual,
@@ -483,6 +489,14 @@ async fn exercise_completed_recovery(
         )
         .await;
     }
+    assert!(
+        db.recovery_phase(f.context("owner"), id, missing_start)
+            .await
+            .unwrap()
+            .record()
+            .outcome
+            .is_none()
+    );
     let (prepared_phase, prepared_request) = prepare_next(&f, &db, id).await;
     let RecoveryDispatch::Target {
         node_id: prepared_node,
@@ -543,6 +557,7 @@ async fn exercise_completed_recovery(
         })),
     )
     .await;
+    reject_changed_completion_caps(&f, id).await;
     let (unresolved, original_request) = prepare_next(&f, &db, id).await;
     let (complete_phase, retried) = prepare_next(&f, &db, id).await;
     let RecoveryDispatch::Target {
@@ -559,7 +574,7 @@ async fn exercise_completed_recovery(
     else {
         panic!("completion peer retry required")
     };
-    assert_eq!((old_node, node_id), (1, 2));
+    assert_eq!((old_node, node_id), (2, 3));
     assert_eq!(
         old, completion,
         "peer retry must preserve original command and absolute deadline"
@@ -2072,7 +2087,7 @@ async fn resolve_expired_completion(
     );
     let resolution = commit_next_control(f, db, operation).await;
     assert_eq!(resolution.request.phase, LifecyclePhase::ResolveComplete);
-    for node in 1..=3 {
+    for node in 1..=2 {
         let (id, dispatch) = prepare_next(f, db, operation).await;
         let RecoveryDispatch::Target { node_id, request } = dispatch else {
             panic!("terminal startup required")
@@ -2156,7 +2171,7 @@ async fn resolve_expired_completion(
     let inspection = commit_next_control(f, db, operation).await;
     assert_eq!(inspection.request.phase, LifecyclePhase::InspectTarget);
     assert_ne!(inspection.request.command_id, old_intent.request.command_id);
-    for node in 1..=3 {
+    for node in 1..=2 {
         let (id, dispatch) = prepare_next(f, db, operation).await;
         let RecoveryDispatch::Target { node_id, request } = dispatch else {
             panic!("fresh inspection startup required")
@@ -2288,4 +2303,76 @@ async fn resolve_expired_completion(
     assert_eq!(head.record().phase, RecoveryPhase::FenceSource);
     drop(head);
     snapshot(db).await;
+}
+
+async fn reject_changed_completion_caps(f: &Fixture, operation: Uuid) {
+    for delta in [-1_i64, 1] {
+        let db = f.leader().await;
+        let context = f.context("owner");
+        let id = Uuid::new_v4();
+        let head = db
+            .recovery_status(context.clone(), operation)
+            .await
+            .unwrap()
+            .record()
+            .clone();
+        let mut input = db
+            .next_recovery_dispatch(&context, operation, id)
+            .await
+            .unwrap()
+            .unwrap();
+        let RecoveryDispatch::Target { request, .. } = &mut input else {
+            panic!("Complete required");
+        };
+        assert!(matches!(request.step, TargetRuntimeStep::Complete(_)));
+        request.not_after_ms = request.not_after_ms.checked_add_signed(delta).unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let current = f.leader().await;
+                match current
+                    .prepare_recovery_dispatch(
+                        context.clone(),
+                        operation,
+                        id,
+                        head.next_phase_sequence,
+                        head.pending_phase,
+                        input.clone(),
+                    )
+                    .await
+                {
+                    Err(error)
+                        if matches!(
+                            error.code,
+                            ErrorCode::UnknownOutcome | ErrorCode::Unavailable
+                        ) =>
+                    {
+                        continue;
+                    }
+                    Err(error) => {
+                        assert_eq!(error.code, ErrorCode::Conflict, "{error}");
+                        break;
+                    }
+                    Ok(_) => panic!("changed original Complete cap was committed"),
+                }
+            }
+        })
+        .await
+        .expect("exact negative Complete admission did not resolve");
+        let current = f.leader().await;
+        let error = current
+            .recovery_phase(f.context("owner"), operation, id)
+            .await
+            .err()
+            .expect("rejected phase was retained");
+        assert_eq!(error.code, ErrorCode::NotFound);
+        assert_eq!(
+            *current
+                .recovery_status(f.context("owner"), operation)
+                .await
+                .unwrap()
+                .record(),
+            head
+        );
+        snapshot(&current).await;
+    }
 }

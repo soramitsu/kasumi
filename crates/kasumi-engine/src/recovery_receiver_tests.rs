@@ -54,7 +54,7 @@ fn control(state: &mut TenantState, operation: &RecoveryRecord, intent: Lifecycl
 }
 fn fixture_state() -> (TenantState, RecoveryRecord, TargetCompletionAttempt) {
     let origin = fixture::origin();
-    let attempt = fixture::attempt(&origin, None, 3, 1, 200, 500);
+    let attempt = fixture::attempt(&origin, None, 12, 1, 200, 500);
     let mut state = crate::TenantEngine::new(
         crate::control::CONTROL_TENANT.into(),
         origin.materialization.control_incarnation.to_string(),
@@ -184,6 +184,46 @@ fn fixture_state() -> (TenantState, RecoveryRecord, TargetCompletionAttempt) {
         );
         operation.voters.get_mut(node).unwrap().materialization = Some(id);
     }
+    let initialization = fixture::intent(
+        &origin,
+        LifecyclePhase::Initialize,
+        attempt.input.quorum.digest().unwrap(),
+        9,
+        150,
+        1000,
+    );
+    control(&mut state, &operation, initialization.clone());
+    let initialized_id = Uuid::from_u128(609);
+    let mut initialized = retained(
+        &mut state,
+        &operation,
+        initialized_id,
+        RecoveryDispatch::Target {
+            node_id: 1,
+            request: Box::new(TargetRuntimeRequest {
+                tenant: r.tenant.clone(),
+                command_id: initialization.request.command_id,
+                not_after_ms: 500,
+                step: TargetRuntimeStep::Initialize(attempt.input.quorum.clone()),
+            }),
+        },
+        Some(RecoveryDispatchOutcome::Target(Box::new(
+            TargetRuntimeResponse {
+                node_id: 1,
+                command_id: initialization.request.command_id,
+                outcome: TargetRuntimeOutcome::Initialized {
+                    origin_sha256: attempt.input.quorum.origin_sha256.clone(),
+                },
+            },
+        ))),
+        10,
+    );
+    initialized.phase = RecoveryPhase::Initialize;
+    state
+        .recovery_control
+        .phases
+        .insert(initialized_id.to_string(), initialized);
+    operation.initialization = Some(initialized_id);
     let first = retained(
         &mut state,
         &operation,
@@ -198,7 +238,7 @@ fn fixture_state() -> (TenantState, RecoveryRecord, TargetCompletionAttempt) {
             }),
         },
         None,
-        10,
+        16,
     );
     operation.pending_phase = Some(first.phase_id);
     (state, operation, attempt)
@@ -595,4 +635,253 @@ fn terminal_status_absence_or_new_resolver_identity_has_no_valid_evidence_form()
     observe(&mut state, &mut operation, &attempt);
     assert!(terminal_status_input(&state, &operation).is_err());
     assert!(terminal(&state, &operation).is_err());
+}
+
+/// The first installed node has no startup response. Its original request stays
+/// unknown while the other two installed nodes can start under the same intent.
+#[test]
+fn established_receiver_routes_around_unknown_start_without_unanimous_reopening() {
+    let (mut state, mut operation, attempt) = fixture_state();
+    let input = status_input(&state, &operation).unwrap();
+    let current = fixture::intent(
+        &attempt.origin,
+        LifecyclePhase::InspectCompletionAttempt,
+        input.digest().unwrap(),
+        20,
+        1000,
+        2000,
+    );
+    control(&mut state, &operation, current.clone());
+    operation.current_intent = Some(current.request.command_id);
+    operation.pending_phase = None;
+    let first = next(&state, &operation, &current, 1100, 2000).unwrap();
+    let RecoveryDispatch::Target { node_id, request } = &first else {
+        panic!("startup required");
+    };
+    assert_eq!(*node_id, 1);
+    assert!(matches!(request.step, TargetRuntimeStep::Start(_)));
+    let original_request = request.clone();
+    let first_phase = retained(
+        &mut state,
+        &operation,
+        Uuid::from_u128(920),
+        first,
+        None,
+        21,
+    );
+    operation.voters.get_mut(&1).unwrap().start_attempt = Some(first_phase.phase_id);
+    operation.last_phase = Some(first_phase.phase_id);
+    operation.pending_phase = Some(first_phase.phase_id);
+    assert_eq!(
+        quorum::retry_destination(
+            &state,
+            &operation,
+            current.request.command_id,
+            1,
+            &original_request.step
+        )
+        .unwrap(),
+        2
+    );
+    let retry = RecoveryDispatch::Target {
+        node_id: 2,
+        request: original_request.clone(),
+    };
+    assert!(quorum::completion_route_retry(&first_phase, &retry, 1100));
+    assert!(!quorum::completion_route_retry(
+        &first_phase,
+        &retry,
+        original_request.not_after_ms
+    ));
+    for node in [2, 3] {
+        let dispatch = if node == 2 {
+            retry.clone()
+        } else {
+            let dispatch = next(&state, &operation, &current, 1100, 2000).unwrap();
+            assert!(
+                matches!(&dispatch, RecoveryDispatch::Target { node_id: 3, request }
+                if matches!(request.step, TargetRuntimeStep::Start(_)))
+            );
+            dispatch
+        };
+        let response = TargetRuntimeResponse {
+            node_id: node,
+            command_id: current.request.command_id,
+            outcome: TargetRuntimeOutcome::Started {
+                origin_sha256: attempt.input.quorum.origin_sha256.clone(),
+            },
+        };
+        let record = retained(
+            &mut state,
+            &operation,
+            Uuid::from_u128(920 + u128::from(node)),
+            dispatch,
+            Some(RecoveryDispatchOutcome::Target(Box::new(response.clone()))),
+            21 + node,
+        );
+        validate_outcome(&state, &operation, &record, &response).unwrap();
+        let progress = operation.voters.get_mut(&node).unwrap();
+        progress.start_attempt = Some(record.phase_id);
+        progress.started = Some(record.phase_id);
+        operation.last_phase = Some(record.phase_id);
+        operation.pending_phase = None;
+    }
+    assert!(!quorum::all_started(&state, &operation, current.request.command_id).unwrap());
+    let RecoveryDispatch::Target { node_id, request } =
+        next(&state, &operation, &current, 1100, 2000).unwrap()
+    else {
+        panic!("positive receiver observation required");
+    };
+    assert_eq!(node_id, 2);
+    assert!(matches!(
+        request.step,
+        TargetRuntimeStep::InspectCompletionAttempt(_)
+    ));
+    validate_step(&state, &operation, &current, node_id, &request, true).unwrap();
+    assert!(validate_step(&state, &operation, &current, 1, &request, true).is_err());
+    assert!(
+        phase(&state, &operation, first_phase.phase_id)
+            .unwrap()
+            .outcome
+            .is_none()
+    );
+    assert_eq!(
+        quorum::retry_destination(
+            &state,
+            &operation,
+            current.request.command_id,
+            2,
+            &request.step
+        )
+        .unwrap(),
+        3
+    );
+    // Startup replies do not replace the required materialization proof or a
+    // signed positive target observation; neither original outcome is invented.
+    assert!(preparation(&state, &operation).is_err());
+    operation.voters.get_mut(&1).unwrap().materialization = None;
+    assert!(next(&state, &operation, &current, 1100, 2000).is_err());
+}
+
+#[test]
+fn complete_reducer_rejects_both_original_cap_substitutions_before_inserting_phase() {
+    let (mut state, mut operation, attempt) = fixture_state();
+    let original_id = operation.completion_preparation_attempt.unwrap();
+    let mut original = phase(&state, &operation, original_id).unwrap().clone();
+    let observation = TargetCompletionAttemptObservation {
+        attempt: attempt.clone(),
+        observer_node_id: 1,
+        observed_revision: attempt.revision,
+        observed_term: attempt.position.term,
+    };
+    original.outcome = Some(RecoveryDispatchOutcome::Target(Box::new(
+        TargetRuntimeResponse {
+            command_id: attempt.intent.request.command_id,
+            node_id: 1,
+            outcome: TargetRuntimeOutcome::PreparedCompletion(Box::new(
+                SignedTargetCompletionAttempt {
+                    signature: fixture::sign(
+                        &observation,
+                        "kasumi.prepared-target-completion-observation.v1",
+                        1,
+                    ),
+                    observation,
+                },
+            )),
+        },
+    )));
+    original.resolved_revision = Some(17);
+    state
+        .recovery_control
+        .phases
+        .insert(original_id.to_string(), original);
+    operation.completion_preparation = Some(original_id);
+    operation.pending_phase = None;
+    operation.current_intent = Some(attempt.intent.request.command_id);
+    let started = retained(
+        &mut state,
+        &operation,
+        Uuid::from_u128(930),
+        RecoveryDispatch::Target {
+            node_id: 1,
+            request: Box::new(TargetRuntimeRequest {
+                tenant: operation.request.tenant.clone(),
+                command_id: attempt.intent.request.command_id,
+                not_after_ms: 500,
+                step: TargetRuntimeStep::Start(TargetReplicaInput::Completion(
+                    attempt.input.clone(),
+                )),
+            }),
+        },
+        Some(RecoveryDispatchOutcome::Target(Box::new(
+            TargetRuntimeResponse {
+                node_id: 1,
+                command_id: attempt.intent.request.command_id,
+                outcome: TargetRuntimeOutcome::Started {
+                    origin_sha256: attempt.input.quorum.origin_sha256.clone(),
+                },
+            },
+        ))),
+        14,
+    );
+    operation.voters.get_mut(&1).unwrap().started = Some(started.phase_id);
+    operation.voters.get_mut(&1).unwrap().start_attempt = Some(started.phase_id);
+    state.revision = 101;
+    state.recovery_control.operations.insert(
+        operation.request.operation_id.to_string(),
+        operation.clone(),
+    );
+    let context = RequestContext {
+        tenant: state.tenant.clone(),
+        principal: "operator".into(),
+        scopes: BTreeSet::from([Action::Admin]),
+        request_id: "cap-admission".into(),
+        authorization: RequestAuthorization::service_identity(),
+    };
+    for cap in [
+        attempt.dispatch_not_after_ms - 1,
+        attempt.dispatch_not_after_ms + 1,
+        attempt.dispatch_not_after_ms,
+    ] {
+        let mut candidate = state.clone();
+        let id = Uuid::new_v4();
+        let command = super::super::RecoveryCommand {
+            authorization: super::super::RecoveryAuthorization {
+                context: context.clone(),
+                policy_epoch: state.policy_epoch,
+                admitted_at_ms: 300,
+                expires_at_ms: 2000,
+            },
+            mutation: super::super::RecoveryMutation::Prepare {
+                operation_id: operation.request.operation_id,
+                phase_id: id,
+                expected_sequence: operation.next_phase_sequence,
+                expected_pending: None,
+                input: Box::new(RecoveryDispatch::Target {
+                    node_id: 1,
+                    request: Box::new(TargetRuntimeRequest {
+                        tenant: operation.request.tenant.clone(),
+                        command_id: attempt.intent.request.command_id,
+                        not_after_ms: cap,
+                        step: TargetRuntimeStep::Complete(attempt.input.clone()),
+                    }),
+                }),
+            },
+        };
+        let applied = super::super::apply(&mut candidate, &command);
+        if cap == attempt.dispatch_not_after_ms {
+            assert!(applied.is_ok(), "{applied:?}");
+            assert!(
+                candidate
+                    .recovery_control
+                    .phases
+                    .contains_key(&id.to_string())
+            );
+        } else {
+            let error = applied.unwrap_err();
+            assert_eq!(error.code, ErrorCode::Conflict);
+            assert!(error.message.contains("original deadline"), "{error}");
+            assert_eq!(candidate.recovery_control, state.recovery_control);
+        }
+    }
 }

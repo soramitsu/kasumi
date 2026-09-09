@@ -458,12 +458,20 @@ impl ControlRecoveryCoordinator {
                 let config = connection(&target.client)?;
                 let credential = FileCredentialSource::new(&target.client.token_file)?;
                 let bearer = token(&credential)?;
-                let mut client =
-                    KasumiTargetClient::connect(&config, control, trust.clone(), *node_id).await?;
-                prepared.admit_dispatch().await?;
-                let acknowledgement =
-                    tokio::time::timeout(duration, client.execute(&bearer, &verified, request))
-                        .await??;
+                // An unreachable installed voter must not consume the entire
+                // current phase before another voter can be tried. The wait
+                // covers connection as well as dispatch, while the exact request
+                // and its target-owned operation keep their original cap.
+                let remaining = prepared.dispatch_remaining().await?;
+                let wait = target_route_wait(head, request, duration.min(remaining));
+                let acknowledgement = tokio::time::timeout(wait, async {
+                    let mut client =
+                        KasumiTargetClient::connect(&config, control, trust.clone(), *node_id)
+                            .await?;
+                    prepared.admit_dispatch().await?;
+                    Ok::<_, anyhow::Error>(client.execute(&bearer, &verified, request).await?)
+                })
+                .await??;
                 prepared.release().await?;
                 phase.release().await?;
                 Ok(RecoveryDispatchOutcome::Target(Box::new(
@@ -522,6 +530,36 @@ impl ControlRecoveryCoordinator {
         }
     }
 }
+fn target_route_wait(
+    head: &RecoveryRecord,
+    request: &TargetRuntimeRequest,
+    remaining: Duration,
+) -> Duration {
+    let established = head.phase == RecoveryPhase::Complete
+        && matches!(
+            request.step,
+            TargetRuntimeStep::Start(
+                TargetReplicaInput::Completion(_)
+                    | TargetReplicaInput::CompletionAttemptStatus(_)
+                    | TargetReplicaInput::CompletionTerminalStatus(_)
+                    | TargetReplicaInput::CompletionResolution(_)
+                    | TargetReplicaInput::Inspection(_)
+            ) | TargetRuntimeStep::PrepareComplete(_)
+                | TargetRuntimeStep::Complete(_)
+                | TargetRuntimeStep::InspectCompletionAttempt(_)
+                | TargetRuntimeStep::InspectCompletionResolution(_)
+                | TargetRuntimeStep::ResolveComplete(_)
+                | TargetRuntimeStep::Inspect(_)
+        );
+    if established {
+        // RecoveryStart validates exactly three installed voters. Leave time for
+        // their routes and the final current-Control response/phase commit.
+        remaining / 5
+    } else {
+        remaining
+    }
+}
+
 // Exact custody verification is independent of application admission. A failed
 // custody read is never proof of absence: only an authenticated application
 // status with no original outcome permits the unchanged retirement dispatch.

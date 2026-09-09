@@ -4,7 +4,7 @@ use super::*;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 #[path = "recovery_quorum.rs"]
-mod quorum;
+pub(crate) mod quorum;
 pub(crate) use quorum::{completion_route_retry, quorum_input, started_for};
 
 #[path = "recovery_source.rs"]
@@ -596,6 +596,15 @@ fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Result<RecoveryR
             {
                 operation.completion_attempt = Some(*phase_id);
             }
+            if let RecoveryDispatch::Target { node_id, request } = input.as_ref()
+                && quorum::established_start(&request.step)
+            {
+                operation
+                    .voters
+                    .get_mut(node_id)
+                    .ok_or_else(|| conflict("startup voter absent"))?
+                    .start_attempt = Some(*phase_id);
+            }
             operation.pending_phase = Some(*phase_id);
             operation.last_phase = Some(*phase_id);
             operation.next_phase_sequence = operation
@@ -1033,6 +1042,9 @@ fn validate_input(
                 return Err(conflict(
                     "native target dispatch differs from current original phase",
                 ));
+            }
+            if matches!(request.step, TargetRuntimeStep::Complete(_)) {
+                receiver::validate_complete_dispatch(state, operation, request)?;
             }
             match (&request.step, operation.phase) {
                 (_, RecoveryPhase::Confirm) => activation::validate_step(
@@ -1721,16 +1733,36 @@ pub(crate) fn validate(state: &TenantState) -> Result<()> {
         }
         let mut cursor = operation.last_phase;
         let mut expected = sequence - 1;
+        // At most one selected pointer per installed voter; the full command
+        // history stays in its phase records rather than this scheduling head.
+        let mut latest_starts = BTreeMap::new();
         while let Some(id) = cursor {
             let record = phase(state, operation, id)?;
             if record.sequence != expected || expected == 0 {
                 return Err(conflict("recovery phase chain forked"));
+            }
+            if let RecoveryDispatch::Target { node_id, request } = &record.input
+                && quorum::established_start(&request.step)
+            {
+                if !operation.voters.contains_key(node_id) {
+                    return Err(conflict("startup history names an uninstalled voter"));
+                }
+                latest_starts.entry(*node_id).or_insert(record.phase_id);
             }
             expected -= 1;
             cursor = record.previous_phase;
         }
         if expected != 0 {
             return Err(conflict("recovery phase chain is incomplete"));
+        }
+        if operation
+            .voters
+            .iter()
+            .any(|(node, voter)| voter.start_attempt != latest_starts.get(node).copied())
+        {
+            return Err(conflict(
+                "startup attempt head differs from its latest exact phase",
+            ));
         }
         if let Some(id) = operation.pending_phase {
             let pending = phase(state, operation, id)?;
@@ -1779,6 +1811,16 @@ pub(crate) fn validate(state: &TenantState) -> Result<()> {
             origin(state, operation)?;
         }
         for (node_id, voter) in &operation.voters {
+            if let Some(id) = voter.start_attempt {
+                let attempted = phase(state, operation, id)?;
+                if !matches!(&attempted.input, RecoveryDispatch::Target { node_id: actual, request }
+                    if actual == node_id && quorum::established_start(&request.step))
+                {
+                    return Err(conflict(
+                        "startup attempt progress does not name the exact voter",
+                    ));
+                }
+            }
             for (id, cleanup) in [(voter.materialization, false), (voter.cleanup, true)] {
                 if let Some(id) = id {
                     let retained = phase(state, operation, id)?;
@@ -2079,6 +2121,9 @@ fn validate_frozen_input(
             {
                 return Err(conflict("retained target dispatch resource differs"));
             }
+            if matches!(request.step, TargetRuntimeStep::Complete(_)) {
+                receiver::validate_complete_dispatch(state, operation, request)?;
+            }
             match (&request.step, retained.phase) {
                 (_, RecoveryPhase::Confirm) => activation::validate_step(
                     state,
@@ -2218,22 +2263,26 @@ pub(crate) fn validate_successor(previous: &TenantState, incoming: &TenantState)
                 .voters
                 .get(id)
                 .ok_or_else(|| conflict("snapshot removed recovery voter"))?;
-            if let Some(old_id) = old.started {
-                let new_id = new
-                    .started
-                    .ok_or_else(|| conflict("snapshot removed target startup progress"))?;
-                let old_phase = previous
-                    .recovery_control
-                    .phases
-                    .get(&old_id.to_string())
-                    .ok_or_else(|| conflict("old startup phase absent"))?;
-                let new_phase = incoming
-                    .recovery_control
-                    .phases
-                    .get(&new_id.to_string())
-                    .ok_or_else(|| conflict("new startup phase absent"))?;
-                if new_phase.sequence < old_phase.sequence {
-                    return Err(conflict("snapshot regressed target startup progress"));
+            for (old_id, new_id) in [
+                (old.started, new.started),
+                (old.start_attempt, new.start_attempt),
+            ] {
+                if let Some(old_id) = old_id {
+                    let new_id = new_id
+                        .ok_or_else(|| conflict("snapshot removed target startup progress"))?;
+                    let old_phase = previous
+                        .recovery_control
+                        .phases
+                        .get(&old_id.to_string())
+                        .ok_or_else(|| conflict("old startup phase absent"))?;
+                    let new_phase = incoming
+                        .recovery_control
+                        .phases
+                        .get(&new_id.to_string())
+                        .ok_or_else(|| conflict("new startup phase absent"))?;
+                    if new_phase.sequence < old_phase.sequence {
+                        return Err(conflict("snapshot regressed target startup progress"));
+                    }
                 }
             }
             for (old, new) in [

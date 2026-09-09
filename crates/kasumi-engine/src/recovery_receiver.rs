@@ -169,6 +169,25 @@ pub(crate) fn fresh_phase(
     // completion inspection is safe, but absence still cannot advance it.
     Ok(LifecyclePhase::InspectTarget)
 }
+pub(crate) fn validate_complete_dispatch(
+    state: &TenantState,
+    operation: &RecoveryRecord,
+    request: &TargetRuntimeRequest,
+) -> Result<()> {
+    let attempt = preparation(state, operation)?;
+    let TargetRuntimeStep::Complete(input) = &request.step else {
+        return Err(conflict("original completion dispatch kind differs"));
+    };
+    if request.command_id != attempt.intent.request.command_id
+        || *input != attempt.input
+        || request.not_after_ms != attempt.dispatch_not_after_ms
+    {
+        return Err(conflict(
+            "Complete dispatch changed its exact prepared input or original deadline",
+        ));
+    }
+    Ok(())
+}
 pub(crate) fn is_step(step: &TargetRuntimeStep) -> bool {
     matches!(
         step,
@@ -247,10 +266,8 @@ pub(crate) fn validate_step(
                 "receiver voter already started under this exact phase",
             ));
         }
-        if !startup && !quorum::all_started(state, operation, current.request.command_id)? {
-            return Err(conflict(
-                "receiver operation requires the exact started target quorum",
-            ));
+        if !startup {
+            quorum::require_eligible_observer(state, operation, current.request.command_id, node)?;
         }
     }
     Ok(())
@@ -385,34 +402,23 @@ pub(crate) fn next(
         }
         _ => return Err(conflict("current receiver phase differs")),
     };
-    let mut missing = None;
-    for node in operation.voters.keys() {
-        if !started_for(state, operation, *node, current.request.command_id)? {
-            missing = Some(*node);
-            break;
+    let (node_id, startup) =
+        quorum::established_destination(state, operation, current.request.command_id)?;
+    let step = if startup {
+        TargetRuntimeStep::Start(input)
+    } else {
+        match input {
+            TargetReplicaInput::CompletionAttemptStatus(input) => {
+                TargetRuntimeStep::InspectCompletionAttempt(input)
+            }
+            TargetReplicaInput::CompletionResolution(input) => {
+                TargetRuntimeStep::ResolveComplete(input)
+            }
+            TargetReplicaInput::CompletionTerminalStatus(input) => {
+                TargetRuntimeStep::InspectCompletionResolution(input)
+            }
+            _ => unreachable!(),
         }
-    }
-    let (node_id, step) = match missing {
-        Some(node) => (node, TargetRuntimeStep::Start(input)),
-        None => (
-            *operation
-                .voters
-                .keys()
-                .next()
-                .ok_or_else(|| conflict("receiver voters absent"))?,
-            match input {
-                TargetReplicaInput::CompletionAttemptStatus(input) => {
-                    TargetRuntimeStep::InspectCompletionAttempt(input)
-                }
-                TargetReplicaInput::CompletionResolution(input) => {
-                    TargetRuntimeStep::ResolveComplete(input)
-                }
-                TargetReplicaInput::CompletionTerminalStatus(input) => {
-                    TargetRuntimeStep::InspectCompletionResolution(input)
-                }
-                _ => unreachable!(),
-            },
-        ),
     };
     Ok(RecoveryDispatch::Target {
         node_id,

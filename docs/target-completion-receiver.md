@@ -82,6 +82,27 @@ times the complete logical stream for resident admission; separating permanent
 point-row spans from that admission estimate is also required before claiming
 sustainable unlimited terminal-history recovery.
 
+Established-group receiver scheduling retains one explicit latest startup-attempt
+pointer per installed voter. An unanswered Start keeps its original unknown
+outcome, input and cap while the same request can route to another installed
+voter. After a majority of positive startup replies, the coordinator may select
+one acknowledged observer; these replies are scheduling evidence, never a quorum
+proof. The target still runs a linearizable barrier and verifies the exact
+installed membership, current leader, physical origin and immutable fact before
+signing. All three original materialization proofs remain mandatory. Initial
+membership creation retains its separate every-voter startup requirement.
+Connection and request waits share a fraction of the verified original remaining
+phase lifetime, leaving time for another endpoint without extending any request.
+The canonical voter head requires its new `start_attempt` field explicitly, and
+snapshot validation checks it against the latest exact retained phase.
+
+Complete admission now checks its exact original Prepare input and dispatch cap
+before inserting a Control phase. The source regressions exercise both one-
+millisecond cap substitutions through the reducer and through the replicated
+administrative API, and retain an unanswered first-voter startup while the other
+two voters proceed. The replicated fixture also validates its snapshot following
+each rejected cap. These new/changed regressions have not been executed.
+
 Only direct Rust 1.97.1 rustfmt and whitespace checks have been run for this
 source. Compilation and all functional tests require the scheduled frozen
 validation cohort; earlier prepared-prefix check evidence is not evidence for
