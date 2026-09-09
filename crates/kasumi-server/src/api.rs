@@ -348,6 +348,7 @@ mod tests {
     include!("api_backup_checkpoint_tests.rs");
     include!("api_routing_tests.rs");
     include!("api_tls_reload_tests.rs");
+    include!("api_sdk_literal_tests.rs");
     use super::*;
     use crate::{
         auth::{AuthConfig, Authenticator},
