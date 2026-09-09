@@ -690,3 +690,80 @@ async fn local_incomplete_catalogs_or_dispatched_restore_never_restart_creation(
         );
     }
 }
+
+#[tokio::test]
+async fn activated_local_recovery_never_recreates_missing_control_topology() {
+    let root = tempfile::tempdir().unwrap();
+    let (configuration, request, _) = backup(root.path()).await;
+    start(&configuration, request.clone()).await.unwrap();
+    let mut operator = Operator::open(&configuration).await.unwrap();
+    let mut journal = record(operator.store(), request.operation_id).unwrap();
+    for expected in [
+        LocalRecoveryPhase::Complete,
+        LocalRecoveryPhase::Activate,
+        LocalRecoveryPhase::Publish,
+    ] {
+        operator.step(&mut journal).await.unwrap();
+        assert_eq!(journal.status.phase, expected);
+    }
+    let original_phase = journal.status.phase_id;
+    let activation = active_generation(&operator.config, operator.store(), &request.tenant)
+        .unwrap()
+        .unwrap();
+    let control = crate::standalone::operator_control(
+        &operator.config,
+        operator.node.clone(),
+        operator.audit.clone(),
+    )
+    .await
+    .unwrap();
+    let context = crate::standalone::offline_context(&control).unwrap();
+    let plane = kasumi_engine::control::ControlPlane::new(control.clone()).unwrap();
+    let topology = plane.topology(&context).await.unwrap().unwrap();
+    control
+        .mutate(
+            context.clone(),
+            MutationBatch {
+                idempotency_key: Uuid::new_v4().to_string(),
+                read_set: vec![],
+                operations: vec![Mutation::Delete {
+                    collection: "topology".into(),
+                    id: "current".into(),
+                    expected: Precondition::Version(topology.version),
+                }],
+            },
+        )
+        .await
+        .unwrap();
+    assert!(plane.topology(&context).await.unwrap().is_none());
+    drop(plane);
+    control.shutdown().await.unwrap();
+    drop(control);
+    let failure = operator.step(&mut journal).await.unwrap_err();
+    assert!(format!("{failure:#}").contains("installed standalone Control topology is missing"));
+    let retained = record(operator.store(), request.operation_id).unwrap();
+    assert_eq!(retained.status.phase, LocalRecoveryPhase::Publish);
+    assert_eq!(retained.status.phase_id, original_phase);
+    assert!(retained.publication.is_none());
+    let current = active_generation(&operator.config, operator.store(), &request.tenant)
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.operation_id, activation.operation_id);
+    assert_eq!(current.incarnation, activation.incarnation);
+    let control = crate::standalone::operator_control(
+        &operator.config,
+        operator.node.clone(),
+        operator.audit.clone(),
+    )
+    .await
+    .unwrap();
+    let context = crate::standalone::offline_context(&control).unwrap();
+    let plane = kasumi_engine::control::ControlPlane::new(control.clone()).unwrap();
+    assert!(plane.topology(&context).await.unwrap().is_none());
+    drop(plane);
+    control.shutdown().await.unwrap();
+    drop(control);
+    crate::startup_owner::finish(&mut operator).await.unwrap();
+    drop(operator);
+    assert!(stop(&configuration, request.operation_id).await.is_err());
+}

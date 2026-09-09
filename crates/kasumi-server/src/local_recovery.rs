@@ -1300,44 +1300,6 @@ impl Operator {
 }
 
 impl Operator {
-    fn initial_topology(&self) -> Result<kasumi_engine::control::ControlTopology> {
-        use kasumi_engine::control::{ControlNode, ControlTopology, DeploymentMode, TenantRoute};
-        let mut tenants = std::collections::BTreeMap::new();
-        for tenant in &self.config.tenants {
-            let incarnation = match active_generation(&self.config, self.store(), &tenant.tenant)? {
-                Some(active) => active.incarnation.to_string(),
-                None => tenant
-                    .incarnation
-                    .clone()
-                    .context("installed incarnation missing")?,
-            };
-            tenants.insert(
-                tenant.tenant.clone(),
-                TenantRoute {
-                    incarnation,
-                    mode: DeploymentMode::Local,
-                    voters: std::collections::BTreeSet::from([1]),
-                },
-            );
-        }
-        let topology = ControlTopology {
-            nodes: std::collections::BTreeMap::from([(
-                1,
-                ControlNode {
-                    endpoint: url::Url::parse(&self.config.mcp.protocol.public_url)?
-                        .origin()
-                        .ascii_serialization(),
-                    failure_domain: "local".into(),
-                    certificate_pins: std::collections::BTreeSet::from([hex::encode(
-                        self.config.mcp.tls.load()?.certificate_pin(),
-                    )]),
-                },
-            )]),
-            tenants,
-        };
-        topology.validate()?;
-        Ok(topology)
-    }
     async fn publish(&self, journal: &mut Journal) -> Result<()> {
         let active = active_generation(&self.config, self.store(), &journal.status.request.tenant)?
             .context("local activation is not committed")?;
@@ -1369,16 +1331,14 @@ impl Operator {
                 )
                 .await?;
             let plane = kasumi_engine::control::ControlPlane::new(control.clone())?;
-            plane.initialize(context.clone()).await?;
+            plane.require_initialized(&context).await?;
             if journal.publication.is_none() {
-                let current = plane.topology(&context).await?;
-                let (mut topology, expected) = match current {
-                    Some(current) => (
-                        current.topology,
-                        kasumi_types::Precondition::Version(current.version),
-                    ),
-                    None => (self.initial_topology()?, kasumi_types::Precondition::Absent),
-                };
+                let current = plane
+                    .topology(&context)
+                    .await?
+                    .context("installed standalone Control topology is missing")?;
+                let mut topology = current.topology;
+                let expected = kasumi_types::Precondition::Version(current.version);
                 let route = topology
                     .tenants
                     .get_mut(&journal.status.request.tenant)
