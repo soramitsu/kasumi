@@ -154,3 +154,109 @@ async fn closure_before_actual_enrollment_handoff_rejects_publication_and_preser
     assert!(invocation.prepared_selection.lock().unwrap().is_none());
     runtime.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn abandoned_fresh_standalone_preparation_drains_without_publication_and_retries_existing_state()
+-> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let installed =
+        crate::standalone::initialize(&directory.path().join("installed"), "tenant-a").await?;
+    let config = RuntimeConfig::load(&installed.configuration)?;
+    let request = crate::standalone::StageTenantRequest {
+        operation_id: Uuid::new_v4(),
+        tenant: "tenant-b".into(),
+        incarnation: Uuid::new_v4(),
+        initial_policy: config.tenants[0].initial_policy.clone(),
+        initial_limits: config.tenants[0].initial_limits.clone(),
+    };
+    crate::standalone::stage_tenant(&installed.configuration, request.clone()).await?;
+    let mut config = RuntimeConfig::load(&installed.configuration)?;
+    let listeners = (0..3)
+        .map(|_| std::net::TcpListener::bind("127.0.0.1:0"))
+        .collect::<std::io::Result<Vec<_>>>()?;
+    config.mcp.listen = listeners[0].local_addr()?;
+    config.native.listen = listeners[1].local_addr()?;
+    config.admin.listen = listeners[2].local_addr()?;
+    drop(listeners);
+    let mut runtime = crate::runtime::NodeRuntime::open(config).await?;
+    let manager = runtime.administration_for_enrollment_test();
+    let original = manager.configured("tenant-a")?;
+    let original_bytes = original.store.get("engine.bootstrap", b"manifest")?;
+    let context = crate::runtime::configured_control_context(&manager.config.control)?;
+    manager
+        .execute_for_test(
+            context.clone(),
+            ManagementCommand::ApproveTenant {
+                tenant: request.tenant.clone(),
+            },
+        )
+        .await?;
+    let pause = Arc::new(Pause::default());
+    pauses()
+        .lock()
+        .unwrap()
+        .insert(manager.config.database_id, pause.clone());
+    let invocation = manager.prepare(
+        context.clone(),
+        ManagementCommand::PrepareTenant {
+            tenant: request.tenant.clone(),
+        },
+    )?;
+    let mut waiting = Box::pin(invocation.execute());
+    std::future::poll_fn(|cx| {
+        assert!(waiting.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), pause.entered.notified()).await?;
+    drop(waiting);
+    pause.release.notify_one();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        crate::startup_owner::drain(crate::startup_owner::Kind::TenantEnrollment),
+    )
+    .await??;
+    assert!(manager.configured(&request.tenant).is_err());
+    assert!(invocation.prepared_selection.lock().unwrap().is_none());
+    let record = node_enrollment::tenant_record(manager.audit.store(), &request.tenant)?.unwrap();
+    assert_eq!(record.stage, Stage::Prepared);
+    assert_eq!(record.incarnation, request.incarnation);
+    original.store.check_access()?;
+    assert_eq!(
+        original.store.get("engine.bootstrap", b"manifest")?,
+        original_bytes
+    );
+    manager
+        .execute_for_test(
+            context,
+            ManagementCommand::PrepareTenant {
+                tenant: request.tenant.clone(),
+            },
+        )
+        .await?;
+    let installed = manager.configured(&request.tenant)?;
+    assert_eq!(
+        Some(crate::runtime::persisted_bootstrap_fingerprint(
+            &installed.store
+        )?),
+        record.bootstrap_sha256
+    );
+    assert_eq!(
+        installed.database.engine().generation()?.state.incarnation,
+        request.incarnation.to_string()
+    );
+    assert!(
+        runtime
+            .registry()
+            .database(&RequestContext {
+                tenant: request.tenant,
+                ..invocation.context.clone()
+            })
+            .is_err()
+    );
+    drop(installed);
+    drop(original);
+    drop(invocation);
+    runtime.shutdown().await?;
+    Ok(())
+}

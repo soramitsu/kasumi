@@ -47,6 +47,11 @@ impl OperatorState {
                 kasumi_engine::admission::NodeAdmission::new(config.admission.clone())?,
             )?;
             pending.audits.push(audit.clone());
+            crate::node_enrollment::require_complete(
+                audit.store(),
+                config.database_id,
+                crate::node_enrollment::Kind::Data,
+            )?;
             #[cfg(test)]
             super::ownership_tests::checkpoint(&config.database_path, "audit").await?;
             let credentials = LocalCredentials::open(

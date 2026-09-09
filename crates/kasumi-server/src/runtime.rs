@@ -1094,7 +1094,7 @@ impl NodeRuntime {
         {
             return Err(error);
         }
-        if config.mode == DeploymentMode::Replicated {
+        if crate::node_enrollment::required(&config) {
             if let Err(error) = crate::node_enrollment::require_complete(
                 &security_store,
                 config.database_id,
@@ -1104,7 +1104,7 @@ impl NodeRuntime {
             }
         }
         let selected_tenants = config.tenants.iter().map(|tenant| {
-            let installed = config.mode != DeploymentMode::Replicated || crate::node_enrollment::tenant_record(&security_store, &tenant.tenant)?.is_some_and(|record| record.stage == crate::node_enrollment::Stage::Prepared);
+            let installed = !crate::node_enrollment::required(&config) || crate::node_enrollment::tenant_record(&security_store, &tenant.tenant)?.is_some_and(|record| record.stage == crate::node_enrollment::Stage::Prepared);
             Ok(installed.then_some(tenant))
         }).collect::<Result<Vec<_>>>()?.into_iter().flatten().collect::<Vec<_>>();
         config.validate_selected_key_domains(&selected_tenants)?;
@@ -1199,7 +1199,7 @@ impl NodeRuntime {
                 lease: None,
             }];
             for configured_tenant in &config.tenants {
-                if config.mode == DeploymentMode::Replicated {
+                if crate::node_enrollment::required(&config) {
                     let enrolled = crate::node_enrollment::tenant_record(runtime.audit.store(), &configured_tenant.tenant)?;
                     if enrolled.as_ref().is_none_or(|record| record.stage != crate::node_enrollment::Stage::Prepared) {
                         let state = runtime.control.database.engine().generation()?;
@@ -1273,7 +1273,7 @@ impl NodeRuntime {
                     provider.clone(), custody_provider.clone(), storage_access).await?;
                 runtime.startup_stores.push(stores.application().clone());
                 runtime.startup_stores.push(stores.custody().store().clone());
-                if config.mode == DeploymentMode::Replicated {
+                if crate::node_enrollment::required(&config) && active.is_none() {
                     let enrolled = crate::node_enrollment::tenant_record(runtime.audit.store(), &tenant.tenant)?.context("enrollment disappeared during startup")?;
                     ensure!(enrolled.bootstrap_sha256.as_ref() == Some(&persisted_bootstrap_fingerprint(stores.application())?), "installed bootstrap differs from its enrollment receipt");
                 }
@@ -1406,6 +1406,16 @@ impl NodeRuntime {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn enrollment_for_test(
+        &self,
+        tenant: &str,
+    ) -> Result<Option<(Uuid, crate::node_enrollment::Stage)>> {
+        Ok(
+            crate::node_enrollment::tenant_record(self.audit.store(), tenant)?
+                .map(|record| (record.incarnation, record.stage)),
+        )
+    }
     #[cfg(test)]
     pub(crate) fn administration_for_enrollment_test(
         &self,

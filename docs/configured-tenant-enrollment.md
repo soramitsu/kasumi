@@ -90,12 +90,12 @@ substitute for the HA process tests.
 Partial creation is intentionally not resumable with another grant. Shared-node
 physical catalog cleanup and a permanent explicit abort/replacement workflow remain
 open. An incomplete record remains dormant and cannot be retried as a new creator.
-Standalone addition of a new tenant is not implemented here; existing standalone
-resident preparation remains supported. The subsequent
-[explicit Control genesis change](explicit-control-genesis.md) replaces runtime
+Standalone tenant staging, required local enrollment and retained live preparation
+are now implemented in the [standalone enrollment checkpoint](standalone-tenant-enrollment.md).
+The [explicit Control genesis change](explicit-control-genesis.md) replaces runtime
 absence-selected initialization and retains HA node enrollment through acknowledged
-outcome and actual resource drain. Its source tests remain unrun; this does not
-claim that the final release gate is complete.
+outcome and actual resource drain. Their new source tests and the typed startup
+drain tests remain unrun; these changes do not complete the final release gates.
 
 Integration must preserve the independent singleton-catalog API changes and their
 node-enrollment fixture spelling, plus the local/operator ownership fixes. Earlier

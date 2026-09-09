@@ -9,6 +9,10 @@ use uuid::Uuid;
 
 const NS: &str = "node.enrollment";
 const MAX_INPUT: usize = 2 << 20;
+pub(crate) fn required(config: &crate::runtime::RuntimeConfig) -> bool {
+    config.mode == crate::runtime::DeploymentMode::Replicated
+        || crate::standalone::requires_provisioned(config)
+}
 #[path = "tenant_enrollment_record.rs"]
 mod tenants;
 pub(crate) use tenants::{Origin, Proposal, Stage, dispatch_tenant, tenant_record, update_tenant};

@@ -394,6 +394,8 @@ impl Administration {
                 proposal.digest()?.as_bytes(),
             )])?;
             prepared.resident = Some(resident); // Explicitly borrowed: never in cleanup resources.
+        } else if self.config.mode == crate::runtime::DeploymentMode::Standalone {
+            self.prepare_local_enrollment(prepared).await?;
         } else {
             ensure!(
                 !self
@@ -406,7 +408,7 @@ impl Administration {
             );
             ensure!(
                 self.config.mode == crate::runtime::DeploymentMode::Replicated,
-                "new standalone tenant enrollment is not installed"
+                "fresh independent enrollment requires replicated mode"
             );
             node_enrollment::require_complete(
                 self.audit.store(),
@@ -792,3 +794,6 @@ impl crate::startup_owner::Runtime for PreparedTenant {
 #[cfg(test)]
 #[path = "configured_tenant_enrollment_tests.rs"]
 mod tests;
+
+#[path = "standalone_tenant_preparation.rs"]
+mod standalone_preparation;

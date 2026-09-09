@@ -1,4 +1,6 @@
 //! Secure, exclusive first-release standalone installation and operator tools.
+#[path = "standalone_tenant_staging.rs"]
+mod tenant_staging;
 use crate::{
     auth::{AuthConfig, AuthKeySource},
     local_auth::{LocalCredentials, initialize_signer},
@@ -14,6 +16,7 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
+pub use tenant_staging::{StageTenantRequest, StagedTenant, stage_tenant, tenant_stage_status};
 use uuid::Uuid;
 
 #[derive(PartialEq, Eq, Serialize, Deserialize)]
@@ -70,7 +73,7 @@ pub(crate) fn claim(config: &RuntimeConfig) -> Result<Option<private_files::Excl
     )?)?;
     ensure!(
         prepared == installed
-            && installed.format == 2
+            && installed.format == 3
             && installed.database_id == config.database_id
             && !installed.database_id.is_nil()
             && installed.database_path == config.database_path
@@ -203,12 +206,47 @@ type OperatorTenants = (
 );
 
 /// Resolve operational generations without rewriting immutable installation settings.
-fn operator_tenants(
+async fn operator_tenants(
     config: &RuntimeConfig,
     store: &TenantStore,
     owner: &OperatorState,
 ) -> Result<OperatorTenants> {
-    let mut tenants = config.tenants.clone();
+    let control = owner.control().await?;
+    let plane = kasumi_engine::control::ControlPlane::new(control.clone())?;
+    let topology = plane
+        .topology(&offline_context(&control)?)
+        .await?
+        .context("installed Control topology is missing")?
+        .topology;
+    for tenant in topology.tenants.keys() {
+        ensure!(
+            config.tenants.iter().any(|entry| &entry.tenant == tenant),
+            "routed tenant is not configured"
+        );
+        let enrolled = crate::node_enrollment::tenant_record(store, tenant)?
+            .context("routed tenant has no local enrollment")?;
+        ensure!(
+            enrolled.stage == crate::node_enrollment::Stage::Prepared,
+            "routed tenant enrollment is incomplete"
+        );
+    }
+    let mut tenants = Vec::new();
+    for tenant in &config.tenants {
+        if let Some(record) = crate::node_enrollment::tenant_record(store, &tenant.tenant)?
+            && record.stage == crate::node_enrollment::Stage::Prepared
+        {
+            ensure!(
+                tenant
+                    .incarnation
+                    .as_deref()
+                    .map(Uuid::parse_str)
+                    .transpose()?
+                    == Some(record.incarnation),
+                "operator tenant differs from original enrollment"
+            );
+            tenants.push(tenant.clone());
+        }
+    }
     let mut nodes = std::collections::BTreeMap::new();
     for tenant in &mut tenants {
         let selected =
@@ -223,6 +261,12 @@ fn operator_tenants(
                 }
                 None => owner.node.clone(),
             };
+        if let Some(route) = topology.tenants.get(&tenant.tenant) {
+            ensure!(
+                tenant.incarnation.as_deref() == Some(route.incarnation.as_str()),
+                "routed tenant differs from its selected operator generation"
+            );
+        }
         owner.retain_node(selected.clone());
         nodes.insert(tenant.tenant.clone(), selected);
     }
@@ -247,7 +291,7 @@ async fn recover_administrator_owned(configuration: &Path, output: &Path) -> Res
         let credentials = owner.credentials.clone();
         crate::local_recovery::require_runtime_ready(audit.store())?;
         let (effective_tenants, generation_nodes) =
-            operator_tenants(&config, audit.store(), &owner)?;
+            operator_tenants(&config, audit.store(), &owner).await?;
         private_files::create_directory(output)?;
         let operation_id = Uuid::new_v4().to_string();
         audit
@@ -315,27 +359,32 @@ async fn recover_administrator_owned(configuration: &Path, output: &Path) -> Res
                 CredentialResource::Database { incarnation: uuid },
             )
         })) {
-            let source = Arc::new(crate::runtime::file_secret);
-            let stores = kasumi_store::TenantStorageSet::open_existing(
-                generation_nodes
-                    .get(tenant)
-                    .cloned()
-                    .unwrap_or_else(|| node.clone()),
-                tenant.into(),
-                application.provider(source.clone())?,
-                custody.provider(source)?,
-                access,
-            )
-            .await?;
-            owner.retain_stores(&stores);
-            config.install_tenant_audit_archive(stores.application(), None)?;
-            let database = kasumi_engine::open_existing_local(
-                stores,
-                audit.clone(),
-                Uuid::parse_str(incarnation)?,
-            )
-            .await?;
-            owner.retain_database(database.clone());
+            let database = if tenant == crate::runtime::CONTROL_TENANT {
+                owner.control().await?
+            } else {
+                let source = Arc::new(crate::runtime::file_secret);
+                let stores = kasumi_store::TenantStorageSet::open_existing(
+                    generation_nodes
+                        .get(tenant)
+                        .cloned()
+                        .unwrap_or_else(|| node.clone()),
+                    tenant.into(),
+                    application.provider(source.clone())?,
+                    custody.provider(source)?,
+                    access,
+                )
+                .await?;
+                owner.retain_stores(&stores);
+                config.install_tenant_audit_archive(stores.application(), None)?;
+                let database = kasumi_engine::open_existing_local(
+                    stores,
+                    audit.clone(),
+                    Uuid::parse_str(incarnation)?,
+                )
+                .await?;
+                owner.retain_database(database.clone());
+                database
+            };
             let generation = database.engine().generation()?;
             let principal = generation
                 .state
@@ -413,7 +462,7 @@ async fn rotate_wrapping_keys_owned(configuration: &Path) -> Result<()> {
         let audit = owner.audit.clone();
         crate::local_recovery::require_runtime_ready(audit.store())?;
         let (effective_tenants, generation_nodes) =
-            operator_tenants(&config, audit.store(), &owner)?;
+            operator_tenants(&config, audit.store(), &owner).await?;
         let operation = Uuid::new_v4().to_string();
         audit
             .record(operator_event(
@@ -428,8 +477,7 @@ async fn rotate_wrapping_keys_owned(configuration: &Path) -> Result<()> {
         ]
         .into_iter()
         .chain(
-            config
-                .tenants
+            effective_tenants
                 .iter()
                 .flat_map(|tenant| [&tenant.keys, &tenant.custody_keys]),
         ) {
@@ -483,8 +531,6 @@ async fn rotate_wrapping_keys_owned(configuration: &Path) -> Result<()> {
             config.install_tenant_audit_archive(stores.application(), None)?;
             stores.application().rewrap_keys().await?;
             stores.custody().store().rewrap_keys().await?;
-            stores.application().shutdown().await;
-            stores.custody().store().shutdown().await;
         }
         audit
             .record(operator_event(
@@ -766,7 +812,7 @@ async fn initialize_owned(
         let tenant_incarnation = Uuid::new_v4();
         let database_path = data.join("node.redb");
         let installation = Installation {
-            format: 2,
+            format: 3,
             installation_id,
             control_incarnation,
             database_id: Uuid::new_v4(),
@@ -1055,6 +1101,13 @@ async fn provision_databases(
     node: Arc<NodeStore>,
     audit: Arc<kasumi_engine::SecurityAudit>,
 ) -> Result<()> {
+    config.validate_selected_key_domains(&config.tenants.iter().collect::<Vec<_>>())?;
+    let enrollment = crate::node_enrollment::Enrollment::begin(
+        audit.store(),
+        &crate::node_enrollment::Input::Data {
+            configuration: Box::new(config.clone()),
+        },
+    )?;
     for (tenant, policy, limits, incarnation, application, custody, access) in std::iter::once((
         crate::runtime::CONTROL_TENANT,
         &config.control.initial_policy,
@@ -1128,22 +1181,30 @@ async fn provision_databases(
                     )
                     .await?;
             }
-            Ok::<_, anyhow::Error>(())
+            crate::runtime::persisted_bootstrap_fingerprint(stores.application())
         }
         .await;
         let drained = crate::startup_owner::finish(&mut pending).await;
-        match (configured, drained) {
+        let fingerprint = match (configured, drained) {
             (Err(error), Err(drain)) => {
                 return Err(error.context(format!(
                     "standalone tenant initializer drain failed: {drain:#}"
                 )));
             }
             (Err(error), Ok(())) => return Err(error),
-            (Ok(()), Err(drain)) => return Err(drain),
-            (Ok(()), Ok(())) => {}
+            (Ok(_), Err(drain)) => return Err(drain),
+            (Ok(fingerprint), Ok(())) => fingerprint,
+        };
+        if tenant != crate::runtime::CONTROL_TENANT {
+            enrollment.record_genesis_tenant(
+                audit.store(),
+                tenant,
+                Uuid::parse_str(incarnation)?,
+                fingerprint,
+            )?;
         }
     }
-    Ok(())
+    enrollment.complete(audit.store())
 }
 
 fn parameters(name: &str, days: i64) -> Result<rcgen::CertificateParams> {
@@ -1195,6 +1256,10 @@ fn generate_identity(
 #[cfg(test)]
 #[path = "standalone_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "standalone_tenant_enrollment_tests.rs"]
+mod tenant_enrollment_tests;
 
 #[cfg(test)]
 #[path = "standalone_backup_cli_tests.rs"]
