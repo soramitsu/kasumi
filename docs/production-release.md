@@ -122,17 +122,22 @@ integration; the final integrated source must then pass the complete gates above
    cohort. The captured-output continuation and its later failure are retained
    separately. Independent review
    found that external history chunks still need structural admission alongside
-   retained logical indexes; that correction is a separate successor. Structural
+   retained logical indexes. That correction is included in `f4a472f`, which
+   [passes combined workspace compilation and formatting](evidence/followon-f4a472f-check-20260909/README.md).
+   Its [predecessor compilation failure](evidence/followon-9814949-check-20260909/README.md)
+   remains preserved; the successor retains the owning zeroizing plaintext
+   buffer without another copy. Its new functional gates are pending. Structural
    accounting and the resident/index estimator require actual capacity validation.
 5. Complete signer coverage, authority genesis-prefix reopen and the durable
    target completion coordinator. The source-frozen receiver and coordinator
    retain exact preparation, observation and resolution phases; their combined
    functional gates are incomplete. Three positive receiver/coordinator tests
    passed in the typed-snapshot cohort. Terminal-only status is source-frozen at
-   `ef772f3` and combined without execution at `c1ba870`. Review also found that
+   `ef772f3` and combined at `c1ba870`. Review also found that
    fresh unanimous startup blocks established-quorum status, and live Complete
-   admission must independently reject a changed original cap; both corrections
-   are in progress. Automatic safe successors, physical cleanup and actual
+   admission must independently reject a changed original cap; `6a4cf3e` implements
+   both corrections and is compiled in `f4a472f`. Its pure and replicated Control
+   regressions still require execution. Automatic safe successors, physical cleanup and actual
    source-unavailable recovery remain unfinished. Absence never resolves a mutation.
 6. Expand the [successful small offline Linux diagnostic](evidence/small-offline-native-3a8d512-20260909/README.md)
    to final-source acceptance. It exercised 129 documents through private
@@ -140,6 +145,13 @@ integration; the final integrated source must then pass the complete gates above
    restore using exact prior fixture-free binaries. Its processes drained and
    confidential installation files remain private. It does not replace full
    credential rotation, HA recovery, 3 GiB or 24-hour acceptance.
+7. Require existing authenticated state on restart. The strict catalog/local
+   bootstrap primitives and activated-target caller are frozen at `4ff1a10` and
+   `e6354ef`, with eight unrun regressions. Local reopening must also require the
+   configured Control incarnation before startup. Explicit standalone init must
+   provision Control/application catalogs and bootstrap before startup can stop
+   creating them. Strict replicated readmission is a separate pending change.
+   No missing-state fallback or compatibility constructor is permitted.
 
 Persistent disk admission and native durable resource reservations must be
 implemented before claiming configured node disk capacity or reserved import
