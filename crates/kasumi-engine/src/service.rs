@@ -34,6 +34,8 @@ mod restore_lineage_service;
 #[path = "retirement_service.rs"]
 mod retirement_service;
 pub use retirement_service::RetirementResponseFence;
+#[path = "mutation_receipt_reads.rs"]
+mod mutation_receipt_reads;
 #[path = "schema_service.rs"]
 mod schema_service;
 #[path = "snapshot_leases.rs"]
@@ -1340,10 +1342,14 @@ impl Database {
         } else {
             0
         };
-        let max_command_payload = if matches!(operation, Operation::ActivateSchema(_)) {
-            MAX_SCHEMA_CHANGESET_BYTES
-        } else {
-            generation.state.limits.max_batch_bytes
+        let max_command_payload = match &operation {
+            Operation::ActivateSchema(_) => MAX_SCHEMA_CHANGESET_BYTES,
+            // Permanent receipt replay is ordered before today's tenant batch
+            // admission. Retain the immutable request envelope so lowering a
+            // tenant budget cannot hide an already committed outcome. A new
+            // identity still meets the configured limit in apply_batch.
+            Operation::Mutate(_) => 8 << 20,
+            _ => generation.state.limits.max_batch_bytes,
         };
         let command_budget = max_command_payload
             .saturating_add(64 << 10)
@@ -1838,51 +1844,22 @@ impl Database {
         context: &RequestContext,
         idempotency_key: &str,
     ) -> Result<Option<MutationReceipt>> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         self.access()?;
         self.engine
             .authorize_discovery(context, Action::Write, None)?;
-        let mut reservation = self.admission().reserve(
-            self.engine
-                .generation()?
-                .state
-                .limits
-                .max_batch_operations
-                .saturating_mul(1024)
-                .saturating_add(64 << 10)
-                .saturating_mul(3) as u64,
-            None,
-        )?;
+        validate_name(idempotency_key)?;
         self.barrier().await?;
-        let generation = self.engine.generation()?;
-        if context.tenant != generation.state.tenant {
-            return Err(Error::new(ErrorCode::Forbidden, "tenant access denied"));
-        }
-        let identity = serde_json::to_vec(&(&context.principal, idempotency_key))
-            .map_err(|_| Error::new(ErrorCode::InvalidArgument, "receipt identity invalid"))?;
-        let key = hex::encode(Sha256::digest(identity));
-        let now = self
-            .command_clock
-            .lock()
-            .map_err(|_| Error::new(ErrorCode::Unavailable, "command clock unavailable"))?
-            .now_ms()?;
-        let receipt = generation
-            .state
-            .receipts
-            .get(&key)
-            .filter(|r| r.expires_at_ms > now)
-            .cloned();
-        let epoch = generation.state.policy_epoch;
-        let revision = generation.state.revision;
-        let strict = generation.state.policy.strict_read_audit;
-        reservation.retain_workspace();
-        if let Some(receipt) = &receipt {
+        let read = self
+            .read_mutation_receipt(context, idempotency_key, deadline)
+            .await?;
+        let receipt = &read.receipt;
+        let epoch = read.epoch;
+        let revision = read.revision;
+        let strict = read.strict;
+        if let Some(receipt) = receipt {
             for collection in &receipt.collections {
-                let strict = strict
-                    || generation
-                        .state
-                        .collections
-                        .get(collection)
-                        .is_some_and(|c| c.definition.strict_read_audit);
+                let strict = strict || read.strict_collections.contains(collection);
                 self.release_event(
                     context,
                     Some(collection),
@@ -1898,7 +1875,14 @@ impl Database {
                 .await?;
         }
         self.access()?;
-        Ok(receipt.map(|r| MutationReceipt {
+        context.authorization.check_live()?;
+        if tokio::time::Instant::now() >= deadline {
+            return Err(Error::new(
+                ErrorCode::Unavailable,
+                "mutation receipt deadline exceeded",
+            ));
+        }
+        Ok(read.receipt.map(|r| MutationReceipt {
             scope: r.scope,
             request_digest: r.request_digest,
             outcome: r.outcome,
@@ -2213,6 +2197,7 @@ mod tests {
     include!("service_staged_stop_tests.rs");
     include!("service_schema_tests.rs");
     include!("service_credential_tests.rs");
+    include!("service_mutation_receipt_tests.rs");
     include!("service_serving_tests.rs");
     include!("service_retirement_tests.rs");
     include!("service_custody_tests.rs");

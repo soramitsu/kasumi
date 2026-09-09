@@ -173,19 +173,28 @@ fn policy() -> Policy {
         strict_read_audit: false,
     }
 }
-fn limits(documents: usize, operations: usize) -> Limits {
-    Limits {
+fn limits(documents: usize, operations: usize) -> anyhow::Result<Limits> {
+    let receipt_count = operations
+        .checked_mul(3)
+        .and_then(|n| n.checked_add(documents.div_ceil(256)))
+        .and_then(|n| n.checked_add(128))
+        .context("receipt workload count overflow")?;
+    Ok(Limits {
         max_documents: documents as u64 + 1,
         max_logical_bytes: (documents as u64 + 1) * 2048,
-        max_receipts: documents.div_ceil(256) + operations * 3 + 128,
+        max_mutation_receipt_bytes: u64::try_from(receipt_count)
+            .context("receipt workload exceeds address space")?
+            .checked_mul(2 << 20)
+            .context("receipt workload byte budget overflow")?,
         audit_retention: AuditRetentionBudget {
             hot_bytes: ((documents.div_ceil(256) + operations * 3 + 1024) as u64 * 1024)
                 .max(AuditRetentionBudget::default().hot_bytes),
             ..AuditRetentionBudget::default()
         },
         ..Limits::default()
-    }
+    })
 }
+
 fn definition(text: bool) -> CollectionDefinition {
     let mut indexes = vec![IndexDefinition {
         name: "ordinal".into(),
@@ -321,6 +330,7 @@ impl Databases {
         let mut result = Vec::new();
         for tenant in 0..tenants {
             let count = documents / tenants + usize::from(tenant < documents % tenants);
+            let workload_limits = limits(count, operations)?;
             let bootstrap = if replicated {
                 Some(
                     bootstraps
@@ -329,7 +339,7 @@ impl Databases {
                         .unwrap_or_else(|| ReplicatedBootstrap {
                             incarnation: uuid::Uuid::new_v4().to_string(),
                             initial_policy: policy(),
-                            initial_limits: limits(count, operations),
+                            initial_limits: workload_limits.clone(),
                             voters: (1..=3)
                                 .map(|id| {
                                     (
@@ -390,7 +400,7 @@ impl Databases {
                         .await
                         .unwrap(),
                         policy(),
-                        limits(count, operations),
+                        workload_limits.clone(),
                         audits[replica].clone(),
                     )
                     .await?

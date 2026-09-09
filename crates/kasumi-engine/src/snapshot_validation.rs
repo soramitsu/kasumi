@@ -246,17 +246,20 @@ impl ValidatedApplicationSnapshot {
         let headroom = crate::accounting::snapshot_headroom(&self.target_budget_state()?)?
             .checked_add(20 - h.revision.to_string().len() as u64)
             .context("snapshot headroom overflow")?;
+        let permanent_receipt_bytes = self.index.framed_bytes(5)?;
         ensure!(
             self.index
                 .summary()
                 .bytes
                 .checked_sub(self.index.framed_bytes(22)?)
+                .and_then(|n| n.checked_sub(permanent_receipt_bytes))
                 .and_then(|n| n.checked_add(headroom))
                 .is_some_and(|n| n <= h.limits.max_snapshot_bytes),
             "snapshot exceeds serialized byte quota"
         );
         ensure!(
-            self.index.count(5)? <= h.limits.max_receipts as u64
+            self.index.count(5)? == h.mutation_receipt_head.count
+                && h.mutation_receipt_head.encoded_bytes <= h.limits.max_mutation_receipt_bytes
                 && self.index.count(2)? <= h.limits.max_collections as u64,
             "snapshot record quota exceeded"
         );
@@ -339,41 +342,45 @@ impl ValidatedApplicationSnapshot {
         &self,
         check: &mut impl FnMut() -> anyhow::Result<()>,
     ) -> anyhow::Result<()> {
+        let h = &self.header;
+        let mut head =
+            MutationReceiptHead::empty(&h.tenant, &h.mutation_receipt_head.origin_incarnation)?;
+        ensure!(
+            head.origin_incarnation == h.incarnation
+                || self.lineage_source(&head.origin_incarnation)?.is_some(),
+            "receipt origin is outside verified lineage"
+        );
         self.index.visit(5, |record| {
             check()?;
-            let Record::Receipt(key, receipt) = record else {
+            let Record::Receipt(row) = record else {
                 unreachable!()
             };
-            let maximum_revision = if receipt.scope.incarnation == self.header.incarnation {
-                self.header.revision
-            } else {
-                self.lineage_source(&receipt.scope.incarnation)?
-                    .context("receipt original incarnation is absent from lineage")?
-                    .checkpoint
-                    .revision
-            };
-            let genesis_revision = if receipt.scope.incarnation == self.header.incarnation {
-                self.header.revision_base
-            } else {
-                self.lineage_target(&receipt.scope.incarnation)?
-                    .map(|link| {
-                        link.checkpoint
-                            .revision
-                            .checked_add(1)
-                            .context("receipt genesis revision overflow")
-                    })
-                    .transpose()?
-                    .unwrap_or(0)
-            };
-            receipt.validate_identity(
-                &key,
-                &self.header.tenant,
-                genesis_revision,
-                maximum_revision,
+            let proof = self.staging_lineage(
+                &row.receipt.scope.incarnation,
+                Some(&row.applied.incarnation),
             )?;
+            row.validate(&proof)?;
+            ensure!(
+                get::<u64>(&self.lineage, &("mutation-receipt-key", &row.key))?.is_none(),
+                "duplicate immutable mutation identity"
+            );
+            insert(
+                &self.lineage,
+                &("mutation-receipt-key", &row.key),
+                &row.ordinal,
+            )?;
+            crate::mutation_receipt::advance(&mut head, &row)?;
             Ok(())
-        })
+        })?;
+        ensure!(
+            head == h.mutation_receipt_head
+                && head.count == self.index.count(5)?
+                && head.encoded_bytes == self.index.framed_bytes(5)?,
+            "receipt snapshot chain/count/bytes differ"
+        );
+        Ok(())
     }
+
     fn validate_documents(
         &self,
         check: &mut impl FnMut() -> anyhow::Result<()>,
@@ -1248,6 +1255,11 @@ mod tests {
         SnapshotImage::capture(&kasumi_store::ScratchDisk::fixture(), 128 << 20, |writer| {
             crate::snapshot_codec::write(
                 state,
+                &crate::mutation_receipt::View::empty(
+                    &state.tenant,
+                    &state.mutation_receipt_head.origin_incarnation,
+                )
+                .unwrap(),
                 &crate::staged_terminal::View::empty(
                     &state.tenant,
                     &state.staged_terminal_head.origin_incarnation,
@@ -1443,14 +1455,62 @@ mod tests {
     }
     #[test]
     fn receipt_original_scope_and_position_are_checked_in_both_snapshot_paths() {
-        use sha2::{Digest, Sha256};
-        let mut original = state();
-        let key = hex::encode(Sha256::digest(
-            serde_json::to_vec(&("owner", "original")).unwrap(),
-        ));
-        original.receipts.insert(
-            key.clone(),
-            StoredReceipt {
+        use crate::mutation_receipt::{Row, advance};
+        use crate::staged_terminal::{AppliedIdentity, AppliedOrigin};
+        fn encoded(state: &TenantState, row: &Row) -> SnapshotImage {
+            let mut header = state.clone();
+            header.mutation_receipt_head = MutationReceiptHead::empty(
+                &state.tenant,
+                &state.mutation_receipt_head.origin_incarnation,
+            )
+            .unwrap();
+            // Recompute the frame/root on purpose. Semantic defects must be
+            // rejected even when every transport count and digest is consistent.
+            advance(&mut header.mutation_receipt_head, row).unwrap();
+            SnapshotImage::capture(&kasumi_store::ScratchDisk::fixture(), 128 << 20, |writer| {
+                let mut encoder = crate::snapshot_codec::Encoder::new(writer)?;
+                for kind in 0..21 {
+                    if kind == 5 {
+                        encoder.record(Record::Receipt(Box::new(row.clone())))?;
+                    }
+                    for record in crate::snapshot_codec::records(&header, kind, None)? {
+                        encoder.record(record?)?;
+                    }
+                }
+                encoder.finish()
+            })
+            .unwrap()
+        }
+        fn verify(state: &TenantState, row: &Row, accepted: bool, case: &str) {
+            let image = encoded(state, row);
+            let full = crate::snapshot_codec::read(image.disk(), &mut image.reader()).and_then(
+                |decoded| {
+                    TenantEngine::verify_logical_snapshot(&image, &decoded.state)
+                        .map_err(Into::into)
+                },
+            );
+            assert_eq!(full.is_ok(), accepted, "full {case}: {full:?}");
+            let indexed = ValidatedApplicationSnapshot::validate(image, 128 << 20, || Ok(()));
+            assert_eq!(indexed.is_ok(), accepted, "indexed {case}");
+        }
+        let original = state();
+        let row = Row {
+            ordinal: 1,
+            key: staged_digest(&("owner", "original")).unwrap().0,
+            previous_sha256: original.mutation_receipt_head.sha256.clone(),
+            applied: AppliedIdentity {
+                incarnation: original.incarnation.clone(),
+                revision: original.revision,
+                timestamp_ms: 1000,
+                command_sha256: "ab".repeat(32),
+                origin: AppliedOrigin::Raft {
+                    term: 1,
+                    leader: 1,
+                    index: original.revision,
+                    context_sha256: "cd".repeat(32),
+                },
+            },
+            receipt: StoredReceipt {
                 scope: MutationReceiptScope {
                     tenant: original.tenant.clone(),
                     incarnation: original.incarnation.clone(),
@@ -1459,35 +1519,41 @@ mod tests {
                 idempotency_key: "original".into(),
                 recorded_revision: original.revision,
                 request_digest: "12".repeat(32),
-                expires_at_ms: 100_000,
                 collections: vec!["rows".into()],
                 outcome: Ok(WriteReceipt {
                     revision: original.revision,
-                    versions: Default::default(),
+                    versions: BTreeMap::from([("/rows/a".into(), original.revision)]),
                 }),
             },
-        );
-        TenantEngine::verify_logical_snapshot(&image(&original), &original).unwrap();
-        indexed(&original).unwrap();
-        for case in 0..7 {
-            let mut candidate = original.clone();
-            let receipt = candidate.receipts.get_mut(&key).unwrap();
+        };
+        verify(&original, &row, true, "original");
+        for case in 0..9 {
+            let mut candidate = row.clone();
             match case {
-                0 => receipt.scope.tenant = "another-tenant".into(),
-                1 => receipt.scope.principal = "another-owner".into(),
-                2 => receipt.scope.incarnation = "unretained-source".into(),
-                3 => receipt.idempotency_key = "another-key".into(),
-                4 => receipt.recorded_revision += 1,
-                5 => receipt.outcome.as_mut().unwrap().revision -= 1,
-                _ => receipt.request_digest.clear(),
+                0 => candidate.receipt.scope.tenant = "another-tenant".into(),
+                1 => candidate.receipt.scope.principal = "another-owner".into(),
+                2 => candidate.receipt.scope.incarnation = "unretained-source".into(),
+                3 => candidate.receipt.idempotency_key = "another-key".into(),
+                4 => candidate.receipt.recorded_revision += 1,
+                5 => candidate.receipt.outcome.as_mut().unwrap().revision -= 1,
+                6 => candidate.receipt.request_digest.clear(),
+                7 => candidate.applied.revision -= 1,
+                _ => {
+                    if let AppliedOrigin::Raft { index, .. } = &mut candidate.applied.origin {
+                        *index -= 1;
+                    }
+                }
             }
-            assert!(
-                TenantEngine::verify_logical_snapshot(&image(&candidate), &candidate).is_err(),
-                "full case {case}"
+            verify(
+                &original,
+                &candidate,
+                false,
+                &format!("substitution {case}"),
             );
-            assert!(indexed(&candidate).is_err(), "indexed case {case}");
         }
         let mut restored = original;
+        // The state deliberately retains the original point head across each
+        // new genesis; original rows and their applying positions never relabel.
         for incarnation in ["intermediate", "current-target"] {
             let checkpoint = FullBackupCheckpoint {
                 tenant: restored.tenant.clone(),
@@ -1509,19 +1575,12 @@ mod tests {
             restored.suspended = false;
             restored.revision += 2;
         }
-        TenantEngine::verify_logical_snapshot(&image(&restored), &restored).unwrap();
-        indexed(&restored).unwrap();
+        verify(&restored, &row, true, "unchanged two-hop source");
         for incarnation in ["intermediate", "current-target"] {
-            let mut candidate = restored.clone();
-            candidate.receipts.get_mut(&key).unwrap().scope.incarnation = incarnation.into();
-            assert!(
-                TenantEngine::verify_logical_snapshot(&image(&candidate), &candidate).is_err(),
-                "full relabel {incarnation}"
-            );
-            assert!(
-                indexed(&candidate).is_err(),
-                "indexed relabel {incarnation}"
-            );
+            let mut candidate = row.clone();
+            candidate.receipt.scope.incarnation = incarnation.into();
+            candidate.applied.incarnation = incarnation.into();
+            verify(&restored, &candidate, false, incarnation);
         }
     }
     #[test]

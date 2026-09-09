@@ -9,7 +9,7 @@ use std::{
     sync::Arc,
 };
 
-const MAGIC: &[u8; 8] = b"KASUMIT5";
+const MAGIC: &[u8; 8] = b"KASUMIT6";
 const MAX_RECORD: usize = 32 << 20;
 pub(crate) const RECORD_KINDS: u8 = 23;
 pub(crate) const FRAME_HEADER_BYTES: usize = 9;
@@ -31,8 +31,27 @@ pub(crate) fn inspect_external_json_work(
     meter.finish()
 }
 
+/// Count owned typed metadata through the same structural model without a JSON
+/// buffer. Callers borrow the input until this check admits its later clones.
+pub(crate) fn inspect_typed_json_work(value: &impl Serialize) -> anyhow::Result<u64> {
+    struct Writer(record_work::Meter);
+    impl Write for Writer {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.consume(bytes).map_err(std::io::Error::other)?;
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut writer = Writer(record_work::Meter::default());
+    serde_json::to_writer(&mut writer, value)?;
+    writer.0.finish()
+}
+
 pub(crate) fn record_limit(kind: u8) -> anyhow::Result<u64> {
     Ok(match kind {
+        5 => crate::mutation_receipt::MAX_SNAPSHOT_RECORD_BYTES as u64,
         0..=20 => MAX_RECORD as u64,
         21 => crate::staged_terminal::MAX_SNAPSHOT_RECORD_BYTES as u64,
         22 => crate::target_resolution::MAX_SNAPSHOT_RECORD_BYTES as u64,
@@ -48,7 +67,7 @@ pub(crate) enum Record {
     Collection(String, CollectionState),
     Document(String, Arc<Document>),
     Archived(String, String, Arc<ArchivedDocument>),
-    Receipt(String, StoredReceipt),
+    Receipt(Box<crate::mutation_receipt::Row>),
     Stage(String, StagedTransaction),
     StageChunk(String, usize, Arc<StagedChunk>),
     ActiveStage(String),
@@ -75,7 +94,7 @@ impl Record {
             Self::Collection(k, _) => (2, k.clone(), String::new()),
             Self::Document(k, d) => (3, k.clone(), d.id.clone()),
             Self::Archived(k, id, _) => (4, k.clone(), id.clone()),
-            Self::Receipt(k, _) => (5, k.clone(), String::new()),
+            Self::Receipt(row) => (5, format!("{:020}", row.ordinal), String::new()),
             Self::Stage(k, _) => (6, k.clone(), String::new()),
             Self::StageChunk(k, i, _) => (7, k.clone(), format!("{i:020}")),
             Self::ActiveStage(k) => (8, k.clone(), String::new()),
@@ -168,12 +187,7 @@ pub(crate) fn records<'a>(
                         Record::Archived(name.clone(), id.clone(), reference.clone())
                     })
             })),
-            5 => Box::new(
-                state
-                    .receipts
-                    .iter()
-                    .map(|(key, value)| Record::Receipt(key.clone(), value.clone())),
-            ),
+            5 => Box::new(std::iter::empty()), // Permanent rows require their selected owner.
             6 => Box::new(state.staged_transactions.iter().map(|(key, value)| {
                 let mut header = value.clone();
                 header.chunks.clear();
@@ -307,7 +321,7 @@ pub(crate) fn metadata(state: &TenantState) -> TenantState {
         policy: state.policy.clone(),
         limits: state.limits.clone(),
         collections: Default::default(),
-        receipts: Default::default(),
+        mutation_receipt_head: state.mutation_receipt_head.clone(),
         staged_transactions: Default::default(),
         active_staged_transactions: Default::default(),
         permanent_staged_bytes: state.permanent_staged_bytes,
@@ -335,7 +349,6 @@ fn empty_records(state: &TenantState) -> bool {
     state.target_lifecycle.is_empty()
         && state.recovery_control.is_empty()
         && state.collections.is_empty()
-        && state.receipts.is_empty()
         && state.staged_transactions.is_empty()
         && state.active_staged_transactions.is_empty()
         && state.change_feed.commits.is_empty()
@@ -432,6 +445,7 @@ impl<'a> Encoder<'a> {
 }
 pub(crate) fn write(
     state: &TenantState,
+    receipts: &crate::mutation_receipt::View,
     terminals: &crate::staged_terminal::View,
     target_resolutions: &crate::target_resolution::View,
     writer: &mut dyn Write,
@@ -440,12 +454,19 @@ pub(crate) fn write(
         terminals.head() == &state.staged_terminal_head,
         "snapshot terminal owner differs"
     );
+    receipts.validate_state(state)?;
     terminals.check_head(&state.tenant)?;
     target_resolutions.validate_state(state)?;
     let mut encoder = Encoder::new(writer)?;
     for kind in 0..21 {
-        for record in records(state, kind, None)? {
-            encoder.record(record?)?;
+        if kind == 5 {
+            for row in receipts.records() {
+                encoder.record(Record::Receipt(Box::new(row?)))?;
+            }
+        } else {
+            for record in records(state, kind, None)? {
+                encoder.record(record?)?;
+            }
         }
     }
     for row in terminals.records() {
@@ -523,11 +544,15 @@ impl StreamSummary {
     /// Resident semantic records and fixed stream framing, excluding encrypted
     /// permanent point rows. This is not an allocator or hard-RSS measurement.
     pub(crate) fn resident_bytes(&self) -> anyhow::Result<u64> {
-        self.kinds[..21].iter().try_fold(64u64, |total, kind| {
-            total
-                .checked_add(kind.framed_bytes)
-                .ok_or_else(|| anyhow::anyhow!("resident snapshot byte overflow"))
-        })
+        self.kinds[..21]
+            .iter()
+            .enumerate()
+            .filter(|(kind, _)| *kind != 5)
+            .try_fold(64u64, |total, (_, kind)| {
+                total
+                    .checked_add(kind.framed_bytes)
+                    .ok_or_else(|| anyhow::anyhow!("resident snapshot byte overflow"))
+            })
     }
     /// Two bounded encrypted indexes and metadata retain their existing cache
     /// floor. Add peak structural decode work before inspecting semantic DTOs.
@@ -779,6 +804,7 @@ fn decode_record(bytes: &[u8]) -> anyhow::Result<Record> {
 pub(crate) struct Decoded {
     pub(crate) state: TenantState,
     pub(crate) summary: StreamSummary,
+    pub(crate) receipts: crate::mutation_receipt::View,
     pub(crate) terminals: crate::staged_terminal::View,
     pub(crate) target_resolutions: crate::target_resolution::View,
 }
@@ -787,6 +813,7 @@ pub(crate) fn read(
     reader: &mut dyn Read,
 ) -> anyhow::Result<Decoded> {
     let mut state: Option<TenantState> = None;
+    let mut receipts: Option<crate::mutation_receipt::Builder> = None;
     let mut terminals: Option<crate::staged_terminal::Builder> = None;
     let mut target_resolutions: Option<crate::target_resolution::Builder> = None;
     let summary = visit(reader, |_, record| {
@@ -795,6 +822,16 @@ pub(crate) fn read(
                 state.is_none() && empty_records(&header),
                 "snapshot header contains embedded records"
             );
+            if header.mutation_receipt_head.count > 0 {
+                receipts = Some(crate::mutation_receipt::Builder::new(
+                    disk,
+                    crate::mutation_receipt::scratch_limit(
+                        header.limits.max_mutation_receipt_bytes,
+                    )?,
+                    &header.tenant,
+                    &header.mutation_receipt_head.origin_incarnation,
+                )?);
+            }
             if header.target_resolution_head.count > 0 {
                 target_resolutions = Some(crate::target_resolution::Builder::new(
                     disk,
@@ -851,8 +888,11 @@ pub(crate) fn read(
                     .archived_documents
                     .insert(id, reference);
             }
-            Record::Receipt(k, receipt) => {
-                state.receipts.insert(k, receipt);
+            Record::Receipt(row) => {
+                receipts
+                    .as_mut()
+                    .ok_or_else(|| anyhow::anyhow!("receipt row without authenticated prefix"))?
+                    .push(&row, state)?;
             }
             Record::Stage(k, stage) => {
                 anyhow::ensure!(
@@ -979,6 +1019,20 @@ pub(crate) fn read(
         Ok(())
     })?;
     let state = state.ok_or_else(|| anyhow::anyhow!("snapshot metadata absent"))?;
+    let receipts = match receipts {
+        Some(builder) => builder.finish(&state.mutation_receipt_head)?,
+        None => {
+            let empty = crate::mutation_receipt::View::empty(
+                &state.tenant,
+                &state.mutation_receipt_head.origin_incarnation,
+            )?;
+            anyhow::ensure!(
+                empty.head() == &state.mutation_receipt_head,
+                "receipt history missing from snapshot"
+            );
+            empty
+        }
+    };
     let terminals = match terminals {
         Some(builder) => builder.finish(&state.staged_terminal_head)?,
         None => {
@@ -1009,6 +1063,7 @@ pub(crate) fn read(
     };
     Ok(Decoded {
         state,
+        receipts,
         summary,
         terminals,
         target_resolutions,
@@ -1021,6 +1076,7 @@ mod tests {
     fn write(state: &TenantState, writer: &mut dyn Write) -> anyhow::Result<()> {
         super::write(
             state,
+            &crate::mutation_receipt::View::empty(&state.tenant, &state.incarnation)?,
             &crate::staged_terminal::View::empty(&state.tenant, &state.incarnation)?,
             &crate::target_resolution::View::empty(&state.tenant, &state.incarnation)?,
             writer,

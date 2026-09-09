@@ -88,6 +88,7 @@ impl StreamWork {
     fn run(mut self) -> Result<(u64, String)> {
         crate::snapshot_codec::write(
             &self.generation.state,
+            &self.generation.receipts,
             &self.generation.terminals,
             &self.generation.target_resolutions,
             &mut self.writer,

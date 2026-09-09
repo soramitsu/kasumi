@@ -24,13 +24,14 @@ pub trait SnapshotFixtureState {
 }
 impl SnapshotFixtureState for TenantState {
     fn write_fixture(&self, writer: &mut dyn std::io::Write) -> anyhow::Result<()> {
-        write_candidate(self, None, None, writer)
+        write_candidate(self, None, None, None, writer)
     }
 }
 impl SnapshotFixtureState for crate::Generation {
     fn write_fixture(&self, writer: &mut dyn std::io::Write) -> anyhow::Result<()> {
         crate::snapshot_codec::write(
             &self.state,
+            &self.receipts,
             &self.terminals,
             &self.target_resolutions,
             writer,
@@ -54,6 +55,7 @@ impl SnapshotFixtureState for SnapshotCandidate {
     fn write_fixture(&self, writer: &mut dyn std::io::Write) -> anyhow::Result<()> {
         write_candidate(
             &self.0.state,
+            Some(&self.0.receipts),
             Some(&self.0.terminals),
             Some(&self.0.target_resolutions),
             writer,
@@ -79,12 +81,20 @@ pub fn decode_snapshot_candidate(candidate: &SnapshotImage) -> Result<SnapshotCa
 // This path is feature gated and never grants publication or a storage capability.
 fn write_candidate(
     state: &TenantState,
+    receipts: Option<&crate::mutation_receipt::View>,
     terminals: Option<&crate::staged_terminal::View>,
     target_resolutions: Option<&crate::target_resolution::View>,
     writer: &mut dyn std::io::Write,
 ) -> anyhow::Result<()> {
     let mut encoder = crate::snapshot_codec::Encoder::new(writer)?;
     for kind in 0..21 {
+        if kind == 5 {
+            if let Some(receipts) = receipts {
+                for row in receipts.records() {
+                    encoder.record(crate::snapshot_codec::Record::Receipt(Box::new(row?)))?;
+                }
+            }
+        }
         for record in crate::snapshot_codec::records(state, kind, None)? {
             encoder.record(record?)?;
         }

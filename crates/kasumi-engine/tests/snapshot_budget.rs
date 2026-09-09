@@ -71,13 +71,20 @@ fn apply(
         )
         .unwrap();
     let snapshot = db.fixture_snapshot().unwrap();
-    assert_eq!(db.snapshot_bytes().unwrap() as u64, snapshot.len());
-    assert!(snapshot.len() <= db.generation().unwrap().state.limits.max_snapshot_bytes);
+    let generation = db.generation().unwrap();
+    let resident = db.snapshot_bytes().unwrap() as u64;
+    assert_eq!(
+        resident
+            + generation.state.mutation_receipt_head.encoded_bytes
+            + generation.state.target_resolution_head.encoded_bytes,
+        snapshot.len()
+    );
+    assert!(resident <= generation.state.limits.max_snapshot_bytes);
     result
 }
 
 #[test]
-fn exact_incremental_accounting_covers_documents_receipts_expiry_schemas_policy_and_restore() {
+fn exact_incremental_accounting_covers_documents_permanent_receipts_schemas_policy_and_restore() {
     let db = engine(1 << 20);
     apply(&db, 1, 1, schema()).unwrap();
     for n in 2..30 {
@@ -93,9 +100,12 @@ fn exact_incremental_accounting_covers_documents_receipts_expiry_schemas_policy_
         )
         .unwrap();
     }
-    // Expire the entire old receipt cohort without losing size accounting.
+    // Timestamps beyond the former TTL retain the complete permanent cohort.
     apply(&db, 30, 86_400_100, batch("fresh", "new", 20)).unwrap();
-    assert_eq!(db.generation().unwrap().state.receipts.len(), 1);
+    assert_eq!(
+        db.generation().unwrap().state.mutation_receipt_head.count,
+        29
+    );
     let delete = Operation::Mutate(MutationBatch {
         read_set: Vec::new(),
         idempotency_key: "delete".into(),
@@ -143,20 +153,7 @@ fn oversize_effects_become_a_durable_rejected_receipt_without_partial_documents(
     assert_eq!(result.unwrap_err().code, ErrorCode::QuotaExceeded);
     let generation = db.generation().unwrap();
     assert!(generation.state.collections["docs"].documents.is_empty());
-    assert_eq!(generation.state.receipts.len(), 1);
-    assert_eq!(
-        generation
-            .state
-            .receipts
-            .values()
-            .next()
-            .unwrap()
-            .outcome
-            .as_ref()
-            .unwrap_err()
-            .code,
-        ErrorCode::QuotaExceeded
-    );
+    assert_eq!(generation.state.mutation_receipt_head.count, 1);
     assert_eq!(generation.state.audits.back().unwrap().outcome, "rejected");
     drop(generation);
     assert_eq!(
@@ -206,15 +203,21 @@ fn replay_with_only_rejection_audit_headroom_keeps_the_original_receipt() {
     let source = engine(16 << 10);
     apply(&source, 1, 1, schema()).unwrap();
     let original = apply(&source, 2, 2, batch("original", "id", 3000)).unwrap();
-    let mut before = source.generation().unwrap().state.clone();
+    let mut before =
+        kasumi_engine::test_utils::decode_snapshot_candidate(&source.fixture_snapshot().unwrap())
+            .unwrap();
     apply(&source, 3, 3, batch("original", "id", 3000)).unwrap();
-    let mut after = source.generation().unwrap().state.clone();
+    let mut after =
+        kasumi_engine::test_utils::decode_snapshot_candidate(&source.fixture_snapshot().unwrap())
+            .unwrap();
     // A committed replay audit is exactly one byte larger than a rejection
     // audit. Account for changing the serialized quota's own decimal digits.
     loop {
         let limit = kasumi_engine::test_utils::encode_snapshot_candidate(&after, 64 << 20)
             .unwrap()
             .len()
+            - after.mutation_receipt_head.encoded_bytes
+            - after.target_resolution_head.encoded_bytes
             + 19
             - 1;
         if after.limits.max_snapshot_bytes == limit {
@@ -238,8 +241,18 @@ fn replay_with_only_rejection_audit_headroom_keeps_the_original_receipt() {
     assert_eq!(generation.state.audits.len(), before.audits.len() + 1);
     assert_eq!(generation.state.audits.back().unwrap().outcome, "rejected");
     assert_eq!(
-        generation.state.receipts.values().next().unwrap().outcome,
-        Ok(original)
+        generation.state.mutation_receipt_head,
+        before.mutation_receipt_head
+    );
+    drop(generation);
+    // Expanding only the snapshot budget permits an exact replay again; it
+    // proves the earlier audit rejection did not overwrite the point result.
+    let mut limits = db.generation().unwrap().state.limits.clone();
+    limits.max_snapshot_bytes = 32 << 10;
+    apply(&db, 4, 4, Operation::SetLimits(limits)).unwrap();
+    assert_eq!(
+        apply(&db, 5, 5, batch("original", "id", 3000)).unwrap(),
+        original
     );
 }
 
@@ -248,7 +261,9 @@ fn recovery_and_limit_changes_cannot_admit_state_above_snapshot_format_or_tenant
     let db = engine(16 << 10);
     apply(&db, 1, 1, schema()).unwrap();
     apply(&db, 2, 2, batch("large", "id", 5000)).unwrap();
-    let mut state = db.generation().unwrap().state.clone();
+    let mut state =
+        kasumi_engine::test_utils::decode_snapshot_candidate(&db.fixture_snapshot().unwrap())
+            .unwrap();
     state.limits.max_snapshot_bytes = 4096;
     assert!(
         db.fixture_restore(
@@ -256,7 +271,7 @@ fn recovery_and_limit_changes_cannot_admit_state_above_snapshot_format_or_tenant
         )
         .is_err()
     );
-    let outcome = apply(&db, 3, 3, Operation::SetLimits(state.limits));
+    let outcome = apply(&db, 3, 3, Operation::SetLimits(state.limits.clone()));
     assert_eq!(outcome.unwrap_err().code, ErrorCode::QuotaExceeded);
     assert_eq!(
         db.generation().unwrap().state.limits.max_snapshot_bytes,
@@ -270,7 +285,9 @@ fn recovery_and_limit_changes_cannot_admit_state_above_snapshot_format_or_tenant
             .code,
         ErrorCode::InvalidArgument
     );
-    let mut state = db.generation().unwrap().state.clone();
+    let mut state =
+        kasumi_engine::test_utils::decode_snapshot_candidate(&db.fixture_snapshot().unwrap())
+            .unwrap();
     state.limits.max_document_bytes = 1024;
     assert!(
         db.fixture_restore(
@@ -279,7 +296,7 @@ fn recovery_and_limit_changes_cannot_admit_state_above_snapshot_format_or_tenant
         .is_err()
     );
     assert_eq!(
-        apply(&db, 5, 5, Operation::SetLimits(state.limits))
+        apply(&db, 5, 5, Operation::SetLimits(state.limits.clone()))
             .unwrap_err()
             .code,
         ErrorCode::QuotaExceeded

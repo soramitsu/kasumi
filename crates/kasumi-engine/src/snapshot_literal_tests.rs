@@ -46,7 +46,13 @@ fn literal_marker_documents_schema_and_staged_records_survive_canonical_snapshot
     let target_resolutions =
         crate::target_resolution::View::empty(&state.tenant, &state.incarnation).unwrap();
     let image = kasumi_store::SnapshotImage::capture(&disk, 64 << 20, |writer| {
-        write(&state, &terminals, &target_resolutions, writer)
+        write(
+            &state,
+            &crate::mutation_receipt::View::empty(&state.tenant, &state.incarnation)?,
+            &terminals,
+            &target_resolutions,
+            writer,
+        )
     })
     .unwrap();
     let restored = read(image.disk(), &mut image.reader()).unwrap();

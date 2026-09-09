@@ -1,139 +1,25 @@
-//! Immutable terminal transaction rows. A logical view selects a prefix; durable
-//! rows beyond that prefix are never evidence that their command was applied.
-//! Reads open short point transactions and do not pin unrelated redb pages.
+//! Permanent ordinary mutation outcomes, selected by one applied generation.
+//! No expiry or resident lifetime map exists. Point reads use short transactions;
+//! a row beyond the selected ordinal cannot prove that its command was applied.
+use crate::staged_terminal::AppliedIdentity;
+#[cfg(any(test, feature = "test-utils"))]
+use crate::staged_terminal::AppliedOrigin;
 use anyhow::{Context, Result, ensure};
 use kasumi_store::{EncryptedTable, ScratchDisk, TenantStore, WriteOp};
 use kasumi_types::*;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+// A single admitted batch has at most 256 bounded names/IDs and contains no
+// document Value in its receipt. This is a per-record format bound, not a lifetime cap.
 const MAX_ROW_BYTES: usize = 2 << 20;
 pub(crate) const MAX_SNAPSHOT_RECORD_BYTES: usize = MAX_ROW_BYTES;
-const CATALOG: &str = "staged-terminal-catalog";
+const CATALOG: &str = "mutation-receipt-catalog";
 pub(crate) fn scratch_limit(canonical_bytes: u64) -> Result<u64> {
     canonical_bytes
         .checked_mul(8)
         .and_then(|n| n.checked_add(64 << 20))
-        .context("terminal scratch table budget overflow")
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "kind", deny_unknown_fields)]
-pub(crate) enum AppliedOrigin {
-    Raft {
-        term: u64,
-        leader: u64,
-        index: u64,
-        context_sha256: String,
-    },
-    #[cfg(any(test, feature = "test-utils"))]
-    Fixture,
-}
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct AppliedIdentity {
-    pub incarnation: String,
-    pub revision: u64,
-    pub timestamp_ms: u64,
-    pub command_sha256: String,
-    pub origin: AppliedOrigin,
-}
-impl AppliedIdentity {
-    pub(crate) fn ordered(
-        incarnation: &str,
-        revision: u64,
-        timestamp_ms: u64,
-        position: &kasumi_raft::AppliedEntryContext,
-    ) -> Result<Self> {
-        let result = Self {
-            incarnation: incarnation.into(),
-            revision,
-            timestamp_ms,
-            command_sha256: position.command_sha256.clone(),
-            origin: AppliedOrigin::Raft {
-                term: position.log_id.leader_id.term,
-                leader: position.log_id.leader_id.node_id,
-                index: position.log_id.index,
-                context_sha256: staged_digest(&(
-                    "kasumi.staged-terminal-applied.v1",
-                    &position.log_id,
-                    &position.previous,
-                    &position.membership,
-                    &position.command_sha256,
-                ))?
-                .0,
-            },
-        };
-        result.validate()?;
-        Ok(result)
-    }
-    /// Validate an immutable applied position against the retained original
-    /// incarnation, including the strict post-genesis lower bound after restore.
-    pub(crate) fn validate_original_position(&self, state: &TenantState) -> Result<(u64, u64)> {
-        self.validate()?;
-        let (genesis_revision, bound) = if self.incarnation == state.incarnation {
-            (state.revision_base, state.revision)
-        } else {
-            let bound = state
-                .restore_lineage
-                .iter()
-                .find(|link| link.checkpoint.source_incarnation == self.incarnation)
-                .context("terminal applied incarnation is outside retained lineage")?
-                .checkpoint
-                .revision;
-            let genesis = state
-                .restore_lineage
-                .iter()
-                .find(|link| link.target_incarnation == self.incarnation)
-                .map(|link| {
-                    link.checkpoint
-                        .revision
-                        .checked_add(1)
-                        .context("terminal applied genesis revision overflow")
-                })
-                .transpose()?
-                .unwrap_or(0);
-            (genesis, bound)
-        };
-        ensure!(
-            self.revision > genesis_revision && self.revision <= bound,
-            "terminal applied revision is outside its original incarnation"
-        );
-        match &self.origin {
-            AppliedOrigin::Raft { index, .. } => {
-                ensure!(
-                    genesis_revision.checked_add(*index) == Some(self.revision),
-                    "terminal Raft position differs from original incarnation revision"
-                );
-            }
-            #[cfg(any(test, feature = "test-utils"))]
-            AppliedOrigin::Fixture => {}
-        }
-        Ok((genesis_revision, bound))
-    }
-
-    fn validate(&self) -> Result<()> {
-        validate_name(&self.incarnation)?;
-        ensure!(
-            self.revision > 0 && digest(&self.command_sha256),
-            "invalid terminal applied identity"
-        );
-        match &self.origin {
-            AppliedOrigin::Raft {
-                index,
-                context_sha256,
-                ..
-            } => {
-                ensure!(
-                    *index > 0 && *index <= self.revision && digest(context_sha256),
-                    "invalid terminal Raft binding"
-                );
-            }
-            #[cfg(any(test, feature = "test-utils"))]
-            AppliedOrigin::Fixture => {}
-        }
-        Ok(())
-    }
+        .context("receipt scratch table budget overflow")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -143,59 +29,97 @@ pub(crate) struct Row {
     pub key: String,
     pub previous_sha256: String,
     pub applied: AppliedIdentity,
-    pub stage: StagedTransaction,
+    pub receipt: StoredReceipt,
 }
 impl Row {
     pub(crate) fn sha256(&self) -> Result<String> {
-        Ok(staged_digest(&("kasumi.staged-terminal-row.v1", self))?.0)
+        Ok(staged_digest(&("kasumi.mutation-receipt-row.v1", self))?.0)
     }
     pub(crate) fn framed_bytes(&self) -> Result<u64> {
-        let size = crate::accounting::encoded_len(&crate::snapshot_codec::Record::Terminal(
+        let bytes = crate::accounting::encoded_len(&crate::snapshot_codec::Record::Receipt(
             Box::new(self.clone()),
         ))?;
         ensure!(
-            size <= MAX_ROW_BYTES,
-            "terminal row exceeds canonical record budget"
+            bytes <= MAX_ROW_BYTES,
+            "receipt exceeds canonical per-record budget"
         );
-        u64::try_from(size)?
+        (bytes as u64)
             .checked_add(crate::snapshot_codec::FRAME_HEADER_BYTES as u64)
-            .context("terminal row length overflow")
+            .context("receipt canonical length overflow")
     }
     pub(crate) fn validate(&self, state: &TenantState) -> Result<()> {
         ensure!(
             self.ordinal > 0 && digest(&self.key) && digest(&self.previous_sha256),
-            "invalid terminal chain identity"
+            "receipt chain identity differs"
         );
-        self.applied.validate()?;
+        let (genesis, maximum) = self.applied.validate_original_position(state)?;
+        self.receipt
+            .validate_identity(&self.key, &state.tenant, genesis, maximum)?;
         ensure!(
-            !self.stage.is_active()
-                && self.stage.chunks.is_empty()
-                && !crate::state::staging::validate_snapshot_record(
-                    &self.key,
-                    &self.stage,
-                    state,
-                    &Default::default(),
-                )?,
-            "terminal row contains a live upload"
+            self.receipt.scope.incarnation == self.applied.incarnation
+                && self.receipt.recorded_revision == self.applied.revision,
+            "receipt original scope differs from its applying command"
         );
-        self.applied.validate_original_position(state)?;
-        let receipt = match &self.stage.outcome {
-            StagedOutcome::Finished {
-                outcome: Ok(receipt),
-            }
-            | StagedOutcome::Aborted { receipt }
-            | StagedOutcome::Expired { receipt } => Some(receipt),
-            _ => None,
-        };
-        if let Some(receipt) = receipt {
+        ensure!(
+            !self.receipt.collections.is_empty() && self.receipt.collections.len() <= 256,
+            "receipt collection count exceeds per-operation bound"
+        );
+        let mut previous: Option<&str> = None;
+        for collection in &self.receipt.collections {
+            validate_name(collection)?;
             ensure!(
-                receipt.revision == self.applied.revision,
-                "terminal receipt differs from original applying revision"
+                previous.is_none_or(|old| old < collection.as_str()),
+                "receipt collections are not canonical"
+            );
+            previous = Some(collection);
+        }
+        if let Ok(outcome) = &self.receipt.outcome {
+            ensure!(
+                !outcome.versions.is_empty() && outcome.versions.len() <= 256,
+                "receipt version count exceeds per-operation bound"
+            );
+            let mut collections = std::collections::BTreeSet::new();
+            for (key, version) in &outcome.versions {
+                ensure!(
+                    key.len() <= 1026 && *version == self.applied.revision,
+                    "receipt document version differs"
+                );
+                let path = key
+                    .strip_prefix('/')
+                    .context("receipt path lacks root slash")?;
+                let (collection, id) = path
+                    .split_once('/')
+                    .context("receipt path lacks document segment")?;
+                let collection = decode_path_segment(collection)?;
+                let _id = decode_path_segment(id)?;
+                collections.insert(collection);
+            }
+            ensure!(
+                collections.iter().eq(self.receipt.collections.iter()),
+                "receipt versions and authorized collection set differ"
             );
         }
+
         self.framed_bytes()?;
         Ok(())
     }
+}
+fn decode_path_segment(segment: &str) -> Result<String> {
+    let mut decoded = String::with_capacity(segment.len());
+    let mut chars = segment.chars();
+    while let Some(ch) = chars.next() {
+        decoded.push(match ch {
+            '/' => anyhow::bail!("receipt path has an extra segment"),
+            '~' => match chars.next() {
+                Some('0') => '~',
+                Some('1') => '/',
+                _ => anyhow::bail!("receipt path escape is not canonical"),
+            },
+            ch => ch,
+        });
+    }
+    validate_name(&decoded)?;
+    Ok(decoded)
 }
 fn digest(value: &str) -> bool {
     value.len() == 64
@@ -222,11 +146,11 @@ pub(crate) struct NamespaceBinding {
     tenant: String,
     incarnation: String,
     checkpoint_sha256: String,
-    checkpoint_head: StagedTerminalHead,
+    checkpoint_head: MutationReceiptHead,
 }
 impl NamespaceBinding {
     fn namespace(&self) -> String {
-        format!("staged-terminal-{}", self.namespace)
+        format!("mutation-receipt-{}", self.namespace)
     }
 }
 struct DurableRows {
@@ -250,7 +174,7 @@ impl Source {
             result
                 .as_ref()
                 .is_none_or(|value| value.len() <= MAX_ROW_BYTES),
-            "terminal physical row exceeds bound"
+            "receipt physical row exceeds bound"
         );
         Ok(result)
     }
@@ -260,11 +184,11 @@ impl Source {
 #[derive(Clone)]
 pub(crate) struct View {
     source: Option<Arc<Source>>,
-    head: StagedTerminalHead,
+    head: MutationReceiptHead,
 }
 impl std::fmt::Debug for View {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TerminalView")
+        f.debug_struct("MutationReceiptView")
             .field("head", &self.head)
             .finish_non_exhaustive()
     }
@@ -273,10 +197,10 @@ impl View {
     pub(crate) fn empty(tenant: &str, incarnation: &str) -> Result<Self> {
         Ok(Self {
             source: None,
-            head: StagedTerminalHead::empty(tenant, incarnation)?,
+            head: MutationReceiptHead::empty(tenant, incarnation)?,
         })
     }
-    pub(crate) fn head(&self) -> &StagedTerminalHead {
+    pub(crate) fn head(&self) -> &MutationReceiptHead {
         &self.head
     }
     fn bytes(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
@@ -289,31 +213,32 @@ impl View {
     fn index(&self, ordinal: u64) -> Result<Ordinal> {
         ensure!(
             ordinal > 0 && ordinal <= self.head.count,
-            "terminal ordinal is outside selected generation"
+            "receipt ordinal is outside selected generation"
         );
         let bytes = self
             .bytes(&ordinal_key(ordinal))?
-            .context("terminal ordinal missing")?;
+            .context("receipt ordinal missing")?;
         let entry: Ordinal = serde_json::from_slice(&bytes)?;
         ensure!(
             digest(&entry.key) && digest(&entry.sha256),
-            "invalid terminal ordinal index"
+            "invalid receipt ordinal index"
         );
         Ok(entry)
     }
     pub(crate) fn check_head(&self, tenant: &str) -> Result<()> {
         validate_name(&self.head.origin_incarnation)?;
-        ensure!(digest(&self.head.sha256), "invalid terminal head digest");
+        ensure!(digest(&self.head.sha256), "invalid receipt head digest");
         if self.head.count == 0 {
             ensure!(
-                self.head == StagedTerminalHead::empty(tenant, &self.head.origin_incarnation)?,
-                "nonempty terminal accounting without rows"
+                self.head == MutationReceiptHead::empty(tenant, &self.head.origin_incarnation)?,
+                "nonempty receipt accounting without rows"
             );
         } else {
             ensure!(
                 self.head.encoded_bytes > 0
+                    && self.head.last_applied_revision > 0
                     && self.index(self.head.count)?.sha256 == self.head.sha256,
-                "terminal physical prefix differs from selected root"
+                "receipt physical prefix differs from selected root"
             );
         }
         Ok(())
@@ -321,14 +246,15 @@ impl View {
     pub(crate) fn validate_state(&self, state: &TenantState) -> Result<()> {
         self.check_head(&state.tenant)?;
         ensure!(
-            self.head == state.staged_terminal_head
+            self.head == state.mutation_receipt_head
+                && self.head.last_applied_revision <= state.revision
                 && (self.head.origin_incarnation == state.incarnation
                     || state
                         .restore_lineage
                         .iter()
                         .any(|link| link.checkpoint.source_incarnation
                             == self.head.origin_incarnation)),
-            "terminal history origin is outside retained lineage"
+            "receipt history origin is outside retained lineage"
         );
         Ok(())
     }
@@ -338,13 +264,13 @@ impl View {
     pub(crate) fn get_charged(
         &self,
         key: &str,
-        reserve_decoded: impl FnOnce(usize) -> Result<()>,
+        reserve_decoded: impl FnOnce(&[u8]) -> Result<()>,
     ) -> Result<Option<Row>> {
-        ensure!(digest(key), "invalid staged point identity");
+        ensure!(digest(key), "invalid mutation receipt point identity");
         let Some(bytes) = self.bytes(&id_key(key))? else {
             return Ok(None);
         };
-        reserve_decoded(bytes.len())?;
+        reserve_decoded(&bytes)?;
         let row: Row = serde_json::from_slice(&bytes)?;
         // A commit may have persisted a row before its applied cursor. It remains
         // invisible until exact replay advances this logical view's prefix.
@@ -353,39 +279,45 @@ impl View {
         }
         ensure!(
             row.key == key && row.ordinal > 0,
-            "terminal point identity differs"
+            "receipt point identity differs"
         );
+        if row.ordinal == self.head.count {
+            ensure!(
+                row.applied.revision == self.head.last_applied_revision,
+                "receipt last applied position differs from selected head"
+            );
+        }
         let index = self.index(row.ordinal)?;
         ensure!(
             index.key == key && index.sha256 == row.sha256()?,
-            "terminal row differs from ordinal commitment"
+            "receipt row differs from ordinal commitment"
         );
         if row.ordinal == 1 {
             ensure!(
                 row.previous_sha256
-                    == StagedTerminalHead::empty(
-                        &row.stage.scope.tenant,
+                    == MutationReceiptHead::empty(
+                        &row.receipt.scope.tenant,
                         &self.head.origin_incarnation
                     )?
                     .sha256,
-                "terminal initial root differs"
+                "receipt initial root differs"
             );
         } else {
             ensure!(
                 row.previous_sha256 == self.index(row.ordinal - 1)?.sha256,
-                "terminal parent root differs"
+                "receipt parent root differs"
             );
         }
         ensure!(
             self.index(self.head.count)?.sha256 == self.head.sha256,
-            "terminal selected root differs"
+            "receipt selected root differs"
         );
         Ok(Some(row))
     }
     pub(crate) fn row(&self, ordinal: u64) -> Result<Row> {
         let key = self.index(ordinal)?.key;
-        let row = self.get(&key)?.context("terminal indexed row missing")?;
-        ensure!(row.ordinal == ordinal, "terminal ordinal redirected");
+        let row = self.get(&key)?.context("receipt indexed row missing")?;
+        ensure!(row.ordinal == ordinal, "receipt ordinal redirected");
         Ok(row)
     }
     pub(crate) fn records(&self) -> impl Iterator<Item = Result<Row>> + Send + '_ {
@@ -397,7 +329,7 @@ impl View {
 /// authenticated final head must match before this can become a restore input.
 pub(crate) struct Builder {
     table: Arc<EncryptedTable>,
-    head: StagedTerminalHead,
+    head: MutationReceiptHead,
 }
 impl Builder {
     pub(crate) fn new(
@@ -408,11 +340,15 @@ impl Builder {
     ) -> Result<Self> {
         Ok(Self {
             table: Arc::new(EncryptedTable::new(disk, limit)?),
-            head: StagedTerminalHead::empty(tenant, origin)?,
+            head: MutationReceiptHead::empty(tenant, origin)?,
         })
     }
     pub(crate) fn push(&mut self, row: &Row, state: &TenantState) -> Result<()> {
         row.validate(state)?;
+        ensure!(
+            self.table.get(&id_key(&row.key))?.is_none(),
+            "duplicate immutable receipt identity"
+        );
         advance(&mut self.head, row)?;
         let index = Ordinal {
             key: row.key.clone(),
@@ -424,10 +360,10 @@ impl Builder {
             .insert(&ordinal_key(row.ordinal), &serde_json::to_vec(&index)?)?;
         Ok(())
     }
-    pub(crate) fn finish(self, expected: &StagedTerminalHead) -> Result<View> {
+    pub(crate) fn finish(self, expected: &MutationReceiptHead) -> Result<View> {
         ensure!(
             &self.head == expected,
-            "terminal stream final root/count/bytes differ"
+            "receipt stream final root/count/bytes differ"
         );
         Ok(View {
             source: Some(Arc::new(Source::Staged(self.table))),
@@ -435,21 +371,23 @@ impl Builder {
         })
     }
 }
-pub(crate) fn advance(head: &mut StagedTerminalHead, row: &Row) -> Result<()> {
+pub(crate) fn advance(head: &mut MutationReceiptHead, row: &Row) -> Result<()> {
     ensure!(
         row.ordinal
             == head
                 .count
                 .checked_add(1)
-                .context("terminal ordinal exhausted")?
-            && row.previous_sha256 == head.sha256,
-        "terminal row is not the next committed prefix"
+                .context("receipt ordinal exhausted")?
+            && row.previous_sha256 == head.sha256
+            && row.applied.revision > head.last_applied_revision,
+        "receipt row is not the next committed prefix"
     );
     head.encoded_bytes = head
         .encoded_bytes
         .checked_add(row.framed_bytes()?)
-        .context("terminal permanent byte overflow")?;
+        .context("receipt permanent byte overflow")?;
     head.count = row.ordinal;
+    head.last_applied_revision = row.applied.revision;
     head.sha256 = row.sha256()?;
     Ok(())
 }
@@ -478,7 +416,7 @@ impl View {
     pub(crate) fn checkpoint_exists(store: &TenantStore, checkpoint_sha256: &str) -> Result<bool> {
         ensure!(
             digest(checkpoint_sha256),
-            "invalid terminal checkpoint digest"
+            "invalid receipt checkpoint digest"
         );
         Ok(store
             .get_bounded(CATALOG, checkpoint_sha256.as_bytes(), 64 << 10)?
@@ -494,8 +432,8 @@ impl View {
         ensure!(
             digest(checkpoint_sha256)
                 && store.tenant() == state.tenant
-                && self.head == state.staged_terminal_head,
-            "terminal installation identity differs"
+                && self.head == state.mutation_receipt_head,
+            "receipt installation identity differs"
         );
         self.check_head(&state.tenant)?;
         let selected = store
@@ -503,14 +441,14 @@ impl View {
             .map(|bytes| serde_json::from_slice::<NamespaceBinding>(&bytes))
             .transpose()?;
         if reopen {
-            let binding = selected.context("authoritative terminal checkpoint binding missing")?;
+            let binding = selected.context("authoritative receipt checkpoint binding missing")?;
             ensure!(
                 binding.tenant == state.tenant
                     && binding.incarnation == state.incarnation
                     && binding.checkpoint_sha256 == checkpoint_sha256
                     && binding.checkpoint_head == self.head
                     && !binding.namespace.is_nil(),
-                "terminal checkpoint binding differs"
+                "receipt checkpoint binding differs"
             );
             let view = View {
                 source: Some(Arc::new(Source::Durable(DurableRows {
@@ -526,10 +464,10 @@ impl View {
                 let row = row?;
                 let actual = view
                     .get(&row.key)?
-                    .context("checkpoint terminal row missing")?;
+                    .context("checkpoint receipt row missing")?;
                 ensure!(
                     actual.sha256()? == row.sha256()?,
-                    "checkpoint terminal physical row differs"
+                    "checkpoint receipt physical row differs"
                 );
             }
             return Ok(Installation {
@@ -543,7 +481,7 @@ impl View {
             Some(Source::Staged(table)) => table.clone(),
             None if self.head.count == 0 => Arc::new(EncryptedTable::new(
                 store.scratch_disk(),
-                scratch_limit(state.limits.max_snapshot_bytes)?,
+                scratch_limit(state.limits.max_mutation_receipt_bytes)?,
             )?),
             _ => anyhow::bail!("namespace installation requires verified staged rows"),
         };
@@ -583,11 +521,11 @@ impl View {
         checkpoint_sha256: &str,
     ) -> Result<Vec<WriteOp>> {
         ensure!(
-            digest(checkpoint_sha256) && self.head == state.staged_terminal_head,
-            "terminal capture checkpoint differs"
+            digest(checkpoint_sha256) && self.head == state.mutation_receipt_head,
+            "receipt capture checkpoint differs"
         );
         let Some(Source::Durable(rows)) = self.source.as_deref() else {
-            anyhow::bail!("terminal snapshot capture requires installed durable ownership");
+            anyhow::bail!("receipt snapshot capture requires installed durable ownership");
         };
         rows.store.check_access()?;
         self.check_head(&state.tenant)?;
@@ -602,99 +540,64 @@ impl View {
     }
 }
 
-/// At most the bounded active set and the current command can become terminal
-/// during one apply. Existing permanent rows are never cloned into a history map.
+/// At most one finalized ordinary receipt can arise from one ordered mutation.
 pub(crate) struct Pending {
     previous: View,
-    head: StagedTerminalHead,
+    head: MutationReceiptHead,
     rows: Vec<Row>,
 }
 impl Pending {
     pub(crate) fn prepare(
         previous: &View,
-        previous_state: &TenantState,
-        next: &mut TenantState,
+        state: &TenantState,
+        receipt: Option<StoredReceipt>,
         applied: &AppliedIdentity,
     ) -> Result<Self> {
         ensure!(
-            previous.head == previous_state.staged_terminal_head
-                && next.staged_terminal_head == previous.head,
-            "terminal starting prefix differs"
+            previous.head == state.mutation_receipt_head,
+            "receipt starting prefix differs"
         );
         let mut head = previous.head.clone();
         let mut rows = Vec::new();
-        let keys: Vec<_> = next
-            .staged_transactions
-            .iter()
-            .filter(|(_, stage)| !stage.is_active())
-            .map(|(key, _)| key.clone())
-            .collect();
-        ensure!(
-            keys.len() <= 65,
-            "terminal apply overlay exceeds bounded active set"
-        );
-        for key in keys {
-            let stage = next
-                .staged_transactions
-                .remove(&key)
-                .context("terminal overlay row missing")?;
-            if let Some(existing) = previous.get(&key)? {
-                ensure!(
-                    staged_digest(&existing.stage)? == staged_digest(&stage)?,
-                    "permanent terminal outcome changed"
-                );
-                continue;
-            }
-            let header_bytes = crate::accounting::staged_header(&key, &stage)?;
+        if let Some(receipt) = receipt {
+            let key = staged_digest(&(&receipt.scope.principal, &receipt.idempotency_key))?.0;
+            ensure!(
+                previous.get(&key)?.is_none(),
+                "cannot rewrite permanent receipt"
+            );
             let row = Row {
                 ordinal: head
                     .count
                     .checked_add(1)
-                    .context("terminal ordinal exhausted")?,
-                key: key.clone(),
+                    .context("receipt ordinal overflow")?,
+                key,
                 previous_sha256: head.sha256.clone(),
                 applied: applied.clone(),
-                stage,
+                receipt,
             };
-            row.validate(next)?;
-            let row_bytes = row.framed_bytes()?;
-            if let Some(active) = previous_state.staged_transactions.get(&key) {
-                let (used, reserved) = crate::state::staging::permanent_charge(&key, active)?;
-                ensure!(
-                    active.is_active()
-                        && used
-                            .checked_add(reserved)
-                            .is_some_and(|capacity| row_bytes <= capacity),
-                    "terminal envelope exceeds its original Begin reservation"
-                );
-            }
-            next.permanent_staged_bytes = next
-                .permanent_staged_bytes
-                .checked_sub(header_bytes)
-                .and_then(|n| n.checked_add(row_bytes))
-                .context("terminal row accounting overflow")?;
+            row.validate(state)?;
             advance(&mut head, &row)?;
+            ensure!(
+                head.encoded_bytes <= state.limits.max_mutation_receipt_bytes,
+                "receipt byte admission was not reserved"
+            );
             rows.push(row);
         }
-        next.staged_terminal_head = head.clone();
         Ok(Self {
             previous: previous.clone(),
             head,
             rows,
         })
     }
-    pub(crate) fn get(&self, key: &str) -> Result<Option<StagedTransaction>> {
-        if let Some(row) = self.rows.iter().find(|row| row.key == key) {
-            return Ok(Some(row.stage.clone()));
-        }
-        Ok(self.previous.get(key)?.map(|row| row.stage))
+    pub(crate) fn head(&self) -> &MutationReceiptHead {
+        &self.head
     }
     pub(crate) fn persist(self) -> Result<View> {
         if self.rows.is_empty() {
             return Ok(self.previous);
         }
         let Some(source) = &self.previous.source else {
-            anyhow::bail!("terminal append storage is not installed");
+            anyhow::bail!("receipt append storage is not installed");
         };
         match source.as_ref() {
             Source::Durable(storage) => {
@@ -713,7 +616,7 @@ impl Pending {
                         (Some(old_row), Some(old_index)) => {
                             ensure!(
                                 old_row == bytes && old_index == index,
-                                "future terminal row differs from exact original command replay"
+                                "future receipt row differs from exact original command replay"
                             );
                         }
                         (None, None) => {
@@ -725,7 +628,7 @@ impl Pending {
                                 WriteOp::put(&namespace, ordinal, index),
                             ])?;
                         }
-                        _ => anyhow::bail!("partially published terminal row/index"),
+                        _ => anyhow::bail!("partially published receipt row/index"),
                     }
                 }
             }
@@ -748,14 +651,14 @@ impl Pending {
                 }
             }
             Source::Staged(_) => {
-                anyhow::bail!("unpublished restore staging cannot serve terminal writes")
+                anyhow::bail!("unpublished restore staging cannot serve receipt writes")
             }
         }
         let view = View {
             source: self.previous.source,
             head: self.head,
         };
-        view.check_head(&self.rows[0].stage.scope.tenant)?;
+        view.check_head(&self.rows[0].receipt.scope.tenant)?;
         Ok(view)
     }
 }
@@ -766,10 +669,10 @@ impl View {
         if self.source.is_some() {
             return Ok(self.clone());
         }
-        ensure!(self.head.count == 0, "fixture terminal prefix has no owner");
+        ensure!(self.head.count == 0, "fixture receipt prefix has no owner");
         let table = Arc::new(EncryptedTable::new(
             &ScratchDisk::fixture(),
-            scratch_limit(state.limits.max_snapshot_bytes)?,
+            scratch_limit(state.limits.max_mutation_receipt_bytes)?,
         )?);
         Ok(Self {
             source: Some(Arc::new(Source::Staged(table))),
@@ -779,5 +682,5 @@ impl View {
 }
 
 #[cfg(test)]
-#[path = "staged_terminal_tests.rs"]
+#[path = "mutation_receipt_tests.rs"]
 mod tests;

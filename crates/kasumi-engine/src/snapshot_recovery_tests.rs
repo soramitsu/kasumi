@@ -180,7 +180,14 @@ fn image(state: &TenantState) -> kasumi_store::SnapshotImage {
     let terminals = crate::staged_terminal::View::empty(&state.tenant, &state.incarnation).unwrap();
     let target_resolutions =
         crate::target_resolution::View::empty(&state.tenant, &state.incarnation).unwrap();
-    write(state, &terminals, &target_resolutions, &mut spool).unwrap();
+    write(
+        state,
+        &crate::mutation_receipt::View::empty(&state.tenant, &state.incarnation).unwrap(),
+        &terminals,
+        &target_resolutions,
+        &mut spool,
+    )
+    .unwrap();
     kasumi_store::SnapshotImage::freeze(spool).unwrap()
 }
 
@@ -210,13 +217,7 @@ fn canonical_recovery_records_roundtrip_and_point_accounting_match_stream() {
         .phases
         .insert(phase.phase_id.to_string(), phase);
     let accounting = before
-        .updated(
-            &previous,
-            &next,
-            &Default::default(),
-            &Default::default(),
-            &Default::default(),
-        )
+        .updated(&previous, &next, &Default::default(), &Default::default())
         .unwrap();
     assert_eq!(accounting.bytes(&next).unwrap() as u64, image(&next).len());
     assert_eq!(
@@ -228,13 +229,7 @@ fn canonical_recovery_records_roundtrip_and_point_accounting_match_stream() {
     );
     next.recovery_control = Default::default();
     let accounting = before
-        .updated(
-            &previous,
-            &next,
-            &Default::default(),
-            &Default::default(),
-            &Default::default(),
-        )
+        .updated(&previous, &next, &Default::default(), &Default::default())
         .unwrap();
     assert_eq!(accounting.bytes(&next).unwrap() as u64, image(&next).len());
 }

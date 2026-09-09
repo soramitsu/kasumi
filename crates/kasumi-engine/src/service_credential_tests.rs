@@ -206,7 +206,15 @@ fn replicated_credential_admission_uses_only_captured_time_after_local_expiry() 
                 .documents
                 .is_empty()
         );
-        assert!(replica.generation().unwrap().state.receipts.is_empty());
+        assert_eq!(
+            replica
+                .generation()
+                .unwrap()
+                .state
+                .mutation_receipt_head
+                .count,
+            0
+        );
     }
     assert_eq!(
         first

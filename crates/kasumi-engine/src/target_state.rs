@@ -232,7 +232,7 @@ impl TenantEngine {
             target_resolutions,
             state: next,
             indexes: previous.indexes.clone(),
-            receipt_expiry: previous.receipt_expiry.clone(),
+            receipts: previous.receipts.clone(),
             snapshot_accounting: accounting,
             _read_reservations: vec![],
         })));

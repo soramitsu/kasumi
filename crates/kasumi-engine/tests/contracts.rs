@@ -337,7 +337,10 @@ fn audit_budget_blocks_effects_and_can_be_increased_without_losing_records() {
         ErrorCode::AuditUnavailable
     );
     assert_eq!(db.generation().unwrap().state.document_count, 0);
-    assert!(db.generation().unwrap().state.receipts.is_empty());
+    assert_eq!(
+        db.generation().unwrap().state.mutation_receipt_head.count,
+        0
+    );
     let limits = Limits {
         audit_retention: AuditRetentionBudget {
             hot_bytes: 256 << 10,
@@ -366,14 +369,8 @@ fn audit_budget_blocks_effects_and_can_be_increased_without_losing_records() {
 }
 
 #[test]
-fn receipt_expiry_index_obeys_exact_boundary_and_rebuilds_from_snapshot() {
-    let db = engine(
-        false,
-        Limits {
-            max_receipts: 2,
-            ..Limits::default()
-        },
-    );
+fn permanent_receipts_ignore_former_expiry_boundaries_and_survive_snapshot_recovery() {
+    let db = engine(false, Limits::default());
     db.apply_command(1, command(Operation::CreateCollection(definition())))
         .unwrap()
         .unwrap();
@@ -384,31 +381,48 @@ fn receipt_expiry_index_obeys_exact_boundary_and_rebuilds_from_snapshot() {
             vec![put(id, id, Precondition::Any)],
         )))
     };
-    db.apply_command(2, make("first", "a", 1000))
+    let first = db
+        .apply_command(2, make("first", "a", 1000))
         .unwrap()
         .unwrap();
     db.apply_command(3, make("second", "b", 2000))
         .unwrap()
         .unwrap();
+    db.apply_command(4, make("third", "c", 86_400_999))
+        .unwrap()
+        .unwrap();
     assert_eq!(
-        db.apply_command(4, make("third", "c", 86_400_999))
+        db.apply_command(5, make("first", "a", 86_401_000))
+            .unwrap()
+            .unwrap(),
+        first
+    );
+    assert_eq!(
+        db.generation().unwrap().state.mutation_receipt_head.count,
+        3
+    );
+    db.fixture_restore(&db.fixture_snapshot().unwrap()).unwrap();
+    assert_eq!(
+        db.apply_command(6, make("first", "d", 86_402_000))
             .unwrap()
             .unwrap_err()
             .code,
-        ErrorCode::QuotaExceeded
+        ErrorCode::Conflict
     );
-    db.apply_command(5, make("third", "c", 86_401_000))
-        .unwrap()
-        .unwrap();
-    assert_eq!(db.generation().unwrap().state.receipts.len(), 2);
-    db.fixture_restore(&db.fixture_snapshot().unwrap()).unwrap();
-    db.apply_command(6, make("first", "d", 86_402_000))
-        .unwrap()
-        .unwrap();
-    assert_eq!(db.generation().unwrap().state.receipts.len(), 2);
     assert_eq!(
-        db.generation().unwrap().state.collections["people"].documents["d"].version,
-        6
+        db.apply_command(7, make("first", "a", u64::MAX - 1))
+            .unwrap()
+            .unwrap(),
+        first
+    );
+    assert_eq!(
+        db.generation().unwrap().state.mutation_receipt_head.count,
+        3
+    );
+    assert!(
+        !db.generation().unwrap().state.collections["people"]
+            .documents
+            .contains_key("d")
     );
 }
 

@@ -1,0 +1,92 @@
+{
+  "status": "source-only; not executed",
+  "toolchain": "1.97.1",
+  "locked": true,
+  "jobs": 1,
+  "required_check": [
+    "cargo check --workspace --all-targets --all-features --locked",
+    "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings"
+  ],
+  "focused": [
+    {
+      "package": "kasumi-engine",
+      "target": "lib",
+      "filter": "service::tests::permanent_receipt_public_retry_survives_expiry_era_and_lowered_batch_limits",
+      "required_count": 1
+    },
+    {
+      "package": "kasumi-engine",
+      "target": "lib",
+      "filter": "state::mutation_apply::tests::",
+      "required_names": [
+        "state::mutation_apply::tests::admitted_failure_survives_byte_exhaustion_expansion_and_snapshot_replay",
+        "state::mutation_apply::tests::hot_audit_exhaustion_cannot_rewrite_original_or_admit_a_new_identity",
+        "state::mutation_apply::tests::terminal_reservation_covers_error_codes_escaped_versions_and_counter_widths"
+      ]
+    },
+    {
+      "package": "kasumi-engine",
+      "target": "lib",
+      "filter": "mutation_receipt::tests::",
+      "required_count": 4
+    },
+    {
+      "package": "kasumi-engine",
+      "target": "lib",
+      "filter": "state::snapshot_validation::tests::receipt_original_scope_and_position_are_checked_in_both_snapshot_paths",
+      "required_count": 1
+    },
+    {
+      "package": "kasumi-engine",
+      "target": "lib",
+      "filter": "snapshot_codec::frame_tests::",
+      "required_count": 5
+    },
+    {
+      "package": "kasumi-engine",
+      "target": "test contracts",
+      "filter": "permanent_receipts_ignore_former_expiry_boundaries_and_survive_snapshot_recovery",
+      "required_count": 1
+    },
+    {
+      "package": "kasumi-engine",
+      "target": "test snapshot_budget",
+      "filter": "",
+      "required_count": 5
+    },
+    {
+      "package": "kasumi-raft",
+      "target": "lib",
+      "filter": "storage::joint_publication_tests::",
+      "required_names": [
+        "storage::joint_publication_tests::joint_immutable_table_snapshot_power_loss_selects_complete_old_or_new_prefix",
+        "storage::joint_publication_tests::cancelled_joint_table_publication_seals_and_reopens_exact_committed_prefix"
+      ]
+    },
+    {
+      "package": "kasumi-server",
+      "target": "lib",
+      "filter": "api::tests::native_and_mcp_lost_committed_responses_resolve_without_reapplying",
+      "required_count": 1
+    }
+  ],
+  "separate_capacity_gate": {
+    "package": "kasumi-engine",
+    "target": "lib",
+    "filter": "state::mutation_apply::tests::verified_point_history_crosses_former_count_limit_before_a_real_new_mutation",
+    "ignored": true,
+    "required_count": 1,
+    "not_established": [
+      "actual HA history",
+      "production maintenance reserve capacity",
+      "hard RSS",
+      "3 GiB acceptance"
+    ]
+  },
+  "remaining": [
+    "full workspace regression after focused gates",
+    "original source/target backup and recovery gates",
+    "production graph with fixtures disabled",
+    "persistent physical disk admission and namespace reclamation"
+  ]
+}

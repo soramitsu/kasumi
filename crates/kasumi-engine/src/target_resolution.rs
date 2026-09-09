@@ -15,18 +15,20 @@ pub(crate) fn scratch_limit(table_budget: u64) -> Result<u64> {
         .and_then(|n| n.checked_add(64 << 20))
         .context("target terminal staging budget overflow")
 }
-/// Application and permanent target records have independent configured
+/// Resident application, ordinary receipts and permanent target records have independent configured
 /// budgets. The snapshot spool admits their checked aggregate on the same disk.
 pub(crate) fn snapshot_limit(state: &TenantState) -> Result<u64> {
     ensure!(
-        state.target_resolution_head.encoded_bytes <= state.limits.max_target_resolution_bytes,
-        "target terminal selected bytes exceed configured table budget"
+        state.target_resolution_head.encoded_bytes <= state.limits.max_target_resolution_bytes
+            && state.mutation_receipt_head.encoded_bytes <= state.limits.max_mutation_receipt_bytes,
+        "selected permanent bytes exceed configured table budget"
     );
     state
         .limits
         .max_snapshot_bytes
         .checked_add(state.target_resolution_head.encoded_bytes)
-        .context("combined target snapshot budget overflow")
+        .and_then(|bytes| bytes.checked_add(state.mutation_receipt_head.encoded_bytes))
+        .context("combined permanent snapshot budget overflow")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

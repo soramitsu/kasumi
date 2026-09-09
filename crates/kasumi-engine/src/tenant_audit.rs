@@ -307,7 +307,6 @@ impl TenantEngine {
                 &next,
                 &BTreeMap::new(),
                 &BTreeSet::new(),
-                &BTreeSet::new(),
             )?;
             ensure!(
                 accounting.fits(&next)?,
@@ -318,7 +317,7 @@ impl TenantEngine {
                 target_resolutions: previous.target_resolutions.clone(),
                 state: next,
                 indexes: previous.indexes.clone(),
-                receipt_expiry: previous.receipt_expiry.clone(),
+                receipts: previous.receipts.clone(),
                 snapshot_accounting: accounting,
                 _read_reservations: vec![],
             })));

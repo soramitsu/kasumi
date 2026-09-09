@@ -31,7 +31,7 @@ fn permanent_kind_cannot_forward_a_resident_payload_to_semantic_consumers() {
         }),
     ))
     .unwrap();
-    for kind in [21, 22] {
+    for kind in [5, 21, 22] {
         let bytes = raw(&[(0, header()), (kind, document.clone())]);
         // Framing hints determine a bounded initial allocation only. This is
         // deliberately a fresh valid digest over the malicious typed hint.
@@ -53,6 +53,7 @@ fn permanent_kind_cannot_forward_a_resident_payload_to_semantic_consumers() {
 fn typed_inspection_rejects_bounds_kind_order_and_terminal_substitutions() {
     for (kind, size) in [
         (0, MAX_RECORD as u64 + 1),
+        (5, record_limit(5).unwrap() + 1),
         (21, record_limit(21).unwrap() + 1),
         (22, record_limit(22).unwrap() + 1),
         (255, 1),
@@ -96,10 +97,12 @@ fn typed_inspection_rejects_bounds_kind_order_and_terminal_substitutions() {
         assert!(inspect(&mut changed.as_slice()).is_err());
         assert!(visit(&mut changed.as_slice(), |_, _| Ok(())).is_err());
     }
-    let mut old = original;
-    old[..8].copy_from_slice(b"KASUMIT4");
-    assert!(inspect(&mut old.as_slice()).is_err());
-    assert!(visit(&mut old.as_slice(), |_, _| Ok(())).is_err());
+    for magic in [b"KASUMIT4", b"KASUMIT5"] {
+        let mut old = original.clone();
+        old[..8].copy_from_slice(magic);
+        assert!(inspect(&mut old.as_slice()).is_err());
+        assert!(visit(&mut old.as_slice(), |_, _| Ok(())).is_err());
+    }
 }
 
 #[test]
@@ -108,8 +111,11 @@ fn permanent_aggregate_does_not_become_ram_and_all_layout_arithmetic_is_checked(
     layout.add(0, 4096).unwrap();
     layout.add(21, 64 << 10).unwrap();
     layout.record_work(21, 1 << 20).unwrap();
+    layout.add(5, 64 << 10).unwrap();
+    layout.record_work(5, 1 << 20).unwrap();
     let first = layout.materialization_workspace().unwrap();
     for _ in 0..32768 {
+        layout.add(5, 64 << 10).unwrap();
         layout.add(21, 64 << 10).unwrap();
     }
     // Arithmetic only: this is not an actual multi-GiB payload capacity gate.
@@ -160,4 +166,58 @@ fn inspection_reads_large_typed_payload_in_fixed_chunks_before_any_dto() {
     let verified = visit(&mut image.as_slice(), |_, _| Ok(())).unwrap();
     assert_eq!(layout, verified);
     assert!(layout.kinds[3].maximum_decode_work > layout.kinds[3].maximum_payload_bytes);
+}
+
+#[test]
+fn obsolete_receipt_tuple_and_resident_header_fields_are_rejected() {
+    let old_row = serde_json::json!({"type":"Receipt","value":["a".repeat(64), {}]});
+    let bytes = raw(&[(0, header()), (5, serde_json::to_vec(&old_row).unwrap())]);
+    let mut forwarded = 0;
+    assert!(
+        visit(&mut bytes.as_slice(), |_, _| {
+            forwarded += 1;
+            Ok(())
+        })
+        .is_err()
+    );
+    assert_eq!(forwarded, 1);
+    for case in 0..4 {
+        let mut header: serde_json::Value = serde_json::from_slice(&header()).unwrap();
+        match case {
+            0 => {
+                header["value"]
+                    .as_object_mut()
+                    .unwrap()
+                    .insert("receipts".into(), serde_json::json!({}));
+            }
+            1 => {
+                header["value"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("mutation_receipt_head");
+            }
+            2 => {
+                header["value"]["limits"]
+                    .as_object_mut()
+                    .unwrap()
+                    .insert("max_receipts".into(), serde_json::json!(100000));
+            }
+            _ => {
+                header["value"]["limits"]
+                    .as_object_mut()
+                    .unwrap()
+                    .insert("receipt_ttl_ms".into(), serde_json::json!(86400000));
+            }
+        }
+        let bytes = raw(&[(0, serde_json::to_vec(&header).unwrap())]);
+        let mut forwarded = 0;
+        assert!(
+            visit(&mut bytes.as_slice(), |_, _| {
+                forwarded += 1;
+                Ok(())
+            })
+            .is_err()
+        );
+        assert_eq!(forwarded, 0, "legacy header case {case}");
+    }
 }

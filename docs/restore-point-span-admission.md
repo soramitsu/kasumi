@@ -1,7 +1,7 @@
 # Restore admission for permanent point history
 
 This first-release change replaces the tenant logical codec directly with
-`KASUMIT5`. There is no T4 reader or conversion path. Each nonterminal frame is
+`KASUMIT6`. There is no T4/T5 reader or conversion path. Each nonterminal frame is
 `u64 payload_bytes | u8 semantic_rank | canonical_json`; the zero-length footer
 still verifies exact 64-bit count, framed bytes, digest and EOF. The outer bundle
 also checks its logical/archive counts and digest. Encrypted envelopes and
@@ -14,12 +14,12 @@ and maximum structurally accounted decode work. The semantic pass checks the
 actual enum rank before accumulating or forwarding each record, then recomputes
 that summary. A permanent tag on resident JSON cannot spend the permanent class's
 budget or reach the resident-state consumer. Permanent row roots and their exact
-framed-byte counters are still independently verified by the staged/target table
+framed-byte counters are still independently verified by the receipt/staged/target table
 builders before publication.
 
 Public restore preparation reserves a 64 MiB maintenance floor, then adds three
 times the resident framed bytes plus the maximum structural record work. Ranks
-21 and 22 do not enter the resident term. Historical backup verification reserves
+5, 21 and 22 do not enter the resident term. Historical backup verification reserves
 its 128 MiB index/cache floor plus the maximum record work before building its
 point index. Relocation repeats this admission after the old index has dropped;
 genesis materialization transfers the same reservation to the resident formula
@@ -55,8 +55,8 @@ Malformed JSON is still rejected by canonical typed decoding; structural
 preflight alone never authorizes a snapshot.
 
 The existing three-times-resident estimate and query-index rebuild memory still
-need measured capacity validation. This change does not make ordinary documents,
-receipts or all lifecycle history disk resident. Fixed cache/DTO assumptions,
+need measured capacity validation. This change does not make ordinary documents or all lifecycle history disk resident.
+The separate [permanent receipt contract](permanent-mutation-receipts.md) moves ordinary receipt outcomes into encrypted point rows. Fixed cache/DTO assumptions,
 allocator overhead, production maintenance floors and encrypted scratch usage
 must be measured together during the final 3 GiB gate. It does not certify a
 million permanent records, namespace reclamation or persistent disk admission.

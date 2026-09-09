@@ -602,6 +602,7 @@ mod tests {
             engine
                 .prepare_state(
                     state,
+                    engine.generation().unwrap().receipts.clone(),
                     engine.generation().unwrap().terminals.clone(),
                     engine.generation().unwrap().target_resolutions.clone(),
                 )
@@ -765,6 +766,7 @@ mod tests {
             source
                 .prepare_state(
                     state,
+                    source.generation().unwrap().receipts.clone(),
                     source.generation().unwrap().terminals.clone(),
                     source.generation().unwrap().target_resolutions.clone(),
                 )
@@ -777,6 +779,7 @@ mod tests {
             source
                 .prepare_state(
                     state,
+                    source.generation().unwrap().receipts.clone(),
                     source.generation().unwrap().terminals.clone(),
                     source.generation().unwrap().target_resolutions.clone(),
                 )
@@ -908,7 +911,12 @@ mod tests {
             .replace_namespaces(&install.replacements(), install.writes())
             .unwrap();
         let generation = source
-            .prepare_state(state, install.view, previous.target_resolutions.clone())
+            .prepare_state(
+                state,
+                previous.receipts.clone(),
+                install.view,
+                previous.target_resolutions.clone(),
+            )
             .unwrap();
         source.publish_generation(Some(Arc::new(generation)));
         drop(previous);

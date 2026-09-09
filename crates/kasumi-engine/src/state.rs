@@ -1,5 +1,7 @@
 #[path = "custody_snapshot.rs"]
 mod custody_snapshot;
+#[path = "mutation_apply.rs"]
+mod mutation_apply;
 #[path = "snapshot_api.rs"]
 mod snapshot_api;
 #[path = "snapshot_bundle.rs"]
@@ -35,28 +37,26 @@ pub(crate) mod tenant_audit;
 
 pub struct Generation {
     pub state: TenantState,
+    pub(crate) receipts: crate::mutation_receipt::View,
     pub(crate) terminals: crate::staged_terminal::View,
     pub(crate) target_resolutions: crate::target_resolution::View,
     pub indexes: Arc<QueryIndexes>,
-    // Derived from snapshotted receipts; each command removes only expired
-    // buckets instead of traversing every retained receipt on every write.
-    receipt_expiry: ReceiptExpiry,
     snapshot_accounting: SnapshotAccounting,
     _read_reservations: Vec<crate::admission::Reservation>,
 }
 impl Generation {
-    /// Share persistent document roots without retaining receipts, staging,
-    /// audit history, or the previous generation of secondary/text indexes.
+    /// Share persistent document roots and fixed point-history owners without
+    /// retaining resident staging, audit history, or prior secondary/text indexes.
     pub(crate) fn lease_view(&self) -> Self {
         let mut state = crate::snapshot_codec::metadata(&self.state);
         state.collections = self.state.collections.clone();
         state.history_archives = self.state.history_archives.clone();
         Self {
+            receipts: self.receipts.clone(),
             terminals: self.terminals.clone(),
             target_resolutions: self.target_resolutions.clone(),
             state,
             indexes: Arc::new(QueryIndexes::default()),
-            receipt_expiry: ReceiptExpiry::new(),
             snapshot_accounting: SnapshotAccounting::default(),
             _read_reservations: Vec::new(),
         }
@@ -70,11 +70,11 @@ impl Generation {
         let mut state = self.state.clone();
         state.collections = collections;
         Self {
+            receipts: self.receipts.clone(),
             terminals: self.terminals.clone(),
             target_resolutions: self.target_resolutions.clone(),
             state,
             indexes: self.indexes.clone(),
-            receipt_expiry: self.receipt_expiry.clone(),
             snapshot_accounting: self.snapshot_accounting.clone(),
             _read_reservations: reservations,
         }
@@ -83,7 +83,6 @@ impl Generation {
         self.snapshot_accounting.bytes(&self.state)
     }
 }
-type ReceiptExpiry = imbl::OrdMap<u64, imbl::Vector<String>>;
 
 /// Only ordered consensus application may publish generations.
 pub struct TenantEngine {
@@ -187,10 +186,14 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
                 snapshot_bundle::write(&generation, &store, writer)
             })
             .with_checkpoint_writes(move |context| {
-                let mut writes = checkpoint_generation.terminals.checkpoint_writes(
+                let mut writes = checkpoint_generation.receipts.checkpoint_writes(
                     &checkpoint_generation.state,
                     &context.checkpoint_sha256()?,
                 )?;
+                writes.extend(checkpoint_generation.terminals.checkpoint_writes(
+                    &checkpoint_generation.state,
+                    &context.checkpoint_sha256()?,
+                )?);
                 writes.extend(checkpoint_generation.target_resolutions.checkpoint_writes(
                     &checkpoint_generation.state,
                     &context.checkpoint_sha256()?,
@@ -228,6 +231,13 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
             .snapshot_store
             .get()
             .ok_or_else(|| anyhow::anyhow!("snapshot storage not installed"))?;
+        let receipt_installation = generation.receipts.prepare_install(
+            store,
+            &generation.state,
+            &context.checkpoint_sha256()?,
+            context.mode == kasumi_raft::SnapshotRestoreMode::Reopen,
+        )?;
+        generation.receipts = receipt_installation.view.clone();
         let installation = generation.terminals.prepare_install(
             store,
             &generation.state,
@@ -242,12 +252,14 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
             context.mode == kasumi_raft::SnapshotRestoreMode::Reopen,
         )?;
         generation.target_resolutions = target_installation.view.clone();
-        let mut writes = installation.writes().to_vec();
+        let mut writes = receipt_installation.writes().to_vec();
+        writes.extend_from_slice(installation.writes());
         writes.extend_from_slice(target_installation.writes());
         let retirement = custody_snapshot::retired(&generation.state)?;
         Ok(Box::new(PreparedTenantRestore {
             engine: self,
             generation,
+            receipt_installation,
             installation,
             target_installation,
             writes,
@@ -260,6 +272,7 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
 struct PreparedTenantRestore<'a> {
     engine: &'a TenantEngine,
     generation: Generation,
+    receipt_installation: crate::mutation_receipt::Installation,
     installation: crate::staged_terminal::Installation,
     target_installation: crate::target_resolution::Installation,
     writes: Vec<kasumi_store::WriteOp>,
@@ -271,7 +284,8 @@ impl kasumi_raft::PreparedStateMachineRestore for PreparedTenantRestore<'_> {
         self.retirement.clone()
     }
     fn application_replacements(&self) -> Vec<(&str, &kasumi_store::EncryptedTable)> {
-        let mut replacements = self.installation.replacements();
+        let mut replacements = self.receipt_installation.replacements();
+        replacements.extend(self.installation.replacements());
         replacements.extend(self.target_installation.replacements());
         replacements
     }
@@ -421,7 +435,7 @@ impl TenantEngine {
                 "authenticated bootstrap image identity missing",
             )
         })?;
-        let checkpoint = staged_digest(&("kasumi.staged-terminal-bootstrap.v1", digest))?.0;
+        let checkpoint = staged_digest(&("kasumi.application-point-bootstrap.v1", digest))?.0;
         let reopen = crate::staged_terminal::View::checkpoint_exists(store, &checkpoint)
             .map_err(terminal_error)?;
         if crate::target_resolution::View::checkpoint_exists(store, &checkpoint)
@@ -433,6 +447,19 @@ impl TenantEngine {
                 "joint terminal bootstrap catalogs differ",
             ));
         }
+        if crate::mutation_receipt::View::checkpoint_exists(store, &checkpoint)
+            .map_err(terminal_error)?
+            != reopen
+        {
+            return Err(Error::new(
+                ErrorCode::Corruption,
+                "joint receipt bootstrap catalog differs",
+            ));
+        }
+        let receipt_installation = previous
+            .receipts
+            .prepare_install(store, &previous.state, &checkpoint, reopen)
+            .map_err(terminal_error)?;
         let installation = previous
             .terminals
             .prepare_install(store, &previous.state, &checkpoint, reopen)
@@ -441,9 +468,11 @@ impl TenantEngine {
             .target_resolutions
             .prepare_install(store, &previous.state, &checkpoint, reopen)
             .map_err(terminal_error)?;
-        let mut replacements = installation.replacements();
+        let mut replacements = receipt_installation.replacements();
+        replacements.extend(installation.replacements());
         replacements.extend(target_installation.replacements());
-        let mut writes = installation.writes().to_vec();
+        let mut writes = receipt_installation.writes().to_vec();
+        writes.extend_from_slice(installation.writes());
         writes.extend_from_slice(target_installation.writes());
         store
             .replace_namespaces(&replacements, &writes)
@@ -451,10 +480,10 @@ impl TenantEngine {
         drop(replacements);
         self.publish_generation(Some(Arc::new(Generation {
             state: previous.state.clone(),
+            receipts: receipt_installation.view,
             terminals: installation.view,
             target_resolutions: target_installation.view,
             indexes: previous.indexes.clone(),
-            receipt_expiry: previous.receipt_expiry.clone(),
             snapshot_accounting: previous.snapshot_accounting.clone(),
             _read_reservations: vec![],
         })));
@@ -543,7 +572,7 @@ impl TenantEngine {
             policy,
             limits,
             collections: BTreeMap::new(),
-            receipts: imbl::OrdMap::new(),
+            mutation_receipt_head: MutationReceiptHead::empty(&tenant, &incarnation)?,
             staged_transactions: imbl::OrdMap::new(),
             active_staged_transactions: BTreeSet::new(),
             permanent_staged_bytes: 0,
@@ -591,11 +620,12 @@ impl TenantEngine {
                     &state.incarnation,
                 )
                 .map_err(terminal_error)?,
+                receipts: crate::mutation_receipt::View::empty(&state.tenant, &state.incarnation)
+                    .map_err(terminal_error)?,
                 terminals: crate::staged_terminal::View::empty(&state.tenant, &state.incarnation)
                     .map_err(terminal_error)?,
                 state,
                 indexes,
-                receipt_expiry: ReceiptExpiry::new(),
                 snapshot_accounting,
                 _read_reservations: vec![],
             }),
@@ -615,6 +645,7 @@ impl TenantEngine {
         let engine = Self::from_bootstrap_state(
             expected_tenant,
             decoded.state,
+            decoded.receipts,
             decoded.terminals,
             decoded.target_resolutions,
         )?;
@@ -628,6 +659,7 @@ impl TenantEngine {
     fn from_bootstrap_state(
         expected_tenant: &str,
         state: TenantState,
+        receipts: crate::mutation_receipt::View,
         terminals: crate::staged_terminal::View,
         target_resolutions: crate::target_resolution::View,
     ) -> Result<Self> {
@@ -650,7 +682,7 @@ impl TenantEngine {
             apply_lock: Mutex::new(()),
             current: ArcSwapOption::empty(),
         };
-        let generation = engine.prepare_state(state, terminals, target_resolutions)?;
+        let generation = engine.prepare_state(state, receipts, terminals, target_resolutions)?;
         engine.publish_generation(Some(Arc::new(generation)));
         Ok(engine)
     }
@@ -665,6 +697,7 @@ impl TenantEngine {
     ) -> Result<kasumi_store::SnapshotImage> {
         let crate::snapshot_codec::Decoded {
             mut state,
+            receipts,
             terminals,
             target_resolutions,
             ..
@@ -679,7 +712,15 @@ impl TenantEngine {
             bytes.disk(),
             crate::target_resolution::snapshot_limit(&state)
                 .map_err(|e| Error::new(ErrorCode::Corruption, e.to_string()))?,
-            |writer| crate::snapshot_codec::write(&state, &terminals, &target_resolutions, writer),
+            |writer| {
+                crate::snapshot_codec::write(
+                    &state,
+                    &receipts,
+                    &terminals,
+                    &target_resolutions,
+                    writer,
+                )
+            },
         )
         .map_err(|e| Error::new(ErrorCode::Corruption, e.to_string()))
     }
@@ -779,6 +820,7 @@ impl TenantEngine {
         let scratch_disk = image.disk().clone();
         let crate::snapshot_codec::Decoded {
             mut state,
+            receipts,
             terminals,
             target_resolutions,
             ..
@@ -786,8 +828,13 @@ impl TenantEngine {
             .map_err(|error| Error::new(ErrorCode::Corruption, error.to_string()))?;
         drop(image);
         Self::rebind_restored_state(&mut state, incarnation, checkpoint, target_origin)?;
-        let engine =
-            Self::from_bootstrap_state(expected_tenant, state, terminals, target_resolutions)?;
+        let engine = Self::from_bootstrap_state(
+            expected_tenant,
+            state,
+            receipts,
+            terminals,
+            target_resolutions,
+        )?;
         let image = engine.logical_snapshot(&scratch_disk)?;
         engine
             .bootstrap_sha256
@@ -833,7 +880,12 @@ impl TenantEngine {
         };
         let decoded = crate::snapshot_codec::read(_bytes.disk(), &mut _bytes.reader())
             .map_err(terminal_error)?;
-        verifier.prepare_state(state.clone(), decoded.terminals, decoded.target_resolutions)?;
+        verifier.prepare_state(
+            state.clone(),
+            decoded.receipts,
+            decoded.terminals,
+            decoded.target_resolutions,
+        )?;
         Ok(())
     }
 
@@ -946,6 +998,9 @@ impl TenantEngine {
                 "application state is permanently frozen after retirement",
             )));
         }
+        if let Operation::Mutate(batch) = &command.operation {
+            return self.apply_mutation_ordered(&previous, &command, batch, &applied);
+        }
         let terminal_owner = previous.terminals.clone();
         #[cfg(any(test, feature = "test-utils"))]
         let terminal_owner = if matches!(
@@ -959,8 +1014,6 @@ impl TenantEngine {
             terminal_owner
         };
         let mut next = previous.state.clone();
-        let mut receipt_expiry = previous.receipt_expiry.clone();
-        let mut changed_receipts = BTreeSet::new();
         next.revision = revision;
         let result = if command.context.tenant != next.tenant {
             Err(Error::new(ErrorCode::Forbidden, "tenant access denied"))
@@ -986,8 +1039,6 @@ impl TenantEngine {
                 revision,
                 previous.state.revision,
                 &previous.indexes,
-                &mut receipt_expiry,
-                &mut changed_receipts,
             )
         };
         let (outcome, changed_documents) = match result {
@@ -1041,11 +1092,11 @@ impl TenantEngine {
             let mut rejected = previous.state.clone();
             rejected.revision = revision;
             self.publish_generation(Some(Arc::new(Generation {
+                receipts: previous.receipts.clone(),
                 terminals: previous.terminals.clone(),
                 target_resolutions: previous.target_resolutions.clone(),
                 state: rejected,
                 indexes: previous.indexes.clone(),
-                receipt_expiry: previous.receipt_expiry.clone(),
                 snapshot_accounting: previous.snapshot_accounting.clone(),
                 _read_reservations: vec![],
             })));
@@ -1066,8 +1117,6 @@ impl TenantEngine {
                 &previous,
                 next,
                 &command,
-                receipt_expiry,
-                &changed_receipts,
                 Some(error),
                 &applied,
                 &terminal_pending,
@@ -1088,8 +1137,6 @@ impl TenantEngine {
                 &previous,
                 next,
                 &command,
-                receipt_expiry,
-                &changed_receipts,
                 Some(error),
                 &applied,
                 &terminal_pending,
@@ -1100,7 +1147,6 @@ impl TenantEngine {
             &previous.state,
             &next,
             &changed,
-            &changed_receipts,
             &staged_changes(&previous.state, &command)?,
         )?;
         if !snapshot_accounting.fits(&next)? || !lifecycle::completion_fits(&next)? {
@@ -1108,8 +1154,6 @@ impl TenantEngine {
                 &previous,
                 next,
                 &command,
-                receipt_expiry,
-                &changed_receipts,
                 None,
                 &applied,
                 &terminal_pending,
@@ -1129,11 +1173,11 @@ impl TenantEngine {
         };
         let terminals = terminal_pending.persist().map_err(terminal_error)?;
         self.publish_generation(Some(Arc::new(Generation {
+            receipts: previous.receipts.clone(),
             target_resolutions: previous.target_resolutions.clone(),
             terminals,
             state: next,
             indexes,
-            receipt_expiry,
             snapshot_accounting,
             _read_reservations: vec![],
         })));
@@ -1145,38 +1189,15 @@ impl TenantEngine {
         previous: &Generation,
         next: TenantState,
         command: &Command,
-        receipt_expiry: ReceiptExpiry,
-        changed_receipts: &BTreeSet<String>,
         failure: Option<Error>,
         applied: &crate::staged_terminal::AppliedIdentity,
         terminal_pending: &crate::staged_terminal::Pending,
         terminal_owner: &crate::staged_terminal::View,
     ) -> Result<Result<WriteReceipt>> {
         let revision = next.revision;
-        let receipt_key = if let Operation::Mutate(batch) = &command.operation {
-            Some(hex::encode(Sha256::digest(
-                serde_json::to_vec(&(&command.context.principal, &batch.idempotency_key)).map_err(
-                    |_| Error::new(ErrorCode::Corruption, "receipt identity encoding failed"),
-                )?,
-            )))
-        } else {
-            None
-        };
-        let replay = receipt_key.as_ref().is_some_and(|key| {
-            !changed_receipts.contains(key)
-                && previous
-                    .state
-                    .receipts
-                    .get(key)
-                    .is_some_and(|receipt| receipt.expires_at_ms > command.timestamp_ms)
-        });
         let error = failure.unwrap_or_else(|| {
             Error::new(
-                if replay {
-                    ErrorCode::AuditUnavailable
-                } else {
-                    ErrorCode::QuotaExceeded
-                },
+                ErrorCode::QuotaExceeded,
                 "serialized tenant snapshot byte budget exhausted",
             )
         });
@@ -1207,16 +1228,6 @@ impl TenantEngine {
                     staging::replace_record(&mut rejected, key, completed)?;
                 }
             }
-            if let Some(key) = &receipt_key {
-                // Preserve expiry cleanup and record this failed attempt when its
-                // bounded receipt fits; never overwrite a prior idempotent result.
-                rejected.receipts = next.receipts.clone();
-                if changed_receipts.contains(key)
-                    && let Some(receipt) = rejected.receipts.get_mut(key)
-                {
-                    receipt.outcome = Err(error.clone());
-                }
-            }
             let mut event = next
                 .audits
                 .back()
@@ -1235,7 +1246,6 @@ impl TenantEngine {
                 &previous.state,
                 &rejected,
                 &BTreeMap::new(),
-                changed_receipts,
                 &staged_changes(&previous.state, command)?,
             )?;
             if rejected.audit_retention.hot_bytes <= rejected.limits.audit_retention.hot_bytes
@@ -1244,11 +1254,11 @@ impl TenantEngine {
             {
                 let terminals = rejected_terminals.persist().map_err(terminal_error)?;
                 self.publish_generation(Some(Arc::new(Generation {
+                    receipts: previous.receipts.clone(),
                     target_resolutions: previous.target_resolutions.clone(),
                     terminals,
                     state: rejected,
                     indexes: previous.indexes.clone(),
-                    receipt_expiry,
                     snapshot_accounting: accounting,
                     _read_reservations: vec![],
                 })));
@@ -1260,11 +1270,11 @@ impl TenantEngine {
         let mut rejected = previous.state.clone();
         rejected.revision = revision;
         self.publish_generation(Some(Arc::new(Generation {
+            receipts: previous.receipts.clone(),
             terminals: previous.terminals.clone(),
             target_resolutions: previous.target_resolutions.clone(),
             state: rejected,
             indexes: previous.indexes.clone(),
-            receipt_expiry: previous.receipt_expiry.clone(),
             snapshot_accounting: previous.snapshot_accounting.clone(),
             _read_reservations: vec![],
         })));
@@ -1286,6 +1296,7 @@ impl TenantEngine {
         }
         crate::snapshot_codec::write(
             &generation.state,
+            &generation.receipts,
             &generation.terminals,
             &generation.target_resolutions,
             writer,
@@ -1341,6 +1352,7 @@ impl TenantEngine {
     ) -> Result<Generation> {
         let crate::snapshot_codec::Decoded {
             state,
+            receipts,
             terminals,
             target_resolutions,
             summary,
@@ -1352,12 +1364,13 @@ impl TenantEngine {
                 "snapshot differs from admitted typed framing",
             ));
         }
-        self.prepare_state(state, terminals, target_resolutions)
+        self.prepare_state(state, receipts, terminals, target_resolutions)
     }
 
     fn prepare_state(
         &self,
         state: TenantState,
+        receipts: crate::mutation_receipt::View,
         terminals: crate::staged_terminal::View,
         target_resolutions: crate::target_resolution::View,
     ) -> Result<Generation> {
@@ -1547,7 +1560,7 @@ impl TenantEngine {
             || logical_bytes != state.logical_bytes
             || count > state.limits.max_documents
             || logical_bytes > state.limits.max_logical_bytes
-            || state.receipts.len() > state.limits.max_receipts
+            || state.mutation_receipt_head.encoded_bytes > state.limits.max_mutation_receipt_bytes
         {
             return Err(Error::new(
                 ErrorCode::Corruption,
@@ -1665,38 +1678,29 @@ impl TenantEngine {
             &state.restore_lineage,
         )
         .map_err(|_| Error::new(ErrorCode::Corruption, "invalid restore lineage"))?;
-        for (key, receipt) in &state.receipts {
-            let maximum_revision = if receipt.scope.incarnation == state.incarnation {
-                state.revision
-            } else {
-                state
-                    .restore_lineage
-                    .iter()
-                    .find(|link| link.checkpoint.source_incarnation == receipt.scope.incarnation)
-                    .map(|link| link.checkpoint.revision)
-                    .ok_or_else(|| {
-                        Error::new(
-                            ErrorCode::Corruption,
-                            "receipt original incarnation is absent from lineage",
-                        )
-                    })?
-            };
-            let genesis_revision = if receipt.scope.incarnation == state.incarnation {
-                state.revision_base
-            } else {
-                state
-                    .restore_lineage
-                    .iter()
-                    .find(|link| link.target_incarnation == receipt.scope.incarnation)
-                    .map(|link| {
-                        link.checkpoint.revision.checked_add(1).ok_or_else(|| {
-                            Error::new(ErrorCode::Corruption, "receipt genesis revision overflow")
-                        })
-                    })
-                    .transpose()?
-                    .unwrap_or(0)
-            };
-            receipt.validate_identity(key, &state.tenant, genesis_revision, maximum_revision)?;
+        receipts.validate_state(&state).map_err(terminal_error)?;
+        for row in receipts.records() {
+            row.map_err(terminal_error)?
+                .validate(&state)
+                .map_err(terminal_error)?;
+        }
+        if let Ok(current) = self.generation() {
+            let old = current.receipts.head();
+            if old.origin_incarnation != state.mutation_receipt_head.origin_incarnation
+                || old.count > state.mutation_receipt_head.count
+                || (old.count > 0
+                    && receipts
+                        .row(old.count)
+                        .map_err(terminal_error)?
+                        .sha256()
+                        .map_err(terminal_error)?
+                        != old.sha256)
+            {
+                return Err(Error::new(
+                    ErrorCode::Corruption,
+                    "snapshot removed or substituted permanent mutation receipts",
+                ));
+            }
         }
         if let Some(origin) = &state.restored_from {
             origin.validate()?;
@@ -1729,19 +1733,12 @@ impl TenantEngine {
             ));
         }
         let indexes = Arc::new(QueryIndexes::build(&state.collections)?);
-        let mut receipt_expiry = ReceiptExpiry::new();
-        for (key, receipt) in &state.receipts {
-            receipt_expiry
-                .entry(receipt.expires_at_ms)
-                .or_default()
-                .push_back(key.clone());
-        }
         Ok(Generation {
+            receipts,
             terminals,
             target_resolutions,
             state,
             indexes,
-            receipt_expiry,
             snapshot_accounting,
             _read_reservations: vec![],
         })
@@ -1817,8 +1814,6 @@ fn apply_operation(
     revision: u64,
     previous_revision: u64,
     indexes: &QueryIndexes,
-    receipt_expiry: &mut ReceiptExpiry,
-    changed_receipts: &mut BTreeSet<String>,
 ) -> Result<(Result<WriteReceipt>, bool)> {
     let receipt = || WriteReceipt {
         revision,
@@ -1849,119 +1844,10 @@ fn apply_operation(
         | Operation::AppendStaged(_)
         | Operation::FinalizeStaged(_)
         | Operation::StopStaged(_) => staging::apply(state, command, revision, indexes),
-        Operation::Mutate(batch) => {
-            for mutation in &batch.operations {
-                authorize_state(
-                    state,
-                    &command.context,
-                    Some(mutation.target().0),
-                    Action::Write,
-                )?;
-            }
-            for assertion in &batch.read_set {
-                if let ReadAssertion::Document { collection, .. }
-                | ReadAssertion::Collection { collection, .. } = assertion
-                {
-                    authorize_state(state, &command.context, Some(collection), Action::Read)?;
-                }
-            }
-            if batch.operations.is_empty() {
-                return Err(Error::new(
-                    ErrorCode::InvalidArgument,
-                    "empty mutation batch",
-                ));
-            }
-            validate_name(&batch.idempotency_key)?;
-            let identity =
-                serde_json::to_vec(&(&command.context.principal, &batch.idempotency_key)).map_err(
-                    |_| Error::new(ErrorCode::InvalidArgument, "invalid receipt identity"),
-                )?;
-            let receipt_key = hex::encode(Sha256::digest(identity));
-            let digest = batch.digest()?;
-            if let Some(existing) = state
-                .receipts
-                .get(&receipt_key)
-                .filter(|r| r.expires_at_ms > command.timestamp_ms)
-            {
-                if existing.request_digest != digest {
-                    return Err(Error::new(
-                        ErrorCode::Conflict,
-                        "idempotency key reused for different input",
-                    ));
-                }
-                return Ok((existing.outcome.clone(), false));
-            }
-            while let Some(expires) = receipt_expiry.get_min().map(|(expires, _)| *expires) {
-                if expires > command.timestamp_ms {
-                    break;
-                }
-                let keys = receipt_expiry
-                    .remove(&expires)
-                    .expect("expiry bucket exists");
-                for key in &keys {
-                    if state
-                        .receipts
-                        .get(key)
-                        .is_some_and(|receipt| receipt.expires_at_ms == expires)
-                    {
-                        state.receipts.remove(key);
-                        changed_receipts.insert(key.clone());
-                    }
-                }
-            }
-            if state.receipts.len() >= state.limits.max_receipts {
-                return Err(Error::new(
-                    ErrorCode::QuotaExceeded,
-                    "receipt retention budget exhausted",
-                ));
-            }
-            let mut staged = state.clone();
-            let outcome = apply_batch(&mut staged, batch, revision, command.timestamp_ms).and_then(
-                |receipt| {
-                    indexes.validate_unique_changes(
-                        &state.collections,
-                        &staged.collections,
-                        &batch_changes(batch),
-                    )?;
-                    Ok(receipt)
-                },
-            );
-            if outcome.is_ok() {
-                *state = staged;
-            }
-            let expires_at_ms = command
-                .timestamp_ms
-                .saturating_add(state.limits.receipt_ttl_ms);
-            receipt_expiry
-                .entry(expires_at_ms)
-                .or_default()
-                .push_back(receipt_key.clone());
-            changed_receipts.insert(receipt_key.clone());
-            state.receipts.insert(
-                receipt_key,
-                StoredReceipt {
-                    scope: MutationReceiptScope {
-                        tenant: state.tenant.clone(),
-                        incarnation: state.incarnation.clone(),
-                        principal: command.context.principal.clone(),
-                    },
-                    idempotency_key: batch.idempotency_key.clone(),
-                    recorded_revision: revision,
-                    request_digest: digest,
-                    expires_at_ms,
-                    collections: batch
-                        .operations
-                        .iter()
-                        .map(|op| op.target().0.to_owned())
-                        .collect::<BTreeSet<_>>()
-                        .into_iter()
-                        .collect(),
-                    outcome: outcome.clone(),
-                },
-            );
-            let changed = outcome.is_ok();
-            Ok((outcome, changed))
-        }
+        Operation::Mutate(_) => Err(Error::new(
+            ErrorCode::Corruption,
+            "ordinary mutation bypassed permanent receipt admission",
+        )),
         Operation::ActivateSchema(request) => schema::apply(
             state,
             &command.context,
@@ -2033,7 +1919,7 @@ fn apply_operation(
             }
             if state.document_count > limits.max_documents
                 || state.logical_bytes > limits.max_logical_bytes
-                || state.receipts.len() > limits.max_receipts
+                || state.mutation_receipt_head.encoded_bytes > limits.max_mutation_receipt_bytes
                 || state.history_archives.len() > limits.history.max_archive_segments
                 || state.audit_retention.hot_bytes > limits.audit_retention.hot_bytes
                 || state.audit_retention.archive_bytes > limits.audit_retention.archive_bytes
@@ -2467,11 +2353,10 @@ pub(super) fn validate_limits(limits: &Limits) -> Result<()> {
         || limits.max_page_size > 1000
         || limits.cursor_ttl_ms == 0
         || limits.cursor_ttl_ms > 60_000
-        || limits.receipt_ttl_ms != 86_400_000
         || limits.max_query_candidates == 0
         || limits.max_result_bytes == 0
         || limits.max_result_bytes > (8 << 20)
-        || limits.max_receipts == 0
+        || limits.max_mutation_receipt_bytes == 0
         || limits.max_documents == 0
         || limits.max_logical_bytes == 0
         || limits.max_snapshot_bytes < 4096

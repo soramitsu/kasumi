@@ -6,16 +6,16 @@ are rejected. `Limits.max_snapshot_bytes` is a checked `u64` resource quota;
 there is no 2 GiB format ceiling. Documents, requests, transactions, individual
 records, results and admitted node work retain independent bounds.
 
-Tenant images begin with `KASUMIT5`. Every record has an eight-byte big-endian
+Tenant images begin with `KASUMIT6`. Every record has an eight-byte big-endian
 payload length, one explicit category byte, then canonical JSON. The category
 byte is included in the digest and must equal the decoded semantic record kind
 before the record reaches a resident-state or permanent-table consumer. Records explicitly identify metadata,
 collections, documents, archive references, command receipts, staged metadata and
 chunks, change-feed headers and individual changes, history archives, schema and
 retirement records, audit events, Control history, target lifecycle records, and
-Control recovery operation, phase, and target identity records. Ranks 21 and 22
-carry immutable staged outcomes and target resolution rows into encrypted point
-tables; their aggregate length is separate from resident state. Recovery records
+Control recovery operation, phase, and target identity records. Ranks 5, 21 and 22
+carry immutable ordinary receipts, staged outcomes and target resolution rows into encrypted point
+tables; their aggregate length is separate from resident state. Ordinary receipts retain a 2 MiB per-record bound. Recovery records
 retain their independent 1 MiB work bound; other payloads cannot exceed 32 MiB. Records must follow the specified category/key order, with contiguous
 indices for sequence members. The terminal zero-length record carries checked
 64-bit record and byte counts and SHA-256 over the preceding image. The decoder
@@ -97,7 +97,7 @@ in backup/replacement workflows before their pruning transitions become usable.
 
 Application Raft backends use the canonical `KASUMID1` dependency bundle inside
 `KASUMIS2`. A bounded canonical source-purpose header precedes 64 KiB frames of
-`KASUMIT5`, an explicit logical-stream terminator, and the audit ciphertext chain
+`KASUMIT6`, an explicit logical-stream terminator, and the audit ciphertext chain
 in reverse sequence order. Each archive record is at most 8 MiB. The final record
 binds checked logical/archive byte and record totals and the complete bundle
 digest; missing dependencies, extra records and logical-only transport are

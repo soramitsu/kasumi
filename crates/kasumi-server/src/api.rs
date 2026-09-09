@@ -739,28 +739,20 @@ mod tests {
             let committed = fixture.db.engine().generation().unwrap();
             let original = committed.state.collections["docs"].documents["one"].clone();
             assert_eq!(committed.state.document_count, 1);
-            assert_eq!(committed.state.receipts.len(), 1);
+            assert_eq!(committed.state.mutation_receipt_head.count, 1);
+            let original_head = committed.state.mutation_receipt_head.clone();
             let original_batch: MutationBatch = serde_json::from_value(batch()).unwrap();
             let request_digest = original_batch.digest().unwrap();
-            assert_eq!(
-                committed
-                    .state
-                    .receipts
-                    .values()
-                    .next()
-                    .unwrap()
-                    .request_digest,
-                request_digest
-            );
-            let expected = committed
-                .state
-                .receipts
-                .values()
-                .next()
-                .unwrap()
-                .outcome
-                .clone()
-                .unwrap();
+            // Compare the separately authenticated point result with the
+            // actual original committed document position; no resident outcome
+            // map is retained or used as an alternate resolution path.
+            let expected = WriteReceipt {
+                revision: original.version,
+                versions: std::collections::BTreeMap::from([(
+                    "/docs/one".into(),
+                    original.version,
+                )]),
+            };
             if mcp {
                 let (status, receipt) = post(
                     &router, Some(&token),
@@ -846,7 +838,7 @@ mod tests {
             }
             let after = fixture.db.engine().generation().unwrap();
             assert_eq!(after.state.document_count, 1);
-            assert_eq!(after.state.receipts.len(), 1);
+            assert_eq!(after.state.mutation_receipt_head, original_head);
             assert_eq!(after.state.collections["docs"].documents["one"], original);
             assert_eq!(
                 original.body["n"].to_string(),

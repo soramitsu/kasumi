@@ -97,7 +97,7 @@ fn install(engine: &TenantEngine, state: TenantState) {
         target_resolutions: engine.generation().unwrap().target_resolutions.clone(),
         state,
         indexes,
-        receipt_expiry: Default::default(),
+        receipts: engine.generation().unwrap().receipts.clone(),
         snapshot_accounting,
         _read_reservations: vec![],
     })));

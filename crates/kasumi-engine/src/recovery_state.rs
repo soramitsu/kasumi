@@ -294,7 +294,6 @@ impl TenantEngine {
             &next,
             &changed,
             &BTreeSet::new(),
-            &BTreeSet::new(),
         )?;
         if !crate::accounting::audit_fits(&next)
             || !accounting.fits(&next)?
@@ -322,7 +321,7 @@ impl TenantEngine {
             target_resolutions: previous.target_resolutions.clone(),
             state: next,
             indexes,
-            receipt_expiry: previous.receipt_expiry.clone(),
+            receipts: previous.receipts.clone(),
             snapshot_accounting: accounting,
             _read_reservations: vec![],
         })));

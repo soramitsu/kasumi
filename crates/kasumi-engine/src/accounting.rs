@@ -1,5 +1,6 @@
-//! Exact canonical semantic-record sizes. Only changed document/receipt/stage
-//! records are remeasured during ordinary writes; metadata stays bounded.
+//! Exact canonical resident semantic-record sizes. Only changed document/stage
+//! records are remeasured during ordinary writes; permanent receipt rows have
+//! their own checked byte budget and only a fixed head is resident.
 use crate::snapshot_codec::{Record, metadata};
 use kasumi_types::*;
 use serde::Serialize;
@@ -9,7 +10,6 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(crate) struct SnapshotAccounting {
     documents: usize,
     archived: usize,
-    receipts: usize,
     audits: usize,
     staged: usize,
     feed: usize,
@@ -226,13 +226,6 @@ impl SnapshotAccounting {
                 )?;
             }
         }
-        for (key, value) in &state.receipts {
-            change(
-                &mut result.receipts,
-                0,
-                record(&Record::Receipt(key.clone(), value.clone()))?,
-            )?;
-        }
         for (i, event) in state.audits.iter().enumerate() {
             change(
                 &mut result.audits,
@@ -308,7 +301,6 @@ impl SnapshotAccounting {
         previous: &TenantState,
         next: &TenantState,
         changed_documents: &BTreeMap<String, BTreeSet<String>>,
-        changed_receipts: &BTreeSet<String>,
         changed_stages: &BTreeSet<String>,
     ) -> Result<Self> {
         let mut result = self.clone();
@@ -341,17 +333,6 @@ impl SnapshotAccounting {
                     })?,
                 )?;
             }
-        }
-        for key in changed_receipts {
-            change(
-                &mut result.receipts,
-                optional(previous.receipts.get(key), |r| {
-                    record(&Record::Receipt(key.clone(), r.clone()))
-                })?,
-                optional(next.receipts.get(key), |r| {
-                    record(&Record::Receipt(key.clone(), r.clone()))
-                })?,
-            )?;
         }
         for key in changed_stages {
             change(
@@ -514,7 +495,6 @@ impl SnapshotAccounting {
         for size in [
             self.documents,
             self.archived,
-            self.receipts,
             self.audits,
             self.staged,
             self.feed,
