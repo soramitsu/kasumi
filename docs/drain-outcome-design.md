@@ -28,7 +28,9 @@ Reviewed source SHA-256 values: `raft/mod.rs`
 `core/tick.rs`
 `767b5df3e865b315c7bdcfb1ef271d5879647a16e758f0aeaf3f2212c7596671`.
 The OpenRaft patch is a separate owned workstream. Its intended shutdown returns
-`Result<(), Fatal<NodeId>>` only after retained core and ticker joins. Kasumi must
+`Result<(), ShutdownError<NodeId>>` only after retained core and ticker joins;
+separate core/ticker failures are preserved, and cancellation is distinct from
+normal stop. Kasumi must
 still wait for its separately tracked storage and blocking-job owners before
 classifying a resulting error as completed.
 
