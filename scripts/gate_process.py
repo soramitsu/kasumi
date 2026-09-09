@@ -54,6 +54,9 @@ def drain(process, grace_seconds=10):
                 record["errors"].append(message)
             return None
 
+    # The original deadline may expire before the first terminal poll. Reap an
+    # already exited leader before deciding whether any owned process remains.
+    process.poll()
     record["before"] = inspect()
     for number in (signal.SIGTERM, signal.SIGKILL):
         if inspect() == []:
