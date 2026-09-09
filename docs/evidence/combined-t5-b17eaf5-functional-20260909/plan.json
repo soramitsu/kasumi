@@ -1,0 +1,618 @@
+{
+  "source": "/tmp/kasumi-production-next-reconcile",
+  "target": "/tmp/kasumi-production-root-target",
+  "expected_head": "b17eaf5bd558f6b629d8cbf68efdbc2dd4aa090e",
+  "expected_tree": "554803b4a52ee5e17469c54e56bd15a066a00e2e",
+  "output": "/tmp/kasumi-b17eaf5-combined-functional",
+  "scope": "Source-bound functional validation of combined T5 structural restore/backup admission, exact permanent table publication, receiver/coordinator phases and signer dispatch. First reruns 8bf fault fixture corrected by769; prior seven prefix passes remain distinct. New typed codec module exercises format/recovery/literal tests; actual512-row fixture is not 3GiB or hardRSS proof. Remaining prefix/signer scopes were not reached by prior failed attempts. All original failed cohorts remain failed. No finalrelease or endurance claim. Frozen0336024 canonical TargetResolutionPrefixHead successor corrects root fixture type error; prior77/a159/168 compilation failures remain independently preserved. No compatibility alias or assertion change. b17eaf5 applies direct rustfmt to the shortened verifier borrow call before the next cohort; no semantic changes.",
+  "gates": [
+    {
+      "name": "joint-table-publication",
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "--message-format=json-render-diagnostics",
+        "-j1",
+        "-p",
+        "kasumi-raft",
+        "--lib",
+        "--all-features",
+        "storage::tests::joint_publication_tests::",
+        "--",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "required_tests": [
+        "storage::tests::joint_publication_tests::joint_immutable_table_snapshot_power_loss_selects_complete_old_or_new_prefix",
+        "storage::tests::joint_publication_tests::cancelled_joint_table_publication_seals_and_reopens_exact_committed_prefix"
+      ],
+      "timeout_seconds": 900
+    },
+    {
+      "name": "typed-framing-record-work",
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "--message-format=json-render-diagnostics",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--lib",
+        "--all-features",
+        "snapshot_codec::",
+        "--",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "required_tests": [
+        "snapshot_codec::frame_tests::permanent_kind_cannot_forward_a_resident_payload_to_semantic_consumers",
+        "snapshot_codec::frame_tests::typed_inspection_rejects_bounds_kind_order_and_terminal_substitutions",
+        "snapshot_codec::frame_tests::permanent_aggregate_does_not_become_ram_and_all_layout_arithmetic_is_checked",
+        "snapshot_codec::frame_tests::inspection_reads_large_typed_payload_in_fixed_chunks_before_any_dto",
+        "snapshot_codec::record_work::tests::dense_numeric_sites_are_charged_before_serde_and_independent_of_token_width",
+        "snapshot_codec::record_work::tests::escaped_and_duplicate_keys_are_counted_with_bounded_depth_before_decode",
+        "snapshot_codec::tests::canonical_stream_requires_terminal_counts_digest_and_exact_eof",
+        "snapshot_codec::tests::oversized_record_is_rejected_before_payload_read_or_allocation",
+        "snapshot_codec::tests::authenticated_duplicate_header_is_rejected",
+        "snapshot_codec::tests::archived_audit_prefix_preserves_absolute_sequences_and_head",
+        "snapshot_codec::literal_tests::literal_marker_documents_schema_and_staged_records_survive_canonical_snapshots"
+      ],
+      "timeout_seconds": 600
+    },
+    {
+      "name": "public-point-stream-admission",
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "--message-format=json-render-diagnostics",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--lib",
+        "--all-features",
+        "state::snapshot_bundle::tests::public_restore_admits_resident_state_without_charging_permanent_stream_as_ram",
+        "--",
+        "--test-threads=1",
+        "--nocapture",
+        "--exact"
+      ],
+      "required_tests": [
+        "state::snapshot_bundle::tests::public_restore_admits_resident_state_without_charging_permanent_stream_as_ram"
+      ],
+      "timeout_seconds": 600
+    },
+    {
+      "name": "captured_and_historical_backup_verification_fit_fixed_production_workspace",
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "--message-format=json-render-diagnostics",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--test",
+        "backup_checkpoint",
+        "--all-features",
+        "captured_and_historical_backup_verification_fit_fixed_production_workspace",
+        "--",
+        "--test-threads=1",
+        "--nocapture",
+        "--exact"
+      ],
+      "required_tests": [
+        "captured_and_historical_backup_verification_fit_fixed_production_workspace"
+      ],
+      "timeout_seconds": 600
+    },
+    {
+      "name": "restore_hands_off_verified_workspace_with_production_and_destination_reserves",
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "--message-format=json-render-diagnostics",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--test",
+        "backup_checkpoint",
+        "--all-features",
+        "restore_hands_off_verified_workspace_with_production_and_destination_reserves",
+        "--",
+        "--test-threads=1",
+        "--nocapture",
+        "--exact"
+      ],
+      "required_tests": [
+        "restore_hands_off_verified_workspace_with_production_and_destination_reserves"
+      ],
+      "timeout_seconds": 600
+    },
+    {
+      "name": "coordinator-positive-receiver-phases",
+      "timeout_seconds": 600,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "--message-format=json-render-diagnostics",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--lib",
+        "--all-features",
+        "state::recovery::receiver::tests::",
+        "--",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "required_tests": [
+        "state::recovery::receiver::tests::lost_prepare_reply_and_expired_phase_require_persisted_positive_status_before_resolution",
+        "state::recovery::receiver::tests::absence_or_substituted_status_cannot_install_preparation_evidence",
+        "state::recovery::receiver::tests::sealed_terminal_is_retained_distinctly_and_cannot_enter_activation_inspection"
+      ]
+    },
+    {
+      "name": "worker-terminal-failure",
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "--message-format=json-render-diagnostics",
+        "-j1",
+        "-p",
+        "kasumi-raft",
+        "--lib",
+        "--all-features",
+        "storage::tests::worker_failure_tests::",
+        "--",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "required_tests": [
+        "storage::tests::worker_failure_tests::cancelled_snapshot_waiter_cannot_hide_failure_after_durable_publication",
+        "storage::tests::worker_failure_tests::cancelled_snapshot_waiter_cannot_hide_panic_after_durable_publication"
+      ],
+      "timeout_seconds": 900
+    },
+    {
+      "name": "point-read-admission",
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "--message-format=json-render-diagnostics",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--lib",
+        "--all-features",
+        "service::staged_reads::tests::metadata_growth_requires_additional_admission_before_copying",
+        "--",
+        "--test-threads=1",
+        "--nocapture",
+        "--exact"
+      ],
+      "required_tests": [
+        "service::staged_reads::tests::metadata_growth_requires_additional_admission_before_copying"
+      ],
+      "timeout_seconds": 900
+    },
+    {
+      "name": "guarded-4",
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "--message-format=json-render-diagnostics",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--test",
+        "guarded_staging",
+        "--all-features",
+        "missing_stop_has_no_upload_lease_and_defeats_delayed_begin_after_encrypted_restart",
+        "--",
+        "--test-threads=1",
+        "--nocapture",
+        "--exact"
+      ],
+      "required_tests": [
+        "missing_stop_has_no_upload_lease_and_defeats_delayed_begin_after_encrypted_restart"
+      ],
+      "timeout_seconds": 900
+    },
+    {
+      "name": "guarded-5",
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "--message-format=json-render-diagnostics",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--test",
+        "guarded_staging",
+        "--all-features",
+        "encrypted_restore_preserves_original_stage_scope_without_reviving_historical_uploads",
+        "--",
+        "--test-threads=1",
+        "--nocapture",
+        "--exact"
+      ],
+      "required_tests": [
+        "encrypted_restore_preserves_original_stage_scope_without_reviving_historical_uploads"
+      ],
+      "timeout_seconds": 900
+    },
+    {
+      "name": "staged-6",
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "--message-format=json-render-diagnostics",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--test",
+        "staged_transactions",
+        "--all-features",
+        "killed_upload_recovers_encrypted_invisible_chunks_and_finishes_exactly_once",
+        "--",
+        "--test-threads=1",
+        "--nocapture",
+        "--exact"
+      ],
+      "required_tests": [
+        "killed_upload_recovers_encrypted_invisible_chunks_and_finishes_exactly_once"
+      ],
+      "timeout_seconds": 900
+    },
+    {
+      "name": "staged-7",
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "--message-format=json-render-diagnostics",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--test",
+        "staged_transactions",
+        "--all-features",
+        "permanent_staged_byte_exhaustion_preserves_success_failure_and_restored_exact_replays",
+        "--",
+        "--test-threads=1",
+        "--nocapture",
+        "--exact"
+      ],
+      "required_tests": [
+        "permanent_staged_byte_exhaustion_preserves_success_failure_and_restored_exact_replays"
+      ],
+      "timeout_seconds": 900
+    },
+    {
+      "name": "staged-8",
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "--message-format=json-render-diagnostics",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--test",
+        "staged_transactions",
+        "--all-features",
+        "permanent_staged_snapshot_rejection_spends_original_terminal_reservation_atomically",
+        "--",
+        "--test-threads=1",
+        "--nocapture",
+        "--exact"
+      ],
+      "required_tests": [
+        "permanent_staged_snapshot_rejection_spends_original_terminal_reservation_atomically"
+      ],
+      "timeout_seconds": 900
+    },
+    {
+      "name": "local-restore-owned-publication",
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "--message-format=json-render-diagnostics",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--test",
+        "backup_checkpoint",
+        "--all-features",
+        "cancelled_restore_publication_keeps_storage_and_workspace_until_write_drains",
+        "--",
+        "--test-threads=1",
+        "--nocapture",
+        "--exact"
+      ],
+      "required_tests": [
+        "cancelled_restore_publication_keeps_storage_and_workspace_until_write_drains"
+      ],
+      "timeout_seconds": 900
+    },
+    {
+      "name": "full-backup-terminal-history",
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "--message-format=json-render-diagnostics",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--test",
+        "history",
+        "--all-features",
+        "chunked_full_backup_restores_cold_history_and_permanent_identity_without_source_objects",
+        "--",
+        "--test-threads=1",
+        "--nocapture",
+        "--exact"
+      ],
+      "required_tests": [
+        "chunked_full_backup_restores_cold_history_and_permanent_identity_without_source_objects"
+      ],
+      "timeout_seconds": 900
+    },
+    {
+      "name": "public-snapshot-staging",
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "--message-format=json-render-diagnostics",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--lib",
+        "--all-features",
+        "state::snapshot_bundle::tests::public_capture_and_restore_preparation_are_complete_admitted_and_never_publish",
+        "--",
+        "--test-threads=1",
+        "--nocapture",
+        "--exact"
+      ],
+      "required_tests": [
+        "state::snapshot_bundle::tests::public_capture_and_restore_preparation_are_complete_admitted_and_never_publish"
+      ],
+      "timeout_seconds": 900
+    },
+    {
+      "name": "target-terminal-prefix",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--lib",
+        "--all-features",
+        "target_resolution::tests::",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "target_resolution::tests::exact_target_terminal_prefix_hides_unpublished_rows_and_rejects_changed_replay",
+        "target_resolution::tests::target_row_binds_actual_generation_command_and_separate_framed_budget",
+        "target_resolution::tests::target_snapshot_catalog_reopens_only_its_exact_committed_prefix",
+        "target_resolution::tests::every_historical_terminal_requires_its_exact_earlier_seal",
+        "target_resolution::tests::current_selectors_cannot_omit_a_budget_effect_or_the_last_seal",
+        "target_resolution::tests::admitted_completion_reserves_hot_audit_and_resident_completion_space"
+      ]
+    },
+    {
+      "name": "target-completion-machine",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--lib",
+        "--all-features",
+        "target_completion_machine::tests::",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "target_completion_machine::tests::exact_preparation_replays_after_completion_without_replacing_its_reservation",
+        "target_completion_machine::tests::only_an_expired_exact_prepared_attempt_can_be_sealed",
+        "target_completion_machine::tests::sealed_predecessor_orders_successor_and_rejects_a_late_original_complete",
+        "target_completion_machine::tests::committed_original_resolves_positively_and_cannot_authorize_a_successor",
+        "target_completion_machine::tests::preparation_reserves_terminal_capacity_and_resolution_does_not_reacquire_it",
+        "target_completion_machine::tests::target_budget_changes_preserve_reserves_and_replay_the_first_outcome",
+        "target_completion_machine::tests::reservation_shape_and_explicit_predecessor_are_canonical",
+        "target_completion_machine::tests::terminal_proof_binds_original_target_order_and_distinct_signature_purpose"
+      ]
+    },
+    {
+      "name": "positive-preparation-status",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--lib",
+        "--all-features",
+        "target_completion_status_tests::",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "target_completion_status_tests::fresh_status_preserves_expired_original_scope_position_and_dispatch_cap",
+        "target_completion_status_tests::status_requires_distinct_later_control_identity_and_exact_original_attempt",
+        "target_completion_status_tests::status_signature_domain_and_expected_input_cannot_be_substituted"
+      ]
+    },
+    {
+      "name": "canonical-control-completion",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--lib",
+        "--all-features",
+        "state::recovery::completion::tests::",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "state::recovery::completion::tests::retained_complete_input_requires_explicit_canonical_predecessor"
+      ]
+    },
+    {
+      "name": "authority-signer-coverage",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-authority",
+        "--lib",
+        "--all-features",
+        "service::tests::coverage_dispatch_precedes_permission_and_survives_exact_encrypted_restart",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "service::tests::coverage_dispatch_precedes_permission_and_survives_exact_encrypted_restart"
+      ]
+    },
+    {
+      "name": "native-issuer-signer-coverage",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--lib",
+        "--all-features",
+        "rpc::authority_tests::actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_recovery",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "rpc::authority_tests::actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_recovery"
+      ]
+    },
+    {
+      "name": "native-control-signer-coverage",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--lib",
+        "--all-features",
+        "rpc::lifecycle_tests::pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong_resource_and_partition",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "rpc::lifecycle_tests::pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong_resource_and_partition"
+      ]
+    },
+    {
+      "name": "indexed-snapshot-lineage",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--lib",
+        "--all-features",
+        "state::snapshot_validation::tests::",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "state::snapshot_validation::tests::receipt_original_scope_and_position_are_checked_in_both_snapshot_paths"
+      ]
+    },
+    {
+      "name": "lease-retention-with-target-owner",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--lib",
+        "--all-features",
+        "state::lease_retention::tests::",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "state::lease_retention::tests::publication_expires_full_roots_while_two_inflight_selections_keep_only_bounded_pages"
+      ]
+    },
+    {
+      "name": "workspace-strict",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "clippy",
+        "--locked",
+        "--offline",
+        "-j1",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "required_tests": []
+    }
+  ]
+}

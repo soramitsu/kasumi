@@ -1,0 +1,68 @@
+[
+  {
+    "path": "captured_and_historical_backup_verification_fit_fixed_production_workspace.log",
+    "original": "/tmp/kasumi-b17eaf5-combined-functional/captured_and_historical_backup_verification_fit_fixed_production_workspace.log",
+    "sha256": "bebdb5d32bc2f82ccbfb90b8bd5daa15d78a5e8abe78111d761aded63f5dad55",
+    "bytes": 368645
+  },
+  {
+    "path": "coordinator-positive-receiver-phases.log",
+    "original": "/tmp/kasumi-b17eaf5-combined-functional/coordinator-positive-receiver-phases.log",
+    "sha256": "036b30d24f83c1edc1c32b3a4fdd2d5e738bd66a0a94a254b96dbec08cbaa69e",
+    "bytes": 368784
+  },
+  {
+    "path": "evidence.json",
+    "original": "/tmp/kasumi-b17eaf5-combined-functional/evidence.json",
+    "sha256": "79250dcb212f0846671ae14e652f74807e3095ff22bc1d73136c365f092f4cdc",
+    "bytes": 2242614
+  },
+  {
+    "path": "joint-table-publication.log",
+    "original": "/tmp/kasumi-b17eaf5-combined-functional/joint-table-publication.log",
+    "sha256": "a678124bae0808afb21184e242ec98224677a691c8ed7a6c4fed0af8be26f13c",
+    "bytes": 200014
+  },
+  {
+    "path": "plan.json",
+    "original": "/tmp/kasumi-b17eaf5-combined-functional/plan.json",
+    "sha256": "6facbe70575c440a9dce0cf49b357be79b0800fba21a9d3db8a002d692d95ea0",
+    "bytes": 20128
+  },
+  {
+    "path": "public-point-stream-admission.log",
+    "original": "/tmp/kasumi-b17eaf5-combined-functional/public-point-stream-admission.log",
+    "sha256": "f46825bfc66383ea56b44054327ab1d749f4e1c1b6e6c0ddbcd154970594c1db",
+    "bytes": 368534
+  },
+  {
+    "path": "restore_hands_off_verified_workspace_with_production_and_destination_reserves.log",
+    "original": "/tmp/kasumi-b17eaf5-combined-functional/restore_hands_off_verified_workspace_with_production_and_destination_reserves.log",
+    "sha256": "6ddf31b145bd0a7f2b63fcd00efd1000266a0998f24435771f16af15af6f393e",
+    "bytes": 368542
+  },
+  {
+    "path": "runner.py",
+    "original": "/tmp/kasumi-b17eaf5-combined-functional/runner.py",
+    "sha256": "ad3d647fbb73d9d32e04e4e202814f68aea2cb5aa80acbed03a10fa8a3855a6f",
+    "bytes": 10765
+  },
+  {
+    "path": "source-before.json",
+    "original": "/tmp/kasumi-b17eaf5-combined-functional/source-before.json",
+    "sha256": "b48478cbee6bfee124eb8ffa35fdf94aede429b288fa1a738ca3c038d205a7cf",
+    "bytes": 304714
+  },
+  {
+    "path": "typed-framing-record-work.log",
+    "original": "/tmp/kasumi-b17eaf5-combined-functional/typed-framing-record-work.log",
+    "sha256": "197c90d371864aeef7aa8e0bb31b7bf10e7cd42bf093c11f902621d7ad505f2e",
+    "bytes": 370452
+  },
+  {
+    "path": "worker-terminal-failure.log",
+    "original": "/tmp/kasumi-b17eaf5-combined-functional/worker-terminal-failure.log",
+    "sha256": "2a942f868f2e29aa93776d89b4bd2e5ba917e0a451735b2cb12b73abcc70d40b",
+    "bytes": 199814
+  }
+]
