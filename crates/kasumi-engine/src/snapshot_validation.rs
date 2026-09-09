@@ -497,8 +497,7 @@ impl ValidatedApplicationSnapshot {
             {
                 scope_state.restore_lineage.push(link);
             }
-            let uploading =
-                staging::validate_snapshot_record(&key, &stage, &scope_state, &counts)?;
+            let uploading = staging::validate_snapshot_record(&key, &stage, &scope_state, &counts)?;
             let charge = staging::permanent_charge(&key, &stage)?;
             permanent_bytes = permanent_bytes
                 .checked_add(charge.0)
