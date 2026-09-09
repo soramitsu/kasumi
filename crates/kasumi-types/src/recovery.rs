@@ -174,6 +174,14 @@ pub struct RecoveryRecord {
     #[serde(deserialize_with = "crate::require_explicit_option")]
     pub completion_intent: Option<Uuid>,
     #[serde(deserialize_with = "crate::require_explicit_option")]
+    pub completion_preparation_attempt: Option<Uuid>,
+    #[serde(deserialize_with = "crate::require_explicit_option")]
+    pub completion_preparation: Option<Uuid>,
+    #[serde(deserialize_with = "crate::require_explicit_option")]
+    pub completion_resolution_attempt: Option<Uuid>,
+    #[serde(deserialize_with = "crate::require_explicit_option")]
+    pub completion_terminal: Option<Uuid>,
+    #[serde(deserialize_with = "crate::require_explicit_option")]
     pub completion_attempt: Option<Uuid>,
     #[serde(deserialize_with = "crate::require_explicit_option")]
     pub completion: Option<Uuid>,
@@ -243,6 +251,14 @@ pub enum RecoveryDispatchOutcome {
     /// Exact point reference to a separately retained positive inspection.
     CompletionResolution {
         inspection_phase: Uuid,
+    },
+    /// Positive persisted preparation observed under a later read-only phase.
+    PreparationObserved {
+        status_phase: Uuid,
+    },
+    /// Exact ordered committed-or-sealed terminal; never an absence inference.
+    CompletionTerminal {
+        resolution_phase: Uuid,
     },
     SourceRetired(Box<RetirementReceipt>),
     RoutePublished {

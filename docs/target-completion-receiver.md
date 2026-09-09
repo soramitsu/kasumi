@@ -50,9 +50,23 @@ remain held through response encoding and release.
 
 Six source prefix/accounting tests accompany the existing eight pure transition
 tests and three positive-status protocol/signature tests. The prefix visibility
-test also covers status lookup before and after logical publication. No automatic
-Control successor is enabled: persisting and consuming the status observation
-in the coordinator remains a subsequent phase. Namespace reclamation, physical
+test also covers status lookup before and after logical publication. The Control
+coordinator freezes an explicit Prepare request and retains its signed result or
+a later positive status in a phase record. Only that persisted evidence supplies
+the exact Resolve input. Typed references preserve the original Prepare/Complete
+request and deadline while recording their positive observation or committed-or-
+sealed terminal outcome. A Committed terminal must match the subsequent positive
+activation inspection; a Sealed outcome remains visible and cannot advance to
+activation. Three pure coordinator phase fixtures cover lost Prepare replies,
+causal ordering/substitution, and sealed outcome isolation; the existing replicated
+recovery fixture now includes explicit Prepare and positive terminal phases.
+All of these added/changed tests remain unexecuted in this source checkpoint.
+
+No automatic Control successor is enabled. If the first Resolve itself expires
+with an unknown outcome, this coordinator keeps that phase unavailable. A distinct
+fresh terminal-only observation must recover a positive exact retained original
+resolver fact before this outage boundary is usable; absence cannot authorize a
+new resolver identity or deadline. Namespace reclamation, physical
 disk ownership and capacity, receiver/status native crash tests, and the linked
 Control successor remain open. Public full-snapshot restore still charges three
 times the complete logical stream for resident admission; separating permanent

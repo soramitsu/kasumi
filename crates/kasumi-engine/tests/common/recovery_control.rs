@@ -483,6 +483,66 @@ async fn exercise_completed_recovery(
         )
         .await;
     }
+    let (prepared_phase, prepared_request) = prepare_next(&f, &db, id).await;
+    let RecoveryDispatch::Target {
+        node_id: prepared_node,
+        request: prepared_request,
+    } = prepared_request
+    else {
+        panic!("completion preparation required");
+    };
+    let TargetRuntimeStep::PrepareComplete(prepared_input) = prepared_request.step else {
+        panic!("explicit completion preparation required");
+    };
+    let prepared_attempt = TargetCompletionAttempt {
+        origin: prepared_input.quorum.materialized[&1].fact.origin.clone(),
+        input: prepared_input,
+        intent: complete_under.clone(),
+        dispatch_not_after_ms: prepared_request.not_after_ms,
+        admitted_at_ms: complete_under.accepted_at_ms + 1,
+        revision: request.checkpoint.revision + 2,
+        position: TargetCommitPosition {
+            index: 1,
+            term: 8,
+            leader_node_id: prepared_node,
+            command_sha256: "a9".repeat(32),
+        },
+        reserved_terminal_bytes: TARGET_COMPLETION_RESERVE_BYTES,
+        reserved_audit_bytes: TARGET_COMPLETION_AUDIT_RESERVE_BYTES,
+    };
+    let prepared_observation = TargetCompletionAttemptObservation {
+        attempt: prepared_attempt,
+        observer_node_id: prepared_node,
+        observed_revision: request.checkpoint.revision + 2,
+        observed_term: 8,
+    };
+    let prepared_signature = hex::encode(
+        attestation[&prepared_node]
+            .sign(
+                &serde_json::to_vec(&(
+                    "kasumi.prepared-target-completion-observation.v1",
+                    &prepared_observation,
+                ))
+                .unwrap(),
+            )
+            .as_ref(),
+    );
+    resolve_phase(
+        &f,
+        id,
+        prepared_phase,
+        RecoveryDispatchOutcome::Target(Box::new(TargetRuntimeResponse {
+            command_id: prepared_request.command_id,
+            node_id: prepared_node,
+            outcome: TargetRuntimeOutcome::PreparedCompletion(Box::new(
+                SignedTargetCompletionAttempt {
+                    observation: prepared_observation,
+                    signature: prepared_signature,
+                },
+            )),
+        })),
+    )
+    .await;
     let (unresolved, original_request) = prepare_next(&f, &db, id).await;
     let (complete_phase, retried) = prepare_next(&f, &db, id).await;
     let RecoveryDispatch::Target {
@@ -2010,6 +2070,89 @@ async fn resolve_expired_completion(
             .await
             .is_err()
     );
+    let resolution = commit_next_control(f, db, operation).await;
+    assert_eq!(resolution.request.phase, LifecyclePhase::ResolveComplete);
+    for node in 1..=3 {
+        let (id, dispatch) = prepare_next(f, db, operation).await;
+        let RecoveryDispatch::Target { node_id, request } = dispatch else {
+            panic!("terminal startup required")
+        };
+        assert_eq!(node_id, node);
+        let TargetRuntimeStep::Start(TargetReplicaInput::CompletionResolution(input)) =
+            request.step
+        else {
+            panic!("terminal startup input required")
+        };
+        assert_eq!(input.attempt.intent, old_intent);
+        resolve_phase(
+            f,
+            operation,
+            id,
+            RecoveryDispatchOutcome::Target(Box::new(TargetRuntimeResponse {
+                command_id: request.command_id,
+                node_id,
+                outcome: TargetRuntimeOutcome::Started {
+                    origin_sha256: input.attempt.input.quorum.origin_sha256,
+                },
+            })),
+        )
+        .await;
+    }
+    let (resolution_phase, dispatch) = prepare_next(f, db, operation).await;
+    let RecoveryDispatch::Target { node_id, request } = dispatch else {
+        panic!("terminal resolution required")
+    };
+    let TargetRuntimeStep::ResolveComplete(input) = request.step else {
+        panic!("terminal input required")
+    };
+    let terminal = TargetCompletionResolutionFact {
+        input: *input,
+        resolution_intent: resolution.clone(),
+        admitted_at_ms: resolution.accepted_at_ms + 1,
+        dispatch_not_after_ms: request.not_after_ms,
+        revision: fact.revision + 1,
+        position: TargetCommitPosition {
+            index: fact.revision - fact.origin.materialization.request.checkpoint.revision,
+            term: 8,
+            leader_node_id: node_id,
+            command_sha256: "bb".repeat(32),
+        },
+        terminal: TargetCompletionTerminal::Committed(Box::new(fact.clone())),
+    };
+    let terminal_observation = TargetCompletionResolutionObservation {
+        fact: terminal,
+        observation_intent: resolution,
+        observer_node_id: node_id,
+        observed_revision: fact.revision + 1,
+        observed_term: 8,
+    };
+    let terminal_signature = hex::encode(
+        keys[&node_id]
+            .sign(
+                &serde_json::to_vec(&(
+                    "kasumi.resolved-target-completion-observation.v1",
+                    &terminal_observation,
+                ))
+                .unwrap(),
+            )
+            .as_ref(),
+    );
+    resolve_phase(
+        f,
+        operation,
+        resolution_phase,
+        RecoveryDispatchOutcome::Target(Box::new(TargetRuntimeResponse {
+            command_id: request.command_id,
+            node_id,
+            outcome: TargetRuntimeOutcome::ResolvedCompletion(Box::new(
+                SignedTargetCompletionResolution {
+                    observation: terminal_observation,
+                    signature: terminal_signature,
+                },
+            )),
+        })),
+    )
+    .await;
     let inspection = commit_next_control(f, db, operation).await;
     assert_eq!(inspection.request.phase, LifecyclePhase::InspectTarget);
     assert_ne!(inspection.request.command_id, old_intent.request.command_id);
@@ -2129,7 +2272,7 @@ async fn resolve_expired_completion(
     );
     assert_eq!(
         retained.record().outcome,
-        Some(RecoveryDispatchOutcome::CompletionResolution { inspection_phase })
+        Some(RecoveryDispatchOutcome::CompletionTerminal { resolution_phase })
     );
     drop(retained);
     let head = db

@@ -14,6 +14,8 @@ pub(crate) use source::{issuer_action, retirement_request};
 pub(crate) mod activation;
 #[path = "recovery_completion.rs"]
 pub(crate) mod completion;
+#[path = "recovery_receiver.rs"]
+pub(crate) mod receiver;
 #[path = "recovery_route.rs"]
 pub(crate) mod route;
 
@@ -381,6 +383,10 @@ fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Result<RecoveryR
             issuer_preparation: None,
             initialization: None,
             completion_intent: None,
+            completion_preparation_attempt: None,
+            completion_preparation: None,
+            completion_resolution_attempt: None,
+            completion_terminal: None,
             completion_attempt: None,
             completion: None,
             retirement: None,
@@ -487,10 +493,13 @@ fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Result<RecoveryR
                             }
                             TargetRuntimeStep::Start(_)
                             | TargetRuntimeStep::Complete(_)
+                            | TargetRuntimeStep::PrepareComplete(_)
+                            | TargetRuntimeStep::InspectCompletionAttempt(_)
+                            | TargetRuntimeStep::ResolveComplete(_)
                             | TargetRuntimeStep::Inspect(_)
                                 if operation.phase == RecoveryPhase::Complete =>
                             {
-                                Some(LifecyclePhase::InspectTarget)
+                                Some(receiver::fresh_phase(state, &operation)?)
                             }
                             TargetRuntimeStep::StartActivation { .. }
                             | TargetRuntimeStep::Activate { .. }
@@ -571,6 +580,16 @@ fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Result<RecoveryR
             if matches!(input.as_ref(),RecoveryDispatch::Authority(command) if matches!(command.action,AuthorityAction::ActivateCommitted{..}))
             {
                 operation.activation_attempt = Some(*phase_id);
+            }
+            if matches!(input.as_ref(), RecoveryDispatch::Target { request, .. } if matches!(request.step, TargetRuntimeStep::PrepareComplete(_)))
+                && operation.completion_preparation_attempt.is_none()
+            {
+                operation.completion_preparation_attempt = Some(*phase_id);
+            }
+            if matches!(input.as_ref(), RecoveryDispatch::Target { request, .. } if matches!(request.step, TargetRuntimeStep::ResolveComplete(_)))
+                && operation.completion_resolution_attempt.is_none()
+            {
+                operation.completion_resolution_attempt = Some(*phase_id);
             }
             if matches!(input.as_ref(), RecoveryDispatch::Target { request, .. } if matches!(request.step, TargetRuntimeStep::Complete(_)))
             {
@@ -666,6 +685,21 @@ fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Result<RecoveryR
                         .insert(original_key, original_phase);
                 }
             }
+            if let RecoveryDispatchOutcome::Target(response) = outcome.as_ref()
+                && matches!(
+                    response.outcome,
+                    TargetRuntimeOutcome::CompletionAttemptStatus(_)
+                        | TargetRuntimeOutcome::ResolvedCompletion(_)
+                )
+            {
+                prepared.outcome = Some(outcome.as_ref().clone());
+                prepared.resolved_revision = Some(state.revision);
+                state
+                    .recovery_control
+                    .phases
+                    .insert(key.clone(), prepared.clone());
+                receiver::resolve_prior(state, &operation, &prepared, response)?;
+            }
             if matches!((&prepared.input, outcome.as_ref()), (RecoveryDispatch::Target { request, .. }, RecoveryDispatchOutcome::Target(response)) if matches!(request.step, TargetRuntimeStep::Inspect(_)) && matches!(response.outcome, TargetRuntimeOutcome::Inspected(_)))
             {
                 prepared.outcome = Some(outcome.as_ref().clone());
@@ -713,9 +747,14 @@ pub(crate) fn expected_intent(
             completion::completion_input(state, operation)?.digest()?,
             None,
         ),
-        LifecyclePhase::ResolveComplete
-        | LifecyclePhase::MaintainTarget
-        | LifecyclePhase::InspectCompletionAttempt => {
+        LifecyclePhase::InspectCompletionAttempt => {
+            (receiver::status_input(state, operation)?.digest()?, None)
+        }
+        LifecyclePhase::ResolveComplete => (
+            receiver::resolution_input(state, operation)?.digest()?,
+            None,
+        ),
+        LifecyclePhase::MaintainTarget => {
             return Err(conflict(
                 "target terminal coordinator phase is not installed",
             ));
@@ -865,7 +904,7 @@ fn validate_input(
                 LifecyclePhase::Initialize
             } else if operation.phase == RecoveryPhase::Complete {
                 if operation.completion_intent.is_some() {
-                    LifecyclePhase::InspectTarget
+                    receiver::fresh_phase(state, operation)?
                 } else {
                     LifecyclePhase::Complete
                 }
@@ -881,7 +920,12 @@ fn validate_input(
                     "original completion intent must be resolved without replacing its identity",
                 ));
             }
-            if phase == LifecyclePhase::InspectTarget {
+            if matches!(
+                phase,
+                LifecyclePhase::InspectTarget
+                    | LifecyclePhase::InspectCompletionAttempt
+                    | LifecyclePhase::ResolveComplete
+            ) {
                 let current = intent(
                     state,
                     operation,
@@ -890,7 +934,16 @@ fn validate_input(
                         .ok_or_else(|| conflict("current completion phase absent"))?,
                 )?;
                 let expired_pending = operation.pending_phase.and_then(|id| self::phase(state, operation, id).ok()).is_some_and(|phase| matches!(&phase.input, RecoveryDispatch::Target { request, .. } if authorization.admitted_at_ms >= request.not_after_ms));
-                if authorization.admitted_at_ms < current.original_credential_expires_at_ms
+                let preparation_cap = operation
+                    .completion_preparation_attempt
+                    .map(|_| {
+                        receiver::status_input(state, operation)
+                            .map(|i| i.original_dispatch_not_after_ms)
+                    })
+                    .transpose()?;
+                if current.request.phase == LifecyclePhase::Complete
+                    && authorization.admitted_at_ms < current.original_credential_expires_at_ms
+                    && preparation_cap.is_none_or(|cap| authorization.admitted_at_ms < cap)
                     && !expired_pending
                 {
                     return Err(conflict(
@@ -976,6 +1029,9 @@ fn validate_input(
                     &request.step,
                     true,
                 )?,
+                (_, RecoveryPhase::Complete) if receiver::is_step(&request.step) => {
+                    receiver::validate_step(state, operation, current, *node_id, request, true)?;
+                }
                 (_, RecoveryPhase::Complete) if completion::is_inspection(&request.step) => {
                     completion::validate_step(
                         state,
@@ -1177,6 +1233,18 @@ fn validate_outcome(
             completion::validate_resolution(state, operation, prepared, *inspection_phase)?;
         }
         (
+            RecoveryDispatch::Target { .. },
+            RecoveryDispatchOutcome::PreparationObserved { status_phase },
+        ) => {
+            receiver::validate_link(state, operation, prepared, *status_phase, false)?;
+        }
+        (
+            RecoveryDispatch::Target { .. },
+            RecoveryDispatchOutcome::CompletionTerminal { resolution_phase },
+        ) => {
+            receiver::validate_link(state, operation, prepared, *resolution_phase, true)?;
+        }
+        (
             RecoveryDispatch::Target { node_id, request },
             RecoveryDispatchOutcome::Target(response),
         ) => {
@@ -1188,6 +1256,9 @@ fn validate_outcome(
                 .as_ref()
                 .and_then(|control| control.intents.get(&request.command_id))
                 .ok_or_else(|| conflict("target acknowledgement Control phase absent"))?;
+            if receiver::is_step(&request.step) {
+                return receiver::validate_outcome(state, operation, prepared, response);
+            }
             match (&request.step, &response.outcome) {
                 (
                     TargetRuntimeStep::Materialize(_) | TargetRuntimeStep::ResumeMaterialization(_),
@@ -1431,9 +1502,17 @@ fn advance(
                 .ok_or_else(|| conflict("target voter missing"))?;
             match response.outcome {
                 TargetRuntimeOutcome::PreparedCompletion(_)
-                | TargetRuntimeOutcome::CompletionAttemptStatus(_)
-                | TargetRuntimeOutcome::ResolvedCompletion(_)
-                | TargetRuntimeOutcome::ResolutionBudget(_) => {
+                | TargetRuntimeOutcome::CompletionAttemptStatus(_) => {
+                    if operation.completion_preparation.is_none() {
+                        operation.completion_preparation = Some(prepared.phase_id);
+                    }
+                }
+                TargetRuntimeOutcome::ResolvedCompletion(_) => {
+                    if operation.completion_terminal.is_none() {
+                        operation.completion_terminal = Some(prepared.phase_id);
+                    }
+                }
+                TargetRuntimeOutcome::ResolutionBudget(_) => {
                     return Err(conflict(
                         "target receiver maintenance is not a coordinated successor phase",
                     ));
@@ -1674,6 +1753,7 @@ pub(crate) fn validate(state: &TenantState) -> Result<()> {
                 return Err(conflict("original completion attempt reference differs"));
             }
         }
+        receiver::validate_progress(state, operation)?;
         if operation.materialization_intent.is_some() {
             origin(state, operation)?;
         }
@@ -1938,7 +2018,10 @@ fn validate_frozen_input(
                     | (RecoveryPhase::Initialize, LifecyclePhase::Initialize)
                     | (
                         RecoveryPhase::Complete,
-                        LifecyclePhase::Complete | LifecyclePhase::InspectTarget
+                        LifecyclePhase::Complete
+                            | LifecyclePhase::InspectTarget
+                            | LifecyclePhase::InspectCompletionAttempt
+                            | LifecyclePhase::ResolveComplete
                     )
                     | (
                         RecoveryPhase::Activate | RecoveryPhase::Confirm,
@@ -1983,6 +2066,9 @@ fn validate_frozen_input(
                     &request.step,
                     false,
                 )?,
+                (_, RecoveryPhase::Complete) if receiver::is_step(&request.step) => {
+                    receiver::validate_step(state, operation, current, *node_id, request, false)?;
+                }
                 (_, RecoveryPhase::Complete) if completion::is_inspection(&request.step) => {
                     completion::validate_step(
                         state,
@@ -2082,6 +2168,16 @@ pub(crate) fn validate_successor(previous: &TenantState, incoming: &TenantState)
         for (old, new) in [
             (old.materialization_intent, new.materialization_intent),
             (old.completion_intent, new.completion_intent),
+            (
+                old.completion_preparation_attempt,
+                new.completion_preparation_attempt,
+            ),
+            (old.completion_preparation, new.completion_preparation),
+            (
+                old.completion_resolution_attempt,
+                new.completion_resolution_attempt,
+            ),
+            (old.completion_terminal, new.completion_terminal),
             (old.issuer_preparation, new.issuer_preparation),
             (old.initialization, new.initialization),
             (old.completion, new.completion),

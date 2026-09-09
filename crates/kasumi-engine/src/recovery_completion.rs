@@ -92,6 +92,7 @@ pub(crate) fn validate_proof(
     }
     kasumi_serving::verify_target_inspection(&input, signed)
         .map_err(|_| conflict("completion inspection lacks its exact positive signature"))?;
+    receiver::validate_inspected_terminal(state, operation, &signed.observation.completion)?;
     if let Some(id) = operation.completion_attempt {
         let original = phase(state, operation, id)?;
         let RecoveryDispatch::Target { request, .. } = &original.input else {
@@ -157,6 +158,14 @@ pub(crate) fn resolve_original(
         return Ok(());
     };
     let mut original = phase(state, operation, id)?.clone();
+    if matches!(
+        original.outcome,
+        Some(RecoveryDispatchOutcome::CompletionTerminal { .. })
+    ) {
+        // Its exact positive terminal was validated against the inspection above;
+        // preserve the earlier permanent terminal reference and resolution time.
+        return Ok(());
+    }
     if original.outcome.is_some() {
         return Err(conflict(
             "original completion already has a permanent outcome",
