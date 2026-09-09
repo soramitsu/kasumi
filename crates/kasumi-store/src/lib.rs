@@ -154,6 +154,8 @@ pub struct NodeStore {
     scratch_disk: Arc<ScratchDisk>,
     path: Option<PathBuf>,
     tenants: AsyncMutex<HashMap<String, Arc<AsyncMutex<Weak<TenantStore>>>>>,
+    // Retain initialization tasks through rejected/cancelled result delivery.
+    initializers: AsyncMutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
 impl NodeStore {
@@ -266,6 +268,7 @@ impl NodeStore {
             scratch_disk,
             path,
             tenants: AsyncMutex::new(HashMap::new()),
+            initializers: AsyncMutex::new(Vec::new()),
         })
     }
 
@@ -588,33 +591,35 @@ impl TenantStore {
                 matches!(catalog_open, CatalogOpen::CreateIfAbsent),
                 "tenant catalog is not initialized"
             );
-            let root = tokio::time::timeout(PROVIDER_TIMEOUT, provider.generate_key(&tenant))
-                .await
-                .context("key generation timed out")??;
-            access.check()?;
-            let data = tokio::time::timeout(PROVIDER_TIMEOUT, provider.generate_key(&tenant))
-                .await
-                .context("key generation timed out")??;
-            access.check()?;
-            let active = Uuid::new_v4().to_string();
-            let catalog = KeyCatalog {
-                format: 1,
-                catalog_id: Uuid::new_v4(),
-                tenant: tenant.clone(),
-                purpose: access.purpose().clone(),
-                active: active.clone(),
-                keys: BTreeMap::from([
-                    (INDEX_KEY.to_owned(), root.wrapped),
-                    (active, data.wrapped),
-                ]),
-            };
+            let catalog = Self::generate_catalog(&tenant, &provider, &access).await?;
             // Drop plaintext generation responses. Initial access requires fresh decrypts.
             node.save_catalog(&tenant, &catalog)?;
             access.check()?;
             catalog
         };
+        let store = Self::unpublished(node, tenant, provider, access, clock, catalog);
+        store.refresh_lease().await?;
+        // Register every background owner before another open can see this store.
+        if renew {
+            Self::start_renewal(&store).await;
+        }
+        *slot = Arc::downgrade(&store);
+        drop(slot);
+        Ok(store)
+    }
+
+    /// Construct an unpublished owner. The caller retains its open gate until
+    /// either publication or completed shutdown of this exact new owner.
+    fn unpublished(
+        node: Arc<NodeStore>,
+        tenant: String,
+        provider: Arc<dyn KeyProvider>,
+        access: StorageAccess,
+        clock: Arc<dyn LeaseClock>,
+        catalog: KeyCatalog,
+    ) -> Arc<Self> {
         let (seal_notifier, _) = watch::channel(0);
-        let store = Arc::new(Self {
+        Arc::new(Self {
             node: node.clone(),
             tenant: tenant.clone(),
             access,
@@ -634,25 +639,56 @@ impl TenantStore {
             background: AsyncMutex::new(BackgroundTasks::default()),
             audit_placement: Mutex::new(None),
             live_trust: Mutex::new(BTreeMap::new()),
-        });
-        store.refresh_lease().await?;
-        // Register every background owner before another open can see this store.
-        if renew {
-            Self::start_renewal(&store).await;
-        }
-        *slot = Arc::downgrade(&store);
-        drop(slot);
-        Ok(store)
+        })
+    }
+
+    async fn generate_catalog(
+        tenant: &str,
+        provider: &Arc<dyn KeyProvider>,
+        access: &StorageAccess,
+    ) -> Result<KeyCatalog> {
+        access.check()?;
+        let root = tokio::time::timeout(PROVIDER_TIMEOUT, provider.generate_key(tenant))
+            .await
+            .context("key generation timed out")??;
+        access.check()?;
+        let data = tokio::time::timeout(PROVIDER_TIMEOUT, provider.generate_key(tenant))
+            .await
+            .context("key generation timed out")??;
+        access.check()?;
+        let active = Uuid::new_v4().to_string();
+        let catalog = KeyCatalog {
+            format: 1,
+            catalog_id: Uuid::new_v4(),
+            tenant: tenant.to_owned(),
+            purpose: access.purpose().clone(),
+            active: active.clone(),
+            keys: BTreeMap::from([(INDEX_KEY.to_owned(), root.wrapped), (active, data.wrapped)]),
+        };
+        catalog.validate(tenant)?;
+        Ok(catalog)
     }
 
     async fn start_renewal(store: &Arc<Self>) {
+        let (ready, receive) = watch::channel(true);
+        Self::prepare_renewal(store, receive).await;
+        drop(ready);
+    }
+
+    /// Register dormant workers before a prepared owner becomes visible. Their
+    /// first key probe cannot run before the synchronous handoff commits.
+    async fn prepare_renewal(store: &Arc<Self>, ready: watch::Receiver<bool>) {
         let mut background = store.background.lock().await;
         if background.started || store.shutdown_requested.load(Ordering::Acquire) {
             return;
         }
         background.started = true;
         let weak = Arc::downgrade(store);
+        let mut checking_ready = ready.clone();
         background.handles.push(tokio::spawn(async move {
+            if checking_ready.wait_for(|ready| *ready).await.is_err() {
+                return;
+            }
             loop {
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 let Some(store) = weak.upgrade() else { return };
@@ -662,7 +698,11 @@ impl TenantStore {
             }
         }));
         let weak = Arc::downgrade(store);
+        let mut refreshing_ready = ready;
         background.handles.push(tokio::spawn(async move {
+            if refreshing_ready.wait_for(|ready| *ready).await.is_err() {
+                return;
+            }
             let interval = Duration::from_secs(20);
             let mut schedule =
                 tokio::time::interval_at(tokio::time::Instant::now() + interval, interval);

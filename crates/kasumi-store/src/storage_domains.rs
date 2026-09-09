@@ -4,6 +4,8 @@ use super::*;
 use redb::ReadableTable;
 use std::collections::BTreeSet;
 
+mod catalog_initialization;
+
 const BINDING_NS: &str = "kasumi.storage-domains";
 const BINDING_KEY: &[u8] = b"binding";
 const CUSTODY_PREFIX: &str = "kasumi.custody/";
