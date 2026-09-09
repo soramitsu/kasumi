@@ -1,0 +1,50 @@
+[
+  {
+    "path": "evidence.json",
+    "original": "/tmp/kasumi-e17a5eb-sdk-gates/evidence.json",
+    "sha256": "3ce051ebe6333d8959fc3ff6de5b2241399f66c080f62b7f3eb7b9ebf1f71f04",
+    "bytes": 348545
+  },
+  {
+    "path": "format.log",
+    "original": "/tmp/kasumi-e17a5eb-sdk-gates/format.log",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  {
+    "path": "plan.json",
+    "original": "/tmp/kasumi-e17a5eb-sdk-gates/plan.json",
+    "sha256": "320f1a5c64ec2550ad0d0bdbe626d8ab0500efd598e1b1c06418f3d9f4325f6b",
+    "bytes": 1605
+  },
+  {
+    "path": "runner.py",
+    "original": "/tmp/kasumi-e17a5eb-sdk-gates/runner.py",
+    "sha256": "0ffa9d435d4ff35267b0252da7d0c1a92a3d65c4f19bbc99471fefa0760e3707",
+    "bytes": 11490
+  },
+  {
+    "path": "sdk-literal-invariants.log",
+    "original": "/tmp/kasumi-e17a5eb-sdk-gates/sdk-literal-invariants.log",
+    "sha256": "e9fc9fc8e82c62f8df814005f1046734ad4819b57015cc7e11e10293039194c0",
+    "bytes": 172345
+  },
+  {
+    "path": "sdk-strict.log",
+    "original": "/tmp/kasumi-e17a5eb-sdk-gates/sdk-strict.log",
+    "sha256": "5b1f0e0a75706dfdc6fb421c78a6d660fbb934ed91b8a5c189336085bc927f56",
+    "bytes": 165750
+  },
+  {
+    "path": "source-before.json",
+    "original": "/tmp/kasumi-e17a5eb-sdk-gates/source-before.json",
+    "sha256": "85019baa06bf84bd4947423d08037fbb8088dd4ac2589061ca529609977833c2",
+    "bytes": 284644
+  },
+  {
+    "path": "kasumi-combined-runner-process-check.json",
+    "original": "/tmp/kasumi-combined-runner-process-check.json",
+    "sha256": "6a43f830978ca331d607c6c4b98ac0d5f3e24810ad73e9aabffdf04c379003b6",
+    "bytes": 1097
+  }
+]

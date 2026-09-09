@@ -120,6 +120,13 @@ versions. The exact reservation dependency is specified below.
 
 ## Work ownership
 
+The combined SDK metadata checkpoint `e17a5eb` passed all 11 literal-decoder
+tests, client strict Clippy and formatting. Feed after-images now require their
+exact event identity and commit version; schema responses reject impossible
+epoch metadata before constructing schema bodies. Source and all owned process
+groups closed cleanly. [The retained evidence](evidence/sdk-metadata-e17a5eb-20260909/README.md)
+does not certify the server TLS regression, which remains pending execution.
+
 The integration checkout is `/Users/mtakemiya/dev/kasumi`. Implementation branches
 use separate worktrees for streaming storage, standalone runtime and HA runtime.
 The existing `/private/tmp/kasumi-target-runner` remains preserved. Unrelated

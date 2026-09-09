@@ -1,0 +1,41 @@
+{
+  "scope": "Three isolated helper process checks; no Cargo or database listener; no combined plan execution.",
+  "runner_sha256": "1ab29877894f02cab232c06ea4cea9fa8cc1a8dd4e7d12fba7a7082b6f226709",
+  "prior_failure": "First helper attempt failed probing a reaped normal process group with os.killpg(group,0): PermissionError. No remaining helper process was found.",
+  "checks": [
+    {
+      "name": "normal",
+      "result": {
+        "group": 33601,
+        "remaining_after_command": false,
+        "signals": [],
+        "drained": true,
+        "process_returncode": 0
+      }
+    },
+    {
+      "name": "surviving-child",
+      "result": {
+        "group": 33605,
+        "remaining_after_command": true,
+        "signals": [
+          "SIGTERM"
+        ],
+        "drained": true,
+        "process_returncode": 0
+      }
+    },
+    {
+      "name": "repeated-cancellation",
+      "result": {
+        "group": 33612,
+        "remaining_after_command": true,
+        "signals": [
+          "SIGTERM"
+        ],
+        "drained": true,
+        "process_returncode": -15
+      }
+    }
+  ]
+}
