@@ -23,6 +23,7 @@ mod device_disk;
 mod keys;
 mod node_disk;
 mod node_file;
+pub mod node_store_ids;
 mod read_view;
 pub use node_disk::{
     CensusCancellation, DiskWork, NodeDisk, NodeDiskConfig, NodeDiskFile, NodeDiskPhase,

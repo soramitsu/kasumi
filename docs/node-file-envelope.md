@@ -56,10 +56,14 @@ it does not establish persistent disk admission or hard RSS bounds.
 
 Caller reconciliation is required after this initial core source checkpoint.
 Standalone/general node files need a configured random durable UUID. HA target
-generations derive their UUID from immutable retained target origin and physical
-verifier identity; local restored generations derive it from the original local
-operation and target incarnation. Create and reopen must use shared named
-derivation helpers, never paths, mutable membership or the candidate header.
+generations use the permanently journaled Control incarnation, tenant, target
+incarnation and physical verifier identity. These inputs exist even when an
+early Stop precedes materialization; the full original target origin remains a
+separate authenticated logical binding. Local restored generations use the
+original installation, local operation and target incarnation. Shared named
+`node_store_ids` helpers define versioned, length-framed SHA-256 derivations into
+UUIDv8 values. They exclude paths, mutable membership, TLS certificates and the
+candidate header. Target journal and signer-verifier files have distinct domains.
 
 The focused source tests are `node_file::tests::` (eight ordinary tests and one
 explicit subprocess helper). They cover byte-exact clean/unclean unrelated-file
