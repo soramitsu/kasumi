@@ -37,3 +37,13 @@ Raw logs, runner, exact plan and source inventory are preserved byte-for-byte.
 `evidence.json` SHA-256:
 `7dacb95f397a2775b4acdd7930636a487aa9f23a689151ee79b66595c279bb9b`.
 Exact executable copies remain at their hashed paths recorded in that file.
+
+After the terminal result, another task reported that its unrelated compiler
+cohort had owned a separate queue since 06:08 UTC, including intervals of source
+hashing without a visible Cargo process. This overlaps the Kasumi continuation.
+That task's later core process10719 began at06:22:22 UTC, after Kasumi drained;
+it also overlaps another separately dispatched build cohort. These reports do not
+establish exact earlier process timings. No quiet-host performance, resource-peak
+or non-overlap conclusion is drawn from this functional evidence. Kasumi did not
+signal those foreign processes and held subsequent native work pending explicit
+coordination of both owners.

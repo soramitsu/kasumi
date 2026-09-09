@@ -6,7 +6,7 @@ branch evidence remain historical records; they do not certify this integration.
 
 The explicit release goal remains active. Current integration adds atomic recovery
 route publication, issuer-local activation tied to the global winner, and byte
-budgets for permanent staged outcomes. Permanent point-table migration, native
+budgets for permanent staged outcomes. Permanent ordinary receipt storage, native
 resource reservations, persistent disk admission and the final live/capacity/
 endurance gates remain open. The Linux reference VM has 16 GiB memory. Its latest
 frozen run (`3a8d512`, 15 GiB container limit) failed the restored-runtime restart
@@ -106,7 +106,9 @@ integration; the final integrated source must then pass the complete gates above
    `5daf4d3` verifies exact permanent counts and public original-scope outcomes;
    `deb8ead` reconciles the other staged terminal fixtures. Those successors
    pass in the [combined `f4a472f` functional cohort](evidence/followon-f4a472f-functional-20260909/README.md),
-   including the actual killed-upload test. Later prefix/native gates remain unrun.
+   including the actual killed-upload test. The [successor continuation](evidence/recovery-bd42e74-continuation-20260909/README.md)
+   passes all six target-prefix and eight completion-machine tests, then fails
+   the native issuer fixture's private-directory setup. Native coverage remains open.
 4. Validate the combined KASUMIT5 format and restore admission checkpoint.
    `4dddb8d` replaces the prototype decoder directly, inspects typed frames with
    fixed scratch, and separates resident bytes from permanent history. It adds
@@ -139,9 +141,13 @@ integration; the final integrated source must then pass the complete gates above
    fresh unanimous startup blocks established-quorum status, and live Complete
    admission must independently reject a changed original cap; `6a4cf3e` implements
    both corrections and is compiled in `f4a472f`. Seven pure receiver tests and
-   two replicated Control tests pass. The third replicated activation test aborts
+   two replicated Control tests pass. The third replicated activation test aborted
    with stack overflow during nested route-publication setup; its failure and
-   executable are preserved. Eighteen later gates are unrun. Automatic safe successors, physical cleanup and actual
+   executable are preserved. `bd42e74` separates the sequential fixture futures
+   without raising stack size and passes all five recovery callers. That
+   continuation passes30 actual tests across16 gates, then fails the native
+   issuer credential fixture; four later gates are unrun. `d37e33e` corrects its
+   parent directory and still requires execution. Automatic safe successors, physical cleanup and actual
    source-unavailable recovery remain unfinished. Absence never resolves a mutation.
 6. Expand the [successful small offline Linux diagnostic](evidence/small-offline-native-3a8d512-20260909/README.md)
    to final-source acceptance. It exercised 129 documents through private
@@ -149,20 +155,19 @@ integration; the final integrated source must then pass the complete gates above
    restore using exact prior fixture-free binaries. Its processes drained and
    confidential installation files remain private. It does not replace full
    credential rotation, HA recovery, 3 GiB or 24-hour acceptance.
-7. Require existing authenticated state on restart. The strict catalog/local
-   bootstrap primitives and activated-target caller are frozen at `4ff1a10` and
-   `e6354ef`, with eight unrun regressions. Local reopening must also require the
-   configured Control incarnation before startup. Explicit standalone init must
-   provision Control/application catalogs and bootstrap before startup can stop
-   creating them. Strict replicated readmission is a separate pending change.
-   `851741c` adds strict replicated readmission and `a4e0062` provisions standalone
-   Control/application state before the completion marker; both are source-only.
-   Review found that raw redb could be modified before format rejection.
-   `44bf8d7` replaces that open path with a fixed node-file envelope and mandatory
-   installed UUID before writable recovery. Its explicit create/existing/owned-empty
-   constructors require caller reconciliation; its eight tests are unrun.
-   Immutable stored genesis must also remain separate from operational endpoints
-   and membership. No missing-state fallback or compatibility constructor is permitted.
+7. Require existing authenticated state on restart. The source assembly now
+   includes strict local and replicated bootstrap, immutable stored genesis,
+   explicit standalone initialization, mandatory node UUIDs, and distinct
+   create/existing/owned-empty file constructors. The target journal has explicit
+   installation, permanent original-materialization file intent and strict reopen.
+   Service audit initialization is separate from existing-head validation.
+   These changes and their new regressions remain uncompiled together.
+   Review additionally found and corrected a concurrent resize/write race,
+   empty-read bounds, target opener-registry ownership and failed-startup drains.
+   Cold HA and authority callers still need their separate explicit enrollment
+   operations before all startup paths can require existing state. Empty/torn
+   pre-header target cleanup and external namespace custody remain open.
+   No missing-state fallback or compatibility constructor is permitted.
 
 Persistent disk admission and native durable resource reservations must be
 implemented before claiming configured node disk capacity or reserved import
@@ -180,7 +185,10 @@ The separate redb owner-failure prototype `4f62863` passes
 [20 focused regressions](evidence/redb-owner-failure-4f62863-20260909/README.md),
 including permanent failure fencing and ordinary capacity rollback. Its
 [complete upstream source overlay](evidence/redb-upstream-preparation-20260909/README.md)
-is prepared at `bdde797`; dependency/tool preparation, full upstream verification,
+is prepared at `bdde797`. Offline dependency preparation failed on missing cached
+packages and is preserved. [Online metadata preparation](evidence/redb-upstream-metadata-online-20260909/README.md)
+resolved both complete verification graphs without compilation and committed
+their lockfiles at `3a87154`. Pinned tools/harness, full upstream verification,
 fuzzing and production integration remain open.
 
 ## Work ownership
