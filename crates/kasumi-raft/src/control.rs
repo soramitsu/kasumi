@@ -272,21 +272,15 @@ impl ControlLog {
             return Ok(true);
         }
         let store = self.custody.store();
-        let mut indices = Vec::new();
-        store.visit(SEEDS, 2 << 20, |key, _| {
-            ensure!(
-                indices.len() < 100_000,
-                "retirement recovery identity budget exceeded"
-            );
-            let key: [u8; 8] = key.try_into().context("invalid retirement index")?;
-            indices.push(u64::from_be_bytes(key));
-            Ok(())
-        })?;
-        indices.sort_unstable();
         let mut candidate = None;
-        for index in indices {
+        // The control gate keeps the candidate set and coverage stable. A read
+        // view releases its key-state guard before the callback's point reads;
+        // retaining a normal visit guard here could deadlock key renewal.
+        store.read_view()?.visit(SEEDS, 2 << 20, |key, _| {
+            let key: [u8; 8] = key.try_into().context("invalid retirement index")?;
+            let index = u64::from_be_bytes(key);
             let Some(seed) = self.retirement_seed(index)? else {
-                continue;
+                return Ok(());
             };
             let revision = seed
                 .seed
@@ -301,7 +295,8 @@ impl ControlLog {
                 );
                 candidate = Some((seed, receipt));
             }
-        }
+            Ok(())
+        })?;
         let Some((committed, receipt)) = candidate else {
             return Ok(false);
         };

@@ -509,6 +509,64 @@ async fn reserved_committed_retirement_recovers_atomic_custody_after_crash_witho
 }
 
 #[tokio::test]
+async fn retirement_recovery_crosses_former_seed_count_ceiling_without_promoting_a_tail()
+-> Result<()> {
+    let (stores, _, _, mut log) = fixture(FaultBackend::new()).await?;
+    log.blocking_append([membership(0), retirement_entry()?])
+        .await?;
+    // These authenticated physical rows are outside committed coverage. Their
+    // payloads must never become recovery evidence, regardless of their count.
+    // Keep fixture construction bounded too: one small batch at a time.
+    let store = stores.custody().store();
+    let mut batch = Vec::with_capacity(128);
+    for index in 2u64..=100_001 {
+        batch.push(WriteOp::put(
+            SEEDS,
+            index.to_be_bytes(),
+            b"uncommitted physical tail",
+        ));
+        if batch.len() == 128 {
+            store.write_batch(&batch)?;
+            batch.clear();
+        }
+    }
+    if !batch.is_empty() {
+        store.write_batch(&batch)?;
+    }
+    let reader = ControlLog::open(stores.custody().clone(), 1, group())?;
+    assert!(!reader.recover_retired()?);
+    assert!(retired_boundary(stores.custody())?.is_none());
+    log.save_committed(Some(id(1))).await?;
+    assert!(reader.recover_retired()?);
+    let boundary = retired_boundary(stores.custody())?.unwrap();
+    assert_eq!(boundary.position.log_id, id(1));
+    assert_eq!(boundary.receipt.revision, 1);
+    assert!(reader.retirement_seed(100_001)?.is_none());
+    stores.application().shutdown().await;
+    stores.custody().store().shutdown().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn retirement_recovery_never_selects_between_multiple_committed_successes() -> Result<()> {
+    let (stores, _, _, mut log) = fixture(FaultBackend::new()).await?;
+    let mut second = retirement_entry()?;
+    second.log_id = id(2);
+    log.blocking_append([membership(0), retirement_entry()?, second])
+        .await?;
+    log.save_committed(Some(id(2))).await?;
+    let reader = ControlLog::open(stores.custody().clone(), 1, group())?;
+    assert!(reader.retirement_seed(1)?.is_some());
+    assert!(reader.retirement_seed(2)?.is_some());
+    assert!(reader.recover_retired().is_err());
+    assert!(retired_boundary(stores.custody())?.is_none());
+    assert!(load::<AppliedCursor>(stores.custody().store(), META, b"applied")?.is_none());
+    stores.application().shutdown().await;
+    stores.custody().store().shutdown().await;
+    Ok(())
+}
+
+#[tokio::test]
 async fn exhausted_seed_completion_budget_cannot_promote_a_committed_candidate() -> Result<()> {
     let disk = FaultBackend::new();
     let (stores, _, _, mut log) = fixture(disk).await?;
