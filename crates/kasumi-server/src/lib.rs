@@ -25,6 +25,7 @@ mod recovery_cli;
 pub mod recovery_runtime;
 pub mod rpc;
 pub mod runtime;
+mod runtime_drain;
 mod runtime_worker;
 pub mod serving_runtime;
 pub mod standalone;

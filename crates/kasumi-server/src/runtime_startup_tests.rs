@@ -111,7 +111,8 @@ async fn rejected_cold_audit_open_drains_storage_and_releases_the_standalone_ins
 }
 
 #[tokio::test]
-async fn failed_runtime_shutdown_retains_owner_and_retries_without_reopening_audit() -> Result<()> {
+async fn completed_runtime_shutdown_failure_retains_diagnostic_and_installation_lock() -> Result<()>
+{
     let _gate = LIFECYCLE_GATE.lock().await;
     let directory = tempfile::tempdir()?;
     let installed =
@@ -124,13 +125,33 @@ async fn failed_runtime_shutdown_retains_owner_and_retries_without_reopening_aud
     config.mcp.protocol = McpConfig::new(format!("https://localhost:{}/mcp", mcp.port()))?;
     let mut runtime = NodeRuntime::open(config.clone()).await?;
     runtime.audit.seal();
-    assert!(runtime.shutdown().await.is_err());
-    assert!(!runtime.closed, "failed shutdown marked its owner closed");
+    let first = runtime.shutdown().await.unwrap_err();
+    assert_eq!(
+        first.completion(),
+        kasumi_types::drain::DrainCompletion::Complete
+    );
+    assert!(
+        runtime.closed,
+        "complete failure did not mark actual drain completion"
+    );
     assert!(crate::standalone::claim(&config).is_err());
-    // All remaining owners are retried, while the stopping audit is never
-    // submitted again to an already-sealed store. No new open is performed.
-    runtime.shutdown().await?;
-    assert!(runtime.closed);
+    // Repeated shutdown preserves every exact diagnostic and does not submit
+    // the stopping audit again. The installation remains owned until drop.
+    let second = runtime.shutdown().await.unwrap_err();
+    assert_eq!(
+        second.completion(),
+        kasumi_types::drain::DrainCompletion::Complete
+    );
+    assert_eq!(first.issues().len(), second.issues().len());
+    assert!(!first.issues().is_empty());
+    assert!(
+        first
+            .issues()
+            .iter()
+            .zip(second.issues())
+            .all(|(a, b)| Arc::ptr_eq(a, b))
+    );
+    assert!(crate::standalone::claim(&config).is_err());
     drop(runtime);
     NodeRuntime::drain_startups().await?;
     let owner = crate::standalone::claim(&config)?;

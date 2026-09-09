@@ -924,15 +924,15 @@ pub struct NodeRuntime {
     closed: bool,
     stopping_audit_started: bool,
     stopping_audit_observed: bool,
-    shutdown_failure: Option<anyhow::Error>,
     administration: Option<Arc<crate::administration::Administration>>,
     target_recovery: Option<Arc<crate::target_runtime::TargetRecoveryRuntime>>,
     tls_reload: Option<crate::tls_reload::RuntimeTlsReload>,
-    _standalone_lock: Option<kasumi_store::private_files::ExclusiveLock>,
     // Scope-owned cached stores observed during startup, including custody probes.
     startup_stores: Vec<Arc<TenantStore>>,
     #[cfg(test)]
     audit_release_gate: Arc<tokio::sync::Mutex<Option<crate::rpc::AuditReleaseGate>>>,
+    // The installation lock outlives every retained resource-bearing field.
+    _standalone_lock: Option<kasumi_store::private_files::ExclusiveLock>,
 }
 
 impl NodeRuntime {
@@ -1180,7 +1180,6 @@ impl NodeRuntime {
             closed: false,
             stopping_audit_started: false,
             stopping_audit_observed: false,
-            shutdown_failure: None,
             startup_drain: Default::default(),
             #[cfg(test)]
             audit_release_gate: Arc::new(tokio::sync::Mutex::new(None)),
@@ -1582,7 +1581,7 @@ impl NodeRuntime {
     /// configured quorum is elected; initial membership never shrinks on failure.
     pub async fn serve(mut self, mut shutdown: watch::Receiver<bool>) -> Result<()> {
         if *shutdown.borrow() {
-            return self.shutdown().await;
+            return crate::startup_owner::finish(&mut self).await;
         }
         let mut tasks = ServingTasks::new();
         if let Some(listener) = self.cluster_listener.take() {
@@ -1613,15 +1612,19 @@ impl NodeRuntime {
             self.audit.record(lifecycle(SecurityEventKind::NodeStarted)).await?;
             Ok::<_,anyhow::Error>(true)
         }.await;
-        if let Err(error) = startup {
-            let _ = tasks.shutdown().await;
-            let _ = self.shutdown().await;
+        if let Err(mut error) = startup {
+            if let Err(drain) = tasks.shutdown().await {
+                error = error.context(drain);
+            }
+            if let Err(drain) = crate::startup_owner::finish(&mut self).await {
+                error = error.context(drain);
+            }
             return Err(error);
         }
         if matches!(startup, Ok(false)) {
             let drain = tasks.shutdown().await;
-            let cleanup = self.shutdown().await;
-            return drain.and(cleanup);
+            let cleanup = crate::startup_owner::finish(&mut self).await;
+            return crate::runtime_drain::combine(drain, cleanup);
         }
         self.telemetry
             .set_lifecycle(crate::observability::Lifecycle::Serving);
@@ -1651,8 +1654,8 @@ impl NodeRuntime {
         self.telemetry
             .set_lifecycle(crate::observability::Lifecycle::Draining);
         let drain = tasks.shutdown().await;
-        let cleanup = self.shutdown().await;
-        result.and(drain).and(cleanup)
+        let cleanup = crate::startup_owner::finish(&mut self).await;
+        crate::runtime_drain::combine(crate::runtime_drain::combine(result, drain), cleanup)
     }
 
     fn expected_topology(&self) -> Result<kasumi_engine::control::ControlTopology> {
@@ -1814,15 +1817,22 @@ impl NodeRuntime {
         }
     }
 
-    pub async fn shutdown(&mut self) -> Result<()> {
-        if !self.closed {
-            self.telemetry
-                .set_lifecycle(crate::observability::Lifecycle::Draining);
-        }
-        crate::target_runtime::shutdown_target(&mut self.target_recovery).await?;
+    pub async fn shutdown(&mut self) -> kasumi_types::drain::DrainResult {
+        use crate::runtime_drain::observe;
         if self.closed {
-            return Ok(());
+            return self.startup_drain.complete();
         }
+        self.telemetry
+            .set_lifecycle(crate::observability::Lifecycle::Draining);
+        let mut retained = None;
+        for lease in &self.serving_leases {
+            lease.close();
+        }
+        observe(
+            &mut self.startup_drain,
+            &mut retained,
+            crate::target_runtime::shutdown_target(&mut self.target_recovery).await,
+        );
         if !self.stopping_audit_started {
             self.stopping_audit_started = true;
             let audit = self
@@ -1831,74 +1841,111 @@ impl NodeRuntime {
                 .await;
             self.stopping_audit_observed = true;
             if let Err(error) = audit {
-                self.shutdown_failure.get_or_insert(error);
+                self.startup_drain.record("stopping audit", 0, error);
             }
         } else if !self.stopping_audit_observed {
             self.stopping_audit_observed = true;
-            self.shutdown_failure.get_or_insert_with(|| {
+            self.startup_drain.record(
+                "stopping audit",
+                0,
                 anyhow::anyhow!(
                     "stopping audit outcome was not observed before shutdown cancellation"
-                )
-            });
+                ),
+            );
         }
-        for lease in &self.serving_leases {
-            lease.close();
-        }
-        for lease in &self.serving_leases {
+        for (index, lease) in self.serving_leases.iter().enumerate() {
             if let Err(error) = lease.shutdown().await {
-                self.shutdown_failure.get_or_insert(error);
+                // This concrete API closes its gate and returns only after its
+                // sole renewal JoinHandle joins. Retain that completed failure.
+                self.startup_drain.record("serving lease", index, error);
             }
         }
         if let Some(manager) = &self.administration {
-            if let Err(error) = manager.shutdown().await {
-                self.shutdown_failure.get_or_insert(error);
-            }
+            observe(
+                &mut self.startup_drain,
+                &mut retained,
+                manager.shutdown().await,
+            );
         }
-        for tenant in std::iter::once(&self.control).chain(self.tenants.iter()) {
-            let _ = self.registry.remove(tenant.store.tenant());
-            if let (Some(cluster), Some(bootstrap)) = (&self.cluster, &tenant.bootstrap) {
-                let _ = cluster.unregister_group(&format!(
+        for (index, tenant) in std::iter::once(&self.control)
+            .chain(self.tenants.iter())
+            .enumerate()
+        {
+            if let Err(error) = self.registry.remove(tenant.store.tenant()) {
+                retained = Some(kasumi_types::drain::DrainFailure::retained(
+                    self.startup_drain
+                        .record("serving route removal", index, error.into()),
+                ));
+            }
+            if let (Some(cluster), Some(bootstrap)) = (&self.cluster, &tenant.bootstrap)
+                && let Err(error) = cluster.unregister_group(&format!(
                     "{}/{}",
                     tenant.store.tenant(),
                     bootstrap.incarnation
+                ))
+            {
+                retained = Some(kasumi_types::drain::DrainFailure::retained(
+                    self.startup_drain
+                        .record("serving group removal", index, error),
                 ));
             }
-            if let Err(error) = tenant.database.shutdown().await {
-                self.shutdown_failure.get_or_insert(error);
-            }
+            observe(
+                &mut self.startup_drain,
+                &mut retained,
+                tenant.database.shutdown().await,
+            );
         }
-        for source in &self.custody_sources {
-            if let Some(cluster) = &self.cluster {
-                let _ =
-                    cluster.unregister_group(&format!("{}/{}", source.tenant, source.incarnation));
+        for (index, source) in self.custody_sources.iter().enumerate() {
+            if let Some(cluster) = &self.cluster
+                && let Err(error) =
+                    cluster.unregister_group(&format!("{}/{}", source.tenant, source.incarnation))
+            {
+                retained = Some(kasumi_types::drain::DrainFailure::retained(
+                    self.startup_drain
+                        .record("custody group removal", index, error),
+                ));
             }
             if let kasumi_engine::InstalledRetirementSource::RetiredCustody(custody) =
                 &source.source
             {
-                if let Err(error) = custody.shutdown().await {
-                    self.shutdown_failure.get_or_insert(error);
-                }
+                observe(
+                    &mut self.startup_drain,
+                    &mut retained,
+                    custody.shutdown().await,
+                );
             } else {
-                source.store.store().shutdown().await;
+                observe(
+                    &mut self.startup_drain,
+                    &mut retained,
+                    source.store.store().shutdown().await,
+                );
             }
         }
         for store in &self.startup_stores {
-            store.shutdown().await;
+            observe(
+                &mut self.startup_drain,
+                &mut retained,
+                store.shutdown().await,
+            );
         }
-        self.audit.shutdown().await;
+        observe(
+            &mut self.startup_drain,
+            &mut retained,
+            self.audit.shutdown().await,
+        );
         if let Some(verifier) = &self.signer_verifier {
-            verifier.shutdown().await;
+            observe(
+                &mut self.startup_drain,
+                &mut retained,
+                verifier.shutdown().await,
+            );
         }
-        // An error is returned only after all reachable owners were attempted.
-        // Keep this exact runtime eligible for another drain; its initial audit
-        // attempt must not be repeated against the now-closed audit store.
-        let failure = self.shutdown_failure.take();
-        if failure.is_none() {
+        if retained.is_none() {
             self.closed = true;
             self.telemetry
                 .set_lifecycle(crate::observability::Lifecycle::Closed);
         }
-        failure.map_or(Ok(()), Err)
+        self.startup_drain.outcome(retained)
     }
 }
 /// Called only after engine open has verified immutable bootstrap chunks against
@@ -4858,12 +4905,6 @@ impl crate::startup_owner::Runtime for NodeRuntime {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = kasumi_types::drain::DrainResult> + Send + '_>,
     > {
-        Box::pin(async {
-            if let Err(error) = NodeRuntime::shutdown(self).await {
-                let issue = self.startup_drain.record("NodeRuntime", 0, error);
-                return Err(kasumi_types::drain::DrainFailure::retained(issue));
-            }
-            self.startup_drain.complete()
-        })
+        Box::pin(NodeRuntime::shutdown(self))
     }
 }

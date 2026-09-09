@@ -203,13 +203,42 @@ impl AuthorityRuntime {
     }
 
     /// Close an opened runtime that has not entered its consuming serve loop.
-    pub async fn shutdown(&mut self) -> Result<()> {
-        let outcome = self.authority.shutdown().await;
-        self.stores.application().shutdown().await;
-        self.stores.custody().store().shutdown().await;
-        self.audit.shutdown().await;
-        self.signer_verifier.shutdown().await;
-        outcome
+    pub async fn shutdown(&mut self) -> kasumi_types::drain::DrainResult {
+        Self::drain_owned(
+            &mut self.startup_drain,
+            &self.authority,
+            &self.stores,
+            &self.audit,
+            &self.audit_store,
+            &self.signer_verifier,
+        )
+        .await
+    }
+
+    async fn drain_owned(
+        report: &mut kasumi_types::drain::DrainReport,
+        authority: &Arc<IndependentAuthority>,
+        stores: &Arc<TenantStorageSet>,
+        audit: &Arc<SecurityAudit>,
+        audit_store: &Arc<TenantStore>,
+        verifier: &Arc<crate::signer_runtime::InstalledSignerVerifier>,
+    ) -> kasumi_types::drain::DrainResult {
+        use crate::runtime_drain::observe;
+        let mut retained = None;
+        if let Err(error) = authority.shutdown().await {
+            // This authority API has not yet proved its complete child census
+            // in a typed outcome. Retain this exact owner on an opaque error.
+            retained = Some(kasumi_types::drain::DrainFailure::retained(report.record(
+                "authority",
+                0,
+                error,
+            )));
+        }
+        observe(report, &mut retained, stores.shutdown().await);
+        observe(report, &mut retained, audit.shutdown().await);
+        observe(report, &mut retained, audit_store.shutdown().await);
+        observe(report, &mut retained, verifier.shutdown().await);
+        report.outcome(retained)
     }
 
     async fn open_owned(config: AuthorityRuntimeConfig) -> Result<Self> {
@@ -389,7 +418,7 @@ impl AuthorityRuntime {
         }
         outcome
     }
-    pub async fn serve(self, mut shutdown: watch::Receiver<bool>) -> Result<()> {
+    pub async fn serve(mut self, mut shutdown: watch::Receiver<bool>) -> Result<()> {
         let (stop, stopped) = watch::channel(false);
         let mut tasks = JoinSet::new();
         tasks.spawn(tls::serve_tls(
@@ -457,19 +486,37 @@ impl AuthorityRuntime {
         }
         stop.send_replace(true);
         while let Some(result) = tasks.join_next().await {
-            if let Err(error) = result.map_err(Into::into).and_then(|value| value)
-                && outcome.is_ok()
-            {
-                outcome = Err(error);
-            }
+            outcome = crate::runtime_drain::combine(
+                outcome,
+                result.map_err(Into::into).and_then(|value| value),
+            );
         }
-        let close = self.authority.shutdown().await;
-        self.stores.application().shutdown().await;
-        self.stores.custody().store().shutdown().await;
-        self.audit.shutdown().await;
-        self.audit_store.shutdown().await;
-        self.signer_verifier.shutdown().await;
-        outcome.and(close)
+        // During cooperative shutdown, retain service fields until actual drain.
+        // Listener fields have moved. Cancellation of this consuming outer
+        // future still requires a separate retained serving owner.
+        let mut delay = std::time::Duration::from_secs(1);
+        let close = loop {
+            let result = Self::drain_owned(
+                &mut self.startup_drain,
+                &self.authority,
+                &self.stores,
+                &self.audit,
+                &self.audit_store,
+                &self.signer_verifier,
+            )
+            .await;
+            if let Err(error) = &result
+                && error.completion() == kasumi_types::drain::DrainCompletion::Retained
+            {
+                tracing::error!(error = %error, retry_after_secs = delay.as_secs(),
+                    "authority serving owner drain incomplete; retaining resources for retry");
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(std::time::Duration::from_secs(30));
+                continue;
+            }
+            break result.map_err(Into::into);
+        };
+        crate::runtime_drain::combine(outcome, close)
     }
 }
 
@@ -479,12 +526,6 @@ impl crate::startup_owner::Runtime for AuthorityRuntime {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = kasumi_types::drain::DrainResult> + Send + '_>,
     > {
-        Box::pin(async {
-            if let Err(error) = AuthorityRuntime::shutdown(self).await {
-                let issue = self.startup_drain.record("AuthorityRuntime", 0, error);
-                return Err(kasumi_types::drain::DrainFailure::retained(issue));
-            }
-            self.startup_drain.complete()
-        })
+        Box::pin(AuthorityRuntime::shutdown(self))
     }
 }
