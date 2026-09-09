@@ -82,7 +82,7 @@ impl Fixture {
             node_id: 1,
         };
         let clock = Arc::new(Clock(AtomicU64::new(0)));
-        let store = TenantStore::open_with_clock(
+        let store = TenantStore::initialize_catalog_fixture_with_clock_and_access(
             NodeStore::create_new(
                 directory.path().join("trust.redb"),
                 crate::test_utils::NODE_STORE_ID,
@@ -184,7 +184,7 @@ impl Fixture {
         self.store.shutdown().await;
         // The closed old owner may remain referenced. Its capability can never
         // become live when the new store installs its own fresh clock witness.
-        self.store = TenantStore::open_with_clock(
+        self.store = TenantStore::open_existing_fixture_with_clock_and_access(
             self.store.node.clone(),
             self.verifier.tenant(),
             Arc::new(test_utils::LocalKeyProvider::new([51; 32])),
@@ -538,7 +538,7 @@ async fn complete_file_reopen_retains_exact_trust_and_permanent_key_bindings() {
     drop(trust);
     store.shutdown().await;
     drop(store);
-    let reopened = TenantStore::open(
+    let reopened = TenantStore::open_existing(
         NodeStore::open_existing(
             directory.path().join("trust.redb"),
             crate::test_utils::NODE_STORE_ID,

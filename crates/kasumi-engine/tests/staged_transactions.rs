@@ -580,19 +580,36 @@ async fn open(
     } else {
         common::existing_security_audit(node.clone()).await
     };
-    let store = TenantStore::open_fixture(
-        node,
-        "tenant".into(),
-        Arc::new(LocalKeyProvider::new([0xB3; 32])),
-    )
-    .await
-    .unwrap();
-    let db = kasumi_engine::test_utils::open_fixture(
-        kasumi_store::test_utils::with_custody(
-            store,
-            std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
+    let store = (if create {
+        TenantStore::initialize_catalog_fixture(
+            node,
+            "tenant".into(),
+            Arc::new(LocalKeyProvider::new([0xB3; 32])),
         )
         .await
+    } else {
+        TenantStore::open_existing_fixture(
+            node,
+            "tenant".into(),
+            Arc::new(LocalKeyProvider::new([0xB3; 32])),
+        )
+        .await
+    })
+    .unwrap();
+    let db = kasumi_engine::test_utils::open_fixture(
+        (if create {
+            kasumi_store::test_utils::initialize_custody_fixture(
+                store,
+                std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
+            )
+            .await
+        } else {
+            kasumi_store::test_utils::open_existing_custody_fixture(
+                store,
+                std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
+            )
+            .await
+        })
         .unwrap(),
         policy(),
         Limits::default(),

@@ -2187,7 +2187,7 @@ async fn create_fixture_node(config: &RuntimeConfig) {
         .keys
         .provider(credential.clone())
         .unwrap();
-    let store = TenantStore::open(
+    let store = TenantStore::initialize_catalog(
         node.clone(),
         SECURITY_TENANT.into(),
         provider,
@@ -2415,7 +2415,7 @@ mod tests {
         .unwrap();
         let keys = Arc::new(LocalKeyProvider::new([33; 32]));
         let clock = Arc::new(ManualClock::new());
-        let service = TenantStore::open_fixture_with_clock(
+        let service = TenantStore::initialize_catalog_fixture_with_clock(
             node.clone(),
             SECURITY_TENANT.into(),
             keys.clone(),
@@ -2423,7 +2423,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let tenant = TenantStore::open_fixture_with_clock(
+        let tenant = TenantStore::initialize_catalog_fixture_with_clock(
             node,
             "acme".into(),
             Arc::new(LocalKeyProvider::new([34; 32])),
@@ -2463,7 +2463,7 @@ mod tests {
         drop(audit);
         drop(service);
         drop(tenant);
-        let service = TenantStore::open_fixture_with_clock(
+        let service = TenantStore::open_existing_fixture_with_clock(
             NodeStore::open_existing(
                 &path,
                 kasumi_store::test_utils::NODE_STORE_ID,

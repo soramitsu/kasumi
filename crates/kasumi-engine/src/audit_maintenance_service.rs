@@ -151,9 +151,13 @@ mod tests {
             let weak_node = Arc::downgrade(&node);
             let admission = NodeAdmission::new(Default::default()).unwrap();
             let provider = Arc::new(LocalKeyProvider::new([51; 32]));
-            let store = TenantStore::open_fixture(node.clone(), "tenant".into(), provider.clone())
-                .await
-                .unwrap();
+            let store = TenantStore::initialize_catalog_fixture(
+                node.clone(),
+                "tenant".into(),
+                provider.clone(),
+            )
+            .await
+            .unwrap();
             store
                 .write_batch(&[kasumi_store::WriteOp::put(
                     "drain-test",
@@ -161,7 +165,7 @@ mod tests {
                     b"durable".to_vec(),
                 )])
                 .unwrap();
-            let audit_store = TenantStore::open_fixture(
+            let audit_store = TenantStore::initialize_catalog_fixture(
                 node.clone(),
                 crate::SECURITY_TENANT.into(),
                 Arc::new(LocalKeyProvider::new([52; 32])),
@@ -190,7 +194,7 @@ mod tests {
             );
             engine.install_storage_access(&store).unwrap();
             engine.install_audit_maintenance(&admission).unwrap();
-            let stores = kasumi_store::test_utils::with_custody(
+            let stores = kasumi_store::test_utils::initialize_custody_fixture(
                 store.clone(),
                 Arc::new(LocalKeyProvider::new([53; 32])),
             )
@@ -262,7 +266,7 @@ mod tests {
                 kasumi_store::ScratchDisk::fixture(),
             )
             .unwrap();
-            let store = TenantStore::open_fixture(reopened, "tenant".into(), provider)
+            let store = TenantStore::open_existing_fixture(reopened, "tenant".into(), provider)
                 .await
                 .unwrap();
             assert_eq!(
@@ -289,14 +293,14 @@ mod tests {
             ..Default::default()
         })
         .unwrap();
-        let store = TenantStore::open_fixture(
+        let store = TenantStore::initialize_catalog_fixture(
             node.clone(),
             "tenant".into(),
             Arc::new(LocalKeyProvider::new([41; 32])),
         )
         .await
         .unwrap();
-        let audit_store = TenantStore::open_fixture(
+        let audit_store = TenantStore::initialize_catalog_fixture(
             node,
             crate::SECURITY_TENANT.into(),
             Arc::new(LocalKeyProvider::new([42; 32])),
@@ -333,7 +337,7 @@ mod tests {
         engine.install_audit_maintenance(&admission).unwrap();
         let pool = engine.audit_maintenance.lock().unwrap().clone().unwrap();
         let pause = pool.preparation.clone().acquire_owned().await.unwrap();
-        let stores = kasumi_store::test_utils::with_custody(
+        let stores = kasumi_store::test_utils::initialize_custody_fixture(
             store.clone(),
             Arc::new(LocalKeyProvider::new([43; 32])),
         )

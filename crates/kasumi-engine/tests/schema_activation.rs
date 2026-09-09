@@ -628,19 +628,36 @@ async fn open(path: &std::path::Path, create: bool) -> (Arc<Database>, Arc<Secur
     } else {
         common::existing_security_audit(node.clone()).await
     };
-    let store = TenantStore::open_fixture(
-        node,
-        "schema".into(),
-        Arc::new(LocalKeyProvider::new([0xF1; 32])),
-    )
-    .await
-    .unwrap();
-    let db = kasumi_engine::test_utils::open_fixture(
-        kasumi_store::test_utils::with_custody(
-            store,
-            std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([242; 32])),
+    let store = (if create {
+        TenantStore::initialize_catalog_fixture(
+            node,
+            "schema".into(),
+            Arc::new(LocalKeyProvider::new([0xF1; 32])),
         )
         .await
+    } else {
+        TenantStore::open_existing_fixture(
+            node,
+            "schema".into(),
+            Arc::new(LocalKeyProvider::new([0xF1; 32])),
+        )
+        .await
+    })
+    .unwrap();
+    let db = kasumi_engine::test_utils::open_fixture(
+        (if create {
+            kasumi_store::test_utils::initialize_custody_fixture(
+                store,
+                std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([242; 32])),
+            )
+            .await
+        } else {
+            kasumi_store::test_utils::open_existing_custody_fixture(
+                store,
+                std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([242; 32])),
+            )
+            .await
+        })
         .unwrap(),
         policy(),
         Limits::default(),
@@ -754,7 +771,7 @@ async fn encrypted_restart_and_full_restore_preserve_permanent_activation_receip
     .unwrap();
     let audit = common::security_audit(node.clone()).await;
     let provider = Arc::new(LocalKeyProvider::new([0xF1; 32]));
-    let target = TenantStore::open_fixture(node, "schema".into(), provider.clone())
+    let target = TenantStore::initialize_catalog_fixture(node, "schema".into(), provider.clone())
         .await
         .unwrap();
     let source = kasumi_engine::RestoreSource {
@@ -765,7 +782,7 @@ async fn encrypted_restart_and_full_restore_preserve_permanent_activation_receip
     };
     let restored = kasumi_engine::restore_local(
         &source,
-        kasumi_store::test_utils::with_custody(
+        kasumi_store::test_utils::initialize_custody_fixture(
             target,
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([242; 32])),
         )

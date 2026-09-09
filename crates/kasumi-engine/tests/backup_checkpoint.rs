@@ -116,14 +116,14 @@ async fn restore_hands_off_verified_workspace_with_production_and_destination_re
         fixture.store.scratch_disk().clone(),
     )
     .unwrap();
-    let target = TenantStore::open_fixture(
+    let target = TenantStore::initialize_catalog_fixture(
         node,
         "checkpoint".into(),
         Arc::new(LocalKeyProvider::new([0xD8; 32])),
     )
     .await
     .unwrap();
-    let domains = kasumi_store::test_utils::with_custody(
+    let domains = kasumi_store::test_utils::initialize_custody_fixture(
         target.clone(),
         Arc::new(LocalKeyProvider::new([241; 32])),
     )
@@ -159,17 +159,19 @@ async fn restore_hands_off_verified_workspace_with_production_and_destination_re
         fixture.store.scratch_disk().clone(),
     )
     .unwrap();
-    let target = TenantStore::open_fixture(
+    let target = TenantStore::initialize_catalog_fixture(
         node,
         "checkpoint".into(),
         Arc::new(LocalKeyProvider::new([0xD8; 32])),
     )
     .await
     .unwrap();
-    let domains =
-        kasumi_store::test_utils::with_custody(target, Arc::new(LocalKeyProvider::new([241; 32])))
-            .await
-            .unwrap();
+    let domains = kasumi_store::test_utils::initialize_custody_fixture(
+        target,
+        Arc::new(LocalKeyProvider::new([241; 32])),
+    )
+    .await
+    .unwrap();
     let reopened =
         kasumi_engine::open_local(domains, policy(), Limits::default(), fixture.audit.clone())
             .await
@@ -246,7 +248,7 @@ async fn cancelled_restore_publication_keeps_storage_and_workspace_until_write_d
     };
     let node = NodeStore::open_with_backend(backend.clone(), fixture.store.scratch_disk().clone())
         .unwrap();
-    let target = TenantStore::open_fixture(
+    let target = TenantStore::initialize_catalog_fixture(
         node,
         "checkpoint".into(),
         Arc::new(LocalKeyProvider::new([0xD8; 32])),
@@ -254,10 +256,12 @@ async fn cancelled_restore_publication_keeps_storage_and_workspace_until_write_d
     .await
     .unwrap();
     let weak = Arc::downgrade(&target);
-    let domains =
-        kasumi_store::test_utils::with_custody(target, Arc::new(LocalKeyProvider::new([241; 32])))
-            .await
-            .unwrap();
+    let domains = kasumi_store::test_utils::initialize_custody_fixture(
+        target,
+        Arc::new(LocalKeyProvider::new([241; 32])),
+    )
+    .await
+    .unwrap();
     let (started_tx, started_rx) = tokio::sync::oneshot::channel();
     let (release_tx, release_rx) = std::sync::mpsc::channel();
     *backend.pause.lock().unwrap() = Some((started_tx, release_rx));
@@ -296,7 +300,7 @@ async fn cancelled_restore_publication_keeps_storage_and_workspace_until_write_d
     .unwrap();
     // Cancellation before the final manifest cannot publish a partial genesis.
     let node = NodeStore::open_with_backend(backend, fixture.store.scratch_disk().clone()).unwrap();
-    let reopened = TenantStore::open_fixture(
+    let reopened = TenantStore::open_existing_fixture(
         node,
         "checkpoint".into(),
         Arc::new(LocalKeyProvider::new([0xD8; 32])),
@@ -351,14 +355,14 @@ impl Fixture {
         .unwrap();
         let admission = kasumi_engine::admission::NodeAdmission::new(config).unwrap();
         let audit = common::security_audit_with_admission(node.clone(), admission.clone()).await;
-        let store = TenantStore::open_fixture(
+        let store = TenantStore::initialize_catalog_fixture(
             node,
             "checkpoint".into(),
             Arc::new(LocalKeyProvider::new([0xD8; 32])),
         )
         .await
         .unwrap();
-        let stores = kasumi_store::test_utils::with_custody(
+        let stores = kasumi_store::test_utils::initialize_custody_fixture(
             store.clone(),
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
         )
@@ -527,7 +531,7 @@ async fn checkpoint_binds_actual_generation_complete_graph_keys_and_encrypted_re
     )
     .unwrap();
     let audit = common::existing_security_audit(node.clone()).await;
-    let store = TenantStore::open_fixture(
+    let store = TenantStore::open_existing_fixture(
         node,
         "checkpoint".into(),
         Arc::new(LocalKeyProvider::new([0xD8; 32])),
@@ -535,7 +539,7 @@ async fn checkpoint_binds_actual_generation_complete_graph_keys_and_encrypted_re
     .await
     .unwrap();
     let db = kasumi_engine::test_utils::open_fixture(
-        kasumi_store::test_utils::with_custody(
+        kasumi_store::test_utils::open_existing_custody_fixture(
             store,
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
         )
@@ -1132,17 +1136,19 @@ async fn local_restore_binds_exact_source_purpose_even_without_cold_archives() {
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();
-    let target = TenantStore::open_fixture(
+    let target = TenantStore::initialize_catalog_fixture(
         node,
         "checkpoint".into(),
         Arc::new(LocalKeyProvider::new([0xD8; 32])),
     )
     .await
     .unwrap();
-    let domains =
-        kasumi_store::test_utils::with_custody(target, Arc::new(LocalKeyProvider::new([241; 32])))
-            .await
-            .unwrap();
+    let domains = kasumi_store::test_utils::initialize_custody_fixture(
+        target,
+        Arc::new(LocalKeyProvider::new([241; 32])),
+    )
+    .await
+    .unwrap();
     let source = kasumi_engine::RestoreSource {
         destination_alias: "approved".into(),
         destination: fixture.destination.clone(),
@@ -1282,14 +1288,14 @@ async fn archived_audit_backup_is_self_contained_and_source_unavailable_restore_
     )
     .unwrap();
     let target_audit = common::security_audit(node.clone()).await;
-    let target = TenantStore::open_fixture(
+    let target = TenantStore::initialize_catalog_fixture(
         node,
         "checkpoint".into(),
         Arc::new(LocalKeyProvider::new([0xD8; 32])),
     )
     .await
     .unwrap();
-    let domains = kasumi_store::test_utils::with_custody(
+    let domains = kasumi_store::test_utils::initialize_custody_fixture(
         target.clone(),
         Arc::new(LocalKeyProvider::new([241; 32])),
     )
@@ -1346,14 +1352,14 @@ async fn archived_audit_backup_is_self_contained_and_source_unavailable_restore_
     )
     .unwrap();
     let wrong_audit = common::security_audit(wrong_node.clone()).await;
-    let wrong_store = TenantStore::open_fixture(
+    let wrong_store = TenantStore::initialize_catalog_fixture(
         wrong_node,
         "checkpoint".into(),
         Arc::new(LocalKeyProvider::new([0x47; 32])),
     )
     .await
     .unwrap();
-    let wrong_domains = kasumi_store::test_utils::with_custody(
+    let wrong_domains = kasumi_store::test_utils::initialize_custody_fixture(
         wrong_store.clone(),
         Arc::new(LocalKeyProvider::new([241; 32])),
     )
@@ -1425,14 +1431,14 @@ async fn archived_audit_backup_is_self_contained_and_source_unavailable_restore_
     )
     .unwrap();
     let reopened_audit = common::existing_security_audit(node.clone()).await;
-    let reopened_store = TenantStore::open_fixture(
+    let reopened_store = TenantStore::open_existing_fixture(
         node,
         "checkpoint".into(),
         Arc::new(LocalKeyProvider::new([0xD8; 32])),
     )
     .await
     .unwrap();
-    let reopened_domains = kasumi_store::test_utils::with_custody(
+    let reopened_domains = kasumi_store::test_utils::open_existing_custody_fixture(
         reopened_store.clone(),
         Arc::new(LocalKeyProvider::new([241; 32])),
     )

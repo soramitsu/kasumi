@@ -81,7 +81,7 @@ impl Fixture {
         )
         .unwrap();
         let audit = common::security_audit(node.clone()).await;
-        let store = TenantStore::open_fixture(
+        let store = TenantStore::initialize_catalog_fixture(
             node,
             context().tenant,
             Arc::new(LocalKeyProvider::new([0xe1; 32])),
@@ -89,7 +89,7 @@ impl Fixture {
         .await
         .unwrap();
         let db = kasumi_engine::test_utils::open_fixture(
-            kasumi_store::test_utils::with_custody(
+            kasumi_store::test_utils::initialize_custody_fixture(
                 store.clone(),
                 std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
             )
@@ -909,7 +909,7 @@ async fn durable_retirement_stop_defeats_inflight_backup_verification_and_surviv
     )
     .unwrap();
     let audit = common::existing_security_audit(node.clone()).await;
-    let store = TenantStore::open_fixture(
+    let store = TenantStore::open_existing_fixture(
         node,
         context().tenant,
         Arc::new(LocalKeyProvider::new([0xe1; 32])),
@@ -917,7 +917,7 @@ async fn durable_retirement_stop_defeats_inflight_backup_verification_and_surviv
     .await
     .unwrap();
     let db = kasumi_engine::test_utils::open_fixture(
-        kasumi_store::test_utils::with_custody(
+        kasumi_store::test_utils::open_existing_custody_fixture(
             store,
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
         )

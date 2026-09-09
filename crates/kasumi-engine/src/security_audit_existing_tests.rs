@@ -37,7 +37,7 @@ impl Installation {
         };
         let provider = Arc::new(FileKeyProvider::open(&self.keys)?);
         if create {
-            TenantStore::open(
+            TenantStore::initialize_catalog(
                 node,
                 SECURITY_TENANT.into(),
                 provider,

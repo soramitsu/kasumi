@@ -82,8 +82,8 @@ impl StateMachineBackend for RestoreFailureBackend {
 
 async fn cancelled_publication_failure(panic: bool) -> Result<()> {
     let disk = FaultBackend::new();
-    let store = fault_store(disk.clone()).await?;
-    let domains = kasumi_store::test_utils::with_custody(
+    let store = new_fault_store(disk.clone()).await?;
+    let domains = kasumi_store::test_utils::initialize_custody_fixture(
         store.clone(),
         Arc::new(LocalKeyProvider::new([241; 32])),
     )
@@ -143,10 +143,10 @@ async fn cancelled_publication_failure(panic: bool) -> Result<()> {
     // The flag is independent of, and visible before waiting on, actual storage
     // ownership drain. The panic path must not lock the poisoned applied mutex.
     tokio::time::timeout(Duration::from_secs(10), drain.wait()).await?;
-    let recovered_store = fault_store(disk.crash()).await?;
+    let recovered_store = existing_fault_store(disk.crash()).await?;
     let recovered = Arc::new(BytesBackend::default());
     let mut reopened = StateMachine::open(
-        kasumi_store::test_utils::with_custody(
+        kasumi_store::test_utils::open_existing_custody_fixture(
             recovered_store.clone(),
             Arc::new(LocalKeyProvider::new([241; 32])),
         )

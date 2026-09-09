@@ -94,8 +94,18 @@ control domain. It inspects wrapped application catalog identity without creatin
 an application provider or decrypting application keys. It grants no application
 data authority. Native tenant and control configuration therefore requires a
 separate `custody_keys` setting. Test embeddings can explicitly use
-`test_utils::with_custody(existing_application_store, distinct_test_provider)`;
-this feature is unavailable to native configuration.
+`test_utils::initialize_custody_fixture(application_store, distinct_test_provider)`
+for fresh custody, or `test_utils::open_existing_custody_fixture` for its strict
+authenticated reopen. Single-domain fixture calls likewise distinguish
+`initialize_catalog_fixture` from `open_existing_fixture`. These features are
+unavailable to native configuration.
+
+Production `TenantStore::initialize_catalog` and `TenantStore::open_existing`
+accept only service audit, signer trust and target journal storage purposes.
+Fresh initialization rejects live owners, existing catalogs and orphan physical
+rows. Its acknowledged initializer retains new owners and failed outcomes through
+cancellation; strict existing opens preserve borrowed owners and never seed keys
+or metadata. See [singleton ownership](../../docs/explicit-singleton-catalogs.md).
 
 
 ## Actual S3 interoperability

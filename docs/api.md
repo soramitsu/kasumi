@@ -17,49 +17,37 @@ Enable `serde_json`'s `arbitrary_precision` feature in the embedding application
 and parse exact numeric input from its original JSON text. Constructing a value
 through an `f64` first has already lost precision.
 
-Open a node's security audit with an independently protected service Transit
-key, then share that audit across the node's tenants. Each tenant uses its own
-customer Transit key. These functions accept operator-provided configuration;
-the caller obtains tokens from its secret source:
+Storage installation and reopening are separate operations. Retain the exclusive
+node and installation owners through any cancelled acquisition and await
+`NodeStore::drain_initializers` before releasing them. A fresh physical node uses
+`NodeStore::create_new(path, installed_database_id, scratch_disk)`; an installed
+node uses `NodeStore::open_existing` with the same immutable identity and explicit
+scratch owner. Missing files, catalogs and genesis records never authorize repair
+or initialization during ordinary startup.
 
-```rust
-use std::{path::Path, sync::Arc};
-use kasumi_engine::{Database, SecurityAudit, SECURITY_TENANT, open_local};
-use kasumi_store::{NodeStore, TenantStore, TransitConfig, TransitKeyProvider};
-use kasumi_types::{Limits, Policy};
+| Domain | Fresh installation | Existing installation |
+| --- | --- | --- |
+| Service audit catalog | `TenantStore::initialize_catalog(..., StorageAccess::security_audit())` | `TenantStore::open_existing(..., StorageAccess::security_audit())` |
+| Audit stream | `SecurityAudit::initialize(store, retention_budget, admission)` | `SecurityAudit::open(store, retention_budget, admission)` |
+| Application and custody catalogs | `TenantStorageSet::initialize_catalogs(node, tenant, application_provider, custody_provider, access)` | `TenantStorageSet::open_existing` with the same arguments |
+| Standalone database | `open_local_with_incarnation` with its explicit initial policy, limits and incarnation | `open_existing_local` with its installed incarnation |
 
-async fn open_node(
-    path: &Path,
-    security_transit: TransitConfig,
-) -> anyhow::Result<(Arc<NodeStore>, Arc<SecurityAudit>)> {
-    let node = NodeStore::open(path)?;
-    let provider = Arc::new(TransitKeyProvider::new(security_transit)?);
-    let store = TenantStore::open(node.clone(), SECURITY_TENANT.into(), provider).await?;
-    let audit = SecurityAudit::open(store, 100_000)?;
-    Ok((node, audit))
-}
+Both application and custody providers are required and must use independent
+wrapping policies and actual keys. Production single-catalog constructors accept
+only service audit, signer trust and target journal purposes. Application and
+custody domains always use the paired storage owner. The secure standalone CLI
+owns initialization of its installation, Control topology, credentials and client
+profiles; see [standalone operation](standalone.md).
 
-async fn open_tenant(
-    node: Arc<NodeStore>,
-    audit: Arc<SecurityAudit>,
-    transit: TransitConfig,
-    initial_policy: Policy,
-) -> anyhow::Result<(Arc<Database>, Arc<TenantStore>)> {
-    let provider = Arc::new(TransitKeyProvider::new(transit)?);
-    let store = TenantStore::open(node, "acme".into(), provider).await?;
-    let database = open_local(store.clone(), initial_policy, Limits::default(), audit).await?;
-    Ok((database, store))
-}
-```
-
-`TransitConfig` has `endpoint` (HTTPS origin), `mount`, `key_name`, `token`,
-optional `namespace` and `ca_pem`, and `derived` matching the Transit key. Use a
-different `key_name` for every tenant. The adapter performs fresh decrypt probes
-for all retained key dependencies; simply supplying a cached plaintext key is
-not equivalent. See [Transit compatibility and permissions](COMPATIBILITY.md).
-The security audit must use a separate service wrapping key and authorization,
-so revoking a customer key does not prevent durable access-denial records. Its
-record limit is explicit; required audit failure blocks the associated operation.
+`TransitConfig` contains an HTTPS `endpoint`, `mount`, `key_name`, an explicit
+renewable `credential` source, optional `namespace` and `ca_pem`, and `derived`
+matching the Transit key. Use a different key and authority for each application,
+custody and service domain. `FileCredentialSource` reads the installed private
+credential path for requests; a constructor-time token snapshot or environment
+fallback is not a credential source. The provider performs fresh decrypt probes
+for retained key dependencies. See [Transit compatibility and permissions](COMPATIBILITY.md).
+The audit domain remains separately accessible after a customer key is revoked;
+its configured hot/archive budgets and required audit writes still apply.
 
 `initial_policy` contains explicit grants; the default policy denies everyone.
 On reopen, persisted bootstrap and policy remain authoritative. Changing the

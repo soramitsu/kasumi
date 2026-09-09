@@ -1,15 +1,15 @@
 use super::*;
 use crate::test_utils::{FaultBackend, LocalKeyProvider, ManualClock};
 
-async fn installed(node: Arc<NodeStore>) -> Result<Arc<TenantStorageSet>> {
-    let app = TenantStore::open_fixture_with_clock(
+async fn initialize_pair_fixture(node: Arc<NodeStore>) -> Result<Arc<TenantStorageSet>> {
+    let app = TenantStore::initialize_catalog_fixture_with_clock(
         node.clone(),
         "tenant".into(),
         Arc::new(LocalKeyProvider::new([11; 32])),
         Arc::new(ManualClock::new()),
     )
     .await?;
-    let custody = TenantStore::open_fixture_with_clock(
+    let custody = TenantStore::initialize_catalog_fixture_with_clock(
         node,
         CustodyStore::catalog_name("tenant"),
         Arc::new(LocalKeyProvider::new([12; 32])),
@@ -17,6 +17,39 @@ async fn installed(node: Arc<NodeStore>) -> Result<Arc<TenantStorageSet>> {
     )
     .await?;
     TenantStorageSet::install(app, custody)
+}
+
+async fn existing_pair_fixture(node: Arc<NodeStore>) -> Result<Arc<TenantStorageSet>> {
+    let application = Arc::new(LocalKeyProvider::new([11; 32]));
+    let custody = Arc::new(LocalKeyProvider::new([12; 32]));
+    let app = TenantStore::open_existing_fixture_with_clock(
+        node.clone(),
+        "tenant".into(),
+        application.clone(),
+        Arc::new(ManualClock::new()),
+    )
+    .await?;
+    let control = TenantStore::open_existing_fixture_with_clock(
+        node.clone(),
+        CustodyStore::catalog_name("tenant"),
+        custody.clone(),
+        Arc::new(ManualClock::new()),
+    )
+    .await?;
+    let result = TenantStorageSet::open_existing(
+        node.clone(),
+        "tenant".into(),
+        application,
+        custody,
+        StorageAccess::fixture(),
+    )
+    .await;
+    if result.is_err() {
+        app.shutdown().await;
+        control.shutdown().await;
+        node.drain_initializers().await?;
+    }
+    result
 }
 
 #[tokio::test]
@@ -28,12 +61,18 @@ async fn domains_require_distinct_actual_wrapping_policies_and_same_node() -> Re
         crate::ScratchDisk::fixture(),
     )?;
     let provider = Arc::new(LocalKeyProvider::new([1; 32]));
-    let app = TenantStore::open_fixture(node.clone(), "tenant".into(), provider.clone()).await?;
-    let control =
-        TenantStore::open_fixture(node, CustodyStore::catalog_name("tenant"), provider).await?;
+    let app =
+        TenantStore::initialize_catalog_fixture(node.clone(), "tenant".into(), provider.clone())
+            .await?;
+    let control = TenantStore::initialize_catalog_fixture(
+        node,
+        CustodyStore::catalog_name("tenant"),
+        provider,
+    )
+    .await?;
     assert!(TenantStorageSet::install(app.clone(), control.clone()).is_err());
     assert!(control.get(BINDING_NS, BINDING_KEY)?.is_none());
-    let other = TenantStore::open_fixture(
+    let other = TenantStore::initialize_catalog_fixture(
         NodeStore::create_new(
             dir.path().join("other.redb"),
             crate::test_utils::NODE_STORE_ID,
@@ -132,7 +171,7 @@ async fn control_reopens_without_any_application_key_probe_after_revocation() ->
 #[tokio::test]
 async fn every_interrupted_domain_transaction_recovers_whole_old_or_whole_new() -> Result<()> {
     let original = FaultBackend::new();
-    let stores = installed(NodeStore::open_with_backend(
+    let stores = initialize_pair_fixture(NodeStore::open_with_backend(
         original.clone(),
         crate::ScratchDisk::fixture(),
     )?)
@@ -147,7 +186,7 @@ async fn every_interrupted_domain_transaction_recovers_whole_old_or_whole_new() 
     let mut failures = 0;
     for failure in 0..40 {
         let disk = starting.crash();
-        let stores = installed(NodeStore::open_with_backend(
+        let stores = existing_pair_fixture(NodeStore::open_with_backend(
             disk.clone(),
             crate::ScratchDisk::fixture(),
         )?)
@@ -160,7 +199,7 @@ async fn every_interrupted_domain_transaction_recovers_whole_old_or_whole_new() 
         let crashed = disk.crash();
         disk.disarm();
         drop(stores);
-        let reopened = installed(NodeStore::open_with_backend(
+        let reopened = existing_pair_fixture(NodeStore::open_with_backend(
             crashed,
             crate::ScratchDisk::fixture(),
         )?)
@@ -189,14 +228,14 @@ async fn post_commit_domain_expiry_reports_uncertainty_and_retains_complete_writ
     let disk = FaultBackend::new();
     let node = NodeStore::open_with_backend(disk.clone(), crate::ScratchDisk::fixture())?;
     let clock = Arc::new(ManualClock::new());
-    let app = TenantStore::open_fixture_with_clock(
+    let app = TenantStore::initialize_catalog_fixture_with_clock(
         node.clone(),
         "tenant".into(),
         Arc::new(LocalKeyProvider::new([11; 32])),
         clock.clone(),
     )
     .await?;
-    let custody = TenantStore::open_fixture_with_clock(
+    let custody = TenantStore::initialize_catalog_fixture_with_clock(
         node,
         CustodyStore::catalog_name("tenant"),
         Arc::new(LocalKeyProvider::new([12; 32])),
@@ -215,7 +254,7 @@ async fn post_commit_domain_expiry_reports_uncertainty_and_retains_complete_writ
     assert!(stores.application().check_access().is_err());
     let recovered = disk.crash();
     drop(stores);
-    let reopened = installed(NodeStore::open_with_backend(
+    let reopened = existing_pair_fixture(NodeStore::open_with_backend(
         recovered,
         crate::ScratchDisk::fixture(),
     )?)
@@ -243,7 +282,7 @@ async fn combined_quota_and_substituted_catalog_binding_fail_before_publication(
         crate::test_utils::NODE_STORE_ID,
         crate::ScratchDisk::fixture(),
     )?;
-    let stores = installed(node.clone()).await?;
+    let stores = initialize_pair_fixture(node.clone()).await?;
     let ops = vec![WriteOp::put("data", b"entry", b"a"); 32769];
     assert!(stores.write_batch(&ops, &ops).is_err());
     assert!(stores.application().get("data", b"entry")?.is_none());
@@ -273,7 +312,7 @@ async fn initial_state_rejects_unknown_records_in_either_complete_domain() -> Re
             crate::test_utils::NODE_STORE_ID,
             ScratchDisk::fixture(),
         )?;
-        let stores = installed(node).await?;
+        let stores = initialize_pair_fixture(node).await?;
         let domain = if custody {
             stores.custody().store()
         } else {
@@ -309,7 +348,7 @@ async fn initial_state_rejects_unknown_records_in_either_complete_domain() -> Re
 #[tokio::test]
 async fn initial_state_checks_and_joint_publication_have_one_concurrent_winner() -> Result<()> {
     let directory = tempfile::tempdir()?;
-    let stores = installed(NodeStore::create_new(
+    let stores = initialize_pair_fixture(NodeStore::create_new(
         directory.path().join("first-publication.redb"),
         crate::test_utils::NODE_STORE_ID,
         ScratchDisk::fixture(),
@@ -365,7 +404,7 @@ async fn initial_state_checks_and_joint_publication_have_one_concurrent_winner()
 async fn initial_state_requires_the_exact_retained_custody_binding() -> Result<()> {
     let directory = tempfile::tempdir()?;
     for missing in [false, true] {
-        let stores = installed(NodeStore::create_new(
+        let stores = initialize_pair_fixture(NodeStore::create_new(
             directory.path().join(format!("binding-{missing}.redb")),
             crate::test_utils::NODE_STORE_ID,
             ScratchDisk::fixture(),
@@ -401,7 +440,7 @@ async fn initial_state_requires_the_exact_retained_custody_binding() -> Result<(
 async fn initial_state_rejects_delete_only_publications_without_consuming_initialization()
 -> Result<()> {
     let directory = tempfile::tempdir()?;
-    let stores = installed(NodeStore::create_new(
+    let stores = initialize_pair_fixture(NodeStore::create_new(
         directory.path().join("empty-initialization.redb"),
         crate::test_utils::NODE_STORE_ID,
         ScratchDisk::fixture(),

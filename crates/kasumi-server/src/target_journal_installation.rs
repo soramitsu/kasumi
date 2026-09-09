@@ -32,7 +32,7 @@ async fn initialize_owned(config: RuntimeConfig) -> Result<()> {
         &installed.node.verifier,
     )?;
     let node = NodeStore::create_new(&installed.journal_path, id, scratch)?;
-    let store = TenantStore::open(
+    let prepared = TenantStore::initialize_catalog(
         node.clone(),
         format!(
             "kasumi.target.{}.{}",
@@ -41,7 +41,19 @@ async fn initialize_owned(config: RuntimeConfig) -> Result<()> {
         installed.journal_keys.provider(Arc::new(file_secret))?,
         StorageAccess::target_journal(&installed.control_root, &installed.node)?,
     )
-    .await?;
+    .await;
+    let drained = node.drain_initializers().await;
+    let store = match (prepared, drained) {
+        (Ok(store), Ok(())) => store,
+        (Ok(store), Err(error)) => {
+            store.shutdown().await;
+            return Err(error);
+        }
+        (Err(error), Ok(())) => return Err(error),
+        (Err(error), Err(drain)) => {
+            return Err(error.context(format!("singleton drain failed: {drain:#}")));
+        }
+    };
     let result = TargetJournal::create_new(
         store.clone(),
         TargetJournalInstallation {

@@ -440,7 +440,7 @@ mod tests {
         let keys = Arc::new(
             FileKeyProvider::initialize(&private.join("security.json"), "security").unwrap(),
         );
-        let store = TenantStore::open(
+        let store = TenantStore::initialize_catalog(
             NodeStore::create_new(
                 root.path().join("database"),
                 kasumi_store::test_utils::NODE_STORE_ID,

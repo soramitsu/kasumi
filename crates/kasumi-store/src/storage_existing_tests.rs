@@ -45,7 +45,7 @@ async fn missing_catalogs_and_authenticated_binding_never_provision_during_reope
         ] {
             if present & flag != 0 {
                 opened.push(
-                    TenantStore::open_fixture_with_clock(
+                    TenantStore::initialize_catalog_fixture_with_clock(
                         node.clone(),
                         name,
                         Arc::new(LocalKeyProvider::new(key)),
@@ -82,7 +82,7 @@ async fn existing_catalog_admission_cannot_provision_after_waiting_for_the_open_
         ScratchDisk::fixture(),
     )?;
     let provider = Arc::new(LocalKeyProvider::new([11; 32]));
-    let store = TenantStore::open_fixture_with_clock(
+    let store = TenantStore::initialize_catalog_fixture_with_clock(
         node.clone(),
         "tenant".into(),
         provider.clone(),

@@ -27,7 +27,7 @@ impl Installation {
             access.clone(),
         )
         .await?;
-        let audit_store = TenantStore::open(
+        let audit_store = TenantStore::initialize_catalog(
             node.clone(),
             crate::SECURITY_TENANT.into(),
             Arc::new(LocalKeyProvider::new([23; 32])),

@@ -786,7 +786,7 @@ mod tests {
     async fn encrypted_bundle_round_trip_filesystem_reopen_and_tamper_rejection() {
         let dir = tempfile::tempdir().unwrap();
         let provider = Arc::new(LocalKeyProvider::new([17; 32]));
-        let store = TenantStore::open_fixture_with_clock(
+        let store = TenantStore::initialize_catalog_fixture_with_clock(
             NodeStore::create_new(
                 dir.path().join("db"),
                 crate::test_utils::NODE_STORE_ID,
@@ -848,7 +848,7 @@ mod tests {
     async fn historical_backup_keeps_original_key_dependencies_after_rewrap() {
         let dir = tempfile::tempdir().unwrap();
         let provider = Arc::new(LocalKeyProvider::new([22; 32]));
-        let store = TenantStore::open_fixture_with_clock(
+        let store = TenantStore::initialize_catalog_fixture_with_clock(
             NodeStore::create_new(
                 dir.path().join("db"),
                 crate::test_utils::NODE_STORE_ID,
@@ -877,7 +877,7 @@ mod tests {
     async fn removal_of_an_inactive_backup_key_dependency_breaks_authentication() {
         let dir = tempfile::tempdir().unwrap();
         let provider = Arc::new(LocalKeyProvider::new([31; 32]));
-        let store = TenantStore::open_fixture_with_clock(
+        let store = TenantStore::initialize_catalog_fixture_with_clock(
             NodeStore::create_new(
                 dir.path().join("db"),
                 crate::test_utils::NODE_STORE_ID,
@@ -1140,7 +1140,7 @@ mod s3_tests {
         let destination = S3BackupDestination::new(make()).unwrap();
         let directory = tempfile::tempdir().unwrap();
         let keys = Arc::new(crate::test_utils::LocalKeyProvider::new([77; 32]));
-        let store = TenantStore::open_fixture(
+        let store = TenantStore::initialize_catalog_fixture(
             crate::NodeStore::create_new(
                 directory.path().join("db"),
                 crate::test_utils::NODE_STORE_ID,

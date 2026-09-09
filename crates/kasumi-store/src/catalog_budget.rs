@@ -48,7 +48,7 @@ async fn catalog_byte_quota_rejects_initialization_rotation_and_rewrap_before_pe
     });
     let clock = Arc::new(ManualClock::new());
     assert!(
-        TenantStore::open_fixture_with_clock(
+        TenantStore::initialize_catalog_fixture_with_clock(
             node.clone(),
             "tenant".into(),
             provider.clone(),
@@ -59,7 +59,7 @@ async fn catalog_byte_quota_rejects_initialization_rotation_and_rewrap_before_pe
     );
     assert!(node.catalog("tenant").unwrap().is_none());
     provider.padding.store(0, Ordering::SeqCst);
-    let store = TenantStore::open_fixture_with_clock(
+    let store = TenantStore::initialize_catalog_fixture_with_clock(
         node.clone(),
         "tenant".into(),
         provider.clone(),
@@ -112,7 +112,7 @@ async fn exact_catalog_boundary_leaves_room_for_worst_case_manifest_tenant_encod
     .unwrap();
     let tenant = "\u{0001}".repeat(1024);
     let provider = Arc::new(LocalKeyProvider::new([62; 32]));
-    let store = TenantStore::open_fixture_with_clock(
+    let store = TenantStore::initialize_catalog_fixture_with_clock(
         node.clone(),
         tenant.clone(),
         provider,

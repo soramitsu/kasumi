@@ -59,13 +59,14 @@ async fn restore_deadline_bounds_source_io_and_gate_queue_without_blocking_anoth
     .unwrap();
     let audit = common::security_audit(node.clone()).await;
     let keys = Arc::new(LocalKeyProvider::new([0xA6; 32]));
-    let first = TenantStore::open_fixture(node.clone(), "first".into(), keys.clone())
+    let first = TenantStore::initialize_catalog_fixture(node.clone(), "first".into(), keys.clone())
         .await
         .unwrap();
-    let queued = TenantStore::open_fixture(node.clone(), "queued".into(), keys.clone())
-        .await
-        .unwrap();
-    let other = TenantStore::open_fixture(node, "other".into(), keys.clone())
+    let queued =
+        TenantStore::initialize_catalog_fixture(node.clone(), "queued".into(), keys.clone())
+            .await
+            .unwrap();
+    let other = TenantStore::initialize_catalog_fixture(node, "other".into(), keys.clone())
         .await
         .unwrap();
     let pending = Arc::new(PendingSource {
@@ -85,7 +86,7 @@ async fn restore_deadline_bounds_source_io_and_gate_queue_without_blocking_anoth
                     keys,
                     timeout_ms: 400,
                 },
-                kasumi_store::test_utils::with_custody(
+                kasumi_store::test_utils::initialize_custody_fixture(
                     first,
                     std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
                 )
@@ -112,7 +113,7 @@ async fn restore_deadline_bounds_source_io_and_gate_queue_without_blocking_anoth
             keys,
             timeout_ms: 30,
         },
-        kasumi_store::test_utils::with_custody(
+        kasumi_store::test_utils::initialize_custody_fixture(
             queued.clone(),
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
         )
@@ -139,7 +140,7 @@ async fn restore_deadline_bounds_source_io_and_gate_queue_without_blocking_anoth
         let audit = audit.clone();
         async move {
             open_fixture(
-                kasumi_store::test_utils::with_custody(
+                kasumi_store::test_utils::initialize_custody_fixture(
                     other,
                     std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
                 )
@@ -174,7 +175,7 @@ async fn restore_deadline_bounds_source_io_and_gate_queue_without_blocking_anoth
                 .is_none()
         );
         assert!(
-            kasumi_store::test_utils::with_custody(
+            kasumi_store::test_utils::open_existing_custody_fixture(
                 target.clone(),
                 Arc::new(LocalKeyProvider::new([241; 32])),
             )

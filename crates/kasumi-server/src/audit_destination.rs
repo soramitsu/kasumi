@@ -134,9 +134,13 @@ mod tests {
             kasumi_store::ScratchDisk::fixture(),
         )
         .unwrap();
-        let store = TenantStore::open_fixture(node.clone(), "tenant".into(), provider.clone())
-            .await
-            .unwrap();
+        let store = TenantStore::initialize_catalog_fixture(
+            node.clone(),
+            "tenant".into(),
+            provider.clone(),
+        )
+        .await
+        .unwrap();
         let cache =
             Arc::new(FilesystemAuditArchive::open(directory.path().join("owned-cache")).unwrap());
         let mut installed = crate::runtime::example_config();
@@ -162,7 +166,7 @@ mod tests {
             kasumi_store::ScratchDisk::fixture(),
         )
         .unwrap();
-        let reopened = TenantStore::open_fixture(node, "tenant".into(), provider)
+        let reopened = TenantStore::open_existing_fixture(node, "tenant".into(), provider)
             .await
             .unwrap();
         let empty = crate::runtime::example_config();

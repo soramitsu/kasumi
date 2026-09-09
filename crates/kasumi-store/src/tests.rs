@@ -18,7 +18,7 @@ async fn fixture() -> (
     .unwrap();
     let provider = Arc::new(LocalKeyProvider::new([41; 32]));
     let clock = Arc::new(ManualClock::new());
-    let store = TenantStore::open_fixture_with_clock(
+    let store = TenantStore::initialize_catalog_fixture_with_clock(
         node,
         "tenant-a".into(),
         provider.clone(),
@@ -69,7 +69,7 @@ async fn periodic_probes_start_every_twenty_seconds_despite_provider_latency() {
         delay: AtomicBool::new(false),
         starts: std::sync::Mutex::new(Vec::new()),
     });
-    let store = TenantStore::open_fixture_with_clock(
+    let store = TenantStore::initialize_catalog_fixture_with_clock(
         NodeStore::create_new(
             directory.path().join("cadence.redb"),
             crate::test_utils::NODE_STORE_ID,
@@ -145,7 +145,7 @@ async fn canceled_shutdown_drains_blocked_probe_and_releases_the_database_file()
         entered: tokio::sync::Notify::new(),
         canceled: std::sync::atomic::AtomicUsize::new(0),
     });
-    let store = TenantStore::open_fixture_with_clock(
+    let store = TenantStore::initialize_catalog_fixture_with_clock(
         node,
         "shutdown".into(),
         provider.clone(),
@@ -195,7 +195,7 @@ async fn canceled_shutdown_drains_blocked_probe_and_releases_the_database_file()
     // Reopen immediately: completion, rather than a file-lock retry or sleep,
     // proves no background owner can retain the previous redb database.
     provider.block.store(false, Ordering::Release);
-    let reopened = TenantStore::open_fixture_with_clock(
+    let reopened = TenantStore::open_existing_fixture_with_clock(
         NodeStore::open_existing(
             &path,
             crate::test_utils::NODE_STORE_ID,
@@ -258,7 +258,7 @@ async fn atomic_batches_and_cross_namespace_isolation_survive_reopen() {
             (b"b".to_vec(), b"two".to_vec())
         ]
     );
-    let same = TenantStore::open_fixture_with_clock(
+    let same = TenantStore::open_existing_fixture_with_clock(
         store.node.clone(),
         "tenant-a".into(),
         provider.clone(),
@@ -267,7 +267,7 @@ async fn atomic_batches_and_cross_namespace_isolation_survive_reopen() {
     .await
     .unwrap();
     assert!(Arc::ptr_eq(&same, &store));
-    let other = TenantStore::open_fixture_with_clock(
+    let other = TenantStore::initialize_catalog_fixture_with_clock(
         store.node.clone(),
         "tenant-b".into(),
         provider.clone(),
@@ -279,7 +279,7 @@ async fn atomic_batches_and_cross_namespace_isolation_survive_reopen() {
     drop(other);
     drop(same);
     drop(store);
-    let store = TenantStore::open_fixture_with_clock(
+    let store = TenantStore::open_existing_fixture_with_clock(
         NodeStore::open_existing(
             dir.path().join("database.redb"),
             crate::test_utils::NODE_STORE_ID,
@@ -356,7 +356,7 @@ async fn names_keys_and_values_are_absent_from_disk_and_nonce_changes_on_overwri
 #[tokio::test]
 async fn ciphertext_corruption_swapping_and_wrong_tenant_are_rejected() {
     let (_dir, store, provider, clock) = fixture().await;
-    let other = TenantStore::open_fixture_with_clock(
+    let other = TenantStore::initialize_catalog_fixture_with_clock(
         store.node.clone(),
         "tenant-b".into(),
         provider,
@@ -458,7 +458,7 @@ async fn sixty_second_suspend_aware_expiry_and_explicit_recovery() {
     assert!(store.check_access().is_err());
     assert!(store.state.read().keys.is_empty());
     assert!(
-        TenantStore::open_fixture_with_clock(
+        TenantStore::open_existing_fixture_with_clock(
             store.node.clone(),
             "tenant-a".into(),
             provider,
@@ -509,7 +509,7 @@ async fn delayed_probe_cannot_extend_a_lease_past_sixty_seconds_from_start() {
     let dir = tempfile::tempdir().unwrap();
     let provider = Arc::new(DelayedProvider::new());
     let clock = Arc::new(ManualClock::new());
-    let store = TenantStore::open_fixture_with_clock(
+    let store = TenantStore::initialize_catalog_fixture_with_clock(
         NodeStore::create_new(
             dir.path().join("db"),
             crate::test_utils::NODE_STORE_ID,
@@ -539,7 +539,7 @@ async fn delayed_probe_cannot_extend_a_lease_past_sixty_seconds_from_start() {
 async fn a_late_success_cannot_undo_an_explicit_seal() {
     let dir = tempfile::tempdir().unwrap();
     let provider = Arc::new(DelayedProvider::new());
-    let store = TenantStore::open_fixture_with_clock(
+    let store = TenantStore::initialize_catalog_fixture_with_clock(
         NodeStore::create_new(
             dir.path().join("db"),
             crate::test_utils::NODE_STORE_ID,
@@ -575,7 +575,7 @@ async fn rewrap_preserves_documents_after_retiring_old_wrapping_versions() {
     provider.set_minimum_version(2);
     store.refresh_lease().await.unwrap();
     drop(store);
-    let store = TenantStore::open_fixture_with_clock(
+    let store = TenantStore::open_existing_fixture_with_clock(
         NodeStore::open_existing(
             dir.path().join("database.redb"),
             crate::test_utils::NODE_STORE_ID,
@@ -601,10 +601,14 @@ async fn every_injected_commit_failure_recovers_whole_batch_or_previous_state() 
     let clock = Arc::new(ManualClock::new());
     let node =
         NodeStore::open_with_backend(backend.clone(), crate::ScratchDisk::fixture()).unwrap();
-    let store =
-        TenantStore::open_fixture_with_clock(node, "crash".into(), provider.clone(), clock.clone())
-            .await
-            .unwrap();
+    let store = TenantStore::initialize_catalog_fixture_with_clock(
+        node,
+        "crash".into(),
+        provider.clone(),
+        clock.clone(),
+    )
+    .await
+    .unwrap();
     store
         .write_batch(&[
             WriteOp::put("docs", b"a", b"before"),
@@ -623,7 +627,7 @@ async fn every_injected_commit_failure_recovers_whole_batch_or_previous_state() 
         let backend = baseline.crash();
         let node =
             NodeStore::open_with_backend(backend.clone(), crate::ScratchDisk::fixture()).unwrap();
-        let store = TenantStore::open_fixture_with_clock(
+        let store = TenantStore::open_existing_fixture_with_clock(
             node,
             "crash".into(),
             provider.clone(),
@@ -636,7 +640,7 @@ async fn every_injected_commit_failure_recovers_whole_batch_or_previous_state() 
         let synchronized = backend.crash(); // crash before Drop can flush anything
         backend.disarm();
         drop(store);
-        let recovered = TenantStore::open_fixture_with_clock(
+        let recovered = TenantStore::open_existing_fixture_with_clock(
             NodeStore::open_with_backend(synchronized, crate::ScratchDisk::fixture()).unwrap(),
             "crash".into(),
             provider.clone(),
@@ -697,7 +701,7 @@ async fn different_tenants_do_not_share_a_slow_key_service_open_gate() {
         let node = node.clone();
         let provider = provider.clone();
         tokio::spawn(async move {
-            TenantStore::open_fixture_with_clock(
+            TenantStore::initialize_catalog_fixture_with_clock(
                 node,
                 "slow".into(),
                 provider,
@@ -709,7 +713,7 @@ async fn different_tenants_do_not_share_a_slow_key_service_open_gate() {
     provider.started.notified().await;
     let second = tokio::time::timeout(
         Duration::from_secs(1),
-        TenantStore::open_fixture_with_clock(
+        TenantStore::initialize_catalog_fixture_with_clock(
             node,
             "fast".into(),
             Arc::new(LocalKeyProvider::new([29; 32])),
@@ -743,7 +747,7 @@ async fn faulty_provider_rewrap_cannot_replace_data_keys_or_break_recovery() {
     let dir = tempfile::tempdir().unwrap();
     let provider = Arc::new(BadRewrapProvider(LocalKeyProvider::new([30; 32])));
     let clock = Arc::new(ManualClock::new());
-    let store = TenantStore::open_fixture_with_clock(
+    let store = TenantStore::initialize_catalog_fixture_with_clock(
         NodeStore::create_new(
             dir.path().join("db"),
             crate::test_utils::NODE_STORE_ID,
@@ -768,7 +772,7 @@ async fn faulty_provider_rewrap_cannot_replace_data_keys_or_break_recovery() {
             .contains("changed data key")
     );
     drop(store);
-    let store = TenantStore::open_fixture_with_clock(
+    let store = TenantStore::open_existing_fixture_with_clock(
         NodeStore::open_existing(
             dir.path().join("db"),
             crate::test_utils::NODE_STORE_ID,
@@ -792,7 +796,7 @@ async fn wrapping_catalog_is_atomic_across_every_injected_commit_failure() {
     let backend = FaultBackend::new();
     let provider = Arc::new(LocalKeyProvider::new([19; 32]));
     let clock = Arc::new(ManualClock::new());
-    let store = TenantStore::open_fixture_with_clock(
+    let store = TenantStore::initialize_catalog_fixture_with_clock(
         NodeStore::open_with_backend(backend.clone(), crate::ScratchDisk::fixture()).unwrap(),
         "rewrap-crash".into(),
         provider.clone(),
@@ -807,7 +811,7 @@ async fn wrapping_catalog_is_atomic_across_every_injected_commit_failure() {
     provider.rotate();
     for position in 0..128 {
         let disk = baseline.crash();
-        let store = TenantStore::open_fixture_with_clock(
+        let store = TenantStore::open_existing_fixture_with_clock(
             NodeStore::open_with_backend(disk.clone(), crate::ScratchDisk::fixture()).unwrap(),
             "rewrap-crash".into(),
             provider.clone(),
@@ -820,7 +824,7 @@ async fn wrapping_catalog_is_atomic_across_every_injected_commit_failure() {
         let durable = disk.crash();
         disk.disarm();
         drop(store);
-        let recovered = TenantStore::open_fixture_with_clock(
+        let recovered = TenantStore::open_existing_fixture_with_clock(
             NodeStore::open_with_backend(durable, crate::ScratchDisk::fixture()).unwrap(),
             "rewrap-crash".into(),
             provider.clone(),
@@ -857,7 +861,7 @@ async fn expiry_during_fsync_reports_unknown_outcome_and_preserves_committed_bat
     let disk = FaultBackend::new();
     let provider = Arc::new(LocalKeyProvider::new([38; 32]));
     let clock = Arc::new(ManualClock::new());
-    let store = TenantStore::open_fixture_with_clock(
+    let store = TenantStore::initialize_catalog_fixture_with_clock(
         NodeStore::open_with_backend(disk.clone(), crate::ScratchDisk::fixture()).unwrap(),
         "fsync-expiry".into(),
         provider.clone(),
@@ -874,7 +878,7 @@ async fn expiry_during_fsync_reports_unknown_outcome_and_preserves_committed_bat
         .unwrap_err();
     assert!(error.to_string().contains("outcome unknown"));
     assert!(store.state.read().keys.is_empty());
-    let recovered = TenantStore::open_fixture_with_clock(
+    let recovered = TenantStore::open_existing_fixture_with_clock(
         NodeStore::open_with_backend(disk.crash(), crate::ScratchDisk::fixture()).unwrap(),
         "fsync-expiry".into(),
         provider,
@@ -897,7 +901,7 @@ async fn expiry_during_key_catalog_fsync_does_not_acknowledge_rotation() {
     let disk = FaultBackend::new();
     let provider = Arc::new(LocalKeyProvider::new([39; 32]));
     let clock = Arc::new(ManualClock::new());
-    let store = TenantStore::open_fixture_with_clock(
+    let store = TenantStore::initialize_catalog_fixture_with_clock(
         NodeStore::open_with_backend(disk.clone(), crate::ScratchDisk::fixture()).unwrap(),
         "rotation-expiry".into(),
         provider.clone(),
@@ -912,7 +916,7 @@ async fn expiry_during_key_catalog_fsync_does_not_acknowledge_rotation() {
     let error = store.rotate_data_key().await.unwrap_err();
     assert!(error.to_string().contains("outcome unknown"));
     assert!(store.state.read().keys.is_empty());
-    let recovered = TenantStore::open_fixture_with_clock(
+    let recovered = TenantStore::open_existing_fixture_with_clock(
         NodeStore::open_with_backend(disk.crash(), crate::ScratchDisk::fixture()).unwrap(),
         "rotation-expiry".into(),
         provider,
@@ -980,7 +984,7 @@ async fn completed_shutdown_allows_distinct_store_without_reviving_retained_hand
     let retained = original.clone();
     original.seal();
     assert!(
-        TenantStore::open_fixture_with_clock(
+        TenantStore::open_existing_fixture_with_clock(
             original.node.clone(),
             original.tenant.clone(),
             provider.clone(),
@@ -990,7 +994,7 @@ async fn completed_shutdown_allows_distinct_store_without_reviving_retained_hand
         .is_err()
     );
     original.shutdown().await;
-    let fresh = TenantStore::open_fixture_with_clock(
+    let fresh = TenantStore::open_existing_fixture_with_clock(
         original.node.clone(),
         original.tenant.clone(),
         provider,
@@ -1160,7 +1164,7 @@ async fn separate_node_stores_and_pinned_reads_share_one_scratch_budget() {
         disk.clone(),
     )
     .unwrap();
-    let store = TenantStore::open_fixture(
+    let store = TenantStore::initialize_catalog_fixture(
         first.clone(),
         "tenant".into(),
         Arc::new(LocalKeyProvider::new([73; 32])),

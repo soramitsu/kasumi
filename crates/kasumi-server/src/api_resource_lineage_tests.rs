@@ -117,10 +117,10 @@ async fn native_resources_and_two_restore_hops_preserve_immutable_issuer_facts()
         )
         .unwrap();
         let key = Arc::new(LocalKeyProvider::new([20 + hop as u8; 32]));
-        let store = TenantStore::open_fixture(node, "tenant-a".into(), key.clone())
+        let store = TenantStore::initialize_catalog_fixture(node, "tenant-a".into(), key.clone())
             .await
             .unwrap();
-        let stores = kasumi_store::test_utils::with_custody(
+        let stores = kasumi_store::test_utils::initialize_custody_fixture(
             store,
             Arc::new(LocalKeyProvider::new([240 - hop as u8; 32])),
         )
@@ -194,7 +194,7 @@ async fn native_resources_and_two_restore_hops_preserve_immutable_issuer_facts()
         restored.shutdown().await.unwrap();
         drop(restored);
         drop(stores);
-        let reopened_store = TenantStore::open_fixture(
+        let reopened_store = TenantStore::open_existing_fixture(
             NodeStore::open_existing(
                 dir.path().join("node.redb"),
                 kasumi_store::test_utils::NODE_STORE_ID,
@@ -206,7 +206,7 @@ async fn native_resources_and_two_restore_hops_preserve_immutable_issuer_facts()
         )
         .await
         .unwrap();
-        let reopened_stores = kasumi_store::test_utils::with_custody(
+        let reopened_stores = kasumi_store::test_utils::open_existing_custody_fixture(
             reopened_store,
             Arc::new(LocalKeyProvider::new([240 - hop as u8; 32])),
         )

@@ -682,7 +682,7 @@ mod tests {
             archive_bytes: 128 << 20,
         };
         let admission = crate::admission::NodeAdmission::new(Default::default()).unwrap();
-        let store = TenantStore::open_fixture(
+        let store = TenantStore::initialize_catalog_fixture(
             NodeStore::create_new(
                 &path,
                 kasumi_store::test_utils::NODE_STORE_ID,
@@ -718,7 +718,7 @@ mod tests {
         drop(audit);
         drop(store);
 
-        let store = TenantStore::open_fixture(
+        let store = TenantStore::open_existing_fixture(
             NodeStore::open_existing(
                 &path,
                 kasumi_store::test_utils::NODE_STORE_ID,

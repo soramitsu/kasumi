@@ -50,26 +50,39 @@ async fn open(
     } else {
         common::existing_security_audit(node.clone()).await
     };
-    let store = TenantStore::open_fixture(
-        node,
-        "history".into(),
-        Arc::new(LocalKeyProvider::new([0xD3; 32])),
-    )
-    .await
-    .unwrap();
-    let db = kasumi_engine::test_utils::open_fixture(
-        kasumi_store::test_utils::with_custody(
-            store,
-            std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
+    let store = if create {
+        TenantStore::initialize_catalog_fixture(
+            node,
+            "history".into(),
+            Arc::new(LocalKeyProvider::new([0xD3; 32])),
         )
         .await
-        .unwrap(),
-        policy(),
-        limits,
-        audit.clone(),
-    )
-    .await
+    } else {
+        TenantStore::open_existing_fixture(
+            node,
+            "history".into(),
+            Arc::new(LocalKeyProvider::new([0xD3; 32])),
+        )
+        .await
+    }
     .unwrap();
+    let domains = if create {
+        kasumi_store::test_utils::initialize_custody_fixture(
+            store,
+            Arc::new(LocalKeyProvider::new([241; 32])),
+        )
+        .await
+    } else {
+        kasumi_store::test_utils::open_existing_custody_fixture(
+            store,
+            Arc::new(LocalKeyProvider::new([241; 32])),
+        )
+        .await
+    }
+    .unwrap();
+    let db = kasumi_engine::test_utils::open_fixture(domains, policy(), limits, audit.clone())
+        .await
+        .unwrap();
     (db, audit)
 }
 async fn collection(db: &Database, name: &str, retention_class: CollectionRetentionClass) {
@@ -733,7 +746,7 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
     )
     .unwrap();
     let restored_audit = common::security_audit(node.clone()).await;
-    let target = TenantStore::open_fixture(
+    let target = TenantStore::initialize_catalog_fixture(
         node,
         "history".into(),
         Arc::new(LocalKeyProvider::new([0xD3; 32])),
@@ -748,7 +761,7 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
     };
     let restored = kasumi_engine::restore_local(
         &restore_source,
-        kasumi_store::test_utils::with_custody(
+        kasumi_store::test_utils::initialize_custody_fixture(
             target,
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
         )
@@ -859,7 +872,7 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
         )
         .unwrap();
         let audit = common::security_audit(node.clone()).await;
-        let target = TenantStore::open_fixture(
+        let target = TenantStore::initialize_catalog_fixture(
             node,
             "history".into(),
             Arc::new(LocalKeyProvider::new(
@@ -871,7 +884,7 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
         assert!(
             kasumi_engine::restore_local(
                 &restore_source,
-                kasumi_store::test_utils::with_custody(
+                kasumi_store::test_utils::initialize_custody_fixture(
                     target.clone(),
                     std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32]))
                 )
@@ -898,7 +911,7 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
                 .is_none()
         );
         assert!(
-            kasumi_store::test_utils::with_custody(
+            kasumi_store::test_utils::open_existing_custody_fixture(
                 target.clone(),
                 Arc::new(LocalKeyProvider::new([241; 32])),
             )

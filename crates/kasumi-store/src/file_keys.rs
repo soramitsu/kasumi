@@ -257,7 +257,7 @@ mod tests {
         let installation = Uuid::new_v4();
         let incarnation = Uuid::new_v4();
         let access = StorageAccess::standalone(installation, "tenant", incarnation).unwrap();
-        let store = TenantStore::open(
+        let store = TenantStore::initialize_catalog_fixture_with_access(
             node.clone(),
             "tenant".into(),
             provider.clone(),
@@ -269,7 +269,7 @@ mod tests {
             .write_batch(&[WriteOp::put("docs", b"a", b"private")])
             .unwrap();
         assert!(
-            TenantStore::open(
+            TenantStore::open_existing_fixture_with_access(
                 node.clone(),
                 "tenant".into(),
                 provider.clone(),
@@ -279,7 +279,7 @@ mod tests {
             .is_err()
         );
         assert!(
-            TenantStore::open(
+            TenantStore::open_existing_fixture_with_access(
                 node.clone(),
                 "tenant".into(),
                 provider.clone(),
@@ -289,9 +289,14 @@ mod tests {
             .is_err()
         );
         drop(store);
-        let reopened = TenantStore::open(node.clone(), "tenant".into(), provider.clone(), access)
-            .await
-            .unwrap();
+        let reopened = TenantStore::open_existing_fixture_with_access(
+            node.clone(),
+            "tenant".into(),
+            provider.clone(),
+            access,
+        )
+        .await
+        .unwrap();
         assert_eq!(
             reopened.get("docs", b"a").unwrap(),
             Some(b"private".to_vec())

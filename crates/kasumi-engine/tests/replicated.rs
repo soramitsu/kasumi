@@ -69,12 +69,21 @@ async fn store(
     } else {
         common::existing_security_audit(node.clone()).await
     };
-    let store = TenantStore::open_fixture(
-        node,
-        "tenant-a".into(),
-        Arc::new(LocalKeyProvider::new([43; 32])),
-    )
-    .await
+    let store = if create {
+        TenantStore::initialize_catalog_fixture(
+            node,
+            "tenant-a".into(),
+            Arc::new(LocalKeyProvider::new([43; 32])),
+        )
+        .await
+    } else {
+        TenantStore::open_existing_fixture(
+            node,
+            "tenant-a".into(),
+            Arc::new(LocalKeyProvider::new([43; 32])),
+        )
+        .await
+    }
     .unwrap();
     (store, audit)
 }
@@ -148,7 +157,7 @@ async fn replicated_service_preserves_batches_receipts_and_cursor_fences_across_
         audits.insert(id, audit.clone());
         let db = open_fixture_replicated(
             id,
-            kasumi_store::test_utils::with_custody(
+            kasumi_store::test_utils::initialize_custody_fixture(
                 node_store,
                 std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
             )
@@ -357,7 +366,7 @@ async fn replicated_service_preserves_batches_receipts_and_cursor_fences_across_
         audits.insert(id, audit.clone());
         let db = open_fixture_replicated(
             id,
-            kasumi_store::test_utils::with_custody(
+            kasumi_store::test_utils::open_existing_custody_fixture(
                 node_store,
                 std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
             )
@@ -410,7 +419,7 @@ async fn deployment_modes_and_live_store_ownership_cannot_be_overridden() {
     let (store, audit) = store(&root.path().join("local.redb"), true).await;
     let bootstrap = bootstrap();
     let db = open_fixture(
-        kasumi_store::test_utils::with_custody(
+        kasumi_store::test_utils::initialize_custody_fixture(
             store.clone(),
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
         )
@@ -424,7 +433,7 @@ async fn deployment_modes_and_live_store_ownership_cannot_be_overridden() {
     .unwrap();
     assert!(
         open_fixture(
-            kasumi_store::test_utils::with_custody(
+            kasumi_store::test_utils::open_existing_custody_fixture(
                 store.clone(),
                 std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32]))
             )
@@ -443,7 +452,7 @@ async fn deployment_modes_and_live_store_ownership_cannot_be_overridden() {
     assert!(
         open_fixture_replicated(
             1,
-            kasumi_store::test_utils::with_custody(
+            kasumi_store::test_utils::open_existing_custody_fixture(
                 store.clone(),
                 std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32]))
             )
@@ -458,7 +467,7 @@ async fn deployment_modes_and_live_store_ownership_cannot_be_overridden() {
         .is_err()
     );
     let reopened = open_fixture(
-        kasumi_store::test_utils::with_custody(
+        kasumi_store::test_utils::open_existing_custody_fixture(
             store,
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
         )
@@ -490,7 +499,7 @@ async fn replicated_restore_has_identical_genesis_and_requires_quorum_audit_befo
     let initial = bootstrap();
     let (source_store, source_audit) = store(&root.path().join("source.redb"), true).await;
     let source = open_fixture(
-        kasumi_store::test_utils::with_custody(
+        kasumi_store::test_utils::initialize_custody_fixture(
             source_store,
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
         )
@@ -563,7 +572,7 @@ async fn replicated_restore_has_identical_genesis_and_requires_quorum_audit_befo
                 keys: Arc::new(LocalKeyProvider::new([43; 32])),
             },
             backup_id,
-            kasumi_store::test_utils::with_custody(
+            kasumi_store::test_utils::initialize_custody_fixture(
                 node_store,
                 std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
             )
@@ -653,7 +662,7 @@ async fn replicated_restore_has_identical_genesis_and_requires_quorum_audit_befo
         audits.insert(id, audit.clone());
         let db = open_fixture_replicated(
             id,
-            kasumi_store::test_utils::with_custody(
+            kasumi_store::test_utils::open_existing_custody_fixture(
                 node_store,
                 std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
             )

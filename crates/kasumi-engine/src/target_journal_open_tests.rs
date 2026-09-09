@@ -36,7 +36,7 @@ impl Fixture {
             id,
             ScratchDisk::fixture(),
         )?;
-        let store = TenantStore::open(
+        let store = TenantStore::initialize_catalog(
             node.clone(),
             format!("kasumi.target.{}.1", installed.root.control_incarnation),
             Arc::new(LocalKeyProvider::new([39; 32])),

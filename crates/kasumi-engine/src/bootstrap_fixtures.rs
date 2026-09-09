@@ -88,7 +88,7 @@ mod tests {
         )
         .unwrap();
         let admission = NodeAdmission::new(Default::default()).unwrap();
-        let audit_store = TenantStore::open_fixture(
+        let audit_store = TenantStore::initialize_catalog_fixture(
             node.clone(),
             crate::SECURITY_TENANT.into(),
             Arc::new(LocalKeyProvider::new([41; 32])),
@@ -108,14 +108,14 @@ mod tests {
         );
         let mut databases = Vec::new();
         for name in ["tenant", "__kasumi_control", "manual"] {
-            let store = TenantStore::open_fixture(
+            let store = TenantStore::initialize_catalog_fixture(
                 node.clone(),
                 name.into(),
                 Arc::new(LocalKeyProvider::new([42; 32])),
             )
             .await
             .unwrap();
-            let stores = kasumi_store::test_utils::with_custody(
+            let stores = kasumi_store::test_utils::initialize_custody_fixture(
                 store,
                 Arc::new(LocalKeyProvider::new([43; 32])),
             )

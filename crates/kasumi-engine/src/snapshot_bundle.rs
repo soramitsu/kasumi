@@ -534,7 +534,7 @@ mod tests {
             kasumi_store::ScratchDisk::fixture(),
         )
         .unwrap();
-        let store = TenantStore::open_fixture(
+        let store = TenantStore::initialize_catalog_fixture(
             node,
             tenant.into(),
             Arc::new(LocalKeyProvider::new([43; 32])),

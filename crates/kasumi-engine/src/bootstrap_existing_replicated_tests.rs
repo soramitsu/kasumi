@@ -61,7 +61,8 @@ impl Replica {
             TenantStore::open_existing_fixture(node, crate::SECURITY_TENANT.into(), provider)
                 .await?
         } else {
-            TenantStore::open_fixture(node, crate::SECURITY_TENANT.into(), provider).await?
+            TenantStore::initialize_catalog_fixture(node, crate::SECURITY_TENANT.into(), provider)
+                .await?
         };
         let admission =
             crate::admission::NodeAdmission::with_fixed_memory(Default::default(), 2 << 30, 0)?;

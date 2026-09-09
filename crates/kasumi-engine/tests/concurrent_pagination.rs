@@ -64,7 +64,7 @@ async fn snapshot_pages_overlap_atomic_writers_and_current_policy_revocation() {
     )
     .unwrap();
     let audit = common::security_audit(node.clone()).await;
-    let store = TenantStore::open_fixture(
+    let store = TenantStore::initialize_catalog_fixture(
         node,
         "pages".into(),
         Arc::new(LocalKeyProvider::new([62; 32])),
@@ -72,7 +72,7 @@ async fn snapshot_pages_overlap_atomic_writers_and_current_policy_revocation() {
     .await
     .unwrap();
     let database = open_fixture(
-        kasumi_store::test_utils::with_custody(
+        kasumi_store::test_utils::initialize_custody_fixture(
             store,
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
         )

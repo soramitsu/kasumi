@@ -94,7 +94,7 @@ async fn durable() -> (tempfile::TempDir, Arc<TenantStore>, TenantState, View) {
         ScratchDisk::fixture(),
     )
     .unwrap();
-    let store = TenantStore::open_fixture(
+    let store = TenantStore::initialize_catalog_fixture(
         node,
         "tenant".into(),
         Arc::new(LocalKeyProvider::new([89; 32])),
@@ -163,7 +163,7 @@ async fn encrypted_reopen_keeps_unapplied_terminal_rows_hidden_until_exact_repla
         disk,
     )
     .unwrap();
-    let reopened_store = TenantStore::open_fixture(
+    let reopened_store = TenantStore::open_existing_fixture(
         reopened_node,
         "tenant".into(),
         Arc::new(LocalKeyProvider::new([89; 32])),

@@ -63,7 +63,7 @@ async fn shutdown_drains_snapshot_worker_before_releasing_group_or_file_ownershi
     let path = directory.path().join("shutdown.redb");
     let (entered, ready) = tokio::sync::oneshot::channel();
     let (release, wait) = mpsc::channel();
-    let store = TenantStore::open_fixture_with_clock(
+    let store = TenantStore::initialize_catalog_fixture_with_clock(
         NodeStore::create_new(
             &path,
             kasumi_store::test_utils::NODE_STORE_ID,
@@ -77,7 +77,7 @@ async fn shutdown_drains_snapshot_worker_before_releasing_group_or_file_ownershi
     let group = RaftGroup::local(
         1,
         "tenant-a".into(),
-        kasumi_store::test_utils::with_custody(
+        kasumi_store::test_utils::initialize_custody_fixture(
             store.clone(),
             Arc::new(LocalKeyProvider::new([241; 32])),
         )
@@ -103,7 +103,7 @@ async fn shutdown_drains_snapshot_worker_before_releasing_group_or_file_ownershi
         RaftGroup::local(
             1,
             "tenant-a".into(),
-            kasumi_store::test_utils::with_custody(
+            kasumi_store::test_utils::open_existing_custody_fixture(
                 store.clone(),
                 Arc::new(LocalKeyProvider::new([241; 32]))
             )

@@ -242,7 +242,10 @@ async fn explicit_encrypted_verifier_initialization_never_bootstraps_runtime_tru
     );
     std::fs::remove_file(&f.input.verifier.database_path).unwrap();
     f.input.initialize().await.unwrap();
-    f.input.initialize().await.unwrap();
+    assert!(
+        f.input.initialize().await.is_err(),
+        "installation cannot repeat"
+    );
     let installed = f.open().await.unwrap();
     assert!(f.open().await.is_err(), "exclusive metadata ownership");
     let signer = f.operational.open(&installed).unwrap();
@@ -286,7 +289,7 @@ async fn explicit_encrypted_verifier_initialization_never_bootstraps_runtime_tru
 }
 
 #[tokio::test]
-async fn partial_initializer_resumes_only_exact_initial_heads_and_rejects_corruption() {
+async fn partial_verifier_is_never_adopted_and_corrupt_complete_head_is_never_reseeded() {
     let f = Fixture::new();
     let store = f
         .input
@@ -305,19 +308,49 @@ async fn partial_initializer_resumes_only_exact_initial_heads_and_rejects_corrup
             Arc::new(ScopedSignerAdministrator::default()),
         )
         .unwrap();
+    let digest = f.manifest.signing_domain(0).unwrap().digest().unwrap();
+    let retained = store
+        .get("live.signer.trust", digest.as_bytes())
+        .unwrap()
+        .unwrap();
+    assert!(store.get(NS, b"installation").unwrap().is_none());
     store.shutdown().await;
     drop(store);
     assert!(f.open().await.is_err());
-    f.input.initialize().await.unwrap();
-    let installed = f.open().await.unwrap();
-    installed.shutdown().await;
-    drop(installed);
+    assert!(
+        f.input.initialize().await.is_err(),
+        "partial installation cannot be adopted"
+    );
     let store = f
         .input
         .verifier
         .store(
             Arc::new(file_secret),
-            true,
+            false,
+            kasumi_store::ScratchDisk::fixture(),
+        )
+        .await
+        .unwrap();
+    assert!(store.get(NS, b"installation").unwrap().is_none());
+    assert_eq!(
+        store
+            .get("live.signer.trust", digest.as_bytes())
+            .unwrap()
+            .unwrap(),
+        retained
+    );
+    store.shutdown().await;
+    drop(store);
+
+    // Independently completed installation: corruption must not reseed its head.
+    let f = Fixture::new();
+    f.input.initialize().await.unwrap();
+    let store = f
+        .input
+        .verifier
+        .store(
+            Arc::new(file_secret),
+            false,
             kasumi_store::ScratchDisk::fixture(),
         )
         .await
@@ -340,7 +373,7 @@ async fn partial_initializer_resumes_only_exact_initial_heads_and_rejects_corrup
         .verifier
         .store(
             Arc::new(file_secret),
-            true,
+            false,
             kasumi_store::ScratchDisk::fixture(),
         )
         .await

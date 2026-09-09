@@ -25,12 +25,13 @@ async fn fixture(
     provider: Arc<LocalKeyProvider>,
     audit_provider: Arc<LocalKeyProvider>,
 ) -> (Arc<Database>, Arc<TenantStore>, Arc<SecurityAudit>) {
-    let store = TenantStore::open_fixture(node.clone(), "tenant".into(), provider)
+    let store = TenantStore::initialize_catalog_fixture(node.clone(), "tenant".into(), provider)
         .await
         .unwrap();
-    let service = TenantStore::open_fixture(node, SECURITY_TENANT.into(), audit_provider)
-        .await
-        .unwrap();
+    let service =
+        TenantStore::initialize_catalog_fixture(node, SECURITY_TENANT.into(), audit_provider)
+            .await
+            .unwrap();
     let audit = SecurityAudit::initialize(
         service,
         kasumi_types::AuditRetentionBudget::default(),
@@ -38,7 +39,7 @@ async fn fixture(
     )
     .unwrap();
     let db = open_fixture(
-        kasumi_store::test_utils::with_custody(
+        kasumi_store::test_utils::initialize_custody_fixture(
             store.clone(),
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
         )
@@ -168,9 +169,10 @@ async fn every_embedded_request_boundary_durably_audits_denials_and_sealed_tenan
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();
-    let service = TenantStore::open_fixture(reopened, SECURITY_TENANT.into(), service_provider)
-        .await
-        .unwrap();
+    let service =
+        TenantStore::open_existing_fixture(reopened, SECURITY_TENANT.into(), service_provider)
+            .await
+            .unwrap();
     assert_eq!(service.scan("security.audit").unwrap().len(), 12);
     service.shutdown().await;
 }
@@ -237,9 +239,10 @@ fn cancelled_embedded_denial_writer_is_drained_before_shutdown_and_reopen() {
             kasumi_store::ScratchDisk::fixture(),
         )
         .unwrap();
-        let service = TenantStore::open_fixture(reopened, SECURITY_TENANT.into(), service_provider)
-            .await
-            .unwrap();
+        let service =
+            TenantStore::open_existing_fixture(reopened, SECURITY_TENANT.into(), service_provider)
+                .await
+                .unwrap();
         assert_eq!(service.scan("security.audit").unwrap().len(), 1);
         service.shutdown().await;
     });
@@ -277,21 +280,21 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();
-    let target_store = TenantStore::open_fixture(
+    let target_store = TenantStore::initialize_catalog_fixture(
         target_node.clone(),
         "tenant".into(),
         Arc::new(LocalKeyProvider::new([53; 32])),
     )
     .await
     .unwrap();
-    let target_domains = kasumi_store::test_utils::with_custody(
+    let target_domains = kasumi_store::test_utils::initialize_custody_fixture(
         target_store.clone(),
         Arc::new(LocalKeyProvider::new([241; 32])),
     )
     .await
     .unwrap();
     let service_key = Arc::new(LocalKeyProvider::new([54; 32]));
-    let service_store = TenantStore::open_fixture(
+    let service_store = TenantStore::initialize_catalog_fixture(
         target_node.clone(),
         SECURITY_TENANT.into(),
         service_key.clone(),
@@ -423,7 +426,7 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();
-    let service = TenantStore::open_fixture(reopened, SECURITY_TENANT.into(), service_key)
+    let service = TenantStore::open_existing_fixture(reopened, SECURITY_TENANT.into(), service_key)
         .await
         .unwrap();
     assert_eq!(service.scan("security.audit").unwrap().len(), 3);

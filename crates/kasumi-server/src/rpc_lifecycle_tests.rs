@@ -36,7 +36,7 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
         jwks,
     )
     .await;
-    let audit_store = TenantStore::open(
+    let audit_store = TenantStore::initialize_catalog(
         NodeStore::create_new(
             directory.path().join("audit.redb"),
             kasumi_store::test_utils::NODE_STORE_ID,

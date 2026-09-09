@@ -36,7 +36,7 @@ async fn journal(
     let provider = Arc::new(LocalKeyProvider::new([239; 32]));
     let access = StorageAccess::target_journal(&installation.root, &installation.node).unwrap();
     let store = if create {
-        TenantStore::open(node, name, provider, access).await
+        TenantStore::initialize_catalog(node, name, provider, access).await
     } else {
         TenantStore::open_existing(node, name, provider, access).await
     }

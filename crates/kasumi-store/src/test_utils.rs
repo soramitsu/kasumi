@@ -20,18 +20,38 @@ pub const NODE_STORE_ID: uuid::Uuid =
 
 /// Explicitly install an independent custody provider for a trusted test store.
 /// Production configuration must supply both providers through TenantStorageSet.
-pub async fn with_custody(
+pub async fn initialize_custody_fixture(
     application: std::sync::Arc<crate::TenantStore>,
     custody_provider: std::sync::Arc<dyn KeyProvider>,
 ) -> Result<std::sync::Arc<crate::TenantStorageSet>> {
-    let control = crate::TenantStore::open(
+    let control = crate::TenantStore::initialize_catalog_fixture_with_access(
         application.node.clone(),
         crate::CustodyStore::catalog_name(application.tenant()),
         custody_provider,
         crate::StorageAccess::custody(application.tenant()),
     )
     .await?;
-    crate::TenantStorageSet::install(application, control)
+    let result = crate::TenantStorageSet::install(application, control.clone());
+    if result.is_err() {
+        control.shutdown().await;
+    }
+    result
+}
+
+/// Reopen the exact authenticated pair surrounding a borrowed test application.
+/// Missing custody or bindings are errors, including a partially created pair.
+pub async fn open_existing_custody_fixture(
+    application: std::sync::Arc<crate::TenantStore>,
+    custody_provider: std::sync::Arc<dyn KeyProvider>,
+) -> Result<std::sync::Arc<crate::TenantStorageSet>> {
+    crate::TenantStorageSet::open_existing(
+        application.node.clone(),
+        application.tenant.clone(),
+        application.provider.clone(),
+        custody_provider,
+        application.access.clone(),
+    )
+    .await
 }
 
 /// Assemble explicitly clocked test domains. This helper is unavailable in

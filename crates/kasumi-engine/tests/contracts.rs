@@ -764,11 +764,11 @@ async fn database(
     .unwrap();
     let audit = common::security_audit(node.clone()).await;
     let key = Arc::new(LocalKeyProvider::new([7; 32]));
-    let store = TenantStore::open_fixture(node, "tenant-a".into(), key.clone())
+    let store = TenantStore::initialize_catalog_fixture(node, "tenant-a".into(), key.clone())
         .await
         .unwrap();
     let db = kasumi_engine::test_utils::open_fixture(
-        kasumi_store::test_utils::with_custody(
+        kasumi_store::test_utils::initialize_custody_fixture(
             store.clone(),
             Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
         )
@@ -1092,7 +1092,7 @@ async fn strict_empty_discovery_is_audited_and_failed_audit_persistence_blocks_r
     let node = NodeStore::open_with_backend(backend.clone(), kasumi_store::ScratchDisk::fixture())
         .unwrap();
     let audit_directory = tempfile::tempdir().unwrap();
-    let audit_store = TenantStore::open_fixture(
+    let audit_store = TenantStore::initialize_catalog_fixture(
         node.clone(),
         kasumi_engine::SECURITY_TENANT.into(),
         Arc::new(LocalKeyProvider::new([0xA7; 32])),
@@ -1109,7 +1109,7 @@ async fn strict_empty_discovery_is_audited_and_failed_audit_persistence_blocks_r
         kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
     )
     .unwrap();
-    let store = TenantStore::open_fixture(
+    let store = TenantStore::initialize_catalog_fixture(
         node,
         "tenant-a".into(),
         Arc::new(LocalKeyProvider::new([45; 32])),
@@ -1117,7 +1117,7 @@ async fn strict_empty_discovery_is_audited_and_failed_audit_persistence_blocks_r
     .await
     .unwrap();
     let db = kasumi_engine::test_utils::open_fixture(
-        kasumi_store::test_utils::with_custody(
+        kasumi_store::test_utils::initialize_custody_fixture(
             store,
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
         )
@@ -1308,7 +1308,7 @@ async fn logical_backup_restores_suspended_with_new_incarnation_and_increasing_r
     .unwrap();
     let target_audit = common::security_audit(node.clone()).await;
     let target_key = Arc::new(LocalKeyProvider::new([9; 32]));
-    let target_store = TenantStore::open_fixture(node, "tenant-a".into(), target_key)
+    let target_store = TenantStore::initialize_catalog_fixture(node, "tenant-a".into(), target_key)
         .await
         .unwrap();
     let restored = kasumi_engine::restore_local(
@@ -1318,7 +1318,7 @@ async fn logical_backup_restores_suspended_with_new_incarnation_and_increasing_r
             destination: destination.clone(),
             keys: source_key.clone(),
         },
-        kasumi_store::test_utils::with_custody(
+        kasumi_store::test_utils::initialize_custody_fixture(
             target_store.clone(),
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
         )
@@ -1365,7 +1365,7 @@ async fn logical_backup_restores_suspended_with_new_incarnation_and_increasing_r
                 destination: destination.clone(),
                 keys: source_key
             },
-            kasumi_store::test_utils::with_custody(
+            kasumi_store::test_utils::open_existing_custody_fixture(
                 target_store,
                 std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32]))
             )
@@ -1438,7 +1438,7 @@ async fn durable_engine_worker() {
     )
     .unwrap();
     let audit = common::security_audit(node.clone()).await;
-    let store = TenantStore::open_fixture(
+    let store = TenantStore::initialize_catalog_fixture(
         node,
         "tenant-a".into(),
         Arc::new(LocalKeyProvider::new([42; 32])),
@@ -1446,7 +1446,7 @@ async fn durable_engine_worker() {
     .await
     .unwrap();
     let db = kasumi_engine::test_utils::open_fixture(
-        kasumi_store::test_utils::with_custody(
+        kasumi_store::test_utils::initialize_custody_fixture(
             store,
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
         )
@@ -1516,7 +1516,7 @@ async fn killed_process_recovers_acknowledged_documents_receipts_and_bootstrap_p
     )
     .unwrap();
     let audit = common::existing_security_audit(node.clone()).await;
-    let store = TenantStore::open_fixture(
+    let store = TenantStore::open_existing_fixture(
         node,
         "tenant-a".into(),
         Arc::new(LocalKeyProvider::new([42; 32])),
@@ -1532,7 +1532,7 @@ async fn killed_process_recovers_acknowledged_documents_receipts_and_bootstrap_p
         strict_read_audit: true,
     };
     let db = kasumi_engine::test_utils::open_fixture(
-        kasumi_store::test_utils::with_custody(
+        kasumi_store::test_utils::open_existing_custody_fixture(
             store,
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
         )

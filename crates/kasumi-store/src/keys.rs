@@ -489,7 +489,7 @@ mod tests {
         let fixture = TlsFixture::spawn(router(state.clone())).await;
         let provider = Arc::new(TransitKeyProvider::new(config(&fixture)).unwrap());
         let dir = tempfile::tempdir().unwrap();
-        let store = TenantStore::open_fixture_with_clock(
+        let store = TenantStore::initialize_catalog_fixture_with_clock(
             NodeStore::create_new(
                 dir.path().join("db"),
                 crate::test_utils::NODE_STORE_ID,
@@ -581,7 +581,7 @@ mod tests {
         let fixture = TlsFixture::spawn(router(state.clone())).await;
         let provider = Arc::new(TransitKeyProvider::new(config(&fixture)).unwrap());
         let dir = tempfile::tempdir().unwrap();
-        let store = TenantStore::open_fixture_with_clock(
+        let store = TenantStore::initialize_catalog_fixture_with_clock(
             NodeStore::create_new(
                 dir.path().join("db"),
                 crate::test_utils::NODE_STORE_ID,

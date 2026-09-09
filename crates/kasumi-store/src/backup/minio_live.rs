@@ -196,7 +196,7 @@ async fn actual_minio_tls_sigv4_encrypted_roundtrip_create_only_and_access_denia
         response.status()
     );
     let provider = Arc::new(crate::test_utils::LocalKeyProvider::new([73; 32]));
-    let store = TenantStore::open_fixture(
+    let store = TenantStore::initialize_catalog_fixture(
         crate::NodeStore::create_new(
             root.path().join("source.redb"),
             crate::test_utils::NODE_STORE_ID,

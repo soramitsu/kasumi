@@ -153,13 +153,23 @@ impl ServingFixture {
                 )
             })
             .unwrap();
-            let audit_store = TenantStore::open(
-                node.clone(),
-                crate::SECURITY_TENANT.into(),
-                Arc::new(LocalKeyProvider::new([id as u8 + 20; 32])),
-                kasumi_store::StorageAccess::security_audit(),
-            )
-            .await
+            let audit_store = (if create {
+                TenantStore::initialize_catalog(
+                    node.clone(),
+                    crate::SECURITY_TENANT.into(),
+                    Arc::new(LocalKeyProvider::new([id as u8 + 20; 32])),
+                    kasumi_store::StorageAccess::security_audit(),
+                )
+                .await
+            } else {
+                TenantStore::open_existing(
+                    node.clone(),
+                    crate::SECURITY_TENANT.into(),
+                    Arc::new(LocalKeyProvider::new([id as u8 + 20; 32])),
+                    kasumi_store::StorageAccess::security_audit(),
+                )
+                .await
+            })
             .unwrap();
             // Each simulated data node has the same independent governor used
             // by a real NodeRuntime, including its maintenance reservation.

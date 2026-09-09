@@ -109,7 +109,7 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();
-    let audit_store = TenantStore::open(
+    let audit_store = TenantStore::initialize_catalog(
         audit_node,
         kasumi_engine::SECURITY_TENANT.into(),
         Arc::new(LocalKeyProvider::new([88; 32])),
@@ -224,7 +224,7 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
             installed_verifiers.push(installed);
             continue;
         }
-        let store = TenantStore::open(
+        let store = TenantStore::initialize_catalog(
             NodeStore::create_new(
                 dir.path().join(format!("verifier-{node_id}.redb")),
                 kasumi_store::test_utils::NODE_STORE_ID,

@@ -78,7 +78,7 @@ async fn durable() -> (tempfile::TempDir, Arc<TenantStore>, TenantState, View) {
     )
     .unwrap();
     let state = state(&fixture::origin());
-    let store = TenantStore::open_fixture(
+    let store = TenantStore::initialize_catalog_fixture(
         node,
         state.tenant.clone(),
         Arc::new(LocalKeyProvider::new([93; 32])),

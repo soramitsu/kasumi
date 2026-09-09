@@ -18,7 +18,7 @@ pub async fn security_audit_with_admission(
     node: Arc<NodeStore>,
     admission: Arc<kasumi_engine::admission::NodeAdmission>,
 ) -> Arc<SecurityAudit> {
-    let store = TenantStore::open_fixture(
+    let store = TenantStore::initialize_catalog_fixture(
         node,
         SECURITY_TENANT.into(),
         Arc::new(LocalKeyProvider::new([0xA7; 32])),

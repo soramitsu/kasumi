@@ -14,7 +14,7 @@ impl CredentialFixture {
         )
         .unwrap();
         let provider = Arc::new(LocalKeyProvider::new([0x97; 32]));
-        let audit_store = TenantStore::open_fixture(
+        let audit_store = TenantStore::initialize_catalog_fixture(
             node.clone(),
             crate::SECURITY_TENANT.into(),
             provider.clone(),
@@ -35,7 +35,7 @@ impl CredentialFixture {
             scopes: BTreeSet::from([Action::Read, Action::Write, Action::Admin]),
             request_id: "expiry-test".into(),
         };
-        let store = TenantStore::open_fixture(node, context.tenant.clone(), provider)
+        let store = TenantStore::initialize_catalog_fixture(node, context.tenant.clone(), provider)
             .await
             .unwrap();
         let policy = Policy {
@@ -47,7 +47,7 @@ impl CredentialFixture {
             strict_read_audit: false,
         };
         let db = crate::test_utils::open_fixture(
-            kasumi_store::test_utils::with_custody(
+            kasumi_store::test_utils::initialize_custody_fixture(
                 store,
                 std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
             )

@@ -7,7 +7,7 @@ async fn canceled_queued_schema_activation_finishes_once_and_checks_receipt_rele
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();
-    let audit_store = TenantStore::open_fixture(
+    let audit_store = TenantStore::initialize_catalog_fixture(
         node.clone(),
         crate::SECURITY_TENANT.into(),
         Arc::new(LocalKeyProvider::new([0x91; 32])),
@@ -21,7 +21,7 @@ async fn canceled_queued_schema_activation_finishes_once_and_checks_receipt_rele
         node_admission.clone(),
     )
     .unwrap();
-    let store = TenantStore::open_fixture(
+    let store = TenantStore::initialize_catalog_fixture(
         node,
         "schema-cancel".into(),
         Arc::new(LocalKeyProvider::new([0x92; 32])),
@@ -44,7 +44,7 @@ async fn canceled_queued_schema_activation_finishes_once_and_checks_receipt_rele
         strict_read_audit: false,
     };
     let db = crate::test_utils::open_fixture(
-        kasumi_store::test_utils::with_custody(
+        kasumi_store::test_utils::initialize_custody_fixture(
             store,
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
         )

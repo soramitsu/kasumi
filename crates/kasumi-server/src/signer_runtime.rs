@@ -55,10 +55,23 @@ impl SignerVerifierConfig {
         };
         let provider = self.keys.provider(credential)?;
         let access = StorageAccess::live_signer_trust(self.identity.clone())?;
-        if initialize {
-            TenantStore::open(node, self.identity.tenant(), provider, access).await
+        let prepared = if initialize {
+            TenantStore::initialize_catalog(node.clone(), self.identity.tenant(), provider, access)
+                .await
         } else {
-            TenantStore::open_existing(node, self.identity.tenant(), provider, access).await
+            TenantStore::open_existing(node.clone(), self.identity.tenant(), provider, access).await
+        };
+        let drained = node.drain_initializers().await;
+        match (prepared, drained) {
+            (Ok(store), Ok(())) => Ok(store),
+            (Ok(store), Err(error)) => {
+                store.shutdown().await;
+                Err(error)
+            }
+            (Err(error), Ok(())) => Err(error),
+            (Err(error), Err(drain)) => {
+                Err(error.context(format!("singleton drain failed: {drain:#}")))
+            }
         }
     }
     pub(crate) async fn open(
@@ -274,7 +287,7 @@ impl VerifierInstallation {
         Ok(())
     }
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InitializeSignerVerifier {
     pub scratch_disk: kasumi_store::ScratchDiskConfig,
@@ -283,6 +296,12 @@ pub struct InitializeSignerVerifier {
 }
 impl InitializeSignerVerifier {
     pub async fn initialize(&self) -> Result<()> {
+        let input = self.clone();
+        // Only the drained unit outcome crosses this CLI task boundary. Lost
+        // replies cannot cancel catalog preparation or release its file owner.
+        tokio::spawn(async move { input.initialize_owned().await }).await?
+    }
+    async fn initialize_owned(self) -> Result<()> {
         self.verifier.validate()?;
         self.scratch_disk.validate()?;
         ensure!(
@@ -326,60 +345,26 @@ impl InitializeSignerVerifier {
             )
             .await?;
         let result = (|| -> Result<()> {
-            if let Some(previous) = store.get_bounded(NS, b"installation", 256 << 10)? {
-                ensure!(
-                    serde_json::from_slice::<VerifierInstallation>(&previous)? == installed,
-                    "verifier installation already differs"
-                );
-                let administrator: Arc<dyn LiveTrustAdministrator> =
-                    Arc::new(ScopedSignerAdministrator::default());
-                for certificate in &self.initial_certificates {
-                    let owner = store.open_live_signer_trust(
-                        &self.verifier.identity,
-                        certificate.identity.domain.clone(),
-                        administrator.clone(),
-                    )?;
-                    let current = owner.current()?;
-                    ensure!(
-                        current.revision != 0 || current.active == *certificate,
-                        "initial verifier head differs from completed installation"
-                    );
-                }
-            } else {
-                let administrator: Arc<dyn LiveTrustAdministrator> =
-                    Arc::new(ScopedSignerAdministrator::default());
-                for certificate in &self.initial_certificates {
-                    if store.has_live_signer_trust(
-                        &self.verifier.identity,
-                        &certificate.identity.domain,
-                    )? {
-                        let owner = store.open_live_signer_trust(
-                            &self.verifier.identity,
-                            certificate.identity.domain.clone(),
-                            administrator.clone(),
-                        )?;
-                        ensure!(
-                            owner.current()?
-                                == LocalSignerTrustRecord::initial(
-                                    self.verifier.identity.clone(),
-                                    certificate.clone()
-                                )?,
-                            "partial verifier initialization differs"
-                        );
-                    } else {
-                        store.initialize_live_signer_trust(
-                            &self.verifier.identity,
-                            certificate.clone(),
-                            administrator.clone(),
-                        )?;
-                    }
-                }
-                store.write_batch(&[WriteOp::put(
-                    NS,
-                    b"installation",
-                    serde_json::to_vec(&installed)?,
-                )])?;
+            ensure!(
+                store.get_bounded(NS, b"installation", 256 << 10)?.is_none(),
+                "fresh verifier unexpectedly contains an installation"
+            );
+            let administrator: Arc<dyn LiveTrustAdministrator> =
+                Arc::new(ScopedSignerAdministrator::default());
+            for certificate in &self.initial_certificates {
+                // This operation exclusively created the physical file. Neither
+                // a previous head nor partial trust is a resumable installation.
+                store.initialize_live_signer_trust(
+                    &self.verifier.identity,
+                    certificate.clone(),
+                    administrator.clone(),
+                )?;
             }
+            store.write_batch(&[WriteOp::put(
+                NS,
+                b"installation",
+                serde_json::to_vec(&installed)?,
+            )])?;
             Ok(())
         })();
         store.shutdown().await;

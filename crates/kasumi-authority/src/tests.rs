@@ -789,7 +789,7 @@ async fn actual_encrypted_source_materialization_is_fenced_but_independent_custo
     // Even a fixture-enabled embedding cannot reinterpret a serving catalog as
     // an unleased fixture. The persisted purpose is required, without defaults.
     assert!(
-        kasumi_store::TenantStore::open_fixture(reopened, "city".into(), provider.clone())
+        kasumi_store::TenantStore::open_existing_fixture(reopened, "city".into(), provider.clone())
             .await
             .is_err()
     );

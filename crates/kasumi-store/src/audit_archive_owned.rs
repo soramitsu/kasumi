@@ -140,7 +140,7 @@ mod tests {
     async fn owned_publication_resolves_partial_writes_and_uncertain_rename_without_adopting_files()
     {
         let directory = tempfile::tempdir().unwrap();
-        let store = TenantStore::open_fixture(
+        let store = TenantStore::initialize_catalog_fixture(
             crate::NodeStore::create_new(
                 directory.path().join("node.redb"),
                 crate::test_utils::NODE_STORE_ID,

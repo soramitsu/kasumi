@@ -190,14 +190,29 @@ async fn install(machine: &mut StateMachine, image: &SnapshotEnvelope) -> Result
         .await?;
     Ok(())
 }
-async fn open(disk: FaultBackend) -> Result<(Arc<TenantStore>, Arc<JointBackend>, StateMachine)> {
-    let store = fault_store(disk).await?;
+async fn open(
+    disk: FaultBackend,
+    create: bool,
+) -> Result<(Arc<TenantStore>, Arc<JointBackend>, StateMachine)> {
+    let store = if create {
+        new_fault_store(disk).await?
+    } else {
+        existing_fault_store(disk).await?
+    };
     let backend = JointBackend::new(store.clone());
-    let domains = kasumi_store::test_utils::with_custody(
-        store.clone(),
-        Arc::new(LocalKeyProvider::new([241; 32])),
-    )
-    .await?;
+    let domains = if create {
+        kasumi_store::test_utils::initialize_custody_fixture(
+            store.clone(),
+            Arc::new(LocalKeyProvider::new([241; 32])),
+        )
+        .await?
+    } else {
+        kasumi_store::test_utils::open_existing_custody_fixture(
+            store.clone(),
+            Arc::new(LocalKeyProvider::new([241; 32])),
+        )
+        .await?
+    };
     let machine = StateMachine::open(domains, backend.clone()).await?;
     Ok((store, backend, machine))
 }
@@ -232,11 +247,11 @@ async fn joint_immutable_table_snapshot_power_loss_selects_complete_old_or_new_p
     let seed = FaultBackend::new();
     let old = image(7, 3);
     let new = image(9, 4);
-    let (store, backend, mut machine) = open(seed.clone()).await?;
+    let (store, backend, mut machine) = open(seed.clone(), true).await?;
     install(&mut machine, &old).await?;
     let old_selection = selected(&store, &backend, &mut machine).await?;
     let baseline = seed.crash();
-    let (_, _, mut measured) = open(baseline.clone()).await?;
+    let (_, _, mut measured) = open(baseline.clone(), false).await?;
     let start = baseline.operations();
     install(&mut measured, &new).await?;
     let operations = baseline.operations() - start;
@@ -246,10 +261,10 @@ async fn joint_immutable_table_snapshot_power_loss_selects_complete_old_or_new_p
     );
     for boundary in 0..=operations {
         let disk = seed.crash();
-        let (_, _, mut installing) = open(disk.clone()).await?;
+        let (_, _, mut installing) = open(disk.clone(), false).await?;
         disk.fail_after(boundary);
         let outcome = install(&mut installing, &new).await;
-        let (recovered_store, recovered_backend, mut recovered) = open(disk.crash()).await?;
+        let (recovered_store, recovered_backend, mut recovered) = open(disk.crash(), false).await?;
         let observed = selected(&recovered_store, &recovered_backend, &mut recovered).await?;
         ensure!(
             observed.tag == 7 || observed.tag == 9,
@@ -272,9 +287,9 @@ async fn joint_immutable_table_snapshot_power_loss_selects_complete_old_or_new_p
 async fn cancelled_joint_table_publication_seals_and_reopens_exact_committed_prefix() -> Result<()>
 {
     let disk = FaultBackend::new();
-    let store = fault_store(disk.clone()).await?;
+    let store = new_fault_store(disk.clone()).await?;
     let backend = JointBackend::new(store.clone());
-    let domains = kasumi_store::test_utils::with_custody(
+    let domains = kasumi_store::test_utils::initialize_custody_fixture(
         store.clone(),
         Arc::new(LocalKeyProvider::new([241; 32])),
     )
@@ -318,7 +333,7 @@ async fn cancelled_joint_table_publication_seals_and_reopens_exact_committed_pre
     assert_eq!(*backend.current.lock().unwrap(), old);
     drop(machine);
     tokio::time::timeout(Duration::from_secs(10), drain.wait()).await?;
-    let (recovered_store, recovered_backend, mut recovered) = open(disk.crash()).await?;
+    let (recovered_store, recovered_backend, mut recovered) = open(disk.crash(), false).await?;
     assert_eq!(
         selected(&recovered_store, &recovered_backend, &mut recovered).await?,
         expected

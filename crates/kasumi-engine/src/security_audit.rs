@@ -515,10 +515,13 @@ mod tests {
         .unwrap();
         let weak_node = Arc::downgrade(&node);
         let provider = Arc::new(LocalKeyProvider::new([89; 32]));
-        let store =
-            TenantStore::open_fixture(node.clone(), SECURITY_TENANT.into(), provider.clone())
-                .await
-                .unwrap();
+        let store = TenantStore::initialize_catalog_fixture(
+            node.clone(),
+            SECURITY_TENANT.into(),
+            provider.clone(),
+        )
+        .await
+        .unwrap();
         let admission = crate::admission::NodeAdmission::new(Default::default()).unwrap();
         let audit =
             SecurityAudit::initialize(store.clone(), AuditRetentionBudget::default(), admission)
@@ -562,7 +565,7 @@ mod tests {
         drop(node);
         assert!(weak_node.upgrade().is_none());
 
-        let reopened = TenantStore::open_fixture(
+        let reopened = TenantStore::open_existing_fixture(
             NodeStore::open_existing(
                 &path,
                 kasumi_store::test_utils::NODE_STORE_ID,
@@ -609,10 +612,13 @@ mod tests {
             .unwrap();
             let weak_node = Arc::downgrade(&node);
             let provider = Arc::new(LocalKeyProvider::new([83; 32]));
-            let store =
-                TenantStore::open_fixture(node.clone(), SECURITY_TENANT.into(), provider.clone())
-                    .await
-                    .unwrap();
+            let store = TenantStore::initialize_catalog_fixture(
+                node.clone(),
+                SECURITY_TENANT.into(),
+                provider.clone(),
+            )
+            .await
+            .unwrap();
             let admission = crate::admission::NodeAdmission::new(Default::default()).unwrap();
             let audit = SecurityAudit::initialize(
                 store.clone(),
@@ -673,7 +679,7 @@ mod tests {
             drop(node);
             assert!(weak_node.upgrade().is_none());
 
-            let reopened = TenantStore::open_fixture(
+            let reopened = TenantStore::open_existing_fixture(
                 NodeStore::open_existing(
                     &path,
                     kasumi_store::test_utils::NODE_STORE_ID,
@@ -717,10 +723,13 @@ mod tests {
         .unwrap();
         let weak_node = Arc::downgrade(&node);
         let provider = Arc::new(LocalKeyProvider::new([85; 32]));
-        let store =
-            TenantStore::open_fixture(node.clone(), SECURITY_TENANT.into(), provider.clone())
-                .await
-                .unwrap();
+        let store = TenantStore::initialize_catalog_fixture(
+            node.clone(),
+            SECURITY_TENANT.into(),
+            provider.clone(),
+        )
+        .await
+        .unwrap();
         let admission = crate::admission::NodeAdmission::new(Default::default()).unwrap();
         let first = SecurityAudit::initialize(
             store.clone(),
@@ -773,7 +782,7 @@ mod tests {
         drop(node);
         assert!(weak_node.upgrade().is_none());
 
-        let reopened = TenantStore::open_fixture(
+        let reopened = TenantStore::open_existing_fixture(
             NodeStore::open_existing(
                 &path,
                 kasumi_store::test_utils::NODE_STORE_ID,
@@ -826,7 +835,7 @@ mod tests {
         let disk = FaultBackend::new();
         let clock = Arc::new(ManualClock::new());
         let provider = Arc::new(LocalKeyProvider::new([84; 32]));
-        let store = TenantStore::open_fixture_with_clock(
+        let store = TenantStore::initialize_catalog_fixture_with_clock(
             NodeStore::open_with_backend(disk.clone(), kasumi_store::ScratchDisk::fixture())
                 .unwrap(),
             SECURITY_TENANT.into(),
@@ -861,7 +870,7 @@ mod tests {
         assert!(audit.record_sync(event()).is_err());
         assert_eq!(store.scan("security.audit").unwrap().len(), 1);
 
-        let recovered = TenantStore::open_fixture_with_clock(
+        let recovered = TenantStore::open_existing_fixture_with_clock(
             NodeStore::open_with_backend(disk.crash(), kasumi_store::ScratchDisk::fixture())
                 .unwrap(),
             SECURITY_TENANT.into(),

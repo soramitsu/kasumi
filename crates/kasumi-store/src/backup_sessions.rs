@@ -308,7 +308,7 @@ mod tests {
     ) {
         let dir = tempfile::tempdir().unwrap();
         let keys = Arc::new(LocalKeyProvider::new([71; 32]));
-        let store = TenantStore::open_fixture(
+        let store = TenantStore::initialize_catalog_fixture(
             NodeStore::create_new(
                 dir.path().join("node"),
                 crate::test_utils::NODE_STORE_ID,
@@ -654,7 +654,7 @@ mod tests {
         let source_incarnation = Uuid::new_v4();
         let installation = Uuid::new_v4();
         let access = StorageAccess::standalone(installation, "tenant", source_incarnation).unwrap();
-        let store = TenantStore::open(
+        let store = TenantStore::initialize_catalog_fixture_with_access(
             NodeStore::create_new(
                 dir.path().join("source"),
                 crate::test_utils::NODE_STORE_ID,

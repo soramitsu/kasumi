@@ -87,7 +87,7 @@ fn vote(source: u64) -> serde_json::Value {
 }
 
 async fn store(path: &std::path::Path) -> Result<Arc<TenantStore>> {
-    TenantStore::open_fixture(
+    TenantStore::initialize_catalog_fixture(
         NodeStore::create_new(
             path,
             kasumi_store::test_utils::NODE_STORE_ID,
@@ -143,7 +143,7 @@ async fn real_three_node_raft_replicates_over_pinned_mutual_tls_http() -> Result
         let group = RaftGroup::open(
             id,
             "tenant-a".into(),
-            kasumi_store::test_utils::with_custody(
+            kasumi_store::test_utils::initialize_custody_fixture(
                 store(&dir.path().join(format!("node-{id}.redb"))).await?,
                 Arc::new(LocalKeyProvider::new([241; 32])),
             )
@@ -276,7 +276,7 @@ async fn peer_requests_bind_certificate_source_candidate_target_and_group_and_li
     let group = RaftGroup::open(
         1,
         "tenant-a".into(),
-        kasumi_store::test_utils::with_custody(
+        kasumi_store::test_utils::initialize_custody_fixture(
             store(&dir.path().join("node.redb")).await?,
             Arc::new(LocalKeyProvider::new([241; 32])),
         )

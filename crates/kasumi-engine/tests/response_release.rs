@@ -23,7 +23,7 @@ async fn encoded_response_is_fenced_by_policy_changes_and_actual_key_denial() {
         })
         .unwrap();
     let audit = common::security_audit_with_admission(node.clone(), admission.clone()).await;
-    let store = TenantStore::open_fixture(node, "tenant".into(), keys.clone())
+    let store = TenantStore::initialize_catalog_fixture(node, "tenant".into(), keys.clone())
         .await
         .unwrap();
     let context = RequestContext {
@@ -42,7 +42,7 @@ async fn encoded_response_is_fenced_by_policy_changes_and_actual_key_denial() {
         strict_read_audit: true,
     };
     let database = open_local(
-        kasumi_store::test_utils::with_custody(
+        kasumi_store::test_utils::initialize_custody_fixture(
             store.clone(),
             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
         )

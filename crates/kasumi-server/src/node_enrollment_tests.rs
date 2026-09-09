@@ -10,7 +10,7 @@ async fn fixture() -> Result<(tempfile::TempDir, Arc<NodeStore>, Arc<TenantStore
         configuration.database_id,
         ScratchDisk::fixture(),
     )?;
-    let store = TenantStore::open(
+    let store = TenantStore::initialize_catalog(
         node.clone(),
         kasumi_engine::SECURITY_TENANT.into(),
         Arc::new(LocalKeyProvider::new([73; 32])),

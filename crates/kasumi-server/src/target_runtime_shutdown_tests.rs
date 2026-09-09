@@ -37,7 +37,7 @@ async fn target_monitor_and_outer_owner_survive_cancelled_shutdown_until_journal
         let provider = Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([41; 32]));
         let journal_tenant = format!("kasumi.target.{}.1", root.control_incarnation);
         let access = StorageAccess::target_journal(&root, &identity).unwrap();
-        let store = TenantStore::open(
+        let store = TenantStore::initialize_catalog(
             node.clone(),
             journal_tenant.clone(),
             provider.clone(),
@@ -58,7 +58,7 @@ async fn target_monitor_and_outer_owner_survive_cancelled_shutdown_until_journal
             admission.clone(),
         )
         .unwrap();
-        let audit_store = TenantStore::open_fixture(
+        let audit_store = TenantStore::initialize_catalog_fixture(
             node.clone(),
             kasumi_engine::SECURITY_TENANT.into(),
             Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([42; 32])),
@@ -138,14 +138,14 @@ async fn target_monitor_and_outer_owner_survive_cancelled_shutdown_until_journal
         )
         .unwrap();
         let weak_partial = Arc::downgrade(&partial_node);
-        let partial_store = TenantStore::open_fixture(
+        let partial_store = TenantStore::initialize_catalog_fixture(
             partial_node.clone(),
             "city".into(),
             Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([43; 32])),
         )
         .await
         .unwrap();
-        let partial_stores = kasumi_store::test_utils::with_custody(
+        let partial_stores = kasumi_store::test_utils::initialize_custody_fixture(
             partial_store,
             Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([44; 32])),
         )

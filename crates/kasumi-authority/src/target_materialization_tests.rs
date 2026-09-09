@@ -19,7 +19,12 @@ async fn audit(
         TenantStore::open_existing_fixture(node, kasumi_engine::SECURITY_TENANT.into(), provider)
             .await
     } else {
-        TenantStore::open_fixture(node, kasumi_engine::SECURITY_TENANT.into(), provider).await
+        TenantStore::initialize_catalog_fixture(
+            node,
+            kasumi_engine::SECURITY_TENANT.into(),
+            provider,
+        )
+        .await
     }
     .unwrap();
     // These stores model distinct processes. Audit and database on each node
@@ -56,13 +61,15 @@ impl MaterialFixture {
             kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap();
         let security = audit(node.clone(), source_admission.clone(), false).await;
         let sourcekey = Arc::new(LocalKeyProvider::new([51; 32]));
-        let app = TenantStore::open_fixture(node, "city".into(), sourcekey.clone())
+        let app = TenantStore::initialize_catalog_fixture(node, "city".into(), sourcekey.clone())
             .await
             .unwrap();
-        let stores =
-            kasumi_store::test_utils::with_custody(app, Arc::new(LocalKeyProvider::new([211; 32])))
-                .await
-                .unwrap();
+        let stores = kasumi_store::test_utils::initialize_custody_fixture(
+            app,
+            Arc::new(LocalKeyProvider::new([211; 32])),
+        )
+        .await
+        .unwrap();
         let context = RequestContext {
             tenant: "city".into(),
             principal: "source-owner".into(),
@@ -1057,7 +1064,7 @@ async fn exercise_target_activation(maintenance: bool) {
         &journal_installation.node.verifier,
     )
     .unwrap();
-    let journal_store = TenantStore::open(
+    let journal_store = TenantStore::initialize_catalog(
         NodeStore::create_new(
             &journal_path,
             journal_file_id,
@@ -1177,7 +1184,7 @@ async fn exercise_target_activation(maintenance: bool) {
     drop(journal_store);
     // Reopen only the separately encrypted journal, independently of all app
     // providers. Exact signatures survive restart; substituted facts fail closed.
-    let journal_store = TenantStore::open(
+    let journal_store = TenantStore::open_existing(
         NodeStore::open_existing(
             &journal_path,
             journal_file_id,
@@ -1518,7 +1525,7 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
     let provider = Arc::new(LocalKeyProvider::new([238; 32]));
     let access = StorageAccess::target_journal(&installation.root, &installation.node).unwrap();
     assert!(
-        TenantStore::open(
+        TenantStore::initialize_catalog(
             node.clone(),
             "city".into(),
             provider.clone(),
@@ -1527,7 +1534,7 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
         .await
         .is_err()
     );
-    let store = TenantStore::open(
+    let store = TenantStore::initialize_catalog(
         node.clone(),
         tenant.clone(),
         provider.clone(),
@@ -1742,7 +1749,7 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
     drop(node);
     let node =
         NodeStore::open_existing(path, file_id, kasumi_store::ScratchDisk::fixture()).unwrap();
-    let store = TenantStore::open(node, tenant, provider, access)
+    let store = TenantStore::open_existing(node, tenant, provider, access)
         .await
         .unwrap();
     let reopened = TargetJournal::open_existing(
@@ -1905,7 +1912,7 @@ async fn target_file_creation_outcome_distinguishes_original_creation_from_stric
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();
-    let store = TenantStore::open(
+    let store = TenantStore::initialize_catalog(
         node.clone(),
         format!("kasumi.target.{}.1", installation.root.control_incarnation),
         Arc::new(LocalKeyProvider::new([239; 32])),

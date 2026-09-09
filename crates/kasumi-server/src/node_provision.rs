@@ -21,13 +21,25 @@ pub(crate) async fn create(
         .provider(Arc::new(crate::runtime::file_secret))?;
     let disk = ScratchDisk::open(scratch.clone())?;
     let node = NodeStore::create_new(path, database_id, disk)?;
-    let store = TenantStore::open(
+    let prepared = TenantStore::initialize_catalog(
         node.clone(),
         kasumi_engine::SECURITY_TENANT.into(),
         provider,
         StorageAccess::security_audit(),
     )
-    .await?;
+    .await;
+    let drained = node.drain_initializers().await;
+    let store = match (prepared, drained) {
+        (Ok(store), Ok(())) => store,
+        (Ok(store), Err(error)) => {
+            store.shutdown().await;
+            return Err(error);
+        }
+        (Err(error), Ok(())) => return Err(error),
+        (Err(error), Err(drain)) => {
+            return Err(error.context(format!("singleton drain failed: {drain:#}")));
+        }
+    };
     match security.initialize(store.clone(), admission) {
         Ok(audit) => Ok((node, audit)),
         Err(error) => {

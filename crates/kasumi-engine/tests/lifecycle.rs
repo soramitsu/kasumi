@@ -176,18 +176,35 @@ impl Fixture {
             } else {
                 common::existing_security_audit(node.clone()).await
             };
-            let store = TenantStore::open_fixture(
-                node,
-                "__kasumi_control".into(),
-                Arc::new(LocalKeyProvider::new([43; 32])),
-            )
-            .await
+            let store = (if create {
+                TenantStore::initialize_catalog_fixture(
+                    node,
+                    "__kasumi_control".into(),
+                    Arc::new(LocalKeyProvider::new([43; 32])),
+                )
+                .await
+            } else {
+                TenantStore::open_existing_fixture(
+                    node,
+                    "__kasumi_control".into(),
+                    Arc::new(LocalKeyProvider::new([43; 32])),
+                )
+                .await
+            })
             .unwrap();
-            let stores = kasumi_store::test_utils::with_custody(
-                store,
-                Arc::new(LocalKeyProvider::new([241; 32])),
-            )
-            .await
+            let stores = (if create {
+                kasumi_store::test_utils::initialize_custody_fixture(
+                    store,
+                    Arc::new(LocalKeyProvider::new([241; 32])),
+                )
+                .await
+            } else {
+                kasumi_store::test_utils::open_existing_custody_fixture(
+                    store,
+                    Arc::new(LocalKeyProvider::new([241; 32])),
+                )
+                .await
+            })
             .unwrap();
             let db = open_fixture_replicated(
                 id,

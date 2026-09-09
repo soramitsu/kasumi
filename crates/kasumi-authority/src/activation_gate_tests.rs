@@ -472,7 +472,7 @@ async fn target_storage_retains_original_phase_and_cannot_install_late_renewal_o
     .unwrap();
     let provider = Arc::new(LocalKeyProvider::new([91; 32]));
     let access = kasumi_store::StorageAccess::target_phase(serving.clone(), phase.clone()).unwrap();
-    let store = kasumi_store::TenantStore::open(
+    let store = kasumi_store::TenantStore::initialize_catalog_fixture_with_access(
         node_store.clone(),
         "city".into(),
         provider.clone(),
@@ -506,7 +506,7 @@ async fn target_storage_retains_original_phase_and_cannot_install_late_renewal_o
     )
     .unwrap();
     assert!(
-        kasumi_store::TenantStore::open(
+        kasumi_store::TenantStore::open_existing_fixture_with_access(
             node_store,
             "city".into(),
             provider,

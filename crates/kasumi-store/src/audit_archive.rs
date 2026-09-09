@@ -809,12 +809,21 @@ mod tests {
             )
         }
         .unwrap();
-        TenantStore::open_fixture(
-            node,
-            "__kasumi_security".into(),
-            Arc::new(LocalKeyProvider::new([73; 32])),
-        )
-        .await
+        (if create {
+            TenantStore::initialize_catalog_fixture(
+                node,
+                "__kasumi_security".into(),
+                Arc::new(LocalKeyProvider::new([73; 32])),
+            )
+            .await
+        } else {
+            TenantStore::open_existing_fixture(
+                node,
+                "__kasumi_security".into(),
+                Arc::new(LocalKeyProvider::new([73; 32])),
+            )
+            .await
+        })
         .unwrap()
     }
 
@@ -1034,7 +1043,7 @@ mod tests {
         let installation = Uuid::new_v4();
         let source =
             crate::StorageAccess::standalone(installation, "tenant", Uuid::new_v4()).unwrap();
-        let store = TenantStore::open(
+        let store = TenantStore::initialize_catalog_fixture_with_access(
             NodeStore::create_new(
                 directory.path().join("source.redb"),
                 crate::test_utils::NODE_STORE_ID,
@@ -1120,7 +1129,7 @@ mod tests {
         let keys = Arc::new(LocalKeyProvider::new([33; 32]));
         let access =
             crate::StorageAccess::standalone(Uuid::new_v4(), "tenant", Uuid::new_v4()).unwrap();
-        let store = TenantStore::open(
+        let store = TenantStore::initialize_catalog_fixture_with_access(
             NodeStore::create_new(
                 directory.path().join("source.redb"),
                 crate::test_utils::NODE_STORE_ID,
@@ -1205,7 +1214,7 @@ mod tests {
         let keys = Arc::new(LocalKeyProvider::new([32; 32]));
         let access =
             crate::StorageAccess::standalone(Uuid::new_v4(), "tenant", Uuid::new_v4()).unwrap();
-        let store = TenantStore::open(
+        let store = TenantStore::initialize_catalog_fixture_with_access(
             NodeStore::create_new(
                 directory.path().join("source.redb"),
                 crate::test_utils::NODE_STORE_ID,

@@ -429,11 +429,7 @@ struct BackgroundTasks {
     handles: Vec<tokio::task::JoinHandle<()>>,
 }
 
-#[derive(Clone, Copy)]
-enum CatalogOpen {
-    CreateIfAbsent,
-    Existing,
-}
+mod single_catalog;
 
 impl Drop for TenantStore {
     fn drop(&mut self) {
@@ -455,192 +451,6 @@ impl Drop for AccessGuard<'_> {
 impl TenantStore {
     pub fn scratch_disk(&self) -> &Arc<ScratchDisk> {
         self.node.scratch_disk()
-    }
-
-    pub async fn open(
-        node: Arc<NodeStore>,
-        tenant: String,
-        provider: Arc<dyn KeyProvider>,
-        access: StorageAccess,
-    ) -> Result<Arc<Self>> {
-        Self::open_inner(
-            node,
-            tenant,
-            provider,
-            Arc::new(SystemLeaseClock),
-            true,
-            access,
-            CatalogOpen::CreateIfAbsent,
-        )
-        .await
-    }
-
-    /// Open an explicitly initialized tenant catalog. This is required for
-    /// independent verifier metadata; a wrong physical identity cannot seed a
-    /// fresh catalog in an existing application or unrelated metadata file.
-    pub async fn open_existing(
-        node: Arc<NodeStore>,
-        tenant: String,
-        provider: Arc<dyn KeyProvider>,
-        access: StorageAccess,
-    ) -> Result<Arc<Self>> {
-        Self::open_inner(
-            node,
-            tenant,
-            provider,
-            Arc::new(SystemLeaseClock),
-            true,
-            access,
-            CatalogOpen::Existing,
-        )
-        .await
-    }
-
-    #[cfg(any(test, feature = "test-utils"))]
-    pub async fn open_existing_fixture(
-        node: Arc<NodeStore>,
-        tenant: String,
-        provider: Arc<dyn KeyProvider>,
-    ) -> Result<Arc<Self>> {
-        let access = StorageAccess::fixture_for(&tenant);
-        Self::open_existing(node, tenant, provider, access).await
-    }
-
-    #[cfg(any(test, feature = "test-utils"))]
-    pub async fn open_fixture(
-        node: Arc<NodeStore>,
-        tenant: String,
-        provider: Arc<dyn KeyProvider>,
-    ) -> Result<Arc<Self>> {
-        let access = StorageAccess::fixture_for(&tenant);
-        Self::open(node, tenant, provider, access).await
-    }
-    #[cfg(any(test, feature = "test-utils"))]
-    pub async fn open_fixture_with_clock(
-        node: Arc<NodeStore>,
-        tenant: String,
-        provider: Arc<dyn KeyProvider>,
-        clock: Arc<dyn LeaseClock>,
-    ) -> Result<Arc<Self>> {
-        let access = StorageAccess::fixture_for(&tenant);
-        Self::open_inner(
-            node,
-            tenant,
-            provider,
-            clock,
-            false,
-            access,
-            CatalogOpen::CreateIfAbsent,
-        )
-        .await
-    }
-    #[cfg(any(test, feature = "test-utils"))]
-    pub async fn open_with_clock(
-        node: Arc<NodeStore>,
-        tenant: String,
-        provider: Arc<dyn KeyProvider>,
-        clock: Arc<dyn LeaseClock>,
-        access: StorageAccess,
-    ) -> Result<Arc<Self>> {
-        Self::open_inner(
-            node,
-            tenant,
-            provider,
-            clock,
-            false,
-            access,
-            CatalogOpen::CreateIfAbsent,
-        )
-        .await
-    }
-
-    async fn open_inner(
-        node: Arc<NodeStore>,
-        tenant: String,
-        provider: Arc<dyn KeyProvider>,
-        clock: Arc<dyn LeaseClock>,
-        renew: bool,
-        access: StorageAccess,
-        catalog_open: CatalogOpen,
-    ) -> Result<Arc<Self>> {
-        access.validate_tenant(&tenant)?;
-        ensure!(
-            !tenant.is_empty() && tenant.len() <= 1024,
-            "invalid tenant identifier"
-        );
-        // Serialize only concurrent opens of the same tenant. A slow KMS cannot
-        // hold the node-wide registry lock while unrelated tenants are opening.
-        let gate = node
-            .tenants
-            .lock()
-            .await
-            .entry(tenant.clone())
-            .or_default()
-            .clone();
-        let mut slot = gate.lock().await;
-        if matches!(catalog_open, CatalogOpen::Existing) {
-            ensure!(
-                node.catalog(&tenant)?.is_some(),
-                "tenant catalog is not initialized"
-            );
-        }
-        if let Some(existing) = slot.upgrade() {
-            ensure!(
-                existing.access.purpose() == access.purpose(),
-                "existing storage purpose differs"
-            );
-            if existing.shutdown_requested.load(Ordering::Acquire) {
-                // Join any cancellation-interrupted shutdown before publishing a
-                // distinct store. Retained old handles stay permanently sealed.
-                existing.shutdown().await;
-            } else {
-                // A new boot cannot replace a live handle's original capability.
-                match (existing.access.serving_gate(), access.serving_gate()) {
-                    (Some(old), Some(new)) => ensure!(
-                        Arc::ptr_eq(old, new),
-                        "live store belongs to another serving capability"
-                    ),
-                    (None, None) => {}
-                    _ => anyhow::bail!("live store serving capability differs"),
-                }
-                match (existing.access.lifecycle_gate(), access.lifecycle_gate()) {
-                    (Some(old), Some(new)) => ensure!(
-                        Arc::ptr_eq(old, new),
-                        "live store belongs to another lifecycle capability"
-                    ),
-                    (None, None) => {}
-                    _ => anyhow::bail!("live store lifecycle capability differs"),
-                }
-                existing.check_access()?;
-                return Ok(existing);
-            }
-        }
-        let catalog = if let Some(catalog) = node.catalog(&tenant)? {
-            ensure!(
-                &catalog.purpose == access.purpose(),
-                "wrapped catalog storage authority differs"
-            );
-            catalog
-        } else {
-            ensure!(
-                matches!(catalog_open, CatalogOpen::CreateIfAbsent),
-                "tenant catalog is not initialized"
-            );
-            let catalog = Self::generate_catalog(&tenant, &provider, &access).await?;
-            // Drop plaintext generation responses. Initial access requires fresh decrypts.
-            node.save_catalog(&tenant, &catalog)?;
-            access.check()?;
-            catalog
-        };
-        let store = Self::unpublished(node, tenant, provider, access, clock, catalog);
-        store.refresh_lease().await?;
-        // Register every background owner before another open can see this store.
-        if renew {
-            Self::start_renewal(&store).await;
-        }
-        *slot = Arc::downgrade(&store);
-        drop(slot);
-        Ok(store)
     }
 
     /// Construct an unpublished owner. The caller retains its open gate until
@@ -704,6 +514,7 @@ impl TenantStore {
         Ok(catalog)
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
     async fn start_renewal(store: &Arc<Self>) {
         let (ready, receive) = watch::channel(true);
         Self::prepare_renewal(store, receive).await;

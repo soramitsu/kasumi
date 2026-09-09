@@ -227,7 +227,7 @@ async fn fresh_pair_rejects_shared_partial_and_orphan_domains_without_mutation()
         } else {
             "new-tenant".to_owned()
         };
-        let live = TenantStore::open_fixture(
+        let live = TenantStore::initialize_catalog_fixture(
             node.clone(),
             name,
             Arc::new(LocalKeyProvider::new([51; 32])),

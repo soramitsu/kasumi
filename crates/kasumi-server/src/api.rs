@@ -433,7 +433,7 @@ mod tests {
                 kasumi_store::ScratchDisk::fixture(),
             )
             .unwrap();
-            let audit_store = TenantStore::open_fixture(
+            let audit_store = TenantStore::initialize_catalog_fixture(
                 node.clone(),
                 crate::runtime::SECURITY_TENANT.into(),
                 Arc::new(LocalKeyProvider::new([9; 32])),
@@ -449,7 +449,7 @@ mod tests {
             )
             .unwrap();
             auth.install_audit(audit.clone()).unwrap();
-            let store = TenantStore::open_fixture(
+            let store = TenantStore::initialize_catalog_fixture(
                 node,
                 "tenant-a".into(),
                 Arc::new(LocalKeyProvider::new([3; 32])),
@@ -473,7 +473,7 @@ mod tests {
                 strict_read_audit: false,
             };
             let db = kasumi_engine::test_utils::open_fixture(
-                kasumi_store::test_utils::with_custody(
+                kasumi_store::test_utils::initialize_custody_fixture(
                     store.clone(),
                     Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
                 )
@@ -1900,9 +1900,10 @@ name: "docs".into(),
             kasumi_store::ScratchDisk::fixture(),
         )
         .unwrap();
-        let store = TenantStore::open_fixture(node.clone(), tenant.into(), provider.clone())
-            .await
-            .unwrap();
+        let store =
+            TenantStore::initialize_catalog_fixture(node.clone(), tenant.into(), provider.clone())
+                .await
+                .unwrap();
         let limits = Limits {
             audit_retention: kasumi_types::AuditRetentionBudget {
                 hot_bytes: 128 << 10,
@@ -1911,7 +1912,7 @@ name: "docs".into(),
             ..Limits::default()
         };
         let control = kasumi_engine::test_utils::open_fixture(
-            kasumi_store::test_utils::with_custody(
+            kasumi_store::test_utils::initialize_custody_fixture(
                 store.clone(),
                 std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
             )

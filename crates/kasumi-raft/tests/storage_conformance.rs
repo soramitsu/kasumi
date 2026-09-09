@@ -127,19 +127,37 @@ async fn committed_log_replay_survives_every_append_and_commit_io_failure() -> R
         test_utils::{FaultBackend, LocalKeyProvider, ManualClock},
     };
     use openraft::storage::StorageHelper;
-    async fn open(disk: FaultBackend) -> Result<Arc<kasumi_store::TenantStorageSet>> {
-        let application = TenantStore::open_fixture_with_clock(
-            NodeStore::open_with_backend(disk, kasumi_store::ScratchDisk::fixture())?,
-            "log-crash".into(),
-            Arc::new(LocalKeyProvider::new([4; 32])),
-            Arc::new(ManualClock::new()),
-        )
-        .await?;
-        kasumi_store::test_utils::with_custody(
-            application,
-            Arc::new(LocalKeyProvider::new([241; 32])),
-        )
-        .await
+    async fn open(disk: FaultBackend, create: bool) -> Result<Arc<kasumi_store::TenantStorageSet>> {
+        let application = (if create {
+            TenantStore::initialize_catalog_fixture_with_clock(
+                NodeStore::open_with_backend(disk, kasumi_store::ScratchDisk::fixture())?,
+                "log-crash".into(),
+                Arc::new(LocalKeyProvider::new([4; 32])),
+                Arc::new(ManualClock::new()),
+            )
+            .await
+        } else {
+            TenantStore::open_existing_fixture_with_clock(
+                NodeStore::open_with_backend(disk, kasumi_store::ScratchDisk::fixture())?,
+                "log-crash".into(),
+                Arc::new(LocalKeyProvider::new([4; 32])),
+                Arc::new(ManualClock::new()),
+            )
+            .await
+        })?;
+        (if create {
+            kasumi_store::test_utils::initialize_custody_fixture(
+                application,
+                Arc::new(LocalKeyProvider::new([241; 32])),
+            )
+            .await
+        } else {
+            kasumi_store::test_utils::open_existing_custody_fixture(
+                application,
+                Arc::new(LocalKeyProvider::new([241; 32])),
+            )
+            .await
+        })
     }
     async fn append_commit(log: &mut LogStore) -> Result<()> {
         log.blocking_append([entry(1, b"new-a"), entry(2, b"new-b")])
@@ -148,24 +166,24 @@ async fn committed_log_replay_survives_every_append_and_commit_io_failure() -> R
         Ok(())
     }
     let seed = FaultBackend::new();
-    let mut initial = LogStore::open(open(seed.clone()).await?, 1).await?;
+    let mut initial = LogStore::open(open(seed.clone(), true).await?, 1).await?;
     initial.save_vote(&Vote::new_committed(3, 1)).await?;
     initial
         .blocking_append([entry(0, b"already-acknowledged")])
         .await?;
     initial.save_committed(Some(entry(0, b"").log_id)).await?;
     let baseline = seed.crash();
-    let mut log = LogStore::open(open(baseline.clone()).await?, 1).await?;
+    let mut log = LogStore::open(open(baseline.clone(), false).await?, 1).await?;
     let start = baseline.operations();
     append_commit(&mut log).await?;
     let operations = baseline.operations() - start;
     assert!(operations > 4);
     for failure in 0..=operations {
         let disk = seed.crash();
-        let mut log = LogStore::open(open(disk.clone()).await?, 1).await?;
+        let mut log = LogStore::open(open(disk.clone(), false).await?, 1).await?;
         disk.fail_after(failure);
         let acknowledged = append_commit(&mut log).await.is_ok();
-        let store = open(disk.crash()).await?;
+        let store = open(disk.crash(), false).await?;
         let backend = Arc::new(common::Backend::default());
         let mut log = LogStore::open(store.clone(), 1).await?;
         let mut machine = StateMachine::open(store, backend.clone()).await?;

@@ -309,7 +309,7 @@ impl Databases {
         }
         let mut audits = Vec::new();
         for node in &nodes {
-            let service_store = TenantStore::open_fixture(
+            let service_store = TenantStore::initialize_catalog_fixture(
                 node.clone(),
                 SECURITY_TENANT.into(),
                 Arc::new(LocalKeyProvider::new([0xA7; 32])),
@@ -360,7 +360,7 @@ impl Databases {
             };
             let mut databases = Vec::new();
             for (replica, node) in nodes.iter().enumerate() {
-                let store = TenantStore::open_fixture(
+                let store = TenantStore::initialize_catalog_fixture(
                     node.clone(),
                     context(tenant).tenant,
                     provider.clone(),
@@ -369,7 +369,7 @@ impl Databases {
                 let database = if let Some(bootstrap) = &bootstrap {
                     let database = open_replicated(
                         replica as u64 + 1,
-                        kasumi_store::test_utils::with_custody(
+                        kasumi_store::test_utils::initialize_custody_fixture(
                             store,
                             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new(
                                 [241; 32],
@@ -391,7 +391,7 @@ impl Databases {
                     database
                 } else {
                     open_local(
-                        kasumi_store::test_utils::with_custody(
+                        kasumi_store::test_utils::initialize_custody_fixture(
                             store,
                             std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new(
                                 [241; 32],
