@@ -638,8 +638,6 @@ pub(crate) async fn verify(
             let semantic_purpose = history_purpose.clone();
             let semantic_cancellation = reader.cancellation();
             let semantic_work = ownership.clone();
-            let semantic_reservation = reservation.clone();
-            let semantic_admission = admission.clone();
             deadline
                 .blocking(reservation.clone(), ownership.clone(), move || {
                     let check = || -> anyhow::Result<()> {

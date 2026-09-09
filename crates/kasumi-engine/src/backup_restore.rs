@@ -336,7 +336,7 @@ pub(super) async fn load_authorized(
     let verified = Box::pin(crate::backup_verify::verify(
         &reader,
         backup_id,
-        admission.clone(),
+        admission,
         deadline,
         None,
     ))
@@ -360,6 +360,7 @@ pub(super) async fn load_authorized(
     let alias = source.destination_alias.clone();
     let relocation_work = registration.clone();
     let relocation_reservation = reservation.clone();
+    let relocation_admission = admission.clone();
     let relocation_cancellation = reader.cancellation();
     let (state, bytes) = deadline
         .blocking(reservation.clone(), registration.clone(), move || {
@@ -373,7 +374,7 @@ pub(super) async fn load_authorized(
                 backup_id,
                 |layout| {
                     relocation_reservation
-                        .handoff_workspace(&admission, layout.index_workspace()?)
+                        .handoff_workspace(&relocation_admission, layout.index_workspace()?)
                         .map_err(Into::into)
                 },
                 || {
