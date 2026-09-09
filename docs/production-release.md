@@ -128,8 +128,9 @@ gates above. Source-only changes and failed attempts remain explicitly identifie
    every failure/cancellation. Propagate actual worker/core terminal failures;
    joined errors must survive cancelled drains, and elapsed deadlines never prove
    owner release. Repeat the restored-runtime restart failure on final source.
-   The [OpenRaft shutdown patch](evidence/openraft-bed7bad-source-20260910/README.md)
-   retains core/ticker outcomes in source only; it is uninstalled and untested.
+   The [OpenRaft shutdown patch](evidence/openraft-707e82e-source-20260910/README.md)
+   retains core/ticker outcomes and adds post-core cancellation regressions in
+   source only; it is uninstalled and untested. The preceding artifact is retained.
 3. Run full store and authority regressions for acknowledged catalog outcomes,
    admitted-request/fence retention and exact signer authorization reuse. Follow
    with the real TLS canonical coordinator and source-unavailable phase faults.
