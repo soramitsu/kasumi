@@ -220,15 +220,14 @@ impl SecurityAudit {
 
     /// Cancellation of the caller does not cancel owned archive publication.
     pub async fn maintain(&self) -> Result<SecurityAuditStatus> {
-        let work = self.begin()?;
-        tokio::spawn(async move {
+        self.run_owned(|work, _| async move {
             if let Err(error) = work.writer.maintenance_inner().await {
                 work.writer.report_maintenance_failure();
                 return Err(error);
             }
             work.writer.status()
         })
-        .await?
+        .await
     }
 
     fn report_maintenance_failure(&self) {
@@ -333,7 +332,14 @@ impl SecurityAudit {
             WriteOp::put(META, b"pending-ciphertext", segment.ciphertext.clone()),
         ]) {
             state.failed = true;
-            return Err(error);
+            return Err(
+                kasumi_types::drain::DrainFailure::retained(self.record_terminal(
+                    "audit persistence",
+                    0,
+                    error,
+                ))
+                .into(),
+            );
         }
         state.head = updated;
         Ok(Some(segment))
@@ -341,11 +347,24 @@ impl SecurityAudit {
 
     async fn maintenance_inner(&self) -> Result<()> {
         let _serial = self.writer.maintenance.lock().await;
+        // An admitted waiter may acquire this mutex after another turn failed
+        // terminally. It observes that same issue instead of dispatching another
+        // failing worker or growing a process-lifetime failure inventory.
+        if let Some(issue) = self
+            .writer
+            .report
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .issues()
+            .first()
+        {
+            return Err(kasumi_types::drain::DrainFailure::retained(issue.clone()).into());
+        }
         // One bounded segment per turn; permanent backlog resumes on the next
         // turn, leaving cancellation and other consumers a scheduling boundary.
         let worker = self.clone();
-        let Some(segment) = tokio::task::spawn_blocking(move || worker.prepare_archive()).await??
-        else {
+        let prepared = tokio::task::spawn_blocking(move || worker.prepare_archive()).await;
+        let Some(segment) = self.observe_join("audit archive preparation", 0, prepared)? else {
             return Ok(());
         };
         self.writer.destination.publish(&segment).await?;
@@ -362,82 +381,87 @@ impl SecurityAudit {
         drop(segment);
         drop(published);
         let worker = self.clone();
-        tokio::task::spawn_blocking(move || -> Result<()> {
-            let mut state = worker
-                .writer
-                .sequence
-                .lock()
-                .map_err(|_| anyhow::anyhow!("audit state unavailable"))?;
-            ensure!(!state.failed, "service audit persistence requires recovery");
-            let pending = worker
-                .writer
-                .store
-                .get_bounded(META, b"pending", 64 << 10)?
-                .context("pending archive missing")?;
-            let pending: AuditArchiveReference = serde_json::from_slice(&pending)?;
-            ensure!(
-                &pending == verified.reference()
-                    && pending.object.first_sequence == state.head.position.pruned_before,
-                "audit publication phase changed"
-            );
-            let mut removed = 0u64;
-            let mut operations = Vec::new();
-            verified.visit(|sequence, bytes| {
-                let hot = worker
+        let committed =
+            tokio::task::spawn_blocking(move || -> Result<()> {
+                let mut state = worker
+                    .writer
+                    .sequence
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("audit state unavailable"))?;
+                ensure!(!state.failed, "service audit persistence requires recovery");
+                let pending = worker
                     .writer
                     .store
-                    .get_bounded(
-                        "security.audit",
-                        &sequence.to_be_bytes(),
-                        MAX_AUDIT_EVENT_BYTES,
-                    )?
-                    .context("published audit prefix is missing")?;
-                ensure!(hot == bytes, "published audit differs from hot record");
-                removed = removed
-                    .checked_add(bytes.len() as u64 + 8)
-                    .context("audit accounting overflow")?;
-                operations.push(WriteOp::delete("security.audit", sequence.to_be_bytes()));
+                    .get_bounded(META, b"pending", 64 << 10)?
+                    .context("pending archive missing")?;
+                let pending: AuditArchiveReference = serde_json::from_slice(&pending)?;
+                ensure!(
+                    &pending == verified.reference()
+                        && pending.object.first_sequence == state.head.position.pruned_before,
+                    "audit publication phase changed"
+                );
+                let mut removed = 0u64;
+                let mut operations = Vec::new();
+                verified.visit(|sequence, bytes| {
+                    let hot = worker
+                        .writer
+                        .store
+                        .get_bounded(
+                            "security.audit",
+                            &sequence.to_be_bytes(),
+                            MAX_AUDIT_EVENT_BYTES,
+                        )?
+                        .context("published audit prefix is missing")?;
+                    ensure!(hot == bytes, "published audit differs from hot record");
+                    removed = removed
+                        .checked_add(bytes.len() as u64 + 8)
+                        .context("audit accounting overflow")?;
+                    operations.push(WriteOp::delete("security.audit", sequence.to_be_bytes()));
+                    Ok(())
+                })?;
+                let mut updated = state.head.clone();
+                updated.position.hot_bytes = updated
+                    .position
+                    .hot_bytes
+                    .checked_sub(removed)
+                    .context("audit hot byte count mismatch")?;
+                updated.position.pruned_before = pending.object.next_sequence;
+                updated.position.archive_head = Some(pending.clone());
+                updated.position.archive_bytes = updated
+                    .position
+                    .archive_bytes
+                    .checked_add(pending.ciphertext_bytes)
+                    .context("archive byte count overflow")?;
+                updated.position.archive_segments = updated
+                    .position
+                    .archive_segments
+                    .checked_add(1)
+                    .context("archive index overflow")?;
+                updated.position.draining =
+                    updated.position.hot_bytes > worker.writer.budget.drains_to();
+                operations.extend([
+                    WriteOp::put(
+                        ARCHIVES,
+                        state.head.position.archive_segments.to_be_bytes(),
+                        serde_json::to_vec(&pending)?,
+                    ),
+                    updated.write()?,
+                    WriteOp::delete(META, b"pending"),
+                    WriteOp::delete(META, b"pending-ciphertext"),
+                ]);
+                if let Err(error) = worker.writer.store.write_batch(&operations) {
+                    state.failed = true;
+                    return Err(kasumi_types::drain::DrainFailure::retained(
+                        worker.record_terminal("audit persistence", 0, error),
+                    )
+                    .into());
+                }
+                state.head = updated;
+                state.last_failure = None;
                 Ok(())
-            })?;
-            let mut updated = state.head.clone();
-            updated.position.hot_bytes = updated
-                .position
-                .hot_bytes
-                .checked_sub(removed)
-                .context("audit hot byte count mismatch")?;
-            updated.position.pruned_before = pending.object.next_sequence;
-            updated.position.archive_head = Some(pending.clone());
-            updated.position.archive_bytes = updated
-                .position
-                .archive_bytes
-                .checked_add(pending.ciphertext_bytes)
-                .context("archive byte count overflow")?;
-            updated.position.archive_segments = updated
-                .position
-                .archive_segments
-                .checked_add(1)
-                .context("archive index overflow")?;
-            updated.position.draining =
-                updated.position.hot_bytes > worker.writer.budget.drains_to();
-            operations.extend([
-                WriteOp::put(
-                    ARCHIVES,
-                    state.head.position.archive_segments.to_be_bytes(),
-                    serde_json::to_vec(&pending)?,
-                ),
-                updated.write()?,
-                WriteOp::delete(META, b"pending"),
-                WriteOp::delete(META, b"pending-ciphertext"),
-            ]);
-            if let Err(error) = worker.writer.store.write_batch(&operations) {
-                state.failed = true;
-                return Err(error);
-            }
-            state.head = updated;
-            state.last_failure = None;
-            Ok(())
-        })
-        .await??;
+            })
+            .await;
+        self.observe_join("audit archive publication", 0, committed)?;
         Ok(())
     }
 
@@ -487,8 +511,7 @@ impl SecurityAudit {
     }
 
     pub async fn verify_archive(&self, index: u64) -> Result<AuditArchiveReference> {
-        let work = self.begin()?;
-        tokio::spawn(async move {
+        self.run_owned(move |work, _| async move {
             let _serial = work.writer.writer.maintenance.lock().await;
             let reference = work.writer.archive_reference(index)?;
             let bytes = work
@@ -504,7 +527,7 @@ impl SecurityAudit {
                 .await?;
             Ok(reference)
         })
-        .await?
+        .await
     }
 
     pub async fn export_page(
@@ -516,8 +539,7 @@ impl SecurityAudit {
             (1..=1024).contains(&limit),
             "audit page limit must be 1..1024"
         );
-        let work = self.begin()?;
-        tokio::spawn(async move {
+        self.run_owned(move |work, _| async move {
             let audit = &work.writer;
             let _serial = audit.writer.maintenance.lock().await;
             let head = audit
@@ -607,7 +629,7 @@ impl SecurityAudit {
             audit.writer.store.check_access()?;
             Ok(page)
         })
-        .await?
+        .await
     }
 }
 
@@ -714,7 +736,7 @@ mod tests {
         // The remote object exists despite the failed acknowledgment. Its exact
         // identity is recovered from encrypted local metadata, never regenerated.
         archive.read(&pending.object).await.unwrap();
-        audit.shutdown().await;
+        audit.shutdown().await.unwrap();
         drop(audit);
         drop(store);
 
@@ -821,7 +843,7 @@ mod tests {
         );
         store.check_access().unwrap();
         archive.release.add_permits(1);
-        shutdown.await;
+        shutdown.await.unwrap();
         assert!(store.check_access().is_err());
         assert_eq!(admission.snapshot().reserved_bytes, 0);
     }

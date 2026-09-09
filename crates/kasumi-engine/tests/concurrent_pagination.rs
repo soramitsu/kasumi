@@ -227,5 +227,5 @@ async fn snapshot_pages_overlap_atomic_writers_and_current_policy_revocation() {
     );
     assert!(database.query(&identity("reader"), request()).await.is_ok());
     database.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }

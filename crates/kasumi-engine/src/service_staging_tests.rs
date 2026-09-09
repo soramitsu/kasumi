@@ -169,5 +169,5 @@ async fn queued_staged_finalize_checks_fresh_time_and_canceled_callers_keep_dura
         }
     }
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }

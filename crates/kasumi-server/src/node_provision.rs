@@ -96,7 +96,7 @@ mod tests {
                 .await
                 .is_err()
         );
-        audit.shutdown().await;
+        audit.shutdown().await.unwrap();
         drop(audit);
         // Audit shutdown cannot release the independently retained physical node.
         assert!(
@@ -119,7 +119,7 @@ mod tests {
             store.get("enrollment-test", b"retained")?,
             Some(b"original owner".to_vec())
         );
-        audit.shutdown().await;
+        audit.shutdown().await.unwrap();
         Ok(())
     }
 }

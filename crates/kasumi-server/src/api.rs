@@ -581,7 +581,7 @@ mod tests {
         }
         async fn close(&self) {
             self.db.shutdown().await.unwrap();
-            self.audit.shutdown().await;
+            self.audit.shutdown().await.unwrap();
         }
     }
     fn native<T>(message: T, token: &str) -> Request<T> {

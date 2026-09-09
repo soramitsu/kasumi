@@ -477,13 +477,17 @@ impl Databases {
             }
         }
         self.tenants.clear();
+        let mut report = kasumi_types::drain::DrainReport::default();
         for audit in &self.audits {
-            audit.shutdown().await;
+            if let Err(failure) = audit.shutdown().await {
+                report.merge(&failure);
+            }
         }
         self.audits.clear();
         self.nodes.clear();
         drop(self.provider);
         drop(self.router);
+        report.complete()?;
         Ok(bootstraps)
     }
 }

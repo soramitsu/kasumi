@@ -163,7 +163,7 @@ async fn full_shutdown_reopens_immediately_with_receipts_and_retained_plaintext(
         assert_eq!(retained.body["n"], round);
         drop(database);
         drop(store);
-        audit.shutdown().await;
+        audit.shutdown().await.unwrap();
         drop(audit);
         drop(node);
         let reopened = NodeStore::open_existing(

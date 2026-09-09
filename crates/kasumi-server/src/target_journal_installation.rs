@@ -46,8 +46,10 @@ async fn initialize_owned(config: RuntimeConfig) -> Result<()> {
     let store = match (prepared, drained) {
         (Ok(store), Ok(())) => store,
         (Ok(store), Err(error)) => {
-            store.shutdown().await;
-            return Err(error);
+            return Err(match store.shutdown().await {
+                Ok(()) => error,
+                Err(failure) => error.context(failure),
+            });
         }
         (Err(error), Ok(())) => return Err(error),
         (Err(error), Err(drain)) => {
@@ -63,11 +65,20 @@ async fn initialize_owned(config: RuntimeConfig) -> Result<()> {
         installed.limits.journal.clone(),
         admission,
     );
+    let mut report = kasumi_types::drain::DrainReport::default();
     if let Ok(journal) = &result {
-        journal.shutdown().await;
+        if let Err(failure) = journal.shutdown().await {
+            report.merge(&failure);
+        }
     }
-    store.shutdown().await;
+    if let Err(failure) = store.shutdown().await {
+        report.merge(&failure);
+    }
     drop(store);
     drop(node);
-    result.map(|_| ())
+    match (result, report.complete()) {
+        (Ok(_), closed) => closed.map_err(Into::into),
+        (Err(error), Ok(())) => Err(error),
+        (Err(error), Err(failure)) => Err(error.context(failure)),
+    }
 }

@@ -83,8 +83,8 @@ fn retained(store: &TenantStore) -> Result<Vec<LogicalRecords>> {
     .collect()
 }
 async fn close(audit: Arc<SecurityAudit>, store: Arc<TenantStore>) {
-    audit.shutdown().await;
-    store.shutdown().await;
+    audit.shutdown().await.unwrap();
+    store.shutdown().await.unwrap();
     drop(audit);
     drop(store);
 }
@@ -140,7 +140,7 @@ async fn missing_empty_or_nonempty_audit_head_never_recreates_a_stream() -> Resu
             assert_eq!(retained(&store)?, before);
             assert_eq!(installation.admission.snapshot().reserved_bytes, 0);
         }
-        store.shutdown().await;
+        store.shutdown().await.unwrap();
     }
     Ok(())
 }
@@ -197,7 +197,7 @@ async fn corrupt_audit_head_hot_gap_and_pending_pair_fail_without_logical_mutati
         );
         assert_eq!(retained(&store)?, before);
         assert_eq!(installation.admission.snapshot().reserved_bytes, 0);
-        store.shutdown().await;
+        store.shutdown().await.unwrap();
     }
     Ok(())
 }

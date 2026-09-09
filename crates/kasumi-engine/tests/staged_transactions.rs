@@ -728,7 +728,7 @@ async fn killed_upload_recovers_encrypted_invisible_chunks_and_finishes_exactly_
         .await
         .unwrap();
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
     drop(db);
     drop(audit);
     let (db, audit) = open(&directory.path().join("node.redb"), false).await;
@@ -757,7 +757,7 @@ async fn killed_upload_recovers_encrypted_invisible_chunks_and_finishes_exactly_
     assert_eq!(generation.state.staged_terminal_head.count, 1);
     drop(generation);
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -967,7 +967,7 @@ async fn coherent_lease_pages_cover_large_dependencies_and_scans_with_live_write
         .await
         .unwrap();
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -1074,7 +1074,7 @@ async fn small_lease_budget_shares_large_roots_and_expires_on_retained_version_p
         b'b'
     );
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }
 
 #[test]

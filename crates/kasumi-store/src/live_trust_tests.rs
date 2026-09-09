@@ -181,7 +181,7 @@ impl Fixture {
         )
     }
     async fn reopen(&mut self) {
-        self.store.shutdown().await;
+        self.store.shutdown().await.unwrap();
         // The closed old owner may remain referenced. Its capability can never
         // become live when the new store installs its own fresh clock witness.
         self.store = TenantStore::open_existing_fixture_with_clock_and_access(
@@ -310,7 +310,7 @@ async fn exact_live_generation_rejects_historical_and_reused_key_forgery() {
     );
     assert!(trust.administer(&f.context(), stage_reused).is_err());
     assert!(old_fence.check().is_err());
-    f.store.shutdown().await;
+    f.store.shutdown().await.unwrap();
     let raw = std::fs::read(f.directory.path().join("trust.redb")).unwrap();
     assert!(
         !raw.windows(f.domain.manifest_sha256.len())
@@ -370,7 +370,7 @@ async fn encrypted_restart_and_clock_regression_restart_the_complete_retirement_
             .verify_live("lease", &"current", &signature)
             .is_ok()
     );
-    f.store.shutdown().await;
+    f.store.shutdown().await.unwrap();
 }
 
 struct LostReply {
@@ -445,7 +445,7 @@ async fn uncertain_activation_closes_old_owner_and_exact_receipt_recovers_from_e
             .status(&f.context(), activation.operation_id)
             .is_err()
     );
-    f.store.shutdown().await;
+    f.store.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -515,7 +515,7 @@ async fn stopped_stage_and_new_admin_requests_preserve_original_identity_and_rej
         .write_batch(&[WriteOp::put(NS, key.as_bytes(), bytes)])
         .unwrap();
     assert_eq!(f.open().current().unwrap().revision, 3);
-    f.store.shutdown().await;
+    f.store.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -536,7 +536,7 @@ async fn complete_file_reopen_retains_exact_trust_and_permanent_key_bindings() {
     } = f;
     trust.close();
     drop(trust);
-    store.shutdown().await;
+    store.shutdown().await.unwrap();
     drop(store);
     let reopened = TenantStore::open_existing(
         NodeStore::open_existing(
@@ -572,7 +572,7 @@ async fn complete_file_reopen_retains_exact_trust_and_permanent_key_bindings() {
             )
             .is_err()
     );
-    reopened.shutdown().await;
+    reopened.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -631,7 +631,7 @@ async fn issuance_and_encoded_response_require_the_exact_active_signer_owner() {
     assert!(signer(0, reopened).is_err());
     assert!(new_pending.check().is_err());
     assert!(current.check().is_err());
-    f.store.shutdown().await;
+    f.store.shutdown().await.unwrap();
     assert!(fresh.sign("lease", &"closed-storage").is_err());
 }
 
@@ -716,5 +716,5 @@ async fn encrypted_current_generation_fences_lease_admission_and_retained_respon
     assert_eq!(reopened.current().unwrap().active.identity.generation, 2);
     assert!(owner.current().is_err());
     assert!(response.check().is_err());
-    f.store.shutdown().await;
+    f.store.shutdown().await.unwrap();
 }

@@ -40,7 +40,7 @@ async fn panicked_cold_preparation_drains_actual_nodes_stores_and_partial_runtim
         )
         .await?;
         assert!(store.get("security.audit.meta", b"head")?.is_some());
-        store.shutdown().await;
+        store.shutdown().await.unwrap();
         node.drain_initializers().await?;
         drop(store);
         drop(node);
@@ -81,7 +81,7 @@ async fn rejected_cold_audit_open_drains_storage_and_releases_the_standalone_ins
         "security.audit.meta",
         b"head",
     )])?;
-    store.shutdown().await;
+    store.shutdown().await.unwrap();
     drop(store);
     drop(node);
     for _ in 0..2 {
@@ -102,7 +102,7 @@ async fn rejected_cold_audit_open_drains_storage_and_releases_the_standalone_ins
         )
         .await?;
         assert!(store.get("security.audit.meta", b"head")?.is_none());
-        store.shutdown().await;
+        store.shutdown().await.unwrap();
         drop(store);
         drop(node);
         drop(owner);

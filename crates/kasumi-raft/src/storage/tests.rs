@@ -92,7 +92,7 @@ async fn cancelled_log_future_retains_drain_lease_until_blocking_persistence_fin
             .unwrap(),
         b"whole-write"
     );
-    domains.custody().store().shutdown().await;
+    domains.custody().store().shutdown().await.unwrap();
     drop(domains);
     drop(store);
     // An abandoned response does not detach persistence from its drain lease.
@@ -402,7 +402,7 @@ async fn snapshot_install_power_loss_at_every_storage_operation_keeps_whole_old_
         1024,
         &old,
     )?;
-    initial.custody().store().shutdown().await;
+    initial.custody().store().shutdown().await.unwrap();
     drop(initial);
     let bytes = new.encode(64 << 20)?.read_bounded(64 << 20)?;
     let baseline = seed.crash();

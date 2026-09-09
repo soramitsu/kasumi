@@ -26,8 +26,7 @@ impl Fixture {
         stores
             .application
             .write_batch(&[WriteOp::put("data", b"kept", b"original".to_vec())])?;
-        stores.application.shutdown().await;
-        stores.custody.store.shutdown().await;
+        stores.shutdown().await.unwrap();
         node.drain_initializers().await?;
         Ok(Self { directory, node })
     }
@@ -74,8 +73,7 @@ impl Fixture {
             stores.application.get("data", b"kept")?,
             Some(b"original".to_vec())
         );
-        stores.application.shutdown().await;
-        stores.custody.store.shutdown().await;
+        stores.shutdown().await.unwrap();
         node.drain_initializers().await?;
         Ok(())
     }
@@ -179,7 +177,7 @@ async fn interrupted_after_custody(borrowed: bool, cancel: bool) -> Result<()> {
         let same = fixture.custody().await?;
         assert!(Arc::ptr_eq(same.store(), custody.store()));
         drop(same);
-        custody.store.shutdown().await;
+        custody.store.shutdown().await.unwrap();
         drop(custody);
     }
     fixture.reopened_after_release().await
@@ -257,7 +255,7 @@ async fn missing_binding_rejects_new_custody_and_leaves_every_existing_byte_unch
     custody
         .store
         .write_batch(&[WriteOp::delete(BINDING_NS, BINDING_KEY)])?;
-    custody.store.shutdown().await;
+    custody.store.shutdown().await.unwrap();
     drop(custody);
     let before = fixture.contents()?;
     for _ in 0..2 {
@@ -349,8 +347,7 @@ async fn unclaimed_borrowed_pair_and_changed_binding_never_close_its_cached_owne
             Some(b"original".to_vec())
         );
     }
-    original.application.shutdown().await;
-    original.custody.store.shutdown().await;
+    original.shutdown().await.unwrap();
     drop(original);
     fixture.reopened_after_release().await
 }
@@ -428,7 +425,7 @@ async fn buffered_existing_preparation_failure_requires_claim_and_preserves_borr
                 let same = fixture.custody().await?;
                 assert!(Arc::ptr_eq(same.store(), custody.store()));
                 drop(same);
-                custody.store.shutdown().await;
+                custody.store.shutdown().await.unwrap();
                 drop(custody);
             }
             fixture.reopened_after_release().await?;

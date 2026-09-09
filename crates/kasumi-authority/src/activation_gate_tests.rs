@@ -525,7 +525,7 @@ async fn target_storage_retains_original_phase_and_cannot_install_late_renewal_o
             .write_batch(&[kasumi_store::WriteOp::put("bootstrap", b"late", b"denied")])
             .is_err()
     );
-    store.shutdown().await;
+    store.shutdown().await.unwrap();
     drop(store);
     drop(service);
     f.close().await;

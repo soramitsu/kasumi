@@ -32,10 +32,13 @@ pub async fn initialize_custody_fixture(
     )
     .await?;
     let result = crate::TenantStorageSet::install(application, control.clone());
-    if result.is_err() {
-        control.shutdown().await;
+    match result {
+        Ok(stores) => Ok(stores),
+        Err(error) => Err(match control.shutdown().await {
+            Ok(()) => error,
+            Err(failure) => error.context(failure),
+        }),
     }
-    result
 }
 
 /// Reopen the exact authenticated pair surrounding a borrowed test application.

@@ -174,10 +174,10 @@ async fn renewal_shutdown_keeps_its_handle_through_cancelled_join_and_verifier_r
         retry.await.unwrap();
         drop(lease);
         assert!(weak_lease.upgrade().is_none());
-        installed.shutdown().await;
+        installed.shutdown().await.unwrap();
         drop(installed);
         let reopened = f.open().await.unwrap();
-        reopened.shutdown().await;
+        reopened.shutdown().await.unwrap();
     })
     .await
     .expect("shutdown ownership fixture timed out");
@@ -217,11 +217,11 @@ async fn verifier_shutdown_joins_renewal_after_setup_owner_is_dropped() {
         })
         .await;
         pause.release.notify_one();
-        retry.await;
+        retry.await.unwrap();
         assert!(weak_lease.upgrade().is_none());
         drop(installed);
         let reopened = f.open().await.unwrap();
-        reopened.shutdown().await;
+        reopened.shutdown().await.unwrap();
     })
     .await
     .expect("shutdown ownership fixture timed out");
@@ -279,13 +279,13 @@ async fn explicit_encrypted_verifier_initialization_never_bootstraps_runtime_tru
     let mut forged = f.operational.clone();
     forged.certificate.root_signature = "00".repeat(64);
     assert!(forged.open(&installed).is_err());
-    installed.shutdown().await;
+    installed.shutdown().await.unwrap();
     assert!(signer.check().is_err());
     drop(signer);
     drop(installed);
     let reopened = f.open().await.unwrap();
     f.operational.open(&reopened).unwrap().check().unwrap();
-    reopened.shutdown().await;
+    reopened.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -314,7 +314,7 @@ async fn partial_verifier_is_never_adopted_and_corrupt_complete_head_is_never_re
         .unwrap()
         .unwrap();
     assert!(store.get(NS, b"installation").unwrap().is_none());
-    store.shutdown().await;
+    store.shutdown().await.unwrap();
     drop(store);
     assert!(f.open().await.is_err());
     assert!(
@@ -339,7 +339,7 @@ async fn partial_verifier_is_never_adopted_and_corrupt_complete_head_is_never_re
             .unwrap(),
         retained
     );
-    store.shutdown().await;
+    store.shutdown().await.unwrap();
     drop(store);
 
     // Independently completed installation: corruption must not reseed its head.
@@ -363,7 +363,7 @@ async fn partial_verifier_is_never_adopted_and_corrupt_complete_head_is_never_re
             b"corrupt".to_vec(),
         )])
         .unwrap();
-    store.shutdown().await;
+    store.shutdown().await.unwrap();
     drop(store);
     assert!(f.open().await.is_err());
     // A completion marker is not permission to reseed a damaged durable head.
@@ -385,7 +385,7 @@ async fn partial_verifier_is_never_adopted_and_corrupt_complete_head_is_never_re
             .unwrap(),
         b"corrupt"
     );
-    store.shutdown().await;
+    store.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -467,7 +467,7 @@ async fn initialization_rejects_noninitial_and_mismatched_domains_without_publis
             .is_err(),
         "production maintenance requires the current coordinator"
     );
-    installed.shutdown().await;
+    installed.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -499,7 +499,7 @@ async fn operational_source_is_private_bounded_and_cannot_substitute_installed_t
     assert!(OperationalSignerConfig::load(&path, &domain).is_err());
     retained.check().unwrap();
     private_files::replace(&path, &bytes).unwrap();
-    installed.shutdown().await;
+    installed.shutdown().await.unwrap();
     assert!(retained.check().is_err());
     drop(installed);
     assert!(
@@ -514,5 +514,5 @@ async fn operational_source_is_private_bounded_and_cannot_substitute_installed_t
         .unwrap()
         .check()
         .unwrap();
-    reopened.shutdown().await;
+    reopened.shutdown().await.unwrap();
 }

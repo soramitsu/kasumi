@@ -97,6 +97,7 @@ impl CustodyStore {
 pub struct TenantStorageSet {
     application: Arc<TenantStore>,
     custody: Arc<CustodyStore>,
+    shutdown_report: AsyncMutex<DrainReport>,
 }
 
 impl TenantStorageSet {
@@ -210,6 +211,7 @@ impl TenantStorageSet {
         drop(_custody_mutation);
         drop(_app_mutation);
         let result = Arc::new(Self {
+            shutdown_report: AsyncMutex::new(DrainReport::default()),
             application: application.clone(),
             custody: Arc::new(CustodyStore {
                 store: custody.clone(),
@@ -224,6 +226,21 @@ impl TenantStorageSet {
     }
     pub fn custody(&self) -> &Arc<CustodyStore> {
         &self.custody
+    }
+    /// Close both owned domains and retain every terminal outcome through a
+    /// cancelled waiter. Borrowed provisional owners must use their own census.
+    pub async fn shutdown(&self) -> DrainResult {
+        let mut report = self.shutdown_report.lock().await;
+        let mut retained = None;
+        for store in [&self.application, &self.custody.store] {
+            if let Err(failure) = store.shutdown().await {
+                report.merge(&failure);
+                if failure.completion() == kasumi_types::drain::DrainCompletion::Retained {
+                    retained = Some(failure);
+                }
+            }
+        }
+        report.outcome(retained)
     }
     pub fn check_access(&self) -> Result<()> {
         self.application.check_access()?;

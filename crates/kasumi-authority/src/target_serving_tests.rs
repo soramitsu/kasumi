@@ -81,7 +81,7 @@ pub(super) async fn record_follower_projection(
     );
     drop(projection);
     drop(journal);
-    store.shutdown().await;
+    store.shutdown().await.unwrap();
 }
 
 struct Serving {
@@ -200,14 +200,14 @@ impl Serving {
         router.unregister(&format!("city/{}", f.target.incarnation), self.id);
         self.owner.close().await.unwrap();
         drop(self.owner);
-        self.stores.custody().store().shutdown().await;
+        self.stores.custody().store().shutdown().await.unwrap();
         drop(self.stores);
-        self.audit.shutdown().await;
+        self.audit.shutdown().await.unwrap();
         drop(self.audit);
         drop(self.projection);
         drop(self.gate);
         drop(self.journal);
-        self.journal_store.shutdown().await;
+        self.journal_store.shutdown().await.unwrap();
     }
 }
 

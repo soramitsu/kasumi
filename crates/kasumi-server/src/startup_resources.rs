@@ -1,7 +1,7 @@
 //! Unpublished owned resources from an exclusive node open or explicit new
 //! catalogs on an already owned node. A borrowed node is retained only to join
 //! its initializers; borrowed serving stores/databases never enter this scope.
-use kasumi_types::drain::{DrainFailure, DrainReport, DrainResult};
+use kasumi_types::drain::{DrainCompletion, DrainFailure, DrainReport, DrainResult};
 use std::sync::Arc;
 
 #[derive(Default)]
@@ -31,21 +31,37 @@ impl Resources {
                 )));
             }
         }
-        for (index, database) in self.databases.iter().enumerate() {
-            if let Err(error) = database.shutdown().await {
-                retained = Some(DrainFailure::retained(
-                    report.record("database", index, error),
-                ));
+        for database in &self.databases {
+            if let Err(failure) = database.shutdown().await {
+                report.merge(&failure);
+                if failure.completion() == DrainCompletion::Retained {
+                    retained = Some(failure);
+                }
             }
         }
         for audit in &self.audits {
-            audit.shutdown().await;
+            if let Err(failure) = audit.shutdown().await {
+                report.merge(&failure);
+                if failure.completion() == DrainCompletion::Retained {
+                    retained = Some(failure);
+                }
+            }
         }
         for store in &self.stores {
-            store.shutdown().await;
+            if let Err(failure) = store.shutdown().await {
+                report.merge(&failure);
+                if failure.completion() == DrainCompletion::Retained {
+                    retained = Some(failure);
+                }
+            }
         }
         for verifier in &self.verifiers {
-            verifier.shutdown().await;
+            if let Err(failure) = verifier.shutdown().await {
+                report.merge(&failure);
+                if failure.completion() == DrainCompletion::Retained {
+                    retained = Some(failure);
+                }
+            }
         }
         for (index, node) in self.nodes.iter().enumerate() {
             if let Err(error) = node.drain_initializers().await {

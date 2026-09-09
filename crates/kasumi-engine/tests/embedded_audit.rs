@@ -158,7 +158,7 @@ async fn every_embedded_request_boundary_durably_audits_denials_and_sealed_tenan
     assert_eq!(error.code, ErrorCode::Sealed);
     assert!(error.denial_audit_attempted());
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
     drop(db);
     drop(store);
     drop(audit);
@@ -174,7 +174,7 @@ async fn every_embedded_request_boundary_durably_audits_denials_and_sealed_tenan
             .await
             .unwrap();
     assert_eq!(service.scan("security.audit").unwrap().len(), 12);
-    service.shutdown().await;
+    service.shutdown().await.unwrap();
 }
 
 #[test]
@@ -227,7 +227,7 @@ fn cancelled_embedded_denial_writer_is_drained_before_shutdown_and_reopen() {
         occupying.await.unwrap();
         db.shutdown().await.unwrap();
         assert_eq!(audit.store().scan("security.audit").unwrap().len(), 1);
-        audit.shutdown().await;
+        audit.shutdown().await.unwrap();
         drop(db);
         drop(store);
         drop(audit);
@@ -244,7 +244,7 @@ fn cancelled_embedded_denial_writer_is_drained_before_shutdown_and_reopen() {
                 .await
                 .unwrap();
         assert_eq!(service.scan("security.audit").unwrap().len(), 1);
-        service.shutdown().await;
+        service.shutdown().await.unwrap();
     });
 }
 
@@ -414,8 +414,8 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
     assert_eq!(entries.len(), 3);
     let last: Value = serde_json::from_slice(&entries[2].1).unwrap();
     assert_eq!(last["event"]["kind"], "tenant_sealed");
-    target_store.shutdown().await;
-    audit.shutdown().await;
+    target_store.shutdown().await.unwrap();
+    audit.shutdown().await.unwrap();
     drop(target_store);
     drop(target_domains);
     drop(audit);
@@ -430,9 +430,9 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
         .await
         .unwrap();
     assert_eq!(service.scan("security.audit").unwrap().len(), 3);
-    service.shutdown().await;
+    service.shutdown().await.unwrap();
     source.shutdown().await.unwrap();
-    source_audit.shutdown().await;
+    source_audit.shutdown().await.unwrap();
     drop(source);
     drop(source_store);
     drop(source_audit);

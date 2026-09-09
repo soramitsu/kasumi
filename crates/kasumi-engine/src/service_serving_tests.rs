@@ -259,7 +259,7 @@ impl ServingFixture {
             db.shutdown().await.unwrap();
         }
         for audit in &self.audits {
-            audit.shutdown().await;
+            audit.shutdown().await.unwrap();
         }
         self.databases.clear();
         self.audits.clear();

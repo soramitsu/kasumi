@@ -45,8 +45,8 @@ async fn existing_pair_fixture(node: Arc<NodeStore>) -> Result<Arc<TenantStorage
     )
     .await;
     if result.is_err() {
-        app.shutdown().await;
-        control.shutdown().await;
+        app.shutdown().await.unwrap();
+        control.shutdown().await.unwrap();
         node.drain_initializers().await?;
     }
     result
@@ -144,8 +144,7 @@ async fn control_reopens_without_any_application_key_probe_after_revocation() ->
             .unwrap(),
         b"exact-commit"
     );
-    stores.application().shutdown().await;
-    stores.custody().store().shutdown().await;
+    stores.shutdown().await.unwrap();
     drop(stores);
     drop(node);
     let reopened = CustodyStore::open(
@@ -164,7 +163,7 @@ async fn control_reopens_without_any_application_key_probe_after_revocation() ->
         b"exact-commit"
     );
     assert_eq!(app_provider.probe_count(), probes);
-    reopened.store().shutdown().await;
+    reopened.store().shutdown().await.unwrap();
     Ok(())
 }
 
@@ -298,8 +297,7 @@ async fn combined_quota_and_substituted_catalog_binding_fail_before_publication(
     assert!(result.is_err());
     node.drain_initializers().await?;
     stores.check_access()?;
-    stores.application().shutdown().await;
-    stores.custody().store().shutdown().await;
+    stores.shutdown().await.unwrap();
     Ok(())
 }
 
@@ -339,8 +337,7 @@ async fn initial_state_rejects_unknown_records_in_either_complete_domain() -> Re
         );
         assert!(stores.application().get("genesis", b"head")?.is_none());
         assert!(stores.custody().store().get("genesis", b"head")?.is_none());
-        stores.application().shutdown().await;
-        stores.custody().store().shutdown().await;
+        stores.shutdown().await.unwrap();
     }
     Ok(())
 }
@@ -395,8 +392,7 @@ async fn initial_state_checks_and_joint_publication_have_one_concurrent_winner()
             .is_err(),
         "even exact initialization replay is existing state, not permission to publish genesis"
     );
-    stores.application().shutdown().await;
-    stores.custody().store().shutdown().await;
+    stores.shutdown().await.unwrap();
     Ok(())
 }
 
@@ -430,8 +426,7 @@ async fn initial_state_requires_the_exact_retained_custody_binding() -> Result<(
             before
         );
         assert!(stores.application().get("genesis", b"head")?.is_none());
-        stores.application().shutdown().await;
-        stores.custody().store().shutdown().await;
+        stores.shutdown().await.unwrap();
     }
     Ok(())
 }
@@ -462,7 +457,6 @@ async fn initial_state_rejects_delete_only_publications_without_consuming_initia
         stores.custody().store().get("genesis", b"head")?.unwrap(),
         b"initial"
     );
-    stores.application().shutdown().await;
-    stores.custody().store().shutdown().await;
+    stores.shutdown().await.unwrap();
     Ok(())
 }

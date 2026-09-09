@@ -109,7 +109,7 @@ async fn target_monitor_and_outer_owner_survive_cancelled_shutdown_until_journal
             recovery_health: std::sync::Mutex::new(serving::RecoveryHealth::new()),
             registry: Default::default(),
             serving_monitor: Default::default(),
-            shutdown_gate: Mutex::new(()),
+            shutdown_gate: Mutex::new(DrainReport::default()),
             config,
             authority_trusts: BTreeMap::new(),
             installed,
@@ -198,7 +198,7 @@ async fn target_monitor_and_outer_owner_survive_cancelled_shutdown_until_journal
             store.check_access().is_err(),
             "target journal key workers were not drained"
         );
-        audit.shutdown().await;
+        audit.shutdown().await.unwrap();
         drop(audit);
         drop(store);
         drop(node);
@@ -208,7 +208,7 @@ async fn target_monitor_and_outer_owner_survive_cancelled_shutdown_until_journal
         let store = TenantStore::open_existing(reopened, journal_tenant, provider, access)
             .await
             .unwrap();
-        store.shutdown().await;
+        store.shutdown().await.unwrap();
     })
     .await
     .expect("shutdown ownership fixture timed out");

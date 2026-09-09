@@ -82,7 +82,7 @@ impl CredentialFixture {
     }
     async fn close(self) {
         self.db.shutdown().await.unwrap();
-        self.audit.shutdown().await;
+        self.audit.shutdown().await.unwrap();
     }
     fn credential(&self, clock: Arc<dyn LeaseClock>) -> RequestContext {
         let epoch =

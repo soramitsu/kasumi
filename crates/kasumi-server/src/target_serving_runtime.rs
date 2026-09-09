@@ -215,7 +215,7 @@ impl TargetRecoveryRuntime {
             return Ok(());
         }
         drop(control);
-        probe.store().shutdown().await;
+        probe.store().shutdown().await?;
         g.custody_probe = None;
         drop(probe);
         *stage = RecoveryStage::Issuer;

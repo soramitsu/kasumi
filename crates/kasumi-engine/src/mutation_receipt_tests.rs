@@ -119,7 +119,7 @@ async fn durable_future_row_is_invisible_and_only_exact_original_replay_can_reus
     );
     assert_eq!(committed_rows.get(&key).unwrap().unwrap().applied, identity);
     assert!(old.get(&key).unwrap().is_none());
-    store.shutdown().await;
+    store.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -134,7 +134,7 @@ async fn encrypted_reopen_keeps_unapplied_receipt_rows_hidden_until_exact_replay
     assert!(old.get(&key).unwrap().is_none());
     drop(durable_future);
     drop(old);
-    store.shutdown().await;
+    store.shutdown().await.unwrap();
     drop(store);
 
     let reopened_node = NodeStore::open_existing(
@@ -171,7 +171,7 @@ async fn encrypted_reopen_keeps_unapplied_receipt_rows_hidden_until_exact_replay
     assert!(reopened.view.get(&key).unwrap().is_none());
     drop(selected);
     drop(reopened);
-    reopened_store.shutdown().await;
+    reopened_store.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -217,7 +217,7 @@ async fn snapshot_namespace_binding_selects_exact_prefix_and_preserves_older_liv
             .prepare_install(&store, &first_state, &"40".repeat(32), true)
             .is_err()
     );
-    store.shutdown().await;
+    store.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -240,5 +240,5 @@ async fn point_decode_admission_precedes_even_future_row_allocation() {
     assert!(called);
     assert!(error.to_string().contains("injected admission denial"));
     assert_eq!(old.head().count, 0);
-    store.shutdown().await;
+    store.shutdown().await.unwrap();
 }

@@ -313,7 +313,7 @@ async fn cancelled_restore_publication_keeps_storage_and_workspace_until_write_d
             .unwrap()
             .is_none()
     );
-    reopened.shutdown().await;
+    reopened.shutdown().await.unwrap();
     fixture.close().await;
 }
 
@@ -428,7 +428,7 @@ impl Fixture {
     }
     async fn close(&self) {
         self.db.shutdown().await.unwrap();
-        self.audit.shutdown().await;
+        self.audit.shutdown().await.unwrap();
     }
 }
 
@@ -559,7 +559,7 @@ async fn checkpoint_binds_actual_generation_complete_graph_keys_and_encrypted_re
         proof.checkpoint()
     );
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
     drop(db);
     drop(audit);
     drop(directory);
@@ -849,7 +849,7 @@ async fn shutdown_cancels_pending_checkpoint_read_and_releases_database_work() {
         .unwrap()
         .unwrap();
     assert!(task.await.unwrap().is_err());
-    fixture.audit.shutdown().await;
+    fixture.audit.shutdown().await.unwrap();
 }
 
 struct SessionFault {
@@ -1377,8 +1377,8 @@ async fn archived_audit_backup_is_self_contained_and_source_unavailable_restore_
         .is_err()
     );
     assert!(wrong_store.scan("engine.bootstrap").unwrap().is_empty());
-    wrong_store.shutdown().await;
-    wrong_audit.shutdown().await;
+    wrong_store.shutdown().await.unwrap();
+    wrong_audit.shutdown().await.unwrap();
     let restored = kasumi_engine::restore_local(
         &source,
         domains,
@@ -1415,7 +1415,7 @@ async fn archived_audit_backup_is_self_contained_and_source_unavailable_restore_
         .await
         .unwrap();
     restored.shutdown().await.unwrap();
-    target_audit.shutdown().await;
+    target_audit.shutdown().await.unwrap();
     drop(restored);
     drop(target);
     drop(target_audit);
@@ -1501,5 +1501,5 @@ async fn archived_audit_backup_is_self_contained_and_source_unavailable_restore_
         .unwrap();
     assert_eq!(prepared.incarnation(), target_incarnation.to_string());
     reopened.shutdown().await.unwrap();
-    reopened_audit.shutdown().await;
+    reopened_audit.shutdown().await.unwrap();
 }

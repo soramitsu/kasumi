@@ -146,7 +146,7 @@ async fn pressure_rejects_new_proposals_and_queries_but_committed_raft_work_stil
         ErrorCode::ResourceExhausted
     );
     database.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -248,5 +248,5 @@ async fn explicit_local_bootstrap_reads_the_complete_committed_generation() {
     assert_eq!(response.revision, receipt.revision);
     assert_eq!(response.rows[0].body, response.rows[1].body);
     database.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }

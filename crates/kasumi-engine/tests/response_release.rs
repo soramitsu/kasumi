@@ -135,5 +135,5 @@ async fn encoded_response_is_fenced_by_policy_changes_and_actual_key_denial() {
     assert_eq!(fence.check().unwrap_err().code, ErrorCode::Sealed);
     assert!(database.engine().generation().is_err());
     database.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }

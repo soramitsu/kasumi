@@ -137,7 +137,7 @@ impl MaterialFixture {
         };
         source_db.shutdown().await.unwrap();
         drop(source_db);
-        security.shutdown().await;
+        security.shutdown().await.unwrap();
         drop(security);
         let source_id = Uuid::parse_str(&target.checkpoint.source_incarnation).unwrap();
         super::activation_gate_tests::exact_administrative(
@@ -474,10 +474,9 @@ async fn actual_target_materialization_preserves_image_and_original_operation_fe
     drop(fresh);
     scope.close();
     scope.drain().await;
-    stores.application().shutdown().await;
-    stores.custody().store().shutdown().await;
+    stores.shutdown().await.unwrap();
     drop(stores);
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
     drop(audit);
     f.close().await;
 }
@@ -520,10 +519,9 @@ async fn fresh_materialization_admission_preserves_expired_origin_and_exact_publ
     drop(operation);
     scope.close();
     scope.drain().await;
-    stores.application().shutdown().await;
-    stores.custody().store().shutdown().await;
+    stores.shutdown().await.unwrap();
     drop(stores);
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
     drop(audit);
 
     let mut resume = f.intent.clone();
@@ -587,10 +585,9 @@ async fn fresh_materialization_admission_preserves_expired_origin_and_exact_publ
         drop(operation);
         scope.close();
         scope.drain().await;
-        stores.application().shutdown().await;
-        stores.custody().store().shutdown().await;
+        stores.shutdown().await.unwrap();
         drop(stores);
-        audit.shutdown().await;
+        audit.shutdown().await.unwrap();
     }
     verify_target_materializations(&origin, &materialized).unwrap();
     f.close().await;
@@ -641,10 +638,9 @@ async fn materialization_rejects_authenticated_backup_purpose_substitution_befor
     drop(operation);
     scope.close();
     scope.drain().await;
-    stores.application().shutdown().await;
-    stores.custody().store().shutdown().await;
+    stores.shutdown().await.unwrap();
     drop(stores);
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
     f.close().await;
 }
 
@@ -723,10 +719,9 @@ impl MaterialFixture {
             drop(operation);
             scope.close();
             scope.drain().await;
-            stores.application().shutdown().await;
-            stores.custody().store().shutdown().await;
+            stores.shutdown().await.unwrap();
             drop(stores);
-            audit.shutdown().await;
+            audit.shutdown().await.unwrap();
         }
         let input = TargetQuorumInput {
             origin_sha256: origin_sha256.unwrap(),
@@ -805,9 +800,9 @@ impl MaterialFixture {
             drop(t.operation);
             t.scope.close();
             t.scope.drain().await;
-            t.stores.custody().store().shutdown().await;
+            t.stores.custody().store().shutdown().await.unwrap();
             drop(t.stores);
-            t.audit.shutdown().await;
+            t.audit.shutdown().await.unwrap();
         }
     }
 }
@@ -1180,7 +1175,7 @@ async fn exercise_target_activation(maintenance: bool) {
     drop(replayed);
     drop(projected);
     drop(journal);
-    journal_store.shutdown().await;
+    journal_store.shutdown().await.unwrap();
     drop(journal_store);
     // Reopen only the separately encrypted journal, independently of all app
     // providers. Exact signatures survive restart; substituted facts fail closed.
@@ -1263,7 +1258,7 @@ async fn exercise_target_activation(maintenance: bool) {
     projection.check(&serving_gate).unwrap();
     drop(projection);
     drop(journal);
-    journal_store.shutdown().await;
+    journal_store.shutdown().await.unwrap();
     drop(journal_store);
     // A lifecycle-gated handle never turns into an ordinary data route.
     assert!(selected.owner.database().check_serving().is_err());
@@ -1307,7 +1302,7 @@ async fn dropping_target_on_non_runtime_thread_retains_shutdown_work_until_real_
     assert!(t.stores.application().check_access().is_err());
     drop(handle);
     drop(t.stores);
-    t.audit.shutdown().await;
+    t.audit.shutdown().await.unwrap();
     f.close_targets(targets, &router).await;
     f.close().await;
 }
@@ -1744,7 +1739,7 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
     scope.close();
     scope.drain().await;
     drop(journal);
-    store.shutdown().await;
+    store.shutdown().await.unwrap();
     drop(store);
     drop(node);
     let node =
@@ -1836,7 +1831,7 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
             .unwrap(),
         terminal
     );
-    store.shutdown().await;
+    store.shutdown().await.unwrap();
     drop(store);
     drop(issuer);
     f.close().await;
@@ -1980,7 +1975,7 @@ async fn target_file_creation_outcome_distinguishes_original_creation_from_stric
     drop(operation);
     scope.close();
     scope.drain().await;
-    journal.shutdown().await;
+    journal.shutdown().await.unwrap();
     drop(journal);
     drop(node);
     f.issuer.close().await;

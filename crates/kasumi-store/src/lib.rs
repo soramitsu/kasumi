@@ -53,6 +53,7 @@ pub use backup::{
 };
 pub use backup::{MAX_BACKUP_BUNDLE_BYTES, MAX_BACKUP_OBJECT_BYTES};
 use kasumi_clock::{LeaseClock, SystemLeaseClock};
+use kasumi_types::drain::{DrainReport, DrainResult};
 pub use keys::{
     GeneratedKey, KeyProvider, SecretKey, TransitConfig, TransitKeyProvider, WrappedKey,
 };
@@ -418,6 +419,7 @@ pub struct TenantStore {
     // Low bit closes admission; the remaining bits invalidate in-flight probes.
     access_epoch: AtomicU64,
     shutdown_requested: AtomicBool,
+    shutdown_signal: watch::Sender<bool>,
     background: AsyncMutex<BackgroundTasks>,
     audit_placement: Mutex<Option<Arc<TenantAuditPlacement>>>,
     live_trust: Mutex<BTreeMap<String, Weak<kasumi_serving::LiveSignerTrust>>>,
@@ -427,6 +429,7 @@ pub struct TenantStore {
 struct BackgroundTasks {
     started: bool,
     handles: Vec<tokio::task::JoinHandle<()>>,
+    report: DrainReport,
 }
 
 mod single_catalog;
@@ -464,6 +467,7 @@ impl TenantStore {
         catalog: KeyCatalog,
     ) -> Arc<Self> {
         let (seal_notifier, _) = watch::channel(0);
+        let (shutdown_signal, _) = watch::channel(false);
         Arc::new(Self {
             node: node.clone(),
             tenant: tenant.clone(),
@@ -481,6 +485,7 @@ impl TenantStore {
             seal_notifier,
             access_epoch: AtomicU64::new(1),
             shutdown_requested: AtomicBool::new(false),
+            shutdown_signal,
             background: AsyncMutex::new(BackgroundTasks::default()),
             audit_placement: Mutex::new(None),
             live_trust: Mutex::new(BTreeMap::new()),
@@ -531,12 +536,19 @@ impl TenantStore {
         background.started = true;
         let weak = Arc::downgrade(store);
         let mut checking_ready = ready.clone();
+        let mut stopping = store.shutdown_signal.subscribe();
         background.handles.push(tokio::spawn(async move {
-            if checking_ready.wait_for(|ready| *ready).await.is_err() {
-                return;
+            tokio::select! {
+                biased;
+                _ = stopping.wait_for(|stopped| *stopped) => return,
+                ready = checking_ready.wait_for(|ready| *ready) => if ready.is_err() { return; },
             }
             loop {
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                tokio::select! {
+                    biased;
+                    _ = stopping.wait_for(|stopped| *stopped) => return,
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => {},
+                }
                 let Some(store) = weak.upgrade() else { return };
                 if store.check_access().is_err() {
                     return;
@@ -545,9 +557,12 @@ impl TenantStore {
         }));
         let weak = Arc::downgrade(store);
         let mut refreshing_ready = ready;
+        let mut stopping = store.shutdown_signal.subscribe();
         background.handles.push(tokio::spawn(async move {
-            if refreshing_ready.wait_for(|ready| *ready).await.is_err() {
-                return;
+            tokio::select! {
+                biased;
+                _ = stopping.wait_for(|stopped| *stopped) => return,
+                ready = refreshing_ready.wait_for(|ready| *ready) => if ready.is_err() { return; },
             }
             let interval = Duration::from_secs(20);
             let mut schedule =
@@ -556,11 +571,20 @@ impl TenantStore {
             // issuing a burst of catch-up decrypt requests after a delayed poll.
             schedule.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
-                schedule.tick().await;
+                tokio::select! {
+                    biased;
+                    _ = stopping.wait_for(|stopped| *stopped) => return,
+                    _ = schedule.tick() => {},
+                }
                 let Some(store) = weak.upgrade() else { return };
                 // Sealing requires explicit recovery; a timer never silently unseals.
-                if store.check_access().is_err() || store.refresh_lease().await.is_err() {
+                if store.check_access().is_err() {
                     return;
+                }
+                tokio::select! {
+                    biased;
+                    _ = stopping.wait_for(|stopped| *stopped) => return,
+                    refreshed = store.refresh_lease() => if refreshed.is_err() { return; },
                 }
             }
         }));
@@ -573,20 +597,27 @@ impl TenantStore {
     /// store/node handles before reopening the database file. Concurrent calls
     /// are safe; canceling this future leaves task handles available for a later
     /// call to finish waiting. A shutdown store cannot be refreshed or restarted.
-    pub async fn shutdown(&self) {
+    pub async fn shutdown(&self) -> DrainResult {
         self.shutdown_requested.store(true, Ordering::Release);
+        self.shutdown_signal.send_replace(true);
         self.seal();
         let mut background = self.background.lock().await;
-        for task in &background.handles {
-            task.abort();
-        }
+        // Cooperative stop returns normally. Any JoinError, including an abort
+        // requested elsewhere before shutdown, is an actual terminal failure.
         // Await in place: dropping a shutdown future must not detach a task. Pop
         // each completed handle before awaiting another, because a completed
         // JoinHandle must never be polled twice by a subsequent shutdown caller.
         while let Some(task) = background.handles.last_mut() {
-            let _ = task.await;
+            let result = task.await;
+            let index = background.handles.len() - 1;
+            if let Err(error) = result {
+                background
+                    .report
+                    .record("store worker", index, error.into());
+            }
             background.handles.pop();
         }
+        background.report.complete()
     }
 
     pub fn tenant(&self) -> &str {

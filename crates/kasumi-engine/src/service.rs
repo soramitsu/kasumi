@@ -8,6 +8,7 @@ use kasumi_clock::{LeaseClock, SystemLeaseClock};
 use kasumi_query::QueryCancellation;
 use kasumi_raft::RaftGroup;
 use kasumi_store::{BackupDestination, TenantStore};
+use kasumi_types::drain::{DrainCompletion, DrainFailure, DrainReport, DrainResult};
 use kasumi_types::*;
 use sha2::{Digest, Sha256};
 #[path = "backup_checkpoints.rs"]
@@ -387,7 +388,7 @@ pub struct Database {
     embedded: bool,
     closing: AtomicBool,
     custody_detached: AtomicBool,
-    shutdown_gate: tokio::sync::Mutex<()>,
+    shutdown_gate: tokio::sync::Mutex<DrainReport>,
     seal_monitor: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     audit_worker: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     audit_worker_wake: Arc<tokio::sync::Notify>,
@@ -679,7 +680,7 @@ impl Database {
             embedded,
             closing: AtomicBool::new(false),
             custody_detached: AtomicBool::new(false),
-            shutdown_gate: tokio::sync::Mutex::new(()),
+            shutdown_gate: tokio::sync::Mutex::new(DrainReport::default()),
             seal_monitor: tokio::sync::Mutex::new(None),
             audit_worker: tokio::sync::Mutex::new(None),
             audit_worker_wake: Arc::new(tokio::sync::Notify::new()),
@@ -729,7 +730,7 @@ impl Database {
     /// Stop admission, drain background work, and release owned keys and state.
     /// Retained application handles still own this database/store; drop them
     /// before reopening the same node file. A canceled shutdown can be awaited again.
-    pub async fn shutdown(&self) -> anyhow::Result<()> {
+    pub async fn shutdown(&self) -> DrainResult {
         self.shutdown_inner(false).await
     }
 
@@ -741,16 +742,28 @@ impl Database {
         Ok(self.group.storage_domains().custody().clone())
     }
 
-    async fn shutdown_inner(&self, detach_custody: bool) -> anyhow::Result<()> {
-        let _shutdown = self.shutdown_gate.lock().await;
+    async fn shutdown_inner(&self, detach_custody: bool) -> DrainResult {
+        let mut report = self.shutdown_gate.lock().await;
+        let mut retained = None;
         if detach_custody && !self.custody_detached.load(Ordering::Acquire) {
-            let control =
-                kasumi_raft::ControlLog::installed(self.group.storage_domains().custody().clone())?
-                    .ok_or_else(|| anyhow::anyhow!("installed custody identity absent"))?;
-            anyhow::ensure!(
-                control.recover_retired()?,
-                "source is not permanently retired"
-            );
+            let detached = (|| -> anyhow::Result<()> {
+                let control = kasumi_raft::ControlLog::installed(
+                    self.group.storage_domains().custody().clone(),
+                )?
+                .ok_or_else(|| anyhow::anyhow!("installed custody identity absent"))?;
+                anyhow::ensure!(
+                    control.recover_retired()?,
+                    "source is not permanently retired"
+                );
+                Ok(())
+            })();
+            if let Err(error) = detached {
+                return Err(DrainFailure::retained(report.record(
+                    "custody detach",
+                    0,
+                    error,
+                )));
+            }
             self.custody_detached.store(true, Ordering::Release);
         }
         self.closing.store(true, Ordering::Release);
@@ -765,7 +778,13 @@ impl Database {
                 monitor.take();
             }
         }
-        let result = self.group.shutdown().await;
+        if let Err(error) = self.group.shutdown().await {
+            retained = Some(DrainFailure::retained(report.record(
+                "database raft",
+                0,
+                error,
+            )));
+        }
         self.work.drain().await;
         self.audit_work.drain().await;
         {
@@ -775,21 +794,33 @@ impl Database {
                 worker.take();
             }
         }
-        self.store.shutdown().await;
+        if let Err(failure) = self.store.shutdown().await {
+            report.merge(&failure);
+            if failure.completion() == DrainCompletion::Retained {
+                retained = Some(failure);
+            }
+        }
         if !self.custody_detached.load(Ordering::Acquire) {
-            self.group
+            if let Err(failure) = self
+                .group
                 .storage_domains()
                 .custody()
                 .store()
                 .shutdown()
-                .await;
+                .await
+            {
+                report.merge(&failure);
+                if failure.completion() == DrainCompletion::Retained {
+                    retained = Some(failure);
+                }
+            }
         }
         self.engine.seal();
         self.cursors
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .clear();
-        result
+        report.outcome(retained)
     }
     pub(crate) fn store(&self) -> &Arc<TenantStore> {
         &self.store

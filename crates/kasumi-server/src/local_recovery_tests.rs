@@ -458,8 +458,7 @@ async fn create_catalogs(operator: &Operator, journal: &mut Journal) {
     )
     .await
     .unwrap();
-    stores.application().shutdown().await;
-    stores.custody().store().shutdown().await;
+    stores.shutdown().await.unwrap();
     drop(stores);
     node.drain_initializers().await.unwrap();
 }

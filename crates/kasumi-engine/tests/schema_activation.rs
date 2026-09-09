@@ -734,7 +734,7 @@ async fn encrypted_restart_and_full_restore_preserve_permanent_activation_receip
         .await
         .unwrap();
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
     drop(db);
     drop(audit);
     let (db, audit) = open(&path, false).await;
@@ -759,7 +759,7 @@ async fn encrypted_restart_and_full_restore_preserve_permanent_activation_receip
         receipt
     );
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
     drop(db);
     drop(audit);
 
@@ -822,7 +822,7 @@ async fn encrypted_restart_and_full_restore_preserve_permanent_activation_receip
         receipt
     );
     restored.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -987,7 +987,7 @@ async fn cold_schema_change_rejects_whole_bundle_and_scoped_status_rechecks_auth
         ErrorCode::Forbidden
     );
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }
 
 fn guard_assertions(db: &TenantEngine) -> Vec<ReadAssertion> {
@@ -1169,7 +1169,7 @@ async fn encrypted_schema_lookup_checks_current_fences_without_rewriting_origina
         ErrorCode::Conflict
     );
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
     drop(db);
     drop(audit);
     let (db, audit) = open(&path, false).await;
@@ -1215,7 +1215,7 @@ async fn encrypted_schema_lookup_checks_current_fences_without_rewriting_origina
     );
     drop(release);
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }
 
 #[test]

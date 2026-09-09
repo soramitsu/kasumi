@@ -188,7 +188,7 @@ async fn accepted_stop_release_failure_is_unknown_and_reopen_recovers_exact_tomb
         audit,
         context,
     } = fixture;
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
     drop(db);
     drop(audit);
     let node = NodeStore::open_existing(
@@ -247,7 +247,7 @@ async fn accepted_stop_release_failure_is_unknown_and_reopen_recovers_exact_tomb
             .is_err()
     );
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }
 
 #[tokio::test]

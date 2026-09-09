@@ -1482,18 +1482,17 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
         service.shutdown().await.unwrap();
     }
     for storage in stores {
-        storage.application().shutdown().await;
-        storage.custody().store().shutdown().await;
+        storage.shutdown().await.unwrap();
     }
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
     for owner in live_owners {
         owner.close();
     }
     for store in verifier_stores {
-        store.shutdown().await;
+        store.shutdown().await.unwrap();
     }
     for installed in installed_verifiers {
-        installed.shutdown().await;
+        installed.shutdown().await.unwrap();
     }
 }
 

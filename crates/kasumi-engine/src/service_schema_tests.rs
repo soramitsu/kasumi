@@ -120,7 +120,7 @@ async fn canceled_queued_schema_activation_finishes_once_and_checks_receipt_rele
     );
     drop(fence);
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }
 
 #[tokio::test]

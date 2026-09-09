@@ -47,9 +47,8 @@ impl Installation {
         })
     }
     async fn shutdown(&self) {
-        self.stores.application().shutdown().await;
-        self.stores.custody().store().shutdown().await;
-        self.audit.shutdown().await;
+        self.stores.shutdown().await.unwrap();
+        self.audit.shutdown().await.unwrap();
     }
     fn seed_bootstrap(&self) -> anyhow::Result<()> {
         bind_deployment(&self.stores, b"local-v1")?;
@@ -304,9 +303,8 @@ async fn existing_local_reopens_the_same_committed_standalone_after_complete_shu
     drop(generation);
     reopened.shutdown().await?;
     drop(reopened);
-    stores.application().shutdown().await;
-    stores.custody().store().shutdown().await;
-    audit.shutdown().await;
+    stores.shutdown().await.unwrap();
+    audit.shutdown().await.unwrap();
     Ok(())
 }
 
@@ -349,8 +347,7 @@ async fn existing_control_requires_the_non_nil_configured_incarnation_before_sta
         assert!(error.to_string().contains(message));
         assert_eq!(retained(&stores)?, before);
     }
-    stores.application().shutdown().await;
-    stores.custody().store().shutdown().await;
+    stores.shutdown().await.unwrap();
     fixture.shutdown().await;
     Ok(())
 }

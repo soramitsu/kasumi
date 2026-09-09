@@ -204,9 +204,10 @@ impl Administration {
                 if registered && let Some(network) = &self.cluster {
                     network.unregister_group(&group)?;
                 }
-                stores.application().shutdown().await;
-                stores.custody().store().shutdown().await;
-                return Err(error);
+                return Err(match stores.shutdown().await {
+                    Ok(()) => error,
+                    Err(failure) => error.context(failure),
+                });
             }
         };
         self.generations

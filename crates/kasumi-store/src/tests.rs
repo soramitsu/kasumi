@@ -165,7 +165,7 @@ async fn canceled_shutdown_drains_blocked_probe_and_releases_the_database_file()
     assert!(weak_store.strong_count() > 1, "the probe owns the store");
     assert!(!store.state.read().keys.is_empty());
 
-    // This current-thread runtime cannot poll the aborted probe while shutdown
+    // This current-thread runtime cannot poll the stopped probe while shutdown
     // itself is being polled. Cancel at the first pending join, without any wall
     // clock delay, and require a subsequent caller to retain and drain that join.
     let mut shutdown = Box::pin(store.shutdown());
@@ -181,13 +181,15 @@ async fn canceled_shutdown_drains_blocked_probe_and_releases_the_database_file()
     assert!(store.refresh_lease().await.is_err());
     assert_eq!(store.background.lock().await.handles.len(), 2);
 
-    store.shutdown().await;
+    store.shutdown().await.unwrap();
     assert_eq!(provider.canceled.load(Ordering::Acquire), 1);
     assert!(store.background.lock().await.handles.is_empty());
     assert_eq!(weak_store.strong_count(), 1);
     TenantStore::start_renewal(&store).await;
     assert!(store.background.lock().await.handles.is_empty());
-    tokio::join!(store.shutdown(), store.shutdown());
+    let (first, second) = tokio::join!(store.shutdown(), store.shutdown());
+    first.unwrap();
+    second.unwrap();
     drop(store);
     assert!(weak_store.upgrade().is_none());
     assert!(weak_node.upgrade().is_none());
@@ -212,7 +214,135 @@ async fn canceled_shutdown_drains_blocked_probe_and_releases_the_database_file()
         reopened.get("documents", b"durable").unwrap(),
         Some(b"value".to_vec())
     );
-    reopened.shutdown().await;
+    reopened.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn dormant_store_workers_stop_cooperatively_and_external_abort_is_reported() {
+    let (_directory, store, _provider, _clock) = fixture().await;
+    let (_activate, ready) = watch::channel(false);
+    TenantStore::prepare_renewal(&store, ready).await;
+    tokio::time::timeout(Duration::from_secs(5), store.shutdown())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(store.background.lock().await.handles.is_empty());
+
+    let (_directory, store, _provider, _clock) = fixture().await;
+    TenantStore::start_renewal(&store).await;
+    store.background.lock().await.handles[0].abort();
+    let first = store.shutdown().await.unwrap_err();
+    assert_eq!(
+        first.completion(),
+        kasumi_types::drain::DrainCompletion::Complete
+    );
+    assert_eq!(first.issues().len(), 1);
+    assert!(
+        first.issues()[0]
+            .error()
+            .downcast_ref::<tokio::task::JoinError>()
+            .unwrap()
+            .is_cancelled()
+    );
+    let repeated = store.shutdown().await.unwrap_err();
+    assert!(Arc::ptr_eq(&first.issues()[0], &repeated.issues()[0]));
+}
+
+#[tokio::test]
+async fn cancelled_store_drain_retains_joined_panic_and_pending_physical_owner() {
+    use std::{future::Future, task::Poll};
+    let (directory, store, provider, clock) = fixture().await;
+    store
+        .write_batch(&[WriteOp::put("documents", b"retained", b"value")])
+        .unwrap();
+    let node = store.node.clone();
+    let weak_node = Arc::downgrade(&node);
+    let (release, waiting) = tokio::sync::oneshot::channel();
+    let pending = tokio::spawn(async move {
+        let _node = node;
+        waiting.await.unwrap();
+    });
+    let failed = tokio::spawn(async {
+        panic!("actual store worker panic");
+    });
+    while !failed.is_finished() {
+        tokio::task::yield_now().await;
+    }
+    store
+        .background
+        .lock()
+        .await
+        .handles
+        .extend([pending, failed]);
+    let mut first = Box::pin(store.shutdown());
+    std::future::poll_fn(|cx| {
+        assert!(first.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    drop(first);
+    let issue = {
+        let background = store.background.lock().await;
+        assert_eq!(background.handles.len(), 1);
+        assert_eq!(background.report.issues().len(), 1);
+        background.report.issues()[0].clone()
+    };
+    assert!(
+        issue
+            .error()
+            .downcast_ref::<tokio::task::JoinError>()
+            .unwrap()
+            .is_panic()
+    );
+    let path = directory.path().join("database.redb");
+    assert!(
+        NodeStore::open_existing(
+            &path,
+            crate::test_utils::NODE_STORE_ID,
+            ScratchDisk::fixture()
+        )
+        .is_err()
+    );
+    let mut repeated = Box::pin(store.shutdown());
+    std::future::poll_fn(|cx| {
+        assert!(repeated.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    release.send(()).unwrap();
+    let failure = tokio::time::timeout(Duration::from_secs(5), repeated)
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(
+        failure.completion(),
+        kasumi_types::drain::DrainCompletion::Complete
+    );
+    assert!(Arc::ptr_eq(&issue, &failure.issues()[0]));
+    assert!(Arc::ptr_eq(
+        &issue,
+        &store.shutdown().await.unwrap_err().issues()[0]
+    ));
+    drop(store);
+    assert!(weak_node.upgrade().is_none());
+    let reopened = TenantStore::open_existing_fixture_with_clock(
+        NodeStore::open_existing(
+            &path,
+            crate::test_utils::NODE_STORE_ID,
+            ScratchDisk::fixture(),
+        )
+        .unwrap(),
+        "tenant-a".into(),
+        provider,
+        clock,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        reopened.get("documents", b"retained").unwrap(),
+        Some(b"value".to_vec())
+    );
+    reopened.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -232,7 +362,7 @@ async fn shutdown_fences_a_waiting_background_task_registration() {
     .await;
     assert!(store.shutdown_requested.load(Ordering::Acquire));
     drop(registration);
-    shutdown.await;
+    shutdown.await.unwrap();
     starter.await.unwrap();
     assert!(store.background.lock().await.handles.is_empty());
     assert!(!store.background.lock().await.started);
@@ -968,7 +1098,7 @@ async fn bounded_encrypted_reads_reject_payload_before_plaintext_allocation() {
             .unwrap()
             .is_none()
     );
-    store.shutdown().await;
+    store.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -993,7 +1123,7 @@ async fn completed_shutdown_allows_distinct_store_without_reviving_retained_hand
         .await
         .is_err()
     );
-    original.shutdown().await;
+    original.shutdown().await.unwrap();
     let fresh = TenantStore::open_existing_fixture_with_clock(
         original.node.clone(),
         original.tenant.clone(),
@@ -1008,12 +1138,12 @@ async fn completed_shutdown_allows_distinct_store_without_reviving_retained_hand
         Some(b"durable".to_vec())
     );
     assert!(retained.get("docs", b"retained").is_err());
-    original.shutdown().await;
+    original.shutdown().await.unwrap();
     assert_eq!(
         fresh.get("docs", b"retained").unwrap(),
         Some(b"durable".to_vec())
     );
-    fresh.shutdown().await;
+    fresh.shutdown().await.unwrap();
 }
 
 #[cfg(unix)]

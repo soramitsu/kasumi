@@ -86,19 +86,30 @@ pub(crate) async fn initialize(config: AuthorityRuntimeConfig) -> Result<()> {
             enrollment.complete(audit.store())
         }
         .await;
+        let mut report = kasumi_types::drain::DrainReport::default();
         if let Some(stores) = pair {
-            stores.application().shutdown().await;
-            stores.custody().store().shutdown().await;
+            if let Err(failure) = stores.shutdown().await {
+                report.merge(&failure);
+            }
         }
-        let initializers = node.drain_initializers().await;
+        if let Err(error) = node.drain_initializers().await {
+            report.record("authority enrollment initializers", 0, error);
+        }
         if let Some(verifier) = verifier {
-            verifier.shutdown().await;
+            if let Err(failure) = verifier.shutdown().await {
+                report.merge(&failure);
+            }
         }
-        audit.shutdown().await;
+        if let Err(failure) = audit.shutdown().await {
+            report.merge(&failure);
+        }
         drop(audit);
         drop(node);
-        result?;
-        initializers
+        match (result, report.complete()) {
+            (Ok(()), close) => close.map_err(Into::into),
+            (Err(error), Ok(())) => Err(error),
+            (Err(error), Err(failure)) => Err(error.context(failure)),
+        }
     })
     .await?
 }

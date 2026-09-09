@@ -82,7 +82,7 @@ async fn enrollment_requires_exact_completed_input_and_never_adopts_partial_hist
     assert!(require_complete(&store, id, Kind::Authority).is_err());
     assert!(Enrollment::begin(&store, &input).is_err());
     assert_eq!(records(&store)?, completed);
-    store.shutdown().await;
+    store.shutdown().await.unwrap();
     drop(store);
     let reopened = TenantStore::open_existing(
         node,
@@ -93,7 +93,7 @@ async fn enrollment_requires_exact_completed_input_and_never_adopts_partial_hist
     .await?;
     require_complete(&reopened, id, Kind::Data)?;
     assert_eq!(records(&reopened)?, completed);
-    reopened.shutdown().await;
+    reopened.shutdown().await.unwrap();
     Ok(())
 }
 
@@ -115,7 +115,7 @@ async fn missing_or_substituted_enrollment_records_fail_without_logical_mutation
         assert!(require_complete(&store, id, Kind::Data).is_err());
         assert!(Enrollment::begin(&store, &input).is_err());
         assert_eq!(records(&store)?, before);
-        store.shutdown().await;
+        store.shutdown().await.unwrap();
     }
     Ok(())
 }
@@ -149,7 +149,7 @@ async fn completed_genesis_requires_all_tenant_records_and_rejects_the_old_head_
     let before = records(&store)?;
     assert!(require_complete(&store, id, Kind::Data).is_err());
     assert_eq!(records(&store)?, before);
-    store.shutdown().await;
+    store.shutdown().await.unwrap();
     Ok(())
 }
 
@@ -205,6 +205,6 @@ async fn explicit_tenant_dispatch_and_prepared_outcome_never_restore_creation_pe
         tenant_record(&store, &proposal.tenant)?.unwrap().stage,
         Stage::Prepared
     );
-    store.shutdown().await;
+    store.shutdown().await.unwrap();
     Ok(())
 }

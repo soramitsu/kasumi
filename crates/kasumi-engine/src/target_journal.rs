@@ -135,8 +135,8 @@ type JournalOwner = Arc<Mutex<std::sync::Weak<TargetJournal>>>;
 impl TargetJournal {
     /// The installed runner must first close and drain its operations. Retained
     /// journal handles remain sealed after this store's own workers are joined.
-    pub async fn shutdown(&self) {
-        self.store.shutdown().await;
+    pub async fn shutdown(&self) -> kasumi_types::drain::DrainResult {
+        self.store.shutdown().await
     }
 
     /// Explicit journal installation. Existing metadata or a live owner is an

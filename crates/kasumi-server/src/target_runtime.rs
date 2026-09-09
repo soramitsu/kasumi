@@ -14,6 +14,7 @@ use kasumi_engine::{
 };
 use kasumi_serving::*;
 use kasumi_store::{BackupDestination, NodeStore, StorageAccess, TenantStorageSet, TenantStore};
+use kasumi_types::drain::{DrainCompletion, DrainFailure, DrainReport, DrainResult};
 use kasumi_types::*;
 use ring::signature::{Ed25519KeyPair, KeyPair};
 use std::{
@@ -37,6 +38,7 @@ mod serving;
 mod shutdown_tests;
 #[derive(Default)]
 struct Generation {
+    report: DrainReport,
     custody: Option<(GenerationKey, Arc<kasumi_engine::RetiredCustody>)>,
     custody_probe: Option<Arc<kasumi_store::CustodyStore>>,
     serving: Option<kasumi_engine::TargetServingReplica>,
@@ -56,67 +58,177 @@ impl Generation {
         &mut self,
         cluster: &ClusterNetwork,
         registry: &crate::api::DatabaseRegistry,
-    ) -> Result<()> {
-        if let Some((key, database)) = &self.registered_data {
-            serving::detach_owned_data(registry, key, database)?;
-            self.registered_data = None;
-        }
-        if let Some((key, custody)) = &self.custody {
-            registry.detach_target_custody(&key.0, &key.1.to_string(), custody)?;
-        }
+    ) -> DrainResult {
+        let mut retained = None;
+        let mut custody_route_closed = true;
         if let Some(lease) = &self.lease {
             lease.close();
         }
         if let Some(phase) = &self.phase {
             phase.close();
         }
-        if let Some(group) = &self.registered_group {
-            cluster.unregister_group(group)?;
-            self.registered_group = None;
-        }
-        if let Some((_, custody)) = &self.custody {
-            custody.shutdown().await?;
-        }
-        self.custody.take();
-        if let Some(probe) = &self.custody_probe {
-            probe.store().shutdown().await;
-        }
-        self.custody_probe.take();
-        if let Some(serving) = &mut self.serving {
-            serving.close().await?;
-        }
-        self.serving.take();
-        if let Some(replica) = &mut self.replica {
-            replica.close().await?;
-        }
-        self.replica.take();
-        if let Some(phase) = &self.phase {
-            phase.shutdown().await?;
-        }
-        self.phase.take();
-        if let Some(lease) = &self.lease {
-            lease.shutdown().await?;
-        }
-        if let Some(stores) = &self.stores {
-            stores.application().shutdown().await;
-            stores.custody().store().shutdown().await;
-        }
-        self.stores.take();
-        self.lease.take();
-        if let Some(node) = &self.node {
-            node.drain_initializers().await?;
-        }
-        self.fresh_catalogs = false;
-        if let Some(node) = self.node.take() {
-            match Arc::try_unwrap(node) {
-                Ok(node) => drop(node),
-                Err(node) => {
-                    self.node = Some(node);
-                    anyhow::bail!("target file still has an actual detached owner")
+        if let Some((key, database)) = &self.registered_data {
+            match serving::detach_owned_data(registry, key, database) {
+                Ok(()) => self.registered_data = None,
+                Err(error) => {
+                    retained = Some(DrainFailure::retained(self.report.record(
+                        "target data route",
+                        0,
+                        error,
+                    )))
                 }
             }
         }
-        Ok(())
+        if let Some((key, custody)) = &self.custody {
+            if let Err(error) = registry.detach_target_custody(&key.0, &key.1.to_string(), custody)
+            {
+                custody_route_closed = false;
+                retained = Some(DrainFailure::retained(self.report.record(
+                    "target custody route",
+                    0,
+                    error,
+                )));
+            }
+        }
+        if let Some(group) = &self.registered_group {
+            match cluster.unregister_group(group) {
+                Ok(()) => self.registered_group = None,
+                Err(error) => {
+                    retained = Some(DrainFailure::retained(self.report.record(
+                        "target group route",
+                        0,
+                        error,
+                    )))
+                }
+            }
+        }
+        if let Some((_, custody)) = &self.custody {
+            match custody.shutdown().await {
+                Ok(()) => {
+                    if custody_route_closed {
+                        self.custody.take();
+                    }
+                }
+                Err(failure) => {
+                    self.report.merge(&failure);
+                    if failure.completion() == DrainCompletion::Retained {
+                        retained = Some(failure);
+                    } else if custody_route_closed {
+                        self.custody.take();
+                    }
+                }
+            }
+        }
+        if let Some(probe) = &self.custody_probe {
+            match probe.store().shutdown().await {
+                Ok(()) => {
+                    self.custody_probe.take();
+                }
+                Err(failure) => {
+                    self.report.merge(&failure);
+                    if failure.completion() == DrainCompletion::Retained {
+                        retained = Some(failure);
+                    } else {
+                        self.custody_probe.take();
+                    }
+                }
+            }
+        }
+        if let Some(serving) = &mut self.serving {
+            match serving.close().await {
+                Ok(()) => {
+                    self.serving.take();
+                }
+                Err(failure) => {
+                    self.report.merge(&failure);
+                    if failure.completion() == DrainCompletion::Retained {
+                        retained = Some(failure);
+                    } else {
+                        self.serving.take();
+                    }
+                }
+            }
+        }
+        if let Some(replica) = &mut self.replica {
+            match replica.close().await {
+                Ok(()) => {
+                    self.replica.take();
+                }
+                Err(failure) => {
+                    self.report.merge(&failure);
+                    if failure.completion() == DrainCompletion::Retained {
+                        retained = Some(failure);
+                    } else {
+                        self.replica.take();
+                    }
+                }
+            }
+        }
+        if let Some(phase) = &self.phase {
+            match phase.shutdown().await {
+                Ok(()) => {
+                    self.phase.take();
+                }
+                Err(error) => {
+                    retained = Some(DrainFailure::retained(self.report.record(
+                        "target phase",
+                        0,
+                        error,
+                    )))
+                }
+            }
+        }
+        if let Some(lease) = &self.lease {
+            match lease.shutdown().await {
+                Ok(()) => {
+                    self.lease.take();
+                }
+                Err(error) => {
+                    retained = Some(DrainFailure::retained(self.report.record(
+                        "target lease",
+                        0,
+                        error,
+                    )))
+                }
+            }
+        }
+        if let Some(stores) = &self.stores {
+            match stores.shutdown().await {
+                Ok(()) => {
+                    self.stores.take();
+                }
+                Err(failure) => {
+                    self.report.merge(&failure);
+                    if failure.completion() == DrainCompletion::Retained {
+                        retained = Some(failure);
+                    } else {
+                        self.stores.take();
+                    }
+                }
+            }
+        }
+        if let Some(node) = &self.node {
+            if let Err(error) = node.drain_initializers().await {
+                self.report.record("target node initializers", 0, error);
+            }
+        }
+        self.fresh_catalogs = false;
+        if retained.is_none() {
+            if let Some(node) = self.node.take() {
+                match Arc::try_unwrap(node) {
+                    Ok(node) => drop(node),
+                    Err(node) => {
+                        self.node = Some(node);
+                        retained = Some(DrainFailure::retained(self.report.record(
+                            "target physical owner",
+                            0,
+                            anyhow::anyhow!("target file still has an actual detached owner"),
+                        )));
+                    }
+                }
+            }
+        }
+        self.report.outcome(retained)
     }
 }
 enum ResponseEvidence {
@@ -172,7 +284,7 @@ pub struct TargetRecoveryRuntime {
     recovery_health: std::sync::Mutex<serving::RecoveryHealth>,
     registry: crate::api::DatabaseRegistry,
     serving_monitor: crate::runtime_worker::RuntimeWorker,
-    shutdown_gate: Mutex<()>,
+    shutdown_gate: Mutex<DrainReport>,
     config: RuntimeConfig,
     authority_trusts: BTreeMap<String, AuthorityTrust>,
     installed: TargetRecoveryConfig,
@@ -190,7 +302,7 @@ pub struct TargetRecoveryRuntime {
     closing: AtomicBool,
 }
 /// Keep the outer owner reachable across cancellation of its recursive drain.
-pub(crate) async fn shutdown_target(owner: &mut Option<Arc<TargetRecoveryRuntime>>) -> Result<()> {
+pub(crate) async fn shutdown_target(owner: &mut Option<Arc<TargetRecoveryRuntime>>) -> DrainResult {
     if let Some(target) = owner.as_ref() {
         target.shutdown().await?;
     }
@@ -284,15 +396,17 @@ impl TargetRecoveryRuntime {
         let journal = match journal {
             Ok(journal) => journal,
             Err(error) => {
-                store.shutdown().await;
-                return Err(error);
+                return Err(match store.shutdown().await {
+                    Ok(()) => error,
+                    Err(failure) => error.context(failure),
+                });
             }
         };
         let runtime = Arc::new(Self {
             recovery_health: std::sync::Mutex::new(serving::RecoveryHealth::new()),
             registry,
             serving_monitor: Default::default(),
-            shutdown_gate: Mutex::new(()),
+            shutdown_gate: Mutex::new(DrainReport::default()),
             config,
             authority_trusts,
             installed,
@@ -446,7 +560,12 @@ impl TargetRecoveryRuntime {
             let proof = phase.target_stop(&operation, reference).await?;
             self.journal.stop(&operation, &proof)?;
             operation
-                .run(generation.close(&self.cluster, &self.registry))
+                .run(async {
+                    generation
+                        .close(&self.cluster, &self.registry)
+                        .await
+                        .map_err(Into::into)
+                })
                 .await
                 .map_err(unknown)?;
             let outcome = self
@@ -491,7 +610,12 @@ impl TargetRecoveryRuntime {
             old
         } else {
             admission
-                .run(generation.close(&self.cluster, &self.registry))
+                .run(async {
+                    generation
+                        .close(&self.cluster, &self.registry)
+                        .await
+                        .map_err(Into::into)
+                })
                 .await?;
             generation.phase = Some(phase.clone());
             phase
@@ -568,7 +692,12 @@ impl TargetRecoveryRuntime {
                 continue;
             }
             admission
-                .run(generation.close(&self.cluster, &self.registry))
+                .run(async {
+                    generation
+                        .close(&self.cluster, &self.registry)
+                        .await
+                        .map_err(Into::into)
+                })
                 .await?;
             drop(generation);
             let mut all = admission
@@ -1186,10 +1315,15 @@ impl TargetRecoveryRuntime {
         op.check()?;
         Ok(SignedLocalTargetCleanup { fact, signature })
     }
-    pub async fn shutdown(&self) -> Result<()> {
-        let _shutdown = self.shutdown_gate.lock().await;
+    pub async fn shutdown(&self) -> DrainResult {
+        let mut report = self.shutdown_gate.lock().await;
+        let mut retained = None;
         self.closing.store(true, Ordering::Release);
-        self.serving_monitor.drain().await?;
+        // RuntimeWorker returns only after its exact handle joins. Retain its
+        // actual JoinError before waiting for any target or admitted call.
+        if let Err(error) = self.serving_monitor.drain().await {
+            report.record("target serving monitor", 0, error.into());
+        }
         let targets = self
             .generations
             .lock()
@@ -1204,16 +1338,36 @@ impl TargetRecoveryRuntime {
                 p.close();
             }
         }
-        let _all = self.calls.clone().acquire_many_owned(MAX_CALLS).await?;
+        let _all = match self.calls.clone().acquire_many_owned(MAX_CALLS).await {
+            Ok(all) => all,
+            Err(error) => {
+                return Err(DrainFailure::retained(report.record(
+                    "target admitted calls",
+                    0,
+                    error.into(),
+                )));
+            }
+        };
         for target in targets {
-            target
+            if let Err(failure) = target
                 .lock()
                 .await
                 .close(&self.cluster, &self.registry)
-                .await?;
+                .await
+            {
+                report.merge(&failure);
+                if failure.completion() == DrainCompletion::Retained {
+                    retained = Some(failure);
+                }
+            }
         }
-        self.journal.shutdown().await;
-        Ok(())
+        if let Err(failure) = self.journal.shutdown().await {
+            report.merge(&failure);
+            if failure.completion() == DrainCompletion::Retained {
+                retained = Some(failure);
+            }
+        }
+        report.outcome(retained)
     }
 }
 // A failed filesystem observation is not an absence proof. In particular,

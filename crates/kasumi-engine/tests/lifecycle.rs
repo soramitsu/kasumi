@@ -503,7 +503,7 @@ impl Fixture {
         }
         self.nodes.clear();
         for audit in self.audits.values() {
-            audit.shutdown().await;
+            audit.shutdown().await.unwrap();
         }
         self.audits.clear();
     }

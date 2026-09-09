@@ -233,7 +233,7 @@ async fn one_epoch_ages_commands_and_leases_without_renewing_original_credential
     );
     drop(original_release);
     database.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -292,7 +292,7 @@ async fn fixture_epoch_rejects_production_storage_before_bootstrap() {
             .unwrap()
             .is_none()
     );
-    store.shutdown().await;
-    stores.custody().store().shutdown().await;
-    audit.shutdown().await;
+    store.shutdown().await.unwrap();
+    stores.custody().store().shutdown().await.unwrap();
+    audit.shutdown().await.unwrap();
 }

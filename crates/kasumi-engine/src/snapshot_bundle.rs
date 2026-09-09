@@ -707,7 +707,7 @@ mod tests {
                     .unwrap()
             );
         }
-        source_store.shutdown().await;
+        source_store.shutdown().await.unwrap();
         // The replacement is independently sufficient to create and reinstall
         // the snapshot while the original source is unavailable.
         let recaptured = capture(target.clone()).await.unwrap();
@@ -717,7 +717,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        target_store.shutdown().await;
+        target_store.shutdown().await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -751,8 +751,8 @@ mod tests {
         logical.reader().read_to_end(&mut logical_bytes).unwrap();
         assert!(restore(target.clone(), logical_bytes).await.is_err());
         restore(target, snapshot).await.unwrap();
-        source_store.shutdown().await;
-        target_store.shutdown().await;
+        source_store.shutdown().await.unwrap();
+        target_store.shutdown().await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -793,7 +793,7 @@ mod tests {
         let name = format!("{}.audit", references[1].object.object_id);
         std::fs::remove_file(cache.join(name)).unwrap();
         assert!(capture(source).await.is_err());
-        source_store.shutdown().await;
+        source_store.shutdown().await.unwrap();
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn control_archive_transfer_uses_exact_reserved_domain_without_application_authority() {
@@ -821,8 +821,8 @@ mod tests {
             )
             .is_err()
         );
-        source_store.shutdown().await;
-        target_store.shutdown().await;
+        source_store.shutdown().await.unwrap();
+        target_store.shutdown().await.unwrap();
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn public_restore_admits_resident_state_without_charging_permanent_stream_as_ram() {
@@ -959,8 +959,8 @@ mod tests {
         assert_eq!(target.generation().unwrap().terminals.head().count, 0);
         assert_eq!(admission.snapshot().reserved_bytes, 0);
         assert_eq!(admission.snapshot().inflight_operations, 0);
-        source_store.shutdown().await;
-        target_store.shutdown().await;
+        source_store.shutdown().await.unwrap();
+        target_store.shutdown().await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1004,7 +1004,7 @@ mod tests {
         })
         .unwrap();
         assert!(source.snapshot(denied, 60_000).await.is_err());
-        source_store.shutdown().await;
-        target_store.shutdown().await;
+        source_store.shutdown().await.unwrap();
+        target_store.shutdown().await.unwrap();
     }
 }

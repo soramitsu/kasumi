@@ -178,9 +178,10 @@ async fn deliver(outcome: Result<Prepared>, send: oneshot::Sender<Ticket>) -> Re
     let abandoned = handoff.outcome.lock().take();
     match abandoned {
         Some(Ok(prepared)) if prepared.ownership == Ownership::New => {
-            prepared.store.shutdown().await;
+            let outcome = prepared.store.shutdown().await;
             // Retain the exact open gate until this new owner's workers join.
             drop(prepared);
+            outcome?;
         }
         Some(Err(error)) => return Err(error),
         _ => {}
@@ -300,10 +301,10 @@ async fn prepare(input: Input, receiver: &oneshot::Sender<Ticket>) -> Result<Pre
             ownership: Ownership::New,
             activate,
         }),
-        Err(error) => {
-            store.shutdown().await;
-            Err(error)
-        }
+        Err(error) => Err(match store.shutdown().await {
+            Ok(()) => error,
+            Err(failure) => error.context(failure),
+        }),
     }
 }
 

@@ -520,7 +520,7 @@ mod tests {
             engine.generation().unwrap().state.audit_retention,
             current.state.audit_retention
         );
-        store.shutdown().await;
+        store.shutdown().await.unwrap();
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn authenticated_wrong_prefix_and_corrupt_ciphertext_never_prune() {
@@ -543,6 +543,6 @@ mod tests {
             before.state.audit_retention
         );
         assert_eq!(engine.generation().unwrap().state.revision, 50);
-        store.shutdown().await;
+        store.shutdown().await.unwrap();
     }
 }

@@ -161,10 +161,10 @@ async fn deliver(outcome: Result<Prepared>, send: oneshot::Sender<Ticket>) -> Re
     let abandoned = handoff.outcome.lock().take();
     match abandoned {
         Some(Ok(prepared)) => {
-            prepared.stores.application.shutdown().await;
-            prepared.stores.custody.store.shutdown().await;
+            let outcome = prepared.stores.shutdown().await;
             // Open gates remain owned until both new workers are joined.
             drop(prepared);
+            outcome?;
         }
         Some(Err(error)) => return Err(error),
         None => {}
@@ -264,9 +264,16 @@ async fn prepare(input: Input, receiver: &oneshot::Sender<Ticket>) -> Result<Pre
             activate,
         }),
         Err(error) => {
-            application.shutdown().await;
-            custody.shutdown().await;
-            Err(error)
+            let mut report = DrainReport::default();
+            for store in [&application, &custody] {
+                if let Err(failure) = store.shutdown().await {
+                    report.merge(&failure);
+                }
+            }
+            Err(match report.complete() {
+                Ok(()) => error,
+                Err(failure) => error.context(failure),
+            })
         }
     }
 }

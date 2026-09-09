@@ -138,8 +138,7 @@ impl InstalledFixture {
         Ok(())
     }
     async fn close(&self) {
-        self.stores.application().shutdown().await;
-        self.stores.custody().store().shutdown().await;
+        self.stores.shutdown().await.unwrap();
     }
     async fn reopen(self) -> anyhow::Result<Self> {
         self.close().await;

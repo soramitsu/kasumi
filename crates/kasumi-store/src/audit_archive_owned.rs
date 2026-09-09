@@ -192,7 +192,7 @@ mod tests {
         observer.fault.store(4, Ordering::Release);
         assert!(archive.publish(&segment).await.is_err());
         assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
-        store.shutdown().await;
+        store.shutdown().await.unwrap();
     }
 
     #[test]

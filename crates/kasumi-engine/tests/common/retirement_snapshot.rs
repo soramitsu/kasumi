@@ -201,8 +201,7 @@ async fn actual_retired_snapshot_only_replica_preserves_rotated_custody_after_en
     app_provider.revoke();
     assert!(domains.application().refresh_lease().await.is_err());
     let probes = app_provider.probe_count();
-    domains.application().shutdown().await;
-    domains.custody().store().shutdown().await;
+    domains.shutdown().await.unwrap();
     drop(recipient_group);
     drop(backend);
     drop(domains);
@@ -243,7 +242,7 @@ async fn actual_retired_snapshot_only_replica_preserves_rotated_custody_after_en
     let control = ControlLog::open(custody.clone(), 2, group).unwrap();
     assert!(control.recover_retired().unwrap());
     learner.shutdown().await.unwrap();
-    custody.store().shutdown().await;
+    custody.store().shutdown().await.unwrap();
     closed.shutdown().await.unwrap();
     source.close().await;
 }

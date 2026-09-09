@@ -100,7 +100,7 @@ async fn missing_journal_head_never_initializes_and_explicit_installation_cannot
     assert!(f.create().is_err());
     let journal = f.reopen()?;
     assert_eq!(f.store.get(NS, b"metadata")?, Some(head));
-    journal.shutdown().await;
+    journal.shutdown().await.unwrap();
     Ok(())
 }
 
@@ -119,7 +119,7 @@ async fn corrupt_or_wrong_installed_journal_head_is_rejected_without_replacement
         assert!(f.create().is_err());
         assert_eq!(f.store.get(NS, b"metadata")?, Some(bytes));
     }
-    f.store.shutdown().await;
+    f.store.shutdown().await.unwrap();
     Ok(())
 }
 
@@ -128,7 +128,7 @@ async fn installed_empty_journal_reopens_only_its_exact_node_after_owner_drain()
     let f = Fixture::new().await?;
     let journal = f.create()?;
     let original = f.store.get(NS, b"metadata")?.unwrap();
-    journal.shutdown().await;
+    journal.shutdown().await.unwrap();
     drop(journal);
     let Fixture {
         directory,
@@ -161,7 +161,7 @@ async fn installed_empty_journal_reopens_only_its_exact_node_after_owner_drain()
         admission,
     )?;
     assert_eq!(store.get(NS, b"metadata")?, Some(original));
-    journal.shutdown().await;
+    journal.shutdown().await.unwrap();
     Ok(())
 }
 
@@ -195,6 +195,6 @@ async fn paused_registry_handoff_cannot_publish_two_journal_mutation_owners() ->
         "the shared owner cannot initialize the head again"
     );
     assert_eq!(f.store.get(NS, b"metadata")?, Some(original));
-    first.shutdown().await;
+    first.shutdown().await.unwrap();
     Ok(())
 }

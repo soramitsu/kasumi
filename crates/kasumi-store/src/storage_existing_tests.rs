@@ -65,7 +65,7 @@ async fn missing_catalogs_and_authenticated_binding_never_provision_during_reope
             present & 2 != 0
         );
         for store in opened {
-            store.shutdown().await;
+            store.shutdown().await.unwrap();
         }
     }
     Ok(())
@@ -89,7 +89,7 @@ async fn existing_catalog_admission_cannot_provision_after_waiting_for_the_open_
         Arc::new(ManualClock::new()),
     )
     .await?;
-    store.shutdown().await;
+    store.shutdown().await.unwrap();
     drop(store);
     let gate = node.tenants.lock().await.get("tenant").unwrap().clone();
     let guard = gate.lock().await;
@@ -143,8 +143,7 @@ async fn corrupt_or_authenticated_wrong_binding_is_never_repaired_by_reopen() ->
         assert!(reopen(node.clone()).await.is_err());
         assert_eq!(contents(&node)?, before);
     }
-    stores.application.shutdown().await;
-    stores.custody.store.shutdown().await;
+    stores.shutdown().await.unwrap();
     drop(stores);
     let transaction = node.db.begin_write()?;
     transaction.open_table(CATALOG)?.insert(
@@ -183,8 +182,7 @@ async fn exact_standalone_binding_reopens_after_both_domains_close_and_drain() -
     )?;
     let binding = stores.custody.binding.clone();
     let before = contents(&node)?;
-    stores.application.shutdown().await;
-    stores.custody.store.shutdown().await;
+    stores.shutdown().await.unwrap();
     drop(stores);
     drop(node);
     let node = NodeStore::open_existing(&path, crate::test_utils::NODE_STORE_ID, disk)?;
@@ -227,7 +225,6 @@ async fn exact_standalone_binding_reopens_after_both_domains_close_and_drain() -
         Some(b"committed".as_slice())
     );
     assert_eq!(contents(&node)?, before);
-    reopened.application.shutdown().await;
-    reopened.custody.store.shutdown().await;
+    reopened.shutdown().await.unwrap();
     Ok(())
 }

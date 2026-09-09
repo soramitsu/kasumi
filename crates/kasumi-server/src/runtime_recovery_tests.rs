@@ -1157,8 +1157,7 @@ impl Fixture {
         self.issuers.clear();
         self.issuer_networks.clear();
         for stores in self.issuer_stores.drain(..) {
-            stores.application().shutdown().await;
-            stores.custody().store().shutdown().await;
+            stores.shutdown().await.unwrap();
         }
     }
 }

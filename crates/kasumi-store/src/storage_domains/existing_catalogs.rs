@@ -34,9 +34,11 @@ impl Held {
         }
         self.store.check_access()
     }
-    async fn close_unpublished(&self) {
+    async fn close_unpublished(&self) -> DrainResult {
         if self.ownership == Ownership::New {
-            self.store.shutdown().await;
+            self.store.shutdown().await
+        } else {
+            Ok(())
         }
     }
 }
@@ -149,12 +151,19 @@ async fn deliver(outcome: Result<Prepared>, send: oneshot::Sender<Ticket>) -> Re
     let abandoned = handoff.outcome.lock().take();
     match abandoned {
         Some(Ok(prepared)) => {
-            if let Some(application) = &prepared.application {
-                application.close_unpublished().await;
+            let mut report = DrainReport::default();
+            for held in prepared
+                .application
+                .iter()
+                .chain(std::iter::once(&prepared.custody))
+            {
+                if let Err(failure) = held.close_unpublished().await {
+                    report.merge(&failure);
+                }
             }
-            prepared.custody.close_unpublished().await;
             // Every relevant open gate remains held until only our new workers drain.
             drop(prepared);
+            report.complete()?;
         }
         Some(Err(error)) => return Err(error),
         None => {}
@@ -292,6 +301,7 @@ async fn prepare(
                 held.prepare(ready).await?;
                 let binding = validate(&custody.store, Some(&held.store), &tenant)?;
                 Opened::Pair(Arc::new(TenantStorageSet {
+                    shutdown_report: AsyncMutex::new(DrainReport::default()),
                     application: held.store.clone(),
                     custody: Arc::new(CustodyStore {
                         store: custody.store.clone(),
@@ -321,11 +331,16 @@ async fn prepare(
             })
         }
         Err(error) => {
-            if let Some(application) = &application {
-                application.close_unpublished().await;
+            let mut report = DrainReport::default();
+            for held in application.iter().chain(std::iter::once(&custody)) {
+                if let Err(failure) = held.close_unpublished().await {
+                    report.merge(&failure);
+                }
             }
-            custody.close_unpublished().await;
-            Err(error)
+            Err(match report.complete() {
+                Ok(()) => error,
+                Err(failure) => error.context(failure),
+            })
         }
     }
 }

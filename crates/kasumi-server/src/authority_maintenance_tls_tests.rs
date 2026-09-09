@@ -377,7 +377,6 @@ async fn actual_tls_peer_readiness_enrolls_replaces_and_fences_revoked_member() 
         service.shutdown().await.unwrap();
     }
     for store in stores {
-        store.application().shutdown().await;
-        store.custody().store().shutdown().await;
+        store.shutdown().await.unwrap();
     }
 }

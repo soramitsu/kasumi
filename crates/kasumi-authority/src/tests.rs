@@ -295,8 +295,7 @@ impl Fixture {
             service.shutdown().await.unwrap();
         }
         for store in &self.stores {
-            store.application().shutdown().await;
-            store.custody().store().shutdown().await;
+            store.shutdown().await.unwrap();
         }
     }
     async fn reopen(&mut self) {
@@ -304,8 +303,7 @@ impl Fixture {
             service.shutdown().await.unwrap();
         }
         for store in &self.stores {
-            store.application().shutdown().await;
-            store.custody().store().shutdown().await;
+            store.shutdown().await.unwrap();
         }
         let member_ids: Vec<_> = self.services.iter().map(|s| s.local_node_id).collect();
         self.services.clear();
@@ -763,8 +761,7 @@ async fn actual_encrypted_source_materialization_is_fenced_but_independent_custo
     let probes = provider.probe_count();
     assert!(kasumi_store::StorageAccess::serving(gate).is_err());
     assert_eq!(provider.probe_count(), probes);
-    stores.application().shutdown().await;
-    stores.custody().store().shutdown().await;
+    stores.shutdown().await.unwrap();
     drop(stores);
     drop(node);
     let reopened = NodeStore::open_existing(
@@ -794,7 +791,7 @@ async fn actual_encrypted_source_materialization_is_fenced_but_independent_custo
             .is_err()
     );
     assert_eq!(provider.probe_count(), probes);
-    custody.store().shutdown().await;
+    custody.store().shutdown().await.unwrap();
     fixture.close().await;
 }
 

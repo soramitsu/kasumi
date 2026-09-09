@@ -54,10 +54,14 @@ impl TargetServingReplica {
         )?;
         self.projection.check(gate)
     }
-    pub async fn close(&mut self) -> anyhow::Result<()> {
-        self.database.shutdown().await?;
-        self.closed = true;
-        Ok(())
+    pub async fn close(&mut self) -> kasumi_types::drain::DrainResult {
+        let outcome = self.database.shutdown().await;
+        if !outcome.as_ref().is_err_and(|failure| {
+            failure.completion() == kasumi_types::drain::DrainCompletion::Retained
+        }) {
+            self.closed = true;
+        }
+        outcome
     }
 }
 impl Drop for TargetServingReplica {
@@ -65,7 +69,9 @@ impl Drop for TargetServingReplica {
         if !self.closed {
             let database = self.database.clone();
             self.shutdown_runtime.spawn(async move {
-                let _ = database.shutdown().await;
+                if let Err(failure) = database.shutdown().await {
+                    tracing::error!(%failure, "abandoned target serving replica drain failed");
+                }
             });
         }
     }

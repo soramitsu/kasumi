@@ -519,7 +519,7 @@ mod tests {
         assert_eq!(instance.view()?.policy_epoch(), 2);
         assert_eq!(app.probe_count(), probes);
         instance.shutdown().await?;
-        domains.custody().store().shutdown().await;
+        domains.custody().store().shutdown().await.unwrap();
         Ok(())
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -595,7 +595,7 @@ mod tests {
             instance.shutdown().await?;
         }
         for domains in stores {
-            domains.custody().store().shutdown().await;
+            domains.custody().store().shutdown().await.unwrap();
         }
         Ok(())
     }

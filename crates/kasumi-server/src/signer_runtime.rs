@@ -64,10 +64,10 @@ impl SignerVerifierConfig {
         let drained = node.drain_initializers().await;
         match (prepared, drained) {
             (Ok(store), Ok(())) => Ok(store),
-            (Ok(store), Err(error)) => {
-                store.shutdown().await;
-                Err(error)
-            }
+            (Ok(store), Err(error)) => Err(match store.shutdown().await {
+                Ok(()) => error,
+                Err(failure) => error.context(failure),
+            }),
             (Err(error), Ok(())) => Err(error),
             (Err(error), Err(drain)) => {
                 Err(error.context(format!("singleton drain failed: {drain:#}")))
@@ -114,8 +114,10 @@ impl SignerVerifierConfig {
         let owners = match result {
             Ok(owners) => owners,
             Err(error) => {
-                store.shutdown().await;
-                return Err(error);
+                return Err(match store.shutdown().await {
+                    Ok(()) => error,
+                    Err(failure) => error.context(failure),
+                });
             }
         };
         Ok(Arc::new(InstalledSignerVerifier {
@@ -215,14 +217,14 @@ impl InstalledSignerVerifier {
             .cloned()
             .context("installed signer domain absent")
     }
-    pub(crate) async fn shutdown(&self) {
+    pub(crate) async fn shutdown(&self) -> kasumi_types::drain::DrainResult {
         for owner in self.owners.values() {
             owner.close();
         }
         for owner in self.owners.values() {
             owner.drain_background_work().await;
         }
-        self.store.shutdown().await;
+        self.store.shutdown().await
     }
 }
 
@@ -367,8 +369,11 @@ impl InitializeSignerVerifier {
             )])?;
             Ok(())
         })();
-        store.shutdown().await;
-        result
+        match (result, store.shutdown().await) {
+            (Ok(()), close) => close.map_err(Into::into),
+            (Err(error), Ok(())) => Err(error),
+            (Err(error), Err(failure)) => Err(error.context(failure)),
+        }
     }
 }
 pub async fn initialize_from_file(path: &Path) -> Result<()> {

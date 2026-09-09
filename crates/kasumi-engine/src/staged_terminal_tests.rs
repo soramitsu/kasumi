@@ -154,7 +154,7 @@ async fn encrypted_reopen_keeps_unapplied_terminal_rows_hidden_until_exact_repla
     assert!(old.get(&key).unwrap().is_none());
     drop(durable_future);
     drop(old);
-    store.shutdown().await;
+    store.shutdown().await.unwrap();
     drop(store);
 
     let reopened_node = NodeStore::open_existing(
@@ -191,7 +191,7 @@ async fn encrypted_reopen_keeps_unapplied_terminal_rows_hidden_until_exact_repla
     assert!(reopened.view.get(&key).unwrap().is_none());
     drop(selected);
     drop(reopened);
-    reopened_store.shutdown().await;
+    reopened_store.shutdown().await.unwrap();
 }
 
 #[tokio::test]

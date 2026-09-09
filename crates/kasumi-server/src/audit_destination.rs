@@ -157,7 +157,7 @@ mod tests {
             store.tenant_audit_archive().unwrap().cache().identity(),
             cache.identity()
         );
-        store.shutdown().await;
+        store.shutdown().await.unwrap();
         drop(store);
         drop(node);
         let node = NodeStore::open_existing(
@@ -184,6 +184,6 @@ mod tests {
             .install_tenant_audit_archive(&reopened, Some(cache))
             .unwrap();
         assert!(reopened.tenant_audit_archive().is_ok());
-        reopened.shutdown().await;
+        reopened.shutdown().await.unwrap();
     }
 }

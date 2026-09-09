@@ -819,7 +819,7 @@ async fn actual_raft_writes_queries_and_snapshot_pagination() {
         "new-b"
     );
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -912,7 +912,7 @@ async fn coherent_snapshot_reads_span_collections_under_concurrent_commits_and_s
     conditional.read_set = snapshot.read_assertions();
     db.mutate(context("owner"), conditional).await.unwrap();
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -958,7 +958,7 @@ async fn snapshot_reads_reject_partial_queries_cursors_and_foreign_authority() {
         ErrorCode::InvalidArgument
     );
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -1015,7 +1015,7 @@ async fn strict_read_audit_is_committed_before_return_and_tied_to_data_revision(
         None
     );
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -1083,7 +1083,7 @@ async fn shared_get_uses_the_same_audit_and_authorization_and_keeps_historical_v
     // A prior authorized release is owned by the trusted embedding application.
     assert_eq!(shared.body["email"], "before");
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -1164,7 +1164,7 @@ async fn strict_empty_discovery_is_audited_and_failed_audit_persistence_blocks_r
         ErrorCode::AuditUnavailable | ErrorCode::Unavailable | ErrorCode::Sealed
     ));
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -1192,7 +1192,7 @@ async fn key_revocation_fences_and_evicts_resident_state() {
         "reauthorization must not silently resurrect memory"
     );
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -1244,7 +1244,7 @@ async fn key_revocation_evicts_retained_coherent_leases_and_rejects_every_page()
         ErrorCode::Sealed
     );
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -1421,8 +1421,8 @@ async fn logical_backup_restores_suspended_with_new_incarnation_and_increasing_r
     assert!(newer.revision > receipt.revision);
     restored.shutdown().await.unwrap();
     source.shutdown().await.unwrap();
-    source_audit.shutdown().await;
-    target_audit.shutdown().await;
+    source_audit.shutdown().await.unwrap();
+    target_audit.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -1568,5 +1568,5 @@ async fn killed_process_recovers_acknowledged_documents_receipts_and_bootstrap_p
         expected
     );
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }

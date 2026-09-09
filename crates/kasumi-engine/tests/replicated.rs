@@ -100,7 +100,7 @@ async fn shutdown_nodes(
     }
     nodes.clear();
     for audit in audits.values() {
-        audit.shutdown().await;
+        audit.shutdown().await.unwrap();
     }
     audits.clear();
 }
@@ -485,7 +485,7 @@ async fn deployment_modes_and_live_store_ownership_cannot_be_overridden() {
         "owner"
     );
     reopened.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
     let mut invalid = bootstrap;
     invalid.voters.get_mut(&2).unwrap().failure_domain = "zone-1".into();
     assert!(invalid.validate().is_err());
@@ -701,5 +701,5 @@ async fn replicated_restore_has_identical_genesis_and_requires_quorum_audit_befo
     );
     shutdown_nodes(&mut nodes, &mut audits, &router, &group).await;
     source.shutdown().await.unwrap();
-    source_audit.shutdown().await;
+    source_audit.shutdown().await.unwrap();
 }

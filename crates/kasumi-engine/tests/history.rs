@@ -203,7 +203,7 @@ async fn change_feed_is_atomic_ordered_resumable_and_detects_retention_gaps() {
         db.engine().fixture_snapshot().unwrap().len()
     );
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
     drop(db);
     drop(audit);
     let (db, audit) = open(&root.path().join("node.redb"), Limits::default(), true).await;
@@ -310,7 +310,7 @@ async fn change_feed_is_atomic_ordered_resumable_and_detects_retention_gaps() {
         db.engine().fixture_snapshot().unwrap().len()
     );
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -510,7 +510,7 @@ async fn archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_res
             .is_nil()
     );
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
     drop(db);
     drop(audit);
     let (db, audit) = open(&root.path().join("node.redb"), Limits::default(), true).await;
@@ -577,7 +577,7 @@ async fn archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_res
         ErrorCode::Unavailable
     );
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -735,7 +735,7 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
         "exercise real multiple-chunk resident export"
     );
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
     drop(db);
     drop(audit);
     std::fs::remove_dir_all(&cold_path).unwrap();
@@ -836,7 +836,7 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
         .await
         .unwrap();
     restored.shutdown().await.unwrap();
-    restored_audit.shutdown().await;
+    restored_audit.shutdown().await.unwrap();
     drop(restored);
     drop(restored_audit);
 
@@ -923,7 +923,7 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
             .unwrap()
             .is_none()
         );
-        audit.shutdown().await;
+        audit.shutdown().await.unwrap();
         if suffix == "corrupt" {
             std::fs::write(&dependency_path, &valid_dependency).unwrap();
         }
@@ -1023,7 +1023,7 @@ async fn scoped_feed_advances_through_filtered_commit_tail_and_emits_only_real_d
     assert!(events[0].document.is_none());
     assert_eq!(next.after_sequence, 3);
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }
 
 #[async_trait::async_trait]
@@ -1097,7 +1097,7 @@ async fn shutdown_cancels_pending_archive_upload_and_keeps_source_rows_on_restar
         .unwrap()
         .unwrap();
     assert!(task.await.unwrap().is_err());
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
     drop(db);
     drop(audit);
     let (db, audit) = open(&path, Limits::default(), false).await;
@@ -1137,5 +1137,5 @@ async fn shutdown_cancels_pending_archive_upload_and_keeps_source_rows_on_restar
         .unwrap()
         .unwrap();
     assert!(backup.await.unwrap().is_err());
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }

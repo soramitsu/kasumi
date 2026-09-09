@@ -845,7 +845,7 @@ mod tests {
                 .install_tenant_audit_archive(cache.clone(), cache.clone())
                 .is_err()
         );
-        original.shutdown().await;
+        original.shutdown().await.unwrap();
         drop(original);
 
         let reopened = store(directory.path(), false).await;
@@ -864,7 +864,7 @@ mod tests {
                 .destination_identity(),
             external.identity()
         );
-        reopened.shutdown().await;
+        reopened.shutdown().await.unwrap();
     }
 
     #[tokio::test]
@@ -925,7 +925,7 @@ mod tests {
         assert!(destination.publish(&first).await.is_err());
         assert_eq!(std::fs::read(&object).unwrap(), b"corrupted ciphertext");
         assert!(destination.read(&first.reference.object).await.is_err());
-        store.shutdown().await;
+        store.shutdown().await.unwrap();
     }
 
     #[tokio::test]
@@ -976,7 +976,7 @@ mod tests {
             AuditSegmentBuilder::new(Uuid::new_v4(), u64::MAX, Some(previous)).unwrap();
         assert!(exhausted.push(u64::MAX, b"overflow").is_err());
         assert_eq!(exhausted.record_count(), 0);
-        store.shutdown().await;
+        store.shutdown().await.unwrap();
     }
 
     #[tokio::test]
@@ -1011,7 +1011,7 @@ mod tests {
                 .await
                 .is_err()
         );
-        store.shutdown().await;
+        store.shutdown().await.unwrap();
     }
 
     #[tokio::test]
@@ -1033,7 +1033,7 @@ mod tests {
         assert!(destination.read(&segment.reference.object).await.is_err());
         assert!(destination.publish(&segment).await.is_err());
         assert_eq!(std::fs::read(&unrelated).unwrap(), segment.ciphertext);
-        store.shutdown().await;
+        store.shutdown().await.unwrap();
     }
 
     #[tokio::test]
@@ -1059,7 +1059,7 @@ mod tests {
         let mut builder = AuditSegmentBuilder::new(Uuid::new_v4(), 0, None).unwrap();
         builder.push(0, b"retained before recovery").unwrap();
         let segment = store.encrypt_audit_segment(builder).unwrap();
-        store.shutdown().await;
+        store.shutdown().await.unwrap();
         // Source shutdown is permanent for its live store. A separately authorized
         // target can still verify exactly selected historical data and keys.
         assert!(
@@ -1184,7 +1184,7 @@ mod tests {
         // altered ciphertext cannot cross the authenticated proof boundary.
         let inspected = InspectedAuditDependency::from_link(&forged, &forged_link).unwrap();
         assert!(inspected.verify(&verifier).await.is_err());
-        store.shutdown().await;
+        store.shutdown().await.unwrap();
     }
 
     #[tokio::test]
@@ -1268,7 +1268,7 @@ mod tests {
                 .to_string()
                 .contains("request revoked")
         );
-        store.shutdown().await;
+        store.shutdown().await.unwrap();
     }
 
     #[test]

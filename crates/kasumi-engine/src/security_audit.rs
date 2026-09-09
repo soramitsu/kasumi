@@ -4,6 +4,8 @@ use anyhow::{Context, Result, ensure};
 use kasumi_query::QueryCancellation;
 use kasumi_store::{TenantStore, WriteOp};
 use kasumi_types::AuditRetentionBudget;
+#[path = "security_audit_jobs.rs"]
+mod jobs;
 #[path = "security_audit_retention.rs"]
 mod retention;
 
@@ -105,8 +107,12 @@ struct AuditWriter {
     maintenance: tokio::sync::Mutex<()>,
     wake: Arc<tokio::sync::Notify>,
     worker: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    jobs: tokio::sync::Mutex<jobs::Jobs>,
+    report: Mutex<kasumi_types::drain::DrainReport>,
     #[cfg(test)]
     worker_pause: Mutex<Option<Arc<retention::WorkerPause>>>,
+    #[cfg(test)]
+    record_fault: Mutex<Option<jobs::RecordFault>>,
     workspace: Mutex<Option<crate::admission::Reservation>>,
     admission: Arc<crate::admission::NodeAdmission>,
     work: Arc<WorkFence>,
@@ -249,8 +255,12 @@ impl SecurityAudit {
             maintenance: tokio::sync::Mutex::new(()),
             wake: Arc::new(tokio::sync::Notify::new()),
             worker: tokio::sync::Mutex::new(None),
+            jobs: tokio::sync::Mutex::new(jobs::Jobs::default()),
+            report: Mutex::new(kasumi_types::drain::DrainReport::default()),
             #[cfg(test)]
             worker_pause: Mutex::new(None),
+            #[cfg(test)]
+            record_fault: Mutex::new(None),
             work: Arc::new(WorkFence::default()),
             workspace: Mutex::new(Some(workspace)),
             admission,
@@ -313,8 +323,12 @@ impl SecurityAudit {
         event: SecurityEvent,
         transport: Option<TransportAuditMetadata>,
     ) -> Result<()> {
-        let work = self.begin()?;
-        tokio::task::spawn_blocking(move || work.record(event, transport)).await?
+        self.run_owned(move |work, id| async move {
+            let owner = work.writer.clone();
+            let outcome = tokio::task::spawn_blocking(move || work.record(event, transport)).await;
+            owner.observe_join("audit record", id, outcome)
+        })
+        .await
     }
 
     /// Blocking entry for an engine-owned, independently tracked request job.
@@ -328,6 +342,15 @@ impl SecurityAudit {
         event: SecurityEvent,
         transport: Option<TransportAuditMetadata>,
     ) -> Result<()> {
+        #[cfg(test)]
+        if let Some(fault) = self.writer.record_fault.lock().unwrap().take() {
+            fault.entered.send(()).unwrap();
+            fault
+                .release
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+            panic!("injected real blocking audit record panic");
+        }
         for value in [
             event.principal.as_deref(),
             event.tenant.as_deref(),
@@ -430,7 +453,14 @@ impl SecurityAudit {
         ]) {
             // Unknown fsync outcomes fence every queued writer until reopen.
             sequence.failed = true;
-            return Err(error);
+            return Err(
+                kasumi_types::drain::DrainFailure::retained(self.record_terminal(
+                    "audit persistence",
+                    0,
+                    error,
+                ))
+                .into(),
+            );
         }
         sequence.head = updated;
         if sequence.head.position.hot_bytes >= self.writer.budget.starts_at() {
@@ -453,7 +483,7 @@ impl SecurityAudit {
 
     /// Called once all databases/listeners sharing the writer have stopped.
     /// Cancellation leaves the fence closed and permits a later call to finish.
-    pub async fn shutdown(&self) {
+    pub async fn shutdown(&self) -> kasumi_types::drain::DrainResult {
         self.writer.work.seal();
         self.writer.wake.notify_one();
         {
@@ -462,19 +492,31 @@ impl SecurityAudit {
                 // Keep the handle in place across await: cancellation must not
                 // detach the worker or allow a repeated shutdown to skip it.
                 // Do not abort an admitted archive publication.
-                let _ = task.await;
+                if let Err(error) = task.await {
+                    self.record_terminal("audit archive worker", 0, error.into());
+                }
                 worker.take();
             }
         }
+        self.drain_jobs().await;
         self.writer.work.drain().await;
-        self.writer.store.shutdown().await;
+        let store = self.writer.store.shutdown().await;
+        let mut report = self.writer.report.lock().unwrap_or_else(|p| p.into_inner());
+        let retained = store.err().and_then(|failure| {
+            report.merge(&failure);
+            (failure.completion() == kasumi_types::drain::DrainCompletion::Retained)
+                .then_some(failure)
+        });
         // Retained closed handles cannot perform more work. Release the node's
         // maintenance reservation only after every actual store owner drains.
-        self.writer
-            .workspace
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take();
+        if retained.is_none() {
+            self.writer
+                .workspace
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take();
+        }
+        report.outcome(retained)
     }
 }
 
@@ -536,7 +578,7 @@ mod tests {
         audit.writer.work.drain().await;
         // Drain key monitors first to isolate the missing worker ownership from
         // unrelated asynchronous store shutdown. No timing sleep drives this race.
-        store.shutdown().await;
+        store.shutdown().await.unwrap();
 
         let mut shutdown = Box::pin(audit.shutdown());
         std::future::poll_fn(|cx| {
@@ -558,7 +600,7 @@ mod tests {
         })
         .await;
         pause.release.notify_one();
-        repeated.await;
+        repeated.await.unwrap();
         assert!(audit.writer.worker.lock().await.is_none());
         drop(audit);
         drop(store);
@@ -589,7 +631,7 @@ mod tests {
             .next_sequence,
             1
         );
-        reopened.shutdown().await;
+        reopened.shutdown().await.unwrap();
     }
 
     #[test]
@@ -671,7 +713,7 @@ mod tests {
             })
             .await;
             release.send(()).unwrap();
-            repeated.await;
+            repeated.await.unwrap();
             blocker.await.unwrap();
             assert!(store.check_access().is_err());
             drop(audit);
@@ -707,7 +749,7 @@ mod tests {
                 .next_sequence,
                 1
             );
-            reopened.shutdown().await;
+            reopened.shutdown().await.unwrap();
         });
     }
 
@@ -775,7 +817,7 @@ mod tests {
         let mut other = event();
         other.request_id = "third-denial".into();
         third.record(other).await.unwrap();
-        third.shutdown().await;
+        third.shutdown().await.unwrap();
         drop(retained);
         drop(third);
         drop(store);
@@ -821,7 +863,7 @@ mod tests {
             .next_sequence,
             3
         );
-        reopened.shutdown().await;
+        reopened.shutdown().await.unwrap();
     }
 
     #[tokio::test]
@@ -897,8 +939,8 @@ mod tests {
         assert_eq!(first["event"]["request_id"], "cancelled-denial");
         assert_eq!(second["sequence"], 1);
         assert_eq!(second["event"]["request_id"], "after-recovery");
-        audit.shutdown().await;
-        reopened.shutdown().await;
+        audit.shutdown().await.unwrap();
+        reopened.shutdown().await.unwrap();
     }
 }
 

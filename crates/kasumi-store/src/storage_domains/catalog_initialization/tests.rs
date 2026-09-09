@@ -197,8 +197,7 @@ async fn committed_pair_handoff_preserves_a_concurrent_borrower_through_initiali
         stores.application.get("data", b"key")?,
         Some(b"value".to_vec())
     );
-    stores.application.shutdown().await;
-    stores.custody.store.shutdown().await;
+    stores.shutdown().await.unwrap();
     drop(borrower);
     drop(stores);
     // The ordinary existing opener retains the exact pair/binding after drain.
@@ -213,8 +212,7 @@ async fn committed_pair_handoff_preserves_a_concurrent_borrower_through_initiali
         reopened.application.get("data", b"key")?,
         Some(b"value".to_vec())
     );
-    reopened.application.shutdown().await;
-    reopened.custody.store.shutdown().await;
+    reopened.shutdown().await.unwrap();
     Ok(())
 }
 
@@ -245,7 +243,7 @@ async fn fresh_pair_rejects_shared_partial_and_orphan_domains_without_mutation()
         drain(&node).await?;
         assert_eq!(contents(&node)?, before);
         assert_eq!(live.get("kept", b"key")?, Some(b"retained".to_vec()));
-        live.shutdown().await;
+        live.shutdown().await.unwrap();
         drop(live);
         // The same partial disk catalog is rejected after its live owner drains.
         let receive = begin(input(node.clone())).await?;
@@ -525,7 +523,6 @@ async fn admission_reaper_reports_unclaimed_preparation_failure_before_new_work(
         StorageAccess::fixture(),
     )
     .await?;
-    stores.application.shutdown().await;
-    stores.custody.store.shutdown().await;
+    stores.shutdown().await.unwrap();
     drain(&node).await
 }

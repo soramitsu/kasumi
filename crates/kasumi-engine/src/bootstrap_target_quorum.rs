@@ -21,11 +21,15 @@ impl TargetReplica {
     pub fn database(&self) -> &Arc<Database> {
         &self.database
     }
-    pub async fn close(&mut self) -> anyhow::Result<()> {
+    pub async fn close(&mut self) -> kasumi_types::drain::DrainResult {
         self.invocation.gate().close();
-        self.database.shutdown().await?;
-        self.registration.take();
-        Ok(())
+        let outcome = self.database.shutdown().await;
+        if !outcome.as_ref().is_err_and(|failure| {
+            failure.completion() == kasumi_types::drain::DrainCompletion::Retained
+        }) {
+            self.registration.take();
+        }
+        outcome
     }
     fn check(&self, operation: &TargetOperation, phase: LifecyclePhase) -> anyhow::Result<()> {
         operation.check()?;
@@ -114,7 +118,9 @@ impl Drop for TargetReplica {
         let database = self.database.clone();
         self.shutdown_runtime.spawn(async move {
             let _registration = registration;
-            let _ = database.shutdown().await;
+            if let Err(failure) = database.shutdown().await {
+                tracing::error!(%failure, "abandoned target replica drain failed");
+            }
         });
     }
 }

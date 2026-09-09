@@ -104,6 +104,7 @@ pub struct RetiredCustody {
     proposal_gate: Arc<tokio::sync::Mutex<()>>,
     clock: Arc<dyn CommandClock>,
     closing: AtomicBool,
+    shutdown_report: tokio::sync::Mutex<DrainReport>,
 }
 fn unavailable(_: impl std::fmt::Display) -> Error {
     Error::new(
@@ -164,6 +165,7 @@ impl RetiredCustody {
             proposal_gate: Arc::new(tokio::sync::Mutex::new(())),
             clock: Arc::new(SystemCommandClock),
             closing: AtomicBool::new(false),
+            shutdown_report: tokio::sync::Mutex::new(DrainReport::default()),
         }))
     }
     pub fn identity(&self) -> Result<(String, String)> {
@@ -429,18 +431,30 @@ impl RetiredCustody {
         fence.check()?;
         Ok(fence)
     }
-    pub async fn shutdown(&self) -> anyhow::Result<()> {
+    pub async fn shutdown(&self) -> DrainResult {
+        let mut report = self.shutdown_report.lock().await;
+        let mut retained = None;
         self.closing.store(true, Ordering::Release);
         self.work.seal();
         if let CustodyGroup::Closed(group) = &self.group {
-            let result = group.shutdown().await;
+            if let Err(error) = group.shutdown().await {
+                retained = Some(DrainFailure::retained(report.record(
+                    "custody raft",
+                    0,
+                    error,
+                )));
+            }
             self.work.drain().await;
-            group.custody_store().store().shutdown().await;
-            result
+            if let Err(failure) = group.custody_store().store().shutdown().await {
+                report.merge(&failure);
+                if failure.completion() == DrainCompletion::Retained {
+                    retained = Some(failure);
+                }
+            }
         } else {
             self.work.drain().await;
-            Ok(())
         }
+        report.outcome(retained)
     }
 }
 
@@ -462,6 +476,7 @@ impl Database {
             proposal_gate: self.proposal_gate.clone(),
             clock,
             closing: AtomicBool::new(false),
+            shutdown_report: tokio::sync::Mutex::new(DrainReport::default()),
         }))
     }
 }

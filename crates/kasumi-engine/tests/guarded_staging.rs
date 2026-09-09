@@ -102,7 +102,7 @@ async fn open(path: &Path, limits: Limits, create: bool) -> (Arc<Database>, Arc<
 }
 async fn close(db: Arc<Database>, audit: Arc<SecurityAudit>) {
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }
 async fn set_authority(db: &Database, id: &str, enabled: bool) {
     db.mutate(

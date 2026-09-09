@@ -73,9 +73,8 @@ impl Replica {
         }
     }
     async fn close(self) -> tempfile::TempDir {
-        self.stores.application().shutdown().await;
-        self.stores.custody().store().shutdown().await;
-        self.audit.shutdown().await;
+        self.stores.shutdown().await.unwrap();
+        self.audit.shutdown().await.unwrap();
         let Self {
             directory,
             stores,

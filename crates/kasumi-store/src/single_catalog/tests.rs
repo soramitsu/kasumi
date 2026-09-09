@@ -184,7 +184,7 @@ async fn strict_singleton_creation_rejects_orphan_partial_and_existing_catalogs_
         assert_eq!(contents(&node)?, before);
         if let Some(owner) = owner {
             owner.check_access()?;
-            owner.shutdown().await;
+            owner.shutdown().await.unwrap();
         }
         drain(&node).await?;
     }
@@ -206,7 +206,7 @@ async fn existing_singleton_requires_installed_catalog_and_never_repairs_cached_
     assert!(open(input(node.clone(), Mode::Existing)).await.is_err());
     assert_eq!(contents(&node)?, before);
     owner.check_access()?;
-    owner.shutdown().await;
+    owner.shutdown().await.unwrap();
     drain(&node).await
 }
 
@@ -223,7 +223,7 @@ async fn buffered_singleton_success_publishes_only_on_claim_and_abandonment_pres
             };
             if installed == "closed" {
                 let closed = original.take().unwrap();
-                closed.shutdown().await;
+                closed.shutdown().await.unwrap();
                 drop(closed);
             }
             drain(&node).await?;
@@ -272,10 +272,10 @@ async fn buffered_singleton_success_publishes_only_on_claim_and_abandonment_pres
                 );
             }
             if let Some(received) = received {
-                received.shutdown().await;
+                received.shutdown().await.unwrap();
             }
             if let Some(original) = original {
-                original.shutdown().await;
+                original.shutdown().await.unwrap();
             }
             drain(&node).await?;
         }
@@ -308,7 +308,7 @@ async fn borrowed_singleton_keeps_original_provider_clock_and_deadline() -> Resu
     assert!(Arc::ptr_eq(&same.clock, &clock));
     assert_eq!(same.state.read().deadline, deadline);
     assert!(same.background.lock().await.handles.is_empty());
-    same.shutdown().await;
+    same.shutdown().await.unwrap();
     drain(&node).await
 }
 
@@ -322,7 +322,8 @@ async fn buffered_singleton_preparation_errors_require_actual_claim_and_preserve
                 open(input(node.clone(), Mode::Initialize))
                     .await?
                     .shutdown()
-                    .await;
+                    .await
+                    .unwrap();
             }
             drain(&node).await?;
             let before = contents(&node)?;

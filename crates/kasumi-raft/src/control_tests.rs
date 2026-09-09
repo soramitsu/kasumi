@@ -257,7 +257,7 @@ async fn committed_seed_reopens_before_any_projection_without_application_key_ac
     for (_, bytes) in control.store().scan(HEADERS)? {
         assert!(!String::from_utf8_lossy(&bytes).contains("municipal-sensitive-payload"));
     }
-    control.store().shutdown().await;
+    control.store().shutdown().await.unwrap();
     Ok(())
 }
 
@@ -297,7 +297,7 @@ async fn truncation_permanently_removes_uncommitted_seed_before_overwrite_and_re
             .retirement_seed(1)?
             .is_none()
     );
-    control.store().shutdown().await;
+    control.store().shutdown().await.unwrap();
     Ok(())
 }
 
@@ -541,7 +541,7 @@ async fn reserved_committed_retirement_recovers_atomic_custody_after_crash_witho
     .await?;
     assert!(ControlLog::open(custody.clone(), 1, group())?.recover_retired()?);
     assert_eq!(custody_state(&custody)?, saved);
-    custody.store().shutdown().await;
+    custody.store().shutdown().await.unwrap();
     Ok(())
 }
 
@@ -579,8 +579,7 @@ async fn retirement_recovery_crosses_former_seed_count_ceiling_without_promoting
     assert_eq!(boundary.position.log_id, id(1));
     assert_eq!(boundary.receipt.revision, 1);
     assert!(reader.retirement_seed(100_001)?.is_none());
-    stores.application().shutdown().await;
-    stores.custody().store().shutdown().await;
+    stores.shutdown().await.unwrap();
     Ok(())
 }
 
@@ -606,8 +605,7 @@ async fn retirement_recovery_never_selects_between_multiple_committed_successes(
     );
     assert!(retired_boundary(stores.custody())?.is_none());
     assert!(load::<AppliedCursor>(stores.custody().store(), META, b"applied")?.is_none());
-    stores.application().shutdown().await;
-    stores.custody().store().shutdown().await;
+    stores.shutdown().await.unwrap();
     Ok(())
 }
 

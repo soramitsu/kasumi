@@ -192,5 +192,5 @@ async fn control_updates_require_operator_authority_cas_and_survive_reopen() {
         topology
     );
     reopened.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }

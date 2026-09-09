@@ -158,7 +158,7 @@ mod tests {
         for database in databases {
             database.shutdown().await.unwrap();
         }
-        audit.shutdown().await;
+        audit.shutdown().await.unwrap();
         assert_eq!(admission.snapshot().reserved_bytes, 0);
     }
 }

@@ -166,7 +166,7 @@ impl Fixture {
     }
     async fn close(self) {
         self.db.shutdown().await.unwrap();
-        self.audit.shutdown().await;
+        self.audit.shutdown().await.unwrap();
     }
 }
 
@@ -206,7 +206,7 @@ async fn actual_retirement_seed_reopens_through_control_domain_without_loading_s
     drop(stored);
     drop(control);
     fixture.db.shutdown().await.unwrap();
-    fixture.audit.shutdown().await;
+    fixture.audit.shutdown().await.unwrap();
     let Fixture {
         directory,
         db,
@@ -243,7 +243,7 @@ async fn actual_retirement_seed_reopens_through_control_domain_without_loading_s
             .unwrap(),
         original
     );
-    custody.store().shutdown().await;
+    custody.store().shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -351,7 +351,7 @@ async fn exact_retirement_seals_source_once_and_retains_proof_after_encrypted_re
     );
     let path = fixture.directory.path().join("node.redb");
     fixture.db.shutdown().await.unwrap();
-    fixture.audit.shutdown().await;
+    fixture.audit.shutdown().await.unwrap();
     let Fixture {
         directory,
         db,
@@ -388,7 +388,7 @@ async fn exact_retirement_seals_source_once_and_retains_proof_after_encrypted_re
         &receipt
     );
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
     drop(directory);
 }
 
@@ -890,7 +890,7 @@ async fn durable_retirement_stop_defeats_inflight_backup_verification_and_surviv
     drop(paused);
     let path = fixture.directory.path().join("node.redb");
     fixture.db.shutdown().await.unwrap();
-    fixture.audit.shutdown().await;
+    fixture.audit.shutdown().await.unwrap();
     let Fixture {
         directory,
         db,
@@ -942,7 +942,7 @@ async fn durable_retirement_stop_defeats_inflight_backup_verification_and_surviv
         ErrorCode::Conflict
     );
     db.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
     drop(directory);
 }
 

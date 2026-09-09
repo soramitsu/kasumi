@@ -230,7 +230,7 @@ mod tests {
                 monitor.take();
             }
             database.group.shutdown().await.unwrap();
-            store.shutdown().await;
+            store.shutdown().await.unwrap();
             let mut first = Box::pin(database.shutdown());
             std::future::poll_fn(|cx| {
                 assert!(first.as_mut().poll(cx).is_pending());
@@ -252,7 +252,7 @@ mod tests {
             pause.release.notify_one();
             retry.await.unwrap();
             assert!(database.audit_worker.try_lock().unwrap().is_none());
-            audit.shutdown().await;
+            audit.shutdown().await.unwrap();
             drop(database);
             assert!(weak_database.upgrade().is_none());
             drop(store);
@@ -273,7 +273,7 @@ mod tests {
                 store.get("drain-test", b"marker").unwrap().unwrap(),
                 b"durable"
             );
-            store.shutdown().await;
+            store.shutdown().await.unwrap();
         })
         .await
         .expect("shutdown ownership fixture timed out");
@@ -419,7 +419,7 @@ mod tests {
         drop(ordinary);
         drop(pool);
         database.shutdown().await.unwrap();
-        audit.shutdown().await;
+        audit.shutdown().await.unwrap();
         assert_eq!(admission.snapshot().reserved_bytes, 0);
     }
 }

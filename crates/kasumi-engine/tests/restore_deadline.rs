@@ -194,5 +194,5 @@ async fn restore_deadline_bounds_source_io_and_gate_queue_without_blocking_anoth
         .unwrap()
         .unwrap();
     database.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }

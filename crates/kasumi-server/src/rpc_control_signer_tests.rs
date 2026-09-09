@@ -542,7 +542,7 @@ pub(super) async fn exercise(f: Fixture<'_>) {
     drop(trust);
     stop.send(true).unwrap();
     serving.await.unwrap().unwrap();
-    verifier.shutdown().await;
+    verifier.shutdown().await.unwrap();
     drop(verifier);
     let reopened = initialization
         .verifier
@@ -553,5 +553,5 @@ pub(super) async fn exercise(f: Fixture<'_>) {
         reopened.owner(&domain).unwrap().current().unwrap(),
         activated.current
     );
-    reopened.shutdown().await;
+    reopened.shutdown().await.unwrap();
 }

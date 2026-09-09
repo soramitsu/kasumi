@@ -14,6 +14,7 @@ use kasumi_store::{
     BackupDestination, FilesystemBackupDestination, NodeStore, S3BackupConfig, S3BackupDestination,
     TenantStorageSet, TenantStore, WriteOp,
 };
+use kasumi_types::drain::{DrainCompletion, DrainFailure, DrainReport, DrainResult};
 use kasumi_types::{Action, Operation, Precondition, RequestContext};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -197,7 +198,7 @@ pub struct Administration {
     // Closure and enrollment publication take this same synchronous boundary.
     enrollment_closed: std::sync::Mutex<bool>,
     // Retain observed failures if a caller cancels while another owner drains.
-    shutdown_failure: tokio::sync::Mutex<Option<anyhow::Error>>,
+    shutdown_failure: tokio::sync::Mutex<DrainReport>,
     admission: Arc<kasumi_engine::admission::NodeAdmission>,
     credential: crate::serving_runtime::CredentialSource,
 }
@@ -468,7 +469,7 @@ impl Administration {
             custody_generations: RwLock::new(BTreeMap::new()),
             gate: Arc::new(tokio::sync::Mutex::new(())),
             enrollment_closed: std::sync::Mutex::new(false),
-            shutdown_failure: tokio::sync::Mutex::new(None),
+            shutdown_failure: tokio::sync::Mutex::new(DrainReport::default()),
             admission,
             credential,
         }))
@@ -1390,13 +1391,26 @@ impl Administration {
         }
         Ok(())
     }
-    pub(crate) async fn shutdown(&self) -> Result<()> {
-        *self
-            .enrollment_closed
-            .lock()
-            .map_err(|_| anyhow::anyhow!("enrollment publication lock poisoned"))? = true;
-        crate::startup_owner::drain(crate::startup_owner::Kind::TenantEnrollment).await?;
-        let mut failure = self.shutdown_failure.lock().await;
+    pub(crate) async fn shutdown(&self) -> DrainResult {
+        let mut report = self.shutdown_failure.lock().await;
+        let mut retained = None;
+        match self.enrollment_closed.lock() {
+            Ok(mut closed) => *closed = true,
+            Err(poisoned) => {
+                *poisoned.into_inner() = true;
+                report.record(
+                    "enrollment admission",
+                    0,
+                    anyhow::anyhow!("enrollment publication lock poisoned"),
+                );
+            }
+        }
+        if let Err(error) =
+            crate::startup_owner::drain(crate::startup_owner::Kind::TenantEnrollment).await
+        {
+            // The registry returns only after its retained task inventory joins.
+            report.record("tenant enrollment", 0, error);
+        }
         let generations = self
             .generations
             .read()
@@ -1409,7 +1423,7 @@ impl Administration {
                 lease.close();
             }
         }
-        for tenant in generations {
+        for (index, tenant) in generations.into_iter().enumerate() {
             if let Some(network) = &self.cluster {
                 let incarnation = tenant
                     .bootstrap
@@ -1429,17 +1443,28 @@ impl Administration {
                         tenant.store.tenant(),
                         incarnation
                     )) {
-                        failure.get_or_insert(error);
+                        retained = Some(DrainFailure::retained(report.record(
+                            "generation route",
+                            index,
+                            error,
+                        )));
                     }
                 }
             }
             if let Some(lease) = &tenant.lease {
                 if let Err(error) = lease.shutdown().await {
-                    failure.get_or_insert(error);
+                    retained = Some(DrainFailure::retained(report.record(
+                        "generation lease",
+                        index,
+                        error,
+                    )));
                 }
             }
-            if let Err(error) = tenant.database.shutdown().await {
-                failure.get_or_insert(error);
+            if let Err(failure) = tenant.database.shutdown().await {
+                report.merge(&failure);
+                if failure.completion() == DrainCompletion::Retained {
+                    retained = Some(failure);
+                }
             }
         }
         let custody = self
@@ -1450,14 +1475,17 @@ impl Administration {
             .cloned()
             .collect::<Vec<_>>();
         for source in custody {
-            if let Err(error) = source.shutdown().await {
-                failure.get_or_insert(error);
+            if let Err(failure) = source.shutdown().await {
+                report.merge(&failure);
+                if failure.completion() == DrainCompletion::Retained {
+                    retained = Some(failure);
+                }
             }
         }
         if let Err(error) = self.node.drain_initializers().await {
-            failure.get_or_insert(error);
+            report.record("administration node initializers", 0, error);
         }
-        failure.take().map_or(Ok(()), Err)
+        report.outcome(retained)
     }
 }
 impl crate::cluster::EnrollmentReadinessProvider for Administration {

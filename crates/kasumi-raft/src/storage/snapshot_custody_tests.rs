@@ -246,7 +246,7 @@ async fn retired_snapshot_installs_without_original_log_and_recovers_with_only_c
     let view = ControlLog::open(custody.clone(), 1, group())?;
     assert!(view.retirement_seed(1)?.is_some());
     assert_eq!(app_provider.probe_count(), probes);
-    custody.store().shutdown().await;
+    custody.store().shutdown().await.unwrap();
     Ok(())
 }
 

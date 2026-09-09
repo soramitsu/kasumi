@@ -77,13 +77,12 @@ async fn initialization_provisions_control_topology_and_application_before_compl
     );
     application.shutdown().await?;
     drop(application);
-    stores.application().shutdown().await;
-    stores.custody().store().shutdown().await;
+    stores.shutdown().await.unwrap();
     drop(stores);
     drop(plane);
     control.shutdown().await?;
     drop(control);
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
     drop(audit);
     drop(node);
     owner.finish(Ok(())).await?;
@@ -184,10 +183,9 @@ async fn stopped_operator_reopen_never_recreates_missing_control_bootstrap() -> 
             == retained,
         "failed reopen rewrote custody commitment"
     );
-    stores.application().shutdown().await;
-    stores.custody().store().shutdown().await;
+    stores.shutdown().await.unwrap();
     drop(stores);
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
     drop(audit);
     drop(node);
     owner.finish(Ok(())).await?;
