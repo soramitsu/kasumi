@@ -16,12 +16,13 @@ use std::{
 };
 use uuid::Uuid;
 
-#[derive(Serialize, Deserialize)]
+#[derive(PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Installation {
     format: u32,
     installation_id: Uuid,
     control_incarnation: Uuid,
+    database_id: Uuid,
     database_path: PathBuf,
 }
 
@@ -63,8 +64,15 @@ pub(crate) fn claim(config: &RuntimeConfig) -> Result<Option<private_files::Excl
         &directory.join("installation.json"),
         16 << 10,
     )?)?;
+    let prepared: Installation = serde_json::from_slice(&private_files::read(
+        &directory.join("initialization.json"),
+        16 << 10,
+    )?)?;
     ensure!(
-        installed.format == 2
+        prepared == installed
+            && installed.format == 2
+            && installed.database_id == config.database_id
+            && !installed.database_id.is_nil()
             && installed.database_path == config.database_path
             && !installed.installation_id.is_nil()
             && !installed.control_incarnation.is_nil()
@@ -159,6 +167,7 @@ pub(crate) async fn operator_state(
     };
     let node = NodeStore::open_existing(
         &config.database_path,
+        config.database_id,
         kasumi_store::ScratchDisk::open(config.scratch_disk.clone())?,
     )?;
     let store = TenantStore::open_existing(
@@ -293,6 +302,7 @@ fn operator_tenants(
                     tenant.incarnation = Some(active.incarnation.to_string());
                     NodeStore::open_existing(
                         active.directory.join("node.redb"),
+                        active.database_id(config, &tenant.tenant)?,
                         node.scratch_disk().clone(),
                     )?
                 }
@@ -754,6 +764,19 @@ async fn initialize_owned(
     let control_incarnation = Uuid::new_v4();
     let tenant_incarnation = Uuid::new_v4();
     let database_path = data.join("node.redb");
+    let installation = Installation {
+        format: 2,
+        installation_id,
+        control_incarnation,
+        database_id: Uuid::new_v4(),
+        database_path: database_path.clone(),
+    };
+    // Freeze physical ownership before the database inode may be created. The
+    // separate completion marker never authorizes adoption of an interrupted init.
+    private_files::create(
+        &data.join("initialization.json"),
+        &serde_json::to_vec(&installation)?,
+    )?;
 
     for domain in [
         "application",
@@ -796,6 +819,7 @@ async fn initialize_owned(
     config.signer_verifier = None;
     config.replication = None;
     config.database_path = database_path.clone();
+    config.database_id = installation.database_id;
     config.scratch_disk.directory = data.join("scratch");
     config.backup_destinations = std::collections::BTreeMap::from([(
         "local".into(),
@@ -834,8 +858,9 @@ async fn initialize_owned(
     config.tenants[0].initial_policy = policy;
     config.tenants[0].incarnation = Some(tenant_incarnation.to_string());
     config.validate()?;
-    let node = NodeStore::open(
+    let node = NodeStore::create_new(
         database_path,
+        installation.database_id,
         kasumi_store::ScratchDisk::open(config.scratch_disk.clone())?,
     )?;
     let security_store = TenantStore::open(
@@ -946,12 +971,7 @@ async fn initialize_owned(
     private_files::create(&configuration, &serde_json::to_vec_pretty(&config)?)?;
     private_files::create(
         &data.join("installation.json"),
-        &serde_json::to_vec(&Installation {
-            format: 2,
-            installation_id,
-            control_incarnation,
-            database_path: config.database_path.clone(),
-        })?,
+        &serde_json::to_vec(&installation)?,
     )?;
     Ok(InitializedInstallation {
         configuration,

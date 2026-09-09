@@ -9,6 +9,18 @@ async fn initialization_provisions_control_topology_and_application_before_compl
     let root = tempfile::tempdir()?;
     let installed = initialize(&root.path().join("database"), "documents").await?;
     let config = RuntimeConfig::load(&installed.configuration)?;
+    let mut substituted = config.clone();
+    substituted.database_id = Uuid::new_v4();
+    ensure!(
+        operator_state(&substituted).await.is_err(),
+        "different configured physical database identity was accepted"
+    );
+    substituted = config.clone();
+    substituted.control.incarnation = Some(Uuid::new_v4().to_string());
+    ensure!(
+        operator_state(&substituted).await.is_err(),
+        "different configured immutable Control identity was accepted"
+    );
     let (lock, node, audit, credentials) = operator_state(&config).await?;
     let control = operator_control(&config, node.clone(), audit.clone()).await?;
     let plane = ControlPlane::new(control.clone())?;
@@ -56,6 +68,7 @@ async fn initialization_provisions_control_topology_and_application_before_compl
     )?)?;
     ensure!(
         marker.format == 2
+            && marker.database_id == config.database_id
             && marker.control_incarnation.to_string()
                 == config.control.incarnation.clone().unwrap(),
         "completed installation identity differs"
@@ -99,8 +112,13 @@ async fn failed_profile_publication_drains_owners_and_never_marks_partial_instal
         "failed initialization published a completion artifact"
     );
     let _lock = private_files::ExclusiveLock::acquire(&directory.join("data/installation.lock"))?;
+    let prepared: Installation = serde_json::from_slice(&private_files::read(
+        &directory.join("data/initialization.json"),
+        16 << 10,
+    )?)?;
     let node = NodeStore::open_existing(
         directory.join("data/node.redb"),
+        prepared.database_id,
         kasumi_store::ScratchDisk::fixture(),
     )?;
     drop(node);

@@ -138,6 +138,19 @@ pub(crate) struct ActiveGeneration {
     custody_provider: serde_json::Value,
 }
 
+impl ActiveGeneration {
+    /// The selected operation/installation facts already passed the permanent
+    /// generation journal checks in `active_generation`; aliases cannot select
+    /// another expected physical node-file identity.
+    pub(crate) fn database_id(&self, config: &RuntimeConfig, tenant: &str) -> Result<Uuid> {
+        kasumi_store::node_store_ids::local_generation(
+            installation_id(config, tenant)?,
+            self.operation_id,
+            self.incarnation,
+        )
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
 enum GenerationRecord {
@@ -254,7 +267,8 @@ pub(crate) fn active_generation(
     );
     let journal = record(store, active.operation_id)?;
     ensure!(
-        journal.status.request.tenant == tenant
+        journal.installation_id == installation_id(config, tenant)?
+            && journal.status.request.tenant == tenant
             && journal.status.request.target_incarnation == active.incarnation
             && journal.status.request.checkpoint == active.checkpoint
             && journal.target_directory == active.directory
@@ -754,9 +768,35 @@ impl Operator {
             &request.tenant,
             request.target_incarnation,
         )?;
+        let database_id = kasumi_store::node_store_ids::local_generation(
+            journal.installation_id,
+            request.operation_id,
+            request.target_incarnation,
+        )?;
+        let node = if materialize && std::fs::symlink_metadata(&path)?.len() == 0 {
+            // The constructor rechecks the exact journal-bound empty descriptor
+            // while holding its file lock before the first envelope write.
+            kasumi_store::NodeStore::initialize_owned_empty(
+                &path,
+                journal
+                    .database_file
+                    .as_ref()
+                    .context("target inode binding missing")?,
+                database_id,
+                self.store().scratch_disk().clone(),
+            )?
+        } else {
+            // A nonempty file must already have a complete exact envelope. A
+            // partially published envelope is never reset or adopted on retry.
+            kasumi_store::NodeStore::open_existing(
+                &path,
+                database_id,
+                self.store().scratch_disk().clone(),
+            )?
+        };
         let stores = if materialize {
             kasumi_store::TenantStorageSet::open(
-                kasumi_store::NodeStore::open(&path, self.store().scratch_disk().clone())?,
+                node,
                 request.tenant.clone(),
                 application,
                 custody,
@@ -765,7 +805,7 @@ impl Operator {
             .await?
         } else {
             kasumi_store::TenantStorageSet::open_existing(
-                kasumi_store::NodeStore::open_existing(&path, self.store().scratch_disk().clone())?,
+                node,
                 request.tenant.clone(),
                 application,
                 custody,

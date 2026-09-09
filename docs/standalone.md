@@ -14,6 +14,17 @@ Listeners default to loopback: MCP on 9443, native data on 9444, and native admi
 
 Established standalone runtime and operator opens require the existing application/custody catalogs, authenticated bootstrap and exact configured incarnation. Missing bootstrap or Control topology is an error, never permission to create a new genesis from configuration defaults. The completion marker binds the immutable Control incarnation; unsupported marker formats are rejected explicitly.
 
+The required non-nil `database_id` identifies the main physical node file. Init
+persists this random UUID in private `data/initialization.json` before creating
+the inode. The final `data/installation.json` must match that intent and the
+configured ID. An existing node must have a complete canonical node-file
+envelope with the expected ID before the storage engine may recover it. Raw,
+partial, missing or differently identified files are rejected. Restored local
+generations derive their separate file IDs from the retained installation,
+recovery operation and target incarnation; active runtime and stopped operator
+opens use the same derivation. The UUID envelope does not replace encrypted
+tenant catalog authentication or permanent recovery fencing.
+
 The generated configuration includes a required `scratch_disk` object with an
 absolute private `directory` at `data/scratch`, `max_bytes` of 68719476736
 (64 GiB), and `min_free_bytes` of 268435456 (256 MiB). Configure these values for

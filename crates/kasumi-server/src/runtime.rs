@@ -1135,7 +1135,7 @@ impl NodeRuntime {
                 let tenant_node = match &active {
                     Some(active) => {
                         tenant.incarnation = Some(active.incarnation.to_string());
-                        NodeStore::open_existing(active.directory.join("node.redb"), scratch_disk.clone())?
+                        NodeStore::open_existing(active.directory.join("node.redb"), active.database_id(&config, &tenant.tenant)?, scratch_disk.clone())?
                     }
                     None => node.clone(),
                 };
