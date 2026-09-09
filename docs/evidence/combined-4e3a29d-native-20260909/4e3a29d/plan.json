@@ -1,0 +1,235 @@
+{
+  "source": "/tmp/kasumi-production-drain-validation",
+  "target": "/tmp/kasumi-production-root-target",
+  "expected_head": "4e3a29d9b459690072ecf13a570d1869e3070427",
+  "expected_tree": "af312df308c46c527cc6916747db9cbd05def301",
+  "output": "/tmp/kasumi-4e3a29d-native-remainder",
+  "scope": "Remaining12 focused macOS ARM64 checks after correcting native SDK fixture canonical exponent expectation from1e400 to1e+400. Nativepayload and assertions unchanged beyond canonical fixture expectation. Earlier61b native worker/receipt/HArestart checks passed; exact failed setup and all evidence retained. No finalrelease/capacity/performance/endurance acceptance.",
+  "gates": [
+    {
+      "name": "native-sdk-literal",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--lib",
+        "api::tests::native_sdk_query_feed_schema_preserve_literal_values_and_admission",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "api::tests::native_sdk_query_feed_schema_preserve_literal_values_and_admission"
+      ]
+    },
+    {
+      "name": "native-pool",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--lib",
+        "api::tests::native_pool_replays_uncertain_batches_and_never_moves_historical_pages",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "api::tests::native_pool_replays_uncertain_batches_and_never_moves_historical_pages"
+      ]
+    },
+    {
+      "name": "guarded-sdk",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--lib",
+        "api::tests::guarded_stop_secure_sdk_preserves_exact_identity_and_native_authority",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "api::tests::guarded_stop_secure_sdk_preserves_exact_identity_and_native_authority"
+      ]
+    },
+    {
+      "name": "local-recovery",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--lib",
+        "local_recovery::tests::local_recovery_resumes_each_phase_and_fences_old_resources_after_activation",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "local_recovery::tests::local_recovery_resumes_each_phase_and_fences_old_resources_after_activation"
+      ]
+    },
+    {
+      "name": "tls-listener",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--test",
+        "tls_listener",
+        "native_grpc_channel_uses_pinned_tls13_and_http2_with_no_plaintext_fallback",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "native_grpc_channel_uses_pinned_tls13_and_http2_with_no_plaintext_fallback"
+      ]
+    },
+    {
+      "name": "tls-reload",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--lib",
+        "api::tests::native_listener_reloads_complete_tls_and_rejects_invalid_replacement",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "api::tests::native_listener_reloads_complete_tls_and_rejects_invalid_replacement"
+      ]
+    },
+    {
+      "name": "audit-tls",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--lib",
+        "runtime::audit_tests::audit_native_tls_fixed_history_and_original_authorization_release",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "runtime::audit_tests::audit_native_tls_fixed_history_and_original_authorization_release"
+      ]
+    },
+    {
+      "name": "literal-snapshot",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--lib",
+        "snapshot_codec::literal_tests::literal_marker_documents_schema_and_staged_records_survive_canonical_snapshots",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "snapshot_codec::literal_tests::literal_marker_documents_schema_and_staged_records_survive_canonical_snapshots"
+      ]
+    },
+    {
+      "name": "literal-native-mcp-codecs",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--lib",
+        "json_literal_tests",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "json_literal_tests::native_mutation_query_and_canonical_command_keep_literal_values",
+        "json_literal_tests::rmcp_earliest_message_decode_and_typed_arguments_preserve_literals",
+        "json_literal_tests::history_chunk_documents_keep_the_original_body_digest"
+      ]
+    },
+    {
+      "name": "workspace-strict",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "clippy",
+        "--locked",
+        "--offline",
+        "-j1",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "-D",
+        "warnings"
+      ]
+    },
+    {
+      "name": "production-check",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "check",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--no-default-features",
+        "--bins",
+        "--message-format=json-render-diagnostics"
+      ]
+    },
+    {
+      "name": "format",
+      "timeout_seconds": 300,
+      "cargo_args": [
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ]
+    }
+  ]
+}

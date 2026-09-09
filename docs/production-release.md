@@ -150,6 +150,26 @@ gate above and usable installation artifacts.
 
 ## Current verified increments
 
+- The combined SDK, original-receipt, canonical JSON and shutdown changes are
+  integrated through source `980daa4`. Frozen `4e3a29d` passes eleven selected
+  native/codec tests, strict all-target/all-feature workspace Clippy and
+  fixture-free server binary compilation on Rust 1.97.1/macOS ARM64. Its final
+  formatting failure is retained; `980daa4` changes only the reported line wrap
+  and passes formatting. Earlier `61b5f0b` passes the three-node TLS restore and
+  restart test, target/signing worker drains and native/MCP receipt checks.
+  The indexed original-lineage defect and SDK fixture spelling failure are
+  preserved alongside their successors in `docs/evidence/combined-*20260909`.
+  These focused results do not substitute for full workspace, final-platform,
+  capacity or endurance gates, nor validate the newer permanent-prefix and
+  target completion receiver/status implementation.
+- The retained Linux `3a8d512` binaries pass the offline standalone diagnostic:
+  private initialization, pinned native/MCP access, renewal, encrypted backup,
+  restart, local restore and explicit old-resource credential rejection.
+  Source/binary/runner hashes and verified process/container drains are recorded
+  in `docs/evidence/small-offline-native-3a8d512-20260909`. Only allowlisted
+  metadata and hashes were exported; operator secrets remain in private storage.
+  The earlier Linux full functional failure remains failed. This small diagnostic
+  is not final-source, capacity, HA or complete secure-installation acceptance.
 - External stock SDK checkpoint `3f88b44` passes the exact canonical-admission
   test under `preserve_order` and all six public literal-decoding tests in each
   default/ordered graph (13 test executions). Locked metadata and actual compiled

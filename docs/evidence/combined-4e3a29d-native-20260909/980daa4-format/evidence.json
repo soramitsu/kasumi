@@ -1,0 +1,88 @@
+{
+  "scope": "Formatting-only successor after4e3a29d eleven scopedgates passed then formatter rejected a line wrap in indexed staged lineage validation. Exactly one whitespace linewrap changed; prior tests/strict/production results remainbound4e. No finalsourcefunctional claim.",
+  "status": "passed",
+  "source": "980daa4c1378813cd98da69045d46f0b77b75bd6",
+  "tree": "a71d6c20ab401151ef3bf9c0f081c74fbe7a23fe",
+  "source_manifest_sha256": "cb9d09ffa480b0c16c31fa930ab64ca710960ff256c2e0aa0ecbd703e21b0c30",
+  "lock_sha256": "fa77f53d97ea1537b23f2b60cf30c153e4bac9f4d7920afc63d7360773ba16a7",
+  "runner_sha256": "ad3d647fbb73d9d32e04e4e202814f68aea2cb5aa80acbed03a10fa8a3855a6f",
+  "process_helper_sha256": "6c8b255e5a69aa8985da8d70f5baa73337bcaeac7098bd756c4d6cc6472e58de",
+  "plan_sha256": "38381421956fd9c83a91a94bb7d747a4ecfc30623f28a013daaaadcbfe473538",
+  "target": "/private/tmp/kasumi-production-root-target",
+  "started_at": "2026-09-09T04:03:30.689446+00:00",
+  "tools": {
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo": "7672ead309d505577c018fff2cafb3433601f073e38cbe87359ac1f7b944bbf5",
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc": "210df6794001b73ec3d453878707fa1e0bdcb63c427024a6e6574bbe5615a4da",
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustdoc": "aa94960b6a477441f6d1a797394daf4cafcc889d837550c8fa462b102e3fa5da"
+  },
+  "gates": [
+    {
+      "name": "format",
+      "timeout_seconds": 300,
+      "cargo_args": [
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "status": "passed",
+      "command": [
+        "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "process_record": {
+        "status": "passed",
+        "command": [
+          "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+          "fmt",
+          "--all",
+          "--",
+          "--check"
+        ],
+        "timeout_seconds": 300,
+        "process_group": 77478,
+        "process_exit_code": 0,
+        "exit_code": 0,
+        "timed_out": false,
+        "received_signals": [],
+        "error": null,
+        "cleanup": {
+          "group": 77478,
+          "before": [],
+          "after": [],
+          "signals": [],
+          "errors": [],
+          "drained": true,
+          "process_returncode": 0
+        },
+        "duration_seconds": 1.316
+      },
+      "process_group": 77478,
+      "duration_seconds": 1.321,
+      "process_exit_code": 0,
+      "error": null,
+      "cleanup": {
+        "group": 77478,
+        "before": [],
+        "after": [],
+        "signals": [],
+        "errors": [],
+        "drained": true,
+        "process_returncode": 0,
+        "remaining_after_command": false
+      },
+      "log": "format.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source_unchanged": true,
+      "executables": {},
+      "compiled_packages": {},
+      "required_tests_passed": true,
+      "test_summaries": []
+    }
+  ],
+  "finished_at": "2026-09-09T04:03:32.464885+00:00",
+  "source_unchanged": true
+}

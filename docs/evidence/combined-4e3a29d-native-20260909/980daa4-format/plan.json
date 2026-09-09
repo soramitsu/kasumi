@@ -1,0 +1,20 @@
+{
+  "source": "/tmp/kasumi-production-drain-validation",
+  "target": "/tmp/kasumi-production-root-target",
+  "expected_head": "980daa4c1378813cd98da69045d46f0b77b75bd6",
+  "expected_tree": "a71d6c20ab401151ef3bf9c0f081c74fbe7a23fe",
+  "output": "/tmp/kasumi-980daa4-format",
+  "scope": "Formatting-only successor after4e3a29d eleven scopedgates passed then formatter rejected a line wrap in indexed staged lineage validation. Exactly one whitespace linewrap changed; prior tests/strict/production results remainbound4e. No finalsourcefunctional claim.",
+  "gates": [
+    {
+      "name": "format",
+      "timeout_seconds": 300,
+      "cargo_args": [
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ]
+    }
+  ]
+}
