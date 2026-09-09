@@ -19,8 +19,14 @@ pub use backup_sessions::{
     BackupSessionObjectPage, BackupSessionObjects, BackupSessionSlot, MAX_SESSION_GC_OBJECTS,
     MAX_SESSION_RECORD_BYTES, VerifiedBackupAbort, VerifiedBackupSession, verify_backup_session,
 };
+mod device_disk;
 mod keys;
+mod node_disk;
 mod read_view;
+pub use node_disk::{
+    CensusCancellation, DiskWork, NodeDisk, NodeDiskConfig, NodeDiskFile, NodeDiskPhase,
+    NodeDiskSnapshot,
+};
 mod scratch_disk;
 mod scratch_table;
 pub use scratch_disk::{ScratchDisk, ScratchDiskConfig, ScratchDiskSnapshot};
