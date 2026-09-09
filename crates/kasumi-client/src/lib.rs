@@ -5,14 +5,20 @@
 //! pin historical reads to their originating member.
 
 use kasumi_transport::{CertificatePin, TlsIdentity};
-use kasumi_types::{
-    MutationBatch, QueryRequest, QueryResponse, QueryRow, ReadSnapshotRequest,
-    SnapshotReadResponse, WriteReceipt,
-};
+use kasumi_types::{MutationBatch, WriteReceipt};
 use serde::Serialize;
 use std::collections::BTreeSet;
 use tonic::{Request, transport::Channel};
 
+mod literal_decode;
+mod snapshot_decode;
+pub use literal_decode::{
+    decode_mutation_json, decode_query_json, decode_schema_change_json, decode_staged_chunk_json,
+};
+pub use snapshot_decode::{
+    AdmittedResponse, ClientDecodeLimits, ClientResourceUsage, ClientResources, JsonReadOptions,
+    SnapshotReadOptions,
+};
 mod credentials;
 mod security_audit;
 pub use security_audit::VerifiedSecurityAuditArchive;
@@ -25,8 +31,10 @@ mod authority_pool;
 mod control_signer;
 pub use control_signer::CurrentControlSignerObservation;
 mod data_pool;
+mod mutation_receipt;
 pub use authority_pool::KasumiAuthorityPool;
 pub use data_pool::{KasumiClientPool, RoutedQueryPage, RoutedSnapshotLease};
+pub use mutation_receipt::verify_mutation_receipt;
 mod restore_lineage_proof;
 mod retirement_proof;
 pub use authority::KasumiAuthorityClient;
@@ -48,6 +56,13 @@ pub enum ClientError {
     Connection(#[from] anyhow::Error),
     #[error("native transport failed: {0}")]
     Transport(#[from] tonic::Status),
+    /// Admitted decode failures retain no peer-controlled strings or metadata after
+    /// their admission owner is released. The code remains usable for routing.
+    #[error("native decode failed ({code:?}): {reason}")]
+    DecodeRejected {
+        code: tonic::Code,
+        reason: &'static str,
+    },
     #[error("invalid native JSON")]
     Json(#[from] serde_json::Error),
     #[error("invalid native response: {0}")]
@@ -72,6 +87,7 @@ pub struct KasumiClientConfig {
 pub struct KasumiClient {
     inner: proto::kasumi_data_client::KasumiDataClient<Channel>,
     deadline: Option<tokio::time::Instant>,
+    snapshot_channel: Channel,
 }
 
 impl KasumiClient {
@@ -123,23 +139,6 @@ impl KasumiClient {
         Ok(VerifiedRestoreLineage::from_verified_read(observation))
     }
 
-    pub async fn read_change_feed(
-        &mut self,
-        bearer: &str,
-        request: &kasumi_types::ReadChangeFeed,
-    ) -> Result<kasumi_types::ChangeFeedPage, ClientError> {
-        let response = self
-            .inner
-            .read_change_feed(self.authorized(
-                bearer,
-                proto::ReadChangeFeedRequest {
-                    request_json: encode(request)?,
-                },
-            )?)
-            .await?
-            .into_inner();
-        Ok(serde_json::from_slice(&response.response_json)?)
-    }
     pub async fn connect(config: &KasumiClientConfig) -> Result<Self, ClientError> {
         let channel = kasumi_transport::grpc_channel(
             &config.endpoint,
@@ -150,6 +149,7 @@ impl KasumiClient {
         .await?;
         Ok(Self {
             deadline: None,
+            snapshot_channel: channel.clone(),
             inner: proto::kasumi_data_client::KasumiDataClient::new(channel)
                 .max_encoding_message_size((8 << 20) + (64 << 10))
                 .max_decoding_message_size(16 << 20),
@@ -259,60 +259,6 @@ impl KasumiClient {
         staged_status::decode(&response.response_json, request)
     }
 
-    pub async fn open_snapshot_lease(
-        &mut self,
-        bearer: &str,
-        request: &kasumi_types::OpenSnapshotLease,
-    ) -> Result<kasumi_types::SnapshotLease, ClientError> {
-        let response = self
-            .inner
-            .open_snapshot_lease(self.authorized(
-                bearer,
-                proto::OpenSnapshotLeaseRequest {
-                    request_json: encode(request)?,
-                },
-            )?)
-            .await?
-            .into_inner();
-        Ok(serde_json::from_slice(&response.response_json)?)
-    }
-
-    pub async fn read_snapshot_page(
-        &mut self,
-        bearer: &str,
-        request: &kasumi_types::ReadSnapshotPage,
-    ) -> Result<kasumi_types::SnapshotReadResponse, ClientError> {
-        let response = self
-            .inner
-            .read_snapshot_page(self.authorized(
-                bearer,
-                proto::ReadSnapshotPageRequest {
-                    request_json: encode(request)?,
-                },
-            )?)
-            .await?
-            .into_inner();
-        Ok(serde_json::from_slice(&response.response_json)?)
-    }
-
-    pub async fn scan_snapshot_page(
-        &mut self,
-        bearer: &str,
-        request: &kasumi_types::ScanSnapshotPage,
-    ) -> Result<kasumi_types::SnapshotScanPage, ClientError> {
-        let response = self
-            .inner
-            .scan_snapshot_page(self.authorized(
-                bearer,
-                proto::ScanSnapshotPageRequest {
-                    request_json: encode(request)?,
-                },
-            )?)
-            .await?
-            .into_inner();
-        Ok(serde_json::from_slice(&response.response_json)?)
-    }
-
     pub async fn close_snapshot_lease(
         &mut self,
         bearer: &str,
@@ -328,72 +274,6 @@ impl KasumiClient {
             .await?;
         Ok(())
     }
-    pub async fn read_snapshot(
-        &mut self,
-        bearer: &str,
-        request: &ReadSnapshotRequest,
-    ) -> Result<SnapshotReadResponse, ClientError> {
-        let response = self
-            .inner
-            .read_snapshot(self.authorized(
-                bearer,
-                proto::ReadSnapshotRequest {
-                    request_json: encode(request)?,
-                },
-            )?)
-            .await?
-            .into_inner();
-        Ok(serde_json::from_slice(&response.response_json)?)
-    }
-
-    /// Bounded ordinary query/pagination for discovery. A returned page is not
-    /// a complete conditional-transaction dependency set; use coherent snapshot
-    /// reads and their assertions when a write depends on query completeness.
-    pub async fn query(
-        &mut self,
-        bearer: &str,
-        request: &QueryRequest,
-    ) -> Result<QueryResponse, ClientError> {
-        let response = self
-            .inner
-            .query(self.authorized(
-                bearer,
-                proto::QueryRequest {
-                    query_json: encode(request)?,
-                },
-            )?)
-            .await?
-            .into_inner();
-        let rows = response
-            .rows
-            .into_iter()
-            .map(|row| {
-                let document = row.document.ok_or_else(|| {
-                    ClientError::Transport(tonic::Status::data_loss(
-                        "native query row is missing its document",
-                    ))
-                })?;
-                Ok(QueryRow {
-                    id: document.id,
-                    version: document.version,
-                    body: serde_json::from_slice(&document.body_json)?,
-                    score: row.score,
-                })
-            })
-            .collect::<Result<Vec<_>, ClientError>>()?;
-        let aggregates = response
-            .aggregates_json
-            .into_iter()
-            .map(|value| serde_json::from_slice(&value))
-            .collect::<Result<Vec<_>, serde_json::Error>>()?;
-        Ok(QueryResponse {
-            revision: response.revision,
-            rows,
-            aggregates,
-            cursor: response.cursor,
-        })
-    }
-
     pub async fn mutate(
         &mut self,
         bearer: &str,
@@ -419,6 +299,7 @@ impl KasumiClient {
 /// Connect this client to the separate administrative listener.
 #[derive(Clone)]
 pub struct KasumiAdminClient {
+    bounded_channel: Channel,
     inner: proto::kasumi_admin_client::KasumiAdminClient<Channel>,
 }
 impl KasumiAdminClient {
@@ -564,24 +445,6 @@ impl KasumiAdminClient {
         Ok(VerifiedBackupCheckpoint::verified(checkpoint))
     }
 
-    pub async fn read_schema(
-        &mut self,
-        bearer: &str,
-        request: &kasumi_types::ReadSchema,
-    ) -> Result<kasumi_types::SchemaSnapshot, ClientError> {
-        let response = self
-            .inner
-            .read_schema(authorized(
-                bearer,
-                proto::ReadSchemaRequest {
-                    request_json: encode(request)?,
-                },
-            )?)
-            .await?
-            .into_inner();
-        Ok(serde_json::from_slice(&response.response_json)?)
-    }
-
     pub async fn activate_schema(
         &mut self,
         bearer: &str,
@@ -630,6 +493,7 @@ impl KasumiAdminClient {
         )
         .await?;
         Ok(Self {
+            bounded_channel: channel.clone(),
             inner: proto::kasumi_admin_client::KasumiAdminClient::new(channel)
                 .max_encoding_message_size((8 << 20) + (64 << 10))
                 .max_decoding_message_size(16 << 20),
@@ -673,12 +537,16 @@ fn authorized<T>(bearer: &str, value: T) -> Result<Request<T>, ClientError> {
         return Err(ClientError::Authorization);
     }
     let mut request = Request::new(value);
-    request.metadata_mut().insert(
-        "authorization",
+    let mut authorization: tonic::metadata::MetadataValue<tonic::metadata::Ascii> =
         format!("Bearer {bearer}")
             .parse()
-            .map_err(|_| ClientError::Authorization)?,
-    );
+            .map_err(|_| ClientError::Authorization)?;
+    // This flag preserves the wire bytes while redacting Debug and preventing
+    // HTTP/2 implementations from indexing the credential in shared tables.
+    authorization.set_sensitive(true);
+    request
+        .metadata_mut()
+        .insert("authorization", authorization);
     Ok(request)
 }
 
@@ -686,3 +554,24 @@ mod staged_status;
 
 mod target;
 pub use target::{KasumiTargetClient, TargetAcknowledgement};
+
+#[cfg(test)]
+mod authorization_tests {
+    use super::*;
+    #[test]
+    fn bearer_wire_value_is_unchanged_while_debug_is_redacted() {
+        let bearer = "synthetic-private-bearer-for-redaction-test";
+        let request = authorized(bearer, ()).unwrap();
+        let metadata = request.metadata().get("authorization").unwrap();
+        assert_eq!(metadata.to_str().unwrap(), format!("Bearer {bearer}"));
+        assert!(metadata.is_sensitive());
+        for diagnostic in [
+            format!("{metadata:?}"),
+            format!("{:?}", request.metadata()),
+            format!("{request:?}"),
+        ] {
+            assert!(!diagnostic.contains(bearer));
+        }
+        assert!(format!("{request:?}").contains("authorization"));
+    }
+}

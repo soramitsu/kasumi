@@ -19,6 +19,7 @@ use std::{
 #[serde(default, deny_unknown_fields)]
 pub struct AdmissionConfig {
     /// None: half physical memory, limited by the Linux cgroup memory ceiling.
+    /// An explicit value must not exceed that detected capacity either.
     pub high_water_bytes: Option<u64>,
     /// None: seven eighths of the high-water mark, providing hysteresis.
     pub low_water_bytes: Option<u64>,
@@ -41,6 +42,16 @@ impl Default for AdmissionConfig {
     }
 }
 impl AdmissionConfig {
+    fn resolve_high_water(&self, capacity: u64) -> anyhow::Result<u64> {
+        anyhow::ensure!(capacity > 0, "physical RAM capacity is zero");
+        let high = self.high_water_bytes.unwrap_or(capacity / 2);
+        anyhow::ensure!(
+            high > 0 && high <= capacity,
+            "configured admission high-water mark exceeds detected host/container memory capacity"
+        );
+        Ok(high)
+    }
+
     pub fn validate(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
             self.max_inflight_operations > 0,
@@ -208,12 +219,35 @@ pub struct NodeAdmission {
     state: Mutex<State>,
 }
 impl NodeAdmission {
+    /// Deterministic memory observations for unit tests of ownership. This is
+    /// unavailable in library and fixture-feature builds of the database.
+    #[cfg(test)]
+    pub(crate) fn with_fixed_memory(
+        config: AdmissionConfig,
+        capacity: u64,
+        resident: u64,
+    ) -> anyhow::Result<Arc<Self>> {
+        struct FixedMemory(u64);
+        impl MemorySource for FixedMemory {
+            fn resident_bytes(&self) -> anyhow::Result<u64> {
+                Ok(self.0)
+            }
+        }
+        let high = config.resolve_high_water(capacity)?;
+        Self::create(
+            config,
+            high,
+            Arc::new(FixedMemory(resident)),
+            Arc::new(SystemLeaseClock),
+        )
+    }
+
     pub fn new(config: AdmissionConfig) -> anyhow::Result<Arc<Self>> {
         config.validate()?;
-        let high = match config.high_water_bytes {
-            Some(high) => high,
-            None => physical_capacity()? / 2,
-        };
+        // An explicit threshold may reduce the detected capacity, but must not
+        // bypass host/cgroup discovery or turn an impossible RAM budget into an
+        // installed governor. Probe failures remain startup failures.
+        let high = config.resolve_high_water(physical_capacity()?)?;
         let node = Self::create(
             config,
             high,
@@ -675,6 +709,32 @@ mod tests {
             memory,
             clock,
         )
+    }
+    #[test]
+    fn explicit_high_water_cannot_bypass_detected_memory_capacity() {
+        let mut config = AdmissionConfig::default();
+        assert_eq!(config.resolve_high_water(1000).unwrap(), 500);
+        config.high_water_bytes = Some(750);
+        assert_eq!(config.resolve_high_water(1000).unwrap(), 750);
+        config.high_water_bytes = Some(1000);
+        assert_eq!(config.resolve_high_water(1000).unwrap(), 1000);
+        config.high_water_bytes = Some(1001);
+        assert!(config.resolve_high_water(1000).is_err());
+        config.high_water_bytes = Some(1);
+        assert!(config.resolve_high_water(0).is_err());
+        config.high_water_bytes = None;
+        assert!(config.resolve_high_water(0).is_err());
+        assert_eq!(config.resolve_high_water(u64::MAX).unwrap(), u64::MAX / 2);
+        // The public production constructor must use this validation even when
+        // the operator supplied an explicit value. It fails before starting a
+        // sampling worker or admitting operations.
+        assert!(
+            NodeAdmission::new(AdmissionConfig {
+                high_water_bytes: Some(u64::MAX),
+                ..Default::default()
+            })
+            .is_err()
+        );
     }
     #[test]
     fn workspace_handoff_preserves_slot_owner_and_checks_only_replacement_growth() {

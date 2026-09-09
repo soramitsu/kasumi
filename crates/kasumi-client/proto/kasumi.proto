@@ -126,10 +126,16 @@ message WriteReceipt { uint64 revision = 1; map<string, uint64> versions = 2; }
 message CollectionsRequest {}
 message CollectionsResponse { repeated bytes definitions_json = 1; }
 message ReceiptRequest { string idempotency_key = 1; }
+message MutationReceiptScope { string tenant = 1; string incarnation = 2; string principal = 3; }
 message DatabaseError { string code = 1; string message = 2; }
 message ReceiptResponse {
   // Neither outcome set means there is no retained receipt for this principal/key.
   oneof outcome { WriteReceipt committed = 1; DatabaseError rejected = 2; }
+  // Mandatory with either outcome; empty only when no receipt is retained.
+  // SHA-256 of the canonical typed MutationBatch, including its original key.
+  string request_digest = 3;
+  // Mandatory with an outcome, absent only when no receipt is retained.
+  MutationReceiptScope scope = 4;
 }
 message CollectionDefinitionRequest { bytes definition_json = 1; }
 message SetPolicyRequest { bytes policy_json = 1; }

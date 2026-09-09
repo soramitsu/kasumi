@@ -73,6 +73,7 @@ async fn full_shutdown_reopens_immediately_with_receipts_and_retained_plaintext(
                     .await
                     .unwrap()
                     .unwrap()
+                    .outcome
                     .is_ok()
             );
         }

@@ -136,9 +136,21 @@ async fn native_pool_replays_uncertain_batches_and_never_moves_historical_pages(
         1,
         "first member committed but lost its response"
     );
-    assert_eq!(credential_loads.load(Ordering::SeqCst), 1, "ambiguous mutation retries retain the original credential snapshot");
-    assert!(pool.mutate(&original, Duration::from_secs(4)).await.is_err());
-    assert_eq!(credential_loads.load(Ordering::SeqCst), 2, "the next operation reads the replacement once");
+    assert_eq!(
+        credential_loads.load(Ordering::SeqCst),
+        1,
+        "ambiguous mutation retries retain the original credential snapshot"
+    );
+    assert!(
+        pool.mutate(&original, Duration::from_secs(4))
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        credential_loads.load(Ordering::SeqCst),
+        2,
+        "the next operation reads the replacement once"
+    );
     *current_token.write().unwrap() = token;
     let replay = pool
         .mutate(&original, Duration::from_secs(4))
@@ -177,13 +189,40 @@ async fn native_pool_replays_uncertain_batches_and_never_moves_historical_pages(
         json!({"collection":"docs", "filter":{"op":"all"}, "limit":1, "allow_scan":true}),
     )
     .unwrap();
-    let page = pool.query(&query, Duration::from_secs(4)).await.unwrap();
+    let snapshot_resources = kasumi_client::ClientResources::new(64 << 20, 8).unwrap();
+    let json_options = |duration| kasumi_client::JsonReadOptions {
+        resources: snapshot_resources.clone(),
+        limits: kasumi_client::ClientDecodeLimits {
+            max_request_bytes: 64 << 10,
+            max_wire_bytes: 64 << 10,
+            max_json_bytes: 64 << 10,
+            max_decoded_bytes: 2 << 20,
+            ..Default::default()
+        },
+        deadline: tokio::time::Instant::now() + duration,
+    };
+    let page = pool
+        .query(&query, &json_options(Duration::from_secs(4)))
+        .await
+        .unwrap();
     assert_eq!(page.member(), 2);
     assert!(page.response().cursor.is_some());
+    let snapshot_options = |duration| kasumi_client::SnapshotReadOptions {
+        resources: snapshot_resources.clone(),
+        limits: kasumi_client::ClientDecodeLimits {
+            max_request_bytes: 64 << 10,
+            max_wire_bytes: 64 << 10,
+            max_json_bytes: 64 << 10,
+            max_decoded_bytes: 2 << 20,
+            ..Default::default()
+        },
+        deadline: tokio::time::Instant::now() + duration,
+        expected_incarnation: fixture.incarnation,
+    };
     let lease = pool
         .open_snapshot_lease(
             &kasumi_types::OpenSnapshotLease { ttl_ms: 5000 },
-            Duration::from_secs(4),
+            &snapshot_options(Duration::from_secs(4)),
         )
         .await
         .unwrap();
@@ -191,21 +230,27 @@ async fn native_pool_replays_uncertain_batches_and_never_moves_historical_pages(
     let mut other_pool = KasumiClientPool::new(endpoints, source).unwrap();
     assert!(
         other_pool
-            .next_query_page(&page, Duration::from_secs(1))
+            .next_query_page(&page, &json_options(Duration::from_secs(1)))
             .await
             .is_err()
     );
     stops[1].send(true).unwrap();
     tasks.pop().unwrap().await.unwrap().unwrap();
     assert!(
-        pool.next_query_page(&page, Duration::from_millis(150))
+        pool.next_query_page(&page, &json_options(Duration::from_millis(150)))
             .await
             .is_err()
     );
     assert!(
-        pool.scan_snapshot_page(&lease, "docs", None, 1, Duration::from_millis(150))
-            .await
-            .is_err()
+        pool.scan_snapshot_page(
+            &lease,
+            "docs",
+            None,
+            1,
+            &snapshot_options(Duration::from_millis(150))
+        )
+        .await
+        .is_err()
     );
     assert_eq!(
         first_requests.load(Ordering::SeqCst),
@@ -214,7 +259,7 @@ async fn native_pool_replays_uncertain_batches_and_never_moves_historical_pages(
     );
     // An explicitly new query can select an available installed member.
     assert_eq!(
-        pool.query(&query, Duration::from_secs(2))
+        pool.query(&query, &json_options(Duration::from_secs(2)))
             .await
             .unwrap()
             .member(),

@@ -1,6 +1,9 @@
 //! Installed native endpoint routing. Historical pages carry their originating
 //! member in an opaque SDK handle; retry cannot turn them into a fresh snapshot.
-use crate::{ClientError, KasumiClient, KasumiClientConfig};
+use crate::{
+    AdmittedResponse, ClientError, JsonReadOptions, KasumiClient, KasumiClientConfig,
+    SnapshotReadOptions, snapshot_decode,
+};
 use kasumi_transport::credentials::{CredentialSource, token};
 use kasumi_types::*;
 use std::{
@@ -29,8 +32,8 @@ pub struct KasumiClientPool {
 pub struct RoutedQueryPage {
     installation: uuid::Uuid,
     member: u64,
-    query: QueryRequest,
-    response: QueryResponse,
+    prepared: Arc<crate::literal_decode::Prepared>,
+    response: AdmittedResponse<QueryResponse>,
 }
 impl RoutedQueryPage {
     pub fn response(&self) -> &QueryResponse {
@@ -44,7 +47,7 @@ impl RoutedQueryPage {
 pub struct RoutedSnapshotLease {
     installation: uuid::Uuid,
     member: u64,
-    lease: SnapshotLease,
+    lease: AdmittedResponse<SnapshotLease>,
 }
 impl RoutedSnapshotLease {
     pub fn lease(&self) -> &SnapshotLease {
@@ -99,7 +102,7 @@ impl KasumiClientPool {
         pinned: Option<u64>,
         replay: bool,
         timeout: Duration,
-        mut dispatch: F,
+        dispatch: F,
     ) -> NativeResult<(u64, T)>
     where
         T: Send,
@@ -109,6 +112,23 @@ impl KasumiClientPool {
             return Err(deadline());
         }
         let end = Instant::now().checked_add(timeout).ok_or_else(deadline)?;
+        self.request_until(pinned, replay, end, dispatch).await
+    }
+    async fn request_until<T, F>(
+        &mut self,
+        pinned: Option<u64>,
+        replay: bool,
+        end: Instant,
+        mut dispatch: F,
+    ) -> NativeResult<(u64, T)>
+    where
+        T: Send,
+        F: for<'a> FnMut(&'a mut KasumiClient, &'a str) -> Reply<'a, T>,
+    {
+        let timeout = end.saturating_duration_since(Instant::now());
+        if timeout.is_zero() {
+            return Err(deadline());
+        }
         // One atomic credential snapshot belongs to this entire finite operation.
         // Renewal is observed by the next invocation, never by an endpoint retry.
         let bearer = token(self.credential.as_ref()).map_err(|_| ClientError::Authorization)?;
@@ -153,6 +173,9 @@ impl KasumiClientPool {
                 .await;
                 match result {
                     Ok(Ok(reply)) => {
+                        if Instant::now() >= end {
+                            return Err(deadline());
+                        }
                         self.preferred = *member;
                         return Ok((*member, reply));
                     }
@@ -186,6 +209,27 @@ impl KasumiClientPool {
         self.request(None, true, timeout, |client, token| {
             let batch = batch.clone();
             Box::pin(async move { client.mutate(token, &batch).await })
+        })
+        .await
+        .map(|(_, reply)| reply)
+    }
+    /// Read-only resolution against approved members, preserving the complete
+    /// original input. An absent record remains unknown and is never retried as
+    /// a new write by this operation.
+    pub async fn resolve_mutation(
+        &mut self,
+        expected_scope: &MutationReceiptScope,
+        original: &MutationBatch,
+        timeout: Duration,
+    ) -> NativeResult<Option<MutationReceipt>> {
+        self.request(None, true, timeout, |client, token| {
+            let original = original.clone();
+            let scope = expected_scope.clone();
+            Box::pin(async move {
+                client
+                    .resolve_mutation(token, &scope, &original, timeout)
+                    .await
+            })
         })
         .await
         .map(|(_, reply)| reply)
@@ -253,62 +297,100 @@ impl KasumiClientPool {
     pub async fn read_snapshot(
         &mut self,
         request: &ReadSnapshotRequest,
-        timeout: Duration,
-    ) -> NativeResult<SnapshotReadResponse> {
-        self.request(None, true, timeout, |client, token| {
-            let request = request.clone();
-            Box::pin(async move { client.read_snapshot(token, &request).await })
+        options: &SnapshotReadOptions,
+    ) -> NativeResult<AdmittedResponse<SnapshotReadResponse>> {
+        let call = options.admit()?;
+        let prepared = snapshot_decode::prepare_read(request, &call)?;
+        self.snapshot_request(None, true, prepared, call, options)
+            .await
+            .map(|(_, reply)| reply)
+    }
+    async fn snapshot_request<T: snapshot_decode::SnapshotOutput>(
+        &mut self,
+        member: Option<u64>,
+        replay: bool,
+        prepared: Arc<snapshot_decode::Prepared>,
+        first: snapshot_decode::Call,
+        options: &SnapshotReadOptions,
+    ) -> NativeResult<(u64, AdmittedResponse<T>)> {
+        let mut first = Some(first);
+        let options = options.clone();
+        self.request_until(member, replay, options.deadline, |client, token| {
+            // A cancelled attempt may still own transport/decode work. Each
+            // subsequent attempt acquires a separate aggregate reservation.
+            let call = first.take().map_or_else(|| options.admit(), Ok);
+            let prepared = prepared.clone();
+            Box::pin(async move { client.snapshot_prepared(token, prepared, call?).await })
         })
         .await
-        .map(|(_, reply)| reply)
+        .map_err(snapshot_decode::normalize)
     }
     pub async fn query(
         &mut self,
         query: &QueryRequest,
-        timeout: Duration,
+        options: &JsonReadOptions,
     ) -> NativeResult<RoutedQueryPage> {
+        let call = options.admit()?;
         if query.cursor.is_some() {
-            return Err(tonic::Status::invalid_argument(
-                "continue historical pages with their routed page handle",
-            )
-            .into());
+            return Err(snapshot_decode::normalize(
+                tonic::Status::invalid_argument("continue queries through their routed page")
+                    .into(),
+            ));
         }
+        let prepared = crate::literal_decode::prepare_query(query, None, &call)?;
         let (member, response) = self
-            .request(None, true, timeout, |client, token| {
-                let query = query.clone();
-                Box::pin(async move { client.query(token, &query).await })
-            })
+            .query_request(None, prepared.clone(), call, options)
             .await?;
         Ok(RoutedQueryPage {
             installation: self.installation,
             member,
-            query: query.clone(),
+            prepared,
             response,
         })
+    }
+    async fn query_request(
+        &mut self,
+        member: Option<u64>,
+        prepared: Arc<crate::literal_decode::Prepared>,
+        first: snapshot_decode::Call,
+        options: &JsonReadOptions,
+    ) -> NativeResult<(u64, AdmittedResponse<QueryResponse>)> {
+        let mut first = Some(first);
+        let options = options.clone();
+        self.request_until(member, true, options.deadline, |client, token| {
+            let call = first.take().map_or_else(|| options.admit(), Ok);
+            let prepared = prepared.clone();
+            Box::pin(async move { client.query_prepared(token, prepared, call?).await })
+        })
+        .await
+        .map_err(snapshot_decode::normalize)
     }
     pub async fn next_query_page(
         &mut self,
         page: &RoutedQueryPage,
-        timeout: Duration,
+        options: &JsonReadOptions,
     ) -> NativeResult<RoutedQueryPage> {
-        self.require_installation(page.installation)?;
-        let mut query = page.query.clone();
-        query.cursor = Some(
-            page.response
-                .cursor
-                .clone()
-                .ok_or_else(|| tonic::Status::invalid_argument("query has no next page"))?,
-        );
+        let call = options.admit()?;
+        self.require_installation(page.installation)
+            .map_err(snapshot_decode::normalize)?;
+        let cursor = page
+            .response
+            .cursor
+            .as_deref()
+            .ok_or_else(|| snapshot_decode::resources::invalid("query has no next page"))?;
+        let prepared = crate::literal_decode::prepare_query_page(
+            page.prepared.query(),
+            cursor,
+            page.response.revision,
+            &call,
+        )?;
         let (member, response) = self
-            .request(Some(page.member), true, timeout, |client, token| {
-                let query = query.clone();
-                Box::pin(async move { client.query(token, &query).await })
-            })
+            .query_request(Some(page.member), prepared.clone(), call, options)
             .await?;
         Ok(RoutedQueryPage {
             installation: self.installation,
             member,
-            query,
+            prepared,
             response,
         })
     }
@@ -317,13 +399,12 @@ impl KasumiClientPool {
     pub async fn open_snapshot_lease(
         &mut self,
         request: &OpenSnapshotLease,
-        timeout: Duration,
+        options: &SnapshotReadOptions,
     ) -> NativeResult<RoutedSnapshotLease> {
+        let call = options.admit()?;
+        let prepared = snapshot_decode::prepare_open(request, &call)?;
         let (member, lease) = self
-            .request(None, false, timeout, |client, token| {
-                let request = request.clone();
-                Box::pin(async move { client.open_snapshot_lease(token, &request).await })
-            })
+            .snapshot_request(None, false, prepared, call, options)
             .await?;
         Ok(RoutedSnapshotLease {
             installation: self.installation,
@@ -335,18 +416,15 @@ impl KasumiClientPool {
         &mut self,
         lease: &RoutedSnapshotLease,
         documents: &[DocumentKey],
-        timeout: Duration,
-    ) -> NativeResult<SnapshotReadResponse> {
-        self.require_installation(lease.installation)?;
-        self.request(Some(lease.member), true, timeout, |client, token| {
-            let request = ReadSnapshotPage {
-                lease_id: lease.lease.lease_id.clone(),
-                documents: documents.to_vec(),
-            };
-            Box::pin(async move { client.read_snapshot_page(token, &request).await })
-        })
-        .await
-        .map(|(_, reply)| reply)
+        options: &SnapshotReadOptions,
+    ) -> NativeResult<AdmittedResponse<SnapshotReadResponse>> {
+        let call = options.admit()?;
+        self.require_installation(lease.installation)
+            .map_err(snapshot_decode::normalize)?;
+        let prepared = snapshot_decode::prepare_points(&lease.lease, documents, &call)?;
+        self.snapshot_request(Some(lease.member), true, prepared, call, options)
+            .await
+            .map(|(_, reply)| reply)
     }
     pub async fn scan_snapshot_page(
         &mut self,
@@ -354,20 +432,16 @@ impl KasumiClientPool {
         collection: &str,
         after_id: Option<&str>,
         limit: usize,
-        timeout: Duration,
-    ) -> NativeResult<SnapshotScanPage> {
-        self.require_installation(lease.installation)?;
-        self.request(Some(lease.member), true, timeout, |client, token| {
-            let request = ScanSnapshotPage {
-                lease_id: lease.lease.lease_id.clone(),
-                collection: collection.to_owned(),
-                after_id: after_id.map(str::to_owned),
-                limit,
-            };
-            Box::pin(async move { client.scan_snapshot_page(token, &request).await })
-        })
-        .await
-        .map(|(_, reply)| reply)
+        options: &SnapshotReadOptions,
+    ) -> NativeResult<AdmittedResponse<SnapshotScanPage>> {
+        let call = options.admit()?;
+        self.require_installation(lease.installation)
+            .map_err(snapshot_decode::normalize)?;
+        let prepared =
+            snapshot_decode::prepare_scan(&lease.lease, collection, after_id, limit, &call)?;
+        self.snapshot_request(Some(lease.member), true, prepared, call, options)
+            .await
+            .map(|(_, reply)| reply)
     }
     pub async fn close_snapshot_lease(
         &mut self,
@@ -396,5 +470,47 @@ fn deadline() -> ClientError {
     tonic::Status::deadline_exceeded("installed native operation deadline elapsed; resolve uncertain writes with the original batch").into()
 }
 fn retryable(error: &ClientError) -> bool {
-    matches!(error, ClientError::Transport(status) if matches!(status.code(), tonic::Code::Unavailable | tonic::Code::DeadlineExceeded | tonic::Code::Unknown | tonic::Code::Cancelled))
+    let code = match error {
+        ClientError::Transport(status) => status.code(),
+        ClientError::DecodeRejected { code, .. } => *code,
+        _ => return false,
+    };
+    matches!(
+        code,
+        tonic::Code::Unavailable
+            | tonic::Code::DeadlineExceeded
+            | tonic::Code::Unknown
+            | tonic::Code::Cancelled
+    )
+}
+
+#[cfg(test)]
+mod snapshot_error_tests {
+    use super::*;
+    #[test]
+    fn bounded_snapshot_errors_preserve_only_approved_retry_codes() {
+        for code in [
+            tonic::Code::Unavailable,
+            tonic::Code::DeadlineExceeded,
+            tonic::Code::Unknown,
+            tonic::Code::Cancelled,
+        ] {
+            assert!(retryable(&ClientError::DecodeRejected {
+                code,
+                reason: "bounded error"
+            }));
+        }
+        for code in [
+            tonic::Code::Unauthenticated,
+            tonic::Code::PermissionDenied,
+            tonic::Code::DataLoss,
+            tonic::Code::ResourceExhausted,
+            tonic::Code::InvalidArgument,
+        ] {
+            assert!(!retryable(&ClientError::DecodeRejected {
+                code,
+                reason: "bounded error"
+            }));
+        }
+    }
 }

@@ -1221,6 +1221,39 @@ impl TenantEngine {
             &state.restore_lineage,
         )
         .map_err(|_| Error::new(ErrorCode::Corruption, "invalid restore lineage"))?;
+        for (key, receipt) in &state.receipts {
+            let maximum_revision = if receipt.scope.incarnation == state.incarnation {
+                state.revision
+            } else {
+                state
+                    .restore_lineage
+                    .iter()
+                    .find(|link| link.checkpoint.source_incarnation == receipt.scope.incarnation)
+                    .map(|link| link.checkpoint.revision)
+                    .ok_or_else(|| {
+                        Error::new(
+                            ErrorCode::Corruption,
+                            "receipt original incarnation is absent from lineage",
+                        )
+                    })?
+            };
+            let genesis_revision = if receipt.scope.incarnation == state.incarnation {
+                state.revision_base
+            } else {
+                state
+                    .restore_lineage
+                    .iter()
+                    .find(|link| link.target_incarnation == receipt.scope.incarnation)
+                    .map(|link| {
+                        link.checkpoint.revision.checked_add(1).ok_or_else(|| {
+                            Error::new(ErrorCode::Corruption, "receipt genesis revision overflow")
+                        })
+                    })
+                    .transpose()?
+                    .unwrap_or(0)
+            };
+            receipt.validate_identity(key, &state.tenant, genesis_revision, maximum_revision)?;
+        }
         if let Some(origin) = &state.restored_from {
             origin.validate()?;
             if origin.tenant != state.tenant
@@ -1398,10 +1431,7 @@ fn apply_operation(
                     |_| Error::new(ErrorCode::InvalidArgument, "invalid receipt identity"),
                 )?;
             let receipt_key = hex::encode(Sha256::digest(identity));
-            let digest =
-                hex::encode(Sha256::digest(serde_json::to_vec(batch).map_err(|_| {
-                    Error::new(ErrorCode::InvalidArgument, "invalid mutation batch")
-                })?));
+            let digest = batch.digest()?;
             if let Some(existing) = state
                 .receipts
                 .get(&receipt_key)
@@ -1464,6 +1494,13 @@ fn apply_operation(
             state.receipts.insert(
                 receipt_key,
                 StoredReceipt {
+                    scope: MutationReceiptScope {
+                        tenant: state.tenant.clone(),
+                        incarnation: state.incarnation.clone(),
+                        principal: command.context.principal.clone(),
+                    },
+                    idempotency_key: batch.idempotency_key.clone(),
+                    recorded_revision: revision,
                     request_digest: digest,
                     expires_at_ms,
                     collections: batch

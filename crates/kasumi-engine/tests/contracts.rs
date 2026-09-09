@@ -968,6 +968,7 @@ async fn strict_read_audit_is_committed_before_return_and_tied_to_data_revision(
             .await
             .unwrap()
             .unwrap()
+            .outcome
             .is_ok()
     );
     assert_eq!(
@@ -1379,15 +1380,18 @@ async fn logical_backup_restores_suspended_with_new_incarnation_and_increasing_r
             .body["email"],
         "original"
     );
-    assert_eq!(
-        restored
-            .operation_receipt(&context("owner"), "original")
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap(),
-        receipt
+    let retained = restored
+        .operation_receipt(&context("owner"), "original")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(retained.scope.incarnation, old_incarnation);
+    assert_ne!(
+        retained.scope.incarnation,
+        restored.engine().generation().unwrap().state.incarnation
     );
+    assert_eq!(retained.scope.principal, "owner");
+    assert_eq!(retained.outcome.unwrap(), receipt);
     let newer = restored
         .mutate(
             context("owner"),

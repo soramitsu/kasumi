@@ -749,9 +749,10 @@ impl MaterialFixture {
         targets
     }
     async fn close_targets(&self, targets: Vec<RunningTarget>, router: &InProcessRouter) {
-        for t in targets {
+        for mut t in targets {
             router.unregister(&format!("city/{}", self.target.incarnation), t.id);
             t.owner.close().await.unwrap();
+            drop(t.owner);
             drop(t.operation);
             t.scope.close();
             t.scope.drain().await;
@@ -1265,7 +1266,7 @@ async fn exact_actual_completion_is_required_for_issuer_and_target_activation() 
     )
     .await
     .unwrap();
-    let serving = kasumi_engine::open_serving_target(
+    let mut serving = kasumi_engine::open_serving_target(
         projection.clone(),
         stores.clone(),
         TargetReplicaConfig {
@@ -1297,6 +1298,7 @@ async fn exact_actual_completion_is_required_for_issuer_and_target_activation() 
     assert!(projection.storage_access(live).is_err());
     drop(database);
     serving.close().await.unwrap();
+    drop(serving);
     stores.custody().store().shutdown().await;
     drop(stores);
     security.shutdown().await;

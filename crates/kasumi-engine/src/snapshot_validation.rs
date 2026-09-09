@@ -30,6 +30,7 @@ impl ValidatedApplicationSnapshot {
         };
         result.validate_header()?;
         result.validate_lineage(&mut check)?;
+        result.validate_receipts(&mut check)?;
         result.validate_documents(&mut check)?;
         result.validate_staging(&mut check)?;
         result.validate_change_feed(&mut check)?;
@@ -324,6 +325,45 @@ impl ValidatedApplicationSnapshot {
         );
         Ok(())
     }
+    fn validate_receipts(
+        &self,
+        check: &mut impl FnMut() -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
+        self.index.visit(5, |record| {
+            check()?;
+            let Record::Receipt(key, receipt) = record else {
+                unreachable!()
+            };
+            let maximum_revision = if receipt.scope.incarnation == self.header.incarnation {
+                self.header.revision
+            } else {
+                self.lineage_source(&receipt.scope.incarnation)?
+                    .context("receipt original incarnation is absent from lineage")?
+                    .checkpoint
+                    .revision
+            };
+            let genesis_revision = if receipt.scope.incarnation == self.header.incarnation {
+                self.header.revision_base
+            } else {
+                self.lineage_target(&receipt.scope.incarnation)?
+                    .map(|link| {
+                        link.checkpoint
+                            .revision
+                            .checked_add(1)
+                            .context("receipt genesis revision overflow")
+                    })
+                    .transpose()?
+                    .unwrap_or(0)
+            };
+            receipt.validate_identity(
+                &key,
+                &self.header.tenant,
+                genesis_revision,
+                maximum_revision,
+            )?;
+            Ok(())
+        })
+    }
     fn validate_documents(
         &self,
         check: &mut impl FnMut() -> anyhow::Result<()>,
@@ -448,7 +488,16 @@ impl ValidatedApplicationSnapshot {
             };
             let counts = get::<staging::SnapshotChunks>(&self.lineage, &("stage", &key))?
                 .unwrap_or_default();
-            let uploading = staging::validate_snapshot_record(&key, &stage, h, &counts)?;
+            // The header omits streamed lineage. Select the original scope's
+            // verified closing link so historical stages retain their identity
+            // without materializing the complete lineage for every record.
+            let mut scope_state = h.as_ref().clone();
+            if stage.scope.incarnation != h.incarnation
+                && let Some(link) = self.lineage_source(&stage.scope.incarnation)?
+            {
+                scope_state.restore_lineage.push(link);
+            }
+            let uploading = staging::validate_snapshot_record(&key, &stage, &scope_state, &counts)?;
             let charge = staging::permanent_charge(&key, &stage)?;
             permanent_bytes = permanent_bytes
                 .checked_add(charge.0)
@@ -1096,6 +1145,89 @@ mod tests {
             crate::retirement_closure::digest(&state, || Ok(())).unwrap(),
             crate::retirement_closure::digest_verified(&verified, || Ok(())).unwrap()
         );
+    }
+    #[test]
+    fn receipt_original_scope_and_position_are_checked_in_both_snapshot_paths() {
+        use sha2::{Digest, Sha256};
+        let mut original = state();
+        let key = hex::encode(Sha256::digest(
+            serde_json::to_vec(&("owner", "original")).unwrap(),
+        ));
+        original.receipts.insert(
+            key.clone(),
+            StoredReceipt {
+                scope: MutationReceiptScope {
+                    tenant: original.tenant.clone(),
+                    incarnation: original.incarnation.clone(),
+                    principal: "owner".into(),
+                },
+                idempotency_key: "original".into(),
+                recorded_revision: original.revision,
+                request_digest: "12".repeat(32),
+                expires_at_ms: 100_000,
+                collections: vec!["rows".into()],
+                outcome: Ok(WriteReceipt {
+                    revision: original.revision,
+                    versions: Default::default(),
+                }),
+            },
+        );
+        TenantEngine::verify_logical_snapshot(&image(&original), &original).unwrap();
+        indexed(&original).unwrap();
+        for case in 0..7 {
+            let mut candidate = original.clone();
+            let receipt = candidate.receipts.get_mut(&key).unwrap();
+            match case {
+                0 => receipt.scope.tenant = "another-tenant".into(),
+                1 => receipt.scope.principal = "another-owner".into(),
+                2 => receipt.scope.incarnation = "unretained-source".into(),
+                3 => receipt.idempotency_key = "another-key".into(),
+                4 => receipt.recorded_revision += 1,
+                5 => receipt.outcome.as_mut().unwrap().revision -= 1,
+                _ => receipt.request_digest.clear(),
+            }
+            assert!(
+                TenantEngine::verify_logical_snapshot(&image(&candidate), &candidate).is_err(),
+                "full case {case}"
+            );
+            assert!(indexed(&candidate).is_err(), "indexed case {case}");
+        }
+        let mut restored = original;
+        for incarnation in ["intermediate", "current-target"] {
+            let checkpoint = FullBackupCheckpoint {
+                tenant: restored.tenant.clone(),
+                source_incarnation: restored.incarnation.clone(),
+                revision: restored.revision,
+                resident_sha256: "12".repeat(32),
+                backup_id: uuid::Uuid::new_v4(),
+                manifest_ciphertext_sha256: "34".repeat(32),
+                key_lineage_digest: "56".repeat(32),
+            };
+            TenantEngine::rebind_restored_state(
+                &mut restored,
+                incarnation.into(),
+                checkpoint,
+                None,
+            )
+            .unwrap();
+            restored.pending_restore = None;
+            restored.suspended = false;
+            restored.revision += 2;
+        }
+        TenantEngine::verify_logical_snapshot(&image(&restored), &restored).unwrap();
+        indexed(&restored).unwrap();
+        for incarnation in ["intermediate", "current-target"] {
+            let mut candidate = restored.clone();
+            candidate.receipts.get_mut(&key).unwrap().scope.incarnation = incarnation.into();
+            assert!(
+                TenantEngine::verify_logical_snapshot(&image(&candidate), &candidate).is_err(),
+                "full relabel {incarnation}"
+            );
+            assert!(
+                indexed(&candidate).is_err(),
+                "indexed relabel {incarnation}"
+            );
+        }
     }
     #[test]
     fn authenticated_semantic_substitutions_fail_both_validation_paths() {

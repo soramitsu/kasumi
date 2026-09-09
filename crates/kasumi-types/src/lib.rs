@@ -3,6 +3,8 @@ mod security_audit;
 pub use security_audit::*;
 mod audit;
 pub use audit::*;
+mod canonical_json;
+pub use canonical_json::CanonicalJsonValue;
 mod canonical_keys;
 pub use canonical_keys::deserialize_u64_map;
 mod target;
@@ -251,6 +253,7 @@ impl Default for Limits {
 pub struct Document {
     pub id: String,
     pub version: u64,
+    #[serde(serialize_with = "canonical_json::serialize")]
     pub body: Value,
 }
 
@@ -259,6 +262,7 @@ pub struct CollectionDefinition {
     pub name: String,
     pub write_mode: CollectionWriteMode,
     pub retention_class: CollectionRetentionClass,
+    #[serde(serialize_with = "canonical_json::serialize")]
     pub schema: Value,
     #[serde(default)]
     pub indexes: Vec<IndexDefinition>,
@@ -331,6 +335,7 @@ pub enum Mutation {
     Put {
         collection: String,
         id: String,
+        #[serde(serialize_with = "canonical_json::serialize")]
         body: Value,
         #[serde(default)]
         expected: Precondition,
@@ -370,6 +375,14 @@ pub struct MutationBatch {
     pub idempotency_key: String,
     pub read_set: Vec<ReadAssertion>,
     pub operations: Vec<Mutation>,
+}
+
+impl MutationBatch {
+    /// Exact canonical input identity retained with the mutation outcome.
+    /// Includes the original idempotency key, read set and preconditions.
+    pub fn digest(&self) -> Result<String> {
+        staged_digest(self).map(|(digest, _)| digest)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -445,12 +458,65 @@ pub struct WriteReceipt {
     pub revision: u64,
     pub versions: BTreeMap<String, u64>,
 }
+/// A retained outcome is meaningful only for this exact original batch digest.
+/// Absence of this record is not proof that an invocation never committed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct MutationReceipt {
+    pub scope: MutationReceiptScope,
+    pub request_digest: String,
+    pub outcome: Result<WriteReceipt>,
+}
+/// Retain this expected namespace with the original invocation across renewals.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MutationReceiptScope {
+    pub tenant: String,
+    pub incarnation: String,
+    pub principal: String,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StoredReceipt {
+    pub scope: MutationReceiptScope,
+    pub idempotency_key: String,
+    pub recorded_revision: u64,
     pub request_digest: String,
     pub expires_at_ms: u64,
     pub collections: Vec<String>,
     pub outcome: Result<WriteReceipt>,
+}
+impl StoredReceipt {
+    pub fn validate_identity(
+        &self,
+        key: &str,
+        tenant: &str,
+        genesis_revision: u64,
+        maximum_revision: u64,
+    ) -> Result<()> {
+        validate_name(&self.scope.tenant)?;
+        validate_name(&self.scope.incarnation)?;
+        validate_name(&self.scope.principal)?;
+        validate_name(&self.idempotency_key)?;
+        validate_sha256(&self.request_digest)?;
+        let (identity, _) = staged_digest(&(&self.scope.principal, &self.idempotency_key))?;
+        if self.scope.tenant != tenant
+            || identity != key
+            || self.recorded_revision <= genesis_revision
+            || self.recorded_revision > maximum_revision
+            || self.expires_at_ms == 0
+            || self
+                .outcome
+                .as_ref()
+                .is_ok_and(|r| r.revision != self.recorded_revision)
+        {
+            return Err(Error::new(
+                ErrorCode::Corruption,
+                "receipt original identity or position differs",
+            ));
+        }
+        Ok(())
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEvent {

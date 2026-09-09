@@ -13,10 +13,7 @@ use kasumi_serving::{
     AuthorityTrust, ControlTrust, LifecycleBoot, LifecycleGate, NodeIdentity, VerifiedControlIntent,
 };
 use kasumi_types::{Action, LifecyclePhase, RequestContext};
-use std::{
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 use tokio::sync::Mutex as AsyncMutex;
 use uuid::Uuid;
 use zeroize::Zeroizing;
@@ -30,19 +27,33 @@ pub(crate) struct RuntimeTargetPhase {
     authority: AsyncMutex<KasumiAuthorityPool>,
     authority_admin: AsyncMutex<KasumiAuthorityPool>,
     boot: LifecycleBoot,
-    renewal: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    renewal: Arc<crate::runtime_worker::RuntimeWorker>,
 }
 impl Drop for RuntimeTargetPhase {
     fn drop(&mut self) {
         self.scope.close();
-        if let Ok(handle) = self.renewal.get_mut()
-            && let Some(handle) = handle.take()
-        {
-            handle.abort();
-        }
+        self.renewal.abort();
     }
 }
 impl RuntimeTargetPhase {
+    pub(crate) async fn shutdown(&self) -> Result<()> {
+        self.close();
+        self.renewal.drain().await?;
+        if let Some(serving) = &self.serving {
+            serving.shutdown().await?;
+        }
+        self.scope.drain().await;
+        Ok(())
+    }
+    pub(crate) fn close(&self) {
+        self.scope.close();
+        // Close both capabilities before waiting. Every original finite renewal
+        // retains its owner until it completes; shutdown never grants more time.
+        if let Some(serving) = &self.serving {
+            serving.close();
+        }
+        self.renewal.close();
+    }
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn acquire(
         configured: &super::target_runtime_config::TargetRecoveryConfig,
@@ -205,44 +216,65 @@ impl RuntimeTargetPhase {
             authority: AsyncMutex::new(issuer),
             boot,
             authority_admin: AsyncMutex::new(issuer_admin),
-            renewal: Mutex::new(None),
+            renewal: Default::default(),
         });
         admission.run(runtime.check_current()).await?;
         let weak = Arc::downgrade(&runtime);
-        let worker = tokio::spawn(async move {
-            let mut failed = false;
-            loop {
-                let delay = {
-                    let Some(runtime) = weak.upgrade() else { break };
-                    let Ok(remaining) = runtime.scope.invocation().gate().remaining() else {
-                        break;
-                    };
-                    if failed {
-                        (remaining / 4).min(Duration::from_millis(100))
-                    } else {
-                        remaining / 3
+        let wake = runtime.renewal.wake();
+        let partition = runtime
+            .boot
+            .authority()
+            .manifest()
+            .partition(&runtime.original.observation().intent.request.tenant)?;
+        runtime
+            .boot
+            .authority()
+            .start_background_work(partition, || {
+                let worker = tokio::spawn(async move {
+                    let mut failed = false;
+                    loop {
+                        let delay = {
+                            let Some(runtime) = weak.upgrade() else { break };
+                            if runtime.renewal.is_closed() {
+                                break;
+                            }
+                            let Ok(remaining) = runtime.scope.invocation().gate().remaining()
+                            else {
+                                break;
+                            };
+                            if failed {
+                                (remaining / 4).min(Duration::from_millis(100))
+                            } else {
+                                remaining / 3
+                            }
+                        };
+                        tokio::select! {
+                            _ = wake.notified() => {},
+                            _ = tokio::time::sleep(delay) => {},
+                        }
+                        let Some(runtime) = weak.upgrade() else { break };
+                        #[cfg(test)]
+                        runtime.renewal.after_upgrade().await;
+                        if runtime.renewal.is_closed() {
+                            break;
+                        }
+                        let Ok(remaining) = runtime.scope.invocation().gate().remaining() else {
+                            runtime.scope.close();
+                            break;
+                        };
+                        failed = !matches!(
+                            tokio::time::timeout(remaining, runtime.renew()).await,
+                            Ok(Ok(()))
+                        );
+                        if runtime.scope.invocation().check().is_err() {
+                            runtime.scope.close();
+                            break;
+                        }
                     }
-                };
-                tokio::time::sleep(delay).await;
-                let Some(runtime) = weak.upgrade() else { break };
-                let Ok(remaining) = runtime.scope.invocation().gate().remaining() else {
-                    runtime.scope.close();
-                    break;
-                };
-                failed = !matches!(
-                    tokio::time::timeout(remaining, runtime.renew()).await,
-                    Ok(Ok(()))
-                );
-                if runtime.scope.invocation().check().is_err() {
-                    runtime.scope.close();
-                    break;
-                }
-            }
-        });
-        *runtime
-            .renewal
-            .lock()
-            .map_err(|_| anyhow::anyhow!("target renewal poisoned"))? = Some(worker);
+                });
+                runtime.renewal.register(worker);
+                runtime.renewal.clone()
+            })?;
         admission.check()?;
         Ok(runtime)
     }

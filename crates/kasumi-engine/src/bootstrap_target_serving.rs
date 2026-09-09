@@ -63,10 +63,10 @@ impl TargetServingReplica {
         );
         self.projection.check(gate)
     }
-    pub async fn close(mut self) -> anyhow::Result<()> {
-        let result = self.database.shutdown().await;
+    pub async fn close(&mut self) -> anyhow::Result<()> {
+        self.database.shutdown().await?;
         self.closed = true;
-        result
+        Ok(())
     }
 }
 impl Drop for TargetServingReplica {

@@ -10,6 +10,12 @@ struct Prepared {
     _registration: Arc<WorkRegistration>,
 }
 
+#[cfg(test)]
+pub(super) struct WorkerPause {
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
 impl Database {
     pub(crate) fn start_audit_worker(self: &Arc<Self>) {
         if self
@@ -23,12 +29,24 @@ impl Database {
         }
         self.audit_worker_started.store(true, Ordering::Release);
         let weak = Arc::downgrade(self);
+        let wake = self.audit_worker_wake.clone();
         let task = tokio::spawn(async move {
             loop {
-                tokio::time::sleep(Duration::from_millis(250)).await;
+                tokio::select! {
+                    _ = wake.notified() => {},
+                    _ = tokio::time::sleep(Duration::from_millis(250)) => {},
+                }
                 let Some(database) = weak.upgrade() else {
                     return;
                 };
+                #[cfg(test)]
+                {
+                    let pause = database.audit_worker_pause.lock().unwrap().take();
+                    if let Some(pause) = pause {
+                        pause.entered.notify_one();
+                        pause.release.notified().await;
+                    }
+                }
                 if database.closing.load(Ordering::Acquire) {
                     return;
                 }
@@ -55,7 +73,10 @@ impl Database {
                 }
             }
         });
-        *self.audit_worker.lock().unwrap_or_else(|p| p.into_inner()) = Some(task);
+        *self
+            .audit_worker
+            .try_lock()
+            .expect("new tenant audit worker") = Some(task);
     }
 
     async fn maintain_tenant_audit(
@@ -114,6 +135,134 @@ impl Database {
 mod tests {
     use super::*;
     use kasumi_store::{NodeStore, test_utils::LocalKeyProvider};
+    use std::future::Future;
+
+    #[tokio::test]
+    async fn tenant_audit_worker_keeps_its_owner_through_cancelled_shutdown() {
+        tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("node.redb");
+            let node = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
+            let weak_node = Arc::downgrade(&node);
+            let admission = NodeAdmission::new(Default::default()).unwrap();
+            let provider = Arc::new(LocalKeyProvider::new([51; 32]));
+            let store = TenantStore::open_fixture(node.clone(), "tenant".into(), provider.clone())
+                .await
+                .unwrap();
+            store
+                .write_batch(&[kasumi_store::WriteOp::put(
+                    "drain-test",
+                    b"marker",
+                    b"durable".to_vec(),
+                )])
+                .unwrap();
+            let audit_store = TenantStore::open_fixture(
+                node.clone(),
+                crate::SECURITY_TENANT.into(),
+                Arc::new(LocalKeyProvider::new([52; 32])),
+            )
+            .await
+            .unwrap();
+            let audit =
+                SecurityAudit::open(audit_store, Default::default(), admission.clone()).unwrap();
+            let incarnation = uuid::Uuid::new_v4().to_string();
+            let engine = Arc::new(
+                TenantEngine::new(
+                    "tenant".into(),
+                    incarnation.clone(),
+                    Policy {
+                        grants: vec![Grant {
+                            principal: "owner".into(),
+                            collection: None,
+                            actions: BTreeSet::from([Action::Read, Action::Admin]),
+                        }],
+                        strict_read_audit: false,
+                    },
+                    Limits::default(),
+                )
+                .unwrap(),
+            );
+            engine.install_storage_access(&store).unwrap();
+            engine.install_audit_maintenance(&admission).unwrap();
+            let stores = kasumi_store::test_utils::with_custody(
+                store.clone(),
+                Arc::new(LocalKeyProvider::new([53; 32])),
+            )
+            .await
+            .unwrap();
+            let group =
+                RaftGroup::local(1, format!("tenant/{incarnation}"), stores, engine.clone())
+                    .await
+                    .unwrap();
+            let database = Database::new_with_admission(
+                engine,
+                group,
+                store.clone(),
+                admission,
+                audit.clone(),
+            );
+            let weak_database = Arc::downgrade(&database);
+            let pause = Arc::new(WorkerPause {
+                entered: Default::default(),
+                release: Default::default(),
+            });
+            *database.audit_worker_pause.lock().unwrap() = Some(pause.clone());
+            database.audit_worker_wake.notify_one();
+            pause.entered.notified().await;
+            assert!(Arc::strong_count(&database) >= 2);
+            // Isolate the owner before work registration from every other monitor.
+            database.work.drain().await;
+            {
+                let mut monitor = database.seal_monitor.lock().await;
+                let task = monitor.as_mut().unwrap();
+                task.abort();
+                let _ = task.await;
+                monitor.take();
+            }
+            database.group.shutdown().await.unwrap();
+            store.shutdown().await;
+            let mut first = Box::pin(database.shutdown());
+            std::future::poll_fn(|cx| {
+                assert!(first.as_mut().poll(cx).is_pending());
+                std::task::Poll::Ready(())
+            })
+            .await;
+            assert!(
+                database.audit_worker.try_lock().is_err(),
+                "shutdown reached the worker join"
+            );
+            drop(first);
+            assert!(database.audit_worker.try_lock().unwrap().is_some());
+            let mut retry = Box::pin(database.shutdown());
+            std::future::poll_fn(|cx| {
+                assert!(retry.as_mut().poll(cx).is_pending());
+                std::task::Poll::Ready(())
+            })
+            .await;
+            pause.release.notify_one();
+            retry.await.unwrap();
+            assert!(database.audit_worker.try_lock().unwrap().is_none());
+            audit.shutdown().await;
+            drop(database);
+            assert!(weak_database.upgrade().is_none());
+            drop(store);
+            drop(audit);
+            drop(node);
+            assert!(weak_node.upgrade().is_none());
+            // No delay or lock retry is allowed to hide a surviving file owner.
+            let reopened = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
+            let store = TenantStore::open_fixture(reopened, "tenant".into(), provider)
+                .await
+                .unwrap();
+            assert_eq!(
+                store.get("drain-test", b"marker").unwrap().unwrap(),
+                b"durable"
+            );
+            store.shutdown().await;
+        })
+        .await
+        .expect("shutdown ownership fixture timed out");
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn encrypted_worker_drains_hot_history_when_ordinary_capacity_is_full() {

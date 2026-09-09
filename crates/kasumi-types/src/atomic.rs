@@ -205,7 +205,12 @@ impl StagedTransaction {
     }
 }
 
-/// Canonical JSON SHA-256 and length, without a second encoded payload buffer.
+/// SHA-256 and length of the type's JSON encoding, without an encoded payload buffer.
+///
+/// Durable Kasumi payload fields serialize literal JSON through `CanonicalJsonValue`;
+/// enclosing typed field and map order remains part of their contract. This function
+/// does not reorder arbitrary `Serialize` implementations. Wrap an untyped `Value`
+/// in `CanonicalJsonValue` explicitly when its object order must be canonical.
 pub fn staged_digest(value: &impl Serialize) -> Result<(String, usize)> {
     use sha2::{Digest, Sha256};
     struct Writer {

@@ -383,7 +383,10 @@ pub struct Database {
     custody_detached: AtomicBool,
     shutdown_gate: tokio::sync::Mutex<()>,
     seal_monitor: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
-    audit_worker: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    audit_worker: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    audit_worker_wake: Arc<tokio::sync::Notify>,
+    #[cfg(test)]
+    audit_worker_pause: Mutex<Option<Arc<audit_maintenance_service::WorkerPause>>>,
     audit_worker_started: AtomicBool,
     audit_worker_failures: AtomicU64,
     audit_worker_completed: AtomicU64,
@@ -672,7 +675,10 @@ impl Database {
             custody_detached: AtomicBool::new(false),
             shutdown_gate: tokio::sync::Mutex::new(()),
             seal_monitor: tokio::sync::Mutex::new(None),
-            audit_worker: Mutex::new(None),
+            audit_worker: tokio::sync::Mutex::new(None),
+            audit_worker_wake: Arc::new(tokio::sync::Notify::new()),
+            #[cfg(test)]
+            audit_worker_pause: Mutex::new(None),
             audit_worker_started: AtomicBool::new(false),
             audit_worker_failures: AtomicU64::new(0),
             audit_worker_completed: AtomicU64::new(0),
@@ -744,6 +750,7 @@ impl Database {
         self.closing.store(true, Ordering::Release);
         self.work.seal();
         self.audit_work.seal();
+        self.audit_worker_wake.notify_one();
         {
             let mut monitor = self.seal_monitor.lock().await;
             if let Some(task) = monitor.as_mut() {
@@ -755,13 +762,12 @@ impl Database {
         let result = self.group.shutdown().await;
         self.work.drain().await;
         self.audit_work.drain().await;
-        let audit_worker = self
-            .audit_worker
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .take();
-        if let Some(task) = audit_worker {
-            let _ = task.await;
+        {
+            let mut worker = self.audit_worker.lock().await;
+            if let Some(task) = worker.as_mut() {
+                let _ = task.await;
+                worker.take();
+            }
         }
         self.store.shutdown().await;
         if !self.custody_detached.load(Ordering::Acquire) {
@@ -1809,7 +1815,7 @@ impl Database {
         &self,
         context: &RequestContext,
         idempotency_key: &str,
-    ) -> Result<Option<Result<WriteReceipt>>> {
+    ) -> Result<Option<MutationReceipt>> {
         let result = self.operation_receipt_inner(context, idempotency_key).await;
         self.audit_result(context, result).await
     }
@@ -1818,7 +1824,7 @@ impl Database {
         &self,
         context: &RequestContext,
         idempotency_key: &str,
-    ) -> Result<Option<Result<WriteReceipt>>> {
+    ) -> Result<Option<MutationReceipt>> {
         self.access()?;
         self.engine
             .authorize_discovery(context, Action::Write, None)?;
@@ -1879,7 +1885,11 @@ impl Database {
                 .await?;
         }
         self.access()?;
-        Ok(receipt.map(|r| r.outcome))
+        Ok(receipt.map(|r| MutationReceipt {
+            scope: r.scope,
+            request_digest: r.request_digest,
+            outcome: r.outcome,
+        }))
     }
 
     pub async fn query(
@@ -2321,6 +2331,7 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap()
+                .outcome
                 .unwrap_err()
                 .code,
             ErrorCode::Conflict

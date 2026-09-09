@@ -57,10 +57,28 @@ impl Head {
     }
 }
 
-pub(super) fn start_worker(runtime: &tokio::runtime::Handle, weak: Weak<AuditWriter>) {
+#[cfg(test)]
+#[derive(Default)]
+pub(super) struct WorkerPause {
+    pub entered: tokio::sync::Notify,
+    pub release: tokio::sync::Notify,
+}
+
+pub(super) fn start_worker(
+    runtime: &tokio::runtime::Handle,
+    weak: Weak<AuditWriter>,
+) -> tokio::task::JoinHandle<()> {
     runtime.spawn(async move {
         loop {
             let Some(writer) = weak.upgrade() else { return; };
+            #[cfg(test)]
+            {
+                let pause = writer.worker_pause.lock().unwrap().take();
+                if let Some(pause) = pause {
+                    pause.entered.notify_one();
+                    pause.release.notified().await;
+                }
+            }
             let wake = writer.wake.clone();
             let audit = SecurityAudit { writer };
             let Ok(work) = audit.begin() else { return; };
@@ -77,7 +95,7 @@ pub(super) fn start_worker(runtime: &tokio::runtime::Handle, weak: Weak<AuditWri
             // Do not retain storage or admission ownership while idle.
             tokio::select! { _ = wake.notified() => {}, _ = tokio::time::sleep(Duration::from_millis(250)) => {} }
         }
-    });
+    })
 }
 
 impl SecurityAudit {

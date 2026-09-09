@@ -9,7 +9,7 @@ use kasumi_transport::{
     credentials::{CredentialSource, FileCredentialSource, token},
     grpc_channel,
 };
-use kasumi_types::{Mutation, MutationBatch, Precondition};
+use kasumi_types::{Mutation, MutationBatch, Precondition, WriteReceipt};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -260,12 +260,7 @@ fn validate_original_header(
     Ok(())
 }
 
-fn validate_receipt(
-    corpus: &Corpus,
-    first: u64,
-    count: u64,
-    receipt: &proto::WriteReceipt,
-) -> Result<()> {
+fn validate_receipt(corpus: &Corpus, first: u64, count: u64, receipt: &WriteReceipt) -> Result<()> {
     let collection = corpus.collection.replace('~', "~0").replace('/', "~1");
     ensure!(
         receipt.revision > 0
@@ -450,22 +445,33 @@ async fn run(
             )?)
             .await?
             .into_inner();
-        let outcome = match response.outcome {
-            Some(proto::receipt_response::Outcome::Committed(receipt)) => {
+        let kasumi_types::CredentialResource::Database { incarnation } = binding.kasumi_resource
+        else {
+            anyhow::bail!("original credential must select a database");
+        };
+        let scope = kasumi_types::MutationReceiptScope {
+            tenant: binding.tenant.clone(),
+            incarnation: incarnation.to_string(),
+            principal: binding.sub.clone(),
+        };
+        let verified = kasumi_client::verify_mutation_receipt(&scope, &batch, response)?;
+        let original_input_verified = verified.is_some();
+        let outcome = match verified.map(|receipt| receipt.outcome) {
+            Some(Ok(receipt)) => {
                 validate_receipt(&config.corpus, first, count, &receipt)?;
-                json!({"kind":"committed_for_key","revision":receipt.revision,"versions":receipt.versions})
+                json!({"kind":"original_mutation_committed","revision":receipt.revision,"versions":receipt.versions})
             }
-            Some(proto::receipt_response::Outcome::Rejected(error)) => {
-                json!({"kind":"rejected_for_key","code":error.code})
+            Some(Err(error)) => {
+                json!({"kind":"original_mutation_rejected","code":error.code})
             }
             None => {
                 json!({"kind":"unknown","message":"No retained original receipt. This is not proof that the mutation never committed."})
             }
         };
         journal.event(
-            json!({"event":"receipt_for_original_key_observed","idempotency_key":batch.idempotency_key,
-            "batch_sha256":digest(&bytes),"outcome":outcome,"original_body_digest_verified_by_server":false,
-            "scope":"The current receipt RPC returns the retained outcome for this principal/key, without its request digest. This observation cannot prove that a differently reused key committed this exact body and never permits automatic mutation retry."}),
+            json!({"event":"original_mutation_receipt_observed","idempotency_key":batch.idempotency_key,
+            "batch_sha256":digest(&bytes),"outcome":outcome,"original_input_matches_retained_server_digest":original_input_verified,
+            "scope":"A retained outcome must match the exact original canonical input digest returned by the authenticated native server. Absence remains unknown. Resolution never dispatches a mutation."}),
         )?;
         return Ok(());
     }
@@ -490,6 +496,10 @@ async fn run(
                 )?)
                 .await?
                 .into_inner();
+            let receipt = WriteReceipt {
+                revision: receipt.revision,
+                versions: receipt.versions.into_iter().collect(),
+            };
             validate_receipt(&config.corpus, first, count, &receipt)?;
             journal.event(json!({"event":"committed","first":first,"count":count,"idempotency_key":key,
                 "revision":receipt.revision,"versions":receipt.versions,"seconds":started.elapsed().as_secs_f64()}))?;
@@ -673,9 +683,12 @@ mod tests {
     #[test]
     fn receipt_count_alone_cannot_substitute_a_different_document() {
         let corpus = corpus();
-        let mut receipt = proto::WriteReceipt {
+        let mut receipt = WriteReceipt {
             revision: 7,
-            versions: std::collections::HashMap::from([(format!("/capacity/{}", corpus.id(0)), 7)]),
+            versions: std::collections::BTreeMap::from([(
+                format!("/capacity/{}", corpus.id(0)),
+                7,
+            )]),
         };
         validate_receipt(&corpus, 0, 1, &receipt).unwrap();
         assert!(validate_receipt(&corpus, 1, 1, &receipt).is_err());

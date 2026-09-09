@@ -188,6 +188,119 @@ pub trait LiveTrustPersistence: Send + Sync {
     ) -> Result<()>;
 }
 
+/// Local background ownership only; this grants no authority. A worker that
+/// retains verifier storage must keep its registered owner strongly reachable
+/// until its actual task completes, including during cancelled setup.
+pub trait LiveTrustBackgroundWork: Send + Sync {
+    fn close(&self);
+    fn drain(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>>;
+}
+
+#[cfg(test)]
+mod background_tests {
+    use super::*;
+    use std::{
+        future::Future,
+        sync::atomic::{AtomicBool, Ordering},
+        task::Poll,
+    };
+
+    struct Worker {
+        closed: AtomicBool,
+        task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    }
+    impl LiveTrustBackgroundWork for Worker {
+        fn close(&self) {
+            self.closed.store(true, Ordering::Release);
+        }
+        fn drain(&self) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(async move {
+                let mut owner = self.task.lock().await;
+                if let Some(task) = owner.as_mut() {
+                    task.await.unwrap();
+                    owner.take();
+                }
+            })
+        }
+    }
+    #[tokio::test]
+    async fn task_installation_is_atomic_with_close_and_cancelled_drain_retains_ownership() {
+        tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            let key =
+                ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
+                    .unwrap();
+            let root = crate::test_utils::FixtureSigningRoot::from_pkcs8(key.as_ref()).unwrap();
+            let signing = root
+                .install(
+                    crate::AuthorityManifest {
+                        authority_id: Uuid::new_v4(),
+                        partitions: std::collections::BTreeMap::from([(
+                            0,
+                            crate::AuthorityPartition {
+                                group: "worker-test".into(),
+                                public_key: root.public_key(),
+                            },
+                        )]),
+                        lifecycle_controls: Default::default(),
+                        max_lease_ms: 1000,
+                        clock_rate_error_ppm: 0,
+                    },
+                    0,
+                )
+                .unwrap();
+            let live = signing.verifier;
+            let worker = Arc::new(Worker {
+                closed: AtomicBool::new(false),
+                task: Default::default(),
+            });
+            let weak = Arc::downgrade(&worker);
+            let release = Arc::new(tokio::sync::Notify::new());
+            live.start_background_work(|| {
+                // Close uses this same mutex. It cannot see the worker before its
+                // handle is installed, nor finish and let this factory spawn later.
+                assert!(live.state.try_lock().is_err());
+                let owner = worker.clone();
+                let live = live.clone();
+                let release = release.clone();
+                *worker.task.try_lock().unwrap() = Some(tokio::spawn(async move {
+                    release.notified().await;
+                    assert!(owner.closed.load(Ordering::Acquire));
+                    drop(live);
+                    drop(owner);
+                }));
+                worker.clone()
+            })
+            .unwrap();
+            live.close();
+            assert!(worker.closed.load(Ordering::Acquire));
+            assert!(
+                live.start_background_work(|| panic!("late task installed after close"))
+                    .is_err()
+            );
+            drop(worker);
+            let mut first = Box::pin(live.drain_background_work());
+            std::future::poll_fn(|cx| {
+                assert!(first.as_mut().poll(cx).is_pending());
+                Poll::Ready(())
+            })
+            .await;
+            drop(first);
+            assert!(weak.upgrade().is_some());
+            let mut retry = Box::pin(live.drain_background_work());
+            std::future::poll_fn(|cx| {
+                assert!(retry.as_mut().poll(cx).is_pending());
+                Poll::Ready(())
+            })
+            .await;
+            release.notify_one();
+            retry.await;
+            assert!(weak.upgrade().is_none());
+        })
+        .await
+        .expect("shutdown ownership fixture timed out");
+    }
+}
+
 struct RetirementWitness {
     started: Duration,
     last: Duration,
@@ -197,6 +310,7 @@ struct LiveState {
     active_certificate_sha256: String,
     witness: Option<RetirementWitness>,
     closed: bool,
+    workers: Vec<std::sync::Weak<dyn LiveTrustBackgroundWork>>,
 }
 pub struct LiveSignerTrust {
     historical: HistoricalSigningTrust,
@@ -242,6 +356,7 @@ impl LiveSignerTrust {
                 record,
                 witness,
                 closed: false,
+                workers: Vec::new(),
             }),
         }))
     }
@@ -252,10 +367,57 @@ impl LiveSignerTrust {
         self.state.lock().map_or(true, |state| state.closed)
     }
     pub fn close(&self) {
-        if let Ok(mut state) = self.state.lock() {
+        let workers = {
+            let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
             state.closed = true;
-        }
+            state.workers.retain(|worker| worker.strong_count() > 0);
+            state
+                .workers
+                .iter()
+                .filter_map(std::sync::Weak::upgrade)
+                .collect::<Vec<_>>()
+        };
         self.generation.send_replace(0);
+        // Never call a worker while holding the live-trust mutex: renewal may
+        // already hold a serving gate while checking this exact trust owner.
+        for worker in workers {
+            worker.close();
+        }
+    }
+    /// Install the fully registered task while holding the same gate as close.
+    /// The closure must not call back into this owner or await. If close wins,
+    /// the closure is never called and no background task may be spawned.
+    pub fn start_background_work(
+        &self,
+        install: impl FnOnce() -> Arc<dyn LiveTrustBackgroundWork>,
+    ) -> Result<()> {
+        self.check_persistence()?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("live trust poisoned"))?;
+        ensure!(!state.closed, "live signer trust closed");
+        state.workers.retain(|worker| worker.strong_count() > 0);
+        let worker = install();
+        state.workers.push(Arc::downgrade(&worker));
+        Ok(())
+    }
+    /// Close registration first, then join every remaining exact local worker.
+    /// A cancelled waiter does not remove registry entries or task handles.
+    pub async fn drain_background_work(&self) {
+        self.close();
+        let workers = {
+            let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            state.workers.retain(|worker| worker.strong_count() > 0);
+            state
+                .workers
+                .iter()
+                .filter_map(std::sync::Weak::upgrade)
+                .collect::<Vec<_>>()
+        };
+        for worker in workers {
+            worker.drain().await;
+        }
     }
     pub fn historical(&self) -> &HistoricalSigningTrust {
         &self.historical

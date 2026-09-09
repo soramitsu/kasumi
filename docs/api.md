@@ -217,6 +217,16 @@ The five available tool definitions are:
 | `kasumi_mutate` | The same mutation batch used by Rust/native |
 | `kasumi_receipt` | `{"idempotency_key":"invoice-creation-42"}` |
 
+Receipt reads return `null` when no record is retained. A retained response is
+`{"scope":{"tenant":"...","incarnation":"...","principal":"..."},"request_digest":"<canonical batch SHA-256>","outcome":{"Ok":...}}` or the
+same wrapper with `{"Err":...}`. Native gRPC supplies the same `request_digest`
+and original `scope` beside its committed/rejected outcome. Clients must compare that digest with
+the complete original typed `MutationBatch`; a matching principal/key or set of
+document IDs alone cannot establish which body produced the outcome. Compare the
+scope with the namespace retained with the original invocation as well. A restored
+receipt keeps its original incarnation; current target authorization remains
+separately required to read it.
+
 For example, the HTTP request headers for a tool call are:
 
 ```http

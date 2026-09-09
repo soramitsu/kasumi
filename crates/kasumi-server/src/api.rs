@@ -348,6 +348,7 @@ mod tests {
     include!("api_backup_checkpoint_tests.rs");
     include!("api_routing_tests.rs");
     include!("api_tls_reload_tests.rs");
+    include!("api_sdk_literal_tests.rs");
     use super::*;
     use crate::{
         auth::{AuthConfig, Authenticator},
@@ -366,8 +367,8 @@ mod tests {
     use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
     use kasumi_store::{NodeStore, TenantStore, test_utils::LocalKeyProvider};
     use kasumi_types::{
-        Action, CollectionDefinition, Grant, IndexDefinition, IndexField, Limits, Operation,
-        Policy, ScalarType,
+        Action, CollectionDefinition, Grant, IndexDefinition, IndexField, Limits, Mutation,
+        MutationBatch, Operation, Policy, ScalarType,
     };
     use prost::Message;
     use serde_json::{Value, json};
@@ -675,6 +676,14 @@ mod tests {
         (status, bytes.to_vec())
     }
 
+    fn receipt_scope(fixture: &Fixture) -> kasumi_types::MutationReceiptScope {
+        kasumi_types::MutationReceiptScope {
+            tenant: "tenant-a".into(),
+            incarnation: fixture.incarnation.to_string(),
+            principal: "person".into(),
+        }
+    }
+
     fn decode_grpc<M: Message + Default>(frame: &[u8]) -> M {
         assert!(frame.len() >= 5);
         assert_eq!(frame[0], 0, "uncompressed protobuf response expected");
@@ -730,6 +739,18 @@ mod tests {
             let original = committed.state.collections["docs"].documents["one"].clone();
             assert_eq!(committed.state.document_count, 1);
             assert_eq!(committed.state.receipts.len(), 1);
+            let original_batch: MutationBatch = serde_json::from_value(batch()).unwrap();
+            let request_digest = original_batch.digest().unwrap();
+            assert_eq!(
+                committed
+                    .state
+                    .receipts
+                    .values()
+                    .next()
+                    .unwrap()
+                    .request_digest,
+                request_digest
+            );
             let expected = committed
                 .state
                 .receipts
@@ -747,9 +768,13 @@ mod tests {
                 ).await;
                 assert_eq!(status, StatusCode::OK);
                 assert_eq!(
-                    receipt["result"]["structuredContent"]["Ok"],
+                    receipt["result"]["structuredContent"]["outcome"]["Ok"],
                     serde_json::to_value(&expected).unwrap(),
                     "{receipt}"
+                );
+                assert_eq!(
+                    receipt["result"]["structuredContent"]["request_digest"],
+                    request_digest
                 );
                 let (status, retried) = post(
                     &router,
@@ -779,6 +804,28 @@ mod tests {
                 .await;
                 assert_eq!(status, StatusCode::OK);
                 let receipt: proto::ReceiptResponse = decode_grpc(&receipt);
+                assert_eq!(receipt.request_digest, request_digest);
+                let matched = kasumi_client::verify_mutation_receipt(
+                    &receipt_scope(&fixture),
+                    &original_batch,
+                    receipt.clone(),
+                )
+                .unwrap()
+                .unwrap();
+                assert_eq!(matched.outcome.unwrap(), expected);
+                let mut substituted = original_batch.clone();
+                let Mutation::Put { body, .. } = &mut substituted.operations[0] else {
+                    unreachable!()
+                };
+                *body = json!({"different":"same key and document ID"});
+                assert!(
+                    kasumi_client::verify_mutation_receipt(
+                        &receipt_scope(&fixture),
+                        &substituted,
+                        receipt.clone()
+                    )
+                    .is_err()
+                );
                 let Some(proto::receipt_response::Outcome::Committed(receipt)) = receipt.outcome
                 else {
                     panic!("lost response must resolve to a committed receipt");
@@ -894,6 +941,16 @@ name: "docs".into(),
             .await
             .unwrap()
             .into_inner();
+        let original: MutationBatch = serde_json::from_value(batch).unwrap();
+        assert_eq!(receipt.request_digest, original.digest().unwrap());
+        let verified = kasumi_client::verify_mutation_receipt(
+            &receipt_scope(&fixture),
+            &original,
+            receipt.clone(),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(verified.outcome.unwrap_err(), error);
         match receipt.outcome.unwrap() {
             proto::receipt_response::Outcome::Rejected(receipt) => {
                 assert_eq!(receipt.code, "SCHEMA_VIOLATION");
@@ -1629,6 +1686,7 @@ name: "docs".into(),
                         .await
                         .unwrap()
                         .unwrap()
+                        .outcome
                         .is_ok()
                 );
             }

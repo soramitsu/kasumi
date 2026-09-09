@@ -580,6 +580,27 @@ mod response_tests {
     }
 
     #[test]
+    fn literal_marker_keys_survive_tool_output_and_typed_arguments() {
+        let body = json!({
+            "raw":{"$serde_json::private::RawValue":"not JSON"},
+            "number":{"$serde_json::private::Number":"7"}
+        });
+        let document = kasumi_types::Document {
+            id: "first".into(),
+            version: 1,
+            body: body.clone(),
+        };
+        let value = output(&document).unwrap();
+        assert_eq!(value["body"], body);
+        let typed: kasumi_types::Document = arguments(value.clone()).unwrap();
+        assert_eq!(typed, document);
+        let response = bounded_tool_result(value, false, &RequestId::Number(1)).unwrap();
+        let encoded = serde_json::to_vec(&response).unwrap();
+        let observed: Value = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(observed["structuredContent"]["body"], body);
+    }
+
+    #[test]
     fn envelope_accounting_includes_large_request_ids_and_bounds_errors() {
         let id = RequestId::String(std::sync::Arc::from("i".repeat(MAX_REQUEST_BYTES - 128)));
         let value = json!({"value":"x".repeat((8<<20)-128)});

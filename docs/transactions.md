@@ -43,6 +43,24 @@ precedes receipt disclosure. Native receipts retain the configured lifetime
 (24 hours by default). Applications needing permanent replay protection must
 store their permanent receipt in the same atomic batch as the business effects.
 
+`Database::operation_receipt` returns an optional `MutationReceipt` containing
+the original principal/tenant/incarnation `scope`, retained `request_digest`, and
+committed/rejected `outcome`. Native gRPC and
+MCP expose the same input binding. `MutationBatch::digest()` streams the canonical
+typed JSON through SHA-256, including the original key, read set, operations and
+preconditions. `KasumiClient::resolve_mutation` and its installed endpoint-pool
+counterpart require the expected original `MutationReceiptScope` and compare it
+and the input digest before returning an outcome. The stored scope and original
+application revision survive snapshot/restore; both full and indexed snapshot
+verification check the identity and its position against retained source lineage.
+The SDK never relabels an old receipt as a write from the restored incarnation.
+Neither method
+dispatches a mutation; an absent record remains unknown. A new invocation may
+use a renewed credential for the same authorized principal/resource, while every
+endpoint attempt within one invocation keeps the original credential snapshot
+and deadline. Receipt expiry and migration to permanent point storage remain
+separate release work.
+
 ## Coherent reads
 
 The embedded Rust request `ReadSnapshotRequest` and native JSON request are:

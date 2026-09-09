@@ -9,3 +9,7 @@ THIRD-PARTY-NOTICES.json and the referenced original texts in licenses/.
 The vendored bitmaps and lru sources contain Kasumi's documented memory-safety
 fixes. Their upstream notices and licenses remain in the vendored directories;
 patch provenance and review details are in vendor/README.md.
+
+The vendored serde_json source contains Kasumi's documented literal JSON key
+decoding correction. Its original MIT and Apache-2.0 license texts remain in
+vendor/serde_json-1.0.151/; patch details are in vendor/serde-json-literal-keys.md.

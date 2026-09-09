@@ -302,7 +302,7 @@ async fn committed_effect_with_expired_ack_is_resolved_by_fresh_credential() {
         .operation_receipt(&fixture.context, "committed")
         .await
         .unwrap()
-        .unwrap()
+        .unwrap().outcome
         .unwrap();
     let document = fixture
         .db

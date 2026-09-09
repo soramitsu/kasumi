@@ -71,6 +71,19 @@ async fn native_grpc_channel_uses_pinned_tls13_and_http2_with_no_plaintext_fallb
         server_certificate_pins: pins.clone(),
     };
     let mut typed = kasumi_client::KasumiClient::connect(&client_config).await?;
+    let snapshot_resources = kasumi_client::ClientResources::new(16 << 20, 8).unwrap();
+    let snapshot_options = |duration| kasumi_client::SnapshotReadOptions {
+        resources: snapshot_resources.clone(),
+        limits: kasumi_client::ClientDecodeLimits {
+            max_request_bytes: 64 << 10,
+            max_wire_bytes: 64 << 10,
+            max_json_bytes: 64 << 10,
+            max_decoded_bytes: 2 << 20,
+            ..Default::default()
+        },
+        deadline: tokio::time::Instant::now() + duration,
+        expected_incarnation: uuid::Uuid::from_u128(1),
+    };
     let error = typed
         .read_snapshot(
             "invalid",
@@ -81,12 +94,17 @@ async fn native_grpc_channel_uses_pinned_tls13_and_http2_with_no_plaintext_fallb
                 }],
                 queries: vec![],
             },
+            &snapshot_options(std::time::Duration::from_secs(4)),
         )
         .await
         .unwrap_err();
-    assert!(
-        matches!(error, kasumi_client::ClientError::Transport(status) if status.code() == tonic::Code::Unauthenticated)
-    );
+    assert!(matches!(
+        error,
+        kasumi_client::ClientError::DecodeRejected {
+            code: tonic::Code::Unauthenticated,
+            ..
+        }
+    ));
     drop(typed);
     client_config.server_certificate_pins.clear();
     assert!(

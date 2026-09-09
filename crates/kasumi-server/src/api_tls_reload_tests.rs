@@ -89,10 +89,22 @@ async fn native_listener_reloads_complete_tls_and_rejects_invalid_replacement() 
         json!({"collection":"docs", "filter":{"op":"all"}, "allow_scan":true}),
     )
     .unwrap();
+    let decode_resources = kasumi_client::ClientResources::new(64 << 20, 4).unwrap();
+    let decode_options = || kasumi_client::JsonReadOptions {
+        resources: decode_resources.clone(),
+        limits: kasumi_client::ClientDecodeLimits {
+            max_request_bytes: 64 << 10,
+            max_wire_bytes: 1 << 20,
+            max_json_bytes: 1 << 20,
+            max_decoded_bytes: 4 << 20,
+            ..Default::default()
+        },
+        deadline: tokio::time::Instant::now() + std::time::Duration::from_secs(5),
+    };
     KasumiClient::connect(&config)
         .await
         .unwrap()
-        .query(token, &query)
+        .query(token, &query, &decode_options())
         .await
         .unwrap();
     // A new certificate paired with an old private key cannot publish any part.
@@ -102,7 +114,7 @@ async fn native_listener_reloads_complete_tls_and_rejects_invalid_replacement() 
     KasumiClient::connect(&config)
         .await
         .unwrap()
-        .query(token, &query)
+        .query(token, &query, &decode_options())
         .await
         .unwrap();
     std::fs::write(&files.private_key, &second_key).unwrap();
@@ -116,7 +128,7 @@ async fn native_listener_reloads_complete_tls_and_rejects_invalid_replacement() 
     KasumiClient::connect(&new_config)
         .await
         .unwrap()
-        .query(token, &query)
+        .query(token, &query, &decode_options())
         .await
         .unwrap();
     stop.send_replace(true);
