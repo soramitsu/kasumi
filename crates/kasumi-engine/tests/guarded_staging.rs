@@ -855,14 +855,24 @@ async fn encrypted_restore_preserves_original_stage_scope_without_reviving_histo
             .contains_key("historical-upload")
     );
     let staged = db.engine().generation().unwrap();
-    assert_eq!(staged.state.staged_transactions.len(), 2);
-    assert!(
-        staged
-            .state
-            .staged_transactions
-            .values()
-            .all(|stage| stage.scope.incarnation == source_incarnation)
-    );
+    assert!(staged.state.staged_transactions.is_empty());
+    assert_eq!(staged.state.staged_terminal_head.count, 2);
     drop(staged);
+    // Both permanent outcomes must remain point-addressable under the source
+    // scope after restore; the resident map owns only unfinished uploads.
+    let finished_status = db
+        .staged_transaction_status(&renewed, &finished.reference().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(finished_status.transaction, finished.reference().unwrap());
+    assert_eq!(
+        finished_status.transaction.scope.incarnation,
+        source_incarnation
+    );
+    assert_eq!(
+        finished_status.outcome,
+        StagedOutcome::Committed { receipt }
+    );
+    assert_eq!(stopped.transaction.scope.incarnation, source_incarnation);
     close(db, audit).await;
 }
