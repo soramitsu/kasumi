@@ -4,6 +4,7 @@ use crate::admission::{NodeAdmission, Reservation};
 use anyhow::{Result, ensure};
 use kasumi_types::{HistoryArchiveChunk, MAX_ARCHIVE_CHUNK_BYTES};
 use std::sync::Arc;
+use zeroize::Zeroizing;
 
 fn workspace(bytes: &[u8], retained: u64, check: &mut dyn FnMut() -> Result<()>) -> Result<u64> {
     ensure!(
@@ -17,7 +18,7 @@ fn workspace(bytes: &[u8], retained: u64, check: &mut dyn FnMut() -> Result<()>)
 }
 
 pub(super) fn verify_body(
-    bytes: Vec<u8>,
+    bytes: Zeroizing<Vec<u8>>,
     reservation: &Reservation,
     admission: &Arc<NodeAdmission>,
     retained: u64,
@@ -48,7 +49,7 @@ mod tests {
     use super::*;
     use crate::admission::AdmissionConfig;
 
-    fn body() -> Vec<u8> {
+    fn body() -> Zeroizing<Vec<u8>> {
         let mut bytes = br#"{"kind":"history_subset","archive_id":"archive","source_incarnation":"source","collection":"rows","index":0,"documents":[{"id":"row","version":1,"body":{"dense":["#.to_vec();
         for i in 0..8192 {
             if i != 0 {
@@ -57,7 +58,7 @@ mod tests {
             bytes.push(b'0');
         }
         bytes.extend_from_slice(b"]}}]}");
-        bytes
+        Zeroizing::new(bytes)
     }
 
     fn governor(maximum: u64) -> Arc<NodeAdmission> {
@@ -129,7 +130,8 @@ mod tests {
     #[test]
     fn decode_failure_and_validation_panic_keep_the_expanded_charge_until_owner_drain() {
         let retained = 128 << 20;
-        let malformed = br#"{"kind":"history_subset","documents":[0,0,0]}"#.to_vec();
+        let malformed =
+            Zeroizing::new(br#"{"kind":"history_subset","documents":[0,0,0]}"#.to_vec());
         let peak = workspace(&malformed, retained, &mut || Ok(())).unwrap();
         let admission = governor(peak);
         let reservation = admission.reserve(retained, None).unwrap();

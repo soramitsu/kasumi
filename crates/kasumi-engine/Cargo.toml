@@ -30,6 +30,7 @@ arc-swap = "=1.9.2"
 imbl = { version = "=7.0.1", features = ["serde"] }
 url = "=2.5.8"
 libc = "=0.2.189"
+zeroize = "=1.9.0"
 
 [dev-dependencies]
 redb = "4.2"
