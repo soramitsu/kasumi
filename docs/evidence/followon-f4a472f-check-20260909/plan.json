@@ -1,0 +1,37 @@
+{
+  "source": "/tmp/kasumi-production-recovery-followon",
+  "target": "/tmp/kasumi-production-root-target",
+  "expected_head": "f4a472ffa510cead0a5383a5a199a7e5f47560ef",
+  "expected_tree": "ebfb0b3592d03ed8a26bcbe0a9b106edb2ae3ef7",
+  "output": "/tmp/kasumi-f4a472f-followon-check",
+  "scope": "First combined alltarget/allfeature compilation andformatting of b17T5 plus exactterminal-only status, establishedquorum scheduling/originalcap enforcement, unwiredNodeDiskprimitive, externalhistorystructuralpeak admission, and canonicalstagedfixture reconciliation. Keepgoing compiler collects independenttargeterrors underoriginal900sdeadline; nofunctional/native/finalreleaseclaim. Previousb17/f650 passes retaintheir exactsources anddo notcertify thiscombination. Successorf4a472f retains actualZeroizing plaintext ratherthanaddingcopy; directengineedgeusesalreadylockedzeroize1.9.0. Prior981compilefailurepreserved.",
+  "gates": [
+    {
+      "name": "combined-all-targets-check",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "check",
+        "--locked",
+        "--keep-going",
+        "--offline",
+        "-j1",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--message-format=json-render-diagnostics"
+      ],
+      "required_tests": []
+    },
+    {
+      "name": "format",
+      "timeout_seconds": 60,
+      "cargo_args": [
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "required_tests": []
+    }
+  ]
+}

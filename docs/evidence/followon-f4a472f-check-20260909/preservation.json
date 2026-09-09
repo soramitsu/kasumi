@@ -1,0 +1,32 @@
+{
+  "combined-all-targets-check.log": {
+    "source": "/tmp/kasumi-f4a472f-followon-check/combined-all-targets-check.log",
+    "sha256": "fe9abe00c43bd864dbf2a61638c0c5b89552d17bbb877f7ed12386cec41c6cd2",
+    "bytes": 477164
+  },
+  "evidence.json": {
+    "source": "/tmp/kasumi-f4a472f-followon-check/evidence.json",
+    "sha256": "0c4e8dbf37f05e5ff448485f42fa6597a80e23059ee8e5e4fa1fe15521b661b3",
+    "bytes": 509852
+  },
+  "format.log": {
+    "source": "/tmp/kasumi-f4a472f-followon-check/format.log",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "plan.json": {
+    "source": "/tmp/kasumi-f4a472f-followon-check/plan.json",
+    "sha256": "fab573263d78a19f44c6d49a37eb763012e5d6e28c26f7a9cb19c440f02e12ab",
+    "bytes": 1492
+  },
+  "runner.py": {
+    "source": "/tmp/kasumi-f4a472f-followon-check/runner.py",
+    "sha256": "ad3d647fbb73d9d32e04e4e202814f68aea2cb5aa80acbed03a10fa8a3855a6f",
+    "bytes": 10765
+  },
+  "source-before.json": {
+    "source": "/tmp/kasumi-f4a472f-followon-check/source-before.json",
+    "sha256": "29bdb2cecfaadc310204d977bad74b806033fbbb95fb36c32f52fd7afa75c746",
+    "bytes": 305647
+  }
+}
