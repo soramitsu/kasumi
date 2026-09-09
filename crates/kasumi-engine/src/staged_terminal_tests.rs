@@ -138,6 +138,53 @@ async fn durable_future_row_is_invisible_and_only_exact_original_replay_can_reus
 }
 
 #[tokio::test]
+async fn encrypted_reopen_keeps_unapplied_terminal_rows_hidden_until_exact_replay() {
+    let (directory, store, initial, old) = durable().await;
+    let disk = store.scratch_disk().clone();
+    let identity = applied(1);
+    let key = crate::state::staging::identity("owner", "unapplied").unwrap();
+    let (_, pending) = stop(&initial, &old, "unapplied", &identity);
+    let durable_future = pending.persist().unwrap();
+    let expected = durable_future.row(1).unwrap().sha256().unwrap();
+    assert!(old.get(&key).unwrap().is_none());
+    drop(durable_future);
+    drop(old);
+    store.shutdown().await;
+    drop(store);
+
+    let reopened_node = NodeStore::open_existing(directory.path().join("node.redb"), disk).unwrap();
+    let reopened_store = TenantStore::open_fixture(
+        reopened_node,
+        "tenant".into(),
+        Arc::new(LocalKeyProvider::new([89; 32])),
+    )
+    .await
+    .unwrap();
+    let empty = View::empty(&initial.tenant, &initial.incarnation).unwrap();
+    let reopened = empty
+        .prepare_install(&reopened_store, &initial, &"10".repeat(32), true)
+        .unwrap();
+    assert!(reopened.replacements().is_empty());
+    assert!(reopened.view.get(&key).unwrap().is_none());
+
+    let mut conflicting = identity.clone();
+    conflicting.command_sha256 = "ef".repeat(32);
+    let (_, wrong) = stop(&initial, &reopened.view, "unapplied", &conflicting);
+    assert!(wrong.persist().is_err());
+    assert!(reopened.view.get(&key).unwrap().is_none());
+    let (_, exact) = stop(&initial, &reopened.view, "unapplied", &identity);
+    let selected = exact.persist().unwrap();
+    assert_eq!(
+        selected.get(&key).unwrap().unwrap().sha256().unwrap(),
+        expected
+    );
+    assert!(reopened.view.get(&key).unwrap().is_none());
+    drop(selected);
+    drop(reopened);
+    reopened_store.shutdown().await;
+}
+
+#[tokio::test]
 async fn snapshot_namespace_binding_selects_exact_prefix_and_preserves_older_live_views() {
     let (_directory, store, initial, old) = durable().await;
     let (first_state, first) = stop(&initial, &old, "first", &applied(1));
@@ -180,6 +227,83 @@ async fn snapshot_namespace_binding_selects_exact_prefix_and_preserves_older_liv
             .prepare_install(&store, &first_state, &"40".repeat(32), true)
             .is_err()
     );
+}
+
+#[test]
+fn terminal_applied_provenance_cannot_be_relabelled_across_two_restore_geneses() {
+    fn link(source: &str, target: &str, revision: u64) -> RestoreLineageLink {
+        RestoreLineageLink {
+            checkpoint: FullBackupCheckpoint {
+                tenant: "tenant".into(),
+                source_incarnation: source.into(),
+                revision,
+                resident_sha256: "01".repeat(32),
+                backup_id: uuid::Uuid::new_v4(),
+                manifest_ciphertext_sha256: "02".repeat(32),
+                key_lineage_digest: "03".repeat(32),
+            },
+            target_incarnation: target.into(),
+        }
+    }
+    let initial = state();
+    let empty = View::empty(&initial.tenant, &initial.incarnation).unwrap();
+    let (_, pending) = stop(&initial, &empty, "original", &applied(1));
+    let original = pending.rows[0].clone();
+    let mut restored = initial;
+    restored.incarnation = "current".into();
+    restored.revision_base = 21;
+    restored.revision = 25;
+    restored.restore_lineage = vec![
+        link("incarnation", "middle", 10),
+        link("middle", "current", 20),
+    ];
+    restored.restored_from = Some(restored.restore_lineage[1].checkpoint.clone());
+    validate_restore_lineage(
+        &restored.tenant,
+        &restored.incarnation,
+        restored.revision,
+        restored.restored_from.as_ref(),
+        &restored.restore_lineage,
+    )
+    .unwrap();
+    original.validate(&restored).unwrap();
+    for incarnation in ["middle", "current"] {
+        let mut substituted = original.clone();
+        substituted.applied.incarnation = incarnation.into();
+        assert!(
+            substituted
+                .validate(&restored)
+                .unwrap_err()
+                .to_string()
+                .contains("outside its original incarnation")
+        );
+    }
+    // A retained old upload can legitimately be stopped in either successor.
+    // Its original request scope stays unchanged; the actual applying position
+    // must use that successor's own Raft index and genesis revision.
+    for (incarnation, revision) in [("middle", 12), ("current", 22)] {
+        let mut stopped = original.clone();
+        stopped.applied.incarnation = incarnation.into();
+        stopped.applied.revision = revision;
+        stopped.stage.outcome = StagedOutcome::Aborted {
+            receipt: WriteReceipt {
+                revision,
+                versions: BTreeMap::new(),
+            },
+        };
+        stopped.validate(&restored).unwrap();
+        assert_eq!(stopped.stage.scope.incarnation, "incarnation");
+        if let AppliedOrigin::Raft { index, .. } = &mut stopped.applied.origin {
+            *index = 2;
+        }
+        assert!(
+            stopped
+                .validate(&restored)
+                .unwrap_err()
+                .to_string()
+                .contains("Raft position differs")
+        );
+    }
 }
 
 #[test]

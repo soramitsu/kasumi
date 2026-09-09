@@ -132,21 +132,44 @@ impl Row {
                 )?,
             "terminal row contains a live upload"
         );
-        let bound = if self.applied.incarnation == state.incarnation {
-            state.revision
+        let (genesis_revision, bound) = if self.applied.incarnation == state.incarnation {
+            (state.revision_base, state.revision)
         } else {
-            state
+            let bound = state
                 .restore_lineage
                 .iter()
                 .find(|link| link.checkpoint.source_incarnation == self.applied.incarnation)
                 .context("terminal applied incarnation is outside retained lineage")?
                 .checkpoint
-                .revision
+                .revision;
+            let genesis = state
+                .restore_lineage
+                .iter()
+                .find(|link| link.target_incarnation == self.applied.incarnation)
+                .map(|link| {
+                    link.checkpoint
+                        .revision
+                        .checked_add(1)
+                        .context("terminal applied genesis revision overflow")
+                })
+                .transpose()?
+                .unwrap_or(0);
+            (genesis, bound)
         };
         ensure!(
-            self.applied.revision <= bound,
-            "terminal applied revision exceeds retained checkpoint"
+            self.applied.revision > genesis_revision && self.applied.revision <= bound,
+            "terminal applied revision is outside its original incarnation"
         );
+        match &self.applied.origin {
+            AppliedOrigin::Raft { index, .. } => {
+                ensure!(
+                    genesis_revision.checked_add(*index) == Some(self.applied.revision),
+                    "terminal Raft position differs from original incarnation revision"
+                );
+            }
+            #[cfg(any(test, feature = "test-utils"))]
+            AppliedOrigin::Fixture => {}
+        }
         let receipt = match &self.stage.outcome {
             StagedOutcome::Finished {
                 outcome: Ok(receipt),
