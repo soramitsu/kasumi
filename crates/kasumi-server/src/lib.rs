@@ -15,6 +15,7 @@ pub mod local_auth;
 pub mod local_recovery;
 pub mod logging;
 pub mod mcp;
+mod node_provision;
 mod observability;
 mod recovery_cli;
 pub mod recovery_runtime;

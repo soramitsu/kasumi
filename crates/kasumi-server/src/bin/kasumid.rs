@@ -46,6 +46,13 @@ async fn run(arguments: &[String]) -> Result<()> {
             );
             Ok(())
         }
+        [command, path] if command == "provision-node" => {
+            RuntimeConfig::load(path)?.provision_node_file()?;
+            println!(
+                "Created the configured node file. HA catalogs and bootstrap state require separate initialization."
+            );
+            Ok(())
+        }
         [command, path] if command == "serve" => {
             let config = RuntimeConfig::load(path)?;
             let runtime = NodeRuntime::open(config)
@@ -78,7 +85,7 @@ async fn run(arguments: &[String]) -> Result<()> {
             result
         }
         _ => bail!(
-            "usage: kasumid init --mode standalone <absolute-directory> [--tenant name] | example-config | check-config <configuration.json> | serve <configuration.json> | credential create <control-profile> <request.json> <output-profile> | credential renew|watch <profile> | credential status|revoke <control-profile> <family-uuid> | maintenance rotate-wrapping-keys|rotate-signer|rotate-certificates <configuration.json> | recover-administrator <configuration.json> <new-private-directory> | backup-operator-keys <configuration.json> <new-private-directory> | verify-operator-keys <private-directory> | backup create <database-profile> <destination> <checkpoint.json> | backup status|verify <database-profile> <destination> <session-uuid> | backup abort <database-profile> <destination> <session-uuid> <reason> | backup cleanup <database-profile> <destination> <session-uuid> <max-objects> | audit status <control-profile> | audit export|archives <control-profile> <request.json> <output.json> | audit verify <control-profile> <stream-uuid> <index> | control-recovery configuration-digest|start|status|resume|stop|phase <arguments> | local-recovery start|status|resume|stop <configuration.json> <request.json-or-operation-uuid>"
+            "usage: kasumid init --mode standalone <absolute-directory> [--tenant name] | example-config | check-config <configuration.json> | provision-node <configuration.json> | serve <configuration.json> | credential create <control-profile> <request.json> <output-profile> | credential renew|watch <profile> | credential status|revoke <control-profile> <family-uuid> | maintenance rotate-wrapping-keys|rotate-signer|rotate-certificates <configuration.json> | recover-administrator <configuration.json> <new-private-directory> | backup-operator-keys <configuration.json> <new-private-directory> | verify-operator-keys <private-directory> | backup create <database-profile> <destination> <checkpoint.json> | backup status|verify <database-profile> <destination> <session-uuid> | backup abort <database-profile> <destination> <session-uuid> <reason> | backup cleanup <database-profile> <destination> <session-uuid> <max-objects> | audit status <control-profile> | audit export|archives <control-profile> <request.json> <output.json> | audit verify <control-profile> <stream-uuid> <index> | control-recovery configuration-digest|start|status|resume|stop|phase <arguments> | local-recovery start|status|resume|stop <configuration.json> <request.json-or-operation-uuid>"
         ),
     }
 }

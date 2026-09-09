@@ -233,6 +233,7 @@ pub struct RuntimeConfig {
     pub format: u32,
     pub mode: DeploymentMode,
     pub database_path: PathBuf,
+    pub database_id: Uuid,
     pub scratch_disk: kasumi_store::ScratchDiskConfig,
     pub auth: AuthConfig,
     pub mcp: McpEndpoint,
@@ -246,6 +247,17 @@ pub struct RuntimeConfig {
 }
 
 impl RuntimeConfig {
+    /// Explicit initial file enrollment for HA. This does not provision tenant,
+    /// security-audit or Control catalogs/bootstrap metadata.
+    pub fn provision_node_file(&self) -> Result<()> {
+        self.validate()?;
+        ensure!(
+            self.mode == DeploymentMode::Replicated,
+            "standalone installation requires kasumid init"
+        );
+        crate::node_provision::create(&self.database_path, self.database_id, &self.scratch_disk)
+    }
+
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let bytes = read_bounded(path.as_ref(), MAX_CONFIG_BYTES)?;
         let config: Self =
@@ -259,6 +271,10 @@ impl RuntimeConfig {
     pub fn validate(&self) -> Result<()> {
         ensure!(self.format == 1, "unsupported runtime configuration format");
         absolute(&self.database_path)?;
+        ensure!(
+            !self.database_id.is_nil(),
+            "installed node database identity is nil"
+        );
         self.admission.validate()?;
         self.scratch_disk.validate()?;
         for (tenant, archive) in &self.tenant_audit_archives {
@@ -1004,11 +1020,11 @@ impl NodeRuntime {
         } else {
             (None, None)
         };
-        let node = if existing_standalone {
-            NodeStore::open_existing(&config.database_path, scratch_disk.clone())?
-        } else {
-            NodeStore::open(&config.database_path, scratch_disk.clone())?
-        };
+        let node = NodeStore::open_existing(
+            &config.database_path,
+            config.database_id,
+            scratch_disk.clone(),
+        )?;
         let security_store = if existing_standalone {
             TenantStore::open_existing(
                 node.clone(),
@@ -1982,6 +1998,7 @@ pub fn example_config() -> RuntimeConfig {
         backup_destinations: BTreeMap::new(),
         mode: DeploymentMode::Replicated,
         database_path: "/var/lib/kasumi/node.redb".into(),
+        database_id: Uuid::new_v4(),
         auth: AuthConfig {
             issuer: "https://identity.example".into(),
             audience: "https://kasumi.example/mcp".into(),

@@ -35,6 +35,13 @@ async fn run(args: &[String]) -> Result<()> {
             AuthorityRuntimeConfig::load(path)?;
             Ok(())
         }
+        [command, path] if command == "provision-node" => {
+            AuthorityRuntimeConfig::load(path)?.provision_node_file()?;
+            println!(
+                "Created the configured authority node file. Issuer catalogs and bootstrap state require separate initialization."
+            );
+            Ok(())
+        }
         [command, path] if command == "serve" => {
             let runtime = AuthorityRuntime::open(AuthorityRuntimeConfig::load(path)?)
                 .await
@@ -60,6 +67,8 @@ async fn run(args: &[String]) -> Result<()> {
             signal.abort();
             result
         }
-        _ => bail!("usage: kasumi-authority check-config <config.json> | serve <config.json>"),
+        _ => bail!(
+            "usage: kasumi-authority check-config <config.json> | provision-node <config.json> | serve <config.json>"
+        ),
     }
 }

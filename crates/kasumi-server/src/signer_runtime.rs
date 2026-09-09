@@ -47,10 +47,11 @@ impl SignerVerifierConfig {
                 .parent()
                 .context("verifier directory missing")?,
         )?;
+        let database_id = kasumi_store::node_store_ids::signer_verifier(&self.identity)?;
         let node = if initialize {
-            NodeStore::open(&self.database_path, scratch_disk.clone())?
+            NodeStore::create_new(&self.database_path, database_id, scratch_disk.clone())?
         } else {
-            NodeStore::open_existing(&self.database_path, scratch_disk.clone())?
+            NodeStore::open_existing(&self.database_path, database_id, scratch_disk.clone())?
         };
         let provider = self.keys.provider(credential)?;
         let access = StorageAccess::live_signer_trust(self.identity.clone())?;

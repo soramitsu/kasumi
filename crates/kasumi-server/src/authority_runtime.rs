@@ -23,6 +23,7 @@ use std::{
     time::Duration,
 };
 use tokio::{net::TcpListener, sync::watch, task::JoinSet};
+use uuid::Uuid;
 fn listener_outcome(
     result: Option<std::result::Result<Result<()>, tokio::task::JoinError>>,
 ) -> Result<()> {
@@ -38,6 +39,7 @@ pub struct AuthorityRuntimeConfig {
     pub bootstrap: AuthorityBootstrap,
     pub resource_budget_bytes: u64,
     pub database_path: PathBuf,
+    pub database_id: Uuid,
     pub scratch_disk: kasumi_store::ScratchDiskConfig,
     pub operational_signer_file: PathBuf,
     pub signer_verifier: crate::signer_runtime::SignerVerifierConfig,
@@ -53,6 +55,13 @@ pub struct AuthorityRuntimeConfig {
     pub replication: ReplicationConfig,
 }
 impl AuthorityRuntimeConfig {
+    /// Explicit file enrollment. Issuer/security catalog and bootstrap
+    /// initialization are separate from this outer node-file operation.
+    pub fn provision_node_file(&self) -> Result<()> {
+        self.validate()?;
+        crate::node_provision::create(&self.database_path, self.database_id, &self.scratch_disk)
+    }
+
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let config: Self = serde_json::from_slice(&read_bounded(path.as_ref(), 2 << 20)?)?;
         config.validate()?;
@@ -89,6 +98,10 @@ impl AuthorityRuntimeConfig {
         })
     }
     pub fn validate(&self) -> Result<()> {
+        ensure!(
+            !self.database_id.is_nil(),
+            "installed authority node database identity is nil"
+        );
         self.installation.validate()?;
         kasumi_serving::SigningCertificateVerification::verify(
             &self.bootstrap.initial_signer_certificate,
@@ -233,7 +246,11 @@ impl AuthorityRuntime {
         .open(&signer_verifier)?;
         let native = TcpListener::bind(config.native.listen).await?;
         let cluster = TcpListener::bind(config.replication.listener.listen).await?;
-        let node = NodeStore::open(&config.database_path, scratch_disk.clone())?;
+        let node = NodeStore::open_existing(
+            &config.database_path,
+            config.database_id,
+            scratch_disk.clone(),
+        )?;
         let audit_store = TenantStore::open(
             node.clone(),
             kasumi_engine::SECURITY_TENANT.into(),
