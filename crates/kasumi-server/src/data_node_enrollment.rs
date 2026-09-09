@@ -36,7 +36,7 @@ impl crate::startup_owner::Runtime for Enrolled {
 
 async fn initialize_owned(config: RuntimeConfig) -> Result<Enrolled> {
     let mut pending = crate::startup_resources::Resources::default();
-    let result = async {
+    let result = crate::startup_preparation::capture("HA node enrollment", async {
         let admission = kasumi_engine::admission::NodeAdmission::new(config.admission.clone())?;
         let (node, audit) = crate::node_provision::create(
             &config.database_path,
@@ -48,9 +48,11 @@ async fn initialize_owned(config: RuntimeConfig) -> Result<Enrolled> {
         .await?;
         pending.nodes.push(node.clone());
         pending.audits.push(audit.clone());
+        #[cfg(test)]
+        crate::startup_preparation::checkpoint(config.database_id, "ha-enrollment-node");
         let credential: CredentialSource = Arc::new(crate::runtime::file_secret);
         provision(&config, node, audit, credential).await
-    }
+    })
     .await;
     let drained = crate::startup_owner::finish(&mut pending).await;
     match (result, drained) {
@@ -97,32 +99,36 @@ pub(crate) async fn provision(
     audit: Arc<SecurityAudit>,
     credential: CredentialSource,
 ) -> Result<()> {
-    config.validate_selected_key_domains(&config.tenants.iter().collect::<Vec<_>>())?;
-    let enrollment = Enrollment::begin(
-        audit.store(),
-        &Input::Data {
-            configuration: Box::new(config.clone()),
-        },
-    )?;
-    let mut domains = BTreeMap::new();
-    for authority in config.serving_authorities.values() {
-        for partition in authority.manifest.partitions.keys() {
-            let domain = authority.manifest.signing_domain(*partition)?;
-            domains.insert(domain.digest()?, domain);
+    let mut pending = crate::startup_resources::Resources::default();
+    let result = crate::startup_preparation::capture("HA enrollment provisioning", async {
+        config.validate_selected_key_domains(&config.tenants.iter().collect::<Vec<_>>())?;
+        let enrollment = Enrollment::begin(
+            audit.store(),
+            &Input::Data {
+                configuration: Box::new(config.clone()),
+            },
+        )?;
+        let mut domains = BTreeMap::new();
+        for authority in config.serving_authorities.values() {
+            for partition in authority.manifest.partitions.keys() {
+                let domain = authority.manifest.signing_domain(*partition)?;
+                domains.insert(domain.digest()?, domain);
+            }
         }
-    }
-    let verifier = match &config.signer_verifier {
-        Some(configured) => Some(
-            configured
-                .open(domains, credential.clone(), node.scratch_disk().clone())
-                .await?,
-        ),
-        None => {
-            ensure!(domains.is_empty(), "enrollment live verifier is absent");
-            None
+        let verifier = match &config.signer_verifier {
+            Some(configured) => Some(
+                configured
+                    .open(domains, credential.clone(), node.scratch_disk().clone())
+                    .await?,
+            ),
+            None => {
+                ensure!(domains.is_empty(), "enrollment live verifier is absent");
+                None
+            }
+        };
+        if let Some(verifier) = &verifier {
+            pending.verifiers.push(verifier.clone());
         }
-    };
-    let result = async {
         let trusts: BTreeMap<String, AuthorityTrust> = config
             .serving_authorities
             .iter()
@@ -253,12 +259,16 @@ pub(crate) async fn provision(
             }
         }
         enrollment.complete(audit.store())
-    }
+    })
     .await;
-    if let Some(verifier) = verifier {
-        verifier.shutdown().await;
+    let drained = crate::startup_owner::finish(&mut pending).await;
+    match (result, drained) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Err(error), Err(drain)) => {
+            Err(error.context(format!("enrollment verifier drain failed: {drain:#}")))
+        }
     }
-    result
 }
 
 // The typed fresh-pair initializer owns provisional domains through handoff.
@@ -280,7 +290,7 @@ async fn initialize_domain(
 ) -> Result<String> {
     let mut pending = crate::startup_resources::Resources::default();
     pending.nodes.push(node.clone());
-    let result = async {
+    let result = crate::startup_preparation::capture("HA domain enrollment", async {
         if let Some(grant) = grant {
             grant.check()?;
         }
@@ -296,6 +306,10 @@ async fn initialize_domain(
         .await?;
         pending.stores.push(stores.application().clone());
         pending.stores.push(stores.custody().store().clone());
+        #[cfg(test)]
+        if tenant == CONTROL_TENANT {
+            crate::startup_preparation::checkpoint(config.database_id, "ha-control-pair");
+        }
         let app = stores.application().clone();
         config.install_tenant_audit_archive(&app, None)?;
         if let Some(grant) = grant {
@@ -317,13 +331,17 @@ async fn initialize_domain(
         pending.databases.push(database);
         #[cfg(test)]
         if tenant == CONTROL_TENANT {
+            crate::startup_preparation::checkpoint(config.database_id, "ha-control-database");
+        }
+        #[cfg(test)]
+        if tenant == CONTROL_TENANT {
             crate::control_genesis::tests::checkpoint(&config.database_path).await?;
         }
         if let Some(grant) = grant {
             grant.check()?;
         }
         crate::runtime::persisted_bootstrap_fingerprint(&app)
-    }
+    })
     .await;
     let drained = crate::startup_owner::finish(&mut pending).await;
     let fingerprint = match (result, drained) {

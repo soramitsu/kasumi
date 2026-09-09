@@ -274,3 +274,91 @@ async fn failed_control_genesis_drains_actual_pair_before_returning_enrollment_e
     node.drain_initializers().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn panicked_ha_enrollment_drains_nested_node_audit_pair_and_database_owners() -> Result<()> {
+    for (index, phase) in [
+        "node-provision-node",
+        "node-provision-store",
+        "node-provision-audit",
+        "ha-enrollment-node",
+        "ha-control-pair",
+        "ha-control-database",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let directory = tempfile::tempdir()?;
+        let config = config(directory.path())?;
+        let fault = crate::startup_preparation::install(config.database_id, phase);
+        let error =
+            tokio::time::timeout(std::time::Duration::from_secs(10), config.provision_node())
+                .await?
+                .unwrap_err();
+        assert!(
+            error
+                .downcast_ref::<crate::startup_preparation::PreparationPanic>()
+                .is_some(),
+            "{error:#}"
+        );
+        drop(fault);
+        crate::runtime::NodeRuntime::drain_startups().await?;
+        let node = NodeStore::open_existing(
+            &config.database_path,
+            config.database_id,
+            ScratchDisk::open(config.scratch_disk.clone())?,
+        )?;
+        if index > 0 {
+            let security = TenantStore::open_existing(
+                node.clone(),
+                kasumi_engine::SECURITY_TENANT.into(),
+                config
+                    .security_audit
+                    .keys
+                    .provider(Arc::new(crate::runtime::file_secret))?,
+                StorageAccess::security_audit(),
+            )
+            .await?;
+            assert_eq!(
+                security.get("security.audit.meta", b"head")?.is_some(),
+                index >= 2
+            );
+            assert!(
+                crate::node_enrollment::require_complete(
+                    &security,
+                    config.database_id,
+                    crate::node_enrollment::Kind::Data
+                )
+                .is_err()
+            );
+            if index >= 4 {
+                let stores = TenantStorageSet::open_existing(
+                    node.clone(),
+                    crate::runtime::CONTROL_TENANT.into(),
+                    config
+                        .control
+                        .keys
+                        .provider(Arc::new(crate::runtime::file_secret))?,
+                    config
+                        .control
+                        .custody_keys
+                        .provider(Arc::new(crate::runtime::file_secret))?,
+                    StorageAccess::node_control(),
+                )
+                .await?;
+                assert_eq!(
+                    stores
+                        .application()
+                        .get("engine.bootstrap", b"manifest")?
+                        .is_some(),
+                    index == 5
+                );
+                stores.application().shutdown().await;
+                stores.custody().store().shutdown().await;
+            }
+            security.shutdown().await;
+        }
+        node.drain_initializers().await?;
+    }
+    Ok(())
+}

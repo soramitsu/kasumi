@@ -14,38 +14,44 @@ pub(crate) async fn create(
     security: &crate::runtime::SecurityAuditConfig,
     admission: Arc<kasumi_engine::admission::NodeAdmission>,
 ) -> Result<(Arc<NodeStore>, Arc<kasumi_engine::SecurityAudit>)> {
-    private_files::check_directory(path.parent().context("node database directory is absent")?)?;
-    security.validate()?;
-    let provider = security
-        .keys
-        .provider(Arc::new(crate::runtime::file_secret))?;
-    let disk = ScratchDisk::open(scratch.clone())?;
-    let node = NodeStore::create_new(path, database_id, disk)?;
-    let prepared = TenantStore::initialize_catalog(
-        node.clone(),
-        kasumi_engine::SECURITY_TENANT.into(),
-        provider,
-        StorageAccess::security_audit(),
-    )
+    let mut pending = crate::startup_resources::Resources::default();
+    let outcome = crate::startup_preparation::capture("node provisioning", async {
+        private_files::check_directory(
+            path.parent().context("node database directory is absent")?,
+        )?;
+        security.validate()?;
+        let provider = security
+            .keys
+            .provider(Arc::new(crate::runtime::file_secret))?;
+        let disk = ScratchDisk::open(scratch.clone())?;
+        let node = NodeStore::create_new(path, database_id, disk)?;
+        pending.nodes.push(node.clone());
+        #[cfg(test)]
+        crate::startup_preparation::checkpoint(database_id, "node-provision-node");
+        let store = TenantStore::initialize_catalog(
+            node.clone(),
+            kasumi_engine::SECURITY_TENANT.into(),
+            provider,
+            StorageAccess::security_audit(),
+        )
+        .await?;
+        pending.stores.push(store.clone());
+        #[cfg(test)]
+        crate::startup_preparation::checkpoint(database_id, "node-provision-store");
+        node.drain_initializers().await?;
+        let audit = security.initialize(store, admission)?;
+        pending.audits.push(audit.clone());
+        #[cfg(test)]
+        crate::startup_preparation::checkpoint(database_id, "node-provision-audit");
+        Ok((node, audit))
+    })
     .await;
-    let drained = node.drain_initializers().await;
-    let store = match (prepared, drained) {
-        (Ok(store), Ok(())) => store,
-        (Ok(store), Err(error)) => {
-            store.shutdown().await;
-            return Err(error);
-        }
-        (Err(error), Ok(())) => return Err(error),
-        (Err(error), Err(drain)) => {
-            return Err(error.context(format!("singleton drain failed: {drain:#}")));
-        }
-    };
-    match security.initialize(store.clone(), admission) {
-        Ok(audit) => Ok((node, audit)),
-        Err(error) => {
-            store.shutdown().await;
-            Err(error)
-        }
+    match outcome {
+        Ok(owners) => Ok(owners),
+        Err(error) => match crate::startup_owner::finish(&mut pending).await {
+            Ok(()) => Err(error),
+            Err(drain) => Err(error.context(format!("node provisioning drain failed: {drain:#}"))),
+        },
     }
 }
 

@@ -1225,6 +1225,11 @@ impl NodeRuntime {
                     }
                     None => node.clone(),
                 };
+                if active.is_some() {
+                    pending.nodes.push(tenant_node.clone());
+                    #[cfg(test)]
+                    crate::startup_preparation::checkpoint(config.database_id, "data-active-node");
+                }
                 let custody_provider = tenant.custody_keys.provider(credential.clone())?;
                 if kasumi_store::CustodyStore::catalog_installed(&tenant_node, &tenant.tenant)? {
                     let custody_store = kasumi_store::CustodyStore::open(tenant_node.clone(), tenant.tenant.clone(), custody_provider.clone()).await?;
@@ -1291,7 +1296,6 @@ impl NodeRuntime {
                 if let Some(active) = active {
                     let generation = opened.database.engine().generation()?;
                     if generation.state.restored_from.as_ref() != Some(&active.checkpoint) || generation.state.pending_restore.is_some() {
-                        opened.database.shutdown().await?;
                         anyhow::bail!("active standalone generation is incomplete or differs from its committed checkpoint");
                     }
                 }
@@ -1393,6 +1397,8 @@ impl NodeRuntime {
                 Ok(runtime)
             }
             Err(mut error) => {
+                #[cfg(test)]
+                crate::startup_preparation::failure_checkpoint(config.database_id).await;
                 if let Some(runtime) = retained_runtime.as_mut()
                     && let Err(cleanup) = crate::startup_owner::finish(runtime).await
                 {
@@ -2284,7 +2290,7 @@ async fn provision_local_fixture_domains(
     pending.nodes.push(node.clone());
     let mut control = None;
     let mut routes = BTreeMap::new();
-    let outcome = async {
+    let outcome = crate::startup_preparation::capture("local fixture enrollment", async {
         let entries = std::iter::once((
             CONTROL_TENANT,
             &config.control.initial_policy,
@@ -2379,7 +2385,7 @@ async fn provision_local_fixture_domains(
             )
             .await?;
         Ok::<_, anyhow::Error>(())
-    }
+    })
     .await;
     let drained = crate::startup_owner::finish(&mut pending).await;
     outcome.and(drained)

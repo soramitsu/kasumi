@@ -758,3 +758,104 @@ async fn activated_local_recovery_never_recreates_missing_control_topology() {
     drop(operator);
     assert!(stop(&configuration, request.operation_id).await.is_err());
 }
+
+#[tokio::test]
+async fn failed_restored_generation_startup_retains_alternate_node_through_cancelled_drain() {
+    use kasumi_store::NodeStore;
+    use std::{future::Future, task::Poll};
+    let _serial = crate::standalone::ownership_tests::drain_serial()
+        .lock()
+        .await;
+    let root = tempfile::tempdir().unwrap();
+    let (configuration, request, _) = backup(root.path()).await;
+    start(&configuration, request.clone()).await.unwrap();
+    assert_eq!(
+        resume(&configuration, request.operation_id)
+            .await
+            .unwrap()
+            .phase,
+        LocalRecoveryPhase::Finished
+    );
+    let config = RuntimeConfig::load(&configuration).unwrap();
+    let mut operator = Operator::open(&configuration).await.unwrap();
+    let active = active_generation(&config, operator.store(), &request.tenant)
+        .unwrap()
+        .unwrap();
+    assert_eq!(active.incarnation, request.target_incarnation);
+    let target_path = active.directory.join("node.redb");
+    let target_id = active.database_id(&config, &request.tenant).unwrap();
+    crate::startup_owner::finish(&mut operator).await.unwrap();
+    drop(operator);
+    let fault = crate::startup_preparation::install(config.database_id, "data-active-node");
+    let pause = crate::startup_preparation::pause_failure(config.database_id);
+    let mut opening = Box::pin(NodeRuntime::open(config.clone()));
+    std::future::poll_fn(|cx| {
+        assert!(opening.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), pause.entered())
+        .await
+        .unwrap();
+    // Preparation already unwound. No custody, pair or database from the alternate
+    // node returned yet; only the external pending inventory can retain it.
+    assert!(
+        NodeStore::open_existing(
+            &target_path,
+            target_id,
+            kasumi_store::ScratchDisk::open(config.scratch_disk.clone()).unwrap()
+        )
+        .is_err()
+    );
+    assert!(
+        NodeStore::open_existing(
+            &config.database_path,
+            config.database_id,
+            kasumi_store::ScratchDisk::open(config.scratch_disk.clone()).unwrap()
+        )
+        .is_err()
+    );
+    drop(opening);
+    let mut drain = Box::pin(NodeRuntime::drain_startups());
+    std::future::poll_fn(|cx| {
+        assert!(drain.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    drop(drain);
+    assert!(
+        NodeStore::open_existing(
+            &target_path,
+            target_id,
+            kasumi_store::ScratchDisk::open(config.scratch_disk.clone()).unwrap()
+        )
+        .is_err()
+    );
+    let mut drain = Box::pin(NodeRuntime::drain_startups());
+    std::future::poll_fn(|cx| {
+        assert!(drain.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    pause.release();
+    let error = tokio::time::timeout(std::time::Duration::from_secs(10), drain)
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert!(
+        error
+            .downcast_ref::<crate::startup_preparation::PreparationPanic>()
+            .is_some()
+    );
+    drop(fault);
+    drop(pause);
+    let target = NodeStore::open_existing(
+        &target_path,
+        target_id,
+        kasumi_store::ScratchDisk::open(config.scratch_disk.clone()).unwrap(),
+    )
+    .unwrap();
+    drop(target);
+    let mut runtime = NodeRuntime::open(config).await.unwrap();
+    runtime.shutdown().await.unwrap();
+}

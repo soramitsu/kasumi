@@ -3,7 +3,8 @@
 use anyhow::Result;
 use std::{any::Any, fmt, future::Future, panic::AssertUnwindSafe, sync::Mutex, task::Poll};
 
-/// Retain the original payload without printing possibly sensitive panic data.
+/// Retain the original payload while redacting this error's display. The
+/// process panic hook still runs before capture and is not changed here.
 pub(crate) struct PreparationPanic {
     component: &'static str,
     _payload: Mutex<Box<dyn Any + Send>>,
@@ -46,7 +47,11 @@ pub(crate) async fn capture<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{collections::BTreeSet, sync::OnceLock};
+    use std::{
+        collections::{BTreeMap, BTreeSet},
+        sync::{Arc, OnceLock},
+    };
+    use tokio::sync::Notify;
 
     fn faults() -> &'static Mutex<BTreeSet<(uuid::Uuid, &'static str)>> {
         static FAULTS: OnceLock<Mutex<BTreeSet<(uuid::Uuid, &'static str)>>> = OnceLock::new();
@@ -66,6 +71,48 @@ mod tests {
         let selected = faults().lock().unwrap().remove(&(id, phase));
         if selected {
             std::panic::panic_any(phase);
+        }
+    }
+    #[derive(Default)]
+    struct FailurePause {
+        entered: Notify,
+        release: Notify,
+    }
+    fn failure_pauses() -> &'static Mutex<BTreeMap<uuid::Uuid, Arc<FailurePause>>> {
+        static PAUSES: OnceLock<Mutex<BTreeMap<uuid::Uuid, Arc<FailurePause>>>> = OnceLock::new();
+        PAUSES.get_or_init(Default::default)
+    }
+    pub(crate) struct FailurePauseGuard(uuid::Uuid, Arc<FailurePause>);
+    impl FailurePauseGuard {
+        pub(crate) async fn entered(&self) {
+            self.1.entered.notified().await;
+        }
+        pub(crate) fn release(&self) {
+            self.1.release.notify_one();
+        }
+    }
+    impl Drop for FailurePauseGuard {
+        fn drop(&mut self) {
+            failure_pauses().lock().unwrap().remove(&self.0);
+            self.release();
+        }
+    }
+    pub(crate) fn pause_failure(id: uuid::Uuid) -> FailurePauseGuard {
+        let pause = Arc::new(FailurePause::default());
+        assert!(
+            failure_pauses()
+                .lock()
+                .unwrap()
+                .insert(id, pause.clone())
+                .is_none()
+        );
+        FailurePauseGuard(id, pause)
+    }
+    pub(crate) async fn failure_checkpoint(id: uuid::Uuid) {
+        let pause = failure_pauses().lock().unwrap().remove(&id);
+        if let Some(pause) = pause {
+            pause.entered.notify_one();
+            pause.release.notified().await;
         }
     }
     #[tokio::test]
@@ -89,4 +136,4 @@ mod tests {
 }
 
 #[cfg(test)]
-pub(crate) use tests::{checkpoint, install};
+pub(crate) use tests::{checkpoint, failure_checkpoint, install, pause_failure};

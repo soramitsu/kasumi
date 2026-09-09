@@ -334,7 +334,6 @@ impl AuthorityRuntime {
                 authority.bootstrap_digest().into(),
                 Arc::new(move || access.check_access()),
             ) {
-                authority.shutdown().await?;
                 return Err(error);
             }
             let peer_authority = Arc::downgrade(&authority);
