@@ -86,3 +86,34 @@ All tests in this matrix are required work, not pass claims. No Cargo, native,
 container, VM or platform gate has run for this design. Panic reporting presumes
 unwinding execution; process abort or termination requires separate crash/restart
 evidence. The first chunk does not claim to repair the unchanged leaf suppressions.
+
+## Initial implementation checkpoint
+
+The shared types and startup adapters are implemented, source-only. Runtime::close
+now returns DrainResult; its synchronous handoff hook and TenantEnrollment selector
+from `927f200f54272c1833d9aa3521f8b679b065c876` are preserved. Resources keeps its report
+in an async mutex across every child await. Node initializer errors are Complete
+only after its actual handle registry finishes; opaque database/authority/runtime
+errors remain Retained until the same owner's full shutdown census succeeds.
+PreparedTenant attempts resources and renewal even after routing or another child
+fails; only successful release removes an owned lease or routing entry.
+
+The initial chunk adds these tests, all **UNRUN**:
+
+- `retries_retain_original_error_and_one_issue_per_owned_slot`
+- `parent_merge_keeps_distinct_owners_and_explicit_remaining_ownership`
+- `completed_worker_panic_reports_original_join_error_without_retry`
+- `cancelled_finish_keeps_joined_panic_and_exact_unfinished_worker`
+
+The last two spawn actual Tokio workers. One panics and is joined; another remains
+blocked while the first finish waiter is cancelled. They assert the exact original
+JoinError and Arc issue remain, the pending resource does not drop early, and a
+completed failure does not trigger another cleanup attempt. These are controlled
+worker regressions, not a process-crash or storage reopen gate. The existing retry
+regression now requires exactly two attempts, retaining the original failure.
+
+The outer startup registry still reports ordinary failed opening/abandoned reply
+outcomes through its existing acknowledged Result handoff. This chunk does not
+claim to recover a runtime destroyed by a panic inside its opening future. It also
+does not repair unchanged leaf APIs that suppress worker errors. Direct Rust
+1.97.1 rustfmt and whitespace inspection are the only checks performed here.

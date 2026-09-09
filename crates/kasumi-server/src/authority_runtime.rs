@@ -170,6 +170,7 @@ impl AuthorityRuntimeConfig {
     }
 }
 pub struct AuthorityRuntime {
+    startup_drain: kasumi_types::drain::DrainReport,
     config: AuthorityRuntimeConfig,
     authority: Arc<IndependentAuthority>,
     signer_verifier: Arc<crate::signer_runtime::InstalledSignerVerifier>,
@@ -364,6 +365,7 @@ impl AuthorityRuntime {
                 audit.clone(),
             );
             Ok(Self {
+                startup_drain: Default::default(),
                 tls_reload,
                 config,
                 authority,
@@ -477,7 +479,15 @@ impl AuthorityRuntime {
 impl crate::startup_owner::Runtime for AuthorityRuntime {
     fn close(
         &mut self,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + '_>> {
-        Box::pin(AuthorityRuntime::shutdown(self))
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = kasumi_types::drain::DrainResult> + Send + '_>,
+    > {
+        Box::pin(async {
+            if let Err(error) = AuthorityRuntime::shutdown(self).await {
+                let issue = self.startup_drain.record("AuthorityRuntime", 0, error);
+                return Err(kasumi_types::drain::DrainFailure::retained(issue));
+            }
+            self.startup_drain.complete()
+        })
     }
 }

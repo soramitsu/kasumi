@@ -904,6 +904,7 @@ impl ServingTasks {
 }
 
 pub struct NodeRuntime {
+    startup_drain: kasumi_types::drain::DrainReport,
     telemetry: Arc<crate::observability::Telemetry>,
     config: RuntimeConfig,
     signer_verifier: Option<Arc<crate::signer_runtime::InstalledSignerVerifier>>,
@@ -1175,6 +1176,7 @@ impl NodeRuntime {
             stopping_audit_started: false,
             stopping_audit_observed: false,
             shutdown_failure: None,
+            startup_drain: Default::default(),
             #[cfg(test)]
             audit_release_gate: Arc::new(tokio::sync::Mutex::new(None)),
             administration: None,
@@ -4806,7 +4808,15 @@ mod observability_tests;
 impl crate::startup_owner::Runtime for NodeRuntime {
     fn close(
         &mut self,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + '_>> {
-        Box::pin(NodeRuntime::shutdown(self))
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = kasumi_types::drain::DrainResult> + Send + '_>,
+    > {
+        Box::pin(async {
+            if let Err(error) = NodeRuntime::shutdown(self).await {
+                let issue = self.startup_drain.record("NodeRuntime", 0, error);
+                return Err(kasumi_types::drain::DrainFailure::retained(issue));
+            }
+            self.startup_drain.complete()
+        })
     }
 }

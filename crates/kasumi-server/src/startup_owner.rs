@@ -2,6 +2,7 @@
 //! A successful oneshot send is not transfer: only the recipient's synchronous
 //! ticket claim moves the runtime. Every abandoned result is closed and joined.
 use anyhow::{Context, Result};
+use kasumi_types::drain::{DrainCompletion, DrainReport, DrainResult};
 use std::{
     future::Future,
     pin::Pin,
@@ -68,21 +69,24 @@ pub(crate) trait Runtime: Send + 'static {
     fn handoff(&mut self) -> Result<()> {
         Ok(())
     }
-    fn close(&mut self) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>>;
+    fn close(&mut self) -> Pin<Box<dyn Future<Output = DrainResult> + Send + '_>>;
 }
 
-/// A failed drain is never permission to discard its owner. Retry only the
-/// same idempotent shutdown; this cannot reacquire credentials or reopen files.
-/// The joinable startup task remains live until actual owner drain succeeds.
+/// Retry only incomplete ownership. A completed failure still reports the exact
+/// errors, but never keeps a fully drained runtime in an endless cleanup loop.
+/// Every implementation also retains its report across a cancelled finish call.
 pub(crate) async fn finish(runtime: &mut impl Runtime) -> Result<()> {
-    let mut failure = None;
+    let mut report = DrainReport::default();
     let mut delay = std::time::Duration::from_secs(1);
     loop {
         match runtime.close().await {
-            Ok(()) => return failure.map_or(Ok(()), Err),
+            Ok(()) => return report.complete().map_err(Into::into),
             Err(error) => {
-                tracing::error!(error = %error, retry_after_secs = delay.as_secs(), "startup owner drain failed; retaining resources for retry");
-                failure.get_or_insert(error);
+                report.merge(&error);
+                if error.completion() == DrainCompletion::Complete {
+                    return report.complete().map_err(Into::into);
+                }
+                tracing::error!(error = %error, retry_after_secs = delay.as_secs(), "startup owner drain incomplete; retaining resources for retry");
                 tokio::time::sleep(delay).await;
                 delay = (delay * 2).min(std::time::Duration::from_secs(30));
             }
@@ -175,6 +179,7 @@ async fn drain_tasks(tasks: &Tasks) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kasumi_types::drain::DrainFailure;
     use std::{
         sync::atomic::{AtomicBool, AtomicUsize, Ordering},
         task::Poll,
@@ -190,6 +195,7 @@ mod tests {
         release: Notify,
     }
     struct Candidate {
+        report: DrainReport,
         observation: Arc<Observation>,
         fail_once: bool,
     }
@@ -199,16 +205,21 @@ mod tests {
         }
     }
     impl Runtime for Candidate {
-        fn close(&mut self) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
+        fn close(&mut self) -> Pin<Box<dyn Future<Output = DrainResult> + Send + '_>> {
             Box::pin(async move {
                 let attempt = self.observation.attempts.fetch_add(1, Ordering::AcqRel);
                 self.observation.entered.notify_one();
                 if self.fail_once && attempt == 0 {
-                    anyhow::bail!("injected drain failure");
+                    let issue = self.report.record(
+                        "candidate",
+                        0,
+                        anyhow::anyhow!("injected drain failure"),
+                    );
+                    return Err(DrainFailure::retained(issue));
                 }
                 self.observation.release.notified().await;
                 self.observation.closed.store(true, Ordering::Release);
-                Ok(())
+                self.report.complete()
             })
         }
     }
@@ -218,6 +229,7 @@ mod tests {
     -> Result<()> {
         let observation = Arc::new(Observation::default());
         let candidate = Candidate {
+            report: DrainReport::default(),
             observation: observation.clone(),
             fail_once: false,
         };
@@ -249,6 +261,7 @@ mod tests {
         let tasks = Tasks::default();
         let observation = Arc::new(Observation::default());
         let candidate = Candidate {
+            report: DrainReport::default(),
             observation: observation.clone(),
             fail_once: false,
         };
@@ -271,6 +284,7 @@ mod tests {
         let tasks = Tasks::default();
         let observation = Arc::new(Observation::default());
         let candidate = Candidate {
+            report: DrainReport::default(),
             observation: observation.clone(),
             fail_once: true,
         };
@@ -296,7 +310,7 @@ mod tests {
         // The actual retry must drain, and the original failure remains an error.
         let result = tokio::time::timeout(Duration::from_secs(5), draining).await?;
         assert!(result.is_err());
-        assert!(observation.attempts.load(Ordering::Acquire) >= 2);
+        assert_eq!(observation.attempts.load(Ordering::Acquire), 2);
         assert!(observation.closed.load(Ordering::Acquire));
         assert!(observation.dropped.load(Ordering::Acquire));
         assert!(tasks.lock().await.handles.is_empty());
@@ -375,6 +389,129 @@ mod tests {
         Ok(())
     }
 
+    struct JoinedWorkers {
+        handles: Vec<tokio::task::JoinHandle<()>>,
+        report: DrainReport,
+        attempts: usize,
+    }
+    impl Runtime for JoinedWorkers {
+        fn close(&mut self) -> Pin<Box<dyn Future<Output = DrainResult> + Send + '_>> {
+            Box::pin(async {
+                self.attempts += 1;
+                while let Some(handle) = self.handles.last_mut() {
+                    let result = handle.await;
+                    self.handles.pop();
+                    if let Err(error) = result {
+                        // Slots remain stable as this owned stack drains.
+                        self.report
+                            .record("joined worker", self.handles.len(), error.into());
+                    }
+                }
+                self.report.complete()
+            })
+        }
+    }
+    async fn panicked_worker() -> Result<tokio::task::JoinHandle<()>> {
+        let task = tokio::spawn(async { panic!("injected actual worker panic") });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !task.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        Ok(task)
+    }
+    #[tokio::test]
+    async fn completed_worker_panic_reports_original_join_error_without_retry() -> Result<()> {
+        let mut workers = JoinedWorkers {
+            handles: vec![panicked_worker().await?],
+            report: DrainReport::default(),
+            attempts: 0,
+        };
+        let error = tokio::time::timeout(Duration::from_secs(5), finish(&mut workers))
+            .await?
+            .unwrap_err();
+        assert_eq!(workers.attempts, 1);
+        assert!(workers.handles.is_empty());
+        let failure = error.downcast_ref::<DrainFailure>().unwrap();
+        assert_eq!(failure.completion(), DrainCompletion::Complete);
+        let issue = failure.issues()[0].clone();
+        assert!(
+            issue
+                .error()
+                .downcast_ref::<tokio::task::JoinError>()
+                .unwrap()
+                .is_panic()
+        );
+        drop(workers);
+        // Error evidence remains the actual JoinError after resource owner drop.
+        assert!(
+            issue
+                .error()
+                .downcast_ref::<tokio::task::JoinError>()
+                .unwrap()
+                .is_panic()
+        );
+        Ok(())
+    }
+    #[tokio::test]
+    async fn cancelled_finish_keeps_joined_panic_and_exact_unfinished_worker() -> Result<()> {
+        struct Resource(Arc<AtomicBool>);
+        impl Drop for Resource {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+        let dropped = Arc::new(AtomicBool::new(false));
+        let resource = Resource(dropped.clone());
+        let (release, waiting) = oneshot::channel::<()>();
+        let retained = tokio::spawn(async move {
+            let _resource = resource;
+            waiting.await.unwrap();
+        });
+        let mut workers = JoinedWorkers {
+            handles: vec![retained, panicked_worker().await?],
+            report: DrainReport::default(),
+            attempts: 0,
+        };
+        let mut first = Box::pin(finish(&mut workers));
+        std::future::poll_fn(|cx| {
+            assert!(first.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        drop(first);
+        assert_eq!(workers.handles.len(), 1);
+        assert!(!dropped.load(Ordering::Acquire));
+        let original = workers.report.issues()[0].clone();
+        assert!(
+            original
+                .error()
+                .downcast_ref::<tokio::task::JoinError>()
+                .unwrap()
+                .is_panic()
+        );
+        let mut retry = Box::pin(finish(&mut workers));
+        std::future::poll_fn(|cx| {
+            assert!(retry.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        assert!(!dropped.load(Ordering::Acquire));
+        release.send(()).unwrap();
+        let error = tokio::time::timeout(Duration::from_secs(5), retry)
+            .await?
+            .unwrap_err();
+        assert!(workers.handles.is_empty());
+        assert_eq!(workers.attempts, 2);
+        assert!(dropped.load(Ordering::Acquire));
+        let failure = error.downcast_ref::<DrainFailure>().unwrap();
+        assert_eq!(failure.completion(), DrainCompletion::Complete);
+        assert_eq!(failure.issues().len(), 1);
+        assert!(Arc::ptr_eq(&original, &failure.issues()[0]));
+        Ok(())
+    }
+
     struct RejectedPublication {
         candidate: Candidate,
         handed: Arc<std::sync::atomic::AtomicUsize>,
@@ -384,7 +521,7 @@ mod tests {
             self.handed.fetch_add(1, Ordering::AcqRel);
             anyhow::bail!("publication fence rejected the actual recipient")
         }
-        fn close(&mut self) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
+        fn close(&mut self) -> Pin<Box<dyn Future<Output = DrainResult> + Send + '_>> {
             self.candidate.close()
         }
     }
@@ -396,6 +533,7 @@ mod tests {
         let handed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let candidate = RejectedPublication {
             candidate: Candidate {
+                report: DrainReport::default(),
                 observation: observation.clone(),
                 fail_once: false,
             },

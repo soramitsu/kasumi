@@ -321,7 +321,9 @@ struct DrainedStatus(LocalRecoveryStatus);
 impl crate::startup_owner::Runtime for DrainedStatus {
     fn close(
         &mut self,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + '_>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = kasumi_types::drain::DrainResult> + Send + '_>,
+    > {
         Box::pin(async { Ok(()) })
     }
 }
@@ -338,7 +340,9 @@ impl std::ops::Deref for Operator {
 impl crate::startup_owner::Runtime for Operator {
     fn close(
         &mut self,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + '_>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = kasumi_types::drain::DrainResult> + Send + '_>,
+    > {
         crate::startup_owner::Runtime::close(&mut self.state)
     }
 }

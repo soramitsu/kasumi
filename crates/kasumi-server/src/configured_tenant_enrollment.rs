@@ -332,6 +332,7 @@ impl Administration {
             "approved enrollment differs from this replica"
         );
         let mut prepared = PreparedTenant {
+            drain_report: Default::default(),
             manager: self.clone(),
             invocation,
             _reservation: reservation,
@@ -639,6 +640,7 @@ impl Administration {
     }
 }
 struct PreparedTenant {
+    drain_report: kasumi_types::drain::DrainReport,
     _reservation: kasumi_engine::admission::Reservation,
     manager: Arc<Administration>,
     invocation: ManagementInvocation,
@@ -727,29 +729,62 @@ impl crate::startup_owner::Runtime for PreparedTenant {
     }
     fn close(
         &mut self,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + '_>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = kasumi_types::drain::DrainResult> + Send + '_>,
+    > {
         Box::pin(async {
-            ensure!(
-                !self.committed,
-                "claimed enrollment owner belongs to Administration"
-            );
+            use kasumi_types::drain::{DrainCompletion, DrainFailure};
+            if self.committed {
+                let issue = self.drain_report.record(
+                    "enrollment handoff",
+                    0,
+                    anyhow::anyhow!("claimed enrollment owner belongs to Administration"),
+                );
+                return Err(DrainFailure::retained(issue));
+            }
+            let mut retained = None;
             if let Some(lease) = &self.lease {
                 lease.close();
             }
             if let Some(group) = &self.registered {
-                self.manager
+                let unregistered = self
+                    .manager
                     .cluster
                     .as_ref()
-                    .context("registered cluster is absent")?
-                    .unregister_group(group)?;
-                self.registered = None;
+                    .context("registered cluster is absent")
+                    .and_then(|cluster| cluster.unregister_group(group));
+                match unregistered {
+                    Ok(()) => self.registered = None,
+                    Err(error) => {
+                        retained = Some(DrainFailure::retained(self.drain_report.record(
+                            "enrollment routing",
+                            0,
+                            error,
+                        )));
+                    }
+                }
             }
-            self.resources.close().await?;
+            if let Err(error) = self.resources.close().await {
+                self.drain_report.merge(&error);
+                if error.completion() == DrainCompletion::Retained {
+                    retained = Some(error);
+                }
+            }
             if let Some(lease) = &self.lease {
-                lease.shutdown().await?;
+                match lease.shutdown().await {
+                    Ok(()) => {
+                        self.lease.take();
+                    }
+                    Err(error) => {
+                        retained = Some(DrainFailure::retained(self.drain_report.record(
+                            "enrollment renewal",
+                            0,
+                            error,
+                        )));
+                    }
+                }
             }
-            self.lease.take();
-            Ok(())
+            self.drain_report.outcome(retained)
         })
     }
 }

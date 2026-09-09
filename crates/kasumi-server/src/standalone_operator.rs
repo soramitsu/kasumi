@@ -134,7 +134,9 @@ impl OperatorState {
 impl crate::startup_owner::Runtime for OperatorState {
     fn close(
         &mut self,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + '_>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = kasumi_types::drain::DrainResult> + Send + '_>,
+    > {
         Box::pin(async { self.resources.lock().await.close().await })
     }
 }
@@ -161,7 +163,9 @@ struct Drained<T: Send + 'static>(T);
 impl<T: Send + 'static> crate::startup_owner::Runtime for Drained<T> {
     fn close(
         &mut self,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + '_>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = kasumi_types::drain::DrainResult> + Send + '_>,
+    > {
         Box::pin(async { Ok(()) })
     }
 }

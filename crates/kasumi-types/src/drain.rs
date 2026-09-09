@@ -83,6 +83,9 @@ pub struct DrainReport {
     issues: Vec<Arc<DrainIssue>>,
 }
 impl DrainReport {
+    pub fn issues(&self) -> &[Arc<DrainIssue>] {
+        &self.issues
+    }
     pub fn record(
         &mut self,
         component: &'static str,

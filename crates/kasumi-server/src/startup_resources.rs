@@ -1,11 +1,12 @@
-//! Resources retained before a runtime value can own them. These handles come
-//! only from freshly claimed, exclusive physical node opens in the startup task;
-//! this scope cannot accept another serving runtime's borrowed cached stores.
-use anyhow::Result;
+//! Unpublished owned resources from an exclusive node open or explicit new
+//! catalogs on an already owned node. A borrowed node is retained only to join
+//! its initializers; borrowed serving stores/databases never enter this scope.
+use kasumi_types::drain::{DrainFailure, DrainReport, DrainResult};
 use std::sync::Arc;
 
 #[derive(Default)]
 pub(crate) struct Resources {
+    report: tokio::sync::Mutex<DrainReport>,
     pub(crate) nodes: Vec<Arc<kasumi_store::NodeStore>>,
     pub(crate) stores: Vec<Arc<kasumi_store::TenantStore>>,
     pub(crate) audits: Vec<Arc<kasumi_engine::SecurityAudit>>,
@@ -17,16 +18,24 @@ pub(crate) struct Resources {
     pub(crate) standalone_lock: Option<kasumi_store::private_files::ExclusiveLock>,
 }
 impl Resources {
-    pub(crate) async fn close(&self) -> Result<()> {
-        let mut failure = None;
-        for authority in &self.authorities {
+    pub(crate) async fn close(&self) -> DrainResult {
+        let mut report = self.report.lock().await;
+        let mut retained = None;
+        for (index, authority) in self.authorities.iter().enumerate() {
             if let Err(error) = authority.shutdown().await {
-                failure.get_or_insert(error);
+                // Until this child returns typed completion, keep its exact owner.
+                retained = Some(DrainFailure::retained(report.record(
+                    "authority",
+                    index,
+                    error,
+                )));
             }
         }
-        for database in &self.databases {
+        for (index, database) in self.databases.iter().enumerate() {
             if let Err(error) = database.shutdown().await {
-                failure.get_or_insert(error);
+                retained = Some(DrainFailure::retained(
+                    report.record("database", index, error),
+                ));
             }
         }
         for audit in &self.audits {
@@ -38,19 +47,21 @@ impl Resources {
         for verifier in &self.verifiers {
             verifier.shutdown().await;
         }
-        for node in &self.nodes {
+        for (index, node) in self.nodes.iter().enumerate() {
             if let Err(error) = node.drain_initializers().await {
-                failure.get_or_insert(error);
+                // This API returns a failure only after all registered handles
+                // have actually joined. Preserve it without retrying forever.
+                report.record("node initializers", index, error);
             }
         }
-        failure.map_or(Ok(()), Err)
+        report.outcome(retained)
     }
 }
 
 impl crate::startup_owner::Runtime for Resources {
     fn close(
         &mut self,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + '_>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = DrainResult> + Send + '_>> {
         Box::pin(Resources::close(self))
     }
 }
