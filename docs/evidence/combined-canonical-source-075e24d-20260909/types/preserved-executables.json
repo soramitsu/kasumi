@@ -1,0 +1,12 @@
+[
+  {
+    "path": "/tmp/kasumi-combined-075e24d-types-gates/preserved-executables/canonical_json-3a8932830245ca65",
+    "sha256": "6063ce7b29d14c489740cec643b146ad962d9188d1f2d285e80bf533c877d4f3",
+    "bytes": 2458576
+  },
+  {
+    "path": "/tmp/kasumi-combined-075e24d-types-gates/preserved-executables/kasumi_types-22950832e95ebbc4",
+    "sha256": "7cb50047f9fbc18181db16ba8331cb86580654516355f10a7fe787002aa889bd",
+    "bytes": 6121152
+  }
+]

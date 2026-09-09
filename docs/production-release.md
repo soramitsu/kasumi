@@ -132,6 +132,12 @@ gate above and usable installation artifacts.
 
 ## Current verified increments
 
+- Validation checkpoint `075e24d` combines current release tooling, corrected
+  JSON dependency, canonical SDK and shutdown/receipt source. It passes all 36
+  release-tool Python tests, exact vendored dependency checks, formatting, six
+  canonical payload tests, 13 type-library tests and strict type-library lint.
+  Exact evidence is in `docs/evidence/combined-canonical-source-075e24d-20260909`.
+  Full workspace, native and production gates have not run for this combination.
 - Combined SDK/canonical-payload checkpoint `785dd7f` passes 26 focused tests,
   strict client lint and no-default-feature compilation. Both previous compile
   and lint failures remain retained in `docs/evidence/sdk-literal-small-20260909`.
