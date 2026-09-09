@@ -157,7 +157,10 @@ impl StateMachineBackend for JointBackend {
                 (None, vec![])
             }
             crate::SnapshotRestoreMode::Install => {
-                let table = kasumi_store::EncryptedTable::new(self.store.scratch_disk(), 1 << 20)?;
+                // redb reserves 1 MiB of usable pages plus tracker/header
+                // space at creation. This tests publication faults, so fund
+                // that initialization and the two bounded rows explicitly.
+                let table = kasumi_store::EncryptedTable::new(self.store.scratch_disk(), 8 << 20)?;
                 for ordinal in 0..2 {
                     table.insert(&[ordinal], &row(selected.tag, ordinal))?;
                 }
