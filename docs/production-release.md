@@ -83,45 +83,44 @@ These are concrete steps toward the active release goal, not separate release
 approvals. Implementation branches must pass their stated regressions before
 integration; the final integrated source must then pass the complete gates above.
 
-1. Close storage ownership across completed, cancelled and retried shutdowns.
-   Validate security and tenant audit workers, recovery supervisors, serving
-   lease renewals and target phase renewals, then repeat the three-node restored
-   restart that failed on Linux. A source-level ownership counterexample does
-   not establish the sole cause of that observed failure.
-   Combined `27b0ebc` passed the verifier, audit, tenant-audit and memory-admission
-   gates (19 tests). An obsolete lease test filter then selected zero tests;
-   the runner rejected it and stopped with all process groups drained. The
-   [failed initial cohort](evidence/combined-27b0ebc-initial-20260909/README.md)
-   remains preserved; the corrected selection and later native gates are pending.
-2. Integrate original mutation receipt scope and digest verification, including
-   restored lineage intervals, native/MCP lost-response resolution and the
-   finite original SDK deadline. The prepared receipt checkpoint passes client
-   and driver tests plus strict workspace lint; engine and native functional
-   checks remain pending. Ordinary receipt lifetime and permanent table
-   migration remain separate work.
-3. Validate staged terminal records in encrypted point-addressed storage,
-   including cancellation after physical publication, exact applied-prefix
-   selection and restore publication. The prepared branch compiles; crash and
-   functional regressions have not yet passed. Reuse the validated storage
-   primitive for authority and recovery terminal facts only after these checks.
-4. Add explicit SDK snapshot transport/decode admission, exact returned snapshot
-   semantics and response ownership through cancellation. Enforce caller byte,
-   depth and node limits before the corresponding owned DTO allocation, and
-   preserve member routing and the original deadline. Document SDK-accounted
-   capacity separately from transport buffers and process RSS. Preserve literal
-   document keys throughout native, MCP, durable command and snapshot decoding:
-   the locked JSON dependency can interpret its private number/raw-value marker
-   keys as internal representations. The source audit below identifies these
-   paths; a bounded literal SDK parser alone does not fix server ingress.
-5. Complete signer coverage and exact authority reopen, then install prepared
-   target completion reservations, terminal resolution and linked Control
-   successors. An absent Complete remains unknown until the exact durable
-   terminal protocol proves otherwise.
-6. Run a small offline standalone diagnostic with the actual fixture-free Linux
-   binaries: private initialization, native and MCP access, renewal, encrypted
-   backup, restart and stopped local restore. Preserve its exact source and
-   executable hashes. This diagnostic does not replace the full credential,
-   rotation, recovery, 3 GiB, HA or endurance acceptance gates.
+1. Repeat the complete Linux acceptance after the integrated shutdown and SDK
+   changes. The corrected three-node TLS restore/restart passed on macOS in the
+   [native `61b5f0b` cohort](evidence/combined-61b5f0b-native-20260909/README.md).
+   The subsequent [combined SDK, strict and fixture-free compilation checks](evidence/combined-4e3a29d-native-20260909/README.md)
+   passed at their recorded sources; a final whitespace-only successor passed
+   formatting. These changes are integrated through `4815312`. The earlier
+   Linux failure remains failed until a new complete Linux run passes.
+2. Finish ordinary receipt lifetime and permanent identity migration. Original
+   mutation scope/digest, native/MCP resolution and literal JSON changes have
+   focused integrated evidence. An [external stock-JSON SDK consumer](evidence/stock-json-sdk-3f88b44-20260909/README.md)
+   passed 13 tests without the workspace patch. Neither those tests nor explicit
+   SDK decode accounting prove permanent retention or a hard process RSS bound.
+3. Complete the encrypted staged/target terminal-prefix functional matrix.
+   Source `8bf5e27` passed six point-prefix tests and one indexed-genesis test,
+   then its two atomic-publication fault tests failed during fixture setup:
+   the table's 1 MiB budget could not initialize redb. The [failed cohort](evidence/combined-prefix-8bf5e27-functional-20260909/README.md)
+   is retained. Successor `769b834` funds that fixture at 8 MiB; its actual fault
+   assertions still must pass before claiming publication safety.
+4. Validate the combined KASUMIT5 format and restore admission checkpoint.
+   `4dddb8d` replaces the prototype decoder directly, inspects typed frames with
+   fixed scratch, and separates resident bytes from permanent history. It adds
+   structural record-work accounting and a real 512-terminal-row preparation
+   fixture. Combined `77bddb1` [failed compilation](evidence/combined-t5-77bddb1-check-20260909/README.md);
+   `a159ebc` corrects admission ownership at the verifier/relocation boundary.
+   Its compiler and functional results are still pending. Structural accounting
+   and the existing resident/index estimator require actual capacity validation.
+5. Complete signer coverage, authority genesis-prefix reopen and the durable
+   target completion coordinator. The source-frozen receiver and coordinator
+   retain exact preparation, observation and resolution phases; their combined
+   functional gates are pending. A fresh terminal-only status operation,
+   automatic safe successor, physical cleanup and source-unavailable recovery
+   remain unfinished. Absence is never sufficient to resolve a mutation.
+6. Expand the [successful small offline Linux diagnostic](evidence/small-offline-native-3a8d512-20260909/README.md)
+   to final-source acceptance. It exercised 129 documents through private
+   initialization, native/MCP access, renewal, backup, restart and stopped local
+   restore using exact prior fixture-free binaries. Its processes drained and
+   confidential installation files remain private. It does not replace full
+   credential rotation, HA recovery, 3 GiB or 24-hour acceptance.
 
 Persistent disk admission and native durable resource reservations must be
 implemented before claiming configured node disk capacity or reserved import
