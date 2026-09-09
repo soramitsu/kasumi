@@ -109,9 +109,10 @@ integration; the final integrated source must then pass the complete gates above
    `a159ebc` corrects admission ownership at the verifier/relocation boundary,
    then [fails on missing fixture imports](evidence/combined-t5-a159ebc-check-20260909/README.md).
    `1682a8f` fixes ten imports but [retains one incorrect type name](evidence/combined-t5-1682a8f-check-20260909/README.md).
-   Source `0336024` uses the canonical target prefix head; its compilation and
-   functional results are pending. Structural accounting and the existing
-   resident/index estimator require actual capacity validation.
+   `0336024` uses the canonical target prefix head. Its formatting successor
+   `b17eaf5` [passes all-target/all-feature workspace compilation and formatting](evidence/combined-t5-b17eaf5-check-20260909/README.md).
+   The separate functional matrix is running. Structural accounting and the
+   existing resident/index estimator require actual capacity validation.
 5. Complete signer coverage, authority genesis-prefix reopen and the durable
    target completion coordinator. The source-frozen receiver and coordinator
    retain exact preparation, observation and resolution phases; their combined
