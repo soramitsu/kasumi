@@ -314,7 +314,7 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
             kasumi_store::ScratchDisk::fixture(),
         )
         .unwrap();
-        let storage = TenantStorageSet::open(
+        let storage = TenantStorageSet::initialize_catalogs(
             node,
             installation.tenant(),
             Arc::new(LocalKeyProvider::new([id as u8; 32])),

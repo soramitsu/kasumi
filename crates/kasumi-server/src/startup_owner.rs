@@ -22,14 +22,17 @@ type Tasks = AsyncMutex<Registry>;
 pub(crate) enum Kind {
     Data,
     Authority,
+    LocalOperator,
 }
 
 fn tasks(kind: Kind) -> &'static Tasks {
     static DATA: OnceLock<Tasks> = OnceLock::new();
     static AUTHORITY: OnceLock<Tasks> = OnceLock::new();
+    static LOCAL_OPERATOR: OnceLock<Tasks> = OnceLock::new();
     match kind {
         Kind::Data => &DATA,
         Kind::Authority => &AUTHORITY,
+        Kind::LocalOperator => &LOCAL_OPERATOR,
     }
     .get_or_init(Default::default)
 }

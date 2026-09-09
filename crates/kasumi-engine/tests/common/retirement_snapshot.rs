@@ -134,7 +134,7 @@ async fn actual_retired_snapshot_only_replica_preserves_rotated_custody_after_en
     let path = recipient.path().join("replica.redb");
     let app_provider = Arc::new(LocalKeyProvider::new([0xe2; 32]));
     let custody_provider = Arc::new(LocalKeyProvider::new([0xe3; 32]));
-    let domains = TenantStorageSet::open_fixture(
+    let domains = TenantStorageSet::initialize_catalogs_fixture(
         NodeStore::create_new(
             &path,
             kasumi_store::test_utils::NODE_STORE_ID,

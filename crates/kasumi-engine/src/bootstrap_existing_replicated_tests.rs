@@ -19,7 +19,7 @@ impl Replica {
             NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
         )?;
-        let stores = TenantStorageSet::open_fixture(
+        let stores = TenantStorageSet::initialize_catalogs_fixture(
             node.clone(),
             "replica".into(),
             Arc::new(LocalKeyProvider::new([31; 32])),

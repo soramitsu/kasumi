@@ -2244,7 +2244,7 @@ async fn provision_local_fixture_domains(
         )
     }));
     for (tenant, policy, limits, application, custody, incarnation, access) in entries {
-        let stores = TenantStorageSet::open(
+        let stores = TenantStorageSet::initialize_catalogs(
             node.clone(),
             tenant.into(),
             application.provider(credential.clone())?,

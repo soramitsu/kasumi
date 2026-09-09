@@ -78,9 +78,12 @@ configuration.
 
 ## Independent application and custody storage
 
-Engine and Raft openers require `Arc<TenantStorageSet>`. Create it with
-`TenantStorageSet::open(node, tenant, application_provider, custody_provider)`.
-Both providers are explicit. The installed catalogs must have distinct identities,
+Engine and Raft openers require `Arc<TenantStorageSet>`. Explicit fresh enrollment
+uses `TenantStorageSet::initialize_catalogs(node, tenant, application_provider,
+custody_provider, access)`. Existing installations use `TenantStorageSet::open_existing`
+with the same arguments. Missing or partial catalogs fail; no API chooses creation
+from their absence. Join `NodeStore::drain_initializers` before releasing physical
+ownership after any attempted catalog acquisition. Both providers are explicit. The installed catalogs must have distinct identities,
 wrapping policies and actual key bytes. Their immutable encrypted binding prevents
 a substituted application/control pair. The same node transaction can publish
 application and custody records together, retaining both key-access guards through

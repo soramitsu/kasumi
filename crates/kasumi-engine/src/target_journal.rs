@@ -84,12 +84,18 @@ pub struct MaterializationFile {
     node_store_id: Uuid,
     create: bool,
 }
+/// The catalog action follows this original journal decision, never a disk
+/// existence probe. Replayed file reservations always return `Existing`.
+pub enum MaterializationNode {
+    Created(Arc<kasumi_store::NodeStore>),
+    Existing(Arc<kasumi_store::NodeStore>),
+}
 impl MaterializationFile {
     pub fn open(
         self,
         path: &std::path::Path,
         scratch: Arc<kasumi_store::ScratchDisk>,
-    ) -> Result<Arc<kasumi_store::NodeStore>> {
+    ) -> Result<MaterializationNode> {
         self.operation.check()?;
         let node = if self.create {
             kasumi_store::NodeStore::create_new(path, self.node_store_id, scratch)
@@ -98,7 +104,11 @@ impl MaterializationFile {
         }
         .map_err(journal_unknown)?;
         self.operation.check().map_err(journal_unknown)?;
-        Ok(node)
+        Ok(if self.create {
+            MaterializationNode::Created(node)
+        } else {
+            MaterializationNode::Existing(node)
+        })
     }
 }
 

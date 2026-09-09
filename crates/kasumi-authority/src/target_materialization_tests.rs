@@ -306,14 +306,25 @@ impl MaterialFixture {
             .unwrap()
         };
         let security = audit(node.clone(), self.admissions[&id].clone(), !first_creation).await;
-        let stores = TenantStorageSet::open(
-            node,
-            "city".into(),
-            Arc::new(LocalKeyProvider::new([61; 32])),
-            Arc::new(LocalKeyProvider::new([221; 32])),
-            StorageAccess::target_phase(serving, gate).unwrap(),
-        )
-        .await
+        let stores = if first_creation {
+            TenantStorageSet::initialize_catalogs(
+                node,
+                "city".into(),
+                Arc::new(LocalKeyProvider::new([61; 32])),
+                Arc::new(LocalKeyProvider::new([221; 32])),
+                StorageAccess::target_phase(serving, gate).unwrap(),
+            )
+            .await
+        } else {
+            TenantStorageSet::open_existing(
+                node,
+                "city".into(),
+                Arc::new(LocalKeyProvider::new([61; 32])),
+                Arc::new(LocalKeyProvider::new([221; 32])),
+                StorageAccess::target_phase(serving, gate).unwrap(),
+            )
+            .await
+        }
         .unwrap();
         (scope, stores, security)
     }
@@ -1873,4 +1884,97 @@ async fn followup_request_keeps_both_original_credential_fences_and_cannot_reope
     let late = TargetRequestAdmission::capture(current, 60_000).unwrap();
     assert!(scope.begin_followup(late).is_err());
     f.close().await;
+}
+
+#[tokio::test]
+async fn target_file_creation_outcome_distinguishes_original_creation_from_strict_replay() {
+    use kasumi_engine::{MaterializationNode, TargetJournal, TargetJournalInstallation};
+    let f = MaterialFixture::new().await;
+    let installation = TargetJournalInstallation {
+        root: f.control.root.clone(),
+        node: nodes().first().unwrap().clone(),
+    };
+    let journal_path = f.issuer._dir.path().join("creation-outcome-journal.redb");
+    let node = NodeStore::create_new(
+        &journal_path,
+        kasumi_store::node_store_ids::target_journal(
+            installation.root.control_incarnation,
+            &installation.node.verifier,
+        )
+        .unwrap(),
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
+    let store = TenantStore::open(
+        node.clone(),
+        format!("kasumi.target.{}.1", installation.root.control_incarnation),
+        Arc::new(LocalKeyProvider::new([239; 32])),
+        StorageAccess::target_journal(&installation.root, &installation.node).unwrap(),
+    )
+    .await
+    .unwrap();
+    let journal = TargetJournal::create_new(
+        store,
+        installation,
+        TargetJournalLimits {
+            max_metadata_bytes: 4 << 20,
+        },
+        f.admissions[&1].clone(),
+    )
+    .unwrap();
+    let scope = f.journal_scope(&f.intent).await;
+    let operation = scope.begin_operation(60_000).unwrap();
+    journal
+        .prepare(&operation, &f.input.digest().unwrap())
+        .unwrap();
+    let path = f.issuer._dir.path().join("creation-outcome-target.redb");
+    let MaterializationNode::Created(target) = journal
+        .reserve_materialization_file(&operation)
+        .unwrap()
+        .open(&path, kasumi_store::ScratchDisk::fixture())
+        .unwrap()
+    else {
+        panic!("original durable file dispatch lost catalog initialization permission")
+    };
+    target.drain_initializers().await.unwrap();
+    drop(target);
+    let before = std::fs::read(&path).unwrap();
+    let MaterializationNode::Existing(target) = journal
+        .reserve_materialization_file(&operation)
+        .unwrap()
+        .open(&path, kasumi_store::ScratchDisk::fixture())
+        .unwrap()
+    else {
+        panic!("replay regained original catalog initialization permission")
+    };
+    assert!(
+        TenantStorageSet::open_existing_fixture(
+            target.clone(),
+            "city".into(),
+            Arc::new(LocalKeyProvider::new([52; 32])),
+            Arc::new(LocalKeyProvider::new([53; 32])),
+        )
+        .await
+        .is_err()
+    );
+    target.drain_initializers().await.unwrap();
+    drop(target);
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    // Even absence after an earlier creation cannot turn a replay into a creator.
+    std::fs::remove_file(&path).unwrap();
+    assert!(
+        journal
+            .reserve_materialization_file(&operation)
+            .unwrap()
+            .open(&path, kasumi_store::ScratchDisk::fixture())
+            .is_err()
+    );
+    assert!(!path.exists());
+    drop(operation);
+    scope.close();
+    scope.drain().await;
+    journal.shutdown().await;
+    drop(journal);
+    drop(node);
+    f.issuer.close().await;
 }

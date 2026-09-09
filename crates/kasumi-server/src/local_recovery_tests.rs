@@ -420,3 +420,273 @@ async fn local_stop_persists_identity_before_cleanup_and_rejects_unrelated_files
     let mut runtime = NodeRuntime::open(config).await.unwrap();
     runtime.shutdown().await.unwrap();
 }
+
+#[derive(Default)]
+struct OpenPause {
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+fn open_pauses() -> &'static std::sync::Mutex<std::collections::BTreeMap<PathBuf, Arc<OpenPause>>> {
+    static PAUSES: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::BTreeMap<PathBuf, Arc<OpenPause>>>,
+    > = std::sync::OnceLock::new();
+    PAUSES.get_or_init(Default::default)
+}
+pub(super) async fn pause_open(path: &Path) {
+    let pause = open_pauses().lock().unwrap().remove(path);
+    if let Some(pause) = pause {
+        pause.entered.notify_one();
+        pause.release.notified().await;
+    }
+}
+
+async fn create_catalogs(operator: &Operator, journal: &mut Journal) {
+    let node = operator.prepare_database_file(journal).unwrap().unwrap();
+    let tenant = &operator.config.tenants[0];
+    let source = Arc::new(crate::runtime::file_secret);
+    let stores = kasumi_store::TenantStorageSet::initialize_catalogs(
+        node.clone(),
+        journal.status.request.tenant.clone(),
+        tenant.keys.provider(source.clone()).unwrap(),
+        tenant.custody_keys.provider(source).unwrap(),
+        kasumi_store::StorageAccess::standalone(
+            journal.installation_id,
+            &journal.status.request.tenant,
+            journal.status.request.target_incarnation,
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    stores.application().shutdown().await;
+    stores.custody().store().shutdown().await;
+    drop(stores);
+    node.drain_initializers().await.unwrap();
+}
+
+#[tokio::test]
+async fn cancelled_local_operator_retains_exclusive_installation_until_joined_drain() {
+    use std::{future::Future, task::Poll};
+    let root = tempfile::tempdir().unwrap();
+    let (configuration, request, _) = backup(root.path()).await;
+    start(&configuration, request.clone()).await.unwrap();
+    let pause = Arc::new(OpenPause::default());
+    open_pauses()
+        .lock()
+        .unwrap()
+        .insert(configuration.clone(), pause.clone());
+    let mut waiting = Box::pin(status(&configuration, request.operation_id));
+    std::future::poll_fn(|cx| {
+        assert!(waiting.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    tokio::time::timeout(std::time::Duration::from_secs(5), pause.entered.notified())
+        .await
+        .unwrap();
+    drop(waiting);
+    assert!(Operator::open(&configuration).await.is_err());
+    let mut drain = Box::pin(drain_operations());
+    std::future::poll_fn(|cx| {
+        assert!(drain.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    drop(drain);
+    assert!(Operator::open(&configuration).await.is_err());
+    pause.release.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(5), drain_operations())
+        .await
+        .unwrap()
+        .unwrap();
+    let mut operator = Operator::open(&configuration).await.unwrap();
+    assert_eq!(
+        record(operator.store(), request.operation_id)
+            .unwrap()
+            .status
+            .phase,
+        LocalRecoveryPhase::Materialize
+    );
+    crate::startup_owner::finish(&mut operator).await.unwrap();
+}
+
+#[tokio::test]
+async fn local_creation_replay_never_creates_or_adopts_an_absent_or_empty_file() {
+    let root = tempfile::tempdir().unwrap();
+    let (configuration, request, _) = backup(root.path()).await;
+    start(&configuration, request.clone()).await.unwrap();
+    let mut operator = Operator::open(&configuration).await.unwrap();
+    let mut journal = record(operator.store(), request.operation_id).unwrap();
+    operator.prepare_directory(&journal).unwrap();
+    operator.prepare_archives(&mut journal).unwrap();
+    operator
+        .prepare_stage(&mut journal, TargetPreparation::CreationDispatched)
+        .unwrap();
+    let path = journal.target_directory.join("node.redb");
+    assert!(
+        operator
+            .target(&mut journal, TargetOpen::Materialize)
+            .await
+            .is_err()
+    );
+    assert!(!path.exists());
+    private_files::create(&path, b"").unwrap();
+    assert!(
+        operator
+            .target(&mut journal, TargetOpen::Materialize)
+            .await
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), b"");
+    crate::startup_owner::finish(&mut operator).await.unwrap();
+    drop(operator);
+    assert!(stop(&configuration, request.operation_id).await.is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), b"");
+    // This unrecognized inode is deliberately operator-owned test input. Recovery
+    // refuses it; removing it here permits cleanup of the otherwise empty target.
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(
+        resume(&configuration, request.operation_id)
+            .await
+            .unwrap()
+            .phase,
+        LocalRecoveryPhase::Stopped
+    );
+}
+
+#[tokio::test]
+async fn local_lost_file_binding_cleanup_requires_the_original_node_identity() {
+    let root = tempfile::tempdir().unwrap();
+    let (configuration, request, _) = backup(root.path()).await;
+    start(&configuration, request.clone()).await.unwrap();
+    let mut operator = Operator::open(&configuration).await.unwrap();
+    let mut journal = record(operator.store(), request.operation_id).unwrap();
+    operator.prepare_directory(&journal).unwrap();
+    operator.prepare_archives(&mut journal).unwrap();
+    operator
+        .prepare_stage(&mut journal, TargetPreparation::CreationDispatched)
+        .unwrap();
+    let path = journal.target_directory.join("node.redb");
+    let node = kasumi_store::NodeStore::create_new(
+        &path,
+        local_node_id(&journal).unwrap(),
+        operator.store().scratch_disk().clone(),
+    )
+    .unwrap();
+    drop(node);
+    assert!(journal.database_file.is_none());
+    assert!(
+        operator
+            .target(&mut journal, TargetOpen::Materialize)
+            .await
+            .is_err()
+    );
+    crate::startup_owner::finish(&mut operator).await.unwrap();
+    drop(operator);
+    let preserved = root.path().join("original-node.redb");
+    std::fs::rename(&path, &preserved).unwrap();
+    let other = kasumi_store::NodeStore::create_new(
+        &path,
+        Uuid::new_v4(),
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
+    drop(other);
+    let bytes = std::fs::read(&path).unwrap();
+    assert!(stop(&configuration, request.operation_id).await.is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    std::fs::remove_file(&path).unwrap();
+    std::fs::rename(&preserved, &path).unwrap();
+    let stopped = resume(&configuration, request.operation_id).await.unwrap();
+    assert_eq!(stopped.phase, LocalRecoveryPhase::Stopped);
+    assert!(stopped.cleanup_evidence.is_some());
+    assert!(!path.exists());
+}
+
+#[tokio::test]
+async fn local_catalog_replay_resolves_complete_catalogs_without_reinitialization() {
+    let root = tempfile::tempdir().unwrap();
+    let (configuration, request, _) = backup(root.path()).await;
+    start(&configuration, request.clone()).await.unwrap();
+    let mut operator = Operator::open(&configuration).await.unwrap();
+    let mut journal = record(operator.store(), request.operation_id).unwrap();
+    create_catalogs(&operator, &mut journal).await;
+    assert_eq!(
+        journal.target_preparation,
+        TargetPreparation::CreationDispatched
+    );
+    crate::startup_owner::finish(&mut operator).await.unwrap();
+    drop(operator);
+    let mut operator = Operator::open(&configuration).await.unwrap();
+    let mut journal = record(operator.store(), request.operation_id).unwrap();
+    operator.step(&mut journal).await.unwrap();
+    assert_eq!(journal.status.phase, LocalRecoveryPhase::Complete);
+    assert_eq!(
+        journal.target_preparation,
+        TargetPreparation::MaterializationDispatched
+    );
+    crate::startup_owner::finish(&mut operator).await.unwrap();
+    drop(operator);
+    assert_eq!(
+        stop(&configuration, request.operation_id)
+            .await
+            .unwrap()
+            .phase,
+        LocalRecoveryPhase::Stopped
+    );
+}
+
+#[tokio::test]
+async fn local_incomplete_catalogs_or_dispatched_restore_never_restart_creation() {
+    for dispatched in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let (configuration, request, _) = backup(root.path()).await;
+        start(&configuration, request.clone()).await.unwrap();
+        let mut operator = Operator::open(&configuration).await.unwrap();
+        let mut journal = record(operator.store(), request.operation_id).unwrap();
+        if dispatched {
+            create_catalogs(&operator, &mut journal).await;
+            operator
+                .prepare_stage(&mut journal, TargetPreparation::CatalogsReady)
+                .unwrap();
+            operator
+                .prepare_stage(&mut journal, TargetPreparation::MaterializationDispatched)
+                .unwrap();
+        } else {
+            drop(
+                operator
+                    .prepare_database_file(&mut journal)
+                    .unwrap()
+                    .unwrap(),
+            );
+        }
+        let path = journal.target_directory.join("node.redb");
+        let before = std::fs::read(&path).unwrap();
+        let stage = journal.target_preparation;
+        assert!(
+            operator
+                .target(&mut journal, TargetOpen::Materialize)
+                .await
+                .is_err()
+        );
+        assert_eq!(journal.target_preparation, stage);
+        assert_eq!(
+            record(operator.store(), request.operation_id)
+                .unwrap()
+                .target_preparation,
+            stage
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        crate::startup_owner::finish(&mut operator).await.unwrap();
+        drop(operator);
+        assert!(resume(&configuration, request.operation_id).await.is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(
+            stop(&configuration, request.operation_id)
+                .await
+                .unwrap()
+                .phase,
+            LocalRecoveryPhase::Stopped
+        );
+    }
+}

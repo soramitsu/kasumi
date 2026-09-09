@@ -103,25 +103,36 @@ impl StateMachineBackend for Backend {
 }
 
 pub async fn store(path: &Path, create: bool) -> Result<Arc<kasumi_store::TenantStorageSet>> {
-    kasumi_store::TenantStorageSet::open_fixture(
-        (if create {
-            NodeStore::create_new(
-                path,
-                kasumi_store::test_utils::NODE_STORE_ID,
-                kasumi_store::ScratchDisk::fixture(),
-            )
-        } else {
-            NodeStore::open_existing(
-                path,
-                kasumi_store::test_utils::NODE_STORE_ID,
-                kasumi_store::ScratchDisk::fixture(),
-            )
-        })?,
-        "tenant-a".into(),
-        Arc::new(LocalKeyProvider::new([19; 32])),
-        Arc::new(LocalKeyProvider::new([241; 32])),
-    )
-    .await
+    let node = if create {
+        NodeStore::create_new(
+            path,
+            kasumi_store::test_utils::NODE_STORE_ID,
+            kasumi_store::ScratchDisk::fixture(),
+        )?
+    } else {
+        NodeStore::open_existing(
+            path,
+            kasumi_store::test_utils::NODE_STORE_ID,
+            kasumi_store::ScratchDisk::fixture(),
+        )?
+    };
+    if create {
+        kasumi_store::TenantStorageSet::initialize_catalogs_fixture(
+            node,
+            "tenant-a".into(),
+            Arc::new(LocalKeyProvider::new([19; 32])),
+            Arc::new(LocalKeyProvider::new([241; 32])),
+        )
+        .await
+    } else {
+        kasumi_store::TenantStorageSet::open_existing_fixture(
+            node,
+            "tenant-a".into(),
+            Arc::new(LocalKeyProvider::new([19; 32])),
+            Arc::new(LocalKeyProvider::new([241; 32])),
+        )
+        .await
+    }
 }
 
 pub fn config() -> Config {

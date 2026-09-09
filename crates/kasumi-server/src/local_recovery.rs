@@ -100,6 +100,20 @@ pub struct LocalRecoveryStatus {
     pub cleanup_evidence: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum TargetPreparation {
+    Uncreated,
+    CreationDispatched,
+    CatalogsReady,
+    MaterializationDispatched,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TargetOpen {
+    Materialize,
+    Existing,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Journal {
@@ -109,6 +123,7 @@ struct Journal {
     database_path: PathBuf,
     target_directory: PathBuf,
     database_file: Option<private_files::FileIdentity>,
+    target_preparation: TargetPreparation,
     #[serde(deserialize_with = "kasumi_types::require_explicit_option")]
     archive_directory: Option<private_files::DirectoryIdentity>,
     source_provider: serde_json::Value,
@@ -181,7 +196,7 @@ fn record(store: &TenantStore, operation: Uuid) -> Result<Journal> {
             .context("local recovery operation is unknown")?,
     )?;
     ensure!(
-        journal.format == 2 && journal.status.request.operation_id == operation,
+        journal.format == 3 && journal.status.request.operation_id == operation,
         "unsupported or substituted local recovery record"
     );
     Ok(journal)
@@ -302,6 +317,20 @@ pub(crate) fn runtime_pending(store: &TenantStore) -> Result<bool> {
     Ok(store.get(INSTALLATION, b"pending")?.is_some())
 }
 
+struct DrainedStatus(LocalRecoveryStatus);
+impl crate::startup_owner::Runtime for DrainedStatus {
+    fn close(
+        &mut self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + '_>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+/// Stop admitting operator calls before joining outstanding local operations.
+/// Committed status results contain no worker, key or storage owner.
+pub async fn drain_operations() -> Result<()> {
+    crate::startup_owner::drain(crate::startup_owner::Kind::LocalOperator).await
+}
+
 struct Operator {
     config: RuntimeConfig,
     node: Arc<kasumi_store::NodeStore>,
@@ -309,23 +338,80 @@ struct Operator {
     credentials: Arc<crate::local_auth::LocalCredentials>,
     _lock: private_files::ExclusiveLock,
 }
+impl crate::startup_owner::Runtime for Operator {
+    fn close(
+        &mut self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + '_>> {
+        Box::pin(async {
+            self.audit.shutdown().await;
+            self.node.drain_initializers().await
+        })
+    }
+}
+
+/// Own every unpublished target handle through the phase's actual shutdown.
+/// This value remains inside the retained local operator task until drained.
+struct LocalTarget {
+    database: Arc<kasumi_engine::Database>,
+    resources: crate::startup_resources::Resources,
+}
+impl std::ops::Deref for LocalTarget {
+    type Target = kasumi_engine::Database;
+    fn deref(&self) -> &Self::Target {
+        &self.database
+    }
+}
+impl LocalTarget {
+    async fn shutdown(&mut self) -> Result<()> {
+        crate::startup_owner::finish(&mut self.resources).await
+    }
+}
+
 impl Operator {
     async fn open(configuration: &Path) -> Result<Self> {
         let config = RuntimeConfig::load(configuration)?;
         let (lock, node, audit, credentials) = crate::standalone::operator_state(&config).await?;
-        Ok(Self {
+        let owner = Self {
             config,
             node,
             audit,
             credentials,
             _lock: lock,
-        })
+        };
+        #[cfg(test)]
+        tests::pause_open(configuration).await;
+        Ok(owner)
     }
     fn store(&self) -> &TenantStore {
         self.audit.store()
     }
     fn validate(&self, journal: &Journal) -> Result<()> {
         journal.status.request.validate()?;
+        ensure!(
+            journal.format == 3,
+            "unsupported local recovery journal format"
+        );
+        ensure!(
+            !matches!(
+                journal.target_preparation,
+                TargetPreparation::CatalogsReady | TargetPreparation::MaterializationDispatched
+            ) || journal.database_file.is_some(),
+            "prepared local target lacks its durable physical binding"
+        );
+        ensure!(
+            journal.target_preparation != TargetPreparation::Uncreated
+                || journal.database_file.is_none(),
+            "uncreated local target has a physical binding"
+        );
+        ensure!(
+            matches!(
+                journal.status.phase,
+                LocalRecoveryPhase::Materialize
+                    | LocalRecoveryPhase::Stopping
+                    | LocalRecoveryPhase::Stopped
+            ) || journal.target_preparation == TargetPreparation::MaterializationDispatched,
+            "local recovery phase has no materialization dispatch"
+        );
         let request = &journal.status.request;
         ensure!(
             journal.installation_id == installation_id(&self.config, &request.tenant)?
@@ -420,8 +506,23 @@ pub async fn start(
     configuration: &Path,
     request: LocalRecoveryStart,
 ) -> Result<LocalRecoveryStatus> {
+    let configuration = configuration.to_owned();
+    let result =
+        crate::startup_owner::open(crate::startup_owner::Kind::LocalOperator, async move {
+            start_owned(&configuration, request)
+                .await
+                .map(DrainedStatus)
+        })
+        .await?;
+    Ok(result.0)
+}
+
+async fn start_owned(
+    configuration: &Path,
+    request: LocalRecoveryStart,
+) -> Result<LocalRecoveryStatus> {
     request.validate()?;
-    let operator = Operator::open(configuration).await?;
+    let mut operator = Operator::open(configuration).await?;
     let result = async {
         if let Some(bytes) = operator
             .store()
@@ -476,11 +577,12 @@ pub async fn start(
             "target generation directory already exists"
         );
         let journal = Journal {
-            format: 2,
+            format: 3,
             installation_id: installation_id(&operator.config, &request.tenant)?,
             database_path: operator.config.database_path.clone(),
             target_directory,
             database_file: None,
+            target_preparation: TargetPreparation::Uncreated,
             archive_directory: None,
             source_provider: request.source_keys.identity_descriptor()?,
             application_provider: tenant.keys.identity_descriptor()?,
@@ -524,23 +626,57 @@ pub async fn start(
         Ok(journal.status)
     }
     .await;
-    operator.audit.shutdown().await;
+    if let Err(drain) = crate::startup_owner::finish(&mut operator).await {
+        return Err(match result {
+            Err(error) => error.context(format!("local operator drain failed: {drain:#}")),
+            Ok(_) => drain,
+        });
+    }
     result
 }
 
 pub async fn status(configuration: &Path, operation: Uuid) -> Result<LocalRecoveryStatus> {
-    let operator = Operator::open(configuration).await?;
+    let configuration = configuration.to_owned();
+    let result =
+        crate::startup_owner::open(crate::startup_owner::Kind::LocalOperator, async move {
+            status_owned(&configuration, operation)
+                .await
+                .map(DrainedStatus)
+        })
+        .await?;
+    Ok(result.0)
+}
+
+async fn status_owned(configuration: &Path, operation: Uuid) -> Result<LocalRecoveryStatus> {
+    let mut operator = Operator::open(configuration).await?;
     let result = (|| {
         let journal = record(operator.store(), operation)?;
         operator.validate(&journal)?;
         Ok(journal.status)
     })();
-    operator.audit.shutdown().await;
+    if let Err(drain) = crate::startup_owner::finish(&mut operator).await {
+        return Err(match result {
+            Err(error) => error.context(format!("local operator drain failed: {drain:#}")),
+            Ok(_) => drain,
+        });
+    }
     result
 }
 
 pub async fn resume(configuration: &Path, operation: Uuid) -> Result<LocalRecoveryStatus> {
-    let operator = Operator::open(configuration).await?;
+    let configuration = configuration.to_owned();
+    let result =
+        crate::startup_owner::open(crate::startup_owner::Kind::LocalOperator, async move {
+            resume_owned(&configuration, operation)
+                .await
+                .map(DrainedStatus)
+        })
+        .await?;
+    Ok(result.0)
+}
+
+async fn resume_owned(configuration: &Path, operation: Uuid) -> Result<LocalRecoveryStatus> {
+    let mut operator = Operator::open(configuration).await?;
     let result = async {
         let mut journal = record(operator.store(), operation)?;
         operator.validate(&journal)?;
@@ -570,12 +706,29 @@ pub async fn resume(configuration: &Path, operation: Uuid) -> Result<LocalRecove
         Ok(journal.status)
     }
     .await;
-    operator.audit.shutdown().await;
+    if let Err(drain) = crate::startup_owner::finish(&mut operator).await {
+        return Err(match result {
+            Err(error) => error.context(format!("local operator drain failed: {drain:#}")),
+            Ok(_) => drain,
+        });
+    }
     result
 }
 
 pub async fn stop(configuration: &Path, operation: Uuid) -> Result<LocalRecoveryStatus> {
-    let operator = Operator::open(configuration).await?;
+    let configuration = configuration.to_owned();
+    let result =
+        crate::startup_owner::open(crate::startup_owner::Kind::LocalOperator, async move {
+            stop_owned(&configuration, operation)
+                .await
+                .map(DrainedStatus)
+        })
+        .await?;
+    Ok(result.0)
+}
+
+async fn stop_owned(configuration: &Path, operation: Uuid) -> Result<LocalRecoveryStatus> {
+    let mut operator = Operator::open(configuration).await?;
     let result = async {
         let mut journal = record(operator.store(), operation)?;
         operator.validate(&journal)?;
@@ -608,7 +761,12 @@ pub async fn stop(configuration: &Path, operation: Uuid) -> Result<LocalRecovery
         Ok(journal.status)
     }
     .await;
-    operator.audit.shutdown().await;
+    if let Err(drain) = crate::startup_owner::finish(&mut operator).await {
+        return Err(match result {
+            Err(error) => error.context(format!("local operator drain failed: {drain:#}")),
+            Ok(_) => drain,
+        });
+    }
     result
 }
 
@@ -648,6 +806,13 @@ fn check_binding(journal: &Journal) -> Result<()> {
     );
     Ok(())
 }
+fn local_node_id(journal: &Journal) -> Result<Uuid> {
+    kasumi_store::node_store_ids::local_generation(
+        journal.installation_id,
+        journal.status.request.operation_id,
+        journal.status.request.target_incarnation,
+    )
+}
 fn check_database_file(journal: &Journal) -> Result<()> {
     let path = journal.target_directory.join("node.redb");
     let identity = journal
@@ -661,17 +826,77 @@ fn check_database_file(journal: &Journal) -> Result<()> {
     Ok(())
 }
 impl Operator {
-    fn prepare_database_file(&self, journal: &mut Journal) -> Result<()> {
+    fn prepare_stage(&self, journal: &mut Journal, next: TargetPreparation) -> Result<()> {
+        ensure!(
+            matches!(
+                (journal.target_preparation, next),
+                (
+                    TargetPreparation::Uncreated,
+                    TargetPreparation::CreationDispatched
+                ) | (
+                    TargetPreparation::CreationDispatched,
+                    TargetPreparation::CatalogsReady
+                ) | (
+                    TargetPreparation::CatalogsReady,
+                    TargetPreparation::MaterializationDispatched
+                )
+            ),
+            "invalid local target preparation transition"
+        );
+        ensure!(
+            journal.status.phase == LocalRecoveryPhase::Materialize,
+            "local preparation requires the materialization phase"
+        );
+        let code = match next {
+            TargetPreparation::Uncreated => 0,
+            TargetPreparation::CreationDispatched => 1,
+            TargetPreparation::CatalogsReady => 2,
+            TargetPreparation::MaterializationDispatched => 3,
+        };
+        let key = format!("{}/target-preparation/{code}", journal.status.phase_id);
+        ensure!(
+            self.store().get(PHASES, key.as_bytes())?.is_none(),
+            "local preparation dispatch already exists"
+        );
+        journal.target_preparation = next;
+        self.store().write_batch(&[
+            WriteOp::put(
+                OPERATIONS,
+                journal.status.request.operation_id.as_bytes(),
+                encoded(journal)?,
+            ),
+            WriteOp::put(
+                PHASES,
+                key.into_bytes(),
+                encoded(&(
+                    journal.status.phase_id,
+                    &journal.status.request,
+                    &binding(journal),
+                    next,
+                ))?,
+            ),
+        ])
+    }
+    fn prepare_database_file(
+        &self,
+        journal: &mut Journal,
+    ) -> Result<Option<Arc<kasumi_store::NodeStore>>> {
         self.prepare_directory(journal)?;
+        self.prepare_archives(journal)?;
         let path = journal.target_directory.join("node.redb");
-        if journal.database_file.is_none() {
-            if path.try_exists()? {
-                // A crash can leave the just-created empty inode before its
-                // journal commit. An unbound populated file is never adopted.
-                private_files::read(&path, 0)?;
-            } else {
-                private_files::create(&path, b"")?;
-            }
+        let created = if journal.target_preparation == TargetPreparation::Uncreated {
+            ensure!(
+                journal.database_file.is_none(),
+                "uncreated local target has a physical binding"
+            );
+            // Commit the one original dispatch before any physical creation.
+            // Replay never recovers creation permission from an absent/empty file.
+            self.prepare_stage(journal, TargetPreparation::CreationDispatched)?;
+            let node = kasumi_store::NodeStore::create_new(
+                &path,
+                local_node_id(journal)?,
+                self.store().scratch_disk().clone(),
+            )?;
             journal.database_file = Some(private_files::file_identity(&path)?);
             self.store().write_batch(&[
                 WriteOp::put(
@@ -685,9 +910,12 @@ impl Operator {
                     encoded(&journal.database_file)?,
                 ),
             ])?;
-        }
+            Some(node)
+        } else {
+            None
+        };
         check_database_file(journal)?;
-        self.prepare_archives(journal)
+        Ok(created)
     }
     fn prepare_directory(&self, journal: &Journal) -> Result<()> {
         let parent = journal
@@ -720,111 +948,52 @@ impl Operator {
         }
         check_binding(journal)
     }
-    async fn target(
-        &self,
-        journal: &Journal,
-        materialize: bool,
-    ) -> Result<Arc<kasumi_engine::Database>> {
-        let request = &journal.status.request;
-        let outcome: GenerationRecord = decode(
-            &self
-                .store()
-                .get(GENERATIONS, request.target_incarnation.as_bytes())?
-                .context("target generation reservation missing")?,
-        )?;
-        ensure!(
-            matches!(outcome, GenerationRecord::Reserved { operation_id } | GenerationRecord::Active { operation_id } if operation_id == request.operation_id),
-            "target generation is permanently stopped or substituted"
-        );
+    async fn target(&self, journal: &mut Journal, mode: TargetOpen) -> Result<LocalTarget> {
+        let mut pending = crate::startup_resources::Resources::default();
+        let result = async {
+        let request = journal.status.request.clone();
+        let outcome: GenerationRecord = decode(&self.store().get(GENERATIONS, request.target_incarnation.as_bytes())?.context("target generation reservation missing")?)?;
+        ensure!(matches!(outcome, GenerationRecord::Reserved { operation_id } | GenerationRecord::Active { operation_id } if operation_id == request.operation_id), "target generation is permanently stopped or substituted");
+        let original_creation = if mode == TargetOpen::Materialize { self.prepare_database_file(journal)? } else {
+            ensure!(journal.target_preparation == TargetPreparation::MaterializationDispatched, "local target materialization was never dispatched");
+            None
+        };
         check_binding(journal)?;
         check_database_file(journal)?;
         let path = journal.target_directory.join("node.redb");
-        ensure!(
-            materialize || path.is_file(),
-            "materialized target database is missing"
-        );
-        let tenant = self
-            .config
-            .tenants
-            .iter()
-            .find(|tenant| tenant.tenant == request.tenant)
-            .context("installed tenant missing")?;
-        ensure!(
-            journal.application_provider == tenant.keys.identity_descriptor()?
-                && journal.custody_provider == tenant.custody_keys.identity_descriptor()?,
-            "local target wrapping-key identity differs"
-        );
-        if materialize {
-            ensure!(
-                journal.source_provider == request.source_keys.identity_descriptor()?,
-                "local source wrapping-key identity differs"
-            );
+        let tenant = self.config.tenants.iter().find(|tenant| tenant.tenant == request.tenant).context("installed tenant missing")?;
+        ensure!(journal.application_provider == tenant.keys.identity_descriptor()? && journal.custody_provider == tenant.custody_keys.identity_descriptor()?, "local target wrapping-key identity differs");
+        if mode == TargetOpen::Materialize {
+            ensure!(journal.source_provider == request.source_keys.identity_descriptor()?, "local source wrapping-key identity differs");
         }
         let source = Arc::new(crate::runtime::file_secret);
         let application = tenant.keys.provider(source.clone())?;
         let custody = tenant.custody_keys.provider(source)?;
-        let access = kasumi_store::StorageAccess::standalone(
-            journal.installation_id,
-            &request.tenant,
-            request.target_incarnation,
-        )?;
-        let database_id = kasumi_store::node_store_ids::local_generation(
-            journal.installation_id,
-            request.operation_id,
-            request.target_incarnation,
-        )?;
-        let node = if materialize && std::fs::symlink_metadata(&path)?.len() == 0 {
-            // The constructor rechecks the exact journal-bound empty descriptor
-            // while holding its file lock before the first envelope write.
-            kasumi_store::NodeStore::initialize_owned_empty(
-                &path,
-                journal
-                    .database_file
-                    .as_ref()
-                    .context("target inode binding missing")?,
-                database_id,
-                self.store().scratch_disk().clone(),
-            )?
-        } else {
-            // A nonempty file must already have a complete exact envelope. A
-            // partially published envelope is never reset or adopted on retry.
-            kasumi_store::NodeStore::open_existing(
-                &path,
-                database_id,
-                self.store().scratch_disk().clone(),
-            )?
+        let access = kasumi_store::StorageAccess::standalone(journal.installation_id, &request.tenant, request.target_incarnation)?;
+        let fresh = original_creation.is_some();
+        let node = match original_creation {
+            Some(node) => node,
+            None => kasumi_store::NodeStore::open_existing(&path, local_node_id(journal)?, self.store().scratch_disk().clone())?,
         };
-        let stores = if materialize {
-            kasumi_store::TenantStorageSet::open(
-                node,
-                request.tenant.clone(),
-                application,
-                custody,
-                access,
-            )
-            .await?
+        pending.nodes.push(node.clone());
+        let stores = if fresh {
+            kasumi_store::TenantStorageSet::initialize_catalogs(node.clone(), request.tenant.clone(), application, custody, access).await?
         } else {
-            kasumi_store::TenantStorageSet::open_existing(
-                node,
-                request.tenant.clone(),
-                application,
-                custody,
-                access,
-            )
-            .await?
+            kasumi_store::TenantStorageSet::open_existing(node.clone(), request.tenant.clone(), application, custody, access).await?
         };
+        pending.stores.push(stores.application().clone());
+        pending.stores.push(stores.custody().store().clone());
+        if journal.target_preparation == TargetPreparation::CreationDispatched {
+            self.prepare_stage(journal, TargetPreparation::CatalogsReady)?;
+        }
         self.config.install_tenant_audit_archive(
             stores.application(),
             Some(self.observed_archives(journal)?),
         )?;
-        let initialized = stores
-            .application()
-            .get("engine.bootstrap", b"manifest")?
-            .is_some();
-        ensure!(
-            materialize || initialized,
-            "materialized target bootstrap is missing"
-        );
+        let initialized = journal.target_preparation == TargetPreparation::MaterializationDispatched;
+        if !initialized {
+            ensure!(mode == TargetOpen::Materialize, "local materialization requires its original dispatch");
+        }
         let admission = self.audit.admission().clone();
         let database = if initialized {
             kasumi_engine::open_existing_local(
@@ -854,15 +1023,15 @@ impl Operator {
                     journal.status.phase_id,
                 )
                 .await?;
+            let source = kasumi_engine::RestoreSource {
+                destination_alias: request.destination.clone(),
+                destination: self.config.backup_destinations[&request.destination].open()?,
+                keys: request.source_keys.provider(Arc::new(crate::runtime::file_secret))?,
+                timeout_ms: request.phase_timeout_ms,
+            };
+            self.prepare_stage(journal, TargetPreparation::MaterializationDispatched)?;
             kasumi_engine::restore_local(
-                &kasumi_engine::RestoreSource {
-                    destination_alias: request.destination.clone(),
-                    destination: self.config.backup_destinations[&request.destination].open()?,
-                    keys: request
-                        .source_keys
-                        .provider(Arc::new(crate::runtime::file_secret))?,
-                    timeout_ms: request.phase_timeout_ms,
-                },
+                &source,
                 stores.clone(),
                 kasumi_engine::LocalRestoreRequest {
                     checkpoint: request.checkpoint.clone(),
@@ -876,6 +1045,7 @@ impl Operator {
             )
             .await?
         };
+        pending.databases.push(database.clone());
         let validated = (|| {
             let generation = database.engine().generation()?;
             ensure!(
@@ -894,24 +1064,38 @@ impl Operator {
             }
             Ok::<_, anyhow::Error>(())
         })();
-        if let Err(error) = validated {
-            database.shutdown().await?;
-            return Err(error);
-        }
+        validated?;
+        node.drain_initializers().await?;
         Ok(database)
+        }.await;
+        match result {
+            Ok(database) => Ok(LocalTarget {
+                database,
+                resources: pending,
+            }),
+            Err(error) => {
+                let drained = crate::startup_owner::finish(&mut pending).await;
+                Err(match drained {
+                    Ok(()) => error,
+                    Err(cleanup) => error.context(format!(
+                        "local target drain failed before completion: {cleanup:#}"
+                    )),
+                })
+            }
+        }
     }
+
     async fn step(&self, journal: &mut Journal) -> Result<()> {
         self.validate(journal)?;
         match journal.status.phase {
             LocalRecoveryPhase::Materialize => {
-                self.prepare_database_file(journal)?;
-                let target = self.target(journal, true).await?;
+                let mut target = self.target(journal, TargetOpen::Materialize).await?;
                 target.shutdown().await?;
                 drop(target);
                 self.transition(journal, LocalRecoveryPhase::Complete)?;
             }
             LocalRecoveryPhase::Complete => {
-                let target = self.target(journal, false).await?;
+                let mut target = self.target(journal, TargetOpen::Existing).await?;
                 let result = async {
                     let context = self
                         .context(
@@ -932,7 +1116,7 @@ impl Operator {
                 self.transition(journal, LocalRecoveryPhase::Activate)?;
             }
             LocalRecoveryPhase::Activate => {
-                let target = self.target(journal, false).await?;
+                let mut target = self.target(journal, TargetOpen::Existing).await?;
                 let ready = target.engine().generation().map(|generation| {
                     generation.state.pending_restore.is_none() && generation.state.suspended
                 });
@@ -1054,14 +1238,23 @@ impl Operator {
             );
             let database = journal.target_directory.join("node.redb");
             let ownership = if database.try_exists()? {
+                ensure!(
+                    journal.target_preparation != TargetPreparation::Uncreated,
+                    "cleanup refuses a file without an original creation dispatch"
+                );
                 if journal.database_file.is_some() {
                     check_database_file(journal)?;
-                } else {
-                    private_files::read(&database, 0)?;
                 }
-                // This uses the same exclusive inode lock as redb. Existing
-                // workers must drain before the owned directory entry is deleted.
-                Some(private_files::ExclusiveLock::acquire(&database)?)
+                // A lost file-binding commit can leave our exact Prepared or Ready
+                // envelope. Claim its deterministic generation identity without
+                // opening/repairing redb. Empty, torn or unrelated files stay intact.
+                let ownership =
+                    kasumi_store::NodeStore::claim_cleanup(&database, local_node_id(journal)?)?;
+                ensure!(
+                    ownership.identity() == &private_files::file_identity(&database)?,
+                    "local cleanup path changed during ownership handoff"
+                );
+                Some(ownership)
             } else {
                 None
             };
@@ -1159,6 +1352,8 @@ impl Operator {
             self.audit.clone(),
         )
         .await?;
+        let mut control_resources = crate::startup_resources::Resources::default();
+        control_resources.databases.push(control.clone());
         let result = async {
             let administrator = crate::standalone::offline_context(&control)?;
             let context = self
@@ -1233,10 +1428,12 @@ impl Operator {
             Ok::<_, anyhow::Error>(())
         }
         .await;
-        control.shutdown().await?;
+        let drained = crate::startup_owner::finish(&mut control_resources).await;
+        drop(control_resources);
         drop(control);
         result?;
-        let target = self.target(journal, false).await?;
+        drained?;
+        let mut target = self.target(journal, TargetOpen::Existing).await?;
         let result = async {
             let request = &journal.status.request;
             let context = self

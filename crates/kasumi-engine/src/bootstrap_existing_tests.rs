@@ -19,7 +19,7 @@ impl Installation {
         )?;
         let incarnation = uuid::Uuid::new_v4();
         let access = StorageAccess::standalone(uuid::Uuid::new_v4(), "tenant", incarnation)?;
-        let stores = TenantStorageSet::open(
+        let stores = TenantStorageSet::initialize_catalogs(
             node.clone(),
             "tenant".into(),
             Arc::new(LocalKeyProvider::new([21; 32])),
@@ -314,7 +314,7 @@ async fn existing_local_reopens_the_same_committed_standalone_after_complete_shu
 async fn existing_control_requires_the_non_nil_configured_incarnation_before_startup()
 -> anyhow::Result<()> {
     let fixture = Installation::new().await?;
-    let stores = TenantStorageSet::open(
+    let stores = TenantStorageSet::initialize_catalogs(
         fixture.node.clone(),
         "__kasumi_control".into(),
         Arc::new(LocalKeyProvider::new([24; 32])),

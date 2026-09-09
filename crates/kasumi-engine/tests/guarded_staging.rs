@@ -36,13 +36,23 @@ async fn open(path: &Path, limits: Limits, create: bool) -> (Arc<Database>, Arc<
     } else {
         common::existing_security_audit(node.clone()).await
     };
-    let stores = TenantStorageSet::open_fixture(
-        node,
-        context().tenant,
-        Arc::new(LocalKeyProvider::new([0x95; 32])),
-        Arc::new(LocalKeyProvider::new([0x96; 32])),
-    )
-    .await
+    let stores = if create {
+        TenantStorageSet::initialize_catalogs_fixture(
+            node,
+            context().tenant,
+            Arc::new(LocalKeyProvider::new([0x95; 32])),
+            Arc::new(LocalKeyProvider::new([0x96; 32])),
+        )
+        .await
+    } else {
+        TenantStorageSet::open_existing_fixture(
+            node,
+            context().tenant,
+            Arc::new(LocalKeyProvider::new([0x95; 32])),
+            Arc::new(LocalKeyProvider::new([0x96; 32])),
+        )
+        .await
+    }
     .unwrap();
     let db = kasumi_engine::test_utils::open_fixture(
         stores,
@@ -713,7 +723,7 @@ async fn encrypted_restore_preserves_original_stage_scope_without_reviving_histo
     )
     .unwrap();
     let audit = common::security_audit(node.clone()).await;
-    let stores = TenantStorageSet::open_fixture(
+    let stores = TenantStorageSet::initialize_catalogs_fixture(
         node,
         context().tenant,
         Arc::new(LocalKeyProvider::new([0x95; 32])),

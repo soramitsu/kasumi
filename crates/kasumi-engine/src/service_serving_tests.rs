@@ -184,14 +184,25 @@ impl ServingFixture {
                 admission.clone(),
             )
             .unwrap();
-            let stores = kasumi_store::TenantStorageSet::open(
-                node,
-                self.context.tenant.clone(),
-                Arc::new(LocalKeyProvider::new([id as u8; 32])),
-                Arc::new(LocalKeyProvider::new([id as u8 + 10; 32])),
-                kasumi_store::StorageAccess::serving(gate).unwrap(),
-            )
-            .await
+            let stores = if create {
+                kasumi_store::TenantStorageSet::initialize_catalogs(
+                    node,
+                    self.context.tenant.clone(),
+                    Arc::new(LocalKeyProvider::new([id as u8; 32])),
+                    Arc::new(LocalKeyProvider::new([id as u8 + 10; 32])),
+                    kasumi_store::StorageAccess::serving(gate).unwrap(),
+                )
+                .await
+            } else {
+                kasumi_store::TenantStorageSet::open_existing(
+                    node,
+                    self.context.tenant.clone(),
+                    Arc::new(LocalKeyProvider::new([id as u8; 32])),
+                    Arc::new(LocalKeyProvider::new([id as u8 + 10; 32])),
+                    kasumi_store::StorageAccess::serving(gate).unwrap(),
+                )
+                .await
+            }
             .unwrap();
             let db = crate::open_replicated(
                 id,

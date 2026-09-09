@@ -39,7 +39,7 @@ impl Fixture {
         let id = 4;
         let mut settings = self.settings.clone();
         settings.resource_budget_bytes = resource_budget_bytes;
-        let stores = TenantStorageSet::open(
+        let stores = TenantStorageSet::initialize_catalogs(
             NodeStore::create_new(
                 self._dir.path().join("authority-4.redb"),
                 kasumi_store::test_utils::NODE_STORE_ID,

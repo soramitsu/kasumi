@@ -93,7 +93,7 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
     let issuer_router = Arc::new(kasumi_raft::InProcessRouter::default());
     let mut issuers = Vec::new();
     for id in 1..=3 {
-        let stores = TenantStorageSet::open(
+        let stores = TenantStorageSet::initialize_catalogs(
             NodeStore::create_new(
                 directory.path().join(format!("issuer-{id}.redb")),
                 kasumi_store::test_utils::NODE_STORE_ID,
@@ -232,7 +232,7 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
     let group = format!("__kasumi_control/{incarnation}");
     let mut nodes = Vec::new();
     for id in 1..=3 {
-        let stores = TenantStorageSet::open(
+        let stores = TenantStorageSet::initialize_catalogs(
             NodeStore::create_new(
                 directory.path().join(format!("node-{id}.redb")),
                 kasumi_store::test_utils::NODE_STORE_ID,

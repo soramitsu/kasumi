@@ -163,7 +163,7 @@ pub(crate) async fn fixture(
         Arc::new(ManualClock::new()),
     )
     .await?;
-    let stores = TenantStorageSet::install(app, custody)?;
+    let stores = kasumi_store::test_utils::with_domains(app, custody)?;
     if stores
         .custody()
         .store()

@@ -50,7 +50,7 @@ async fn domains_require_distinct_actual_wrapping_policies_and_same_node() -> Re
         crate::ScratchDisk::fixture(),
     )?;
     assert!(
-        TenantStorageSet::open_fixture(
+        TenantStorageSet::initialize_catalogs_fixture(
             reserved.clone(),
             "kasumi.custody/tenant".into(),
             Arc::new(LocalKeyProvider::new([3; 32])),
@@ -77,7 +77,7 @@ async fn control_reopens_without_any_application_key_probe_after_revocation() ->
         crate::test_utils::NODE_STORE_ID,
         crate::ScratchDisk::fixture(),
     )?;
-    let stores = TenantStorageSet::open_fixture(
+    let stores = TenantStorageSet::initialize_catalogs_fixture(
         node.clone(),
         "tenant".into(),
         app_provider.clone(),

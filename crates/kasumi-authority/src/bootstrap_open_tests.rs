@@ -40,7 +40,7 @@ impl InstalledFixture {
             kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
         )?;
-        let stores = TenantStorageSet::open(
+        let stores = TenantStorageSet::initialize_catalogs(
             node,
             installation.tenant(),
             Arc::new(LocalKeyProvider::new([31; 32])),

@@ -1,4 +1,5 @@
 use super::*;
+use kasumi_store::KeyProvider;
 use std::{collections::BTreeSet, future::Future, task::Poll};
 
 #[tokio::test]
@@ -229,4 +230,113 @@ fn target_absence_requires_a_successful_filesystem_observation() {
     let cycle = directory.path().join("cycle");
     std::os::unix::fs::symlink(&cycle, &cycle).unwrap();
     assert!(target_file_exists(&cycle.join("target.redb")).is_err());
+}
+
+struct PausedCatalogProvider {
+    inner: kasumi_store::test_utils::LocalKeyProvider,
+    paused: AtomicBool,
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+#[async_trait::async_trait]
+impl kasumi_store::KeyProvider for PausedCatalogProvider {
+    async fn generate_key(&self, tenant: &str) -> Result<kasumi_store::GeneratedKey> {
+        if !self.paused.swap(true, Ordering::AcqRel) {
+            self.entered.notify_one();
+            self.release.notified().await;
+        }
+        self.inner.generate_key(tenant).await
+    }
+    async fn unwrap_key(
+        &self,
+        tenant: &str,
+        key: &kasumi_store::WrappedKey,
+    ) -> Result<kasumi_store::SecretKey> {
+        self.inner.unwrap_key(tenant, key).await
+    }
+    async fn rewrap_key(
+        &self,
+        tenant: &str,
+        key: &kasumi_store::WrappedKey,
+    ) -> Result<kasumi_store::WrappedKey> {
+        self.inner.rewrap_key(tenant, key).await
+    }
+}
+
+#[tokio::test]
+async fn target_generation_close_joins_cancelled_catalog_initializers_before_file_cleanup() {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("unpublished-target.redb");
+        let id = Uuid::new_v4();
+        let node = NodeStore::create_new(&path, id, kasumi_store::ScratchDisk::fixture()).unwrap();
+        let weak = Arc::downgrade(&node);
+        let provider = Arc::new(PausedCatalogProvider {
+            inner: kasumi_store::test_utils::LocalKeyProvider::new([63; 32]),
+            paused: AtomicBool::new(false),
+            entered: Default::default(),
+            release: Default::default(),
+        });
+        let mut opening = Box::pin(TenantStorageSet::initialize_catalogs_fixture(
+            node.clone(),
+            "city".into(),
+            provider.clone(),
+            Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([64; 32])),
+        ));
+        std::future::poll_fn(|cx| {
+            assert!(opening.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        provider.entered.notified().await;
+        drop(opening);
+        let mut generation = Generation {
+            node: Some(node),
+            fresh_catalogs: true,
+            ..Default::default()
+        };
+        let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
+        let certificate = rcgen::CertificateParams::new(vec!["localhost".into()])
+            .unwrap()
+            .self_signed(&key)
+            .unwrap();
+        let pem = certificate.pem().into_bytes();
+        let tls =
+            kasumi_transport::TlsIdentity::from_pem(&pem, key.serialize_pem().as_bytes()).unwrap();
+        let cluster = ClusterNetwork::new(
+            1,
+            &tls,
+            &pem,
+            vec![crate::cluster::PeerConfig {
+                node_id: 1,
+                endpoint: "https://localhost:9".into(),
+                certificate_pins: BTreeSet::from([tls.certificate_pin()]),
+            }],
+            Default::default(),
+        )
+        .unwrap();
+        let registry = crate::api::DatabaseRegistry::default();
+        let mut closing = Box::pin(generation.close(&cluster, &registry));
+        std::future::poll_fn(|cx| {
+            assert!(closing.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        drop(closing);
+        assert!(generation.node.is_some());
+        assert!(weak.upgrade().is_some());
+        assert!(NodeStore::claim_cleanup(&path, id).is_err());
+        provider.release.notify_one();
+        generation.close(&cluster, &registry).await.unwrap();
+        assert!(generation.node.is_none());
+        assert!(!generation.fresh_catalogs);
+        assert!(weak.upgrade().is_none());
+        let ownership = NodeStore::claim_cleanup(&path, id).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        kasumi_store::private_files::sync_parent(&path).unwrap();
+        drop(ownership);
+        assert!(!path.exists());
+    })
+    .await
+    .unwrap();
 }

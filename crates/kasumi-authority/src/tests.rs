@@ -118,7 +118,7 @@ impl Fixture {
                 kasumi_store::ScratchDisk::fixture(),
             )
             .unwrap();
-            let store = TenantStorageSet::open(
+            let store = TenantStorageSet::initialize_catalogs(
                 node,
                 installation.tenant(),
                 Arc::new(LocalKeyProvider::new([id as u8; 32])),
@@ -674,7 +674,7 @@ async fn actual_encrypted_source_materialization_is_fenced_but_independent_custo
     .unwrap();
     let provider = Arc::new(LocalKeyProvider::new([90; 32]));
     let custody_provider = Arc::new(LocalKeyProvider::new([91; 32]));
-    let stores = TenantStorageSet::open(
+    let stores = TenantStorageSet::initialize_catalogs(
         node.clone(),
         "city".into(),
         provider.clone(),

@@ -125,7 +125,7 @@ async fn corrupt_or_authenticated_wrong_binding_is_never_repaired_by_reopen() ->
         crate::test_utils::NODE_STORE_ID,
         ScratchDisk::fixture(),
     )?;
-    let stores = TenantStorageSet::open_fixture(
+    let stores = TenantStorageSet::initialize_catalogs_fixture(
         node.clone(),
         "tenant".into(),
         Arc::new(LocalKeyProvider::new([11; 32])),
@@ -169,7 +169,7 @@ async fn exact_standalone_binding_reopens_after_both_domains_close_and_drain() -
     let access = StorageAccess::standalone(installation, "tenant", incarnation)?;
     let application = Arc::new(LocalKeyProvider::new([11; 32]));
     let custody = Arc::new(LocalKeyProvider::new([12; 32]));
-    let stores = TenantStorageSet::open(
+    let stores = TenantStorageSet::initialize_catalogs(
         node.clone(),
         "tenant".into(),
         application.clone(),

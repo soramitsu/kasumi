@@ -34,6 +34,15 @@ pub async fn with_custody(
     crate::TenantStorageSet::install(application, control)
 }
 
+/// Assemble explicitly clocked test domains. This helper is unavailable in
+/// production; production callers use initialize_catalogs or open_existing.
+pub fn with_domains(
+    application: std::sync::Arc<crate::TenantStore>,
+    custody: std::sync::Arc<crate::TenantStore>,
+) -> Result<std::sync::Arc<crate::TenantStorageSet>> {
+    crate::TenantStorageSet::install(application, custody)
+}
+
 pub struct LocalKeyProvider {
     key: SecretKey,
     key_ref: String,

@@ -29,11 +29,12 @@ tasks. Stop admitting new catalog work before final drain. Cancelled drains reta
 unfinished handles; completed tasks are joined/reaped on the next acquisition.
 A successful pair handoff transfers normal shutdown responsibility to its caller.
 
-This change does not convert the older create-or-open `TenantStorageSet::open`
-and direct `TenantStore::open` APIs. Their remaining callers must be classified
-as explicit creation or existing-state acquisition and those fallback APIs removed
-for the first release. It also does not add process-wide admission for an
-arbitrary number of concurrent catalog requests.
+The pair create-or-open API has been removed. Fresh callers use
+`initialize_catalogs`; existing callers use `open_existing`. See
+[explicit catalog lifecycle](explicit-catalog-lifecycle.md) for durable recovery
+intent and incomplete-state behavior. Direct single-store `TenantStore::open`
+still requires a separate caller classification/removal. There is no process-wide
+admission bound for arbitrary concurrent catalog requests.
 
 ## Validation status
 

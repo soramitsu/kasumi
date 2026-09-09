@@ -44,6 +44,9 @@ struct Generation {
     registered_data: Option<(GenerationKey, Arc<kasumi_engine::Database>)>,
     phase: Option<Arc<RuntimeTargetPhase>>,
     node: Option<Arc<NodeStore>>,
+    // Consumed only from the journal's original Created outcome. A lost
+    // attempt cannot recover creation permission from missing catalogs.
+    fresh_catalogs: bool,
     stores: Option<Arc<TenantStorageSet>>,
     replica: Option<TargetReplica>,
     registered_group: Option<String>,
@@ -100,6 +103,10 @@ impl Generation {
         }
         self.stores.take();
         self.lease.take();
+        if let Some(node) = &self.node {
+            node.drain_initializers().await?;
+        }
+        self.fresh_catalogs = false;
         if let Some(node) = self.node.take() {
             match Arc::try_unwrap(node) {
                 Ok(node) => drop(node),
@@ -737,17 +744,29 @@ impl TargetRecoveryRuntime {
             op.check()?;
             let path = self.path(&key)?;
             let scratch = self.audit.store().scratch_disk().clone();
-            g.node = Some(if matches!(step, TargetRuntimeStep::Materialize(_)) {
-                self.journal
+            if matches!(step, TargetRuntimeStep::Materialize(_)) {
+                match self
+                    .journal
                     .reserve_materialization_file(op)?
                     .open(&path, scratch)?
+                {
+                    kasumi_engine::MaterializationNode::Created(node) => {
+                        g.node = Some(node);
+                        g.fresh_catalogs = true;
+                    }
+                    kasumi_engine::MaterializationNode::Existing(node) => {
+                        g.node = Some(node);
+                        g.fresh_catalogs = false;
+                    }
+                }
             } else {
-                NodeStore::open_existing(
+                g.node = Some(NodeStore::open_existing(
                     path,
                     self.journal.materialization_file_id(&key.0, key.1)?,
                     scratch,
-                )?
-            });
+                )?);
+                g.fresh_catalogs = false;
+            }
             op.check()?;
         }
         if g.stores.is_none() {
@@ -758,30 +777,29 @@ impl TargetRecoveryRuntime {
             let custody = template.custody_keys.provider(self.credential.clone())?;
             let node = g.node.as_ref().unwrap().clone();
             let access = phase.access()?;
-            g.stores = Some(
-                if matches!(
-                    step,
-                    TargetRuntimeStep::Materialize(_) | TargetRuntimeStep::ResumeMaterialization(_)
-                ) {
-                    op.run(TenantStorageSet::open(
-                        node,
-                        key.0.clone(),
-                        app,
-                        custody,
-                        access,
-                    ))
-                    .await?
-                } else {
-                    op.run(TenantStorageSet::open_existing(
-                        node,
-                        key.0.clone(),
-                        app,
-                        custody,
-                        access,
-                    ))
-                    .await?
-                },
-            );
+            g.stores = Some(if std::mem::take(&mut g.fresh_catalogs) {
+                ensure!(
+                    matches!(step, TargetRuntimeStep::Materialize(_)),
+                    "only original materialization may initialize catalogs"
+                );
+                op.run(TenantStorageSet::initialize_catalogs(
+                    node,
+                    key.0.clone(),
+                    app,
+                    custody,
+                    access,
+                ))
+                .await?
+            } else {
+                op.run(TenantStorageSet::open_existing(
+                    node,
+                    key.0.clone(),
+                    app,
+                    custody,
+                    access,
+                ))
+                .await?
+            });
         }
 
         let stores = g.stores.as_ref().unwrap().clone();

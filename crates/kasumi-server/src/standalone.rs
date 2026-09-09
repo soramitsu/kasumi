@@ -1085,38 +1085,32 @@ async fn provision_databases(
             .expect("validated standalone"),
         )
     })) {
-        let source = Arc::new(crate::runtime::file_secret);
-        let stores = kasumi_store::TenantStorageSet::open(
-            node.clone(),
-            tenant.into(),
-            application.provider(source.clone())?,
-            custody.provider(source)?,
-            access,
-        )
-        .await?;
-        let opened = async {
+        let mut pending = crate::startup_resources::Resources::default();
+        pending.nodes.push(node.clone());
+        let configured = async {
+            let source = Arc::new(crate::runtime::file_secret);
+            let stores = kasumi_store::TenantStorageSet::initialize_catalogs(
+                node.clone(),
+                tenant.into(),
+                application.provider(source.clone())?,
+                custody.provider(source)?,
+                access,
+            )
+            .await?;
+            pending.stores.push(stores.application().clone());
+            pending.stores.push(stores.custody().store().clone());
             config.install_tenant_audit_archive(stores.application(), None)?;
-            kasumi_engine::open_local_with_incarnation(
+            let database = kasumi_engine::open_local_with_incarnation(
                 stores.clone(),
                 policy.clone(),
                 limits.clone(),
                 audit.clone(),
                 Uuid::parse_str(incarnation)?,
             )
-            .await
-        }
-        .await;
-        let database = match opened {
-            Ok(database) => database,
-            Err(error) => {
-                stores.application().shutdown().await;
-                stores.custody().store().shutdown().await;
-                return Err(error);
-            }
-        };
-        let configured = async {
+            .await?;
+            pending.databases.push(database.clone());
             if tenant == crate::runtime::CONTROL_TENANT {
-                let plane = kasumi_engine::control::ControlPlane::new(database.clone())?;
+                let plane = kasumi_engine::control::ControlPlane::new(database)?;
                 let context = crate::runtime::configured_control_context(&config.control)?;
                 plane.initialize(context.clone()).await?;
                 plane
@@ -1131,12 +1125,17 @@ async fn provision_databases(
             Ok::<_, anyhow::Error>(())
         }
         .await;
-        let drained = database.shutdown().await;
-        drop(database);
-        stores.application().shutdown().await;
-        stores.custody().store().shutdown().await;
-        configured?;
-        drained?;
+        let drained = crate::startup_owner::finish(&mut pending).await;
+        match (configured, drained) {
+            (Err(error), Err(drain)) => {
+                return Err(error.context(format!(
+                    "standalone tenant initializer drain failed: {drain:#}"
+                )));
+            }
+            (Err(error), Ok(())) => return Err(error),
+            (Ok(()), Err(drain)) => return Err(drain),
+            (Ok(()), Ok(())) => {}
+        }
     }
     Ok(())
 }

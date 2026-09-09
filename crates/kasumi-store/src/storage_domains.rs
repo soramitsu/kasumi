@@ -124,48 +124,6 @@ impl TenantStorageSet {
         }
     }
 
-    pub async fn open(
-        node: Arc<NodeStore>,
-        tenant: String,
-        application_provider: Arc<dyn KeyProvider>,
-        custody_provider: Arc<dyn KeyProvider>,
-        application_access: StorageAccess,
-    ) -> Result<Arc<Self>> {
-        validate_application_tenant(&tenant)?;
-        application_access.validate_tenant(&tenant)?;
-        // For an installed generation, authenticate the purpose/catalog binding
-        // using only the independent custody provider before even constructing
-        // application keys. Wrapped application metadata alone is not authority.
-        if CustodyStore::catalog_installed(&node, &tenant)? {
-            let custody =
-                CustodyStore::open(node.clone(), tenant.clone(), custody_provider).await?;
-            ensure!(
-                &custody.binding.application_purpose == application_access.purpose(),
-                "current serving authority differs from authenticated installed binding"
-            );
-            let application =
-                TenantStore::open(node, tenant, application_provider, application_access).await?;
-            return Ok(Arc::new(Self {
-                application,
-                custody,
-            }));
-        }
-        let application = TenantStore::open(
-            node.clone(),
-            tenant.clone(),
-            application_provider,
-            application_access,
-        )
-        .await?;
-        let custody = TenantStore::open(
-            node,
-            CustodyStore::catalog_name(&tenant),
-            custody_provider,
-            StorageAccess::custody(&tenant),
-        )
-        .await?;
-        Self::install(application, custody)
-    }
     #[cfg(any(test, feature = "test-utils"))]
     pub async fn open_existing_fixture(
         node: Arc<NodeStore>,
@@ -178,14 +136,15 @@ impl TenantStorageSet {
     }
 
     #[cfg(any(test, feature = "test-utils"))]
-    pub async fn open_fixture(
+    pub async fn initialize_catalogs_fixture(
         node: Arc<NodeStore>,
         tenant: String,
         application_provider: Arc<dyn KeyProvider>,
         custody_provider: Arc<dyn KeyProvider>,
     ) -> Result<Arc<Self>> {
         let access = StorageAccess::fixture_for(&tenant);
-        Self::open(node, tenant, application_provider, custody_provider, access).await
+        Self::initialize_catalogs(node, tenant, application_provider, custody_provider, access)
+            .await
     }
 
     /// Trusted installation boundary, useful for explicitly clocked embeddings.

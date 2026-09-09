@@ -89,8 +89,8 @@ impl EncodedResponseFence for RetirementResponseFence<'_> {
 
 mod target_journal;
 pub use target_journal::{
-    MaterializationFile, TargetJournal, TargetJournalInstallation, TargetJournalIntent,
-    VerifiedTargetServingProjection,
+    MaterializationFile, MaterializationNode, TargetJournal, TargetJournalInstallation,
+    TargetJournalIntent, VerifiedTargetServingProjection,
 };
 
 pub use bootstrap::target_serving::{TargetServingReplica, open_serving_target};
