@@ -526,7 +526,7 @@ async fn checkpoint_binds_actual_generation_complete_graph_keys_and_encrypted_re
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();
-    let audit = common::security_audit(node.clone()).await;
+    let audit = common::existing_security_audit(node.clone()).await;
     let store = TenantStore::open_fixture(
         node,
         "checkpoint".into(),
@@ -1424,7 +1424,7 @@ async fn archived_audit_backup_is_self_contained_and_source_unavailable_restore_
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();
-    let reopened_audit = common::security_audit(node.clone()).await;
+    let reopened_audit = common::existing_security_audit(node.clone()).await;
     let reopened_store = TenantStore::open_fixture(
         node,
         "checkpoint".into(),

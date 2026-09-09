@@ -521,7 +521,8 @@ mod tests {
                 .unwrap();
         let admission = crate::admission::NodeAdmission::new(Default::default()).unwrap();
         let audit =
-            SecurityAudit::open(store.clone(), AuditRetentionBudget::default(), admission).unwrap();
+            SecurityAudit::initialize(store.clone(), AuditRetentionBudget::default(), admission)
+                .unwrap();
         audit.record_sync(event()).unwrap();
         let pause = Arc::new(retention::WorkerPause::default());
         *audit.writer.worker_pause.lock().unwrap() = Some(pause.clone());
@@ -575,10 +576,14 @@ mod tests {
         .unwrap();
         assert_eq!(reopened.scan("security.audit").unwrap().len(), 1);
         assert_eq!(
-            retention::Head::open(&reopened, &audit_destination(&reopened))
-                .unwrap()
-                .position
-                .next_sequence,
+            retention::Head::open(
+                &reopened,
+                &audit_destination(&reopened),
+                &AuditRetentionBudget::default()
+            )
+            .unwrap()
+            .position
+            .next_sequence,
             1
         );
         reopened.shutdown().await;
@@ -609,7 +614,7 @@ mod tests {
                     .await
                     .unwrap();
             let admission = crate::admission::NodeAdmission::new(Default::default()).unwrap();
-            let audit = SecurityAudit::open(
+            let audit = SecurityAudit::initialize(
                 store.clone(),
                 kasumi_types::AuditRetentionBudget::default(),
                 admission.clone(),
@@ -686,10 +691,14 @@ mod tests {
             assert_eq!(record["event"]["kind"], "access_denied");
             assert_eq!(record["event"]["request_id"], "cancelled-denial");
             assert_eq!(
-                retention::Head::open(&reopened, &audit_destination(&reopened))
-                    .unwrap()
-                    .position
-                    .next_sequence,
+                retention::Head::open(
+                    &reopened,
+                    &audit_destination(&reopened),
+                    &AuditRetentionBudget::default()
+                )
+                .unwrap()
+                .position
+                .next_sequence,
                 1
             );
             reopened.shutdown().await;
@@ -713,7 +722,7 @@ mod tests {
                 .await
                 .unwrap();
         let admission = crate::admission::NodeAdmission::new(Default::default()).unwrap();
-        let first = SecurityAudit::open(
+        let first = SecurityAudit::initialize(
             store.clone(),
             kasumi_types::AuditRetentionBudget::default(),
             admission.clone(),
@@ -793,10 +802,14 @@ mod tests {
             ])
         );
         assert_eq!(
-            retention::Head::open(&reopened, &audit_destination(&reopened))
-                .unwrap()
-                .position
-                .next_sequence,
+            retention::Head::open(
+                &reopened,
+                &audit_destination(&reopened),
+                &AuditRetentionBudget::default()
+            )
+            .unwrap()
+            .position
+            .next_sequence,
             3
         );
         reopened.shutdown().await;
@@ -822,7 +835,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let audit = SecurityAudit::open_with_archive(
+        let audit = SecurityAudit::initialize_with_archive(
             store.clone(),
             kasumi_types::AuditRetentionBudget::default(),
             archive.clone(),
@@ -835,14 +848,15 @@ mod tests {
         assert!(error.to_string().contains("outcome unknown"));
         // Even explicit key reauthorization cannot reuse the uncertain counter.
         store.refresh_lease().await.unwrap();
-        let duplicate = SecurityAudit::open_with_archive(
-            store.clone(),
-            kasumi_types::AuditRetentionBudget::default(),
-            archive.clone(),
-            admission.clone(),
-        )
-        .unwrap();
-        assert!(duplicate.record_sync(event()).is_err());
+        assert!(
+            SecurityAudit::open_with_archive(
+                store.clone(),
+                kasumi_types::AuditRetentionBudget::default(),
+                archive.clone(),
+                admission.clone(),
+            )
+            .is_err()
+        );
         assert!(queued.record(event(), None).is_err());
         assert!(audit.record_sync(event()).is_err());
         assert_eq!(store.scan("security.audit").unwrap().len(), 1);
@@ -878,3 +892,7 @@ mod tests {
         reopened.shutdown().await;
     }
 }
+
+#[cfg(test)]
+#[path = "security_audit_existing_tests.rs"]
+mod existing_tests;

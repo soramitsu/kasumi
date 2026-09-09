@@ -31,7 +31,11 @@ async fn open(path: &Path, limits: Limits, create: bool) -> (Arc<Database>, Arc<
         )
     })
     .unwrap();
-    let audit = common::security_audit(node.clone()).await;
+    let audit = if create {
+        common::security_audit(node.clone()).await
+    } else {
+        common::existing_security_audit(node.clone()).await
+    };
     let stores = TenantStorageSet::open_fixture(
         node,
         context().tenant,

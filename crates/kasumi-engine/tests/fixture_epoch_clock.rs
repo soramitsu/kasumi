@@ -54,7 +54,7 @@ fn context(database: &Database, clock: &EpochClock) -> RequestContext {
     }
 }
 async fn audit(node: Arc<NodeStore>, admission: Arc<NodeAdmission>) -> Arc<SecurityAudit> {
-    SecurityAudit::open(
+    SecurityAudit::initialize(
         TenantStore::open_fixture(
             node,
             kasumi_engine::SECURITY_TENANT.into(),

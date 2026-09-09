@@ -306,7 +306,11 @@ impl Databases {
                 Arc::new(LocalKeyProvider::new([0xA7; 32])),
             )
             .await?;
-            audits.push(SecurityAudit::open(
+            audits.push((if create {
+                SecurityAudit::initialize
+            } else {
+                SecurityAudit::open
+            })(
                 service_store,
                 kasumi_types::AuditRetentionBudget::default(),
                 kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),

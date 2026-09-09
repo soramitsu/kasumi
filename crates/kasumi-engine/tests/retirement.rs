@@ -369,7 +369,7 @@ async fn exact_retirement_seals_source_once_and_retains_proof_after_encrypted_re
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();
-    let audit = common::security_audit(node.clone()).await;
+    let audit = common::existing_security_audit(node.clone()).await;
     let db = reopen_custody(node, audit.clone()).await;
     // Permanent recovery does not need backup objects to be read again, and the
     // original action deadline does not expire immutable retirement evidence.
@@ -908,7 +908,7 @@ async fn durable_retirement_stop_defeats_inflight_backup_verification_and_surviv
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();
-    let audit = common::security_audit(node.clone()).await;
+    let audit = common::existing_security_audit(node.clone()).await;
     let store = TenantStore::open_fixture(
         node,
         context().tenant,

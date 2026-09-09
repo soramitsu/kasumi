@@ -2149,22 +2149,48 @@ fn fixture_config() -> RuntimeConfig {
 }
 
 #[cfg(test)]
+// A fixture must explicitly enroll its node file once. Runtime restarts only
+// open the retained configured identity and never create missing files.
+async fn create_fixture_node(config: &RuntimeConfig) {
+    let node = NodeStore::create_new(
+        &config.database_path,
+        config.database_id,
+        kasumi_store::ScratchDisk::open(config.scratch_disk.clone()).unwrap(),
+    )
+    .unwrap();
+    let provider = config
+        .security_audit
+        .keys
+        .provider(Arc::new(|_| {
+            Ok(Zeroizing::new("test-runtime-token".into()))
+        }))
+        .unwrap();
+    let store = TenantStore::open(
+        node.clone(),
+        SECURITY_TENANT.into(),
+        provider,
+        kasumi_store::StorageAccess::security_audit(),
+    )
+    .await
+    .unwrap();
+    let audit = config
+        .security_audit
+        .initialize(
+            store.clone(),
+            kasumi_engine::admission::NodeAdmission::new(config.admission.clone()).unwrap(),
+        )
+        .unwrap();
+    audit.shutdown().await;
+    store.shutdown().await;
+    drop(audit);
+    drop(store);
+    drop(node);
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use kasumi_store::test_utils::{LocalKeyProvider, ManualClock};
-
-    // A fixture must explicitly enroll its node file once. Runtime restarts only
-    // open the retained configured identity and never create missing files.
-    fn create_fixture_node(config: &RuntimeConfig) {
-        drop(
-            NodeStore::create_new(
-                &config.database_path,
-                config.database_id,
-                kasumi_store::ScratchDisk::open(config.scratch_disk.clone()).unwrap(),
-            )
-            .unwrap(),
-        );
-    }
 
     #[test]
     fn operator_example_is_valid_secret_free_and_rejects_inline_credentials() {
@@ -2308,7 +2334,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let audit = SecurityAudit::open(
+        let audit = SecurityAudit::initialize(
             service.clone(),
             kasumi_types::AuditRetentionBudget::default(),
             kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
@@ -3120,7 +3146,7 @@ mod lifecycle_tests {
                 max_bytes: 32 << 20,
             },
         );
-        create_fixture_node(&config);
+        create_fixture_node(&config).await;
         let mut incarnation = None;
         for round in 0..3 {
             let runtime = NodeRuntime::open_using(config.clone(), |_| {
@@ -3594,7 +3620,7 @@ mod lifecycle_tests {
                     None => {}
                 }
             }
-            create_fixture_node(&config);
+            create_fixture_node(&config).await;
             configurations.push(config);
         }
         drop(reserved);

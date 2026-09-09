@@ -2245,7 +2245,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let audit = SecurityAudit::open(
+        let audit = SecurityAudit::initialize(
             audit_store,
             kasumi_types::AuditRetentionBudget::default(),
             crate::admission::NodeAdmission::new(Default::default()).unwrap(),

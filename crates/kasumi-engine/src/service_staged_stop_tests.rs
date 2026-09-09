@@ -198,7 +198,7 @@ async fn accepted_stop_release_failure_is_unknown_and_reopen_recovers_exact_tomb
     )
     .unwrap();
     let provider = Arc::new(LocalKeyProvider::new([0x97; 32]));
-    let audit = SecurityAudit::open(
+    let audit = SecurityAudit::initialize(
         TenantStore::open_fixture(
             node.clone(),
             crate::SECURITY_TENANT.into(),

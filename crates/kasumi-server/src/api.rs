@@ -421,7 +421,7 @@ mod tests {
             .unwrap();
             let node_admission =
                 kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap();
-            let audit = crate::runtime::SecurityAudit::open(
+            let audit = crate::runtime::SecurityAudit::initialize(
                 audit_store.clone(),
                 kasumi_types::AuditRetentionBudget::default(),
                 node_admission.clone(),

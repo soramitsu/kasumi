@@ -34,7 +34,11 @@ async fn full_shutdown_reopens_immediately_with_receipts_and_retained_plaintext(
             kasumi_store::ScratchDisk::fixture(),
         )
         .unwrap();
-        let audit = common::security_audit(node.clone()).await;
+        let audit = if round == 0 {
+            common::security_audit(node.clone()).await
+        } else {
+            common::existing_security_audit(node.clone()).await
+        };
         let store =
             TenantStore::open_fixture(node.clone(), context.tenant.clone(), provider.clone())
                 .await

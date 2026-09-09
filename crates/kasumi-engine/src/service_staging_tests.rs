@@ -15,7 +15,7 @@ async fn queued_staged_finalize_checks_fresh_time_and_canceled_callers_keep_dura
     .await
     .unwrap();
     let node_admission = NodeAdmission::new(AdmissionConfig::default()).unwrap();
-    let audit = SecurityAudit::open(
+    let audit = SecurityAudit::initialize(
         audit_store,
         kasumi_types::AuditRetentionBudget::default(),
         node_admission.clone(),

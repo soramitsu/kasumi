@@ -31,7 +31,7 @@ async fn fixture(
     let service = TenantStore::open_fixture(node, SECURITY_TENANT.into(), audit_provider)
         .await
         .unwrap();
-    let audit = SecurityAudit::open(
+    let audit = SecurityAudit::initialize(
         service,
         kasumi_types::AuditRetentionBudget::default(),
         kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
@@ -298,7 +298,7 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
     )
     .await
     .unwrap();
-    let audit = SecurityAudit::open(
+    let audit = SecurityAudit::initialize(
         service_store,
         kasumi_types::AuditRetentionBudget::default(),
         kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),

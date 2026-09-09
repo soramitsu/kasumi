@@ -1085,7 +1085,7 @@ async fn strict_empty_discovery_is_audited_and_failed_audit_persistence_blocks_r
     )
     .await
     .unwrap();
-    let audit = kasumi_engine::SecurityAudit::open_with_archive(
+    let audit = kasumi_engine::SecurityAudit::initialize_with_archive(
         audit_store,
         kasumi_types::AuditRetentionBudget::default(),
         Arc::new(
@@ -1501,7 +1501,7 @@ async fn killed_process_recovers_acknowledged_documents_receipts_and_bootstrap_p
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();
-    let audit = common::security_audit(node.clone()).await;
+    let audit = common::existing_security_audit(node.clone()).await;
     let store = TenantStore::open_fixture(
         node,
         "tenant-a".into(),

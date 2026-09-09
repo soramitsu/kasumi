@@ -58,7 +58,7 @@ async fn retired_runtime_reopens_current_custody_without_constructing_applicatio
         scopes: BTreeSet::from([Action::Read, Action::Write, Action::Admin]),
         request_id: "custody-native-restart".into(),
     };
-    create_fixture_node(&config);
+    create_fixture_node(&config).await;
     let mut runtime = NodeRuntime::open_using(config.clone(), |_| {
         Ok(Zeroizing::new("test-runtime-token".into()))
     })

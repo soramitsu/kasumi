@@ -22,7 +22,7 @@ impl CredentialFixture {
         .await
         .unwrap();
         let node_admission = NodeAdmission::new(AdmissionConfig::default()).unwrap();
-        let audit = SecurityAudit::open(
+        let audit = SecurityAudit::initialize(
             audit_store,
             kasumi_types::AuditRetentionBudget::default(),
             node_admission.clone(),

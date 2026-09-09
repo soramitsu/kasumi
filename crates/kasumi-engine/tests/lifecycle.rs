@@ -171,7 +171,11 @@ impl Fixture {
                 )
             })
             .unwrap();
-            let audit = common::security_audit(node.clone()).await;
+            let audit = if create {
+                common::security_audit(node.clone()).await
+            } else {
+                common::existing_security_audit(node.clone()).await
+            };
             let store = TenantStore::open_fixture(
                 node,
                 "__kasumi_control".into(),

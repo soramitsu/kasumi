@@ -113,7 +113,7 @@ async fn fenced_source_startup_keeps_control_handle_without_constructing_applica
         .clone();
     let probes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let observed = probes.clone();
-    create_fixture_node(&config);
+    create_fixture_node(&config).await;
     let mut runtime = NodeRuntime::open_using(config.clone(), move |name| {
         if name == application_token {
             observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -212,7 +212,7 @@ async fn original_tenant_reopens_after_key_outage_without_reviving_retained_hand
         .clone();
     let available = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let credential_available = available.clone();
-    create_fixture_node(&config);
+    create_fixture_node(&config).await;
     let runtime = NodeRuntime::open_using(config.clone(), move |path| {
         anyhow::ensure!(
             path != application_file

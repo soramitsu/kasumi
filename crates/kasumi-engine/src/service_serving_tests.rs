@@ -173,7 +173,11 @@ impl ServingFixture {
                 )
                 .unwrap(),
             );
-            let audit = SecurityAudit::open_with_archive(
+            let audit = (if create {
+                SecurityAudit::initialize_with_archive
+            } else {
+                SecurityAudit::open_with_archive
+            })(
                 audit_store,
                 kasumi_types::AuditRetentionBudget::default(),
                 archive,

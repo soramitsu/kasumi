@@ -117,7 +117,7 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
     )
     .await
     .unwrap();
-    let audit = kasumi_engine::SecurityAudit::open(
+    let audit = kasumi_engine::SecurityAudit::initialize(
         audit_store.clone(),
         kasumi_types::AuditRetentionBudget::default(),
         kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),

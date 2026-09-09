@@ -95,8 +95,9 @@ mod tests {
         )
         .await
         .unwrap();
-        let audit = SecurityAudit::open(audit_store.clone(), Default::default(), admission.clone())
-            .unwrap();
+        let audit =
+            SecurityAudit::initialize(audit_store.clone(), Default::default(), admission.clone())
+                .unwrap();
         assert!(
             SecurityAudit::open(
                 audit_store,

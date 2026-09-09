@@ -795,3 +795,12 @@ a read-only quota getter or caller capacity claim cannot close this dependency.
   `docs/evidence/small-native-runner-20260909`. These are pure runner checks;
   the first actual Linux diagnostic is still unrun. A diagnostic of the failed
   `3a8d512` checkpoint cannot change its workspace result or approve a candidate.
+
+- Source checkpoint: service-audit initialization is now explicit and established
+  daemon/operator opens require the retained canonical head even with no hot
+  records. Bounded hot-range, pending-publication and current archive-root checks
+  preserve the installed stream; HA node provisioning creates/drains the initial
+  audit catalog. Four new source regressions and explicit fixture create/reopen
+  phases are documented in [Service audit installation](security-audit-installation.md).
+  Compilation and functional gates are pending; this does not close release or
+  retention acceptance.

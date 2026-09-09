@@ -694,7 +694,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let audit = SecurityAudit::open_with_archive(
+        let audit = SecurityAudit::initialize_with_archive(
             store.clone(),
             budget.clone(),
             archive.clone(),

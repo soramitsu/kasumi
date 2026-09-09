@@ -169,7 +169,8 @@ mod tests {
             .await
             .unwrap();
             let audit =
-                SecurityAudit::open(audit_store, Default::default(), admission.clone()).unwrap();
+                SecurityAudit::initialize(audit_store, Default::default(), admission.clone())
+                    .unwrap();
             let incarnation = uuid::Uuid::new_v4().to_string();
             let engine = Arc::new(
                 TenantEngine::new(
@@ -303,7 +304,7 @@ mod tests {
         .await
         .unwrap();
         let audit =
-            SecurityAudit::open(audit_store, Default::default(), admission.clone()).unwrap();
+            SecurityAudit::initialize(audit_store, Default::default(), admission.clone()).unwrap();
         let policy = Policy {
             grants: vec![Grant {
                 principal: "owner".into(),

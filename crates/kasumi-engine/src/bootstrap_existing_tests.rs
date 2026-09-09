@@ -36,7 +36,7 @@ impl Installation {
         .await?;
         let admission =
             crate::admission::NodeAdmission::with_fixed_memory(Default::default(), 2 << 30, 0)?;
-        let audit = SecurityAudit::open(audit_store, Default::default(), admission)?;
+        let audit = SecurityAudit::initialize(audit_store, Default::default(), admission)?;
         Ok(Self {
             directory,
             node,
@@ -291,7 +291,7 @@ async fn existing_local_reopens_the_same_committed_standalone_after_complete_shu
         StorageAccess::security_audit(),
     )
     .await?;
-    let audit = SecurityAudit::open(
+    let audit = SecurityAudit::initialize(
         audit_store,
         Default::default(),
         crate::admission::NodeAdmission::with_fixed_memory(Default::default(), 2 << 30, 0)?,

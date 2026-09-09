@@ -15,7 +15,7 @@ async fn canceled_queued_schema_activation_finishes_once_and_checks_receipt_rele
     .await
     .unwrap();
     let node_admission = NodeAdmission::new(AdmissionConfig::default()).unwrap();
-    let audit = SecurityAudit::open(
+    let audit = SecurityAudit::initialize(
         audit_store,
         kasumi_types::AuditRetentionBudget::default(),
         node_admission.clone(),
