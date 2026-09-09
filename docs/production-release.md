@@ -8,8 +8,9 @@ The explicit release goal remains active. Current integration adds atomic recove
 route publication, issuer-local activation tied to the global winner, and byte
 budgets for permanent staged outcomes. Permanent point-table migration, native
 resource reservations, persistent disk admission and the final live/capacity/
-endurance gates remain open. The Linux reference VM now has16GiB memory; the
-preceding7GiB-container workspace attempt failed and is retained in full.
+endurance gates remain open. The Linux reference VM has 16 GiB memory. Its latest
+frozen run (`3a8d512`, 15 GiB container limit) failed the restored-runtime restart
+test while all other gates passed. Earlier failures remain retained in full.
 
 ## Contract
 
@@ -20,6 +21,12 @@ preceding7GiB-container workspace attempt failed and is retained in full.
   deadlines and permanent incarnation fences remain mandatory.
 - Streaming storage and resource-budget capacity, archive-before-prune audits,
   complete recovery, and usable release artifacts.
+
+Choose the strongest first-release design without preserving earlier prototype
+APIs, configuration shapes, digests or storage layouts for compatibility. Update
+all supported callers and writers together, remove superseded paths, and reject
+unsupported inputs explicitly. Retained test evidence documents earlier sources;
+it does not make their interfaces or formats part of the release contract.
 
 ## Implementation milestones
 
@@ -64,6 +71,53 @@ preceding7GiB-container workspace attempt failed and is retained in full.
 - [ ] Source/configuration/dependency/executable-bound evidence, dependency
   dispositions, notices, SBOM, checksums and validated release artifacts.
 
+## Next integration checkpoints
+
+These are concrete steps toward the active release goal, not separate release
+approvals. Implementation branches must pass their stated regressions before
+integration; the final integrated source must then pass the complete gates above.
+
+1. Close storage ownership across completed, cancelled and retried shutdowns.
+   Validate security and tenant audit workers, recovery supervisors, serving
+   lease renewals and target phase renewals, then repeat the three-node restored
+   restart that failed on Linux. A source-level ownership counterexample does
+   not establish the sole cause of that observed failure.
+2. Integrate original mutation receipt scope and digest verification, including
+   restored lineage intervals, native/MCP lost-response resolution and the
+   finite original SDK deadline. The prepared receipt checkpoint passes client
+   and driver tests plus strict workspace lint; engine and native functional
+   checks remain pending. Ordinary receipt lifetime and permanent table
+   migration remain separate work.
+3. Validate staged terminal records in encrypted point-addressed storage,
+   including cancellation after physical publication, exact applied-prefix
+   selection and restore publication. The prepared branch compiles; crash and
+   functional regressions have not yet passed. Reuse the validated storage
+   primitive for authority and recovery terminal facts only after these checks.
+4. Add explicit SDK snapshot transport/decode admission, exact returned snapshot
+   semantics and response ownership through cancellation. Enforce caller byte,
+   depth and node limits before the corresponding owned DTO allocation, and
+   preserve member routing and the original deadline. Document SDK-accounted
+   capacity separately from transport buffers and process RSS. Preserve literal
+   document keys throughout native, MCP, durable command and snapshot decoding:
+   the locked JSON dependency can interpret its private number/raw-value marker
+   keys as internal representations. The source audit below identifies these
+   paths; a bounded literal SDK parser alone does not fix server ingress.
+5. Complete signer coverage and exact authority reopen, then install prepared
+   target completion reservations, terminal resolution and linked Control
+   successors. An absent Complete remains unknown until the exact durable
+   terminal protocol proves otherwise.
+6. Run a small offline standalone diagnostic with the actual fixture-free Linux
+   binaries: private initialization, native and MCP access, renewal, encrypted
+   backup, restart and stopped local restore. Preserve its exact source and
+   executable hashes. This diagnostic does not replace the full credential,
+   rotation, recovery, 3 GiB, HA or endurance acceptance gates.
+
+Persistent disk admission and native durable resource reservations must be
+implemented before claiming configured node disk capacity or reserved import
+completion. A scratch-file budget or an application payload limit does not
+account for persistent databases, indexes, WALs, archived objects or retained
+versions. The exact reservation dependency is specified below.
+
 ## Work ownership
 
 The integration checkout is `/Users/mtakemiya/dev/kasumi`. Implementation branches
@@ -78,6 +132,73 @@ gate above and usable installation artifacts.
 
 ## Current verified increments
 
+- Combined SDK/canonical-payload checkpoint `785dd7f` passes 26 focused tests,
+  strict client lint and no-default-feature compilation. Both previous compile
+  and lint failures remain retained in `docs/evidence/sdk-literal-small-20260909`.
+  It is merged with corrected JSON dependency and shutdown/receipt work only in
+  validation checkpoint `b1851d5`; actual combined native and production checks
+  remain unrun. External consumer and actual SDK feed/schema TLS coverage are
+  being added with their own exact scope.
+- Broader SDK literal decoding passed nine focused tests at `0523c64`, then
+  failed two stale diagnostic assertions in the snapshot cohort (11 passed).
+  The preceding `3027530` compile failure and both exact attempts are retained in
+  `docs/evidence/sdk-literal-small-20260909`. Canonical serialization still needs
+  charged sorting workspace before combination; no combined or native gate is
+  claimed. First-release APIs are replaced directly without compatibility aliases.
+- Experimental redb capacity admission at `ccf76d6` compiles, but its first
+  seven-test cohort has one pass and six fixture failures. Missing dependencies,
+  the preceding compile failure and all raw outcomes are retained in
+  `docs/evidence/redb-capacity-leaf-20260909`. The prototype is outside the
+  production dependency graph; persistent disk ownership and safe commit-time
+  capacity recovery remain open.
+- Redb prototype successor `2886774` passes all seven focused pre-commit
+  capacity tests, including rollback/reopen, shared allocator state, retained
+  physical charges, genuine I/O failures and commit-time failure fencing. Its
+  exact bounded split geometry fixes the remaining `dad7479` fixture failure.
+  All previous failures and executable hashes remain in
+  `docs/evidence/redb-capacity-leaf-20260909`. Full upstream validation, the
+  database-wide persistent owner and nonallocating commit publication remain
+  unfinished; this prototype is not installed in Kasumi's dependency graph.
+- JSON correction `13fbbc1` passes exact vendored-input checks and all four
+  complete upstream suites: default 239, number 245, raw 257 and combined 265
+  tests passed, with one unchanged nightly-only UI ignore in each. Original
+  failures remain retained in `docs/evidence/literal-json-upstream-20260909`.
+  It is combined with the corrected shutdown/receipt and SDK snapshot work only
+  in validation branch `eb1f31e`; combined Kasumi and production gates remain
+  unrun. Broader SDK literal decoding and canonical input helpers are separately
+  under source review, including external-consumer behavior without root patches.
+- Prepared JSON dependency patch `8f4cf74` passed exact resolver/hash checks and
+  the default upstream suite (239 tests passed, one upstream test ignored), then
+  failed an added large-number tagged-value regression in its number-only suite.
+  The identical failure reproduces against pristine serde_json 1.0.151 with only
+  that test added. Raw-only/combined suites and Kasumi boundary tests did not run.
+  Exact failures and source inventories are retained in
+  `docs/evidence/literal-json-upstream-20260909`; neither source review nor the
+  pristine reproduction closes the required correction and execution gates.
+- Bounded SDK checkpoint `fb172be` passes 13 snapshot decoder/ownership tests,
+  the bearer-metadata redaction regression, strict client lint and a no-default
+  client library check. Initial `2b9061d` passed the tests but failed three lint
+  checks; that failure and the narrow successor are retained in
+  `docs/evidence/sdk-snapshot-small-20260909`. Native endpoints, MCP, combined
+  workspace and production builds did not run. The SDK is combined with the
+  corrected shutdown fixture in validation branch `f93414e`, not accepted into
+  the release implementation. The subsequent `eb1f31e` validation integration includes the corrected JSON
+  dependency; it has not run combined gates.
+- Frozen shutdown/receipt checkpoint `711b32d` passed one verifier-worker and
+  five security-audit tests, then failed its new tenant-audit shutdown fixture
+  because that tenant had no administrator. The other tenant maintenance test
+  passed. All later functional/strict/production gates were skipped, and every
+  owned process group drained. Preserve this failure in
+  `docs/evidence/shutdown-receipts-711b32d-20260909`; the combined source remains
+  unmerged pending correction and execution, including the original Linux
+  restored-runtime restart regression.
+- A read-only audit of the locked JSON decoder and the actual historical Linux
+  production feature inventory identifies literal-key reinterpretation in
+  native and MCP requests. Canonical snapshot and history integrity checks reject
+  changed values; document validation still runs after request decoding. The
+  source-derived counterexamples have not yet been reproduced by execution and
+  no correction is integrated. Exact source/dependency hashes and affected fields
+  are retained in `docs/evidence/literal-json-source-audit-20260909`.
 - `7200732` integrates the preserved target runner with schema admission. The
   merged workspace compiles; composed recovery process acceptance is still open.
 - `f2e64af` vendors the minimal bitmaps/lru fixes. All 107 upstream unit/doctests
@@ -627,3 +748,21 @@ a read-only quota getter or caller capacity claim cannot close this dependency.
   `docs/evidence/control-positive-completion-20260908`. Missing completion still
   remains unknown; negative resolution and actual three-target TLS acceptance
   are separate unfinished work.
+
+- Frozen Linux ARM64 `3a8d512` completed with 545 workspace passes, one failure
+  and two ignored tests. The three-node restored-runtime restart could not acquire
+  its still-owned database lock. All other gates, including strict lint and
+  fixture-free production builds, passed. Actual container exit1/PID0 and no-OOM
+  counters, raw logs, executable hashes and observed shared-host overlap are in
+  `docs/evidence/frozen-linux-arm64-3a8d512-terminal-20260908`. The workspace failure
+  blocks packaging; no release candidate was produced. A separately identified
+  audit-worker ownership gap is under validation, not an accepted explanation or
+  a substitute for the corrected runtime gate.
+
+- `a276db6` adds a private standalone diagnostic using existing, hash-verified
+  fixture-free binaries, protected TLS readiness, native/MCP corpus checks,
+  credential renewal, encrypted backup, restart and stopped local restore.
+  Integration `e6c80c8` passes all 36 combined Python tests. Evidence is in
+  `docs/evidence/small-native-runner-20260909`. These are pure runner checks;
+  the first actual Linux diagnostic is still unrun. A diagnostic of the failed
+  `3a8d512` checkpoint cannot change its workspace result or approve a candidate.

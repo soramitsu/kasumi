@@ -1,0 +1,84 @@
+{
+  "scope": "macOS ARM64 seven redb experimental precommit growth admission unit regressions only. No root dependency patch, Kasumi engine/store/server/Raft compilation, listener or provider. Shared host; full upstream just test, fuzzing, durable disk governor and production integration remain unrun.",
+  "source_before": {
+    "head": "2886774d79923c9c2955f5ce147e16956cb61bb4",
+    "tree": "10d6a6c05ee36663e47267b67b896e558a6219a6",
+    "status": "",
+    "lock_sha256": "f42fec1f6e7232b1cd5e9c564cfff56dfec7634f2548eab7eb2096a0d0c17c78",
+    "leaf_lock_sha256": "bcccfce715a96865a7c82c4f97d64140b825ec90ea676d35c26e5deb048c0ce5"
+  },
+  "tools": {
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo": "7672ead309d505577c018fff2cafb3433601f073e38cbe87359ac1f7b944bbf5",
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc": "210df6794001b73ec3d453878707fa1e0bdcb63c427024a6e6574bbe5615a4da",
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustdoc": "aa94960b6a477441f6d1a797394daf4cafcc889d837550c8fa462b102e3fa5da"
+  },
+  "runner_sha256": "a4a02aadfbf87dcdad50db2a3cad9cc20ddd529acb7731a6dec455ab2202146e",
+  "per_gate_timeout_seconds": 300,
+  "gates": [
+    {
+      "name": "redb-growth-admission",
+      "command": [
+        "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+        "test",
+        "--manifest-path",
+        "vendor/redb-4.2.0/Cargo.toml",
+        "--locked",
+        "--offline",
+        "-j1",
+        "--features",
+        "experimental-precommit-growth-admission",
+        "--lib",
+        "transactions::growth_admission_tests",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "seconds": 6.030704291071743,
+      "process_group_id": 76613,
+      "process_exit_code": 0,
+      "exit_code": 0,
+      "problem": null,
+      "cleanup": {
+        "signals": [],
+        "process_returncode": 0,
+        "process_group_drained": true
+      },
+      "required_test": [
+        "transactions::growth_admission_tests::denied_growth_never_calls_resize_and_caught_error_cannot_commit",
+        "transactions::growth_admission_tests::split_failures_preserve_pinned_roots_and_successful_extent_charges",
+        "transactions::growth_admission_tests::replacement_denial_aborts_all_tables_and_retains_original_value",
+        "transactions::growth_admission_tests::explicit_abort_and_drop_after_capacity_denial_leave_database_usable",
+        "transactions::growth_admission_tests::actual_backend_failures_still_latch_and_never_claim_capacity_abort",
+        "transactions::growth_admission_tests::allocator_clones_and_system_namespace_share_the_capacity_abort_state",
+        "transactions::growth_admission_tests::commit_time_denial_keeps_failed_commit_latch_instead_of_claiming_rollback"
+      ],
+      "required_test_passed": true,
+      "log_sha256": "758eab6eed07aaf8d40c2a374b48b1f6edf04dde1257bb5e30518ae3dd4af6bc",
+      "artifacts": [
+        {
+          "path": "/tmp/kasumi-redb-capacity-target/debug/deps/redb-ba841ece6df4e8b1",
+          "sha256": "3400f1e467b83d9dfd27458dfb71140d593065a422af2e63a0df9ba0749e2127",
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 2,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": [
+            "default",
+            "experimental-precommit-growth-admission",
+            "std"
+          ]
+        }
+      ]
+    }
+  ],
+  "source_after": {
+    "head": "2886774d79923c9c2955f5ce147e16956cb61bb4",
+    "tree": "10d6a6c05ee36663e47267b67b896e558a6219a6",
+    "status": "",
+    "lock_sha256": "f42fec1f6e7232b1cd5e9c564cfff56dfec7634f2548eab7eb2096a0d0c17c78",
+    "leaf_lock_sha256": "bcccfce715a96865a7c82c4f97d64140b825ec90ea676d35c26e5deb048c0ce5"
+  }
+}

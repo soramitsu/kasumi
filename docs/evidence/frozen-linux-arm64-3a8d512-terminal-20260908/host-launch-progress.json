@@ -1,0 +1,910 @@
+{
+  "build_environment": {
+    "AR": null,
+    "CARGO_ENCODED_RUSTFLAGS": null,
+    "CC": null,
+    "CXX": null,
+    "RUSTFLAGS": null,
+    "SOURCE_DATE_EPOCH": "1788875900"
+  },
+  "execution_description": "Native Linux ARM64 VZ reference VM; Debian 13 host, 2 vCPU, 16 GiB provisioned RAM, 200 GiB disk; pinned Rust1.97.1 Bookworm build image abf802c3daf7460f7498869910288b63bf5e138efc28e3c0704bf931b99e1ed4; container CPU2/memory15GiB/no extra swap. Shared macOS physical host. Host/image/package records retained. Functional integration checkpoint, not final capacity or endurance acceptance.",
+  "gates": [
+    {
+      "command": [
+        "rustc",
+        "+1.97.1",
+        "-Vv"
+      ],
+      "compiled_packages": {},
+      "duration_seconds": 0.013,
+      "executables": {},
+      "exit_code": 0,
+      "log": "toolchain.log",
+      "log_sha256": "6c427c11d6d5e217066999d86447291da4f7aab462151b8e6064ab230dc0aecf",
+      "name": "toolchain",
+      "resources": "toolchain-resources.json",
+      "resources_sha256": "a79ba23e8bde21e07a97ba852a8994fb9056fccc9721e7ee37c1fa6632451647"
+    },
+    {
+      "command": [
+        "cargo",
+        "+1.97.1",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "compiled_packages": {},
+      "duration_seconds": 1.16,
+      "executables": {},
+      "exit_code": 0,
+      "log": "format.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "name": "format",
+      "resources": "format-resources.json",
+      "resources_sha256": "3c2d4d7bfb6ddd70aeb0862f58c8f2e075891a8d94d7f9e5a9591b4438a41bb4"
+    },
+    {
+      "command": [
+        "/usr/bin/python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "scripts",
+        "-p",
+        "test_*.py",
+        "-v"
+      ],
+      "compiled_packages": {},
+      "duration_seconds": 0.717,
+      "executables": {},
+      "exit_code": 0,
+      "log": "python.log",
+      "log_sha256": "ceac3149de481cf54421438616ad3121261ea852078bded497ea6f677b770a09",
+      "name": "python",
+      "resources": "python-resources.json",
+      "resources_sha256": "a52b45fa1673cf258bf52a89fa887d988967d6584e9d1b400bce6ec0f5558910"
+    },
+    {
+      "command": [
+        "/usr/bin/python3",
+        "scripts/check_dependency_patches.py"
+      ],
+      "compiled_packages": {},
+      "duration_seconds": 0.702,
+      "executables": {},
+      "exit_code": 0,
+      "log": "dependency-patches.log",
+      "log_sha256": "ab7dceeabe9d13798e7be466c2e07642ae52b6d9f28cd7f236253497d99430d0",
+      "name": "dependency-patches",
+      "resources": "dependency-patches-resources.json",
+      "resources_sha256": "caeec261d775564689f2cbdcf515f22ecb5e9908e1e8505fda2d6d3309a58a03"
+    },
+    {
+      "command": [
+        "cargo",
+        "+1.97.1",
+        "test",
+        "--manifest-path",
+        "vendor/bitmaps-3.2.1/Cargo.toml",
+        "--locked",
+        "-j",
+        "2",
+        "--message-format=json-render-diagnostics"
+      ],
+      "compiled_packages": {
+        "path+file:///evidence/run/source/vendor/bitmaps-3.2.1#bitmaps@3.2.1": {
+          "features": [
+            "default",
+            "std"
+          ],
+          "targets": [
+            {
+              "crate_types": [
+                "lib"
+              ],
+              "kind": [
+                "lib"
+              ],
+              "name": "bitmaps"
+            }
+          ]
+        },
+        "registry+https://github.com/rust-lang/crates.io-index#autocfg@1.5.1": {
+          "features": [],
+          "targets": [
+            {
+              "crate_types": [
+                "lib"
+              ],
+              "kind": [
+                "lib"
+              ],
+              "name": "autocfg"
+            }
+          ]
+        },
+        "registry+https://github.com/rust-lang/crates.io-index#bit-set@0.8.0": {
+          "features": [
+            "default",
+            "std"
+          ],
+          "targets": [
+            {
+              "crate_types": [
+                "lib"
+              ],
+              "kind": [
+                "lib"
+              ],
+              "name": "bit_set"
+            }
+          ]
+        },
+        "registry+https://github.com/rust-lang/crates.io-index#bit-vec@0.8.0": {
+          "features": [
+            "default",
+            "std"
+          ],
+          "targets": [
+            {
+              "crate_types": [
+                "lib"
+              ],
+              "kind": [
+                "lib"
+              ],
+              "name": "bit_vec"
+            }
+          ]
+        },
+        "registry+https://github.com/rust-lang/crates.io-index#bitflags@2.13.1": {
+          "features": [
+            "std"
+          ],
+          "targets": [
+            {
+              "crate_types": [
+                "lib"
+              ],
+              "kind": [
+                "lib"
+              ],
+              "name": "bitflags"
+            }
+          ]
+        },
+        "registry+https://github.com/rust-lang/crates.io-index#cfg-if@1.0.4": {
+          "features": [],
+          "targets": [
+            {
+              "crate_types": [
+                "lib"
+              ],
+              "kind": [
+                "lib"
+              ],
+              "name": "cfg_if"
+            }
+          ]
+        },
+        "registry+https://github.com/rust-lang/crates.io-index#fastrand@2.5.0": {
+          "features": [
+            "alloc",
+            "default",
+            "std"
+          ],
+          "targets": [
+            {
+              "crate_types": [
+                "lib"
+              ],
+              "kind": [
+                "lib"
+              ],
+              "name": "fastrand"
+            }
+          ]
+        },
+        "registry+https://github.com/rust-lang/crates.io-index#fnv@1.0.7": {
+          "features": [
+            "default",
+            "std"
+          ],
+          "targets": [
+            {
+              "crate_types": [
+                "lib"
+              ],
+              "kind": [
+                "lib"
+              ],
+              "name": "fnv"
+            }
+          ]
+        },
+        "registry+https://github.com/rust-lang/crates.io-index#getrandom@0.3.4": {
+          "features": [
+            "std"
+          ],
+          "targets": [
+            {
+              "crate_types": [
+                "bin"
+              ],
+              "kind": [
+                "custom-build"
+              ],
+              "name": "build-script-build"
+            },
+            {
+              "crate_types": [
+                "lib"
+              ],
+              "kind": [
+                "lib"
+              ],
+              "name": "getrandom"
+            }
+          ]
+        },
+        "registry+https://github.com/rust-lang/crates.io-index#getrandom@0.4.3": {
+          "features": [],
+          "targets": [
+            {
+              "crate_types": [
+                "bin"
+              ],
+              "kind": [
+                "custom-build"
+              ],
+              "name": "build-script-build"
+            },
+            {
+              "crate_types": [
+                "lib"
+              ],
+              "kind": [
+                "lib"
+              ],
+              "name": "getrandom"
+            }
+          ]
+        },
+        "registry+https://github.com/rust-lang/crates.io-index#libc@0.2.189": {
+          "features": [
+            "default",
+            "std"
+          ],
+          "targets": [
+            {
+              "crate_types": [
+                "bin"
+              ],
+              "kind": [
+                "custom-build"
+              ],
+              "name": "build-script-build"
+            },
+            {
+              "crate_types": [
+                "lib"
+              ],
+              "kind": [
+                "lib"
+              ],
+              "name": "libc"
+            }
+          ]
+        },
+        "registry+https://github.com/rust-lang/crates.io-index#linux-raw-sys@0.12.1": {
+          "features": [
+            "auxvec",
+            "elf",
+            "errno",
+            "general",
+            "ioctl",
+            "no_std"
+          ],
+          "targets": [
+            {
+              "crate_types": [
+                "lib"
+              ],
+              "kind": [
+                "lib"
+              ],
+              "name": "linux_raw_sys"
+            }
+          ]
+        },
+        "registry+https://github.com/rust-lang/crates.io-index#num-traits@0.2.19": {
+          "features": [
+            "std"
+          ],
+          "targets": [
+            {
+              "crate_types": [
+                "bin"
+              ],
+              "kind": [
+                "custom-build"
+              ],
+              "name": "build-script-build"
+            },
+            {
+              "crate_types": [
+                "lib"
+              ],
+              "kind": [
+                "lib"
+              ],
+              "name": "num_traits"
+            }
+          ]
+        },
+        "registry+https://github.com/rust-lang/crates.io-index#once_cell@1.21.4": {
+          "features": [
+            "alloc",
+            "race",
+            "std"
+          ],
+          "targets": [
+            {
+              "crate_types": [
+                "lib"
+              ],
+              "kind": [
+                "lib"
+              ],
+              "name": "once_cell"
+            }
+          ]
+        },
+        "registry+https://github.com/rust-lang/crates.io-index#ppv-lite86@0.2.21": {
+          "features": [
+            "simd"
+          ],
+          "targets": [
+            {
+              "crate_types": [
+                "lib"
+              ],
+              "kind": [
+                "lib"
+              ],
+              "name": "ppv_lite86"
+            }
+          ]
+        },
+        "registry+https://github.com/rust-lang/crates.io-index#proc-macro2@1.0.107": {
+          "features": [
+            "default",
+            "proc-macro"
+          ],
+          "targets": [
+            {
+              "crate_types": [
+                "bin"
+              ],
+              "kind": [
+                "custom-build"
+              ],
+              "name": "build-script-build"
+            },
+            {
+              "crate_types": [
+                "lib"
+              ],
+              "kind": [
+                "lib"
+              ],
+              "name": "proc_macro2"
+            }
+          ]
+        },
+        "registry+https://github.com/rust-lang/crates.io-index#proptest-derive@0.4.0": {
+          "features": [],
+          "targets": [
+            {
+              "crate_types": [
+                "proc-macro"
+              ],
+              "kind": [
+                "proc-macro"
+              ],
+              "name": "proptest_derive"
+            }
+          ]
+        },
+        "registry+https://github.com/rust-lang/crates.io-index#proptest@1.11.0": {
+          "features": [
+            "bit-set",
+            "default",
+            "fork",
+            "regex-syntax",
+            "rusty-fork",
+            "std",
+            "tempfile",
+            "timeout"
+          ],
+          "targets": [
+            {
+              "crate_types": [
+                "lib"
+              ],
+              "kind": [
+                "lib"
+              ],
+              "name": "proptest"
+            }
+          ]
+        },
+        "registry+https://github.com/rust-lang/crates.io-index#quick-error@1.2.3": {
+          "features": [],
+          "targets": [
+            {
+              "crate_types": [
+                "lib"
+              ],
+              "kind": [
+                "lib"
+              ],
+              "name": "quick_error"
+            }
+          ]
+        },
+        "registry+https://github.com/rust-lang/crates.io-index#quote@1.0.47": {
+          "features": [
+            "default",
+            "proc-macro"
+          ],
+          "targets": [
+            {
+              "crate_types": [
+                "bin"
+              ],
+              "kind": [
+                "custom-build"
+              ],
+              "name": "build-script-build"
+            },
+            {
+              "crate_types": [
+                "lib"
+              ],
+              "kind": [
+                "lib"
+              ],
+              "name": "quote"
+            }
+          ]
+        },
+        "registry+https://github.com/rust-lang/crates.io-index#rand@0.9.5": {
+          "features": [
+            "alloc",
+            "os_rng",
+            "std"
+          ],
+          "targets": [
+            {
+              "crate_types": [
+                "lib"
+              ],
+              "kind": [
+                "lib"
+              ],
+              "name": "rand"
+            }
+          ]
+        },
+        "registry+https://github.com/rust-lang/crates.io-index#rand_chacha@0.9.0": {
+          "features": [],
+          "targets": [
+            {
+              "crate_types": [
+                "lib"
+              ],
+              "kind": [
+                "lib"
+              ],
+              "name": "rand_chacha"
+            }
+          ]
+        },
+        "registry+https://github.com/rust-lang/crates.io-index#rand_core@0.9.5": {
+          "features": [
+            "os_rng",
+            "std"
+          ],
+          "targets": [
+            {
+              "crate_types": [
+                "lib"
+              ],
+              "kind": [
+                "lib"
+              ],
+              "name": "rand_core"
+            }
+          ]
+        },
+        "registry+https://github.com/rust-lang/crates.io-index#rand_xorshift@0.4.0": {
+          "features": [],
+          "targets": [
+            {
+              "crate_types": [
+                "lib"
+              ],
+              "kind": [
+                "lib"
+              ],
+              "name": "rand_xorshift"
+            }
+          ]
+        },
+        "registry+https://github.com/rust-lang/crates.io-index#regex-syntax@0.8.11": {
+          "features": [
+            "default",
+            "std",
+            "unicode",
+            "unicode-age",
+            "unicode-bool",
+            "unicode-case",
+            "unicode-gencat",
+            "unicode-perl",
+            "unicode-script",
+            "unicode-segment"
+          ],
+          "targets": [
+            {
+              "crate_types": [
+                "lib"
+              ],
+              "kind": [
+                "lib"
+              ],
+              "name": "regex_syntax"
+            }
+          ]
+        },
+        "registry+https://github.com/rust-lang/crates.io-index#rustix@1.1.4": {
+          "features": [
+            "alloc",
+            "default",
+            "fs",
+            "std"
+          ],
+          "targets": [
+            {
+              "crate_types": [
+                "bin"
+              ],
+              "kind": [
+                "custom-build"
+              ],
+              "name": "build-script-build"
+            },
+            {
+              "crate_types": [
+                "lib"
+              ],
+              "kind": [
+                "lib"
+              ],
+              "name": "rustix"
+            }
+          ]
+        },
+        "registry+https://github.com/rust-lang/crates.io-index#rusty-fork@0.3.1": {
+          "features": [
+            "timeout",
+            "wait-timeout"
+          ],
+          "targets": [
+            {
+              "crate_types": [
+                "lib"
+              ],
+              "kind": [
+                "lib"
+              ],
+              "name": "rusty_fork"
+            }
+          ]
+        },
+        "registry+https://github.com/rust-lang/crates.io-index#syn@1.0.109": {
+          "features": [
+            "clone-impls",
+            "default",
+            "derive",
+            "extra-traits",
+            "full",
+            "parsing",
+            "printing",
+            "proc-macro",
+            "quote",
+            "visit"
+          ],
+          "targets": [
+            {
+              "crate_types": [
+                "bin"
+              ],
+              "kind": [
+                "custom-build"
+              ],
+              "name": "build-script-build"
+            },
+            {
+              "crate_types": [
+                "lib"
+              ],
+              "kind": [
+                "lib"
+              ],
+              "name": "syn"
+            }
+          ]
+        },
+        "registry+https://github.com/rust-lang/crates.io-index#tempfile@3.27.0": {
+          "features": [
+            "default",
+            "getrandom"
+          ],
+          "targets": [
+            {
+              "crate_types": [
+                "lib"
+              ],
+              "kind": [
+                "lib"
+              ],
+              "name": "tempfile"
+            }
+          ]
+        },
+        "registry+https://github.com/rust-lang/crates.io-index#unarray@0.1.4": {
+          "features": [],
+          "targets": [
+            {
+              "crate_types": [
+                "lib"
+              ],
+              "kind": [
+                "lib"
+              ],
+              "name": "unarray"
+            }
+          ]
+        },
+        "registry+https://github.com/rust-lang/crates.io-index#unicode-ident@1.0.24": {
+          "features": [],
+          "targets": [
+            {
+              "crate_types": [
+                "lib"
+              ],
+              "kind": [
+                "lib"
+              ],
+              "name": "unicode_ident"
+            }
+          ]
+        },
+        "registry+https://github.com/rust-lang/crates.io-index#wait-timeout@0.2.1": {
+          "features": [],
+          "targets": [
+            {
+              "crate_types": [
+                "lib"
+              ],
+              "kind": [
+                "lib"
+              ],
+              "name": "wait_timeout"
+            }
+          ]
+        },
+        "registry+https://github.com/rust-lang/crates.io-index#zerocopy@0.8.56": {
+          "features": [
+            "simd"
+          ],
+          "targets": [
+            {
+              "crate_types": [
+                "bin"
+              ],
+              "kind": [
+                "custom-build"
+              ],
+              "name": "build-script-build"
+            },
+            {
+              "crate_types": [
+                "lib"
+              ],
+              "kind": [
+                "lib"
+              ],
+              "name": "zerocopy"
+            }
+          ]
+        }
+      },
+      "duration_seconds": 8.624,
+      "executables": {
+        "debug/deps/bitmaps-05f7e9faa91d7974": {
+          "bytes": 23694256,
+          "package_id": "path+file:///evidence/run/source/vendor/bitmaps-3.2.1#bitmaps@3.2.1",
+          "sha256": "fbff174ec9054d3dfd40e4ec5b294f32bd8c85834dd5bbbb90f59de7d965de12",
+          "target": "bitmaps",
+          "test": true
+        }
+      },
+      "exit_code": 0,
+      "log": "bitmaps.log",
+      "log_sha256": "a050b2d965cc4bad345dfca151396b74cb88eca8244e916e5acabf7006fb9f9d",
+      "name": "bitmaps",
+      "resources": "bitmaps-resources.json",
+      "resources_sha256": "66f6c9e5172192b19cb5af57da68453f833804739b740e49766b9ae8930d6120"
+    },
+    {
+      "command": [
+        "cargo",
+        "+1.97.1",
+        "test",
+        "--manifest-path",
+        "vendor/lru-0.16.4/Cargo.toml",
+        "--locked",
+        "-j",
+        "2",
+        "--message-format=json-render-diagnostics"
+      ],
+      "compiled_packages": {
+        "path+file:///evidence/run/source/vendor/lru-0.16.4#lru@0.16.4": {
+          "features": [
+            "default",
+            "hashbrown"
+          ],
+          "targets": [
+            {
+              "crate_types": [
+                "lib"
+              ],
+              "kind": [
+                "lib"
+              ],
+              "name": "lru"
+            }
+          ]
+        },
+        "registry+https://github.com/rust-lang/crates.io-index#allocator-api2@0.2.21": {
+          "features": [
+            "alloc"
+          ],
+          "targets": [
+            {
+              "crate_types": [
+                "lib"
+              ],
+              "kind": [
+                "lib"
+              ],
+              "name": "allocator_api2"
+            }
+          ]
+        },
+        "registry+https://github.com/rust-lang/crates.io-index#equivalent@1.0.2": {
+          "features": [],
+          "targets": [
+            {
+              "crate_types": [
+                "lib"
+              ],
+              "kind": [
+                "lib"
+              ],
+              "name": "equivalent"
+            }
+          ]
+        },
+        "registry+https://github.com/rust-lang/crates.io-index#foldhash@0.2.0": {
+          "features": [],
+          "targets": [
+            {
+              "crate_types": [
+                "lib"
+              ],
+              "kind": [
+                "lib"
+              ],
+              "name": "foldhash"
+            }
+          ]
+        },
+        "registry+https://github.com/rust-lang/crates.io-index#hashbrown@0.16.1": {
+          "features": [
+            "allocator-api2",
+            "default",
+            "default-hasher",
+            "equivalent",
+            "inline-more",
+            "raw-entry"
+          ],
+          "targets": [
+            {
+              "crate_types": [
+                "lib"
+              ],
+              "kind": [
+                "lib"
+              ],
+              "name": "hashbrown"
+            }
+          ]
+        },
+        "registry+https://github.com/rust-lang/crates.io-index#scoped_threadpool@0.1.9": {
+          "features": [],
+          "targets": [
+            {
+              "crate_types": [
+                "lib"
+              ],
+              "kind": [
+                "lib"
+              ],
+              "name": "scoped_threadpool"
+            }
+          ]
+        },
+        "registry+https://github.com/rust-lang/crates.io-index#stats_alloc@0.1.10": {
+          "features": [
+            "default"
+          ],
+          "targets": [
+            {
+              "crate_types": [
+                "lib"
+              ],
+              "kind": [
+                "lib"
+              ],
+              "name": "stats_alloc"
+            }
+          ]
+        }
+      },
+      "duration_seconds": 4.035,
+      "executables": {
+        "debug/deps/lru-199c80ce820333dc": {
+          "bytes": 11882000,
+          "package_id": "path+file:///evidence/run/source/vendor/lru-0.16.4#lru@0.16.4",
+          "sha256": "b822114bac12a2e6b2e819a1ec34969b742bc6120298081c5115266994f61117",
+          "target": "lru",
+          "test": true
+        }
+      },
+      "exit_code": 0,
+      "log": "lru.log",
+      "log_sha256": "424b6ca39ce4b6330e54dfa1f9251feeb3e381d54b16841c1caa23420c67c6a3",
+      "name": "lru",
+      "resources": "lru-resources.json",
+      "resources_sha256": "9694f332328ac3d268a88b808174373933de3206c9fe23c292ac7769969d2dbc"
+    }
+  ],
+  "jobs": 2,
+  "lockfile_sha256": "f42fec1f6e7232b1cd5e9c564cfff56dfec7634f2548eab7eb2096a0d0c17c78",
+  "python_executable_sha256": "304aa87a76ebb13fd22d253ac157f14980ff2cdb23e6274f3b045571405e07dc",
+  "python_version": "3.11.2 (main, May 12 2026, 05:17:27) [GCC 12.2.0]",
+  "schema": 1,
+  "scope": "functional gates only; not final production release acceptance",
+  "source_archive_sha256": "a196fdbc342beae16a98816ac65b75b8aaf31c8945e6c65ae88526fb4765a2a6",
+  "source_commit": "3a8d5121e1ddee14ae8a6d938d12152eaa04e417",
+  "source_files_sha256": "1476c9a55058d2965f55095f65fdd3a29817ea41359d5214770e236168902962",
+  "source_tree": "44871b6470914c011ad56f374d416b7d0e742efe",
+  "started_at": "2026-09-08T14:02:26.272561+00:00",
+  "status": "running",
+  "toolchain": "1.97.1"
+}

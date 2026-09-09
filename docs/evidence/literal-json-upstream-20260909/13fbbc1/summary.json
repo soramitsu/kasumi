@@ -1,0 +1,491 @@
+{
+  "schema": 1,
+  "scope": "Complete authorized serde-only cohort; Kasumi boundary/production integration gates not run",
+  "source": "13fbbc162d2a428bde502a334beb3ebab9aa59d9",
+  "tree": "e2df23893ddb726c9c0373a638a4a42e1e5550fb",
+  "evidence_sha256": "2c0eb93be7c7d7fc325dc03313feff5b8c8b4cfcf2854ee99dad1f3a30d6953d",
+  "source_before_sha256": "d1ec14876bf32b9549b7d6731c4779bf5a1001a823577465c97b8c6bf47a45d8",
+  "source_after_sha256": "d1ec14876bf32b9549b7d6731c4779bf5a1001a823577465c97b8c6bf47a45d8",
+  "post_cohort_vendor_hashes_and_file_set": "passed",
+  "gates": [
+    {
+      "name": "dependency-patches",
+      "duration_seconds": 1.067,
+      "log_sha256": "d4ee369e6f581e6e652610e49647d88487e863553cec28ca1c4b20b1e5a4400a",
+      "process_group": 41220,
+      "drained": true,
+      "test_suites": [],
+      "total_reported_results": {
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0
+      },
+      "compiler_artifact_files": 0,
+      "artifact_files_changed_since_gate": [],
+      "literal_keys_executables": []
+    },
+    {
+      "name": "serde-json-default",
+      "duration_seconds": 65.836,
+      "log_sha256": "d450ad31373d28062edbf7478538a2e847062da40dd5b65734e1b3f5a8c01071",
+      "process_group": 41239,
+      "drained": true,
+      "test_suites": [
+        {
+          "section": "Running unittests src/lib.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/serde_json-6a01f245131caa20)",
+          "status": "ok",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 0
+        },
+        {
+          "section": "Running tests/compiletest.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/compiletest-1d9374b50e654108)",
+          "status": "ok",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 1,
+          "measured": 0,
+          "filtered_out": 0
+        },
+        {
+          "section": "Running tests/debug.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/debug-5654153dfebfb003)",
+          "status": "ok",
+          "passed": 9,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 0
+        },
+        {
+          "section": "Running tests/lexical.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/lexical-9306f2ef34df256d)",
+          "status": "ok",
+          "passed": 35,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 0
+        },
+        {
+          "section": "Running tests/literal_keys.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/literal_keys-af26ab2508b0d09d)",
+          "status": "ok",
+          "passed": 4,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 0
+        },
+        {
+          "section": "Running tests/map.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/map-0a5a5c7edc9a9e5d)",
+          "status": "ok",
+          "passed": 3,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 0
+        },
+        {
+          "section": "Running tests/regression.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/regression-42bd516573fbeeea)",
+          "status": "ok",
+          "passed": 5,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 0
+        },
+        {
+          "section": "Running tests/stream.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/stream-2759f44f52e84b92)",
+          "status": "ok",
+          "passed": 11,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 0
+        },
+        {
+          "section": "Running tests/test.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/test-3a23692608f740a6)",
+          "status": "ok",
+          "passed": 75,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 0
+        },
+        {
+          "section": "Doc-tests serde_json",
+          "status": "ok",
+          "passed": 97,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 0
+        }
+      ],
+      "total_reported_results": {
+        "passed": 239,
+        "failed": 0,
+        "ignored": 1,
+        "measured": 0,
+        "filtered_out": 0
+      },
+      "compiler_artifact_files": 98,
+      "artifact_files_changed_since_gate": [],
+      "literal_keys_executables": [
+        {
+          "file": "/tmp/kasumi-literal-json-validation-target/debug/deps/literal_keys-af26ab2508b0d09d",
+          "sha256": "d3f4f2a15d3af5edec8aa4a7a109777248a073f63bb28ac6e39ccb6ca4d41738",
+          "matches_terminal_hash": true
+        }
+      ]
+    },
+    {
+      "name": "serde-json-number",
+      "duration_seconds": 68.876,
+      "log_sha256": "aa11441f09678f180a49c480d32ac38e1e4866f5a835990f984e5df7c50c1812",
+      "process_group": 42728,
+      "drained": true,
+      "test_suites": [
+        {
+          "section": "Running unittests src/lib.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/serde_json-91ce5ffada670560)",
+          "status": "ok",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 0
+        },
+        {
+          "section": "Running tests/compiletest.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/compiletest-259235d0baff08e4)",
+          "status": "ok",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 1,
+          "measured": 0,
+          "filtered_out": 0
+        },
+        {
+          "section": "Running tests/debug.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/debug-3b1d79152b2b499c)",
+          "status": "ok",
+          "passed": 9,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 0
+        },
+        {
+          "section": "Running tests/lexical.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/lexical-fc8f5175f3a4b8a7)",
+          "status": "ok",
+          "passed": 35,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 0
+        },
+        {
+          "section": "Running tests/literal_keys.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/literal_keys-63057e816eeb668e)",
+          "status": "ok",
+          "passed": 7,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 0
+        },
+        {
+          "section": "Running tests/map.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/map-468b66a322505d03)",
+          "status": "ok",
+          "passed": 3,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 0
+        },
+        {
+          "section": "Running tests/regression.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/regression-d5373c929add1170)",
+          "status": "ok",
+          "passed": 6,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 0
+        },
+        {
+          "section": "Running tests/stream.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/stream-ccbc22c03537094a)",
+          "status": "ok",
+          "passed": 11,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 0
+        },
+        {
+          "section": "Running tests/test.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/test-5b38577e7a98914f)",
+          "status": "ok",
+          "passed": 76,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 0
+        },
+        {
+          "section": "Doc-tests serde_json",
+          "status": "ok",
+          "passed": 98,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 0
+        }
+      ],
+      "total_reported_results": {
+        "passed": 245,
+        "failed": 0,
+        "ignored": 1,
+        "measured": 0,
+        "filtered_out": 0
+      },
+      "compiler_artifact_files": 98,
+      "artifact_files_changed_since_gate": [],
+      "literal_keys_executables": [
+        {
+          "file": "/tmp/kasumi-literal-json-validation-target/debug/deps/literal_keys-63057e816eeb668e",
+          "sha256": "44af0efcebebf8f05993bcd04a4c63a5353138bf0b04a9b61aa42b949ab72d22",
+          "matches_terminal_hash": true
+        }
+      ]
+    },
+    {
+      "name": "serde-json-raw",
+      "duration_seconds": 76.108,
+      "log_sha256": "3a6c4330ce6e24a60f3f497f5057c9685e610d9a868aaeaec524b7cca7b0a889",
+      "process_group": 44512,
+      "drained": true,
+      "test_suites": [
+        {
+          "section": "Running unittests src/lib.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/serde_json-da3ebd14bd62bd12)",
+          "status": "ok",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 0
+        },
+        {
+          "section": "Running tests/compiletest.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/compiletest-5d0a1e062289f560)",
+          "status": "ok",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 1,
+          "measured": 0,
+          "filtered_out": 0
+        },
+        {
+          "section": "Running tests/debug.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/debug-b51246c97d559f93)",
+          "status": "ok",
+          "passed": 9,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 0
+        },
+        {
+          "section": "Running tests/lexical.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/lexical-79336bb5688e1589)",
+          "status": "ok",
+          "passed": 35,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 0
+        },
+        {
+          "section": "Running tests/literal_keys.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/literal_keys-3e05fc22c9116998)",
+          "status": "ok",
+          "passed": 5,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 0
+        },
+        {
+          "section": "Running tests/map.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/map-f967ec29533c94ee)",
+          "status": "ok",
+          "passed": 3,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 0
+        },
+        {
+          "section": "Running tests/regression.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/regression-f22cf253a05ba3a4)",
+          "status": "ok",
+          "passed": 5,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 0
+        },
+        {
+          "section": "Running tests/stream.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/stream-9b9e34f880489edf)",
+          "status": "ok",
+          "passed": 11,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 0
+        },
+        {
+          "section": "Running tests/test.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/test-c6572fa2860f3284)",
+          "status": "ok",
+          "passed": 85,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 0
+        },
+        {
+          "section": "Doc-tests serde_json",
+          "status": "ok",
+          "passed": 104,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 0
+        }
+      ],
+      "total_reported_results": {
+        "passed": 257,
+        "failed": 0,
+        "ignored": 1,
+        "measured": 0,
+        "filtered_out": 0
+      },
+      "compiler_artifact_files": 98,
+      "artifact_files_changed_since_gate": [],
+      "literal_keys_executables": [
+        {
+          "file": "/tmp/kasumi-literal-json-validation-target/debug/deps/literal_keys-3e05fc22c9116998",
+          "sha256": "bd3a89d002f46f71b5ed5718eabc953b92b92b5e5fc86aecbd4042210557b498",
+          "matches_terminal_hash": true
+        }
+      ]
+    },
+    {
+      "name": "serde-json-combined",
+      "duration_seconds": 78.18,
+      "log_sha256": "9babb709a36e8fb3c5a1cfd4ac064df3e4cbc14f948133a787b22c611e3b60cb",
+      "process_group": 46046,
+      "drained": true,
+      "test_suites": [
+        {
+          "section": "Running unittests src/lib.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/serde_json-abdacdce2852b347)",
+          "status": "ok",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 0
+        },
+        {
+          "section": "Running tests/compiletest.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/compiletest-843c3f5e4dded159)",
+          "status": "ok",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 1,
+          "measured": 0,
+          "filtered_out": 0
+        },
+        {
+          "section": "Running tests/debug.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/debug-9b6e1b531ffa558a)",
+          "status": "ok",
+          "passed": 9,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 0
+        },
+        {
+          "section": "Running tests/lexical.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/lexical-8758dc481b1b4844)",
+          "status": "ok",
+          "passed": 35,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 0
+        },
+        {
+          "section": "Running tests/literal_keys.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/literal_keys-d392165e2cc38387)",
+          "status": "ok",
+          "passed": 8,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 0
+        },
+        {
+          "section": "Running tests/map.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/map-e8f2812f494666c6)",
+          "status": "ok",
+          "passed": 4,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 0
+        },
+        {
+          "section": "Running tests/regression.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/regression-cce177adf483f0dc)",
+          "status": "ok",
+          "passed": 6,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 0
+        },
+        {
+          "section": "Running tests/stream.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/stream-054a356338e3c20d)",
+          "status": "ok",
+          "passed": 11,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 0
+        },
+        {
+          "section": "Running tests/test.rs (/tmp/kasumi-literal-json-validation-target/debug/deps/test-01e7ff685fa8d27f)",
+          "status": "ok",
+          "passed": 87,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 0
+        },
+        {
+          "section": "Doc-tests serde_json",
+          "status": "ok",
+          "passed": 105,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 0
+        }
+      ],
+      "total_reported_results": {
+        "passed": 265,
+        "failed": 0,
+        "ignored": 1,
+        "measured": 0,
+        "filtered_out": 0
+      },
+      "compiler_artifact_files": 104,
+      "artifact_files_changed_since_gate": [],
+      "literal_keys_executables": [
+        {
+          "file": "/tmp/kasumi-literal-json-validation-target/debug/deps/literal_keys-d392165e2cc38387",
+          "sha256": "32ba35d9338cf93e5d55584588036690c502e98ba8999f0daf2b91af17061c31",
+          "matches_terminal_hash": true
+        }
+      ]
+    }
+  ],
+  "unchanged_upstream_ignore": "Each feature suite reports one ignored ui test: requires nightly. It was not run on the pinned1.97.1 toolchain."
+}

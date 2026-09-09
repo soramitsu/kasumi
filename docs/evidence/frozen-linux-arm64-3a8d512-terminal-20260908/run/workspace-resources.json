@@ -1,0 +1,38 @@
+{
+  "after": {
+    "available": true,
+    "cgroups": {
+      "/sys/fs/cgroup": {
+        "memory.current": "14178930688\n",
+        "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n",
+        "memory.events.local": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n",
+        "memory.max": "16106127360\n",
+        "memory.peak": "15979606016\n",
+        "memory.swap.current": "0\n",
+        "memory.swap.max": "0\n"
+      }
+    },
+    "errors": [],
+    "membership": "0::/\n",
+    "observed_at": "2026-09-08T14:22:13.508619+00:00",
+    "scope": "raw visible cgroup counters; non-atomic and possibly shared"
+  },
+  "before": {
+    "available": true,
+    "cgroups": {
+      "/sys/fs/cgroup": {
+        "memory.current": "769765376\n",
+        "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n",
+        "memory.events.local": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n",
+        "memory.max": "16106127360\n",
+        "memory.peak": "1155211264\n",
+        "memory.swap.current": "0\n",
+        "memory.swap.max": "0\n"
+      }
+    },
+    "errors": [],
+    "membership": "0::/\n",
+    "observed_at": "2026-09-08T14:02:42.196198+00:00",
+    "scope": "raw visible cgroup counters; non-atomic and possibly shared"
+  }
+}

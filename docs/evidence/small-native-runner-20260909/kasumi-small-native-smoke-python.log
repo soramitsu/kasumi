@@ -1,0 +1,21 @@
+test_build_provenance_rejects_unknown_features_tests_and_mismatched_sources (test_small_native_smoke.SmokeTests) ... ok
+test_cleanup_failure_preserves_original_command_failure_and_retries_owner (test_small_native_smoke.SmokeTests) ... ok
+test_descendant_forced_drain_waits_for_the_owned_group_and_retains_failure (test_small_native_smoke.SmokeTests) ... ok
+test_driver_failure_requires_an_actual_auth_denial_before_any_verified_prefix (test_small_native_smoke.SmokeTests) ... ok
+test_driver_success_is_bound_to_exact_binary_config_counts_and_digest (test_small_native_smoke.SmokeTests) ... ok
+test_duplicate_gate_or_ambiguous_artifact_is_not_an_exact_build (test_small_native_smoke.SmokeTests) ... ok
+test_failed_workspace_may_supply_proven_builds_without_becoming_a_release_candidate (test_small_native_smoke.SmokeTests) ... ok
+test_independent_python_corpus_matches_published_rust_vectors (test_small_native_smoke.SmokeTests) ... ok
+test_local_restore_requires_finished_exact_input_and_local_fencing_scope (test_small_native_smoke.SmokeTests) ... ok
+test_log_sync_failure_closes_every_log_and_retains_cleanup_failure (test_small_native_smoke.SmokeTests) ... ok
+test_mcp_request_has_exact_stateless_metadata_and_distinct_request_identity (test_small_native_smoke.SmokeTests) ... ok
+test_pending_or_unknown_build_outcome_cannot_supply_binary_evidence (test_small_native_smoke.SmokeTests) ... ok
+test_prepare_copies_only_exact_build_artifacts_and_preserves_failed_baseline (test_small_native_smoke.SmokeTests) ... ok
+test_private_atomic_output_rejects_symlink_without_overwriting_unrelated_file (test_small_native_smoke.SmokeTests) ... ok
+test_protected_readiness_rejects_a_tcp_live_but_unready_service (test_small_native_smoke.SmokeTests) ... ok
+test_timeout_retains_failure_logs_and_drains_only_the_owned_process_group (test_small_native_smoke.SmokeTests) ... ok
+
+----------------------------------------------------------------------
+Ran 16 tests in 0.047s
+
+OK

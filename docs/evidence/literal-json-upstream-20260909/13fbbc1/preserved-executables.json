@@ -1,0 +1,225 @@
+{
+  "schema": 1,
+  "source": "13fbbc162d2a428bde502a334beb3ebab9aa59d9",
+  "evidence_sha256": "2c0eb93be7c7d7fc325dc03313feff5b8c8b4cfcf2854ee99dad1f3a30d6953d",
+  "unique_executables": 36,
+  "bytes": 101553440,
+  "references": [
+    {
+      "gate": "serde-json-default",
+      "relative": "debug/deps/lexical-9306f2ef34df256d",
+      "sha256": "a77d9443d98620505a04b53dccc324ae4948ad77c233e80aea55cccdc1027ed9",
+      "copy": "/tmp/kasumi-literal-json-validation-13fbbc1/preserved-executables/a77d9443d98620505a04b53dccc324ae4948ad77c233e80aea55cccdc1027ed9-lexical-9306f2ef34df256d"
+    },
+    {
+      "gate": "serde-json-default",
+      "relative": "debug/deps/debug-5654153dfebfb003",
+      "sha256": "ef3aa298231872da5d3ec57c8f01a1c89f218726a3f08fc603b4d7e276b57c74",
+      "copy": "/tmp/kasumi-literal-json-validation-13fbbc1/preserved-executables/ef3aa298231872da5d3ec57c8f01a1c89f218726a3f08fc603b4d7e276b57c74-debug-5654153dfebfb003"
+    },
+    {
+      "gate": "serde-json-default",
+      "relative": "debug/deps/map-0a5a5c7edc9a9e5d",
+      "sha256": "bd8f16f0401659a8c3a1b88211b2c3cd07311a6d091fd0fe65d5203b307b7d49",
+      "copy": "/tmp/kasumi-literal-json-validation-13fbbc1/preserved-executables/bd8f16f0401659a8c3a1b88211b2c3cd07311a6d091fd0fe65d5203b307b7d49-map-0a5a5c7edc9a9e5d"
+    },
+    {
+      "gate": "serde-json-default",
+      "relative": "debug/deps/literal_keys-af26ab2508b0d09d",
+      "sha256": "d3f4f2a15d3af5edec8aa4a7a109777248a073f63bb28ac6e39ccb6ca4d41738",
+      "copy": "/tmp/kasumi-literal-json-validation-13fbbc1/preserved-executables/d3f4f2a15d3af5edec8aa4a7a109777248a073f63bb28ac6e39ccb6ca4d41738-literal_keys-af26ab2508b0d09d"
+    },
+    {
+      "gate": "serde-json-default",
+      "relative": "debug/deps/stream-2759f44f52e84b92",
+      "sha256": "19dd1fc3b046e9f8f3e375d5f962d5653cebb6fcf0b0dc4e58982319836963a9",
+      "copy": "/tmp/kasumi-literal-json-validation-13fbbc1/preserved-executables/19dd1fc3b046e9f8f3e375d5f962d5653cebb6fcf0b0dc4e58982319836963a9-stream-2759f44f52e84b92"
+    },
+    {
+      "gate": "serde-json-default",
+      "relative": "debug/deps/test-3a23692608f740a6",
+      "sha256": "4877fcc6a61aacc48baee183963260658eb00e86ebe4a829b9acb6eac86c38f4",
+      "copy": "/tmp/kasumi-literal-json-validation-13fbbc1/preserved-executables/4877fcc6a61aacc48baee183963260658eb00e86ebe4a829b9acb6eac86c38f4-test-3a23692608f740a6"
+    },
+    {
+      "gate": "serde-json-default",
+      "relative": "debug/deps/regression-42bd516573fbeeea",
+      "sha256": "14489c2a784bb2befda4245c8c23fcd66e566a4250f5b37b9be4687d369e5dbd",
+      "copy": "/tmp/kasumi-literal-json-validation-13fbbc1/preserved-executables/14489c2a784bb2befda4245c8c23fcd66e566a4250f5b37b9be4687d369e5dbd-regression-42bd516573fbeeea"
+    },
+    {
+      "gate": "serde-json-default",
+      "relative": "debug/deps/compiletest-1d9374b50e654108",
+      "sha256": "f1b4d4ced2e0fb5028804b358e57d4dba873b02681e715cfd65af08bd61da496",
+      "copy": "/tmp/kasumi-literal-json-validation-13fbbc1/preserved-executables/f1b4d4ced2e0fb5028804b358e57d4dba873b02681e715cfd65af08bd61da496-compiletest-1d9374b50e654108"
+    },
+    {
+      "gate": "serde-json-default",
+      "relative": "debug/deps/serde_json-6a01f245131caa20",
+      "sha256": "7017320e2507ef7658a04cb1a131af88235485588d1397f95e0c2979e3543541",
+      "copy": "/tmp/kasumi-literal-json-validation-13fbbc1/preserved-executables/7017320e2507ef7658a04cb1a131af88235485588d1397f95e0c2979e3543541-serde_json-6a01f245131caa20"
+    },
+    {
+      "gate": "serde-json-number",
+      "relative": "debug/deps/compiletest-259235d0baff08e4",
+      "sha256": "a5d2a3e062176afd98a84a9c4bc3aa7d31720fda5e5db7d69170d662ff26c686",
+      "copy": "/tmp/kasumi-literal-json-validation-13fbbc1/preserved-executables/a5d2a3e062176afd98a84a9c4bc3aa7d31720fda5e5db7d69170d662ff26c686-compiletest-259235d0baff08e4"
+    },
+    {
+      "gate": "serde-json-number",
+      "relative": "debug/deps/debug-3b1d79152b2b499c",
+      "sha256": "c947135a099fd0d6fefbff23db9283d205092d6446f0199a86e39a1e92bb054a",
+      "copy": "/tmp/kasumi-literal-json-validation-13fbbc1/preserved-executables/c947135a099fd0d6fefbff23db9283d205092d6446f0199a86e39a1e92bb054a-debug-3b1d79152b2b499c"
+    },
+    {
+      "gate": "serde-json-number",
+      "relative": "debug/deps/test-5b38577e7a98914f",
+      "sha256": "54b1824e3c2eb9a5d7664372dc47ea771ecf2cda6ecd71a02104d97b120e6473",
+      "copy": "/tmp/kasumi-literal-json-validation-13fbbc1/preserved-executables/54b1824e3c2eb9a5d7664372dc47ea771ecf2cda6ecd71a02104d97b120e6473-test-5b38577e7a98914f"
+    },
+    {
+      "gate": "serde-json-number",
+      "relative": "debug/deps/map-468b66a322505d03",
+      "sha256": "ae6097d1a85e7bc7eff3424f58aa272aa9c24c4288fcd8120d484c66d1025612",
+      "copy": "/tmp/kasumi-literal-json-validation-13fbbc1/preserved-executables/ae6097d1a85e7bc7eff3424f58aa272aa9c24c4288fcd8120d484c66d1025612-map-468b66a322505d03"
+    },
+    {
+      "gate": "serde-json-number",
+      "relative": "debug/deps/regression-d5373c929add1170",
+      "sha256": "b77884cb28700f148e4a0ecccf14c92d0bbef9a848147c7a8c030b5f8b8621ce",
+      "copy": "/tmp/kasumi-literal-json-validation-13fbbc1/preserved-executables/b77884cb28700f148e4a0ecccf14c92d0bbef9a848147c7a8c030b5f8b8621ce-regression-d5373c929add1170"
+    },
+    {
+      "gate": "serde-json-number",
+      "relative": "debug/deps/literal_keys-63057e816eeb668e",
+      "sha256": "44af0efcebebf8f05993bcd04a4c63a5353138bf0b04a9b61aa42b949ab72d22",
+      "copy": "/tmp/kasumi-literal-json-validation-13fbbc1/preserved-executables/44af0efcebebf8f05993bcd04a4c63a5353138bf0b04a9b61aa42b949ab72d22-literal_keys-63057e816eeb668e"
+    },
+    {
+      "gate": "serde-json-number",
+      "relative": "debug/deps/stream-ccbc22c03537094a",
+      "sha256": "5e6684bcb0c62dd7a2bf9ec1af2a1bad6e40543b0a374c790d8221891b5abc12",
+      "copy": "/tmp/kasumi-literal-json-validation-13fbbc1/preserved-executables/5e6684bcb0c62dd7a2bf9ec1af2a1bad6e40543b0a374c790d8221891b5abc12-stream-ccbc22c03537094a"
+    },
+    {
+      "gate": "serde-json-number",
+      "relative": "debug/deps/lexical-fc8f5175f3a4b8a7",
+      "sha256": "9b51d51601d033361b230c404ca4ffd2e2b0f78bfd29984e9726194c5f17db71",
+      "copy": "/tmp/kasumi-literal-json-validation-13fbbc1/preserved-executables/9b51d51601d033361b230c404ca4ffd2e2b0f78bfd29984e9726194c5f17db71-lexical-fc8f5175f3a4b8a7"
+    },
+    {
+      "gate": "serde-json-number",
+      "relative": "debug/deps/serde_json-91ce5ffada670560",
+      "sha256": "be7ee7d9844b144b5547b123619ccd1253ded8085ae2644d097b2940262630cc",
+      "copy": "/tmp/kasumi-literal-json-validation-13fbbc1/preserved-executables/be7ee7d9844b144b5547b123619ccd1253ded8085ae2644d097b2940262630cc-serde_json-91ce5ffada670560"
+    },
+    {
+      "gate": "serde-json-raw",
+      "relative": "debug/deps/compiletest-5d0a1e062289f560",
+      "sha256": "4746211fb5982c42b464dff6adec7e61382fc9feacaf9ff8c32290fbdcbc11a2",
+      "copy": "/tmp/kasumi-literal-json-validation-13fbbc1/preserved-executables/4746211fb5982c42b464dff6adec7e61382fc9feacaf9ff8c32290fbdcbc11a2-compiletest-5d0a1e062289f560"
+    },
+    {
+      "gate": "serde-json-raw",
+      "relative": "debug/deps/stream-9b9e34f880489edf",
+      "sha256": "9ab7ee0e361cd026703cfcb43f309fe6884ef73a5d12069999dec3742eb7ace5",
+      "copy": "/tmp/kasumi-literal-json-validation-13fbbc1/preserved-executables/9ab7ee0e361cd026703cfcb43f309fe6884ef73a5d12069999dec3742eb7ace5-stream-9b9e34f880489edf"
+    },
+    {
+      "gate": "serde-json-raw",
+      "relative": "debug/deps/map-f967ec29533c94ee",
+      "sha256": "7c31172028bacec5639eb70e488a9bbf1770d9854df15cf726075dc2195d2a2d",
+      "copy": "/tmp/kasumi-literal-json-validation-13fbbc1/preserved-executables/7c31172028bacec5639eb70e488a9bbf1770d9854df15cf726075dc2195d2a2d-map-f967ec29533c94ee"
+    },
+    {
+      "gate": "serde-json-raw",
+      "relative": "debug/deps/test-c6572fa2860f3284",
+      "sha256": "1ff30d89b6069d2e38a889f1dff1c100140e2da99873600560915078ddebe96e",
+      "copy": "/tmp/kasumi-literal-json-validation-13fbbc1/preserved-executables/1ff30d89b6069d2e38a889f1dff1c100140e2da99873600560915078ddebe96e-test-c6572fa2860f3284"
+    },
+    {
+      "gate": "serde-json-raw",
+      "relative": "debug/deps/lexical-79336bb5688e1589",
+      "sha256": "688eca06821a42462e2cdecf104733927509b4513dbf0491edddafa3d69564d4",
+      "copy": "/tmp/kasumi-literal-json-validation-13fbbc1/preserved-executables/688eca06821a42462e2cdecf104733927509b4513dbf0491edddafa3d69564d4-lexical-79336bb5688e1589"
+    },
+    {
+      "gate": "serde-json-raw",
+      "relative": "debug/deps/literal_keys-3e05fc22c9116998",
+      "sha256": "bd3a89d002f46f71b5ed5718eabc953b92b92b5e5fc86aecbd4042210557b498",
+      "copy": "/tmp/kasumi-literal-json-validation-13fbbc1/preserved-executables/bd3a89d002f46f71b5ed5718eabc953b92b92b5e5fc86aecbd4042210557b498-literal_keys-3e05fc22c9116998"
+    },
+    {
+      "gate": "serde-json-raw",
+      "relative": "debug/deps/regression-f22cf253a05ba3a4",
+      "sha256": "ab156ea98912b708219dc3632fbe921695e127c00bb86bbffd8c8fd6568a5ea6",
+      "copy": "/tmp/kasumi-literal-json-validation-13fbbc1/preserved-executables/ab156ea98912b708219dc3632fbe921695e127c00bb86bbffd8c8fd6568a5ea6-regression-f22cf253a05ba3a4"
+    },
+    {
+      "gate": "serde-json-raw",
+      "relative": "debug/deps/debug-b51246c97d559f93",
+      "sha256": "3d87bd37d9539e9c352dc4d7a76800bd17873478867b97685165f202edcdb2d0",
+      "copy": "/tmp/kasumi-literal-json-validation-13fbbc1/preserved-executables/3d87bd37d9539e9c352dc4d7a76800bd17873478867b97685165f202edcdb2d0-debug-b51246c97d559f93"
+    },
+    {
+      "gate": "serde-json-raw",
+      "relative": "debug/deps/serde_json-da3ebd14bd62bd12",
+      "sha256": "6be3f22375eda3b9a7dd0fa8db959f609f67d7a1a2ac3a984e644c475addd538",
+      "copy": "/tmp/kasumi-literal-json-validation-13fbbc1/preserved-executables/6be3f22375eda3b9a7dd0fa8db959f609f67d7a1a2ac3a984e644c475addd538-serde_json-da3ebd14bd62bd12"
+    },
+    {
+      "gate": "serde-json-combined",
+      "relative": "debug/deps/test-01e7ff685fa8d27f",
+      "sha256": "bf283f37b7c5ace5aea61d79d8459af3e2d52dd2ea34620ca9c8bf67bcca984e",
+      "copy": "/tmp/kasumi-literal-json-validation-13fbbc1/preserved-executables/bf283f37b7c5ace5aea61d79d8459af3e2d52dd2ea34620ca9c8bf67bcca984e-test-01e7ff685fa8d27f"
+    },
+    {
+      "gate": "serde-json-combined",
+      "relative": "debug/deps/regression-cce177adf483f0dc",
+      "sha256": "a350b55c368ebccb911157c68f69822680d8753a1c01da0754f7e3afd05a5e96",
+      "copy": "/tmp/kasumi-literal-json-validation-13fbbc1/preserved-executables/a350b55c368ebccb911157c68f69822680d8753a1c01da0754f7e3afd05a5e96-regression-cce177adf483f0dc"
+    },
+    {
+      "gate": "serde-json-combined",
+      "relative": "debug/deps/lexical-8758dc481b1b4844",
+      "sha256": "db59b1f4439d6506ec45ba5e41f6c4929aa5d81a286663ec45e6fc86c93a4fa5",
+      "copy": "/tmp/kasumi-literal-json-validation-13fbbc1/preserved-executables/db59b1f4439d6506ec45ba5e41f6c4929aa5d81a286663ec45e6fc86c93a4fa5-lexical-8758dc481b1b4844"
+    },
+    {
+      "gate": "serde-json-combined",
+      "relative": "debug/deps/stream-054a356338e3c20d",
+      "sha256": "4a91c0d88d291624bae3dc4f9bf894fd8c5b04d405a75d80a3a6bc1085e34606",
+      "copy": "/tmp/kasumi-literal-json-validation-13fbbc1/preserved-executables/4a91c0d88d291624bae3dc4f9bf894fd8c5b04d405a75d80a3a6bc1085e34606-stream-054a356338e3c20d"
+    },
+    {
+      "gate": "serde-json-combined",
+      "relative": "debug/deps/compiletest-843c3f5e4dded159",
+      "sha256": "85a37af9db2adb3bb41ae2e4f1fee897edf9ba2d75cc7d1a86ba4626f7b927e3",
+      "copy": "/tmp/kasumi-literal-json-validation-13fbbc1/preserved-executables/85a37af9db2adb3bb41ae2e4f1fee897edf9ba2d75cc7d1a86ba4626f7b927e3-compiletest-843c3f5e4dded159"
+    },
+    {
+      "gate": "serde-json-combined",
+      "relative": "debug/deps/debug-9b6e1b531ffa558a",
+      "sha256": "5ddc9954efd73e58665d4a4ca75d56390ba5e61519f7ad47f5e17f981a67668a",
+      "copy": "/tmp/kasumi-literal-json-validation-13fbbc1/preserved-executables/5ddc9954efd73e58665d4a4ca75d56390ba5e61519f7ad47f5e17f981a67668a-debug-9b6e1b531ffa558a"
+    },
+    {
+      "gate": "serde-json-combined",
+      "relative": "debug/deps/map-e8f2812f494666c6",
+      "sha256": "e696f16e3d3e538d32091dfe18f2151bb0330bca3227ea3d13d045f959146d0b",
+      "copy": "/tmp/kasumi-literal-json-validation-13fbbc1/preserved-executables/e696f16e3d3e538d32091dfe18f2151bb0330bca3227ea3d13d045f959146d0b-map-e8f2812f494666c6"
+    },
+    {
+      "gate": "serde-json-combined",
+      "relative": "debug/deps/literal_keys-d392165e2cc38387",
+      "sha256": "32ba35d9338cf93e5d55584588036690c502e98ba8999f0daf2b91af17061c31",
+      "copy": "/tmp/kasumi-literal-json-validation-13fbbc1/preserved-executables/32ba35d9338cf93e5d55584588036690c502e98ba8999f0daf2b91af17061c31-literal_keys-d392165e2cc38387"
+    },
+    {
+      "gate": "serde-json-combined",
+      "relative": "debug/deps/serde_json-abdacdce2852b347",
+      "sha256": "6a54afb57e6176dce3e2d7f99b581e9665d93883c98e85318e108248e10201d4",
+      "copy": "/tmp/kasumi-literal-json-validation-13fbbc1/preserved-executables/6a54afb57e6176dce3e2d7f99b581e9665d93883c98e85318e108248e10201d4-serde_json-abdacdce2852b347"
+    }
+  ]
+}

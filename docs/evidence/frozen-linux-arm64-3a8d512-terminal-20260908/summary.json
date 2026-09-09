@@ -1,0 +1,137 @@
+{
+  "status": "failed",
+  "candidate_produced": false,
+  "source_commit": "3a8d5121e1ddee14ae8a6d938d12152eaa04e417",
+  "source_tree": "44871b6470914c011ad56f374d416b7d0e742efe",
+  "lockfile_sha256": "f42fec1f6e7232b1cd5e9c564cfff56dfec7634f2548eab7eb2096a0d0c17c78",
+  "workspace_counts": {
+    "completed_groups": 45,
+    "passed": 545,
+    "failed": 1,
+    "ignored": 2
+  },
+  "failed_test": "runtime::lifecycle_tests::three_runtime_nodes_replicate_with_control_quorum_over_audited_pinned_mtls",
+  "failure": "runtime.rs:4177 durable database already open on restarted runtime",
+  "production_executables": {
+    "release/kasumi-authority": {
+      "bytes": 23577536,
+      "package_id": "path+file:///evidence/run/source/crates/kasumi-server#0.1.0",
+      "sha256": "a167467d939eca69da4ef83f8f10846cbbb187c85aa88bf709d13b4ebdf54b2e",
+      "target": "kasumi-authority",
+      "test": false
+    },
+    "release/kasumictl": {
+      "bytes": 6289896,
+      "package_id": "path+file:///evidence/run/source/crates/kasumi-server#0.1.0",
+      "sha256": "5488d51495a750e3ec4a22ae4591d8f5a1e313af1e8183a59ce7292ecc75a600",
+      "target": "kasumictl",
+      "test": false
+    },
+    "release/kasumid": {
+      "bytes": 104710280,
+      "package_id": "path+file:///evidence/run/source/crates/kasumi-server#0.1.0",
+      "sha256": "340db15a8130289da49ca18c50e6da25ac27a1a3210bbdeed72ec5acba81bc8b",
+      "target": "kasumid",
+      "test": false
+    }
+  },
+  "network_executables": {
+    "release/kasumi-bench-capacity": {
+      "bytes": 5068568,
+      "package_id": "path+file:///evidence/run/source/crates/kasumi-bench#0.1.0",
+      "sha256": "2bf9528308df725f4f3d343d700934d9dd628b92c6e17f3008552e434fea1975",
+      "target": "kasumi-bench-capacity",
+      "test": false
+    },
+    "release/kasumi-bench-network": {
+      "bytes": 6566896,
+      "package_id": "path+file:///evidence/run/source/crates/kasumi-bench#0.1.0",
+      "sha256": "88c27599faf1f2af3897edbbf30ad96c002222abd8d85264578464b699122295",
+      "target": "kasumi-bench-network",
+      "test": false
+    }
+  },
+  "gates": [
+    {
+      "name": "toolchain",
+      "exit_code": 0,
+      "duration_seconds": 0.013
+    },
+    {
+      "name": "format",
+      "exit_code": 0,
+      "duration_seconds": 1.16
+    },
+    {
+      "name": "python",
+      "exit_code": 0,
+      "duration_seconds": 0.717
+    },
+    {
+      "name": "dependency-patches",
+      "exit_code": 0,
+      "duration_seconds": 0.702
+    },
+    {
+      "name": "bitmaps",
+      "exit_code": 0,
+      "duration_seconds": 8.624
+    },
+    {
+      "name": "lru",
+      "exit_code": 0,
+      "duration_seconds": 4.035
+    },
+    {
+      "name": "workspace",
+      "exit_code": 101,
+      "duration_seconds": 1187.99
+    },
+    {
+      "name": "workspace-docs",
+      "exit_code": 0,
+      "duration_seconds": 3.783
+    },
+    {
+      "name": "clippy",
+      "exit_code": 0,
+      "duration_seconds": 109.123
+    },
+    {
+      "name": "network-features",
+      "exit_code": 0,
+      "duration_seconds": 0.134
+    },
+    {
+      "name": "network-driver",
+      "exit_code": 0,
+      "duration_seconds": 75.501
+    },
+    {
+      "name": "production-features",
+      "exit_code": 0,
+      "duration_seconds": 0.168
+    },
+    {
+      "name": "production",
+      "exit_code": 0,
+      "duration_seconds": 611.14
+    }
+  ],
+  "retained_external_artifacts": {
+    "source_tar": "/opt/kasumi-acceptance/3a8d512-functional-arm64/run/source.tar",
+    "source_tar_sha256": "a196fdbc342beae16a98816ac65b75b8aaf31c8945e6c65ae88526fb4765a2a6",
+    "full_target": "/opt/kasumi-acceptance/3a8d512-functional-arm64/run/target",
+    "copied_evidence_archive": "/tmp/kasumi-3a8d512-terminal-evidence.tar.gz",
+    "copied_evidence_archive_sha256": "499c3b46f72f5248b4ca91e8b0bab80a163372333317ed1b18d626a274811ca3"
+  },
+  "limitations": [
+    "The source-bound full workspace failed; passing later gates do not permit packaging.",
+    "Actual container state: exit1, not running, pid0, OOMKilledfalse.",
+    "Visible cgroup cumulative memory peak includes cache and earlier gates; it is not a per-test RAM measurement. No recorded OOM or swap.",
+    "Shared macOS physical host had explicitly observed other task compiler overlap; no quiet-host performance/capacity claim.",
+    "Independent source review found an audit-worker ownership gap; its fix is not part of this frozen source, and this run does not establish it was the only lock owner.",
+    "No final 3GiB, actual providers, final platform set, final matrix, or 24-hour soak acceptance.",
+    "Evidence-copy preparation first used macOS Python3.9 hashlib.file_digest, which raised AttributeError before extraction. Retried with bundled Python3.12 and verified the archive and every gate log/resource hash."
+  ]
+}

@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "scope": "Pure Python checks of the integrated diagnostic and release tooling only; no native, Cargo, HA, capacity, soak or release acceptance.",
+  "observed_at": "2026-09-08T15:27:13.552269+00:00",
+  "integration_commit": "e6c80c8f03898b1076da4e4733b7f3aa394b223a",
+  "integration_tree": "b894197becbda931f07665e8c6baf603328a6b08",
+  "lockfile_sha256": "f42fec1f6e7232b1cd5e9c564cfff56dfec7634f2548eab7eb2096a0d0c17c78",
+  "command": [
+    "/Users/mtakemiya/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+    "-m",
+    "unittest",
+    "discover",
+    "-s",
+    "scripts",
+    "-p",
+    "test_*.py",
+    "-v"
+  ],
+  "environment": {
+    "PYTHONDONTWRITEBYTECODE": "1"
+  },
+  "python": "3.12.14 (main, Aug 25 2026, 13:50:33) [Clang 22.1.3 ]",
+  "python_executable_sha256": "ac60cfe0268614638d0ffa35f3b0284fc7b3a11482723793455e17eeb278509e",
+  "result": "passed",
+  "tests": 36,
+  "native_execution": false,
+  "source_checkpoint": "a276db67c540ecd5551197583cf5b2c104499cf1",
+  "limitations": [
+    "Agent source-only checks used Python 3.9.6; integrated checks used recorded Python 3.12.",
+    "First actual Linux diagnostic has not run.",
+    "Runner accepts successful fixture-free builds from a failed completed checkpoint only as an explicitly labeled diagnostic, never a candidate."
+  ],
+  "files": {
+    "combined-python312.log": {
+      "sha256": "d60dac9082740d5d573b5c4be4ab7e6b725b526d731dfa30ba77201c96200765",
+      "bytes": 6841
+    },
+    "kasumi-small-native-smoke-diff.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "kasumi-small-native-smoke-python.log": {
+      "sha256": "b7d09a466a4df11ff7ae1534204bcfa4c0a42f142da418c76b221a4d5b6a6b01",
+      "bytes": 1963
+    },
+    "kasumi-small-native-smoke-syntax.log": {
+      "sha256": "9de6b26ebbb5d78ba445c4edaddeccfcd56f499b9b9c3aad9beca2f2d8747c2f",
+      "bytes": 23
+    },
+    "source-evidence.json": {
+      "sha256": "3fe62dd4b2193237b56c32906044c7a2474a194e03d969264d6b2352e8f8b0b4",
+      "bytes": 2225
+    }
+  }
+}

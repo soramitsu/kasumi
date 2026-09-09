@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "scope": "Pure Python runner checks only; no native, Cargo, capacity or release acceptance",
+  "source_commit": "a276db67c540ecd5551197583cf5b2c104499cf1",
+  "source_tree": "f3945b44de46d1c219a5c63e0a643e4d14a9154a",
+  "base": "35b68509d8a4656fb1df776ac8b883eb81c88063",
+  "clean": true,
+  "lockfile_sha256": "f42fec1f6e7232b1cd5e9c564cfff56dfec7634f2548eab7eb2096a0d0c17c78",
+  "python": "3.9.6 (default, May 22 2026, 11:13:45) \n[Clang 21.0.0 (clang-2100.1.1.101)]",
+  "python_executable": "/Library/Developer/CommandLineTools/usr/bin/python3",
+  "host": "macOS-26.6.2-arm64-arm-64bit",
+  "files": {
+    "scripts/small_native_smoke.py": "d3d87af9491932a86faae1b8855c6a6c46a30caaad404fe6244f729b15488966",
+    "scripts/test_small_native_smoke.py": "2ab65f5295f0c8174d7d90162fe87cf9ddf6a0a3cb95cfeb175d7e274bc57981",
+    "scripts/validation/small-native-smoke.md": "6cfb121ab4cc8643afbcff1a7efd847d124b17c57e8982a9aca20c405e726ca0",
+    "scripts/validation/README.md": "8a37c70e0064ceaea4dd3f85dbfd5d2bff5ee79f6c6e371e8f4c8fd6d7515dac"
+  },
+  "checks": [
+    {
+      "name": "pure-tests",
+      "result": "passed",
+      "tests": 16,
+      "command": "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts -p test_small_native_smoke.py -v"
+    },
+    {
+      "name": "AST syntax",
+      "result": "passed",
+      "files": 2
+    },
+    {
+      "name": "git diff --check",
+      "result": "passed"
+    }
+  ],
+  "logs": {
+    "/tmp/kasumi-small-native-smoke-python.log": "b7d09a466a4df11ff7ae1534204bcfa4c0a42f142da418c76b221a4d5b6a6b01",
+    "/tmp/kasumi-small-native-smoke-syntax.log": "9de6b26ebbb5d78ba445c4edaddeccfcd56f499b9b9c3aad9beca2f2d8747c2f",
+    "/tmp/kasumi-small-native-smoke-diff.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "native_execution": false,
+  "cargo_execution": false,
+  "limitations": [
+    "Actual Linux runner requires Python 3.11+; pure checks ran on host Python 3.9.6.",
+    "First actual offline native TLS lifecycle diagnostic remains unrun.",
+    "Input Git source objects required; extracted archive-only proof is not implemented.",
+    "3a8d512 is a failed functional checkpoint even if this diagnostic later passes."
+  ]
+}

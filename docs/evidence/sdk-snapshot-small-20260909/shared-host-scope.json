@@ -1,0 +1,9 @@
+{
+  "scope": "Small client-only pure tests and compiler checks on a shared macOS ARM64 host, no engine/store/server/Raft compilation or listeners/native/provider workload. No performance/capacity or release acceptance.",
+  "initial_session": 1904,
+  "successor_session": 9240,
+  "both_runners_terminal_and_owned_groups_drained": true,
+  "warm_target": "/tmp/kasumi-production-root-target",
+  "concurrent_heavy_owner": "Separate Curie E corrected fixture native/route cohort session70876. One compiler-only mode correction session76212 permitted, actual terminal0 in24.914s; no local native from that harness.",
+  "memory_pressure_observation": "64 GiB physical, 39% system-wide free observed; not a peak RSS measurement."
+}

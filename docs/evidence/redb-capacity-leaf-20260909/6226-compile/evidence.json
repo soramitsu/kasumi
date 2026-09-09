@@ -1,0 +1,67 @@
+{
+  "scope": "macOS ARM64 seven redb experimental precommit growth admission unit regressions only. No root dependency patch, Kasumi engine/store/server/Raft compilation, listener or provider. Shared host; full upstream just test, fuzzing, durable disk governor and production integration remain unrun.",
+  "source_before": {
+    "head": "6226cdaa5b1d18a425a695dbec50b1c4fb2a9760",
+    "tree": "153e94a4d114addc8b797b26de4ff6491424de54",
+    "status": "",
+    "lock_sha256": "f42fec1f6e7232b1cd5e9c564cfff56dfec7634f2548eab7eb2096a0d0c17c78",
+    "leaf_lock_sha256": "bcccfce715a96865a7c82c4f97d64140b825ec90ea676d35c26e5deb048c0ce5"
+  },
+  "tools": {
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo": "7672ead309d505577c018fff2cafb3433601f073e38cbe87359ac1f7b944bbf5",
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc": "210df6794001b73ec3d453878707fa1e0bdcb63c427024a6e6574bbe5615a4da",
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustdoc": "aa94960b6a477441f6d1a797394daf4cafcc889d837550c8fa462b102e3fa5da"
+  },
+  "runner_sha256": "b015b2df075645e874399c979f410167fe4ef45d83e64cea433da540cd8e2f97",
+  "per_gate_timeout_seconds": 300,
+  "gates": [
+    {
+      "name": "redb-growth-admission",
+      "command": [
+        "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+        "test",
+        "--manifest-path",
+        "vendor/redb-4.2.0/Cargo.toml",
+        "--locked",
+        "--offline",
+        "-j1",
+        "--features",
+        "experimental-precommit-growth-admission",
+        "--lib",
+        "transactions::growth_admission_tests",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "seconds": 10.711683999979869,
+      "process_group_id": 61478,
+      "process_exit_code": 101,
+      "exit_code": 101,
+      "problem": null,
+      "cleanup": {
+        "signals": [],
+        "process_returncode": 101,
+        "process_group_drained": true
+      },
+      "required_test": [
+        "transactions::growth_admission_tests::denied_growth_never_calls_resize_and_caught_error_cannot_commit",
+        "transactions::growth_admission_tests::split_failures_preserve_pinned_roots_and_successful_extent_charges",
+        "transactions::growth_admission_tests::replacement_denial_aborts_all_tables_and_retains_original_value",
+        "transactions::growth_admission_tests::explicit_abort_and_drop_after_capacity_denial_leave_database_usable",
+        "transactions::growth_admission_tests::actual_backend_failures_still_latch_and_never_claim_capacity_abort",
+        "transactions::growth_admission_tests::allocator_clones_and_system_namespace_share_the_capacity_abort_state",
+        "transactions::growth_admission_tests::commit_time_denial_keeps_failed_commit_latch_instead_of_claiming_rollback"
+      ],
+      "required_test_passed": false,
+      "log_sha256": "49dc14c34bc4aac1bb102ad6737405952dbeb92f3a94ce4c4a1f393e1ed15a88",
+      "artifacts": []
+    }
+  ],
+  "source_after": {
+    "head": "6226cdaa5b1d18a425a695dbec50b1c4fb2a9760",
+    "tree": "153e94a4d114addc8b797b26de4ff6491424de54",
+    "status": "",
+    "lock_sha256": "f42fec1f6e7232b1cd5e9c564cfff56dfec7634f2548eab7eb2096a0d0c17c78",
+    "leaf_lock_sha256": "bcccfce715a96865a7c82c4f97d64140b825ec90ea676d35c26e5deb048c0ce5"
+  }
+}

@@ -1,0 +1,123 @@
+{
+  "schema": "kasumi-focused-gate-manifest-v1",
+  "status": "prepared-only; no gates executed",
+  "worktree": "/tmp/kasumi-sdk-snapshot-admission",
+  "branch": "codex/sdk-snapshot-admission",
+  "commit": "2b9061d68e0a398b0f685cba2b86931357a3099c",
+  "tree": "92d642629908524938a3c92e26916dae61abe841",
+  "cargo_lock_sha256": "69a87af31c474246239eeea8e96f98d860c9850e2ee589d78e3bfbb25f558d63",
+  "environment": {
+    "CARGO_TARGET_DIR": "/tmp/kasumi-sdk-snapshot-admission-target",
+    "CARGO_BUILD_JOBS": "1",
+    "RUST_TEST_THREADS": "1"
+  },
+  "source_checks": {
+    "changed_source_rustfmt": "passed on frozen source; not a compiler gate",
+    "git_diff_check": "passed; source clean"
+  },
+  "constraints": [
+    "Each gate requires explicit lane authorization; terminal and report before another dispatch.",
+    "Never reuse frozen e18bdd9 terminal-prefix source/target.",
+    "Stop on failure; preserve raw output and source before changes.",
+    "Native listeners require separately coordinated window.",
+    "Test inventory is source-derived, not runtime discovery or acceptance."
+  ],
+  "gates": [
+    {
+      "id": "workspace-check",
+      "kind": "compile",
+      "command": "cargo +1.97.1 check --locked --workspace --all-targets --all-features -j1"
+    },
+    {
+      "id": "snapshot-pure",
+      "kind": "tests-no-network",
+      "command": "cargo +1.97.1 test --locked -p kasumi-client --lib --all-features -j1 snapshot_ -- --test-threads=1 --nocapture",
+      "expected_source_count": 13
+    },
+    {
+      "id": "authorization-sensitive",
+      "kind": "tests-no-network",
+      "command": "cargo +1.97.1 test --locked -p kasumi-client --lib --all-features -j1 authorization_tests::bearer_wire_value_is_unchanged_while_debug_is_redacted -- --exact --test-threads=1 --nocapture",
+      "expected_source_count": 1
+    },
+    {
+      "id": "native-pool",
+      "kind": "native-process-test",
+      "command": "cargo +1.97.1 test --locked -p kasumi-server --lib --all-features -j1 api::tests::native_pool_replays_uncertain_batches_and_never_moves_historical_pages -- --exact --test-threads=1 --nocapture",
+      "expected_source_count": 1
+    },
+    {
+      "id": "native-staging",
+      "kind": "native-process-test",
+      "command": "cargo +1.97.1 test --locked -p kasumi-server --lib --all-features -j1 api::tests::guarded_stop_secure_sdk_preserves_exact_identity_and_native_authority -- --exact --test-threads=1 --nocapture",
+      "expected_source_count": 1
+    },
+    {
+      "id": "local-recovery",
+      "kind": "native-process-test",
+      "command": "cargo +1.97.1 test --locked -p kasumi-server --lib --all-features -j1 local_recovery::tests::local_recovery_resumes_each_phase_and_fences_old_resources_after_activation -- --exact --test-threads=1 --nocapture",
+      "expected_source_count": 1
+    },
+    {
+      "id": "native-tls",
+      "kind": "native-process-test",
+      "command": "cargo +1.97.1 test --locked -p kasumi-server --test tls_listener --all-features -j1 native_grpc_channel_uses_pinned_tls13_and_http2_with_no_plaintext_fallback -- --exact --test-threads=1 --nocapture",
+      "expected_source_count": 1
+    },
+    {
+      "id": "strict-changed-crates",
+      "kind": "clippy",
+      "command": "cargo +1.97.1 clippy --locked -p kasumi-client -p kasumi-server --all-targets --all-features -j1 -- -D warnings"
+    },
+    {
+      "id": "client-small-feature-graph",
+      "kind": "compile-feature-evidence",
+      "command": "cargo +1.97.1 check --locked -p kasumi-client --lib --no-default-features -j1 --message-format=json"
+    },
+    {
+      "id": "production",
+      "kind": "production-release-build",
+      "command": "cargo +1.97.1 build --locked --release -p kasumi-server --bin kasumid --no-default-features -j1 --message-format=json-render-diagnostics",
+      "required_evidence": [
+        "Record all compiler-artifact features, including serde_json and Kasumi test-utils/fixture absence.",
+        "Hash actual kasumid binary.",
+        "Build/test feature graphs must be labeled separately."
+      ]
+    }
+  ],
+  "required_tests": [
+    "snapshot_decode::tests::shared_response_retains_exact_original_reservation",
+    "snapshot_decode::tests::exact_points_scope_order_and_revision_are_checked_before_values",
+    "snapshot_decode::tests::cancelled_and_panicking_decoder_keeps_charge_until_actual_worker_exit",
+    "snapshot_decode::tests::literal_marker_keys_and_nested_payloads_round_trip_as_ordinary_documents",
+    "snapshot_decode::tests::outbound_borrowed_walk_and_nil_scope_fail_before_encoding_growth",
+    "snapshot_decode::tests::parser_error_payload_drops_before_worker_admission_is_released",
+    "snapshot_decode::tests::transport_error_retains_code_without_peer_message_details_or_metadata",
+    "snapshot_decode::tests::query_rows_cannot_advance_beyond_their_collection_epoch",
+    "snapshot_decode::tokens::tests::scans_ignored_duplicate_and_shallow_tokens_before_serde",
+    "snapshot_decode::transport::tests::framing_rejects_declared_size_compression_and_second_message_before_forwarding",
+    "snapshot_decode::transport::tests::bounded_envelope_rejects_duplicate_and_noncanonical_fields",
+    "snapshot_decode::transport::tests::oversized_initial_status_headers_are_removed_before_tonic_can_decode_them",
+    "data_pool::snapshot_error_tests::bounded_snapshot_errors_preserve_only_approved_retry_codes",
+    "authorization_tests::bearer_wire_value_is_unchanged_while_debug_is_redacted",
+    "api::tests::native_pool_replays_uncertain_batches_and_never_moves_historical_pages",
+    "api::tests::guarded_stop_secure_sdk_preserves_exact_identity_and_native_authority",
+    "local_recovery::tests::local_recovery_resumes_each_phase_and_fences_old_resources_after_activation",
+    "native_grpc_channel_uses_pinned_tls13_and_http2_with_no_plaintext_fallback"
+  ],
+  "evidence_per_gate": [
+    "exact source/tree/lock hashes and clean status before dispatch",
+    "exact command, environment, rustc/cargo version",
+    "raw stdout/stderr preserved including failures",
+    "UTC start/end, monotonic elapsed, process exit and actual runner closure",
+    "test names/count and skipped/ignored tests",
+    "hash every test executable or production executable used before later rebuild"
+  ],
+  "limits": [
+    "SDK-accounted allocation/concurrency bounds, not hard process RSS or pre-TLS/HTTP2 header/frame allocation bounds.",
+    "No 64KiB wire == 64KiB decoded-memory claim.",
+    "Prepared retains original full reservation; retries need additional owners/budget even after prior transport exit.",
+    "Generic native/durable/MCP literal-marker correction is separate sibling work.",
+    "e18bdd9 terminal-prefix functional gates remain independently unrun."
+  ]
+}

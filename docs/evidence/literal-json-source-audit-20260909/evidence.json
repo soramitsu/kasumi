@@ -1,0 +1,87 @@
+{
+  "schema": 1,
+  "scope": "Read-only source audit; no compiled or executed Rust/native counterexamples",
+  "source_commit": "47b28e421670bb8f02036edc6bbc65dd7e06e2c4",
+  "head_at_finish": "8972d2136f972cf40284efeb5f083bc2fecee3f5",
+  "files": {
+    "Cargo.lock": {
+      "sha256": "f42fec1f6e7232b1cd5e9c564cfff56dfec7634f2548eab7eb2096a0d0c17c78",
+      "matches_source_commit": true
+    },
+    "crates/kasumi-types/src/lib.rs": {
+      "sha256": "0fd45840066800ba360b4f320ba959e59c7eb6bb0df9fe95e4e9054a90963e9d",
+      "matches_source_commit": true
+    },
+    "crates/kasumi-types/src/history.rs": {
+      "sha256": "3413c421b267ffe8615064d9d4c233cff720f47921c65dfbbabcd7354e0c71b3",
+      "matches_source_commit": true
+    },
+    "crates/kasumi-types/src/atomic.rs": {
+      "sha256": "7ea5075068b2e02c9846e8d8eb4125da2db900ffb032cbbb02ba2d4b198187a8",
+      "matches_source_commit": true
+    },
+    "crates/kasumi-types/src/schema.rs": {
+      "sha256": "2b5c7421c196236cdcdd45268d9724aec29283e3a02295e2dce3af5ba588a561",
+      "matches_source_commit": true
+    },
+    "crates/kasumi-types/src/security_audit.rs": {
+      "sha256": "f389824d24c64c62b610aed381f566798952a158d309cfa83b74a6b6158f8bfc",
+      "matches_source_commit": true
+    },
+    "crates/kasumi-server/src/api.rs": {
+      "sha256": "96eaab901586654adfc531ecbbc94844b206b147ae641e6bb8cdeea358db2623",
+      "matches_source_commit": true
+    },
+    "crates/kasumi-server/src/rpc.rs": {
+      "sha256": "223788d0b149dcc58ecd8a558de21b77c6597349c91875439f5f15a601cfa361",
+      "matches_source_commit": true
+    },
+    "crates/kasumi-server/src/mcp.rs": {
+      "sha256": "3553741f382515713c08237bd4b6bd473521632cb31f75415f10d9132507236c",
+      "matches_source_commit": true
+    },
+    "crates/kasumi-engine/src/state.rs": {
+      "sha256": "7f35d41f17a9edf2a875e2d169200fdfb96b0816479592fd6a4b1322c3a0e144",
+      "matches_source_commit": true
+    },
+    "crates/kasumi-engine/src/snapshot_codec.rs": {
+      "sha256": "5f2b1f2f1fab7b9d59577e0d7c5db181a4c51219506de9d628de235dba0231d5",
+      "matches_source_commit": true
+    },
+    "crates/kasumi-engine/src/snapshot_index.rs": {
+      "sha256": "43081bf0c4c5d8f88716467205aa6f7b0402e953920e69eb52ef309118fc6e6e",
+      "matches_source_commit": true
+    },
+    "crates/kasumi-engine/src/history_reads.rs": {
+      "sha256": "d118c0d05f92a6e8e9ab45b7153a479caa8ed8ae71f2d2782f1d0d337ca53b4c",
+      "matches_source_commit": true
+    },
+    "crates/kasumi-engine/src/backup_verify.rs": {
+      "sha256": "b2239977bcb9b27ddb172bb5c3e678968b183624cc3d9b83dfcdf0889934f8e9",
+      "matches_source_commit": true
+    },
+    "crates/kasumi-query/src/validation.rs": {
+      "sha256": "707cb00610f0311e52324f7d35337e955b28033c85cef97787a8acfe1805e640",
+      "matches_source_commit": true
+    },
+    "crates/kasumi-query/src/structured.rs": {
+      "sha256": "0b3c40196724ed85dbe720cca84b5409cead9aa82d9726324406c493fc0a4a22",
+      "matches_source_commit": true
+    },
+    "crates/kasumi-raft/src/command.rs": {
+      "sha256": "c1ee8635f7c63db9b5ff168c318db67c276559d2329aea3af71ecc346e065505",
+      "matches_source_commit": true
+    }
+  },
+  "report": "/tmp/kasumi-literal-json-inbound-audit.md",
+  "report_sha256": "7b9ad0a3396bbbdcad41d5f5c1799bafa7c30614fe87f23ef62d8b2efcd45a2c",
+  "baseline_report": "docs/evidence/frozen-linux-arm64-3a8d512-terminal-20260908/run/evidence.json",
+  "no_cargo_or_native_execution": true,
+  "dependency_sources": {
+    "/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_json-1.0.151/src/value/de.rs": "ceda1bf415aafde89caa83bf275811b70d393717d4e1038e0c61822d2da02993",
+    "/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_json-1.0.151/src/de.rs": "4998d7e252eb513be85b298e287048b4fb283882e9ba7df905f572f07200f3f3",
+    "/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_json-1.0.151/src/raw.rs": "0e6ae2ade492a3c5c090dfaf31f03ff4e54123a5a47b59def5f1b3dcc035a2e3",
+    "/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rmcp-3.2.0/src/model.rs": "fc49cdae250ff899812be8b9efb3a33a03ba445603df699df7bedaa33dc004e0",
+    "/Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rmcp-3.2.0/src/transport/common/server_side_http.rs": "c4f82b5a6c36b8e48d8124741c5aaa0764b8e27afb16ee022f19af987505a376"
+  }
+}
