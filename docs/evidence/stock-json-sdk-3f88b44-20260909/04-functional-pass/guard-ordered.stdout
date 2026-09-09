@@ -1,0 +1,34 @@
+{
+  "fixture_root": "/private/tmp/kasumi-stock-sdk-consumer/external-tests/stock-json-sdk",
+  "local_packages": [
+    "kasumi-client",
+    "kasumi-clock",
+    "kasumi-serving",
+    "kasumi-stock-json-sdk-consumer",
+    "kasumi-transport",
+    "kasumi-types"
+  ],
+  "consumer_features": [
+    "default",
+    "numbers-and-raw",
+    "ordered"
+  ],
+  "serde_json": {
+    "id": "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.151",
+    "version": "1.0.151",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "features": [
+      "arbitrary_precision",
+      "default",
+      "indexmap",
+      "preserve_order",
+      "raw_value",
+      "std"
+    ],
+    "checksum": "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
+  },
+  "root_patch_absent": true,
+  "scope": "Resolver graph only; no compiled binary or network acceptance claim",
+  "metadata_sha256": "67f5fd4705f3ea7720198033ef55969a312aef138fffc554e63785a1711af2ec",
+  "lock_sha256": "a8e28648a99e39be408e011d28559ec2edbc8cc5c333f207b59315c438471699"
+}

@@ -132,6 +132,16 @@ gate above and usable installation artifacts.
 
 ## Current verified increments
 
+- External stock SDK checkpoint `3f88b44` passes the exact canonical-admission
+  test under `preserve_order` and all six public literal-decoding tests in each
+  default/ordered graph (13 test executions). Locked metadata and actual compiled
+  artifacts verify stock serde_json and the permitted SDK-only dependency graph;
+  source/lock stay unchanged and every process group drains. Preparation, the
+  initial package-selection failure, the corrected compile-only diagnostic and
+  final actual results are retained in
+  `docs/evidence/stock-json-sdk-3f88b44-20260909`. This closes the scoped external
+  consumer check; combined engine/server/native and final release gates remain
+  open. No compatibility API, decoder fallback or format alias was introduced.
 - Validation checkpoint `075e24d` combines current release tooling, corrected
   JSON dependency, canonical SDK and shutdown/receipt source. It passes all 36
   release-tool Python tests, exact vendored dependency checks, formatting, six

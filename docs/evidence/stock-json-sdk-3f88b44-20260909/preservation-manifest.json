@@ -1,0 +1,410 @@
+{
+  "schema": 1,
+  "scope": "Exact copies of external SDK validation evidence; no executable or secret material copied",
+  "source": "3f88b449299a33b23c48543566365cd97ebdb1ab",
+  "omitted": "preserved-executables directories; executable SHA256 values and original paths remain in each evidence.json",
+  "files": [
+    {
+      "original": "/tmp/kasumi-stock-sdk-dependency-preparation-9aad42e/evidence.json",
+      "retained": "01-dependency-preparation/evidence.json",
+      "bytes": 7108,
+      "sha256": "e883b57d45f78d97368974c8ff8c017cdd6c49b8b6eb42148db932ea977ffb22"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-dependency-preparation-9aad42e/generate-lockfile.stderr",
+      "retained": "01-dependency-preparation/generate-lockfile.stderr",
+      "bytes": 189,
+      "sha256": "0f944dbd6a91753b65fea607fc1d84671ab65d4ca24d9bd4703449dc7c9459e3"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-dependency-preparation-9aad42e/generate-lockfile.stdout",
+      "retained": "01-dependency-preparation/generate-lockfile.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-dependency-preparation-9aad42e/guard-default.stderr",
+      "retained": "01-dependency-preparation/guard-default.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-dependency-preparation-9aad42e/guard-default.stdout",
+      "retained": "01-dependency-preparation/guard-default.stdout",
+      "bytes": 940,
+      "sha256": "bf945c4cc4ceaa5705114d583bf026aa2b8e9ccf2f5c8e4532b6fbf427076987"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-dependency-preparation-9aad42e/guard-ordered.stderr",
+      "retained": "01-dependency-preparation/guard-ordered.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-dependency-preparation-9aad42e/guard-ordered.stdout",
+      "retained": "01-dependency-preparation/guard-ordered.stdout",
+      "bytes": 982,
+      "sha256": "754ada9df2b950ecfe74ed4c754ba8f1f13cebd0f4f622abf70b4fd05b0827a1"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-dependency-preparation-9aad42e/metadata-default.stderr",
+      "retained": "01-dependency-preparation/metadata-default.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-dependency-preparation-9aad42e/metadata-default.stdout",
+      "retained": "01-dependency-preparation/metadata-default.stdout",
+      "bytes": 909200,
+      "sha256": "7a151e637b574883838d52564d612967aa733fab6d5ab9ac4f97197ce542c169"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-dependency-preparation-9aad42e/metadata-ordered.stderr",
+      "retained": "01-dependency-preparation/metadata-ordered.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-dependency-preparation-9aad42e/metadata-ordered.stdout",
+      "retained": "01-dependency-preparation/metadata-ordered.stdout",
+      "bytes": 909468,
+      "sha256": "1e17426ca301fc90fb31f05d7e1c3d225a9291576df7e43243b725736438215d"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-dependency-preparation-9aad42e/progress.json",
+      "retained": "01-dependency-preparation/progress.json",
+      "bytes": 59,
+      "sha256": "835cb5881dff0c7e573112964cc9038c69288423bca12d10a9b33d8585702763"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-dependency-preparation-9aad42e/source-after.json",
+      "retained": "01-dependency-preparation/source-after.json",
+      "bytes": 248281,
+      "sha256": "2d44427fee14fc46a4b623ab73048da795d53cfda68afbc567c92b3311a81e4a"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-dependency-preparation-9aad42e/source-before.json",
+      "retained": "01-dependency-preparation/source-before.json",
+      "bytes": 248176,
+      "sha256": "67aef6481dcb82210d52c72defdd70adab799e89248ae8d69d08d90ed986071b"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-validation-3f88b44/canonical-admission-ordered.stderr",
+      "retained": "02-selection-failure/canonical-admission-ordered.stderr",
+      "bytes": 65,
+      "sha256": "e8ba25ea0890bf6630709e9f811ccb71944e489015181c521f81c609f9040c2a"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-validation-3f88b44/canonical-admission-ordered.stdout",
+      "retained": "02-selection-failure/canonical-admission-ordered.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-validation-3f88b44/evidence.json",
+      "retained": "02-selection-failure/evidence.json",
+      "bytes": 5274,
+      "sha256": "2e951892edcbb52aec675fa92b2d4172ae9cd4d17fee7d4df116bd5adcb11df2"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-validation-3f88b44/guard-ordered.stderr",
+      "retained": "02-selection-failure/guard-ordered.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-validation-3f88b44/guard-ordered.stdout",
+      "retained": "02-selection-failure/guard-ordered.stdout",
+      "bytes": 1064,
+      "sha256": "98d70e3b449b9d5b0dcb2c770d51243d817e3e00dbce8cfcb27a33d12c014dd6"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-validation-3f88b44/metadata-ordered.stderr",
+      "retained": "02-selection-failure/metadata-ordered.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-validation-3f88b44/metadata-ordered.stdout",
+      "retained": "02-selection-failure/metadata-ordered.stdout",
+      "bytes": 909685,
+      "sha256": "67f5fd4705f3ea7720198033ef55969a312aef138fffc554e63785a1711af2ec"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-validation-3f88b44/progress.json",
+      "retained": "02-selection-failure/progress.json",
+      "bytes": 59,
+      "sha256": "e37bd3205ce2797fbacec1018a53c8f8d02f7222df6129908c1f28d798acd510"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-validation-3f88b44/source-after.json",
+      "retained": "02-selection-failure/source-after.json",
+      "bytes": 248970,
+      "sha256": "161e58d74334131e8dd3d8b1b6f6845e7a5b3114eca605e40d7e7e1aed99ac2a"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-validation-3f88b44/source-before.json",
+      "retained": "02-selection-failure/source-before.json",
+      "bytes": 248970,
+      "sha256": "161e58d74334131e8dd3d8b1b6f6845e7a5b3114eca605e40d7e7e1aed99ac2a"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-selection-diagnostic-3f88b44/canonical-selection-no-run.stderr",
+      "retained": "03-compile-only-diagnostic/canonical-selection-no-run.stderr",
+      "bytes": 5894,
+      "sha256": "fbd7cfd9a4bdb73c545cca1583e7e5bc0891d6a7ecce85cedbb06555edaf329a"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-selection-diagnostic-3f88b44/canonical-selection-no-run.stdout",
+      "retained": "03-compile-only-diagnostic/canonical-selection-no-run.stdout",
+      "bytes": 168566,
+      "sha256": "c5ffeb3dca7e63dc7550dfbe31b5ac2637c328d0e22fac9b2a88f9fa3df91a72"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-selection-diagnostic-3f88b44/evidence.json",
+      "retained": "03-compile-only-diagnostic/evidence.json",
+      "bytes": 389719,
+      "sha256": "43d7b072d144ef593d07dd073ee45993fb558548223ecb123d99111b29a219ba"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-selection-diagnostic-3f88b44/guard-ordered.stderr",
+      "retained": "03-compile-only-diagnostic/guard-ordered.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-selection-diagnostic-3f88b44/guard-ordered.stdout",
+      "retained": "03-compile-only-diagnostic/guard-ordered.stdout",
+      "bytes": 1064,
+      "sha256": "98d70e3b449b9d5b0dcb2c770d51243d817e3e00dbce8cfcb27a33d12c014dd6"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-selection-diagnostic-3f88b44/metadata-ordered.stderr",
+      "retained": "03-compile-only-diagnostic/metadata-ordered.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-selection-diagnostic-3f88b44/metadata-ordered.stdout",
+      "retained": "03-compile-only-diagnostic/metadata-ordered.stdout",
+      "bytes": 909685,
+      "sha256": "67f5fd4705f3ea7720198033ef55969a312aef138fffc554e63785a1711af2ec"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-selection-diagnostic-3f88b44/progress.json",
+      "retained": "03-compile-only-diagnostic/progress.json",
+      "bytes": 59,
+      "sha256": "39cf3e5bd84e42cd2b072d7bd6ebdf53782d493a776fac2d5e6c82033912402d"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-selection-diagnostic-3f88b44/source-after.json",
+      "retained": "03-compile-only-diagnostic/source-after.json",
+      "bytes": 248970,
+      "sha256": "161e58d74334131e8dd3d8b1b6f6845e7a5b3114eca605e40d7e7e1aed99ac2a"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-selection-diagnostic-3f88b44/source-before.json",
+      "retained": "03-compile-only-diagnostic/source-before.json",
+      "bytes": 248970,
+      "sha256": "161e58d74334131e8dd3d8b1b6f6845e7a5b3114eca605e40d7e7e1aed99ac2a"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-functional-3f88b44/canonical-admission-ordered.stderr",
+      "retained": "04-functional-pass/canonical-admission-ordered.stderr",
+      "bytes": 189,
+      "sha256": "72999ecf613c2ad5118951741da00c90be5fa69de3aef6ceab95a394fa97d080"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-functional-3f88b44/canonical-admission-ordered.stdout",
+      "retained": "04-functional-pass/canonical-admission-ordered.stdout",
+      "bytes": 168584,
+      "sha256": "4009bff9a5809ed2e1d2dfe0c99b3fecab5d5a30503efb944a7e3e403d516804"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-functional-3f88b44/evidence.json",
+      "retained": "04-functional-pass/evidence.json",
+      "bytes": 1165296,
+      "sha256": "6c840e923c533d9261192e0f7260fc49373f183ca0866bb81ba5e48f94380ad5"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-functional-3f88b44/guard-default.stderr",
+      "retained": "04-functional-pass/guard-default.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-functional-3f88b44/guard-default.stdout",
+      "retained": "04-functional-pass/guard-default.stdout",
+      "bytes": 984,
+      "sha256": "40ebd0e97cc53aade63c461927f27444d56515427ef5cf5789a5f0242fa801b2"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-functional-3f88b44/guard-ordered.stderr",
+      "retained": "04-functional-pass/guard-ordered.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-functional-3f88b44/guard-ordered.stdout",
+      "retained": "04-functional-pass/guard-ordered.stdout",
+      "bytes": 1064,
+      "sha256": "98d70e3b449b9d5b0dcb2c770d51243d817e3e00dbce8cfcb27a33d12c014dd6"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-functional-3f88b44/metadata-default.stderr",
+      "retained": "04-functional-pass/metadata-default.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-functional-3f88b44/metadata-default.stdout",
+      "retained": "04-functional-pass/metadata-default.stdout",
+      "bytes": 909417,
+      "sha256": "ac6a542eae7c4d42f3bf8f438bc7932be3e2dad01325e01dbb5955f06bf79bd2"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-functional-3f88b44/metadata-ordered.stderr",
+      "retained": "04-functional-pass/metadata-ordered.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-functional-3f88b44/metadata-ordered.stdout",
+      "retained": "04-functional-pass/metadata-ordered.stdout",
+      "bytes": 909685,
+      "sha256": "67f5fd4705f3ea7720198033ef55969a312aef138fffc554e63785a1711af2ec"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-functional-3f88b44/progress.json",
+      "retained": "04-functional-pass/progress.json",
+      "bytes": 59,
+      "sha256": "e5f587a518b487728ef63ece4330414a74520c9a0db815576ab3ea58d67fec43"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-functional-3f88b44/public-default.stderr",
+      "retained": "04-functional-pass/public-default.stderr",
+      "bytes": 619,
+      "sha256": "f3ffbddbb7e66e5765d8f817f8ae3f8c252323dafdf4ba2f64a884e3c0e25d31"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-functional-3f88b44/public-default.stdout",
+      "retained": "04-functional-pass/public-default.stdout",
+      "bytes": 169696,
+      "sha256": "19734a59014abe3af97ab3d3f8e8b1786021ed18a52daea145b8085b82edc49c"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-functional-3f88b44/public-ordered.stderr",
+      "retained": "04-functional-pass/public-ordered.stderr",
+      "bytes": 393,
+      "sha256": "78de49ed9f35500269be7d6d85439e0415ec87ca7511d7ec9c3756a201bca1b2"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-functional-3f88b44/public-ordered.stdout",
+      "retained": "04-functional-pass/public-ordered.stdout",
+      "bytes": 169776,
+      "sha256": "61a78712dbedabe8424fce04334ce3fe764975e8fb15e9f5b195cf664aa9f2c1"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-functional-3f88b44/source-after.json",
+      "retained": "04-functional-pass/source-after.json",
+      "bytes": 248970,
+      "sha256": "161e58d74334131e8dd3d8b1b6f6845e7a5b3114eca605e40d7e7e1aed99ac2a"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-functional-3f88b44/source-before.json",
+      "retained": "04-functional-pass/source-before.json",
+      "bytes": 248970,
+      "sha256": "161e58d74334131e8dd3d8b1b6f6845e7a5b3114eca605e40d7e7e1aed99ac2a"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-functional-3f88b44/summary.json",
+      "retained": "04-functional-pass/summary.json",
+      "bytes": 4295,
+      "sha256": "f51195fb15f4aab279a8ca889594d60f4ac6b2b21183fa98c5037b2d65dc21cb"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-dependency-preparation.py",
+      "retained": "runners/kasumi-stock-sdk-dependency-preparation.py",
+      "bytes": 8887,
+      "sha256": "961f03786a5f4bd3789da0cfe3774f90be7545d0a0fe9883ef3666bd47b4a6ce"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-validation-3f88b44.py",
+      "retained": "runners/kasumi-stock-sdk-validation-3f88b44.py",
+      "bytes": 12653,
+      "sha256": "a28aab8aa665b239788048af4c229cb1b6466f70b277bbbaa1604137597c290a"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-selection-diagnostic-3f88b44.py",
+      "retained": "runners/kasumi-stock-sdk-selection-diagnostic-3f88b44.py",
+      "bytes": 12815,
+      "sha256": "6910f85bf8ed6caaee49e39fb20e79ca4fcf62ac8bab3adf80a978063cfc7c28"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-functional-3f88b44.py",
+      "retained": "runners/kasumi-stock-sdk-functional-3f88b44.py",
+      "bytes": 13063,
+      "sha256": "f4528fb2c18e724c362e66963832194dc0b4ee44653dfb90c183c0b9111f79b6"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-consumer-e36f596-source-evidence.json",
+      "retained": "source/kasumi-stock-sdk-consumer-e36f596-source-evidence.json",
+      "bytes": 12239,
+      "sha256": "5bbe1320e0eb3fb253924f944c57bb733f6533b4e3e3d0007da72ab4fccd67bd"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-consumer-3f88b44-source-evidence.json",
+      "retained": "source/kasumi-stock-sdk-consumer-3f88b44-source-evidence.json",
+      "bytes": 250836,
+      "sha256": "e1916bb70a36efdd5fd45056cbee3ea629d0fd0d90dcb34cdfa8cc455dd3fb2c"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-consumer-source-tests.log",
+      "retained": "source/kasumi-stock-sdk-consumer-source-tests.log",
+      "bytes": 618,
+      "sha256": "0822253ac4153c0472e2c6a642a2c370ef4f6e0093db2f08b7dc3a6014f3da10"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-consumer-updated-source-tests.log",
+      "retained": "source/kasumi-stock-sdk-consumer-updated-source-tests.log",
+      "bytes": 618,
+      "sha256": "1a1caf05a413e7dd3e8c2b1b9387afcc249e82515bb077666a9d5a5061089153"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-consumer/external-tests/stock-json-sdk/Cargo.lock",
+      "retained": "fixture-source/Cargo.lock",
+      "bytes": 46955,
+      "sha256": "a8e28648a99e39be408e011d28559ec2edbc8cc5c333f207b59315c438471699"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-consumer/external-tests/stock-json-sdk/Cargo.toml",
+      "retained": "fixture-source/Cargo.toml",
+      "bytes": 696,
+      "sha256": "a30f536d6fb6f1e9f46835bb029dbbd04d025295a8d98de3ee44bb19324ba2b9"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-consumer/external-tests/stock-json-sdk/README.md",
+      "retained": "fixture-source/README.md",
+      "bytes": 7556,
+      "sha256": "0b3cf97f39a8c57b1057334b102e505ae91623afd4385f057bac726058c1850c"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-consumer/external-tests/stock-json-sdk/check_graph.py",
+      "retained": "fixture-source/check_graph.py",
+      "bytes": 5224,
+      "sha256": "324e71ac2693908da65586a9a3eaaeb5babbfca28fb772268201ed04388a5e3c"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-consumer/external-tests/stock-json-sdk/consumer.rs",
+      "retained": "fixture-source/consumer.rs",
+      "bytes": 9837,
+      "sha256": "ba0fbd9338c0ba8297bf20c2f35ea7281193591de81cab056e04c69d07e39a87"
+    },
+    {
+      "original": "/tmp/kasumi-stock-sdk-consumer/external-tests/stock-json-sdk/test_check_graph.py",
+      "retained": "fixture-source/test_check_graph.py",
+      "bytes": 4093,
+      "sha256": "d2d514fcac1767c86da51f75c8f71bcd7c497ef971a731b15fa4b23372be1859"
+    }
+  ]
+}

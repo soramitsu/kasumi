@@ -1,0 +1,143 @@
+{
+  "evidence": "/tmp/kasumi-stock-sdk-functional-3f88b44/evidence.json",
+  "evidence_sha256": "6c840e923c533d9261192e0f7260fc49373f183ca0866bb81ba5e48f94380ad5",
+  "source": "3f88b449299a33b23c48543566365cd97ebdb1ab",
+  "tree": "fe2b6babfd7b1ab264c1ef17d96ed9b85298db22",
+  "lock_sha256": "a8e28648a99e39be408e011d28559ec2edbc8cc5c333f207b59315c438471699",
+  "source_unchanged": true,
+  "gates": [
+    {
+      "name": "metadata-ordered",
+      "exit_code": 0,
+      "duration_seconds": 0.482,
+      "source_unchanged": true,
+      "drained": true
+    },
+    {
+      "name": "guard-ordered",
+      "exit_code": 0,
+      "duration_seconds": 0.373,
+      "source_unchanged": true,
+      "drained": true
+    },
+    {
+      "name": "canonical-admission-ordered",
+      "exit_code": 0,
+      "duration_seconds": 3.364,
+      "source_unchanged": true,
+      "drained": true,
+      "decoder_features": [
+        [
+          "arbitrary_precision",
+          "default",
+          "indexmap",
+          "preserve_order",
+          "raw_value",
+          "std"
+        ]
+      ],
+      "summaries": [
+        [
+          "ok",
+          "1",
+          "0",
+          "0",
+          "0",
+          "30"
+        ]
+      ],
+      "executables": [
+        {
+          "path": "/tmp/kasumi-stock-sdk-consumer-target/debug/deps/kasumi_client-52e9b681cb860a92",
+          "sha256": "18608ad21bd91615d0f7bbd76b823e0e78843c1449ee930ec6189f2b0ee1c84d",
+          "preserved_path": "/tmp/kasumi-stock-sdk-functional-3f88b44/preserved-executables/18608ad21bd91615d0f7bbd76b823e0e78843c1449ee930ec6189f2b0ee1c84d-kasumi_client-52e9b681cb860a92",
+          "package_id": "path+file:///private/tmp/kasumi-stock-sdk-consumer/crates/kasumi-client#0.1.0"
+        }
+      ]
+    },
+    {
+      "name": "metadata-default",
+      "exit_code": 0,
+      "duration_seconds": 0.371,
+      "source_unchanged": true,
+      "drained": true
+    },
+    {
+      "name": "guard-default",
+      "exit_code": 0,
+      "duration_seconds": 0.302,
+      "source_unchanged": true,
+      "drained": true
+    },
+    {
+      "name": "public-default",
+      "exit_code": 0,
+      "duration_seconds": 16.072,
+      "source_unchanged": true,
+      "drained": true,
+      "decoder_features": [
+        [
+          "arbitrary_precision",
+          "default",
+          "raw_value",
+          "std"
+        ]
+      ],
+      "summaries": [
+        [
+          "ok",
+          "6",
+          "0",
+          "0",
+          "0",
+          "0"
+        ]
+      ],
+      "executables": [
+        {
+          "path": "/tmp/kasumi-stock-sdk-consumer-target/debug/deps/consumer-1fcb27532586af41",
+          "sha256": "c5ba017741a977ed205c84d0ce4a55d256ab895efd069309430421602f5be3f4",
+          "preserved_path": "/tmp/kasumi-stock-sdk-functional-3f88b44/preserved-executables/c5ba017741a977ed205c84d0ce4a55d256ab895efd069309430421602f5be3f4-consumer-1fcb27532586af41",
+          "package_id": "path+file:///private/tmp/kasumi-stock-sdk-consumer/external-tests/stock-json-sdk#kasumi-stock-json-sdk-consumer@0.0.0"
+        }
+      ]
+    },
+    {
+      "name": "public-ordered",
+      "exit_code": 0,
+      "duration_seconds": 6.589,
+      "source_unchanged": true,
+      "drained": true,
+      "decoder_features": [
+        [
+          "arbitrary_precision",
+          "default",
+          "indexmap",
+          "preserve_order",
+          "raw_value",
+          "std"
+        ]
+      ],
+      "summaries": [
+        [
+          "ok",
+          "6",
+          "0",
+          "0",
+          "0",
+          "0"
+        ]
+      ],
+      "executables": [
+        {
+          "path": "/tmp/kasumi-stock-sdk-consumer-target/debug/deps/consumer-1443de335c7d9c6f",
+          "sha256": "11a0a34330aef9398e8b2fb159b19bc7e9dd79af0c2634fea401004b427e55ab",
+          "preserved_path": "/tmp/kasumi-stock-sdk-functional-3f88b44/preserved-executables/11a0a34330aef9398e8b2fb159b19bc7e9dd79af0c2634fea401004b427e55ab-consumer-1443de335c7d9c6f",
+          "package_id": "path+file:///private/tmp/kasumi-stock-sdk-consumer/external-tests/stock-json-sdk#kasumi-stock-json-sdk-consumer@0.0.0"
+        }
+      ]
+    }
+  ],
+  "functional_count": 13,
+  "scope": "External stock SDK graph and bounded literal/canonical behavior only; not daemon/native/server/engine release acceptance"
+}

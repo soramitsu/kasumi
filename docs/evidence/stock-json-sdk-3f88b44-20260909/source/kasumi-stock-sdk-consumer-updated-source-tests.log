@@ -1,0 +1,8 @@
+test_all_expected_modes_accept_only_their_effective_features (test_check_graph.GraphProofTests.test_all_expected_modes_accept_only_their_effective_features) ... ok
+test_archive_checksum_and_feature_mismatch_cannot_claim_stock_graph (test_check_graph.GraphProofTests.test_archive_checksum_and_feature_mismatch_cannot_claim_stock_graph) ... ok
+test_root_workspace_fork_duplicate_and_database_graphs_are_rejected (test_check_graph.GraphProofTests.test_root_workspace_fork_duplicate_and_database_graphs_are_rejected) ... ok
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.005s
+
+OK

@@ -1,0 +1,4 @@
+   Compiling kasumi-client v0.1.0 (/private/tmp/kasumi-stock-sdk-consumer/crates/kasumi-client)
+   Compiling kasumi-stock-json-sdk-consumer v0.0.0 (/private/tmp/kasumi-stock-sdk-consumer/external-tests/stock-json-sdk)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.58s
+     Running consumer.rs (/tmp/kasumi-stock-sdk-consumer-target/debug/deps/consumer-1443de335c7d9c6f)
