@@ -1,0 +1,37 @@
+{
+  "source": "/tmp/kasumi-production-recovery-followon",
+  "target": "/tmp/kasumi-production-root-target",
+  "expected_head": "981494949767fa52a81937a58914bf5aba030ee5",
+  "expected_tree": "2d3b40f66d9d7f17ed79b4777fa4fd940b05010f",
+  "output": "/tmp/kasumi-9814949-followon-check",
+  "scope": "First combined alltarget/allfeature compilation andformatting of b17T5 plus exactterminal-only status, establishedquorum scheduling/originalcap enforcement, unwiredNodeDiskprimitive, externalhistorystructuralpeak admission, and canonicalstagedfixture reconciliation. Keepgoing compiler collects independenttargeterrors underoriginal900sdeadline; nofunctional/native/finalreleaseclaim. Previousb17/f650 passes retaintheir exactsources anddo notcertify thiscombination.",
+  "gates": [
+    {
+      "name": "combined-all-targets-check",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "check",
+        "--locked",
+        "--keep-going",
+        "--offline",
+        "-j1",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--message-format=json-render-diagnostics"
+      ],
+      "required_tests": []
+    },
+    {
+      "name": "format",
+      "timeout_seconds": 60,
+      "cargo_args": [
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "required_tests": []
+    }
+  ]
+}
