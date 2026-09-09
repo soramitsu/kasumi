@@ -370,3 +370,82 @@ fn crash_child() {
         _ => panic!("unexpected node crash child mode"),
     }
 }
+
+#[test]
+fn reads_enforce_payload_bounds_even_for_empty_buffers() {
+    let directory = directory();
+    let path = directory.path().join("read-bounds");
+    let owner = NodeFile::create_new(&path, ID).unwrap();
+    let backend = owner.backend();
+    backend.set_len(8).unwrap();
+    assert!(backend.read(8, &mut []).is_ok());
+    assert_eq!(
+        backend.read(9, &mut []).unwrap_err().kind(),
+        io::ErrorKind::UnexpectedEof
+    );
+    assert_eq!(
+        backend.read(8, &mut [0]).unwrap_err().kind(),
+        io::ErrorKind::UnexpectedEof
+    );
+    assert_eq!(
+        backend.read(7, &mut [0, 0]).unwrap_err().kind(),
+        io::ErrorKind::UnexpectedEof
+    );
+    backend.set_len(0).unwrap();
+    assert!(backend.read(0, &mut []).is_ok());
+    assert!(backend.read(1, &mut []).is_err());
+    backend.close().unwrap();
+}
+
+#[test]
+fn resize_drains_a_write_after_its_extent_check_before_truncating() {
+    use std::sync::mpsc::{self, RecvTimeoutError};
+    let directory = directory();
+    let path = directory.path().join("resize-drain");
+    let owner = NodeFile::create_new(&path, ID).unwrap();
+    let backend = owner.backend();
+    backend.set_len(8).unwrap();
+    let expected_header = header(ID, PREPARED);
+    let (entered, paused) = mpsc::channel();
+    let (resume, released) = mpsc::channel();
+    *owner.after_write_check.lock() = Some(Box::new(move || {
+        entered.send(()).unwrap();
+        released.recv_timeout(Duration::from_secs(5)).unwrap();
+    }));
+    let (attempted, attempting) = mpsc::channel();
+    let (finished, completed) = mpsc::channel();
+    std::thread::scope(|scope| {
+        let writer = scope.spawn(|| backend.write(0, b"12345678"));
+        paused.recv_timeout(Duration::from_secs(5)).unwrap();
+        // The actual write is paused after its accepted range check with its
+        // descriptor owner held. A resize must wait for that operation to drain.
+        let resizer = scope.spawn(|| {
+            attempted.send(()).unwrap();
+            finished.send(backend.set_len(0)).unwrap();
+        });
+        attempting.recv_timeout(Duration::from_secs(5)).unwrap();
+        let before_release = completed.recv_timeout(Duration::from_millis(250));
+        let waited_for_write = matches!(&before_release, Err(RecvTimeoutError::Timeout));
+        // Always release before asserting, so a failing ownership regression
+        // still drains both bounded scoped threads and their file descriptors.
+        resume.send(()).unwrap();
+        let write = writer.join().unwrap();
+        let resize = match before_release {
+            Err(RecvTimeoutError::Timeout) => {
+                completed.recv_timeout(Duration::from_secs(5)).unwrap()
+            }
+            Ok(result) => result,
+            Err(error) => panic!("resize worker disconnected: {error}"),
+        };
+        resizer.join().unwrap();
+        write.unwrap();
+        resize.unwrap();
+        assert!(
+            waited_for_write,
+            "resize completed before the admitted write drained"
+        );
+    });
+    assert_eq!(backend.len().unwrap(), 0);
+    assert_eq!(std::fs::read(&path).unwrap(), expected_header);
+    backend.close().unwrap();
+}

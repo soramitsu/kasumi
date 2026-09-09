@@ -21,6 +21,9 @@ const MAGIC: &[u8; 16] = b"KASUMI-NODE-0001";
 const PREPARED: u8 = 1;
 const READY: u8 = 2;
 
+#[cfg(test)]
+type AfterWriteCheck = Box<dyn FnOnce() + Send>;
+
 #[derive(Clone, Copy)]
 enum HeaderUse {
     Reopen,
@@ -48,6 +51,8 @@ pub(crate) struct NodeFile {
     parent: File,
     path: PathBuf,
     id: Uuid,
+    #[cfg(test)]
+    after_write_check: parking_lot::Mutex<Option<AfterWriteCheck>>,
 }
 
 impl NodeFile {
@@ -139,6 +144,8 @@ impl NodeFile {
             parent,
             path,
             id,
+            #[cfg(test)]
+            after_write_check: Default::default(),
         }))
     }
 
@@ -256,14 +263,26 @@ impl StorageBackend for NodeBackend {
     }
 
     fn read(&self, offset: u64, out: &mut [u8]) -> io::Result<()> {
-        physical_end(offset, u64::try_from(out.len()).map_err(io::Error::other)?)?;
+        let end = physical_end(offset, u64::try_from(out.len()).map_err(io::Error::other)?)?;
         let guard = self.0.file.read();
-        present(&guard)?.read_exact_at(out, physical_end(offset, 0)?)
+        let file = present(&guard)?;
+        // read_exact_at accepts empty buffers beyond EOF; the backend contract
+        // requires the complete range check even when no bytes are requested.
+        if end > file.metadata()?.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "node read exceeds the allocated payload",
+            ));
+        }
+        file.read_exact_at(out, physical_end(offset, 0)?)
     }
 
     fn set_len(&self, length: u64) -> io::Result<()> {
         let physical = physical_end(length, 0)?;
-        let guard = self.0.file.read();
+        // Drain checked reads/writes before changing their admitted extent. A
+        // shared lock permits shrink between a write's range check and pwrite,
+        // after which that write can silently extend the truncated payload.
+        let guard = self.0.file.write();
         present(&guard)?.set_len(physical)
     }
 
@@ -281,6 +300,10 @@ impl StorageBackend for NodeBackend {
         let file = present(&guard)?;
         if end > file.metadata()?.len() {
             return Err(io::Error::other("node write exceeds the allocated payload"));
+        }
+        #[cfg(test)]
+        if let Some(pause) = self.0.after_write_check.lock().take() {
+            pause();
         }
         file.write_all_at(bytes, physical_end(offset, 0)?)
     }

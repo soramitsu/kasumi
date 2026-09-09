@@ -101,3 +101,12 @@ fixed fixture UUID is default-off `test-utils` material. Production constructors
 have no fixture/default identity. Caller source and these tests remain uncompiled
 until the coordinated combined gate includes the separately owned standalone,
 target and security-audit initialization changes.
+
+Backend reads explicitly check the entire range against the held payload length,
+including an empty buffer whose offset is past EOF. Resizing holds exclusive
+descriptor ownership until the physical length transition finishes; it cannot
+shrink between another operation's admitted range check and actual I/O. Ordinary
+reads and writes still share descriptor ownership, while resize and close drain
+them. Two further source regressions exercise the empty-read boundary and pause
+an actual accepted write while a bounded scoped resize worker attempts to drain.
+These tests are source-only until the superseding frozen store gate executes.
