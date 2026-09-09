@@ -871,7 +871,9 @@ async fn encrypted_restore_preserves_original_stage_scope_without_reviving_histo
     );
     assert_eq!(
         finished_status.outcome,
-        StagedOutcome::Committed { receipt }
+        StagedOutcome::Finished {
+            outcome: Ok(receipt)
+        }
     );
     assert_eq!(stopped.transaction.scope.incarnation, source_incarnation);
     close(db, audit).await;
