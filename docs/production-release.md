@@ -90,7 +90,7 @@ integration; the final integrated source must then pass the complete gates above
    passed at their recorded sources; a final whitespace-only successor passed
    formatting. These changes are integrated through `4815312`. The earlier
    Linux failure remains failed until a new complete Linux run passes.
-2. Finish ordinary receipt lifetime and permanent identity migration. Original
+2. Finish ordinary receipt lifetime and permanent identity storage. Original
    mutation scope/digest, native/MCP resolution and literal JSON changes have
    focused integrated evidence. An [external stock-JSON SDK consumer](evidence/stock-json-sdk-3f88b44-20260909/README.md)
    passed 13 tests without the workspace patch. Neither those tests nor explicit
@@ -105,7 +105,8 @@ integration; the final integrated source must then pass the complete gates above
    assertion that completed restored transactions remain in the resident map.
    `5daf4d3` verifies exact permanent counts and public original-scope outcomes;
    `deb8ead` reconciles the other staged terminal fixtures. Those successors
-   still need execution. Sixteen later remainder gates were unrun.
+   pass in the [combined `f4a472f` functional cohort](evidence/followon-f4a472f-functional-20260909/README.md),
+   including the actual killed-upload test. Later prefix/native gates remain unrun.
 4. Validate the combined KASUMIT5 format and restore admission checkpoint.
    `4dddb8d` replaces the prototype decoder directly, inspects typed frames with
    fixed scratch, and separates resident bytes from permanent history. It adds
@@ -126,7 +127,8 @@ integration; the final integrated source must then pass the complete gates above
    [passes combined workspace compilation and formatting](evidence/followon-f4a472f-check-20260909/README.md).
    Its [predecessor compilation failure](evidence/followon-9814949-check-20260909/README.md)
    remains preserved; the successor retains the owning zeroizing plaintext
-   buffer without another copy. Its new functional gates are pending. Structural
+   buffer without another copy. Its three new history ownership/admission tests
+   pass in that functional cohort. Structural
    accounting and the resident/index estimator require actual capacity validation.
 5. Complete signer coverage, authority genesis-prefix reopen and the durable
    target completion coordinator. The source-frozen receiver and coordinator
@@ -136,8 +138,10 @@ integration; the final integrated source must then pass the complete gates above
    `ef772f3` and combined at `c1ba870`. Review also found that
    fresh unanimous startup blocks established-quorum status, and live Complete
    admission must independently reject a changed original cap; `6a4cf3e` implements
-   both corrections and is compiled in `f4a472f`. Its pure and replicated Control
-   regressions still require execution. Automatic safe successors, physical cleanup and actual
+   both corrections and is compiled in `f4a472f`. Seven pure receiver tests and
+   two replicated Control tests pass. The third replicated activation test aborts
+   with stack overflow during nested route-publication setup; its failure and
+   executable are preserved. Eighteen later gates are unrun. Automatic safe successors, physical cleanup and actual
    source-unavailable recovery remain unfinished. Absence never resolves a mutation.
 6. Expand the [successful small offline Linux diagnostic](evidence/small-offline-native-3a8d512-20260909/README.md)
    to final-source acceptance. It exercised 129 documents through private
@@ -151,7 +155,14 @@ integration; the final integrated source must then pass the complete gates above
    configured Control incarnation before startup. Explicit standalone init must
    provision Control/application catalogs and bootstrap before startup can stop
    creating them. Strict replicated readmission is a separate pending change.
-   No missing-state fallback or compatibility constructor is permitted.
+   `851741c` adds strict replicated readmission and `a4e0062` provisions standalone
+   Control/application state before the completion marker; both are source-only.
+   Review found that raw redb could be modified before format rejection.
+   `44bf8d7` replaces that open path with a fixed node-file envelope and mandatory
+   installed UUID before writable recovery. Its explicit create/existing/owned-empty
+   constructors require caller reconciliation; its eight tests are unrun.
+   Immutable stored genesis must also remain separate from operational endpoints
+   and membership. No missing-state fallback or compatibility constructor is permitted.
 
 Persistent disk admission and native durable resource reservations must be
 implemented before claiming configured node disk capacity or reserved import
@@ -164,6 +175,13 @@ compilation and [23 focused ownership/device/scratch tests](evidence/node-disk-f
 It retains closed-file charges, bounds descriptor metadata and shares filesystem
 promises with scratch storage. Production constructors and redb lifecycle paths
 remain unwired; this result does not close persistent capacity acceptance.
+
+The separate redb owner-failure prototype `4f62863` passes
+[20 focused regressions](evidence/redb-owner-failure-4f62863-20260909/README.md),
+including permanent failure fencing and ordinary capacity rollback. Its
+[complete upstream source overlay](evidence/redb-upstream-preparation-20260909/README.md)
+is prepared at `bdde797`; dependency/tool preparation, full upstream verification,
+fuzzing and production integration remain open.
 
 ## Work ownership
 
