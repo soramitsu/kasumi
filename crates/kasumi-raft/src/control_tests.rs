@@ -556,9 +556,17 @@ async fn retirement_recovery_never_selects_between_multiple_committed_successes(
         .await?;
     log.save_committed(Some(id(2))).await?;
     let reader = ControlLog::open(stores.custody().clone(), 1, group())?;
-    assert!(reader.retirement_seed(1)?.is_some());
-    assert!(reader.retirement_seed(2)?.is_some());
-    assert!(reader.recover_retired().is_err());
+    for index in [1, 2] {
+        let committed = reader.retirement_seed(index)?.unwrap();
+        assert!(committed.seed.recovered_success(index)?.is_some());
+    }
+    let error = reader.recover_retired().unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("multiple successful retirement candidates"),
+        "unexpected recovery rejection: {error:#}"
+    );
     assert!(retired_boundary(stores.custody())?.is_none());
     assert!(load::<AppliedCursor>(stores.custody().store(), META, b"applied")?.is_none());
     stores.application().shutdown().await;
