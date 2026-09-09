@@ -45,7 +45,7 @@ Four regression sources exercise actual encrypted stores and Tokio workers:
 - `database_shutdown_cancels_undispatched_shared_permit_wait_before_other_tenant_drain`:
   an aborted worker's successful unclaimed Prepared retains the shared permit.
   Another tenant still shuts down before that owner drains. Draining the first
-  owner releases both permit and registration before physical reopen.
+owner releases both permit and registration before physical reopen.
 
 All held blocking callbacks have finite failure deadlines and a guard that
 releases them on assertion failure. These are cancellation/panic tests, not
@@ -59,3 +59,12 @@ registry. Callers must retain Database through explicit shutdown; the server's
 retained serving owner supplies that separate boundary. Opaque Raft failures
 continue to require retained ownership. Final production, capacity and recovery
 gates remain open.
+
+Original JoinError objects can carry an opaque Rust panic payload. A trusted
+embedding caller can panic with an Arc to a runtime or another physical owner;
+retaining that payload can then form an ownership cycle through the diagnostic
+itself. The structural cell design avoids built-in owner cycles, but the string
+panic regressions do not establish arbitrary-payload disposal. A joined child
+alone does not prove that references held by its error payload have disappeared.
+The release-wide terminal panic diagnostic/disposal contract remains open; this
+checkpoint neither normalizes payloads nor claims their physical cleanup.
