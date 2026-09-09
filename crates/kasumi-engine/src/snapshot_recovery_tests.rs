@@ -9,7 +9,7 @@ fn coordinator() -> TenantState {
     state.staged_terminal_head =
         StagedTerminalHead::empty(&state.tenant, &state.incarnation).unwrap();
     state.target_resolution_head =
-        TargetResolutionHead::empty(&state.tenant, &state.incarnation).unwrap();
+        kasumi_types::TargetResolutionHead::empty(&state.tenant, &state.incarnation).unwrap();
     state.revision = 3;
     state.policy_epoch = 1;
     let partition = ControlAuthorityPartition {

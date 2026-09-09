@@ -823,6 +823,10 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn public_restore_admits_resident_state_without_charging_permanent_stream_as_ram() {
         use crate::staged_terminal::{AppliedIdentity, AppliedOrigin, Builder, Row};
+        use kasumi_types::{
+            ErrorCode, Mutation, Precondition, StagedChunk, StagedManifest, StagedOutcome,
+            StagedTransaction, StagedTransactionScope, WriteReceipt, staged_digest,
+        };
 
         let incarnation = uuid::Uuid::new_v4().to_string();
         let (_source_dir, source, source_store) = fixture(&incarnation).await;
