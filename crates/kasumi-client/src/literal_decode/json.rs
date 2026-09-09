@@ -91,10 +91,11 @@ pub(super) fn array(raw: &RawValue, max: usize) -> Result<Vec<&RawValue>, Client
     decoder.end()?;
     Ok(rows)
 }
-pub(super) fn document(
+fn feed_document(
     raw: &RawValue,
     call: &Call,
-    maximum_version: u64,
+    expected_id: &str,
+    expected_version: u64,
 ) -> Result<Document, ClientError> {
     call.check()?;
     let mut object = Object::new(raw)?;
@@ -102,8 +103,10 @@ pub(super) fn document(
     let version: u64 = object.field("version")?;
     let body = object.raw("body")?;
     object.finish()?;
-    if id.is_empty() || version == 0 || version > maximum_version {
-        return Err(invalid("invalid native document identity/version"));
+    // A feed carries the exact full after-image from this commit, not an older
+    // document observed at or before it. Check metadata before building its body.
+    if id.is_empty() || id != expected_id || version == 0 || version != expected_version {
+        return Err(invalid("change feed document identity/version differs"));
     }
     Ok(Document {
         id,
@@ -142,6 +145,7 @@ pub(super) fn schema(
         .is_none_or(|id| id.is_nil() || id.to_string() != incarnation)
         || values.0.len() > call.limits.max_rows
         || values.0.len() != request.collections.len()
+        || schema_epoch > policy_epoch
     {
         return Err(invalid("schema collection/identity differs"));
     }
@@ -155,11 +159,14 @@ pub(super) fn schema(
             None
         } else {
             let mut value = Object::new(raw)?;
-            let definition = definition(value.raw("definition")?, call)?;
             let data_epoch = value.field("data_epoch")?;
             let archived_document_count = value.field("archived_document_count")?;
+            if schema_epoch == 0 || data_epoch > revision {
+                return Err(invalid("schema collection epoch differs"));
+            }
+            let definition = definition(value.raw("definition")?, call)?;
             value.finish()?;
-            if definition.name != name || data_epoch > revision {
+            if definition.name != name {
                 return Err(invalid("schema collection epoch/name differs"));
             }
             Some(SchemaCollection {
@@ -292,10 +299,7 @@ pub(super) fn feed(
                 let document = if raw.get() == "null" {
                     None
                 } else {
-                    let document = document(raw, call, event_revision)?;
-                    if document.id != id {
-                        return Err(invalid("change feed document ID differs"));
-                    }
+                    let document = feed_document(raw, call, &id, event_revision)?;
                     Some(Arc::new(document))
                 };
                 previous = sequence;

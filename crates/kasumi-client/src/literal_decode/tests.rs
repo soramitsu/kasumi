@@ -469,6 +469,86 @@ fn change_feed_events_bind_scope_and_commit_metadata_without_rejecting_filtered_
     resumed["caught_up"] = json!(false);
     assert!(feed_result(&resumed, &request, &call).is_err());
 }
+#[test]
+fn change_feed_after_image_requires_exact_commit_version_and_identity() {
+    let options = read_options();
+    let call = options.admit().unwrap();
+    let request = ReadChangeFeed {
+        collections: BTreeSet::from(["docs".into()]),
+        start: ChangeFeedStart::Beginning,
+        limit: 10,
+    };
+    // The current outer revision may be newer, but an event's full after-image
+    // must retain precisely its own commit revision and document identity.
+    let valid = json!({"kind":"events","revision":5,"first_available_sequence":1,
+    "head_sequence":1,"next":{"tenant":"tenant","principal":"reader",
+        "incarnation":uuid::Uuid::new_v4().to_string(),"collections":["docs"],"after_sequence":1},
+    "caught_up":true,"events":[
+        {"sequence":1,"revision":3,"ordinal":0,"commit_event_count":1,
+            "collection":"docs","id":"a","document":{"id":"a","version":3,"body":body()}}
+    ]});
+    let ChangeFeedPage::Events { events, .. } = feed_result(&valid, &request, &call).unwrap()
+    else {
+        panic!("expected full after-image")
+    };
+    assert_eq!(events[0].document.as_ref().unwrap().body, body());
+    for (pointer, value) in [
+        ("/events/0/document/version", json!(0)),
+        ("/events/0/document/version", json!(2)),
+        ("/events/0/document/version", json!(4)),
+        ("/events/0/document/id", json!("other")),
+    ] {
+        let mut invalid = valid.clone();
+        *invalid.pointer_mut(pointer).unwrap() = value;
+        assert!(feed_result(&invalid, &request, &call).is_err(), "{invalid}");
+    }
+    let mut deleted = valid;
+    deleted["events"][0]["document"] = Value::Null;
+    assert!(feed_result(&deleted, &request, &call).is_ok());
+}
+#[test]
+fn schema_read_rejects_impossible_schema_and_collection_epochs() {
+    let options = read_options();
+    let call = options.admit().unwrap();
+    let prepared = Prepared {
+        input: vec![],
+        kind: Kind::Schema(ReadSchema {
+            collections: BTreeSet::from(["docs".into()]),
+        }),
+        path: "",
+        _owner: call.clone(),
+    };
+    let valid = json!({"incarnation":uuid::Uuid::new_v4().to_string(),
+        "revision":4,"policy_epoch":3,"schema_epoch":2,
+        "collections":{"docs":{"definition":{
+            "name":"docs","write_mode":"mutable","retention_class":"operational",
+            "schema":body(),"indexes":[],"strict_read_audit":false
+        },"data_epoch":4,"archived_document_count":0}}});
+    let decoded: SchemaSnapshot = decode(&raw(&valid), &prepared, &call).unwrap();
+    assert_eq!(
+        decoded.collections["docs"]
+            .as_ref()
+            .unwrap()
+            .definition
+            .schema,
+        body()
+    );
+    for (pointer, value) in [
+        ("/schema_epoch", json!(4)),
+        ("/schema_epoch", json!(0)),
+        ("/collections/docs/data_epoch", json!(5)),
+    ] {
+        let mut invalid = valid.clone();
+        *invalid.pointer_mut(pointer).unwrap() = value;
+        assert!(decode::<SchemaSnapshot>(&raw(&invalid), &prepared, &call).is_err());
+    }
+    // Requested absent names do not imply the installation has no schemas.
+    let mut absent = valid;
+    absent["collections"]["docs"] = Value::Null;
+    assert!(decode::<SchemaSnapshot>(&raw(&absent), &prepared, &call).is_ok());
+    absent["schema_epoch"] = json!(0);
+    assert!(decode::<SchemaSnapshot>(&raw(&absent), &prepared, &call).is_ok());
+}
 type Pause = (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>);
 static PAUSE: std::sync::Mutex<Option<Pause>> = std::sync::Mutex::new(None);
 fn paused(_: &serde_json::value::RawValue, _: &Call) -> Result<(), ClientError> {

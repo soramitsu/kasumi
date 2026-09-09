@@ -50,3 +50,32 @@ cargo +1.97.1 test --locked -p kasumi-server --lib --all-features -j1 \
 Require exactly one passing test, bounded runner timeout and complete process-group
 drain. Preserve exact source/tree/lock/configuration hashes, raw failures and test
 executable hash before any rebuild. Direct formatting is not compilation evidence.
+
+## Source review follow-up
+
+The bounded review of `a407cab` found two response metadata gaps in the SDK:
+
+- A feed document with a version older than its event revision was accepted.
+  The engine publishes complete after-images and its durable feed validator
+  requires `document.version == commit.revision`. The SDK now checks exact ID
+  and revision before constructing the literal document body. Deletes still
+  accept the explicit null document, and the outer read revision may be newer.
+- A schema response could claim `schema_epoch > policy_epoch`, or return an
+  existing collection with a zero schema epoch. These violate the engine's
+  canonical state checks. The SDK rejects them; absent requested collections
+  still permit a zero schema epoch or an already established schema epoch.
+
+The added pure tests are
+`literal_decode::tests::change_feed_after_image_requires_exact_commit_version_and_identity`
+and `literal_decode::tests::schema_read_rejects_impossible_schema_and_collection_epochs`.
+They have not run yet. The native test, payload and original deadlines are unchanged.
+
+Source tracing confirmed that the numeric fixture fits Kasumi's current bounded
+exact-decimal model: at most 100 input digits and exponents between -1000 and
+1000. The JSON Schema dependency enables arbitrary precision and compares the
+constant's literal object recursively. The SDK token admission precedes raw-span
+construction; literal object maps and numbers do not cross a generic
+`from_value` bridge. Pooled query pages retain their originating member, original
+query revision and request owner; each retry acquires its own response admission.
+This review is not execution evidence and does not extend accounting to general
+mutation RPC encoding or claim that schema compilation has been exercised.
