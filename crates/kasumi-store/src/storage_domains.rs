@@ -1,6 +1,7 @@
 //! Installed encryption domains for one application incarnation. Control access
 //! never unwraps the application catalog and is not a data authorization bypass.
 use super::*;
+use redb::ReadableTable;
 use std::collections::BTreeSet;
 
 const BINDING_NS: &str = "kasumi.storage-domains";
