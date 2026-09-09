@@ -135,7 +135,12 @@ async fn actual_retired_snapshot_only_replica_preserves_rotated_custody_after_en
     let app_provider = Arc::new(LocalKeyProvider::new([0xe2; 32]));
     let custody_provider = Arc::new(LocalKeyProvider::new([0xe3; 32]));
     let domains = TenantStorageSet::open_fixture(
-        NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap(),
+        NodeStore::create_new(
+            &path,
+            kasumi_store::test_utils::NODE_STORE_ID,
+            kasumi_store::ScratchDisk::fixture(),
+        )
+        .unwrap(),
         context().tenant,
         app_provider.clone(),
         custody_provider.clone(),
@@ -203,7 +208,12 @@ async fn actual_retired_snapshot_only_replica_preserves_rotated_custody_after_en
     drop(domains);
     // Only the independently keyed domain is opened after the encrypted restart.
     let custody = CustodyStore::open(
-        NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap(),
+        NodeStore::open_existing(
+            &path,
+            kasumi_store::test_utils::NODE_STORE_ID,
+            kasumi_store::ScratchDisk::fixture(),
+        )
+        .unwrap(),
         context().tenant,
         custody_provider,
     )

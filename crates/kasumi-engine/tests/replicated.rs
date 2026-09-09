@@ -46,8 +46,24 @@ fn bootstrap() -> ReplicatedBootstrap {
             .collect(),
     }
 }
-async fn store(path: &std::path::Path) -> (Arc<TenantStore>, Arc<kasumi_engine::SecurityAudit>) {
-    let node = NodeStore::open(path, kasumi_store::ScratchDisk::fixture()).unwrap();
+async fn store(
+    path: &std::path::Path,
+    create: bool,
+) -> (Arc<TenantStore>, Arc<kasumi_engine::SecurityAudit>) {
+    let node = (if create {
+        NodeStore::create_new(
+            path,
+            kasumi_store::test_utils::NODE_STORE_ID,
+            kasumi_store::ScratchDisk::fixture(),
+        )
+    } else {
+        NodeStore::open_existing(
+            path,
+            kasumi_store::test_utils::NODE_STORE_ID,
+            kasumi_store::ScratchDisk::fixture(),
+        )
+    })
+    .unwrap();
     let audit = common::security_audit(node.clone()).await;
     let store = TenantStore::open_fixture(
         node,
@@ -124,7 +140,7 @@ async fn replicated_service_preserves_batches_receipts_and_cursor_fences_across_
     let mut nodes = BTreeMap::new();
     let mut audits = BTreeMap::new();
     for id in 1..=3 {
-        let (node_store, audit) = store(&root.path().join(format!("{id}.redb"))).await;
+        let (node_store, audit) = store(&root.path().join(format!("{id}.redb")), true).await;
         audits.insert(id, audit.clone());
         let db = open_fixture_replicated(
             id,
@@ -333,7 +349,7 @@ async fn replicated_service_preserves_batches_receipts_and_cursor_fences_across_
     shutdown_nodes(&mut nodes, &mut audits, &router, &group).await;
     nodes.clear();
     for id in 1..=3 {
-        let (node_store, audit) = store(&root.path().join(format!("{id}.redb"))).await;
+        let (node_store, audit) = store(&root.path().join(format!("{id}.redb")), false).await;
         audits.insert(id, audit.clone());
         let db = open_fixture_replicated(
             id,
@@ -387,7 +403,7 @@ async fn replicated_service_preserves_batches_receipts_and_cursor_fences_across_
 #[tokio::test]
 async fn deployment_modes_and_live_store_ownership_cannot_be_overridden() {
     let root = tempfile::tempdir().unwrap();
-    let (store, audit) = store(&root.path().join("local.redb")).await;
+    let (store, audit) = store(&root.path().join("local.redb"), true).await;
     let bootstrap = bootstrap();
     let db = open_fixture(
         kasumi_store::test_utils::with_custody(
@@ -468,7 +484,7 @@ async fn replicated_restore_has_identical_genesis_and_requires_quorum_audit_befo
     use kasumi_engine::{ReplicaRestoreConfig, prepare_replicated_restore};
     let root = tempfile::tempdir().unwrap();
     let initial = bootstrap();
-    let (source_store, source_audit) = store(&root.path().join("source.redb")).await;
+    let (source_store, source_audit) = store(&root.path().join("source.redb"), true).await;
     let source = open_fixture(
         kasumi_store::test_utils::with_custody(
             source_store,
@@ -532,7 +548,8 @@ async fn replicated_restore_has_identical_genesis_and_requires_quorum_audit_befo
     let mut hashes = BTreeSet::new();
     let mut restored_bootstrap = None;
     for id in 1..=3 {
-        let (node_store, audit) = store(&root.path().join(format!("restored-{id}.redb"))).await;
+        let (node_store, audit) =
+            store(&root.path().join(format!("restored-{id}.redb")), true).await;
         audits.insert(id, audit.clone());
         let restored = prepare_replicated_restore(
             &kasumi_engine::RestoreSource {
@@ -627,7 +644,8 @@ async fn replicated_restore_has_identical_genesis_and_requires_quorum_audit_befo
     shutdown_nodes(&mut nodes, &mut audits, &router, &group).await;
     nodes.clear();
     for id in 1..=3 {
-        let (node_store, audit) = store(&root.path().join(format!("restored-{id}.redb"))).await;
+        let (node_store, audit) =
+            store(&root.path().join(format!("restored-{id}.redb")), false).await;
         audits.insert(id, audit.clone());
         let db = open_fixture_replicated(
             id,

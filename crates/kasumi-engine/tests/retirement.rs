@@ -74,8 +74,9 @@ struct Fixture {
 impl Fixture {
     async fn new() -> Self {
         let directory = tempfile::tempdir().unwrap();
-        let node = NodeStore::open(
+        let node = NodeStore::create_new(
             directory.path().join("node.redb"),
+            kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
         )
         .unwrap();
@@ -220,8 +221,9 @@ async fn actual_retirement_seed_reopens_through_control_domain_without_loading_s
     // The custody opener has no application provider or Database parameter.
     // This observation is recovery input; it is not a fresh Admin proof.
     let custody = kasumi_store::CustodyStore::open(
-        NodeStore::open(
+        NodeStore::open_existing(
             directory.path().join("node.redb"),
+            kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
         )
         .unwrap(),
@@ -361,7 +363,12 @@ async fn exact_retirement_seals_source_once_and_retains_proof_after_encrypted_re
     drop(audit);
     drop(store);
     drop(destination);
-    let node = NodeStore::open(path, kasumi_store::ScratchDisk::fixture()).unwrap();
+    let node = NodeStore::open_existing(
+        path,
+        kasumi_store::test_utils::NODE_STORE_ID,
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
     let audit = common::security_audit(node.clone()).await;
     let db = reopen_custody(node, audit.clone()).await;
     // Permanent recovery does not need backup objects to be read again, and the
@@ -895,7 +902,12 @@ async fn durable_retirement_stop_defeats_inflight_backup_verification_and_surviv
     drop(audit);
     drop(store);
     drop(destination);
-    let node = NodeStore::open(path, kasumi_store::ScratchDisk::fixture()).unwrap();
+    let node = NodeStore::open_existing(
+        path,
+        kasumi_store::test_utils::NODE_STORE_ID,
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
     let audit = common::security_audit(node.clone()).await;
     let store = TenantStore::open_fixture(
         node,

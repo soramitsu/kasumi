@@ -211,8 +211,9 @@ async fn actual_tls_peer_readiness_enrolls_replaces_and_fences_revoked_member() 
         .unwrap();
         network.install_audit(Arc::new(TestAudit)).unwrap();
         let store = TenantStorageSet::open(
-            NodeStore::open(
+            NodeStore::create_new(
                 dir.path().join(format!("node-{id}.redb")),
+                kasumi_store::test_utils::NODE_STORE_ID,
                 kasumi_store::ScratchDisk::fixture(),
             )
             .unwrap(),

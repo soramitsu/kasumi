@@ -13,8 +13,9 @@ use std::{collections::BTreeSet, sync::Arc};
 #[tokio::test]
 async fn pressure_rejects_new_proposals_and_queries_but_committed_raft_work_still_applies() {
     let directory = tempfile::tempdir().unwrap();
-    let node = NodeStore::open(
+    let node = NodeStore::create_new(
         directory.path().join("node.redb"),
+        kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();
@@ -151,8 +152,9 @@ async fn pressure_rejects_new_proposals_and_queries_but_committed_raft_work_stil
 #[tokio::test]
 async fn explicit_local_bootstrap_reads_the_complete_committed_generation() {
     let directory = tempfile::tempdir().unwrap();
-    let node = NodeStore::open(
+    let node = NodeStore::create_new(
         directory.path().join("local.redb"),
+        kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();

@@ -56,7 +56,7 @@ impl Fixture {
         let mut groups = Vec::new();
         let mut stores = Vec::new();
         for id in 1..=3 {
-            let store = common::store(&dir.path().join(format!("{id}.redb"))).await?;
+            let store = common::store(&dir.path().join(format!("{id}.redb")), true).await?;
             let config = kasumi_raft::Config {
                 enable_elect: false,
                 snapshot_policy: kasumi_raft::SnapshotPolicy::Never,

@@ -2232,8 +2232,9 @@ mod tests {
     #[tokio::test]
     async fn queued_deadlines_use_admission_time_and_survive_caller_cancellation() {
         let directory = tempfile::tempdir().unwrap();
-        let node = NodeStore::open(
+        let node = NodeStore::create_new(
             directory.path().join("node.redb"),
+            kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
         )
         .unwrap();

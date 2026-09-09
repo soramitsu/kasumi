@@ -88,8 +88,9 @@ fn query() -> QueryRequest {
 #[tokio::test]
 async fn one_epoch_ages_commands_and_leases_without_renewing_original_credentials() {
     let directory = tempfile::tempdir().unwrap();
-    let node = NodeStore::open(
+    let node = NodeStore::create_new(
         directory.path().join("node.redb"),
+        kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();
@@ -238,8 +239,9 @@ async fn one_epoch_ages_commands_and_leases_without_renewing_original_credential
 #[tokio::test]
 async fn fixture_epoch_rejects_production_storage_before_bootstrap() {
     let directory = tempfile::tempdir().unwrap();
-    let node = NodeStore::open(
+    let node = NodeStore::create_new(
         directory.path().join("node.redb"),
+        kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();

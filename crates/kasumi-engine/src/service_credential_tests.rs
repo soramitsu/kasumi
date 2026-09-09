@@ -7,7 +7,12 @@ struct CredentialFixture {
 impl CredentialFixture {
     async fn new() -> Self {
         let directory = tempfile::tempdir().unwrap();
-        let node = NodeStore::open(directory.path().join("node.redb"), kasumi_store::ScratchDisk::fixture()).unwrap();
+        let node = NodeStore::create_new(
+            directory.path().join("node.redb"),
+            kasumi_store::test_utils::NODE_STORE_ID,
+            kasumi_store::ScratchDisk::fixture(),
+        )
+        .unwrap();
         let provider = Arc::new(LocalKeyProvider::new([0x97; 32]));
         let audit_store = TenantStore::open_fixture(
             node.clone(),
@@ -17,7 +22,12 @@ impl CredentialFixture {
         .await
         .unwrap();
         let node_admission = NodeAdmission::new(AdmissionConfig::default()).unwrap();
-        let audit = SecurityAudit::open(audit_store, kasumi_types::AuditRetentionBudget::default(), node_admission.clone()).unwrap();
+        let audit = SecurityAudit::open(
+            audit_store,
+            kasumi_types::AuditRetentionBudget::default(),
+            node_admission.clone(),
+        )
+        .unwrap();
         let context = RequestContext {
             authorization: RequestAuthorization::service_identity(),
             tenant: "credential-expiry".into(),
@@ -49,8 +59,7 @@ impl CredentialFixture {
         )
         .await
         .unwrap();
-        db.install_admission(node_admission)
-            .unwrap();
+        db.install_admission(node_admission).unwrap();
         db.administer(
             context.clone(),
             Operation::CreateCollection(CollectionDefinition {
@@ -199,7 +208,14 @@ fn replicated_credential_admission_uses_only_captured_time_after_local_expiry() 
         );
         assert!(replica.generation().unwrap().state.receipts.is_empty());
     }
-    assert_eq!(first.logical_snapshot(&kasumi_store::ScratchDisk::fixture()).unwrap(), second.logical_snapshot(&kasumi_store::ScratchDisk::fixture()).unwrap());
+    assert_eq!(
+        first
+            .logical_snapshot(&kasumi_store::ScratchDisk::fixture())
+            .unwrap(),
+        second
+            .logical_snapshot(&kasumi_store::ScratchDisk::fixture())
+            .unwrap()
+    );
 }
 
 #[tokio::test]
@@ -302,7 +318,8 @@ async fn committed_effect_with_expired_ack_is_resolved_by_fresh_credential() {
         .operation_receipt(&fixture.context, "committed")
         .await
         .unwrap()
-        .unwrap().outcome
+        .unwrap()
+        .outcome
         .unwrap();
     let document = fixture
         .db
@@ -369,10 +386,27 @@ struct CredentialPausedDestination {
 }
 #[async_trait::async_trait]
 impl BackupDestination for CredentialPausedDestination {
-    async fn session_put(&self, session: uuid::Uuid, slot: kasumi_store::BackupSessionSlot, bytes: Vec<u8>) -> anyhow::Result<()> { kasumi_store::BackupDestination::session_put(self.inner.as_ref(), session, slot, bytes).await }
-    async fn session_get(&self, session: uuid::Uuid, slot: kasumi_store::BackupSessionSlot, limit: usize) -> anyhow::Result<Option<Vec<u8>>> {
-        if matches!(slot, kasumi_store::BackupSessionSlot::Object(_)) { self.entered.notify_one(); self.release.notified().await; }
-        kasumi_store::BackupDestination::session_get(self.inner.as_ref(), session, slot, limit).await
+    async fn session_put(
+        &self,
+        session: uuid::Uuid,
+        slot: kasumi_store::BackupSessionSlot,
+        bytes: Vec<u8>,
+    ) -> anyhow::Result<()> {
+        kasumi_store::BackupDestination::session_put(self.inner.as_ref(), session, slot, bytes)
+            .await
+    }
+    async fn session_get(
+        &self,
+        session: uuid::Uuid,
+        slot: kasumi_store::BackupSessionSlot,
+        limit: usize,
+    ) -> anyhow::Result<Option<Vec<u8>>> {
+        if matches!(slot, kasumi_store::BackupSessionSlot::Object(_)) {
+            self.entered.notify_one();
+            self.release.notified().await;
+        }
+        kasumi_store::BackupDestination::session_get(self.inner.as_ref(), session, slot, limit)
+            .await
     }
 
     async fn put(&self, id: uuid::Uuid, bytes: Vec<u8>) -> anyhow::Result<()> {
@@ -401,7 +435,11 @@ async fn long_backup_verification_and_encoded_read_recheck_original_credential()
     );
     let proof = fixture
         .db
-        .backup_checkpoint(fixture.context.clone(), destination.as_ref(), uuid::Uuid::new_v4())
+        .backup_checkpoint(
+            fixture.context.clone(),
+            destination.as_ref(),
+            uuid::Uuid::new_v4(),
+        )
         .await
         .unwrap();
     let paused = CredentialPausedDestination {
@@ -429,9 +467,11 @@ async fn long_backup_verification_and_encoded_read_recheck_original_credential()
     // Creation can have already published immutable encrypted objects when its
     // credential expires; suppress the proof and report uncertainty.
     let clock = Arc::new(CredentialClock(std::sync::atomic::AtomicU64::new(0)));
-    let create = fixture
-        .db
-        .backup_checkpoint(fixture.credential(clock.clone()), &paused, uuid::Uuid::new_v4());
+    let create = fixture.db.backup_checkpoint(
+        fixture.credential(clock.clone()),
+        &paused,
+        uuid::Uuid::new_v4(),
+    );
     let advance = async {
         paused.entered.notified().await;
         clock.0.store(1000, Ordering::SeqCst);

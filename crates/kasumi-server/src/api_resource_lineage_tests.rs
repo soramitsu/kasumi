@@ -110,8 +110,9 @@ async fn native_resources_and_two_restore_hops_preserve_immutable_issuer_facts()
                 .is_err()
         );
         let dir = tempfile::tempdir().unwrap();
-        let node = NodeStore::open(
+        let node = NodeStore::create_new(
             dir.path().join("node.redb"),
+            kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
         )
         .unwrap();
@@ -194,8 +195,9 @@ async fn native_resources_and_two_restore_hops_preserve_immutable_issuer_facts()
         drop(restored);
         drop(stores);
         let reopened_store = TenantStore::open_fixture(
-            NodeStore::open(
+            NodeStore::open_existing(
                 dir.path().join("node.redb"),
+                kasumi_store::test_utils::NODE_STORE_ID,
                 kasumi_store::ScratchDisk::fixture(),
             )
             .unwrap(),

@@ -64,7 +64,12 @@ async fn fixture(
 async fn every_embedded_request_boundary_durably_audits_denials_and_sealed_tenants() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("node.redb");
-    let node = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
+    let node = NodeStore::create_new(
+        &path,
+        kasumi_store::test_utils::NODE_STORE_ID,
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
     let provider = Arc::new(LocalKeyProvider::new([31; 32]));
     let service_provider = Arc::new(LocalKeyProvider::new([32; 32]));
     let (db, store, audit) = fixture(node.clone(), provider, service_provider.clone()).await;
@@ -157,7 +162,12 @@ async fn every_embedded_request_boundary_durably_audits_denials_and_sealed_tenan
     drop(store);
     drop(audit);
     drop(node);
-    let reopened = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
+    let reopened = NodeStore::open_existing(
+        &path,
+        kasumi_store::test_utils::NODE_STORE_ID,
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
     let service = TenantStore::open_fixture(reopened, SECURITY_TENANT.into(), service_provider)
         .await
         .unwrap();
@@ -175,7 +185,12 @@ fn cancelled_embedded_denial_writer_is_drained_before_shutdown_and_reopen() {
     runtime.block_on(async {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("node.redb");
-        let node = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
+        let node = NodeStore::create_new(
+            &path,
+            kasumi_store::test_utils::NODE_STORE_ID,
+            kasumi_store::ScratchDisk::fixture(),
+        )
+        .unwrap();
         let weak = Arc::downgrade(&node);
         let service_provider = Arc::new(LocalKeyProvider::new([44; 32]));
         let (db, store, audit) = fixture(
@@ -216,7 +231,12 @@ fn cancelled_embedded_denial_writer_is_drained_before_shutdown_and_reopen() {
         drop(audit);
         drop(node);
         assert!(weak.upgrade().is_none());
-        let reopened = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
+        let reopened = NodeStore::open_existing(
+            &path,
+            kasumi_store::test_utils::NODE_STORE_ID,
+            kasumi_store::ScratchDisk::fixture(),
+        )
+        .unwrap();
         let service = TenantStore::open_fixture(reopened, SECURITY_TENANT.into(), service_provider)
             .await
             .unwrap();
@@ -230,8 +250,9 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
     use kasumi_engine::{ReplicaPlacement, ReplicaRestoreConfig, prepare_replicated_restore};
     use kasumi_raft::{Config, InProcessRouter};
     let dir = tempfile::tempdir().unwrap();
-    let source_node = NodeStore::open(
+    let source_node = NodeStore::create_new(
         dir.path().join("source.redb"),
+        kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();
@@ -250,7 +271,12 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
         .unwrap();
     let backup = checkpoint.backup_id();
     let target_path = dir.path().join("target.redb");
-    let target_node = NodeStore::open(&target_path, kasumi_store::ScratchDisk::fixture()).unwrap();
+    let target_node = NodeStore::create_new(
+        &target_path,
+        kasumi_store::test_utils::NODE_STORE_ID,
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
     let target_store = TenantStore::open_fixture(
         target_node.clone(),
         "tenant".into(),
@@ -391,7 +417,12 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
     drop(target_domains);
     drop(audit);
     drop(target_node);
-    let reopened = NodeStore::open(&target_path, kasumi_store::ScratchDisk::fixture()).unwrap();
+    let reopened = NodeStore::open_existing(
+        &target_path,
+        kasumi_store::test_utils::NODE_STORE_ID,
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
     let service = TenantStore::open_fixture(reopened, SECURITY_TENANT.into(), service_key)
         .await
         .unwrap();

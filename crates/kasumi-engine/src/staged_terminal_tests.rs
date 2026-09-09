@@ -88,7 +88,12 @@ fn stop(
 }
 async fn durable() -> (tempfile::TempDir, Arc<TenantStore>, TenantState, View) {
     let directory = tempfile::tempdir().unwrap();
-    let node = NodeStore::open(directory.path().join("node.redb"), ScratchDisk::fixture()).unwrap();
+    let node = NodeStore::create_new(
+        directory.path().join("node.redb"),
+        kasumi_store::test_utils::NODE_STORE_ID,
+        ScratchDisk::fixture(),
+    )
+    .unwrap();
     let store = TenantStore::open_fixture(
         node,
         "tenant".into(),
@@ -152,7 +157,12 @@ async fn encrypted_reopen_keeps_unapplied_terminal_rows_hidden_until_exact_repla
     store.shutdown().await;
     drop(store);
 
-    let reopened_node = NodeStore::open_existing(directory.path().join("node.redb"), disk).unwrap();
+    let reopened_node = NodeStore::open_existing(
+        directory.path().join("node.redb"),
+        kasumi_store::test_utils::NODE_STORE_ID,
+        disk,
+    )
+    .unwrap();
     let reopened_store = TenantStore::open_fixture(
         reopened_node,
         "tenant".into(),

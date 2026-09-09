@@ -2140,6 +2140,19 @@ mod tests {
     use super::*;
     use kasumi_store::test_utils::{LocalKeyProvider, ManualClock};
 
+    // A fixture must explicitly enroll its node file once. Runtime restarts only
+    // open the retained configured identity and never create missing files.
+    fn create_fixture_node(config: &RuntimeConfig) {
+        drop(
+            NodeStore::create_new(
+                &config.database_path,
+                config.database_id,
+                kasumi_store::ScratchDisk::open(config.scratch_disk.clone()).unwrap(),
+            )
+            .unwrap(),
+        );
+    }
+
     #[test]
     fn operator_example_is_valid_secret_free_and_rejects_inline_credentials() {
         let config = example_config();
@@ -2258,7 +2271,12 @@ mod tests {
     async fn service_audit_survives_reopen_and_tenant_sealing_and_fails_closed_at_quota() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("node.redb");
-        let node = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
+        let node = NodeStore::create_new(
+            &path,
+            kasumi_store::test_utils::NODE_STORE_ID,
+            kasumi_store::ScratchDisk::fixture(),
+        )
+        .unwrap();
         let keys = Arc::new(LocalKeyProvider::new([33; 32]));
         let clock = Arc::new(ManualClock::new());
         let service = TenantStore::open_fixture_with_clock(
@@ -2310,7 +2328,12 @@ mod tests {
         drop(service);
         drop(tenant);
         let service = TenantStore::open_fixture_with_clock(
-            NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap(),
+            NodeStore::open_existing(
+                &path,
+                kasumi_store::test_utils::NODE_STORE_ID,
+                kasumi_store::ScratchDisk::fixture(),
+            )
+            .unwrap(),
             SECURITY_TENANT.into(),
             keys,
             clock,
@@ -2560,7 +2583,12 @@ mod lifecycle_tests {
         for startup in [true, false] {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("listener.redb");
-            let node = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
+            let node = NodeStore::create_new(
+                &path,
+                kasumi_store::test_utils::NODE_STORE_ID,
+                kasumi_store::ScratchDisk::fixture(),
+            )
+            .unwrap();
             let weak = Arc::downgrade(&node);
             let (files, pem) = certificate_files(directory.path());
             let socket = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2648,7 +2676,14 @@ mod lifecycle_tests {
                 "listener or request retained the node after drain"
             );
             // No delay or lock retry after the same drain used by every serve exit.
-            drop(NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap());
+            drop(
+                NodeStore::open_existing(
+                    &path,
+                    kasumi_store::test_utils::NODE_STORE_ID,
+                    kasumi_store::ScratchDisk::fixture(),
+                )
+                .unwrap(),
+            );
         }
     }
 
@@ -3072,6 +3107,7 @@ mod lifecycle_tests {
                 max_bytes: 32 << 20,
             },
         );
+        create_fixture_node(&config);
         let mut incarnation = None;
         for round in 0..3 {
             let runtime = NodeRuntime::open_using(config.clone(), |_| {
@@ -3545,6 +3581,7 @@ mod lifecycle_tests {
                     None => {}
                 }
             }
+            create_fixture_node(&config);
             configurations.push(config);
         }
         drop(reserved);

@@ -142,7 +142,12 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(15), async {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("node.redb");
-            let node = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
+            let node = NodeStore::create_new(
+                &path,
+                kasumi_store::test_utils::NODE_STORE_ID,
+                kasumi_store::ScratchDisk::fixture(),
+            )
+            .unwrap();
             let weak_node = Arc::downgrade(&node);
             let admission = NodeAdmission::new(Default::default()).unwrap();
             let provider = Arc::new(LocalKeyProvider::new([51; 32]));
@@ -250,7 +255,12 @@ mod tests {
             drop(node);
             assert!(weak_node.upgrade().is_none());
             // No delay or lock retry is allowed to hide a surviving file owner.
-            let reopened = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
+            let reopened = NodeStore::open_existing(
+                &path,
+                kasumi_store::test_utils::NODE_STORE_ID,
+                kasumi_store::ScratchDisk::fixture(),
+            )
+            .unwrap();
             let store = TenantStore::open_fixture(reopened, "tenant".into(), provider)
                 .await
                 .unwrap();
@@ -267,8 +277,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn encrypted_worker_drains_hot_history_when_ordinary_capacity_is_full() {
         let directory = tempfile::tempdir().unwrap();
-        let node = NodeStore::open(
+        let node = NodeStore::create_new(
             directory.path().join("node.redb"),
+            kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
         )
         .unwrap();

@@ -742,8 +742,9 @@ async fn database(
     Arc<kasumi_engine::SecurityAudit>,
 ) {
     let dir = tempfile::tempdir().unwrap();
-    let node = NodeStore::open(
+    let node = NodeStore::create_new(
         dir.path().join("node.redb"),
+        kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();
@@ -1285,8 +1286,9 @@ async fn logical_backup_restores_suspended_with_new_incarnation_and_increasing_r
     );
 
     let target_dir = tempfile::tempdir().unwrap();
-    let node = NodeStore::open(
+    let node = NodeStore::create_new(
         target_dir.path().join("node.redb"),
+        kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();
@@ -1415,8 +1417,12 @@ async fn durable_engine_worker() {
         return;
     };
     let root = std::path::PathBuf::from(root);
-    let node =
-        NodeStore::open(root.join("node.redb"), kasumi_store::ScratchDisk::fixture()).unwrap();
+    let node = NodeStore::create_new(
+        root.join("node.redb"),
+        kasumi_store::test_utils::NODE_STORE_ID,
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
     let audit = common::security_audit(node.clone()).await;
     let store = TenantStore::open_fixture(
         node,
@@ -1489,8 +1495,9 @@ async fn killed_process_recovers_acknowledged_documents_receipts_and_bootstrap_p
     child.wait().unwrap();
     let expected: WriteReceipt =
         serde_json::from_slice(&std::fs::read(dir.path().join("ack.json")).unwrap()).unwrap();
-    let node = NodeStore::open(
+    let node = NodeStore::open_existing(
         dir.path().join("node.redb"),
+        kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();

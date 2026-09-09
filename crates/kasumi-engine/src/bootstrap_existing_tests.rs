@@ -12,8 +12,9 @@ struct Installation {
 impl Installation {
     async fn new() -> anyhow::Result<Self> {
         let directory = tempfile::tempdir()?;
-        let node = NodeStore::open(
+        let node = NodeStore::create_new(
             directory.path().join("node.redb"),
+            kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
         )?;
         let incarnation = uuid::Uuid::new_v4();
@@ -272,6 +273,7 @@ async fn existing_local_reopens_the_same_committed_standalone_after_complete_shu
     drop(node);
     let node = NodeStore::open_existing(
         directory.path().join("node.redb"),
+        kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
     )?;
     let stores = TenantStorageSet::open_existing(

@@ -272,6 +272,7 @@ impl Databases {
         operations: usize,
         replicated: bool,
         bootstraps: Option<Vec<ReplicatedBootstrap>>,
+        create: bool,
     ) -> Result<Self> {
         let replicas = if replicated { 3 } else { 1 };
         let mut nodes = Vec::new();
@@ -281,10 +282,21 @@ impl Databases {
             min_free_bytes: 256 << 20,
         })?;
         for replica in 0..replicas {
-            nodes.push(NodeStore::open(
-                path.join(format!("replica-{replica}.redb")),
-                scratch_disk.clone(),
-            )?);
+            nodes.push(
+                (if create {
+                    NodeStore::create_new(
+                        path.join(format!("replica-{replica}.redb")),
+                        kasumi_store::test_utils::NODE_STORE_ID,
+                        scratch_disk.clone(),
+                    )
+                } else {
+                    NodeStore::open_existing(
+                        path.join(format!("replica-{replica}.redb")),
+                        kasumi_store::test_utils::NODE_STORE_ID,
+                        scratch_disk.clone(),
+                    )
+                })?,
+            );
         }
         let mut audits = Vec::new();
         for node in &nodes {
@@ -500,6 +512,7 @@ async fn database_case(
         options.operations,
         replicated,
         None,
+        true,
     )
     .await?;
     let open_seconds = opened.elapsed().as_secs_f64();
@@ -689,6 +702,7 @@ async fn database_case(
         options.operations,
         replicated,
         bootstraps,
+        false,
     )
     .await?;
     for tenant in 0..tenants {
@@ -1008,7 +1022,7 @@ mod tests {
     #[tokio::test]
     async fn failed_read_workload_retains_counts_and_later_independent_work_can_run() {
         let dir = tempfile::tempdir().unwrap();
-        let databases = Databases::open(dir.path(), 1, 1, 4, false, None)
+        let databases = Databases::open(dir.path(), 1, 1, 4, false, None, true)
             .await
             .unwrap();
         let database = databases.leader(0).await.unwrap();

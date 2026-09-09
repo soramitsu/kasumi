@@ -556,11 +556,25 @@ fn changed_limits_preserve_historic_outcomes_and_keep_active_snapshots_recoverab
 
 async fn open(
     path: &std::path::Path,
+    create: bool,
 ) -> (
     Arc<kasumi_engine::Database>,
     Arc<kasumi_engine::SecurityAudit>,
 ) {
-    let node = NodeStore::open(path, kasumi_store::ScratchDisk::fixture()).unwrap();
+    let node = (if create {
+        NodeStore::create_new(
+            path,
+            kasumi_store::test_utils::NODE_STORE_ID,
+            kasumi_store::ScratchDisk::fixture(),
+        )
+    } else {
+        NodeStore::open_existing(
+            path,
+            kasumi_store::test_utils::NODE_STORE_ID,
+            kasumi_store::ScratchDisk::fixture(),
+        )
+    })
+    .unwrap();
     let audit = common::security_audit(node.clone()).await;
     let store = TenantStore::open_fixture(
         node,
@@ -596,7 +610,7 @@ fn staged_crash_worker() {
         .unwrap()
         .block_on(async {
             let directory = std::path::Path::new(&directory);
-            let (db, _audit) = open(&directory.join("node.redb")).await;
+            let (db, _audit) = open(&directory.join("node.redb"), true).await;
             for name in ["docs", "ledger"] {
                 db.administer(
                     context(),
@@ -662,7 +676,7 @@ async fn killed_upload_recovers_encrypted_invisible_chunks_and_finishes_exactly_
         "invisible staging payload must still be encrypted on disk"
     );
     drop(raw);
-    let (db, audit) = open(&directory.path().join("node.redb")).await;
+    let (db, audit) = open(&directory.path().join("node.redb"), false).await;
     let chunks = chunks();
     let (_, reference) = begin(
         &db.engine().generation().unwrap().state.incarnation,
@@ -696,7 +710,7 @@ async fn killed_upload_recovers_encrypted_invisible_chunks_and_finishes_exactly_
     audit.shutdown().await;
     drop(db);
     drop(audit);
-    let (db, audit) = open(&directory.path().join("node.redb")).await;
+    let (db, audit) = open(&directory.path().join("node.redb"), false).await;
     assert_eq!(
         db.finalize_staged_transaction(context(), reference.clone())
             .await
@@ -728,7 +742,7 @@ async fn killed_upload_recovers_encrypted_invisible_chunks_and_finishes_exactly_
 #[tokio::test]
 async fn coherent_lease_pages_cover_large_dependencies_and_scans_with_live_writes() {
     let directory = tempfile::tempdir().unwrap();
-    let (db, audit) = open(&directory.path().join("node.redb")).await;
+    let (db, audit) = open(&directory.path().join("node.redb"), true).await;
     for name in ["docs", "ledger"] {
         db.administer(
             context(),
@@ -938,7 +952,7 @@ async fn coherent_lease_pages_cover_large_dependencies_and_scans_with_live_write
 #[tokio::test]
 async fn small_lease_budget_shares_large_roots_and_expires_on_retained_version_pressure() {
     let directory = tempfile::tempdir().unwrap();
-    let (db, audit) = open(&directory.path().join("lease-delta.redb")).await;
+    let (db, audit) = open(&directory.path().join("lease-delta.redb"), true).await;
     db.administer(
         context(),
         Operation::CreateCollection(definition("docs", CollectionWriteMode::Mutable)),

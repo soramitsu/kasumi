@@ -608,8 +608,21 @@ fn text_and_structured_indexes_publish_together_after_existing_documents_validat
     );
 }
 
-async fn open(path: &std::path::Path) -> (Arc<Database>, Arc<SecurityAudit>) {
-    let node = NodeStore::open(path, kasumi_store::ScratchDisk::fixture()).unwrap();
+async fn open(path: &std::path::Path, create: bool) -> (Arc<Database>, Arc<SecurityAudit>) {
+    let node = (if create {
+        NodeStore::create_new(
+            path,
+            kasumi_store::test_utils::NODE_STORE_ID,
+            kasumi_store::ScratchDisk::fixture(),
+        )
+    } else {
+        NodeStore::open_existing(
+            path,
+            kasumi_store::test_utils::NODE_STORE_ID,
+            kasumi_store::ScratchDisk::fixture(),
+        )
+    })
+    .unwrap();
     let audit = common::security_audit(node.clone()).await;
     let store = TenantStore::open_fixture(
         node,
@@ -638,7 +651,7 @@ async fn open(path: &std::path::Path) -> (Arc<Database>, Arc<SecurityAudit>) {
 async fn encrypted_restart_and_full_restore_preserve_permanent_activation_receipts() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("node.redb");
-    let (db, audit) = open(&path).await;
+    let (db, audit) = open(&path, true).await;
     let names: Vec<_> = (0..32).map(|n| format!("financial_{n}")).collect();
     let refs: Vec<_> = names.iter().map(String::as_str).collect();
     let schema_read = ReadSchema {
@@ -703,7 +716,7 @@ async fn encrypted_restart_and_full_restore_preserve_permanent_activation_receip
     audit.shutdown().await;
     drop(db);
     drop(audit);
-    let (db, audit) = open(&path).await;
+    let (db, audit) = open(&path, false).await;
     assert_eq!(
         db.activate_schema(context("owner"), install.clone())
             .await
@@ -729,8 +742,9 @@ async fn encrypted_restart_and_full_restore_preserve_permanent_activation_receip
     drop(db);
     drop(audit);
 
-    let node = NodeStore::open(
+    let node = NodeStore::create_new(
         root.path().join("restored.redb"),
+        kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();
@@ -793,7 +807,7 @@ async fn encrypted_restart_and_full_restore_preserve_permanent_activation_receip
 #[tokio::test]
 async fn cold_schema_change_rejects_whole_bundle_and_scoped_status_rechecks_authority() {
     let root = tempfile::tempdir().unwrap();
-    let (db, audit) = open(&root.path().join("node.redb")).await;
+    let (db, audit) = open(&root.path().join("node.redb"), true).await;
     let mut history = definition("history");
     history.write_mode = CollectionWriteMode::AppendOnly;
     history.retention_class = CollectionRetentionClass::ArchivableHistory;
@@ -1096,7 +1110,7 @@ fn schema_effect_digest_binds_dependencies_and_current_read_permission_is_requir
 async fn encrypted_schema_lookup_checks_current_fences_without_rewriting_original_effect() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("schema-fences.redb");
-    let (db, audit) = open(&path).await;
+    let (db, audit) = open(&path, true).await;
     let mut install = creates(db.engine(), "fenced-initial", &["guards", "journal"]);
     let before = db.engine().generation().unwrap();
     install.read_set = vec![
@@ -1137,7 +1151,7 @@ async fn encrypted_schema_lookup_checks_current_fences_without_rewriting_origina
     audit.shutdown().await;
     drop(db);
     drop(audit);
-    let (db, audit) = open(&path).await;
+    let (db, audit) = open(&path, false).await;
     let current = db.engine().generation().unwrap();
     let lookup = ReadSchemaActivation {
         reference: reference.clone(),

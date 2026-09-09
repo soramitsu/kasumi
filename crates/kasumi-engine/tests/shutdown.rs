@@ -28,7 +28,12 @@ async fn full_shutdown_reopens_immediately_with_receipts_and_retained_plaintext(
     };
     for round in 0..4 {
         // Reopening is immediate: no sleep, lock retry, or ignored open error.
-        let node = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
+        let node = NodeStore::create_new(
+            &path,
+            kasumi_store::test_utils::NODE_STORE_ID,
+            kasumi_store::ScratchDisk::fixture(),
+        )
+        .unwrap();
         let audit = common::security_audit(node.clone()).await;
         let store =
             TenantStore::open_fixture(node.clone(), context.tenant.clone(), provider.clone())
@@ -129,7 +134,12 @@ async fn full_shutdown_reopens_immediately_with_receipts_and_retained_plaintext(
         audit.shutdown().await;
         drop(audit);
         drop(node);
-        let reopened = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
+        let reopened = NodeStore::open_existing(
+            &path,
+            kasumi_store::test_utils::NODE_STORE_ID,
+            kasumi_store::ScratchDisk::fixture(),
+        )
+        .unwrap();
         drop(reopened);
     }
 }

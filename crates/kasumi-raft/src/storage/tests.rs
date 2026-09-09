@@ -41,7 +41,11 @@ async fn cancelled_log_future_retains_drain_lease_until_blocking_persistence_fin
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("cancelled-persistence.redb");
     let store = TenantStore::open_fixture_with_clock(
-        NodeStore::open(&path, kasumi_store::ScratchDisk::fixture())?,
+        NodeStore::create_new(
+            &path,
+            kasumi_store::test_utils::NODE_STORE_ID,
+            kasumi_store::ScratchDisk::fixture(),
+        )?,
         "cancelled-persistence".into(),
         Arc::new(LocalKeyProvider::new([19; 32])),
         Arc::new(ManualClock::new()),
@@ -92,7 +96,11 @@ async fn cancelled_log_future_retains_drain_lease_until_blocking_persistence_fin
     drop(domains);
     drop(store);
     // An abandoned response does not detach persistence from its drain lease.
-    let reopened = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture())?;
+    let reopened = NodeStore::open_existing(
+        &path,
+        kasumi_store::test_utils::NODE_STORE_ID,
+        kasumi_store::ScratchDisk::fixture(),
+    )?;
     drop(reopened);
     Ok(())
 }
@@ -331,8 +339,9 @@ async fn invalid_backend_snapshot_never_replaces_durable_recoverable_state() -> 
 async fn snapshots_larger_than_store_record_limit_are_chunked_and_recovered() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let store = TenantStore::open_fixture(
-        NodeStore::open(
+        NodeStore::create_new(
             dir.path().join("large.redb"),
+            kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
         )?,
         "large".into(),
@@ -443,16 +452,28 @@ async fn eight_mib_command_uses_compact_log_record_and_replays_after_reopen() ->
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("large-command.redb");
     let bytes = vec![171u8; (8 << 20) + (64 << 10)];
-    async fn open(path: &std::path::Path) -> Result<Arc<TenantStore>> {
+    async fn open(path: &std::path::Path, create: bool) -> Result<Arc<TenantStore>> {
         TenantStore::open_fixture(
-            NodeStore::open(path, kasumi_store::ScratchDisk::fixture())?,
+            (if create {
+                NodeStore::create_new(
+                    path,
+                    kasumi_store::test_utils::NODE_STORE_ID,
+                    kasumi_store::ScratchDisk::fixture(),
+                )
+            } else {
+                NodeStore::open_existing(
+                    path,
+                    kasumi_store::test_utils::NODE_STORE_ID,
+                    kasumi_store::ScratchDisk::fixture(),
+                )
+            })?,
             "large-command".into(),
             Arc::new(LocalKeyProvider::new([9; 32])),
         )
         .await
     }
     {
-        let store = open(&path).await?;
+        let store = open(&path, true).await?;
         let mut log = LogStore::open(
             kasumi_store::test_utils::with_custody(
                 store.clone(),
@@ -475,7 +496,7 @@ async fn eight_mib_command_uses_compact_log_record_and_replays_after_reopen() ->
             "command must not expand into JSON integer arrays"
         );
     }
-    let store = open(&path).await?;
+    let store = open(&path, false).await?;
     let mut log = LogStore::open(
         kasumi_store::test_utils::with_custody(
             store.clone(),

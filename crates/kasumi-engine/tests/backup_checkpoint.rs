@@ -110,8 +110,9 @@ async fn restore_hands_off_verified_workspace_with_production_and_destination_re
         "the previous additive materialization strategy must not fit"
     );
     drop(previous_verification);
-    let node = NodeStore::open(
+    let node = NodeStore::create_new(
         fixture.directory.path().join("restore-budget.redb"),
+        kasumi_store::test_utils::NODE_STORE_ID,
         fixture.store.scratch_disk().clone(),
     )
     .unwrap();
@@ -152,8 +153,9 @@ async fn restore_hands_off_verified_workspace_with_production_and_destination_re
     drop(restored);
     drop(domains);
     drop(target);
-    let node = NodeStore::open(
+    let node = NodeStore::open_existing(
         fixture.directory.path().join("restore-budget.redb"),
+        kasumi_store::test_utils::NODE_STORE_ID,
         fixture.store.scratch_disk().clone(),
     )
     .unwrap();
@@ -341,8 +343,9 @@ impl Fixture {
         production: bool,
     ) -> Self {
         let directory = tempfile::tempdir().unwrap();
-        let node = NodeStore::open(
+        let node = NodeStore::create_new(
             directory.path().join("node.redb"),
+            kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
         )
         .unwrap();
@@ -517,7 +520,12 @@ async fn checkpoint_binds_actual_generation_complete_graph_keys_and_encrypted_re
     drop(db);
     drop(audit);
     drop(store);
-    let node = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
+    let node = NodeStore::open_existing(
+        &path,
+        kasumi_store::test_utils::NODE_STORE_ID,
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
     let audit = common::security_audit(node.clone()).await;
     let store = TenantStore::open_fixture(
         node,
@@ -1118,8 +1126,9 @@ async fn local_restore_binds_exact_source_purpose_even_without_cold_archives() {
         .backup_checkpoint_named(context(), "approved", uuid::Uuid::new_v4())
         .await
         .unwrap();
-    let node = NodeStore::open(
+    let node = NodeStore::create_new(
         fixture.directory.path().join("restore.redb"),
+        kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();
@@ -1266,8 +1275,9 @@ async fn archived_audit_backup_is_self_contained_and_source_unavailable_restore_
     // Restore must neither consult a live source quorum nor its local cache.
     fixture.close().await;
     let target_directory = tempfile::tempdir().unwrap();
-    let node = NodeStore::open(
+    let node = NodeStore::create_new(
         target_directory.path().join("target.redb"),
+        kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();
@@ -1329,8 +1339,9 @@ async fn archived_audit_backup_is_self_contained_and_source_unavailable_restore_
     // Source verification alone is insufficient: an independently installed
     // target provider must also retain every original historical archive key.
     let wrong_directory = tempfile::tempdir().unwrap();
-    let wrong_node = NodeStore::open(
+    let wrong_node = NodeStore::create_new(
         wrong_directory.path().join("wrong.redb"),
+        kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();
@@ -1407,8 +1418,9 @@ async fn archived_audit_backup_is_self_contained_and_source_unavailable_restore_
         .join("tenant-audit-archives")
         .join(format!("{}.audit", head.object.object_id));
     std::fs::remove_file(&cache_path).unwrap();
-    let node = NodeStore::open(
+    let node = NodeStore::open_existing(
         target_directory.path().join("target.redb"),
+        kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();

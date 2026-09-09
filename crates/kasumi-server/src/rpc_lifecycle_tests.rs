@@ -37,8 +37,9 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
     )
     .await;
     let audit_store = TenantStore::open(
-        NodeStore::open(
+        NodeStore::create_new(
             directory.path().join("audit.redb"),
+            kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
         )
         .unwrap(),
@@ -93,8 +94,9 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
     let mut issuers = Vec::new();
     for id in 1..=3 {
         let stores = TenantStorageSet::open(
-            NodeStore::open(
+            NodeStore::create_new(
                 directory.path().join(format!("issuer-{id}.redb")),
+                kasumi_store::test_utils::NODE_STORE_ID,
                 kasumi_store::ScratchDisk::fixture(),
             )
             .unwrap(),
@@ -224,8 +226,9 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
     let mut nodes = Vec::new();
     for id in 1..=3 {
         let stores = TenantStorageSet::open(
-            NodeStore::open(
+            NodeStore::create_new(
                 directory.path().join(format!("node-{id}.redb")),
+                kasumi_store::test_utils::NODE_STORE_ID,
                 kasumi_store::ScratchDisk::fixture(),
             )
             .unwrap(),

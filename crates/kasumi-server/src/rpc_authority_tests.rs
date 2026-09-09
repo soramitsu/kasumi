@@ -103,8 +103,9 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
         keys,
     )
     .await;
-    let audit_node = NodeStore::open(
+    let audit_node = NodeStore::create_new(
         dir.path().join("audit.redb"),
+        kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();
@@ -224,8 +225,9 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
             continue;
         }
         let store = TenantStore::open(
-            NodeStore::open(
+            NodeStore::create_new(
                 dir.path().join(format!("verifier-{node_id}.redb")),
+                kasumi_store::test_utils::NODE_STORE_ID,
                 kasumi_store::ScratchDisk::fixture(),
             )
             .unwrap(),
@@ -306,8 +308,9 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
     let mut services = Vec::new();
     let mut stores = Vec::new();
     for id in 1..=3 {
-        let node = NodeStore::open(
+        let node = NodeStore::create_new(
             dir.path().join(format!("authority-{id}.redb")),
+            kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
         )
         .unwrap();

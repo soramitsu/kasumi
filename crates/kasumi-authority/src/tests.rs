@@ -110,8 +110,9 @@ impl Fixture {
         let mut services = Vec::new();
         let mut stores = Vec::new();
         for id in 1..=3 {
-            let node = NodeStore::open(
+            let node = NodeStore::create_new(
                 dir.path().join(format!("authority-{id}.redb")),
+                kasumi_store::test_utils::NODE_STORE_ID,
                 kasumi_store::ScratchDisk::fixture(),
             )
             .unwrap();
@@ -271,8 +272,9 @@ impl Fixture {
         self.router = Arc::new(InProcessRouter::default());
         self.readiness = Arc::new(TestMaintenanceTransport::default());
         for id in member_ids {
-            let node = NodeStore::open(
+            let node = NodeStore::open_existing(
                 self._dir.path().join(format!("authority-{id}.redb")),
+                kasumi_store::test_utils::NODE_STORE_ID,
                 kasumi_store::ScratchDisk::fixture(),
             )
             .unwrap();
@@ -654,7 +656,12 @@ async fn actual_encrypted_source_materialization_is_fenced_but_independent_custo
     let lease_boot = boot(&fixture, source, 1);
     let gate = ServingGate::new(acquire(&fixture, &service, &lease_boot).await).unwrap();
     let path = fixture._dir.path().join("separate-municipality.redb");
-    let node = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
+    let node = NodeStore::create_new(
+        &path,
+        kasumi_store::test_utils::NODE_STORE_ID,
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
     let provider = Arc::new(LocalKeyProvider::new([90; 32]));
     let custody_provider = Arc::new(LocalKeyProvider::new([91; 32]));
     let stores = TenantStorageSet::open(
@@ -718,7 +725,12 @@ async fn actual_encrypted_source_materialization_is_fenced_but_independent_custo
     stores.custody().store().shutdown().await;
     drop(stores);
     drop(node);
-    let reopened = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
+    let reopened = NodeStore::open_existing(
+        &path,
+        kasumi_store::test_utils::NODE_STORE_ID,
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
     let custody =
         kasumi_store::CustodyStore::open(reopened.clone(), "city".into(), custody_provider)
             .await

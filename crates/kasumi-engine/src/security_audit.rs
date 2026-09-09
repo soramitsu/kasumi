@@ -447,7 +447,12 @@ mod tests {
     async fn archive_worker_before_registration_is_joined_through_cancelled_shutdown_and_reopen() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("worker-security.redb");
-        let node = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
+        let node = NodeStore::create_new(
+            &path,
+            kasumi_store::test_utils::NODE_STORE_ID,
+            kasumi_store::ScratchDisk::fixture(),
+        )
+        .unwrap();
         let weak_node = Arc::downgrade(&node);
         let provider = Arc::new(LocalKeyProvider::new([89; 32]));
         let store =
@@ -497,7 +502,12 @@ mod tests {
         assert!(weak_node.upgrade().is_none());
 
         let reopened = TenantStore::open_fixture(
-            NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap(),
+            NodeStore::open_existing(
+                &path,
+                kasumi_store::test_utils::NODE_STORE_ID,
+                kasumi_store::ScratchDisk::fixture(),
+            )
+            .unwrap(),
             SECURITY_TENANT.into(),
             provider,
         )
@@ -526,7 +536,12 @@ mod tests {
         runtime.block_on(async {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("security.redb");
-            let node = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
+            let node = NodeStore::create_new(
+                &path,
+                kasumi_store::test_utils::NODE_STORE_ID,
+                kasumi_store::ScratchDisk::fixture(),
+            )
+            .unwrap();
             let weak_node = Arc::downgrade(&node);
             let provider = Arc::new(LocalKeyProvider::new([83; 32]));
             let store =
@@ -594,7 +609,12 @@ mod tests {
             assert!(weak_node.upgrade().is_none());
 
             let reopened = TenantStore::open_fixture(
-                NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap(),
+                NodeStore::open_existing(
+                    &path,
+                    kasumi_store::test_utils::NODE_STORE_ID,
+                    kasumi_store::ScratchDisk::fixture(),
+                )
+                .unwrap(),
                 SECURITY_TENANT.into(),
                 provider,
             )
@@ -620,7 +640,12 @@ mod tests {
     async fn live_opens_share_sequence_and_preserve_concurrent_records_through_reopen() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("shared-security.redb");
-        let node = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
+        let node = NodeStore::create_new(
+            &path,
+            kasumi_store::test_utils::NODE_STORE_ID,
+            kasumi_store::ScratchDisk::fixture(),
+        )
+        .unwrap();
         let weak_node = Arc::downgrade(&node);
         let provider = Arc::new(LocalKeyProvider::new([85; 32]));
         let store =
@@ -680,7 +705,12 @@ mod tests {
         assert!(weak_node.upgrade().is_none());
 
         let reopened = TenantStore::open_fixture(
-            NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap(),
+            NodeStore::open_existing(
+                &path,
+                kasumi_store::test_utils::NODE_STORE_ID,
+                kasumi_store::ScratchDisk::fixture(),
+            )
+            .unwrap(),
             SECURITY_TENANT.into(),
             provider,
         )

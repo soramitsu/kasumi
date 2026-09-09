@@ -406,8 +406,9 @@ mod tests {
             .await;
             let key = EncodingKey::from_ed_pem(key.serialize_pem().as_bytes()).unwrap();
             let dir = tempfile::tempdir().unwrap();
-            let node = NodeStore::open(
+            let node = NodeStore::create_new(
                 dir.path().join("node.redb"),
+                kasumi_store::test_utils::NODE_STORE_ID,
                 kasumi_store::ScratchDisk::fixture(),
             )
             .unwrap();
@@ -1880,8 +1881,9 @@ name: "docs".into(),
             strict_read_audit: true,
         };
         let provider = Arc::new(LocalKeyProvider::new([61; 32]));
-        let node = NodeStore::open(
+        let node = NodeStore::create_new(
             fixture._dir.path().join("control.redb"),
+            kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
         )
         .unwrap();

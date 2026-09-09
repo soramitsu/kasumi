@@ -133,7 +133,7 @@ impl Fixture {
             partition_keys,
             installation,
         };
-        result.open().await;
+        result.open(true).await;
         if install_topology {
             kasumi_engine::control::ControlPlane::new(result.leader().await)
                 .unwrap()
@@ -155,12 +155,21 @@ impl Fixture {
             .unwrap();
         result
     }
-    async fn open(&mut self) {
+    async fn open(&mut self, create: bool) {
         for id in 1..=3 {
-            let node = NodeStore::open(
-                self.root.path().join(format!("{id}.redb")),
-                kasumi_store::ScratchDisk::fixture(),
-            )
+            let node = (if create {
+                NodeStore::create_new(
+                    self.root.path().join(format!("{id}.redb")),
+                    kasumi_store::test_utils::NODE_STORE_ID,
+                    kasumi_store::ScratchDisk::fixture(),
+                )
+            } else {
+                NodeStore::open_existing(
+                    self.root.path().join(format!("{id}.redb")),
+                    kasumi_store::test_utils::NODE_STORE_ID,
+                    kasumi_store::ScratchDisk::fixture(),
+                )
+            })
             .unwrap();
             let audit = common::security_audit(node.clone()).await;
             let store = TenantStore::open_fixture(
@@ -534,7 +543,7 @@ async fn replicated_control_intent_is_exact_original_expiry_bound_current_quorum
     drop(proof);
     drop(db);
     f.close().await;
-    f.open().await;
+    f.open(false).await;
     let db = f.leader().await;
     assert_eq!(
         db.lifecycle_control(
@@ -705,7 +714,7 @@ async fn fresh_control_materialization_requires_exact_retained_original_after_ex
         .unwrap();
     drop(db);
     f.close().await;
-    f.open().await;
+    f.open(false).await;
     let db = f.leader().await;
     assert_eq!(
         db.lifecycle_control(
@@ -869,7 +878,7 @@ async fn replicated_control_change_pins_all_partitions_freezes_issuance_and_reco
     drop(pending);
     drop(db);
     f.close().await;
-    f.open().await;
+    f.open(false).await;
     let db = f.leader().await;
     assert_eq!(
         db.lifecycle_control(
@@ -1033,7 +1042,7 @@ async fn control_completion_audit_reservation_survives_denials_and_current_admin
     drop(pending);
     drop(db);
     f.close().await;
-    f.open().await;
+    f.open(false).await;
     let db = f.leader().await;
     db.read_lifecycle_status(&f.context("replacement"), request)
         .await

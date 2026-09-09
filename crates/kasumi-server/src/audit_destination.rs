@@ -128,7 +128,12 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("node.redb");
         let provider = Arc::new(LocalKeyProvider::new([73; 32]));
-        let node = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
+        let node = NodeStore::create_new(
+            &path,
+            kasumi_store::test_utils::NODE_STORE_ID,
+            kasumi_store::ScratchDisk::fixture(),
+        )
+        .unwrap();
         let store = TenantStore::open_fixture(node.clone(), "tenant".into(), provider.clone())
             .await
             .unwrap();
@@ -151,7 +156,12 @@ mod tests {
         store.shutdown().await;
         drop(store);
         drop(node);
-        let node = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
+        let node = NodeStore::open_existing(
+            &path,
+            kasumi_store::test_utils::NODE_STORE_ID,
+            kasumi_store::ScratchDisk::fixture(),
+        )
+        .unwrap();
         let reopened = TenantStore::open_fixture(node, "tenant".into(), provider)
             .await
             .unwrap();

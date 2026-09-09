@@ -51,8 +51,9 @@ fn context(tenant: &str) -> RequestContext {
 #[tokio::test]
 async fn restore_deadline_bounds_source_io_and_gate_queue_without_blocking_another_tenant() {
     let root = tempfile::tempdir().unwrap();
-    let node = NodeStore::open(
+    let node = NodeStore::create_new(
         root.path().join("node.redb"),
+        kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
     )
     .unwrap();

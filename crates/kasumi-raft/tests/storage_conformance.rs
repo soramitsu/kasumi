@@ -17,7 +17,7 @@ impl StoreBuilder<TypeConfig, LogStore, StateMachine, TempDir> for Builder {
     async fn build(&self) -> Result<(TempDir, LogStore, StateMachine), StorageError<u64>> {
         async {
             let dir = tempfile::tempdir()?;
-            let store = common::store(&dir.path().join("node.redb")).await?;
+            let store = common::store(&dir.path().join("node.redb"), true).await?;
             let log = LogStore::open(store.clone(), 1).await?;
             let machine = StateMachine::open(store, Arc::new(common::Backend::default())).await?;
             anyhow::Ok((dir, log, machine))
@@ -45,14 +45,14 @@ async fn log_vote_and_committed_cursor_survive_full_reopen() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("node.redb");
     {
-        let store = common::store(&path).await?;
+        let store = common::store(&path, true).await?;
         let mut log = LogStore::open(store, 1).await?;
         log.save_vote(&Vote::new_committed(3, 1)).await?;
         log.blocking_append([entry(0, b"a"), entry(1, b"b"), entry(2, b"uncommitted")])
             .await?;
         log.save_committed(Some(entry(1, b"").log_id)).await?;
     }
-    let store = common::store(&path).await?;
+    let store = common::store(&path, false).await?;
     let mut log = LogStore::open(store, 1).await?;
     assert_eq!(log.read_vote().await?, Some(Vote::new_committed(3, 1)));
     assert_eq!(log.read_committed().await?, Some(entry(1, b"").log_id));
@@ -71,7 +71,7 @@ async fn snapshot_survives_reopen_and_failed_apply_makes_replica_unavailable() -
     let path = dir.path().join("node.redb");
     let snapshot_meta;
     {
-        let store = common::store(&path).await?;
+        let store = common::store(&path, true).await?;
         let backend = Arc::new(common::Backend::default());
         let mut machine = StateMachine::open(store, backend.clone()).await?;
         machine.apply([entry(0, b"before")]).await?;
@@ -88,7 +88,7 @@ async fn snapshot_survives_reopen_and_failed_apply_makes_replica_unavailable() -
         assert!(machine.apply([entry(2, b"must-not-apply")]).await.is_err());
         assert_eq!(backend.values(), vec![b"before".to_vec()]);
     }
-    let store = common::store(&path).await?;
+    let store = common::store(&path, false).await?;
     let backend = Arc::new(common::Backend::default());
     let mut machine = StateMachine::open(store, backend.clone()).await?;
     assert!(!machine.failed());
