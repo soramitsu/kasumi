@@ -59,6 +59,7 @@ impl ValidatedApplicationSnapshot {
         self,
         alias: &str,
         backup_id: uuid::Uuid,
+        mut admit: impl FnMut(&crate::snapshot_codec::StreamSummary) -> anyhow::Result<()>,
         mut check: impl FnMut() -> anyhow::Result<()>,
     ) -> anyhow::Result<Self> {
         let mut history_bytes = 0u64;
@@ -105,7 +106,14 @@ impl ValidatedApplicationSnapshot {
             .checked_mul(8)
             .and_then(|v| v.checked_add(64 << 20))
             .context("snapshot index disk budget overflow")?;
-        Self::validate(image, disk, check)
+        let layout = StagedSnapshot::inspect(&image, &mut check)?;
+        admit(&layout)?;
+        let validated = Self::validate(image, disk, check)?;
+        ensure!(
+            validated.index.summary() == layout,
+            "relocated backup differs from admitted typed framing"
+        );
+        Ok(validated)
     }
     pub(crate) fn authorize_source(
         &self,

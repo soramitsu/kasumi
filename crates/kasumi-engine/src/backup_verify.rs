@@ -532,41 +532,57 @@ pub(crate) async fn verify(
         "full backup resident stream differs"
     );
     let semantic_work = ownership.clone();
+    let semantic_reservation = reservation.clone();
+    let semantic_admission = admission.clone();
     let semantic_cancellation = reader.cancellation();
-    let (state, bytes) =
-        deadline
-            .blocking(
-                reservation.clone(),
-                ownership.clone(),
-                move || match capture {
-                    Some(capture) => Ok((VerifiedState::Captured(capture.generation), None)),
-                    None => {
-                        let bytes =
-                            kasumi_store::SnapshotImage::freeze(spool.ok_or_else(|| {
-                                anyhow::anyhow!("historical backup staging missing")
-                            })?)?;
-                        let disk = bytes
-                            .len()
-                            .checked_mul(8)
-                            .and_then(|v| v.checked_add(64 << 20))
-                            .ok_or_else(|| {
-                                anyhow::anyhow!("snapshot index disk budget overflow")
-                            })?;
-                        let state = VerifiedState::Indexed(Box::new(
+    let (state, bytes) = deadline
+        .blocking(
+            reservation.clone(),
+            ownership.clone(),
+            move || match capture {
+                Some(capture) => Ok((VerifiedState::Captured(capture.generation), None)),
+                None => {
+                    let bytes =
+                        kasumi_store::SnapshotImage::freeze(spool.ok_or_else(|| {
+                            anyhow::anyhow!("historical backup staging missing")
+                        })?)?;
+                    let disk = bytes
+                        .len()
+                        .checked_mul(8)
+                        .and_then(|v| v.checked_add(64 << 20))
+                        .ok_or_else(|| anyhow::anyhow!("snapshot index disk budget overflow"))?;
+                    let mut check = || {
+                        deadline.check()?;
+                        if let Some(work) = &semantic_work {
+                            work.check()?;
+                        }
+                        if let Some(token) = &semantic_cancellation {
+                            token.check()?;
+                        }
+                        Ok(())
+                    };
+                    let layout =
+                        crate::snapshot_index::StagedSnapshot::inspect(&bytes, &mut check)?;
+                    // Retain the complete index/cache floor while admitting
+                    // the measured peak record work before any DTO decode.
+                    semantic_reservation
+                        .handoff_workspace(&semantic_admission, layout.index_workspace()?)?;
+                    let validated =
                         crate::state::snapshot_validation::ValidatedApplicationSnapshot::validate(
-                            bytes.clone(), disk, || {
-                                deadline.check()?;
-                                if let Some(work) = &semantic_work { work.check()?; }
-                                if let Some(token) = &semantic_cancellation { token.check()?; }
-                                Ok(())
-                            }
-                        )?
-                    ));
-                        Ok((state, Some(bytes)))
-                    }
-                },
-            )
-            .await?;
+                            bytes.clone(),
+                            disk,
+                            &mut check,
+                        )?;
+                    anyhow::ensure!(
+                        validated.index().summary() == layout,
+                        "backup differs from admitted typed framing"
+                    );
+                    let state = VerifiedState::Indexed(Box::new(validated));
+                    Ok((state, Some(bytes)))
+                }
+            },
+        )
+        .await?;
     let state = Arc::new(state);
     reader.authorize_state(state.metadata()).await?;
     anyhow::ensure!(
@@ -622,6 +638,8 @@ pub(crate) async fn verify(
             let semantic_purpose = history_purpose.clone();
             let semantic_cancellation = reader.cancellation();
             let semantic_work = ownership.clone();
+            let semantic_reservation = reservation.clone();
+            let semantic_admission = admission.clone();
             deadline
                 .blocking(reservation.clone(), ownership.clone(), move || {
                     let check = || -> anyhow::Result<()> {

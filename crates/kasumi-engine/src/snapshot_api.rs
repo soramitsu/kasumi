@@ -165,12 +165,13 @@ impl TenantEngine {
         let output = deadline
             .run(tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
                 work.check()?;
-                let logical = snapshot_bundle::inspect(&mut CheckedIo {
+                let layout = snapshot_bundle::inspect(&mut CheckedIo {
                     io: image.reader(),
                     work: &work,
                 })?;
-                let additional = logical
-                    .checked_mul(3)
+                let additional = layout
+                    .materialization_workspace()?
+                    .checked_sub(WORKSPACE)
                     .ok_or_else(|| anyhow::anyhow!("snapshot workspace overflow"))?;
                 work.reservation.reserve_additional(additional)?;
                 let generation = snapshot_bundle::read(
@@ -179,6 +180,7 @@ impl TenantEngine {
                         io: image.reader(),
                         work: &work,
                     },
+                    Some(layout),
                 )?;
                 work.check()?;
                 let prepared = PreparedSnapshotRestore {

@@ -203,7 +203,7 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
         &self,
         bytes: &mut dyn std::io::Read,
     ) -> anyhow::Result<Option<kasumi_raft::RetiredSnapshotState>> {
-        let generation = snapshot_bundle::read(self, bytes)?;
+        let generation = snapshot_bundle::read(self, bytes, None)?;
         custody_snapshot::retired(&generation.state).map_err(Into::into)
     }
     fn prepare_restore<'a>(
@@ -215,7 +215,7 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
             .apply_lock
             .lock()
             .map_err(|_| anyhow::anyhow!("tenant apply lock poisoned"))?;
-        let mut generation = snapshot_bundle::read(self, bytes)?;
+        let mut generation = snapshot_bundle::read(self, bytes, None)?;
         let expected_revision = self
             .revision_base
             .checked_add(context.meta.last_log_id.map_or(0, |id| id.index))
@@ -612,7 +612,12 @@ impl TenantEngine {
     ) -> Result<Self> {
         let decoded = crate::snapshot_codec::read(bytes.disk(), &mut bytes.reader())
             .map_err(|_| Error::new(ErrorCode::Corruption, "invalid tenant bootstrap"))?;
-        let engine = Self::from_bootstrap_state(expected_tenant, decoded)?;
+        let engine = Self::from_bootstrap_state(
+            expected_tenant,
+            decoded.state,
+            decoded.terminals,
+            decoded.target_resolutions,
+        )?;
         engine
             .bootstrap_sha256
             .set(bytes.sha256().into())
@@ -622,13 +627,10 @@ impl TenantEngine {
 
     fn from_bootstrap_state(
         expected_tenant: &str,
-        decoded: crate::snapshot_codec::Decoded,
+        state: TenantState,
+        terminals: crate::staged_terminal::View,
+        target_resolutions: crate::target_resolution::View,
     ) -> Result<Self> {
-        let crate::snapshot_codec::Decoded {
-            state,
-            terminals,
-            target_resolutions,
-        } = decoded;
         if state.tenant != expected_tenant || state.revision != state.revision_base {
             return Err(Error::new(
                 ErrorCode::Corruption,
@@ -665,6 +667,7 @@ impl TenantEngine {
             mut state,
             terminals,
             target_resolutions,
+            ..
         } = crate::snapshot_codec::read(bytes.disk(), &mut bytes.reader())
             .map_err(|_| Error::new(ErrorCode::Corruption, "invalid logical backup"))?;
         if state.tenant != expected_tenant {
@@ -778,18 +781,13 @@ impl TenantEngine {
             mut state,
             terminals,
             target_resolutions,
+            ..
         } = crate::snapshot_codec::read(image.disk(), &mut image.reader())
             .map_err(|error| Error::new(ErrorCode::Corruption, error.to_string()))?;
         drop(image);
         Self::rebind_restored_state(&mut state, incarnation, checkpoint, target_origin)?;
-        let engine = Self::from_bootstrap_state(
-            expected_tenant,
-            crate::snapshot_codec::Decoded {
-                state,
-                terminals,
-                target_resolutions,
-            },
-        )?;
+        let engine =
+            Self::from_bootstrap_state(expected_tenant, state, terminals, target_resolutions)?;
         let image = engine.logical_snapshot(&scratch_disk)?;
         engine
             .bootstrap_sha256
@@ -1320,7 +1318,7 @@ impl TenantEngine {
             .apply_lock
             .lock()
             .map_err(|_| Error::new(ErrorCode::Unavailable, "tenant apply lock poisoned"))?;
-        let generation = self.prepare_snapshot_reader(bytes.disk(), &mut bytes.reader())?;
+        let generation = self.prepare_snapshot_reader(bytes.disk(), &mut bytes.reader(), None)?;
         if generation.state.audit_retention.archive_head.is_some() {
             let store = self.snapshot_store.get().ok_or_else(|| {
                 Error::new(
@@ -1339,13 +1337,21 @@ impl TenantEngine {
         &self,
         disk: &Arc<kasumi_store::ScratchDisk>,
         reader: &mut dyn std::io::Read,
+        expected: Option<crate::snapshot_codec::StreamSummary>,
     ) -> Result<Generation> {
         let crate::snapshot_codec::Decoded {
             state,
             terminals,
             target_resolutions,
+            summary,
         } = crate::snapshot_codec::read(disk, reader)
             .map_err(|_| Error::new(ErrorCode::Corruption, "invalid tenant snapshot"))?;
+        if expected.is_some_and(|expected| expected != summary) {
+            return Err(Error::new(
+                ErrorCode::Corruption,
+                "snapshot differs from admitted typed framing",
+            ));
+        }
         self.prepare_state(state, terminals, target_resolutions)
     }
 

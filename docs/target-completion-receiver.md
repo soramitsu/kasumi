@@ -34,7 +34,7 @@ The current head records the initial table budget and last budget operation;
 snapshots validate every historical completion predecessor and budget
 compare-and-set with bounded encrypted per-origin cursors. Both target terminal
 storage and canonical snapshot formats replace the preceding development format
-directly (`KASUMI_TARGET_V2`, `KASUMIT4`). No preceding decoder is retained.
+directly (`KASUMI_TARGET_V2`, `KASUMIT5`). No preceding decoder is retained.
 
 A distinct `InspectCompletionAttempt` phase recovers a positive original
 preparation after a lost reply, including after the original credential and

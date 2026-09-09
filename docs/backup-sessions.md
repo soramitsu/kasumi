@@ -117,7 +117,10 @@ It counts and hashes chunks directly without staging another full resident image
 The readback has a fixed 64 MiB workspace reservation. A receipt cannot be supplied
 over an API or reconstructed from a completed outcome. Verification of older or
 uncertain sessions independently validates canonical records through an encrypted
-point index and checked scratch counters, with a fixed 128 MiB workspace estimate.
+point index and checked scratch counters. RAM admission retains a 128 MiB
+index/cache floor plus structurally measured peak record work, with fixed-buffer
+inspection before DTO allocation. Aggregate permanent point bytes stay on the
+shared encrypted scratch-disk governor.
 It never materializes another logical tenant or query index. Each record remains
 bounded, and all cross-record identity/accounting checks run before any dependency
 is trusted. Target restore separately reserves its actual materialization and

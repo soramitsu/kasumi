@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 const MAX_ROW_BYTES: usize = 2 << 20;
+pub(crate) const MAX_SNAPSHOT_RECORD_BYTES: usize = MAX_ROW_BYTES;
 const CATALOG: &str = "staged-terminal-catalog";
 pub(crate) fn scratch_limit(canonical_bytes: u64) -> Result<u64> {
     canonical_bytes
@@ -112,7 +113,7 @@ impl Row {
             "terminal row exceeds canonical record budget"
         );
         u64::try_from(size)?
-            .checked_add(8)
+            .checked_add(crate::snapshot_codec::FRAME_HEADER_BYTES as u64)
             .context("terminal row length overflow")
     }
     pub(crate) fn validate(&self, state: &TenantState) -> Result<()> {

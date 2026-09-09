@@ -331,10 +331,9 @@ impl Decoder<'_> {
     }
 }
 
-/// Verify framing/counts/digest with a 64 KiB buffer before using the declared
-/// logical byte count for restore admission. Semantic decoding follows under
-/// the larger admitted reservation, and still rechecks the complete stream.
-pub(super) fn inspect(reader: &mut dyn Read) -> Result<u64> {
+/// Verify both framing layers and their actual typed counts/digests with fixed
+/// buffers. No JSON DTO or aggregate permanent history is allocated here.
+pub(super) fn inspect(reader: &mut dyn Read) -> Result<crate::snapshot_codec::StreamSummary> {
     let mut decoder = Decoder {
         reader,
         digest: Sha256::new(),
@@ -346,20 +345,15 @@ pub(super) fn inspect(reader: &mut dyn Read) -> Result<u64> {
     let mut buffer = vec![0; CHUNK];
     let length = decoder.length(SOURCE_LIMIT)?;
     decoder.bytes(&mut buffer[..length])?;
-    let mut short = false;
-    loop {
-        match decoder.tag()? {
-            LOGICAL => {
-                ensure!(!short, "noncanonical logical snapshot frames");
-                let length = decoder.length(CHUNK)?;
-                short = length < CHUNK;
-                decoder.bytes(&mut buffer[..length])?;
-                decoder.counts.record(false, length)?;
-            }
-            LOGICAL_END => break,
-            _ => anyhow::bail!("invalid logical snapshot record"),
-        }
-    }
+    let mut logical = LogicalReader {
+        decoder: &mut decoder,
+        buffer: Vec::with_capacity(CHUNK),
+        offset: 0,
+        short: false,
+        ended: false,
+    };
+    let summary = crate::snapshot_codec::inspect(&mut logical)?;
+    ensure!(logical.ended, "logical snapshot end missing");
     ensure!(
         decoder.counts.logical_records != 0,
         "logical snapshot absent"
@@ -380,7 +374,11 @@ pub(super) fn inspect(reader: &mut dyn Read) -> Result<u64> {
             _ => anyhow::bail!("invalid audit snapshot record"),
         }
     }
-    Ok(decoder.finish()?.logical_bytes)
+    ensure!(
+        decoder.finish()?.logical_bytes == summary.bytes,
+        "snapshot logical framed bytes differ"
+    );
+    Ok(summary)
 }
 
 struct LogicalReader<'a, 'b> {
@@ -419,7 +417,11 @@ impl Read for LogicalReader<'_, '_> {
     }
 }
 
-pub(super) fn read(engine: &TenantEngine, reader: &mut dyn Read) -> Result<Generation> {
+pub(super) fn read(
+    engine: &TenantEngine,
+    reader: &mut dyn Read,
+    expected: Option<crate::snapshot_codec::StreamSummary>,
+) -> Result<Generation> {
     let store = engine
         .snapshot_store
         .get()
@@ -452,7 +454,8 @@ pub(super) fn read(engine: &TenantEngine, reader: &mut dyn Read) -> Result<Gener
         short: false,
         ended: false,
     };
-    let generation = engine.prepare_snapshot_reader(store.scratch_disk(), &mut logical)?;
+    let generation =
+        engine.prepare_snapshot_reader(store.scratch_disk(), &mut logical, expected)?;
     ensure!(logical.ended, "logical snapshot end missing");
     authorize_root(&generation.state, &source, store.storage_access().purpose())?;
     let retention = &generation.state.audit_retention;
@@ -817,6 +820,136 @@ mod tests {
         source_store.shutdown().await;
         target_store.shutdown().await;
     }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn public_restore_admits_resident_state_without_charging_permanent_stream_as_ram() {
+        use crate::staged_terminal::{AppliedIdentity, AppliedOrigin, Builder, Row};
+
+        let incarnation = uuid::Uuid::new_v4().to_string();
+        let (_source_dir, source, source_store) = fixture(&incarnation).await;
+        let (_target_dir, target, target_store) = fixture(&incarnation).await;
+        let previous = source.generation().unwrap();
+        let mut state = previous.state.clone();
+        state.revision = 512;
+        let manifest = StagedManifest::from_chunks(&vec![
+            StagedChunk {
+                read_set: vec![],
+                operations: vec![Mutation::Delete {
+                    collection: "rows".into(),
+                    id: "one".into(),
+                    expected: Precondition::Any,
+                }],
+            };
+            256
+        ])
+        .unwrap();
+        let mut builder = Builder::new(
+            source_store.scratch_disk(),
+            256 << 20,
+            &state.tenant,
+            &incarnation,
+        )
+        .unwrap();
+        for ordinal in 1..=512 {
+            let transaction_id = format!("terminal-{ordinal:04}");
+            let row = Row {
+                ordinal,
+                key: super::super::staging::identity("owner", &transaction_id).unwrap(),
+                previous_sha256: state.staged_terminal_head.sha256.clone(),
+                applied: AppliedIdentity {
+                    incarnation: incarnation.clone(),
+                    revision: ordinal,
+                    timestamp_ms: 1000,
+                    command_sha256: "ab".repeat(32),
+                    origin: AppliedOrigin::Raft {
+                        term: 1,
+                        leader: 1,
+                        index: ordinal,
+                        context_sha256: "cd".repeat(32),
+                    },
+                },
+                stage: StagedTransaction {
+                    scope: StagedTransactionScope {
+                        tenant: state.tenant.clone(),
+                        incarnation: incarnation.clone(),
+                        principal: "owner".into(),
+                    },
+                    transaction_id,
+                    manifest_digest: staged_digest(&manifest).unwrap().0,
+                    manifest: manifest.clone(),
+                    chunks: Default::default(),
+                    stored_chunk_bytes: 0,
+                    uploaded_payload_bytes: 0,
+                    uploaded_operations: 0,
+                    uploaded_read_assertions: 0,
+                    expires_at_ms: None,
+                    ttl_ms: 60000,
+                    outcome: StagedOutcome::Aborted {
+                        receipt: WriteReceipt {
+                            revision: ordinal,
+                            versions: Default::default(),
+                        },
+                    },
+                },
+            };
+            builder.push(&row, &state).unwrap();
+            crate::staged_terminal::advance(&mut state.staged_terminal_head, &row).unwrap();
+        }
+        state.permanent_staged_bytes = state.staged_terminal_head.encoded_bytes;
+        let staged = builder.finish(&state.staged_terminal_head).unwrap();
+        let install = staged
+            .prepare_install(&source_store, &state, &"de".repeat(32), false)
+            .unwrap();
+        source_store
+            .replace_namespaces(&install.replacements(), install.writes())
+            .unwrap();
+        let generation = source
+            .prepare_state(state, install.view, previous.target_resolutions.clone())
+            .unwrap();
+        source.publish_generation(Some(Arc::new(generation)));
+        drop(previous);
+
+        // This is a fixture governor with no production maintenance lanes. It
+        // isolates point-stream admission, not final production node capacity.
+        let maximum = 80 << 20;
+        let admission = crate::admission::NodeAdmission::new(crate::admission::AdmissionConfig {
+            max_inflight_bytes: Some(maximum),
+            ..Default::default()
+        })
+        .unwrap();
+        let image = source.snapshot(admission.clone(), 60_000).await.unwrap();
+        let layout = inspect(&mut image.reader()).unwrap();
+        assert_eq!(layout.kinds[21].records, 512);
+        assert!(layout.bytes.checked_mul(3).unwrap() + (64 << 20) > maximum);
+        assert!(layout.materialization_workspace().unwrap() < maximum);
+        let denied = crate::admission::NodeAdmission::new(crate::admission::AdmissionConfig {
+            max_inflight_bytes: Some(layout.materialization_workspace().unwrap() - 1),
+            ..Default::default()
+        })
+        .unwrap();
+        let live_files = image.disk().snapshot().live_files;
+        let error = target
+            .prepare_snapshot_restore(image.clone(), denied.clone(), 60_000)
+            .await
+            .err()
+            .expect("accounted record work must be admitted before staging");
+        assert_eq!(error.code, ErrorCode::ResourceExhausted);
+        assert_eq!(image.disk().snapshot().live_files, live_files);
+        assert_eq!(denied.snapshot().reserved_bytes, 0);
+        assert_eq!(denied.snapshot().inflight_operations, 0);
+        let prepared = target
+            .prepare_snapshot_restore(image.clone(), admission.clone(), 60_000)
+            .await
+            .unwrap();
+        assert_eq!(prepared.revision(), 512);
+        assert_eq!(prepared.image(), &image);
+        assert_eq!(target.generation().unwrap().state.revision, 0);
+        assert_eq!(target.generation().unwrap().terminals.head().count, 0);
+        assert_eq!(admission.snapshot().reserved_bytes, 0);
+        assert_eq!(admission.snapshot().inflight_operations, 0);
+        source_store.shutdown().await;
+        target_store.shutdown().await;
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn public_capture_and_restore_preparation_are_complete_admitted_and_never_publish() {
         let incarnation = uuid::Uuid::new_v4().to_string();

@@ -47,7 +47,7 @@ fn record(record: &Record) -> Result<usize> {
             "snapshot record exceeds byte limit",
         ));
     }
-    size.checked_add(8)
+    size.checked_add(crate::snapshot_codec::FRAME_HEADER_BYTES)
         .ok_or_else(|| Error::new(ErrorCode::Corruption, "snapshot record overflow"))
 }
 fn change(total: &mut usize, old: usize, new: usize) -> Result<()> {
