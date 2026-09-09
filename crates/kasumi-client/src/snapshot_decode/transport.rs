@@ -17,12 +17,19 @@ use tonic::{
 };
 use tower_service::Service;
 
-pub(super) struct Wire {
+#[derive(Clone, Copy)]
+pub(crate) enum Format {
+    JsonEnvelope,
+    QueryProtobuf,
+}
+
+pub(crate) struct Wire {
     pub bytes: Bytes,
     pub call: Call,
 }
 struct SnapshotCodec {
     call: Call,
+    format: Format,
 }
 struct SnapshotEncoder {
     inner: tonic_prost::ProstEncoder<proto::ReadSnapshotRequest>,
@@ -30,6 +37,7 @@ struct SnapshotEncoder {
 }
 struct SnapshotDecoder {
     call: Call,
+    format: Format,
     seen: bool,
 }
 impl Codec for SnapshotCodec {
@@ -47,6 +55,7 @@ impl Codec for SnapshotCodec {
         SnapshotDecoder {
             call: self.call.clone(),
             seen: false,
+            format: self.format,
         }
     }
 }
@@ -70,7 +79,18 @@ impl Decoder for SnapshotDecoder {
         self.seen = true;
         self.call.check().map_err(status)?;
         Ok(Some(Wire {
-            bytes: envelope(input, self.call.limits.max_json_bytes)?,
+            bytes: match self.format {
+                Format::JsonEnvelope => envelope(input, self.call.limits.max_json_bytes)?,
+                Format::QueryProtobuf => {
+                    let length = input.remaining();
+                    if length > self.call.limits.max_wire_bytes {
+                        return Err(Status::resource_exhausted(
+                            "native response exceeds wire budget",
+                        ));
+                    }
+                    input.copy_to_bytes(length)
+                }
+            },
             call: self.call.clone(),
         }))
     }
@@ -113,7 +133,7 @@ fn envelope(input: &mut impl Buf, maximum: usize) -> Result<Bytes, Status> {
 fn status(error: ClientError) -> Status {
     match error {
         ClientError::Transport(status) => status,
-        ClientError::SnapshotRejected { code, reason } => Status::new(code, reason),
+        ClientError::DecodeRejected { code, reason } => Status::new(code, reason),
         _ => Status::data_loss("invalid admitted snapshot response"),
     }
 }
@@ -316,10 +336,11 @@ impl http_body::Body for ErrorBody {
         Poll::Ready(self.error.take().map(Err))
     }
 }
-pub(super) async fn receive(
+pub(crate) async fn receive(
     channel: Channel,
     mut request: tonic::Request<proto::ReadSnapshotRequest>,
     path: &'static str,
+    format: Format,
     call: Call,
 ) -> Result<Wire, ClientError> {
     let result = async {
@@ -347,7 +368,10 @@ pub(super) async fn receive(
             .unary(
                 request,
                 http::uri::PathAndQuery::from_static(path),
-                SnapshotCodec { call: call.clone() },
+                SnapshotCodec {
+                    call: call.clone(),
+                    format,
+                },
             )
             .await?;
         call.check()?;
@@ -391,7 +415,7 @@ mod tests {
     async fn oversized_initial_status_headers_are_removed_before_tonic_can_decode_them() {
         let options = crate::SnapshotReadOptions {
             resources: crate::ClientResources::new(1 << 30, 1).unwrap(),
-            limits: crate::SnapshotDecodeLimits::default(),
+            limits: crate::ClientDecodeLimits::default(),
             deadline: tokio::time::Instant::now() + std::time::Duration::from_secs(30),
             expected_incarnation: uuid::Uuid::new_v4(),
         };

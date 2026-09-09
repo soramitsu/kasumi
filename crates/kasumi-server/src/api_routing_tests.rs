@@ -189,13 +189,27 @@ async fn native_pool_replays_uncertain_batches_and_never_moves_historical_pages(
         json!({"collection":"docs", "filter":{"op":"all"}, "limit":1, "allow_scan":true}),
     )
     .unwrap();
-    let page = pool.query(&query, Duration::from_secs(4)).await.unwrap();
+    let snapshot_resources = kasumi_client::ClientResources::new(64 << 20, 8).unwrap();
+    let json_options = |duration| kasumi_client::JsonReadOptions {
+        resources: snapshot_resources.clone(),
+        limits: kasumi_client::ClientDecodeLimits {
+            max_request_bytes: 64 << 10,
+            max_wire_bytes: 64 << 10,
+            max_json_bytes: 64 << 10,
+            max_decoded_bytes: 2 << 20,
+            ..Default::default()
+        },
+        deadline: tokio::time::Instant::now() + duration,
+    };
+    let page = pool
+        .query(&query, &json_options(Duration::from_secs(4)))
+        .await
+        .unwrap();
     assert_eq!(page.member(), 2);
     assert!(page.response().cursor.is_some());
-    let snapshot_resources = kasumi_client::ClientResources::new(16 << 20, 8).unwrap();
     let snapshot_options = |duration| kasumi_client::SnapshotReadOptions {
         resources: snapshot_resources.clone(),
-        limits: kasumi_client::SnapshotDecodeLimits {
+        limits: kasumi_client::ClientDecodeLimits {
             max_request_bytes: 64 << 10,
             max_wire_bytes: 64 << 10,
             max_json_bytes: 64 << 10,
@@ -216,14 +230,14 @@ async fn native_pool_replays_uncertain_batches_and_never_moves_historical_pages(
     let mut other_pool = KasumiClientPool::new(endpoints, source).unwrap();
     assert!(
         other_pool
-            .next_query_page(&page, Duration::from_secs(1))
+            .next_query_page(&page, &json_options(Duration::from_secs(1)))
             .await
             .is_err()
     );
     stops[1].send(true).unwrap();
     tasks.pop().unwrap().await.unwrap().unwrap();
     assert!(
-        pool.next_query_page(&page, Duration::from_millis(150))
+        pool.next_query_page(&page, &json_options(Duration::from_millis(150)))
             .await
             .is_err()
     );
@@ -245,7 +259,7 @@ async fn native_pool_replays_uncertain_batches_and_never_moves_historical_pages(
     );
     // An explicitly new query can select an available installed member.
     assert_eq!(
-        pool.query(&query, Duration::from_secs(2))
+        pool.query(&query, &json_options(Duration::from_secs(2)))
             .await
             .unwrap()
             .member(),

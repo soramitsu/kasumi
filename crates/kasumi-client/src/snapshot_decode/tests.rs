@@ -7,8 +7,8 @@ use std::time::Duration;
 
 fn options() -> SnapshotReadOptions {
     SnapshotReadOptions {
-        resources: ClientResources::new(8 << 20, 2).unwrap(),
-        limits: SnapshotDecodeLimits {
+        resources: ClientResources::new(16 << 20, 2).unwrap(),
+        limits: ClientDecodeLimits {
             max_request_bytes: 64 << 10,
             max_wire_bytes: 64 << 10,
             max_json_bytes: 64 << 10,
@@ -27,7 +27,7 @@ fn shared_response_retains_exact_original_reservation() {
     let mut options = options();
     options.resources = ClientResources::new(options.limits.accounted_bytes().unwrap(), 1).unwrap();
     let call = options.admit().unwrap();
-    let value = AdmittedSnapshot::new(vec![1u8, 2], &call);
+    let value = AdmittedResponse::new(vec![1u8, 2], &call);
     let clone = value.clone();
     let initial = options.resources.usage();
     assert_eq!(initial.live_owners, 1);
@@ -76,7 +76,7 @@ fn exact_points_scope_order_and_revision_are_checked_before_values() {
     }
     let lease = SnapshotLease {
         lease_id: uuid::Uuid::new_v4().to_string(),
-        incarnation: call.expected_incarnation.to_string(),
+        incarnation: call.expected_incarnation.unwrap().to_string(),
         revision: 4,
         policy_epoch: 1,
         schema_epoch: 1,
@@ -265,9 +265,9 @@ async fn parser_error_payload_drops_before_worker_admission_is_released() {
     let error = worker.await.unwrap().unwrap_err();
     assert!(matches!(
         error,
-        ClientError::SnapshotRejected {
+        ClientError::DecodeRejected {
             code: tonic::Code::DataLoss,
-            reason: "snapshot JSON failed validation"
+            reason: "native JSON failed validation"
         }
     ));
     assert_eq!(options.resources.usage(), ClientResourceUsage::default());
@@ -290,9 +290,9 @@ fn transport_error_retains_code_without_peer_message_details_or_metadata() {
     drop(call);
     assert!(matches!(
         error,
-        ClientError::SnapshotRejected {
+        ClientError::DecodeRejected {
             code: tonic::Code::Unavailable,
-            reason: "snapshot transport failed"
+            reason: "native transport failed"
         }
     ));
     assert_eq!(options.resources.usage(), ClientResourceUsage::default());

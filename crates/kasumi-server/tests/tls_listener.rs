@@ -74,7 +74,7 @@ async fn native_grpc_channel_uses_pinned_tls13_and_http2_with_no_plaintext_fallb
     let snapshot_resources = kasumi_client::ClientResources::new(16 << 20, 8).unwrap();
     let snapshot_options = |duration| kasumi_client::SnapshotReadOptions {
         resources: snapshot_resources.clone(),
-        limits: kasumi_client::SnapshotDecodeLimits {
+        limits: kasumi_client::ClientDecodeLimits {
             max_request_bytes: 64 << 10,
             max_wire_bytes: 64 << 10,
             max_json_bytes: 64 << 10,
@@ -100,7 +100,7 @@ async fn native_grpc_channel_uses_pinned_tls13_and_http2_with_no_plaintext_fallb
         .unwrap_err();
     assert!(matches!(
         error,
-        kasumi_client::ClientError::SnapshotRejected {
+        kasumi_client::ClientError::DecodeRejected {
             code: tonic::Code::Unauthenticated,
             ..
         }

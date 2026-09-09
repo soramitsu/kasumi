@@ -169,7 +169,7 @@ async fn guarded_stop_secure_sdk_preserves_exact_identity_and_native_authority()
     let snapshot_resources = kasumi_client::ClientResources::new(16 << 20, 8).unwrap();
     let snapshot_options = |duration| kasumi_client::SnapshotReadOptions {
         resources: snapshot_resources.clone(),
-        limits: kasumi_client::SnapshotDecodeLimits {
+        limits: kasumi_client::ClientDecodeLimits {
             max_request_bytes: 64 << 10,
             max_wire_bytes: 64 << 10,
             max_json_bytes: 64 << 10,

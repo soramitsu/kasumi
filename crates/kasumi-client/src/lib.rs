@@ -5,14 +5,18 @@
 //! pin historical reads to their originating member.
 
 use kasumi_transport::{CertificatePin, TlsIdentity};
-use kasumi_types::{MutationBatch, QueryRequest, QueryResponse, QueryRow, WriteReceipt};
+use kasumi_types::{MutationBatch, WriteReceipt};
 use serde::Serialize;
 use std::collections::BTreeSet;
 use tonic::{Request, transport::Channel};
 
+mod literal_decode;
 mod snapshot_decode;
+pub use literal_decode::{
+    decode_mutation_json, decode_query_json, decode_schema_change_json, decode_staged_chunk_json,
+};
 pub use snapshot_decode::{
-    AdmittedSnapshot, ClientResourceUsage, ClientResources, SnapshotDecodeLimits,
+    AdmittedResponse, ClientDecodeLimits, ClientResourceUsage, ClientResources, JsonReadOptions,
     SnapshotReadOptions,
 };
 mod credentials;
@@ -52,10 +56,10 @@ pub enum ClientError {
     Connection(#[from] anyhow::Error),
     #[error("native transport failed: {0}")]
     Transport(#[from] tonic::Status),
-    /// Snapshot failures retain no peer-controlled strings or metadata after
+    /// Admitted decode failures retain no peer-controlled strings or metadata after
     /// their admission owner is released. The code remains usable for routing.
-    #[error("snapshot request failed ({code:?}): {reason}")]
-    SnapshotRejected {
+    #[error("native decode failed ({code:?}): {reason}")]
+    DecodeRejected {
         code: tonic::Code,
         reason: &'static str,
     },
@@ -135,23 +139,6 @@ impl KasumiClient {
         Ok(VerifiedRestoreLineage::from_verified_read(observation))
     }
 
-    pub async fn read_change_feed(
-        &mut self,
-        bearer: &str,
-        request: &kasumi_types::ReadChangeFeed,
-    ) -> Result<kasumi_types::ChangeFeedPage, ClientError> {
-        let response = self
-            .inner
-            .read_change_feed(self.authorized(
-                bearer,
-                proto::ReadChangeFeedRequest {
-                    request_json: encode(request)?,
-                },
-            )?)
-            .await?
-            .into_inner();
-        Ok(serde_json::from_slice(&response.response_json)?)
-    }
     pub async fn connect(config: &KasumiClientConfig) -> Result<Self, ClientError> {
         let channel = kasumi_transport::grpc_channel(
             &config.endpoint,
@@ -287,54 +274,6 @@ impl KasumiClient {
             .await?;
         Ok(())
     }
-    /// Bounded ordinary query/pagination for discovery. A returned page is not
-    /// a complete conditional-transaction dependency set; use coherent snapshot
-    /// reads and their assertions when a write depends on query completeness.
-    pub async fn query(
-        &mut self,
-        bearer: &str,
-        request: &QueryRequest,
-    ) -> Result<QueryResponse, ClientError> {
-        let response = self
-            .inner
-            .query(self.authorized(
-                bearer,
-                proto::QueryRequest {
-                    query_json: encode(request)?,
-                },
-            )?)
-            .await?
-            .into_inner();
-        let rows = response
-            .rows
-            .into_iter()
-            .map(|row| {
-                let document = row.document.ok_or_else(|| {
-                    ClientError::Transport(tonic::Status::data_loss(
-                        "native query row is missing its document",
-                    ))
-                })?;
-                Ok(QueryRow {
-                    id: document.id,
-                    version: document.version,
-                    body: serde_json::from_slice(&document.body_json)?,
-                    score: row.score,
-                })
-            })
-            .collect::<Result<Vec<_>, ClientError>>()?;
-        let aggregates = response
-            .aggregates_json
-            .into_iter()
-            .map(|value| serde_json::from_slice(&value))
-            .collect::<Result<Vec<_>, serde_json::Error>>()?;
-        Ok(QueryResponse {
-            revision: response.revision,
-            rows,
-            aggregates,
-            cursor: response.cursor,
-        })
-    }
-
     pub async fn mutate(
         &mut self,
         bearer: &str,
@@ -360,6 +299,7 @@ impl KasumiClient {
 /// Connect this client to the separate administrative listener.
 #[derive(Clone)]
 pub struct KasumiAdminClient {
+    bounded_channel: Channel,
     inner: proto::kasumi_admin_client::KasumiAdminClient<Channel>,
 }
 impl KasumiAdminClient {
@@ -505,24 +445,6 @@ impl KasumiAdminClient {
         Ok(VerifiedBackupCheckpoint::verified(checkpoint))
     }
 
-    pub async fn read_schema(
-        &mut self,
-        bearer: &str,
-        request: &kasumi_types::ReadSchema,
-    ) -> Result<kasumi_types::SchemaSnapshot, ClientError> {
-        let response = self
-            .inner
-            .read_schema(authorized(
-                bearer,
-                proto::ReadSchemaRequest {
-                    request_json: encode(request)?,
-                },
-            )?)
-            .await?
-            .into_inner();
-        Ok(serde_json::from_slice(&response.response_json)?)
-    }
-
     pub async fn activate_schema(
         &mut self,
         bearer: &str,
@@ -571,6 +493,7 @@ impl KasumiAdminClient {
         )
         .await?;
         Ok(Self {
+            bounded_channel: channel.clone(),
             inner: proto::kasumi_admin_client::KasumiAdminClient::new(channel)
                 .max_encoding_message_size((8 << 20) + (64 << 10))
                 .max_decoding_message_size(16 << 20),

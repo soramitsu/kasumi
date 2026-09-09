@@ -188,11 +188,28 @@ async fn page(operation: &str, profile_path: &Path, input: &Path, output: &Path)
         .resolved
         .context("audit attempt lacks a fixed range")?;
     let bytes = match operation {
-        "export" => serde_json::to_vec(
-            &client
-                .export_security_audit(&profile.bearer()?, &serde_json::from_value(resolved)?)
-                .await?,
-        )?,
+        "export" => {
+            let options = kasumi_client::JsonReadOptions {
+                resources: kasumi_client::ClientResources::new(256 << 20, 2)?,
+                limits: kasumi_client::ClientDecodeLimits {
+                    max_request_bytes: 64 << 10,
+                    max_wire_bytes: 2 << 20,
+                    max_json_bytes: 1 << 20,
+                    max_decoded_bytes: 64 << 20,
+                    max_rows: 1024,
+                    ..Default::default()
+                },
+                deadline: tokio::time::Instant::now() + std::time::Duration::from_secs(30),
+            };
+            let page = client
+                .export_security_audit(
+                    &profile.bearer()?,
+                    &serde_json::from_value(resolved)?,
+                    &options,
+                )
+                .await?;
+            serde_json::to_vec(&*page)?
+        }
         "archives" => serde_json::to_vec(
             &client
                 .security_audit_archives(&profile.bearer()?, &serde_json::from_value(resolved)?)

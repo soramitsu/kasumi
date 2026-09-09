@@ -1,0 +1,17 @@
+[package]
+name = "kasumi-canonical-json-feature-check"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.97.1"
+publish = false
+
+[workspace]
+
+[features]
+preserve-order = ["serde_json/preserve_order"]
+
+[dependencies]
+kasumi-types = { path = "../../crates/kasumi-types" }
+serde_json = { version = "=1.0.151", features = ["arbitrary_precision"] }
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
