@@ -108,11 +108,44 @@ async fn recovery_uncertain_activation_requires_permanent_stop_before_target_cle
 async fn recovery_expired_completion_resolves_its_exact_positive_fact_before_activation() {
     exercise_completed_recovery(false, Some(true), true).await;
 }
+/// Transfer the exact live fixture only after the completion/activation future
+/// has returned. Polling route publication inside that large future composes
+/// both debug poll frames on the same thread and can exhaust its normal stack.
+struct RoutePublicationFixture {
+    fixture: Fixture,
+    database: Arc<Database>,
+    request: RecoveryStart,
+}
 async fn exercise_completed_recovery(
     planned: bool,
     activation_outcome: Option<bool>,
     inspect_completion: bool,
 ) {
+    let route = {
+        let completed = Box::pin(complete_recovery(
+            planned,
+            activation_outcome,
+            inspect_completion,
+        ));
+        completed.await
+    };
+    if let Some(RoutePublicationFixture {
+        mut fixture,
+        database,
+        request,
+    }) = route
+    {
+        // The old future and its poll frame are gone; this moves the same
+        // storage owners and original request into the next phase. No detached
+        // task, replacement authorization or altered deadline is introduced.
+        Box::pin(exercise_route_publication(&mut fixture, database, &request)).await;
+    }
+}
+async fn complete_recovery(
+    planned: bool,
+    activation_outcome: Option<bool>,
+    inspect_completion: bool,
+) -> Option<RoutePublicationFixture> {
     let mut f = if activation_outcome == Some(true) {
         Fixture::with_topology().await
     } else {
@@ -1073,8 +1106,11 @@ async fn exercise_completed_recovery(
             );
             drop(published);
             snapshot(&db).await;
-            exercise_route_publication(&mut f, db, &request).await;
-            return;
+            return Some(RoutePublicationFixture {
+                fixture: f,
+                database: db,
+                request,
+            });
         }
     }
     if activation_outcome.is_none() {
@@ -1309,6 +1345,7 @@ async fn exercise_completed_recovery(
     );
     drop(db);
     f.close().await;
+    None
 }
 async fn publish_route(f: &Fixture, operation: Uuid, phase: Uuid) -> RecoveryDispatchOutcome {
     let context = f.context("owner");
