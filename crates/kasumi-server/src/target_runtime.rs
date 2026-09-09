@@ -18,7 +18,7 @@ use kasumi_types::*;
 use ring::signature::{Ed25519KeyPair, KeyPair};
 use std::{
     collections::BTreeMap,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -152,7 +152,7 @@ impl TargetRuntimeReply {
             ResponseEvidence::Stopped(stop, key) => {
                 self.runtime.journal.stop(&self.operation, stop)?;
                 ensure!(
-                    !self.runtime.path(key)?.exists(),
+                    !target_file_exists(&self.runtime.path(key)?)?,
                     "target storage reappeared after stop"
                 );
             }
@@ -693,12 +693,7 @@ impl TargetRecoveryRuntime {
         let path = self
             .root
             .join(format!("{}.{}.redb", digest(&key.0)?, key.1));
-        if let Ok(meta) = std::fs::symlink_metadata(&path) {
-            ensure!(
-                meta.is_file() && !meta.file_type().is_symlink(),
-                "target file is not a regular installed path"
-            );
-        }
+        target_file_exists(&path)?;
         Ok(path)
     }
     async fn perform(
@@ -1101,7 +1096,7 @@ impl TargetRecoveryRuntime {
         op.check()?;
         self.journal.stop(op, proof)?;
         let path = self.path(key)?;
-        if path.exists() {
+        if target_file_exists(&path)? {
             // Permanent journal stop and joined generation owners precede this
             // exact Prepared/Ready file claim. No redb or application keys open.
             let node = NodeStore::claim_cleanup(&path, self.generation_file_id(key)?)?;
@@ -1179,6 +1174,22 @@ impl TargetRecoveryRuntime {
         Ok(())
     }
 }
+// A failed filesystem observation is not an absence proof. In particular,
+// Path::exists must not turn permission/I/O failures into successful cleanup.
+fn target_file_exists(path: &Path) -> Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            ensure!(
+                metadata.is_file() && !metadata.file_type().is_symlink(),
+                "target file is not a regular installed path"
+            );
+            Ok(true)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
 fn unknown(error: impl std::fmt::Display) -> anyhow::Error {
     let _ = error;
     Error::new(

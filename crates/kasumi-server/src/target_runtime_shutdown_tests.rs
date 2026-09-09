@@ -212,3 +212,21 @@ async fn target_monitor_and_outer_owner_survive_cancelled_shutdown_until_journal
     .await
     .expect("shutdown ownership fixture timed out");
 }
+
+#[test]
+fn target_absence_requires_a_successful_filesystem_observation() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("target.redb");
+    assert!(!target_file_exists(&path).unwrap());
+    std::fs::write(&path, b"owned").unwrap();
+    assert!(target_file_exists(&path).unwrap());
+    assert!(target_file_exists(directory.path()).is_err());
+    let alias = directory.path().join("alias");
+    std::os::unix::fs::symlink(&path, &alias).unwrap();
+    assert!(target_file_exists(&alias).is_err());
+    // A cyclic parent produces an actual ELOOP observation failure. It is not
+    // NotFound, and must not authorize a cleanup success for the child path.
+    let cycle = directory.path().join("cycle");
+    std::os::unix::fs::symlink(&cycle, &cycle).unwrap();
+    assert!(target_file_exists(&cycle.join("target.redb")).is_err());
+}

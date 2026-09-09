@@ -45,7 +45,9 @@ Permanent journal stop, issuer stop/drain evidence, closed gates and completed
 worker/storage drain precede cleanup. Cleanup claims the exact canonical Prepared
 or Ready envelope without opening redb or constructing application keys; it
 retains the exclusive descriptor through identity recheck, unlink and parent
-synchronization. Empty or torn-before-header files cannot use this guard. Complete
+synchronization. Only an explicit NotFound filesystem observation establishes
+absence; permission, symlink-loop and other I/O failures remain errors, including
+at final response release. Empty or torn-before-header files cannot use this guard. Complete
 automatic physical cleanup remains open: a future durable owned-empty inode and
 namespace protocol must cover pre-header crashes, including the gap between
 creating an inode and recording that inode. This checkpoint neither adopts an
