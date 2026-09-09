@@ -1,0 +1,19 @@
+test_archive_rejects_escape_links_duplicates_and_file_parent (test_outer_guards.OwnerTests.test_archive_rejects_escape_links_duplicates_and_file_parent) ... ok
+test_atomic_status_is_bounded_private_and_replaces_complete_json (test_outer_guards.OwnerTests.test_atomic_status_is_bounded_private_and_replaces_complete_json) ... ok
+test_container_requires_exact_isolation_owner_image_and_mounts (test_outer_guards.OwnerTests.test_container_requires_exact_isolation_owner_image_and_mounts) ... ok
+test_identity_rejects_links (test_outer_guards.OwnerTests.test_identity_rejects_links) ... ok
+test_loop_guard_rejects_path_inode_device_and_extent_substitution (test_outer_guards.OwnerTests.test_loop_guard_rejects_path_inode_device_and_extent_substitution) ... ok
+test_owner_has_one_exact_version_identity_and_source (test_outer_guards.OwnerTests.test_owner_has_one_exact_version_identity_and_source) ... ok
+test_private_path_rejects_aliases_modes_and_mount_separators (test_outer_guards.OwnerTests.test_private_path_rejects_aliases_modes_and_mount_separators) ... ok
+test_content_modes_and_empty_directories_are_inputs (test_prepare.InventoryTests.test_content_modes_and_empty_directories_are_inputs) ... ok
+test_missing_root_and_traversal_errors_fail (test_prepare.InventoryTests.test_missing_root_and_traversal_errors_fail) ... ok
+test_removal_is_detected (test_prepare.InventoryTests.test_removal_is_detected) ... ok
+test_root_must_be_a_real_directory (test_prepare.InventoryTests.test_root_must_be_a_real_directory) ... ok
+test_source_requires_both_exact_locks_and_rejects_generated_state (test_prepare.InventoryTests.test_source_requires_both_exact_locks_and_rejects_generated_state) ... ok
+test_special_files_are_rejected_without_reading (test_prepare.InventoryTests.test_special_files_are_rejected_without_reading) ... ok
+test_symlinks_to_files_directories_and_absent_targets_are_rejected (test_prepare.InventoryTests.test_symlinks_to_files_directories_and_absent_targets_are_rejected) ... ok
+
+----------------------------------------------------------------------
+Ran 14 tests in 0.018s
+
+OK
