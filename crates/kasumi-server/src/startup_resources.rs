@@ -1,6 +1,7 @@
 //! Unpublished owned resources from an exclusive node open or explicit new
-//! catalogs on an already owned node. A borrowed node is retained only to join
-//! its initializers; borrowed serving stores/databases never enter this scope.
+//! catalogs or a new custody runtime on an already owned node. A borrowed node
+//! is retained only to join its initializers; borrowed serving runtimes, stores
+//! and databases never enter this scope.
 use kasumi_types::drain::{DrainCompletion, DrainFailure, DrainReport, DrainResult};
 use std::sync::Arc;
 
@@ -12,6 +13,7 @@ pub(crate) struct Resources {
     pub(crate) audits: Vec<Arc<kasumi_engine::SecurityAudit>>,
     pub(crate) verifiers: Vec<Arc<crate::signer_runtime::InstalledSignerVerifier>>,
     pub(crate) databases: Vec<Arc<kasumi_engine::Database>>,
+    pub(crate) custodies: Vec<Arc<kasumi_engine::RetiredCustody>>,
     pub(crate) authorities: Vec<Arc<kasumi_authority::IndependentAuthority>>,
     // Fields drop in declaration order: exclusive installation ownership must
     // outlive every retained worker and physical node handle.
@@ -29,6 +31,14 @@ impl Resources {
                     index,
                     error,
                 )));
+            }
+        }
+        for custody in &self.custodies {
+            if let Err(failure) = custody.shutdown().await {
+                report.merge(&failure);
+                if failure.completion() == DrainCompletion::Retained {
+                    retained = Some(failure);
+                }
             }
         }
         for database in &self.databases {

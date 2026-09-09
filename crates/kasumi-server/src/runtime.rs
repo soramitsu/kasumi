@@ -4804,96 +4804,137 @@ pub(crate) async fn open_retired_source(
     audit: Arc<SecurityAudit>,
     admission: Arc<kasumi_engine::admission::NodeAdmission>,
 ) -> Result<Arc<kasumi_engine::RetiredCustody>> {
-    let snapshot_limit = if store.binding().tenant() == CONTROL_TENANT {
-        config.control.initial_limits.max_snapshot_bytes
-    } else {
-        config
-            .tenants
-            .iter()
-            .find(|tenant| tenant.tenant == store.binding().tenant())
-            .context("retired source lacks installed capacity settings")?
-            .initial_limits
-            .max_snapshot_bytes
-    };
-    let control = kasumi_raft::ControlLog::installed(store.clone())?
-        .context("installed custody consensus absent")?;
-    let group = control.group().to_owned();
-    let id = control.node_id();
-    let binding = store
-        .store()
-        .get("engine.deployment", b"mode")?
-        .context("custody deployment binding absent")?;
-    if let Some(replication) = &config.replication {
-        let (mode, bootstrap): (String, ReplicatedBootstrap) = serde_json::from_slice(&binding)?;
-        bootstrap.validate()?;
-        ensure!(
-            mode == "replicated"
-                && id == replication.node_id
-                && group == format!("{}/{}", store.binding().tenant(), bootstrap.incarnation),
-            "custody deployment differs from installed replication"
-        );
-        let network = cluster.context("custody peer transport absent")?;
-        let custody = kasumi_engine::RetiredCustody::open_replicated(
-            store,
-            id,
-            group.clone(),
-            network.clone(),
-            kasumi_raft::CustodyRaftConfig {
-                raft: kasumi_raft::server_config(),
-                limits: kasumi_raft::RaftLimits {
-                    max_snapshot_bytes: snapshot_limit,
+    // Every production caller runs inside an already retained startup or
+    // reconciliation task. Keep this nested inventory outside the caught future;
+    // never register a task in its parent's global startup registry.
+    let mut pending = crate::startup_resources::Resources::default();
+    let outcome = crate::startup_preparation::capture("retired custody", async {
+        let snapshot_limit = if store.binding().tenant() == CONTROL_TENANT {
+            config.control.initial_limits.max_snapshot_bytes
+        } else {
+            config
+                .tenants
+                .iter()
+                .find(|tenant| tenant.tenant == store.binding().tenant())
+                .context("retired source lacks installed capacity settings")?
+                .initial_limits
+                .max_snapshot_bytes
+        };
+        let control = kasumi_raft::ControlLog::installed(store.clone())?
+            .context("installed custody consensus absent")?;
+        let group = control.group().to_owned();
+        let id = control.node_id();
+        let binding = store
+            .store()
+            .get("engine.deployment", b"mode")?
+            .context("custody deployment binding absent")?;
+        if let Some(replication) = &config.replication {
+            let (mode, bootstrap): (String, ReplicatedBootstrap) =
+                serde_json::from_slice(&binding)?;
+            bootstrap.validate()?;
+            ensure!(
+                mode == "replicated"
+                    && id == replication.node_id
+                    && group == format!("{}/{}", store.binding().tenant(), bootstrap.incarnation),
+                "custody deployment differs from installed replication"
+            );
+            let network = cluster.context("custody peer transport absent")?;
+            let custody = kasumi_engine::RetiredCustody::open_replicated(
+                store,
+                id,
+                group.clone(),
+                network.clone(),
+                kasumi_raft::CustodyRaftConfig {
+                    raft: kasumi_raft::server_config(),
+                    limits: kasumi_raft::RaftLimits {
+                        max_snapshot_bytes: snapshot_limit,
+                    },
                 },
-            },
-            admission,
-            audit,
-        )
-        .await?;
-        if let Err(error) = network.register_group(
-            group,
-            custody
-                .raft_group()
-                .context("closed custody group absent")?
-                .raft()
-                .clone(),
-            replication.peers.iter().map(|peer| peer.node_id).collect(),
-        ) {
-            let _ = custody.shutdown().await;
-            return Err(error);
+                admission,
+                audit,
+            )
+            .await?;
+            pending.custodies.push(custody.clone());
+            #[cfg(test)]
+            {
+                crate::startup_preparation::checkpoint(config.database_id, "retired-custody-owner");
+                retired_source_tests::after_open(config.database_id, &custody).await?;
+            }
+            network.register_group(
+                group,
+                custody
+                    .raft_group()
+                    .context("closed custody group absent")?
+                    .raft()
+                    .clone(),
+                replication.peers.iter().map(|peer| peer.node_id).collect(),
+            )?;
+            Ok(custody)
+        } else {
+            ensure!(
+                binding == b"local-v1" && id == 1,
+                "replicated custody cannot use local transport"
+            );
+            let router = Arc::new(kasumi_raft::InProcessRouter::default());
+            let custody = kasumi_engine::RetiredCustody::open_replicated(
+                store,
+                id,
+                group.clone(),
+                router.clone(),
+                kasumi_raft::CustodyRaftConfig {
+                    raft: kasumi_raft::Config::default(),
+                    limits: kasumi_raft::RaftLimits {
+                        max_snapshot_bytes: snapshot_limit,
+                    },
+                },
+                admission,
+                audit,
+            )
+            .await?;
+            pending.custodies.push(custody.clone());
+            #[cfg(test)]
+            {
+                crate::startup_preparation::checkpoint(config.database_id, "retired-custody-owner");
+                retired_source_tests::after_open(config.database_id, &custody).await?;
+            }
+            router.register(
+                group,
+                id,
+                custody
+                    .raft_group()
+                    .context("closed custody group absent")?
+                    .raft()
+                    .clone(),
+            );
+            Ok(custody)
         }
-        Ok(custody)
-    } else {
-        ensure!(
-            binding == b"local-v1" && id == 1,
-            "replicated custody cannot use local transport"
-        );
-        let router = Arc::new(kasumi_raft::InProcessRouter::default());
-        let custody = kasumi_engine::RetiredCustody::open_replicated(
-            store,
-            id,
-            group.clone(),
-            router.clone(),
-            kasumi_raft::CustodyRaftConfig {
-                raft: kasumi_raft::Config::default(),
-                limits: kasumi_raft::RaftLimits {
-                    max_snapshot_bytes: snapshot_limit,
-                },
-            },
-            admission,
-            audit,
-        )
-        .await?;
-        router.register(
-            group,
-            id,
-            custody
-                .raft_group()
-                .context("closed custody group absent")?
-                .raft()
-                .clone(),
-        );
-        Ok(custody)
+    })
+    .await;
+    match outcome {
+        Ok(custody) => Ok(custody),
+        Err(error) => {
+            // Returning an error permits callers to publish RecoveringControl.
+            // This must wait for Complete, including retained-child retries.
+            match crate::startup_owner::finish(&mut pending).await {
+                Ok(()) => Err(error),
+                Err(drain) => {
+                    if let Some(failure) = drain.downcast_ref::<kasumi_types::drain::DrainFailure>()
+                    {
+                        // A typed context keeps both the original preparation
+                        // error and each original Arc<DrainIssue> downcastable.
+                        Err(error.context(failure.clone()))
+                    } else {
+                        Err(error.context(drain))
+                    }
+                }
+            }
+        }
     }
 }
+
+#[cfg(test)]
+#[path = "runtime_retired_source_tests.rs"]
+mod retired_source_tests;
 
 #[cfg(test)]
 #[path = "runtime_audit_tests.rs"]
