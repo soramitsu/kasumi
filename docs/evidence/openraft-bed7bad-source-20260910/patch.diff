@@ -1,0 +1,629 @@
+diff --git a/KASUMI-SHUTDOWN-REVIEW.md b/KASUMI-SHUTDOWN-REVIEW.md
+new file mode 100644
+index 0000000..18fb702
+--- /dev/null
++++ b/KASUMI-SHUTDOWN-REVIEW.md
+@@ -0,0 +1,35 @@
++# Retained OpenRaft shutdown outcomes
++
++This is an uninstalled source patch against upstream v0.9.25, commit
++`8815cdba2826f74e848acef361ad03f93bb1c3f8`. The published crate checksum is
++`a97014fb78acb77be3a40ac2da305f6dd3a6b243f3a908ace87d29b3972eaafd`.
++It does not change Kasumi's lockfile or claim dependency qualification.
++
++The original shutdown joins the core but discards its retained fatal result.
++It then removes the ticker handle before awaiting it. Cancelling that await
++detaches the ticker; repeated shutdown returns success without observing it.
++
++The patch changes shutdown directly to `Result<(), ShutdownError<NodeId>>`.
++The result retains separate core and ticker failures. Both tasks join before any
++failure returns; cancellation leaves their handles or terminal outcomes in their
++owners. Unexpected runtime cancellation is `Fatal::Cancelled`, distinct from the
++normal `Fatal::Stopped` return. There is no alternate compatibility shutdown API.
++
++New source tests cover a real ticker owner retained across cancellation of two
++joiners, normal and panicking ticker completion with repeated outcome observation,
++an actually aborted ticker, and an actual Raft core callback that panics after
++shutdown cancellation. Existing normal and panicked cluster shutdown tests also
++require repeat calls to preserve their outcome.
++
++All compilation and runtime tests remain **UNRUN**. Rust 1.97.1 rustfmt parsed the
++five changed Rust files, with warnings that upstream's nightly-only formatting
++options are unavailable on stable. This does not constitute the upstream format
++gate. Whitespace validation is separate. Upstream `make` and its feature matrices,
++the Kasumi dependency integration, production builds and platform gates remain
++required. The disabled mdBook guide points to the maintained lifecycle document.
++
++The promise covers core and ticker joins. It does not establish that all state
++machine, replication, snapshot, network, storage or application worker ownership
++has drained. Kasumi must retain and join its actual subordinate storage owners and
++report failures using its canonical complete-versus-retained drain contract before
++this patch can support installation lock release or physical cleanup.
+diff --git a/guide/README.md b/guide/README.md
+index 54079c3..c3a7526 100644
+--- a/guide/README.md
++++ b/guide/README.md
+@@ -4,6 +4,9 @@
+ 
+ `mdbook` based document is disabled and is moved to https://docs.rs/openraft/0.8.3/openraft/docs ;
+ 
++The maintained [node lifecycle documentation](../openraft/src/docs/cluster_control/node-lifecycle.md)
++describes shutdown ownership, cancellation, and retained core/ticker failures.
++
+ To build mdbook in github workflow, copy the following snippet:
+ 
+ 
+@@ -49,4 +52,3 @@ Backends:
+ 
+ - [mdbook-linkcheck](https://github.com/drmingdrmer/mdbook-linkcheck): A backend for `mdbook` which will check your links for you.
+ 
+-
+diff --git a/openraft/src/core/tick.rs b/openraft/src/core/tick.rs
+index c66a77a..d3080b5 100644
+--- a/openraft/src/core/tick.rs
++++ b/openraft/src/core/tick.rs
+@@ -9,18 +9,22 @@ use std::time::Duration;
+ use futures::future::Either;
+ use tokio::sync::mpsc;
+ use tokio::sync::oneshot;
++use tokio::sync::Mutex as AsyncMutex;
+ use tracing::Instrument;
+ use tracing::Level;
+ use tracing::Span;
+ 
+ use crate::core::notify::Notify;
++use crate::error::Fatal;
+ use crate::type_config::alias::JoinHandleOf;
+ use crate::type_config::TypeConfigExt;
++use crate::AsyncRuntime;
+ use crate::RaftTypeConfig;
+ 
+ /// Emit RaftMsg::Tick event at regular `interval`.
+ pub(crate) struct Tick<C>
+-where C: RaftTypeConfig
++where
++    C: RaftTypeConfig,
+ {
+     interval: Duration,
+ 
+@@ -31,27 +35,32 @@ where C: RaftTypeConfig
+ }
+ 
+ pub(crate) struct TickHandle<C>
+-where C: RaftTypeConfig
++where
++    C: RaftTypeConfig,
+ {
+     enabled: Arc<AtomicBool>,
+     shutdown: Mutex<Option<oneshot::Sender<()>>>,
+-    join_handle: Mutex<Option<JoinHandleOf<C, ()>>>,
++    task: AsyncMutex<TickState<C>>,
++}
++
++enum TickState<C: RaftTypeConfig> {
++    Running(JoinHandleOf<C, ()>),
++    Done(Result<(), Fatal<C::NodeId>>),
+ }
+ 
+ impl<C> Drop for TickHandle<C>
+-where C: RaftTypeConfig
++where
++    C: RaftTypeConfig,
+ {
+     /// Signal the tick loop to stop, without waiting for it to stop.
+     fn drop(&mut self) {
+-        if self.shutdown.lock().unwrap().is_none() {
+-            return;
+-        }
+-        let _ = self.shutdown();
++        self.stop();
+     }
+ }
+ 
+ impl<C> Tick<C>
+-where C: RaftTypeConfig
++where
++    C: RaftTypeConfig,
+ {
+     pub(crate) fn spawn(interval: Duration, tx: mpsc::UnboundedSender<Notify<C>>, enabled: bool) -> TickHandle<C> {
+         let enabled = Arc::new(AtomicBool::from(enabled));
+@@ -74,7 +83,7 @@ where C: RaftTypeConfig
+         TickHandle {
+             enabled,
+             shutdown,
+-            join_handle: Mutex::new(Some(join_handle)),
++            task: AsyncMutex::new(TickState::Running(join_handle)),
+         }
+     }
+ 
+@@ -117,45 +126,60 @@ where C: RaftTypeConfig
+ }
+ 
+ impl<C> TickHandle<C>
+-where C: RaftTypeConfig
++where
++    C: RaftTypeConfig,
+ {
+     pub(crate) fn enable(&self, enabled: bool) {
+         self.enabled.store(enabled, Ordering::Relaxed);
+     }
+ 
+-    /// Signal the tick loop to stop. And return a JoinHandle to wait for the loop to stop.
+-    ///
+-    /// If it is called twice, the second call will return None.
+-    pub(crate) fn shutdown(&self) -> Option<JoinHandleOf<C, ()>> {
+-        {
+-            let shutdown = {
+-                let mut x = self.shutdown.lock().unwrap();
+-                x.take()
+-            };
+-
+-            if let Some(shutdown) = shutdown {
+-                let send_res = shutdown.send(());
+-                tracing::info!("Timer shutdown signal sent: {send_res:?}");
+-            } else {
+-                tracing::warn!("Double call to Raft::shutdown()");
+-            }
++    /// Signal without transferring ownership of the task handle.
++    pub(crate) fn stop(&self) {
++        if let Some(shutdown) = self.shutdown.lock().unwrap().take() {
++            let send_res = shutdown.send(());
++            tracing::info!("Timer shutdown signal sent: {send_res:?}");
+         }
++    }
+ 
+-        let jh = {
+-            let mut x = self.join_handle.lock().unwrap();
+-            x.take()
++    /// Join in place so cancellation retains both the handle and its outcome.
++    pub(crate) async fn shutdown(&self) -> Result<(), Fatal<C::NodeId>> {
++        self.stop();
++        let mut task = self.task.lock().await;
++        if let TickState::Running(handle) = &mut *task {
++            let outcome = handle.await.map_err(|error| {
++                if C::AsyncRuntime::is_panic(&error) {
++                    Fatal::Panicked
++                } else {
++                    Fatal::Cancelled
++                }
++            });
++            // No yield between observing completion and retaining its result.
++            *task = TickState::Done(outcome);
++        }
++        let TickState::Done(outcome) = &*task else {
++            unreachable!("ticker task was joined above")
+         };
+-        jh
++        outcome.clone()
+     }
+ }
+ 
+ #[cfg(test)]
+ mod tests {
++    use std::future::Future;
+     use std::io::Cursor;
++    use std::sync::atomic::AtomicBool;
++    use std::sync::Arc;
++    use std::sync::Mutex;
++    use std::task::Poll;
+ 
++    use tokio::sync::oneshot;
++    use tokio::sync::Mutex as AsyncMutex;
+     use tokio::time::Duration;
+ 
++    use super::TickHandle;
++    use super::TickState;
+     use crate::core::Tick;
++    use crate::error::Fatal;
+     use crate::type_config::TypeConfigExt;
+     use crate::RaftTypeConfig;
+     use crate::TokioRuntime;
+@@ -184,7 +208,7 @@ mod tests {
+         let th = Tick::<TickUTConfig>::spawn(Duration::from_millis(100), tx, true);
+ 
+         TickUTConfig::sleep(Duration::from_millis(500)).await;
+-        let _ = th.shutdown().unwrap().await;
++        th.shutdown().await?;
+         TickUTConfig::sleep(Duration::from_millis(500)).await;
+ 
+         let mut received = vec![];
+@@ -200,4 +224,68 @@ mod tests {
+ 
+         Ok(())
+     }
++
++    /// Real task ownership and failure survive cancellation of both the first
++    /// join and a concurrent waiter. No timer or simulated completion is used.
++    #[cfg(not(feature = "singlethreaded"))]
++    #[tokio::test]
++    async fn cancelled_ticker_shutdown_retains_task_and_terminal_outcome() -> anyhow::Result<()> {
++        for panic in [false, true] {
++            let owner = Arc::new(());
++            let retained = owner.clone();
++            let (release, waiting) = oneshot::channel();
++            let (stop, stopped) = oneshot::channel();
++            let handle = tokio::spawn(async move {
++                let _retained = retained;
++                let _ = stopped.await;
++                let _ = waiting.await;
++                assert!(!panic, "injected ticker panic after drain cancellation");
++            });
++            let ticker = TickHandle::<TickUTConfig> {
++                enabled: Arc::new(AtomicBool::new(true)),
++                shutdown: Mutex::new(Some(stop)),
++                task: AsyncMutex::new(TickState::Running(handle)),
++            };
++            let mut first = Box::pin(ticker.shutdown());
++            std::future::poll_fn(|cx| {
++                assert!(first.as_mut().poll(cx).is_pending());
++                Poll::Ready(())
++            })
++            .await;
++            let mut concurrent = Box::pin(ticker.shutdown());
++            std::future::poll_fn(|cx| {
++                assert!(concurrent.as_mut().poll(cx).is_pending());
++                Poll::Ready(())
++            })
++            .await;
++            drop(first);
++            drop(concurrent);
++            assert_eq!(Arc::strong_count(&owner), 2);
++            release.send(()).unwrap();
++            let expected = if panic { Err(Fatal::Panicked) } else { Ok(()) };
++            assert_eq!(
++                tokio::time::timeout(Duration::from_secs(5), ticker.shutdown()).await?,
++                expected
++            );
++            assert_eq!(Arc::strong_count(&owner), 1);
++            assert_eq!(ticker.shutdown().await, expected);
++        }
++        Ok(())
++    }
++
++    #[cfg(not(feature = "singlethreaded"))]
++    #[tokio::test]
++    async fn runtime_cancelled_ticker_is_never_reported_as_normal_shutdown() -> anyhow::Result<()> {
++        let (stop, _stopped) = oneshot::channel();
++        let handle = tokio::spawn(std::future::pending::<()>());
++        handle.abort();
++        let ticker = TickHandle::<TickUTConfig> {
++            enabled: Arc::new(AtomicBool::new(true)),
++            shutdown: Mutex::new(Some(stop)),
++            task: AsyncMutex::new(TickState::Running(handle)),
++        };
++        assert_eq!(ticker.shutdown().await, Err(Fatal::Cancelled));
++        assert_eq!(ticker.shutdown().await, Err(Fatal::Cancelled));
++        Ok(())
++    }
+ }
+diff --git a/openraft/src/docs/cluster_control/node-lifecycle.md b/openraft/src/docs/cluster_control/node-lifecycle.md
+index 67e2fbe..cf1bcb4 100644
+--- a/openraft/src/docs/cluster_control/node-lifecycle.md
++++ b/openraft/src/docs/cluster_control/node-lifecycle.md
+@@ -1,5 +1,23 @@
+ # Node Lifecycle
+ 
++## Stopping a Node
++
++`Raft::shutdown()` signals and joins the core and ticker tasks. Its join handles
++remain owned by the Raft instance if a shutdown future is cancelled. A later call
++resumes the joins, and concurrent callers observe the same retained outcomes.
++
++Normal shutdown returns success. A core panic, storage failure, unexpected runtime
++cancellation, or ticker failure returns `ShutdownError` after both tasks have
++joined. Its `core()` and `ticker()` accessors preserve independent failures;
++repeating shutdown does not turn an observed failure into success.
++
++Applications must separately stop request admission and drain their own network,
++storage, state-machine and background owners before releasing installation locks
++or deleting files. Joining the core and ticker is not proof that an application
++has released every resource.
++
++## Membership
++
+ - When a node is added using [`Raft::add_learner()`], it immediately starts receiving log
+   replication from the leader, meaning it becomes a `Learner`.
+ 
+diff --git a/openraft/src/error.rs b/openraft/src/error.rs
+index f5f97eb..ddcb687 100644
+--- a/openraft/src/error.rs
++++ b/openraft/src/error.rs
+@@ -34,7 +34,8 @@ use crate::Vote;
+ #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+ #[allow(clippy::large_enum_variant)]
+ pub enum RaftError<NID, E = Infallible>
+-where NID: NodeId
++where
++    NID: NodeId,
+ {
+     #[error(transparent)]
+     APIError(E),
+@@ -119,7 +120,8 @@ where
+ }
+ 
+ impl<NID, E> From<StorageError<NID>> for RaftError<NID, E>
+-where NID: NodeId
++where
++    NID: NodeId,
+ {
+     fn from(se: StorageError<NID>) -> Self {
+         RaftError::Fatal(Fatal::from(se))
+@@ -131,7 +133,8 @@ where NID: NodeId
+ #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize), serde(bound = ""))]
+ #[allow(clippy::large_enum_variant)]
+ pub enum Fatal<NID>
+-where NID: NodeId
++where
++    NID: NodeId,
+ {
+     #[error(transparent)]
+     StorageError(#[from] StorageError<NID>),
+@@ -139,11 +142,39 @@ where NID: NodeId
+     #[error("panicked")]
+     Panicked,
+ 
++    /// The runtime cancelled the task before it returned a terminal result.
++    #[error("raft task cancelled")]
++    Cancelled,
++
+     /// Raft stopped normally.
+     #[error("raft stopped")]
+     Stopped,
+ }
+ 
++/// Failures observed after both the core and ticker tasks have joined.
++///
++/// The two outcomes are retained independently: a core failure never skips the
++/// ticker join or conceals a second failure. Repeated shutdown calls return the
++/// same observed outcomes.
++#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
++#[error("raft shutdown failed (core: {core:?}, ticker: {ticker:?})")]
++pub struct ShutdownError<NID: NodeId> {
++    pub(crate) core: Option<Fatal<NID>>,
++    pub(crate) ticker: Option<Fatal<NID>>,
++}
++
++impl<NID: NodeId> ShutdownError<NID> {
++    /// The core task's unexpected terminal failure, if any.
++    pub fn core(&self) -> Option<&Fatal<NID>> {
++        self.core.as_ref()
++    }
++
++    /// The ticker task's unexpected terminal failure, if any.
++    pub fn ticker(&self) -> Option<&Fatal<NID>> {
++        self.ticker.as_ref()
++    }
++}
++
+ // TODO: remove
+ #[derive(Debug, Clone, thiserror::Error, derive_more::TryInto)]
+ #[derive(PartialEq, Eq)]
+@@ -302,7 +333,9 @@ where
+ {
+     /// Return a reference to ForwardToLeader error if Self::RemoteError contains one.
+     pub fn forward_to_leader(&self) -> Option<&ForwardToLeader<NID, N>>
+-    where E: TryAsRef<ForwardToLeader<NID, N>> {
++    where
++        E: TryAsRef<ForwardToLeader<NID, N>>,
++    {
+         match self {
+             RPCError::Timeout(_) => None,
+             RPCError::Unreachable(_) => None,
+diff --git a/openraft/src/raft/mod.rs b/openraft/src/raft/mod.rs
+index 5f749d7..40d5493 100644
+--- a/openraft/src/raft/mod.rs
++++ b/openraft/src/raft/mod.rs
+@@ -66,6 +66,7 @@ use crate::error::Fatal;
+ use crate::error::Infallible;
+ use crate::error::InitializeError;
+ use crate::error::RaftError;
++use crate::error::ShutdownError;
+ use crate::membership::IntoNodes;
+ use crate::metrics::RaftDataMetrics;
+ use crate::metrics::RaftMetrics;
+@@ -199,13 +200,15 @@ macro_rules! declare_raft_types {
+ /// calling `shutdown` will do the trick.
+ #[derive(Clone)]
+ pub struct Raft<C>
+-where C: RaftTypeConfig
++where
++    C: RaftTypeConfig,
+ {
+     inner: Arc<RaftInner<C>>,
+ }
+ 
+ impl<C> Raft<C>
+-where C: RaftTypeConfig
++where
++    C: RaftTypeConfig,
+ {
+     /// Create and spawn a new Raft task.
+     ///
+@@ -834,7 +837,8 @@ where C: RaftTypeConfig
+     /// If the API channel is already closed (Raft is in shutdown), then the request functor is
+     /// destroyed right away and not called at all.
+     pub fn external_request<F>(&self, req: F)
+-    where F: FnOnce(&RaftState<C::NodeId, C::Node, <C::AsyncRuntime as AsyncRuntime>::Instant>) + OptionalSend + 'static
++    where
++        F: FnOnce(&RaftState<C::NodeId, C::Node, <C::AsyncRuntime as AsyncRuntime>::Instant>) + OptionalSend + 'static,
+     {
+         let req: BoxCoreFn<C> = Box::new(req);
+         let _ignore_error = self.inner.tx_api.send(RaftMsg::ExternalCoreRequest { req });
+@@ -889,21 +893,27 @@ where C: RaftTypeConfig
+ 
+     /// Shutdown this Raft node.
+     ///
+-    /// It sends a shutdown signal and waits until `RaftCore` returns.
+-    pub async fn shutdown(&self) -> Result<(), <C::AsyncRuntime as AsyncRuntime>::JoinError> {
++    /// It signals and joins the core and ticker tasks, retaining both terminal
++    /// outcomes. Cancelling this future does not detach either task; another
++    /// call resumes their joins. Failure is returned only after both joins have
++    /// completed, and repeated calls preserve the same failure.
++    pub async fn shutdown(&self) -> Result<(), ShutdownError<C::NodeId>> {
+         if let Some(tx) = self.inner.tx_shutdown.lock().await.take() {
+             // A failure to send means the RaftCore is already shutdown. Continue to check the task
+             // return value.
+             let send_res = tx.send(());
+             tracing::info!("sending shutdown signal to RaftCore, sending res: {:?}", send_res);
+         }
+-        self.inner.join_core_task().await;
+-        if let Some(join_handle) = self.inner.tick_handle.shutdown() {
+-            let _ = join_handle.await;
++        self.inner.tick_handle.stop();
++        let core = match self.inner.join_core_task().await {
++            Fatal::Stopped => None,
++            error => Some(error),
++        };
++        let ticker = self.inner.tick_handle.shutdown().await.err();
++        if core.is_some() || ticker.is_some() {
++            Err(ShutdownError { core, ticker })
++        } else {
++            Ok(())
+         }
+-
+-        // TODO(xp): API change: replace `JoinError` with `Fatal`,
+-        //           to let the caller know the return value of RaftCore task.
+-        Ok(())
+     }
+ }
+diff --git a/openraft/src/raft/raft_inner.rs b/openraft/src/raft/raft_inner.rs
+index 5bda4ec..a4db9d3 100644
+--- a/openraft/src/raft/raft_inner.rs
++++ b/openraft/src/raft/raft_inner.rs
+@@ -37,7 +37,8 @@ const RECV_CORE_STOP_TIMEOUT: Duration = Duration::from_secs(1);
+ /// RaftInner is the internal handle and provides internally used APIs to communicate with
+ /// `RaftCore`.
+ pub(in crate::raft) struct RaftInner<C>
+-where C: RaftTypeConfig
++where
++    C: RaftTypeConfig,
+ {
+     pub(in crate::raft) id: C::NodeId,
+     pub(in crate::raft) config: Arc<Config>,
+@@ -58,7 +59,8 @@ where C: RaftTypeConfig
+ }
+ 
+ impl<C> RaftInner<C>
+-where C: RaftTypeConfig
++where
++    C: RaftTypeConfig,
+ {
+     /// Send a RaftMsg to RaftCore
+     pub(crate) async fn send_msg(&self, mes: RaftMsg<C>) -> Result<(), Fatal<C::NodeId>> {
+@@ -199,32 +201,21 @@ where C: RaftTypeConfig
+         message_summary: Option<impl fmt::Display + Default>,
+     ) -> Fatal<C::NodeId> {
+         // Wait for the core task to finish.
+-        self.join_core_task().await;
+-
+-        // Retrieve the result.
+-        let core_res = {
+-            let state = self.core_state.lock().await;
+-            if let CoreState::Done(core_task_res) = &*state {
+-                core_task_res.clone()
+-            } else {
+-                unreachable!("RaftCore should have already quit")
+-            }
+-        };
++        let error = self.join_core_task().await;
+ 
+         tracing::error!(
+-            core_result = debug(&core_res),
++            core_result = debug(&error),
+             "failure {}; message: {}",
+             when,
+             message_summary.unwrap_or_default()
+         );
+ 
+-        // Safe unwrap: Infallible is unreachable
+-        core_res.unwrap_err()
++        error
+     }
+ 
+     /// Wait for `RaftCore` task to finish and record the returned value from the task.
+     #[tracing::instrument(level = "debug", skip_all)]
+-    pub(in crate::raft) async fn join_core_task(&self) {
++    pub(in crate::raft) async fn join_core_task(&self) -> Fatal<C::NodeId> {
+         let mut state = self.core_state.lock().await;
+         match &mut *state {
+             CoreState::Running(handle) => {
+@@ -236,7 +227,7 @@ where C: RaftTypeConfig
+                         if C::AsyncRuntime::is_panic(&err) {
+                             Err(Fatal::Panicked)
+                         } else {
+-                            Err(Fatal::Stopped)
++                            Err(Fatal::Cancelled)
+                         }
+                     }
+                     Ok(returned_res) => returned_res,
+@@ -248,5 +239,10 @@ where C: RaftTypeConfig
+                 // RaftCore has already quit, nothing to do
+             }
+         }
++        let CoreState::Done(outcome) = &*state else {
++            unreachable!("RaftCore was joined above")
++        };
++        // The core's successful return type is Infallible.
++        outcome.clone().unwrap_err()
+     }
+ }
+diff --git a/tests/tests/life_cycle/t11_shutdown.rs b/tests/tests/life_cycle/t11_shutdown.rs
+index a70448c..7145068 100644
+--- a/tests/tests/life_cycle/t11_shutdown.rs
++++ b/tests/tests/life_cycle/t11_shutdown.rs
+@@ -28,6 +28,7 @@ async fn shutdown() -> Result<()> {
+         for i in [0, 1, 2] {
+             let (node, _, _) = router.remove_node(i).unwrap();
+             node.shutdown().await?;
++            node.shutdown().await?;
+             let m = node.metrics();
+             assert_eq!(ServerState::Shutdown, m.borrow().state, "shutdown node-{}", i);
+         }
+@@ -70,6 +71,47 @@ async fn return_error_after_panic() -> Result<()> {
+         assert_eq!(Fatal::Panicked, err.into_fatal().unwrap());
+     }
+ 
++    let node = router.get_raft_handle(&0)?;
++    let first = node.shutdown().await.unwrap_err();
++    assert_eq!(first.core(), Some(&Fatal::Panicked));
++    assert_eq!(first.ticker(), None);
++    assert_eq!(node.shutdown().await.unwrap_err(), first);
++
++    Ok(())
++}
++
++/// Cancellation while the real core is still executing an admitted callback
++/// must retain its later panic for both resumed and repeated shutdown calls.
++#[async_entry::test(worker_threads = 8, init = "init_default_ut_tracing()", tracing_span = "debug")]
++async fn cancelled_shutdown_retains_later_core_failure() -> Result<()> {
++    use std::future::Future;
++    use std::task::Poll;
++    use std::time::Duration;
++
++    let config = Arc::new(Config::default().validate()?);
++    let mut router = RaftRouter::new(config);
++    router.new_cluster(btreeset! {0}, btreeset! {}).await?;
++    let node = router.get_raft_handle(&0)?;
++    let (entered, entry) = tokio::sync::oneshot::channel();
++    let (release, waiting) = std::sync::mpsc::channel();
++    node.external_request(move |_| {
++        let _ = entered.send(());
++        let _ = waiting.recv_timeout(Duration::from_secs(10));
++        panic!("injected core panic after shutdown cancellation");
++    });
++    tokio::time::timeout(Duration::from_secs(5), entry).await??;
++    let mut first = Box::pin(node.shutdown());
++    std::future::poll_fn(|cx| {
++        assert!(first.as_mut().poll(cx).is_pending());
++        Poll::Ready(())
++    })
++    .await;
++    drop(first);
++    release.send(())?;
++    let error = tokio::time::timeout(Duration::from_secs(5), node.shutdown()).await?.unwrap_err();
++    assert_eq!(error.core(), Some(&Fatal::Panicked));
++    assert_eq!(error.ticker(), None);
++    assert_eq!(node.shutdown().await.unwrap_err(), error);
+     Ok(())
+ }
+ 

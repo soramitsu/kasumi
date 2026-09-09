@@ -12,6 +12,13 @@ request owners, and canonical planned recovery are integrated in source. Persist
 disk admission, native reservations, complete HA/local lifecycle, and final live,
 capacity, platform, endurance and artifact gates remain open.
 
+The combined `3b932ee` source adds explicit singleton creation/reopening,
+standalone operator ownership from first lock through cleanup, and Control-approved
+HA tenant enrollment with dormant configuration templates. Their new regression
+tests remain **UNRUN**. The [prepared immutable cohort](evidence/first-release-3b932ee-prepared-20260910/README.md)
+retains the original compiler, formatting, full-store and strict-store deadlines
+and requires 44 named store regressions. Preparation is not an execution result.
+
 The latest [frozen compiler/store cohort](evidence/first-release-7a21995-check-20260909/README.md)
 passed workspace compilation and formatting, then failed one store identity
 assertion: 126 passed, one failed, two ignored. Strict store lint did not run after
@@ -24,8 +31,9 @@ and its exact inputs remain retained.
 
 The canonical administration fixture now uses actual encrypted backup data,
 separate pinned TLS issuer/Control/data groups, target materialization, quorum loss,
-source retirement, activation and restart assertions. It remains **UNRUN** and has
-an identified missing live enrollment path for newly configured tenants. Its
+source retirement, activation and restart assertions. It remains **UNRUN**; its
+previously missing live enrollment path is now implemented in source and pending
+combined validation. Its
 [source coverage and corrected review note](evidence/canonical-runtime-f7fa592-source-20260909/README.md)
 distinguish fixture-owned target/signing services from full production lifecycle.
 
@@ -104,14 +112,17 @@ approvals. Source integration does not accept an implementation milestone. Each 
 pass its stated regressions on the combined source, followed by the complete final
 gates above. Source-only changes and failed attempts remain explicitly identified.
 
-1. Validate the combined explicit catalog creation/reopen paths and canonical
-   administration. Remove the remaining generic singleton create-or-open surface;
-   add explicit live enrollment for configured HA tenants while leaving unopened
-   templates dormant. Preserve exact original identities and mismatch rejection.
+1. Validate the combined explicit singleton/pair creation and strict reopen paths,
+   canonical administration, stopped-operator ownership and live configured-tenant
+   enrollment. The generic singleton create-or-open API is removed. Complete
+   explicit immutable Control genesis, standalone tenant enrollment and permanent
+   cleanup/replacement of incomplete HA creation without restoring creation rights.
 2. Close and validate stopped-operator ownership from first exclusive lock through
    every failure/cancellation. Propagate actual worker/core terminal failures;
    joined errors must survive cancelled drains, and elapsed deadlines never prove
    owner release. Repeat the restored-runtime restart failure on final source.
+   The [OpenRaft shutdown patch](evidence/openraft-bed7bad-source-20260910/README.md)
+   retains core/ticker outcomes in source only; it is uninstalled and untested.
 3. Run full store and authority regressions for acknowledged catalog outcomes,
    admitted-request/fence retention and exact signer authorization reuse. Follow
    with the real TLS canonical coordinator and source-unavailable phase faults.
