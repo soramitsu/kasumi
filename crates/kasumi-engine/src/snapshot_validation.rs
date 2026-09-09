@@ -488,7 +488,17 @@ impl ValidatedApplicationSnapshot {
             };
             let counts = get::<staging::SnapshotChunks>(&self.lineage, &("stage", &key))?
                 .unwrap_or_default();
-            let uploading = staging::validate_snapshot_record(&key, &stage, h, &counts)?;
+            // The header omits streamed lineage. Select the original scope's
+            // verified closing link so historical stages retain their identity
+            // without materializing the complete lineage for every record.
+            let mut scope_state = h.as_ref().clone();
+            if stage.scope.incarnation != h.incarnation
+                && let Some(link) = self.lineage_source(&stage.scope.incarnation)?
+            {
+                scope_state.restore_lineage.push(link);
+            }
+            let uploading =
+                staging::validate_snapshot_record(&key, &stage, &scope_state, &counts)?;
             let charge = staging::permanent_charge(&key, &stage)?;
             permanent_bytes = permanent_bytes
                 .checked_add(charge.0)
