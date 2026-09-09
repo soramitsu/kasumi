@@ -40,7 +40,7 @@ async fn run(args: &[String]) -> Result<()> {
                 .provision_node_file()
                 .await?;
             println!(
-                "Created the configured authority node file and security audit. Issuer catalogs and bootstrap state require separate initialization."
+                "Enrolled the configured authority node, audit, independent catalogs and immutable issuer genesis. Membership uses the retained original voter handshake."
             );
             Ok(())
         }

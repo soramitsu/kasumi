@@ -55,18 +55,10 @@ pub struct AuthorityRuntimeConfig {
     pub replication: ReplicationConfig,
 }
 impl AuthorityRuntimeConfig {
-    /// Explicit node and service-audit enrollment. Issuer catalogs/bootstrap
-    /// require their own installation operation.
+    /// Explicit local issuer enrollment creates its node, audit, domain pair and
+    /// immutable authority genesis before any normal startup or Raft handshake.
     pub async fn provision_node_file(&self) -> Result<()> {
-        self.validate()?;
-        crate::node_provision::create(
-            &self.database_path,
-            self.database_id,
-            &self.scratch_disk,
-            &self.security_audit,
-            kasumi_engine::admission::NodeAdmission::new(Default::default())?,
-        )
-        .await
+        crate::authority_node_enrollment::initialize(self.clone()).await
     }
 
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
@@ -76,7 +68,6 @@ impl AuthorityRuntimeConfig {
     }
     fn node_settings(&self) -> Result<AuthorityNodeSettings> {
         Ok(AuthorityNodeSettings {
-            bootstrap: self.bootstrap.clone(),
             resource_budget_bytes: self.resource_budget_bytes,
             installed_members: self
                 .replication
@@ -156,10 +147,6 @@ impl AuthorityRuntimeConfig {
         );
         self.native.validate()?;
         self.replication.validate()?;
-        ensure!(
-            self.replication.voters()? == self.bootstrap.membership.voters,
-            "authority bootstrap voters differ from original installed voters"
-        );
         ensure!(
             self.native.listen != self.replication.listener.listen,
             "authority listeners collide"
@@ -265,13 +252,22 @@ impl AuthorityRuntime {
             StorageAccess::security_audit(),
         )
         .await?;
+        if let Err(error) = crate::node_enrollment::require_complete(
+            &audit_store,
+            config.database_id,
+            crate::node_enrollment::Kind::Authority,
+        ) {
+            audit_store.shutdown().await;
+            signer_verifier.shutdown().await;
+            return Err(error);
+        }
         let audit = config.security_audit.open(
             audit_store.clone(),
             kasumi_engine::admission::NodeAdmission::new(Default::default())?,
         )?;
         auth.install_audit(audit.clone())?;
         network.install_audit(audit.clone())?;
-        let stores = TenantStorageSet::open(
+        let stores = TenantStorageSet::open_existing(
             node,
             config.installation.tenant(),
             config.keys.provider(Arc::new(file_secret))?,
@@ -282,7 +278,7 @@ impl AuthorityRuntime {
             )?,
         )
         .await?;
-        let authority = IndependentAuthority::open_replicated(
+        let authority = IndependentAuthority::open_existing_replicated(
             stores.clone(),
             config.installation.clone(),
             signer,
@@ -366,8 +362,8 @@ impl AuthorityRuntime {
                 .group;
             while !self.authority.raft_group().raft().is_initialized().await? {
                 let mut ready = true;
-                for voter in self.config.replication.voters()? {
-                    match self.network.bootstrap_fingerprint(voter, group).await {
+                for voter in &self.authority.bootstrap().membership.voters {
+                    match self.network.bootstrap_fingerprint(*voter, group).await {
                         Ok(actual) => ensure!(
                             actual == self.authority.bootstrap_digest(),
                             "independent authority bootstrap fingerprint differs"

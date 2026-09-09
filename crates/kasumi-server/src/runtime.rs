@@ -263,22 +263,10 @@ pub struct RuntimeConfig {
 }
 
 impl RuntimeConfig {
-    /// Explicit node and service-audit enrollment for HA. Application and
-    /// Control catalogs/bootstrap require their own installation operation.
+    /// Explicit first HA node enrollment. All local catalogs and immutable
+    /// genesis are installed under the original captured serving grants.
     pub async fn provision_node_file(&self) -> Result<()> {
-        self.validate()?;
-        ensure!(
-            self.mode == DeploymentMode::Replicated,
-            "standalone installation requires kasumid init"
-        );
-        crate::node_provision::create(
-            &self.database_path,
-            self.database_id,
-            &self.scratch_disk,
-            &self.security_audit,
-            kasumi_engine::admission::NodeAdmission::new(self.admission.clone())?,
-        )
-        .await
+        crate::data_node_enrollment::initialize(self.clone()).await
     }
 
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
@@ -941,7 +929,6 @@ impl NodeRuntime {
     ) -> Result<Self> {
         config.validate()?;
         let standalone_lock = crate::standalone::claim(&config)?;
-        let existing_standalone = standalone_lock.is_some();
         let scratch_disk = kasumi_store::ScratchDisk::open(config.scratch_disk.clone())?;
         let credential = Arc::new(credential);
         let signer_verifier = if let Some(verifier) = &config.signer_verifier {
@@ -1061,6 +1048,16 @@ impl NodeRuntime {
             security_store.shutdown().await;
             return Err(error);
         }
+        if config.mode == DeploymentMode::Replicated {
+            if let Err(error) = crate::node_enrollment::require_complete(
+                &security_store,
+                config.database_id,
+                crate::node_enrollment::Kind::Data,
+            ) {
+                security_store.shutdown().await;
+                return Err(error);
+            }
+        }
         let audit = config
             .security_audit
             .open(security_store, admission.clone())?;
@@ -1077,36 +1074,19 @@ impl NodeRuntime {
             cluster.install_audit(audit.clone())?;
         }
         let control = async {
-            let control_stores = if existing_standalone {
-                TenantStorageSet::open_existing(
-                    node.clone(),
-                    CONTROL_TENANT.into(),
-                    control_provider.clone(),
-                    control_custody_provider.clone(),
-                    kasumi_store::StorageAccess::node_control(),
-                )
-                .await?
-            } else {
-                TenantStorageSet::open(
-                    node.clone(),
-                    CONTROL_TENANT.into(),
-                    control_provider.clone(),
-                    control_custody_provider.clone(),
-                    kasumi_store::StorageAccess::node_control(),
-                )
-                .await?
-            };
-            let control_bootstrap = config.bootstrap(
-                &config.control.initial_policy,
-                &config.control.initial_limits,
-                config.control.incarnation.as_deref(),
-            )?;
+            let control_stores = TenantStorageSet::open_existing(
+                node.clone(),
+                CONTROL_TENANT.into(),
+                control_provider.clone(),
+                control_custody_provider.clone(),
+                kasumi_store::StorageAccess::node_control(),
+            )
+            .await?;
             Self::open_database(
                 &config,
                 control_stores,
                 config.control.initial_policy.clone(),
                 config.control.initial_limits.clone(),
-                control_bootstrap,
                 config.control.incarnation.as_deref(),
                 cluster.as_ref(),
                 audit.clone(),
@@ -1211,24 +1191,13 @@ impl NodeRuntime {
                 // The application provider is constructed only after the closed
                 // control route is excluded and an issuer capability is live.
                 let provider = tenant.keys.provider(credential.clone())?;
-                let stores = if existing_standalone {
-                    TenantStorageSet::open_existing(tenant_node.clone(), tenant.tenant.clone(),
-                        provider.clone(), custody_provider.clone(), storage_access).await?
-                } else {
-                    TenantStorageSet::open(tenant_node.clone(), tenant.tenant.clone(),
-                        provider.clone(), custody_provider.clone(), storage_access).await?
-                };
-                let bootstrap = config.bootstrap(
-                    &tenant.initial_policy,
-                    &tenant.initial_limits,
-                    tenant.incarnation.as_deref(),
-                )?;
+                let stores = TenantStorageSet::open_existing(tenant_node.clone(), tenant.tenant.clone(),
+                    provider.clone(), custody_provider.clone(), storage_access).await?;
                 let opened = Self::open_database(
                     &config,
                     stores,
                     tenant.initial_policy.clone(),
                     tenant.initial_limits.clone(),
-                    bootstrap,
                     tenant.incarnation.as_deref(),
                     runtime.cluster.as_ref(),
                     runtime.audit.clone(),
@@ -1355,7 +1324,6 @@ impl NodeRuntime {
         stores: Arc<TenantStorageSet>,
         policy: Policy,
         limits: Limits,
-        bootstrap: Option<ReplicatedBootstrap>,
         installed_incarnation: Option<&str>,
         cluster: Option<&Arc<ClusterNetwork>>,
         audit: Arc<SecurityAudit>,
@@ -1364,35 +1332,40 @@ impl NodeRuntime {
         let opened = async {
             let store = stores.application().clone();
             config.install_tenant_audit_archive(&store, None)?;
-            let database = if let Some(bootstrap) = &bootstrap {
+            let mut bootstrap = None;
+            let database = if config.mode == DeploymentMode::Replicated {
                 let replication = config
                     .replication
                     .as_ref()
                     .context("replication configuration missing")?;
                 let network = cluster.context("cluster transport missing")?;
-                let database = kasumi_engine::open_replicated(
+                let fingerprint = persisted_bootstrap_fingerprint(&store)?;
+                let opened = kasumi_engine::open_existing_replicated(
                     replication.node_id,
                     stores.clone(),
-                    bootstrap,
+                    uuid::Uuid::parse_str(
+                        installed_incarnation
+                            .context("installed replicated incarnation is missing")?,
+                    )?,
                     network.clone(),
                     kasumi_raft::server_config(),
                     audit,
                 )
                 .await?;
-                let group = format!("{}/{}", store.tenant(), bootstrap.incarnation);
-                let fingerprint = persisted_bootstrap_fingerprint(&store)?;
+                let group = format!("{}/{}", store.tenant(), opened.bootstrap.incarnation);
                 let bootstrap_store = store.clone();
                 if let Err(error) = network.register_group_with_bootstrap(
                     group,
-                    database.raft_group().raft().clone(),
+                    opened.database.raft_group().raft().clone(),
                     replication.peers.iter().map(|peer| peer.node_id).collect(),
                     fingerprint,
                     Arc::new(move || bootstrap_store.check_access()),
                 ) {
-                    let _ = database.shutdown().await;
+                    let _ = opened.database.shutdown().await;
                     return Err(error);
                 }
-                database
+                bootstrap = Some(opened.bootstrap);
+                opened.database
             } else if crate::standalone::requires_provisioned(config) {
                 kasumi_engine::open_existing_local(
                     stores,
@@ -2158,12 +2131,12 @@ async fn create_fixture_node(config: &RuntimeConfig) {
         kasumi_store::ScratchDisk::open(config.scratch_disk.clone()).unwrap(),
     )
     .unwrap();
+    let credential: crate::serving_runtime::CredentialSource =
+        Arc::new(|_| Ok(Zeroizing::new("test-runtime-token".into())));
     let provider = config
         .security_audit
         .keys
-        .provider(Arc::new(|_| {
-            Ok(Zeroizing::new("test-runtime-token".into()))
-        }))
+        .provider(credential.clone())
         .unwrap();
     let store = TenantStore::open(
         node.clone(),
@@ -2180,11 +2153,86 @@ async fn create_fixture_node(config: &RuntimeConfig) {
             kasumi_engine::admission::NodeAdmission::new(config.admission.clone()).unwrap(),
         )
         .unwrap();
+    let provisioned = if config.mode == DeploymentMode::Replicated {
+        crate::data_node_enrollment::provision(config, node.clone(), audit.clone(), credential)
+            .await
+    } else {
+        provision_local_fixture_domains(config, node.clone(), audit.clone(), credential).await
+    };
     audit.shutdown().await;
     store.shutdown().await;
     drop(audit);
     drop(store);
     drop(node);
+    provisioned.unwrap();
+}
+
+#[cfg(test)]
+async fn provision_local_fixture_domains(
+    config: &RuntimeConfig,
+    node: Arc<NodeStore>,
+    audit: Arc<SecurityAudit>,
+    credential: crate::serving_runtime::CredentialSource,
+) -> Result<()> {
+    let entries = std::iter::once((
+        CONTROL_TENANT,
+        &config.control.initial_policy,
+        &config.control.initial_limits,
+        &config.control.keys,
+        &config.control.custody_keys,
+        config.control.incarnation.as_deref(),
+        kasumi_store::StorageAccess::node_control(),
+    ))
+    .chain(config.tenants.iter().map(|tenant| {
+        (
+            tenant.tenant.as_str(),
+            &tenant.initial_policy,
+            &tenant.initial_limits,
+            &tenant.keys,
+            &tenant.custody_keys,
+            tenant.incarnation.as_deref(),
+            kasumi_store::StorageAccess::fixture(),
+        )
+    }));
+    for (tenant, policy, limits, application, custody, incarnation, access) in entries {
+        let stores = TenantStorageSet::open(
+            node.clone(),
+            tenant.into(),
+            application.provider(credential.clone())?,
+            custody.provider(credential.clone())?,
+            access,
+        )
+        .await?;
+        let opened = match incarnation {
+            Some(incarnation) => {
+                kasumi_engine::open_local_with_incarnation(
+                    stores.clone(),
+                    policy.clone(),
+                    limits.clone(),
+                    audit.clone(),
+                    uuid::Uuid::parse_str(incarnation)?,
+                )
+                .await
+            }
+            None => {
+                kasumi_engine::open_local(
+                    stores.clone(),
+                    policy.clone(),
+                    limits.clone(),
+                    audit.clone(),
+                )
+                .await
+            }
+        };
+        let result = match opened {
+            Ok(database) => database.shutdown().await,
+            Err(error) => Err(error),
+        };
+        stores.application().shutdown().await;
+        stores.custody().store().shutdown().await;
+        result?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

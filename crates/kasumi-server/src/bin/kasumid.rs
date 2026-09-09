@@ -49,7 +49,7 @@ async fn run(arguments: &[String]) -> Result<()> {
         [command, path] if command == "provision-node" => {
             RuntimeConfig::load(path)?.provision_node_file().await?;
             println!(
-                "Created the configured node file and security audit. HA tenant and Control bootstrap state require separate initialization."
+                "Enrolled the configured HA node, audit and immutable Control/application genesis. Membership initializes only after the original voters verify their retained fingerprints."
             );
             Ok(())
         }
