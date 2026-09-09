@@ -207,6 +207,17 @@ impl TargetRecoveryRuntime {
             .clone()
             .context("target recovery not configured")?;
         installed.validate(&config)?;
+        // Finish fallible filesystem setup before a journal catalog can start
+        // renewal workers. A rejected root must not detach storage ownership.
+        std::fs::create_dir_all(&installed.generation_root)?;
+        ensure!(
+            !std::fs::symlink_metadata(&installed.generation_root)?
+                .file_type()
+                .is_symlink(),
+            "target root cannot be a symlink"
+        );
+        let root = std::fs::canonicalize(&installed.generation_root)?;
+        std::fs::File::open(&root)?.sync_all()?;
         let key = read_private_file(&installed.attestation_key, 1 << 20)?;
         let signer = TargetSigner::from_pkcs8(installed.node.clone(), &key)?;
         let cleanup_key =
@@ -248,15 +259,6 @@ impl TargetRecoveryRuntime {
                 return Err(error);
             }
         };
-        std::fs::create_dir_all(&installed.generation_root)?;
-        ensure!(
-            !std::fs::symlink_metadata(&installed.generation_root)?
-                .file_type()
-                .is_symlink(),
-            "target root cannot be a symlink"
-        );
-        let root = std::fs::canonicalize(&installed.generation_root)?;
-        std::fs::File::open(&root)?.sync_all()?;
         let runtime = Arc::new(Self {
             recovery_health: std::sync::Mutex::new(serving::RecoveryHealth::new()),
             registry,

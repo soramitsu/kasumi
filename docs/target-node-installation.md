@@ -65,3 +65,12 @@ are source-only until the scheduled combined compiler and functional gates run.
 
 This file framing work does not complete persistent disk admission or operational
 journal trust/certificate maintenance, which retain their separate release gates.
+
+The journal owner registry retains a gate while an opener holds its cloned Arc,
+including the interval before it acquires the mutex. A deterministic handoff
+regression completes a second opener during that interval and requires both to
+return the same journal/mutation owner. Fallible generation-root setup now runs
+before journal catalog acquisition, so a rejected root cannot leave journal
+renewal workers behind. The explicit initializer separately drains the opened
+store after either successful or rejected journal installation. These successor
+changes are source-only pending the coordinated compiler and functional gates.

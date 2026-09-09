@@ -120,6 +120,8 @@ pub struct TargetJournal {
     admission: Arc<crate::admission::NodeAdmission>,
     mutation: Mutex<()>,
 }
+type JournalOwner = Arc<Mutex<std::sync::Weak<TargetJournal>>>;
+
 impl TargetJournal {
     /// The installed runner must first close and drain its operations. Retained
     /// journal handles remain sealed after this store's own workers are joined.
@@ -156,20 +158,37 @@ impl TargetJournal {
         admission: Arc<crate::admission::NodeAdmission>,
         create: bool,
     ) -> Result<Arc<Self>> {
-        type Owner = Arc<Mutex<std::sync::Weak<TargetJournal>>>;
-        static OWNERS: std::sync::OnceLock<Mutex<std::collections::HashMap<usize, Owner>>> =
+        let gate = Self::owner_gate(&store)?;
+        Self::open_with_owner(store, installed, limits, admission, create, &gate)
+    }
+
+    fn owner_gate(store: &Arc<TenantStore>) -> Result<JournalOwner> {
+        static OWNERS: std::sync::OnceLock<Mutex<std::collections::HashMap<usize, JournalOwner>>> =
             std::sync::OnceLock::new();
-        let gate = {
-            let mut owners = OWNERS
-                .get_or_init(Default::default)
-                .lock()
-                .map_err(|_| anyhow::anyhow!("target journal owner registry poisoned"))?;
-            owners.retain(|_, owner| owner.try_lock().map_or(true, |old| old.strong_count() > 0));
-            owners
-                .entry(Arc::as_ptr(&store) as usize)
-                .or_default()
-                .clone()
-        };
+        let mut owners = OWNERS
+            .get_or_init(Default::default)
+            .lock()
+            .map_err(|_| anyhow::anyhow!("target journal owner registry poisoned"))?;
+        owners.retain(|_, owner| {
+            // An opener owns its cloned gate before locking it. Pruning that
+            // handoff would let another opener publish a second mutation lock.
+            Arc::strong_count(owner) > 1
+                || owner.try_lock().map_or(true, |old| old.strong_count() > 0)
+        });
+        Ok(owners
+            .entry(Arc::as_ptr(store) as usize)
+            .or_default()
+            .clone())
+    }
+
+    fn open_with_owner(
+        store: Arc<TenantStore>,
+        installed: TargetJournalInstallation,
+        limits: TargetJournalLimits,
+        admission: Arc<crate::admission::NodeAdmission>,
+        create: bool,
+        gate: &JournalOwner,
+    ) -> Result<Arc<Self>> {
         let mut owner = gate
             .lock()
             .map_err(|_| anyhow::anyhow!("target journal owner poisoned"))?;

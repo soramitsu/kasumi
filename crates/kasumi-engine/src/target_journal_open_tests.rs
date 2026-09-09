@@ -164,3 +164,37 @@ async fn installed_empty_journal_reopens_only_its_exact_node_after_owner_drain()
     journal.shutdown().await;
     Ok(())
 }
+
+#[tokio::test]
+async fn paused_registry_handoff_cannot_publish_two_journal_mutation_owners() -> Result<()> {
+    let f = Fixture::new().await?;
+    drop(f.create()?);
+    let original = f.store.get(NS, b"metadata")?.unwrap();
+
+    // Deterministically pause the first opener after registry selection but
+    // before locking the selected gate. Run the second opener to completion,
+    // then resume the first at that exact handoff; no timing race is required.
+    let first_gate = TargetJournal::owner_gate(&f.store)?;
+    let second = f.reopen()?;
+    let first = TargetJournal::open_with_owner(
+        f.store.clone(),
+        f.installed.clone(),
+        TargetJournalLimits {
+            max_metadata_bytes: 4 << 20,
+        },
+        f.admission.clone(),
+        false,
+        &first_gate,
+    )?;
+    assert!(
+        Arc::ptr_eq(&first, &second),
+        "one catalog must have one journal mutation owner"
+    );
+    assert!(
+        f.create().is_err(),
+        "the shared owner cannot initialize the head again"
+    );
+    assert_eq!(f.store.get(NS, b"metadata")?, Some(original));
+    first.shutdown().await;
+    Ok(())
+}
