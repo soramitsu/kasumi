@@ -182,13 +182,10 @@ fn large_transaction_stays_invisible_then_publishes_one_generation_and_permanent
             .flat_map(|collection| collection.documents.values())
             .all(|doc| doc.version == receipt.revision)
     );
-    assert!(
-        committed
-            .state
-            .staged_transactions
-            .values()
-            .all(|stage| stage.chunks.is_empty())
-    );
+    assert!(committed.state.staged_transactions.is_empty());
+    assert!(committed.state.active_staged_transactions.is_empty());
+    assert_eq!(committed.state.staged_terminal_head.count, 1);
+    let terminal_head = committed.state.staged_terminal_head.clone();
     let recovered = TenantEngine::new(
         "tenant".into(),
         "incarnation".into(),
@@ -199,6 +196,10 @@ fn large_transaction_stays_invisible_then_publishes_one_generation_and_permanent
     recovered
         .fixture_restore(&db.fixture_snapshot().unwrap())
         .unwrap();
+    assert_eq!(
+        recovered.generation().unwrap().state.staged_terminal_head,
+        terminal_head
+    );
     assert_eq!(
         apply(
             &recovered,
@@ -213,6 +214,11 @@ fn large_transaction_stays_invisible_then_publishes_one_generation_and_permanent
         receipt
     );
     assert_eq!(recovered.generation().unwrap().state.document_count, 600);
+    assert_eq!(
+        recovered.generation().unwrap().state.staged_terminal_head,
+        terminal_head,
+        "exact replay must retain the original immutable terminal row"
+    );
     assert_eq!(
         recovered.generation().unwrap().state.collections["ledger"].data_epoch,
         receipt.revision
@@ -394,10 +400,8 @@ fn staged_identity_capacity_is_reserved_before_payload_and_expiry_never_reuses_i
         state.permanent_staged_bytes + state.reserved_staged_terminal_bytes;
     apply(&db, 12, Operation::SetLimits(limits)).unwrap();
     assert_eq!(
-        apply(&db, 13, Operation::FinalizeStaged(ar))
-            .unwrap_err()
-            .code,
-        ErrorCode::Conflict
+        apply(&db, 13, Operation::FinalizeStaged(ar)).unwrap_err(),
+        Error::new(ErrorCode::Conflict, "staged upload expired")
     );
     let (c, cr) = begin(
         &db.generation().unwrap().state.incarnation,
@@ -423,16 +427,19 @@ fn staged_identity_capacity_is_reserved_before_payload_and_expiry_never_reuses_i
         .code,
         ErrorCode::NotFound
     );
-    assert_eq!(db.generation().unwrap().state.staged_transactions.len(), 2);
-    assert!(
-        db.generation()
-            .unwrap()
-            .state
-            .staged_transactions
-            .values()
-            .all(|stage| stage.chunks.is_empty())
-    );
     let generation = db.generation().unwrap();
+    assert_eq!(generation.state.staged_terminal_head.count, 1);
+    assert_eq!(generation.state.staged_transactions.len(), 1);
+    assert_eq!(generation.state.active_staged_transactions.len(), 1);
+    let uploading = generation
+        .state
+        .staged_transactions
+        .values()
+        .next()
+        .unwrap();
+    assert_eq!(uploading.status().transaction, br);
+    assert_eq!(uploading.outcome, StagedOutcome::Uploading);
+    assert!(uploading.chunks.is_empty());
     let stop = StopStagedTransaction {
         original: b,
         admission: vec![
@@ -446,16 +453,19 @@ fn staged_identity_capacity_is_reserved_before_payload_and_expiry_never_reuses_i
     };
     drop(generation);
     apply(&db, 14, Operation::StopStaged(stop.clone())).unwrap();
-    let key = staged_digest(&(context().principal, br.transaction_id))
-        .unwrap()
-        .0;
-    let aborted = db.generation().unwrap().state.staged_transactions[&key]
-        .outcome
-        .clone();
+    let stopped = db.generation().unwrap();
+    assert!(stopped.state.staged_transactions.is_empty());
+    assert_eq!(stopped.state.staged_terminal_head.count, 2);
+    let terminal_head = stopped.state.staged_terminal_head.clone();
     apply(&db, 15, Operation::StopStaged(stop)).unwrap();
     assert_eq!(
-        db.generation().unwrap().state.staged_transactions[&key].outcome,
-        aborted
+        apply(&db, 16, Operation::FinalizeStaged(br)).unwrap_err(),
+        Error::new(ErrorCode::Conflict, "staged transaction aborted")
+    );
+    assert_eq!(
+        db.generation().unwrap().state.staged_terminal_head,
+        terminal_head,
+        "stop and finalize replay must retain both original terminal rows"
     );
     assert!(
         db.generation()
@@ -694,13 +704,23 @@ async fn killed_upload_recovers_encrypted_invisible_chunks_and_finishes_exactly_
         receipt
     );
     assert_eq!(db.engine().generation().unwrap().state.document_count, 600);
-    assert!(matches!(
-        db.staged_transaction_status(&context(), &reference)
-            .await
-            .unwrap()
-            .outcome,
-        StagedOutcome::Finished { outcome: Ok(_) }
-    ));
+    let status = db
+        .staged_transaction_status(&context(), &reference)
+        .await
+        .unwrap();
+    assert_eq!(status.transaction, reference);
+    assert!(status.received_chunks.is_empty());
+    assert_eq!(
+        status.outcome,
+        StagedOutcome::Finished {
+            outcome: Ok(receipt)
+        }
+    );
+    let generation = db.engine().generation().unwrap();
+    assert!(generation.state.staged_transactions.is_empty());
+    assert!(generation.state.active_staged_transactions.is_empty());
+    assert_eq!(generation.state.staged_terminal_head.count, 1);
+    drop(generation);
     db.shutdown().await.unwrap();
     audit.shutdown().await;
 }
@@ -1161,13 +1181,10 @@ fn permanent_staged_byte_exhaustion_preserves_success_failure_and_restored_exact
     let current = db.generation().unwrap();
     assert_eq!(current.state.reserved_staged_terminal_bytes, 0);
     assert_eq!(current.state.document_count, 1);
-    assert!(
-        current
-            .state
-            .staged_transactions
-            .values()
-            .all(|s| s.chunks.is_empty())
-    );
+    assert!(current.state.staged_transactions.is_empty());
+    assert!(current.state.active_staged_transactions.is_empty());
+    assert_eq!(current.state.staged_terminal_head.count, 2);
+    let terminal_head = current.state.staged_terminal_head.clone();
     let mut limits = current.state.limits.clone();
     limits.atomic.max_permanent_staged_bytes = current.state.permanent_staged_bytes;
     let used = current.state.permanent_staged_bytes;
@@ -1182,6 +1199,10 @@ fn permanent_staged_byte_exhaustion_preserves_success_failure_and_restored_exact
     )
     .unwrap();
     recovered.fixture_restore(&image).unwrap();
+    assert_eq!(
+        recovered.generation().unwrap().state.staged_terminal_head,
+        terminal_head
+    );
     assert_eq!(
         apply(
             &recovered,
@@ -1213,6 +1234,11 @@ fn permanent_staged_byte_exhaustion_preserves_success_failure_and_restored_exact
         used
     );
     assert_eq!(recovered.generation().unwrap().state.document_count, 1);
+    assert_eq!(
+        recovered.generation().unwrap().state.staged_terminal_head,
+        terminal_head,
+        "successful and failed exact replay cannot replace original terminal provenance"
+    );
 }
 
 #[test]
@@ -1255,16 +1281,17 @@ fn permanent_staged_snapshot_rejection_spends_original_terminal_reservation_atom
     assert_eq!(state.change_feed.event_count, 0);
     assert_eq!(state.reserved_staged_terminal_bytes, 0);
     assert!(state.active_staged_transactions.is_empty());
-    let key = staged_digest(&(context().principal, &reference.transaction_id))
-        .unwrap()
-        .0;
+    assert!(state.staged_transactions.is_empty());
+    assert_eq!(state.staged_terminal_head.count, 1);
+    let terminal_head = state.staged_terminal_head.clone();
     assert_eq!(
-        state.staged_transactions[&key].outcome,
-        StagedOutcome::Finished {
-            outcome: Err(failure.clone())
-        }
+        apply(&db, 6, Operation::FinalizeStaged(reference.clone())).unwrap_err(),
+        failure
     );
-    assert!(state.staged_transactions[&key].chunks.is_empty());
+    assert_eq!(
+        db.generation().unwrap().state.staged_terminal_head,
+        terminal_head
+    );
     let recovered = TenantEngine::new(
         "tenant".into(),
         "incarnation".into(),
@@ -1275,6 +1302,10 @@ fn permanent_staged_snapshot_rejection_spends_original_terminal_reservation_atom
     recovered
         .fixture_restore(&db.fixture_snapshot().unwrap())
         .unwrap();
+    assert_eq!(
+        recovered.generation().unwrap().state.staged_terminal_head,
+        terminal_head
+    );
     assert_eq!(
         apply(
             &recovered,
@@ -1289,4 +1320,9 @@ fn permanent_staged_snapshot_rejection_spends_original_terminal_reservation_atom
         failure
     );
     assert_eq!(recovered.generation().unwrap().state.document_count, 0);
+    assert_eq!(
+        recovered.generation().unwrap().state.staged_terminal_head,
+        terminal_head,
+        "snapshot-limit rejection remains the same permanent point record after restore"
+    );
 }
