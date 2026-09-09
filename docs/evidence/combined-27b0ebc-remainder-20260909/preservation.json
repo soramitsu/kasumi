@@ -1,0 +1,38 @@
+[
+  {
+    "path": "evidence.json",
+    "original": "/tmp/kasumi-27b0ebc-combined-remainder/evidence.json",
+    "sha256": "654a4b6cc06154ec21f8ebfcd9bb1f9da4bdf0c27a7834cfea66877808d17a9f",
+    "bytes": 739941
+  },
+  {
+    "path": "lease-retention.log",
+    "original": "/tmp/kasumi-27b0ebc-combined-remainder/lease-retention.log",
+    "sha256": "fcdea39371e57a77fff008c451cd05157735825f554136f07421ad9865c5ea34",
+    "bytes": 369105
+  },
+  {
+    "path": "plan.json",
+    "original": "/tmp/kasumi-27b0ebc-combined-remainder/plan.json",
+    "sha256": "52a1e20a7ac7f391914f5ef9c53eb4cdf0d139a100db879e965106d10519f7a6",
+    "bytes": 12427
+  },
+  {
+    "path": "runner.py",
+    "original": "/tmp/kasumi-27b0ebc-combined-remainder/runner.py",
+    "sha256": "ad3d647fbb73d9d32e04e4e202814f68aea2cb5aa80acbed03a10fa8a3855a6f",
+    "bytes": 10765
+  },
+  {
+    "path": "snapshot-receipts.log",
+    "original": "/tmp/kasumi-27b0ebc-combined-remainder/snapshot-receipts.log",
+    "sha256": "d7b638f1a7252087a70ae9dc92c9fa618bab33fc66b2e27a645950e41f6be553",
+    "bytes": 369786
+  },
+  {
+    "path": "source-before.json",
+    "original": "/tmp/kasumi-27b0ebc-combined-remainder/source-before.json",
+    "sha256": "0c5f81012fb74887ce0c3438be0820b35c52387a8923b341fba12acc09655fab",
+    "bytes": 301217
+  }
+]
