@@ -111,14 +111,23 @@ integration; the final integrated source must then pass the complete gates above
    `1682a8f` fixes ten imports but [retains one incorrect type name](evidence/combined-t5-1682a8f-check-20260909/README.md).
    `0336024` uses the canonical target prefix head. Its formatting successor
    `b17eaf5` [passes all-target/all-feature workspace compilation and formatting](evidence/combined-t5-b17eaf5-check-20260909/README.md).
-   The separate functional matrix is running. Structural accounting and the
-   existing resident/index estimator require actual capacity validation.
+   Its [functional cohort](evidence/combined-t5-b17eaf5-functional-20260909/README.md)
+   accepted21 tests; two more worker-failure tests passed but expected panic
+   output split the required-name line, so the evidence guard rejected the
+   cohort. The19 unrun gates continue with captured output. Independent review
+   found that external history chunks still need structural admission alongside
+   retained logical indexes; that correction is a separate successor. Structural
+   accounting and the resident/index estimator require actual capacity validation.
 5. Complete signer coverage, authority genesis-prefix reopen and the durable
    target completion coordinator. The source-frozen receiver and coordinator
    retain exact preparation, observation and resolution phases; their combined
-   functional gates are pending. A fresh terminal-only status operation,
-   automatic safe successor, physical cleanup and source-unavailable recovery
-   remain unfinished. Absence is never sufficient to resolve a mutation.
+   functional gates are incomplete. Three positive receiver/coordinator tests
+   passed in the typed-snapshot cohort. Terminal-only status is source-frozen at
+   `ef772f3` and combined without execution at `c1ba870`. Review also found that
+   fresh unanimous startup blocks established-quorum status, and live Complete
+   admission must independently reject a changed original cap; both corrections
+   are in progress. Automatic safe successors, physical cleanup and actual
+   source-unavailable recovery remain unfinished. Absence never resolves a mutation.
 6. Expand the [successful small offline Linux diagnostic](evidence/small-offline-native-3a8d512-20260909/README.md)
    to final-source acceptance. It exercised 129 documents through private
    initialization, native/MCP access, renewal, backup, restart and stopped local
