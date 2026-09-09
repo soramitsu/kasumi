@@ -24,11 +24,25 @@ The [original prepared cohort](evidence/first-release-3b932ee-prepared-20260910/
 and failed run retain unchanged deadlines, commands, source and process evidence.
 
 Subsequent development integrates typed drain completion (`b02c60f`), retained
-startup owners across polling panics (`0f940a4`), and required immutable Control
-genesis (`2547bad`). The genesis tag replaces empty-Control startup creation and
-binds its encrypted baseline to enrollment. These changes and their new tests
-remain **UNRUN** and are excluded from the failed `3b932ee` cohort. Leaf worker
-failure propagation and standalone tenant staging are separate unfinished work.
+startup owners across polling panics (`0f940a4`), required immutable Control
+genesis (`2547bad`), standalone tenant staging (`a3b3976`), nested preparation
+ownership (`31ea437`), typed store/audit outcomes (`6778f30`), runtime propagation
+(`c7f72aa`) and serving-task outcome retention (`d4a5e52`, caller reconciliation
+`71fc4e3`). Retired-source preparation (`836f9f1`) retains its new custody owner
+through completed cleanup before returning an error to its retained caller.
+The genesis tag replaces empty-Control startup creation and binds its encrypted
+baseline to enrollment. These changes and their new tests remain **UNRUN** and
+are excluded from the failed `3b932ee` cohort.
+
+Authority memory admission is now an explicitly required operational setting
+(`ed0507a`); its signer-worker caller migration is pending the worker ownership
+checkpoint. Database inner blocking-child outcomes, live signer-worker custody,
+and cancellation-safe outer serving ownership are active separate changes.
+Neither typed parent results nor cooperative loops alone establish a complete
+child census. Standalone staging is integrated in source, while incomplete
+creation cleanup, replacement enrollment and the full local lifecycle remain
+unfinished. No implementation or release gate is accepted by these source-only
+checkpoints.
 
 The preceding [frozen compiler/store cohort](evidence/first-release-7a21995-check-20260909/README.md)
 passed workspace compilation and formatting, then failed one store identity
