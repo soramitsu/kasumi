@@ -4,6 +4,8 @@ use kasumi_store::{
     test_utils::{FaultBackend, LocalKeyProvider, ManualClock},
 };
 
+#[path = "joint_publication_tests.rs"]
+mod joint_publication_tests;
 #[path = "worker_failure_tests.rs"]
 mod worker_failure_tests;
 
