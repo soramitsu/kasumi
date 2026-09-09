@@ -368,7 +368,7 @@ mod tests {
     use kasumi_store::{NodeStore, TenantStore, test_utils::LocalKeyProvider};
     use kasumi_types::{
         Action, CollectionDefinition, Grant, IndexDefinition, IndexField, Limits, Mutation,
-        MutationBatch, Operation, Policy, ScalarType,
+        MutationBatch, Operation, Policy, ScalarType, WriteReceipt,
     };
     use prost::Message;
     use serde_json::{Value, json};

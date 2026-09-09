@@ -298,7 +298,7 @@ async fn complete_recovery(
     snapshot(&db).await;
     drop(db);
     f.close().await;
-    f.open().await;
+    f.open(false).await;
     let db = f.leader().await;
     let status = db.recovery_status(f.context("owner"), id).await.unwrap();
     assert_eq!(status.record().pending_phase, Some(intent_phase));
@@ -1319,7 +1319,7 @@ async fn complete_recovery(
     snapshot(&db).await;
     drop(db);
     f.close().await;
-    f.open().await;
+    f.open(false).await;
     let db = f.leader().await;
     let mut alias = request.clone();
     alias.operation_id = Uuid::new_v4();
@@ -1603,7 +1603,7 @@ async fn exercise_route_publication(f: &mut Fixture, db: Arc<Database>, request:
     drop(plane);
     drop(db);
     f.close().await;
-    f.open().await;
+    f.open(false).await;
     let db = f.leader().await;
     assert_eq!(
         publish_route(f, request.operation_id, fresh).await,

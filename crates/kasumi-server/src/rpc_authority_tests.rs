@@ -877,9 +877,7 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
         action,
     };
     let mut verifier_set: BTreeSet<_> = settings
-        .bootstrap
-        .membership
-        .members
+        .installed_members
         .values()
         .map(|member| member.verifier.clone())
         .collect();

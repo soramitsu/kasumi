@@ -27,6 +27,7 @@ use std::{
     time::Duration,
 };
 use tokio::{net::TcpListener, sync::watch, task::JoinSet};
+use uuid::Uuid;
 use zeroize::Zeroizing;
 
 pub use kasumi_engine::{

@@ -95,7 +95,7 @@ async fn missing_journal_head_never_initializes_and_explicit_installation_cannot
     );
     assert!(f.store.get(NS, b"metadata")?.is_none());
     f.store
-        .write_batch(&[WriteOp::put(NS, b"metadata", &head)])?;
+        .write_batch(&[WriteOp::put(NS, b"metadata", head.as_slice())])?;
     drop(journal);
     assert!(f.create().is_err());
     let journal = f.reopen()?;
@@ -114,7 +114,7 @@ async fn corrupt_or_wrong_installed_journal_head_is_rejected_without_replacement
     wrong.installation.root.control_incarnation = Uuid::new_v4();
     for bytes in [b"{".to_vec(), serde_json::to_vec(&wrong)?] {
         f.store
-            .write_batch(&[WriteOp::put(NS, b"metadata", &bytes)])?;
+            .write_batch(&[WriteOp::put(NS, b"metadata", bytes.as_slice())])?;
         assert!(f.reopen().is_err());
         assert!(f.create().is_err());
         assert_eq!(f.store.get(NS, b"metadata")?, Some(bytes));
