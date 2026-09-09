@@ -500,8 +500,7 @@ fn changed_limits_preserve_historic_outcomes_and_keep_active_snapshots_recoverab
     let recovered = engine(Limits::default());
     recovered.fixture_restore(&snapshot).unwrap();
     assert_eq!(recovered.generation().unwrap().state.document_count, 0);
-    let mut corrupt: TenantState =
-        kasumi_engine::test_utils::decode_snapshot_candidate(&snapshot).unwrap();
+    let mut corrupt = kasumi_engine::test_utils::decode_snapshot_candidate(&snapshot).unwrap();
     let key = corrupt.active_staged_transactions.first().unwrap().clone();
     corrupt
         .staged_transactions

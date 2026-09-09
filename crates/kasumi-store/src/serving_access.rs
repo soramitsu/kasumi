@@ -177,8 +177,10 @@ impl StorageAccess {
                     phase,
                     kasumi_types::LifecyclePhase::Activate
                         | kasumi_types::LifecyclePhase::InspectTarget
+                        | kasumi_types::LifecyclePhase::ResolveComplete
+                        | kasumi_types::LifecyclePhase::MaintainTarget
                 ),
-            "active target requires activation or metadata inspection capability"
+            "active target requires an exact installed target phase"
         );
         ensure!(
             phase != kasumi_types::LifecyclePhase::StopLocal,

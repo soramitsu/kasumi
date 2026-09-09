@@ -86,8 +86,13 @@ struct StreamWork {
 
 impl StreamWork {
     fn run(mut self) -> Result<(u64, String)> {
-        crate::snapshot_codec::write(&self.generation.state, &mut self.writer)
-            .map_err(|_| Error::new(ErrorCode::Unavailable, "backup state stream failed"))?;
+        crate::snapshot_codec::write(
+            &self.generation.state,
+            &self.generation.terminals,
+            &self.generation.target_resolutions,
+            &mut self.writer,
+        )
+        .map_err(|_| Error::new(ErrorCode::Unavailable, "backup state stream failed"))?;
         self.writer
             .finish()
             .map_err(|_| Error::new(ErrorCode::Unavailable, "backup state stream incomplete"))
@@ -199,7 +204,8 @@ impl Database {
                 buffer: Vec::with_capacity(CHUNK_BYTES),
                 hash: Sha256::new(),
                 total: 0,
-                limit: state.limits.max_snapshot_bytes,
+                limit: crate::target_resolution::snapshot_limit(state)
+                    .map_err(|e| Error::new(ErrorCode::Corruption, e.to_string()))?,
                 cancellation: cancellation.clone(),
             },
             _reservation: reservation.clone(),

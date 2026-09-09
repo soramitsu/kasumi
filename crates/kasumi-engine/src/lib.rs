@@ -22,11 +22,13 @@ pub use audit_maintenance::AuditMaintenanceStatus;
 mod backup_format;
 mod backup_proof;
 mod backup_verify;
+mod target_completion_machine;
 mod target_invocation;
 mod target_signer;
 pub use backup_proof::VerifiedBackupCheckpoint;
 pub use service::target_activation_service::VerifiedTargetActivation;
 pub use service::target_inspection_service::VerifiedTargetInspection;
+pub use service::target_receiver_service::VerifiedTargetReceiver;
 pub use service::target_service::VerifiedTargetCompletion;
 pub use target_invocation::{
     TargetLifecycleInvocation, TargetOperation, TargetOperationScope, TargetRequestAdmission,
@@ -38,7 +40,9 @@ pub mod security_audit;
 mod service;
 mod snapshot_codec;
 mod snapshot_index;
+mod staged_terminal;
 mod state;
+mod target_resolution;
 pub use bootstrap::{
     LocalRestoreRequest, MaterializedTargetReplica, PreparedReplicaRestore, ReplicaPlacement,
     ReplicaRestoreConfig, ReplicatedBootstrap, RestoreSource, TargetMaterializationConfig,

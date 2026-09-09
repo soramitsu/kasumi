@@ -29,8 +29,8 @@ impl SnapshotRecords {
             visitor(std::str::from_utf8(key)?, &serde_json::from_slice(value)?)
         })
     }
-    pub(super) fn publish(&self, store: &TenantStore) -> Result<()> {
-        store.replace_namespaces(&[(NS, &self.0)], &[])
+    pub(super) fn replacements(&self) -> Vec<(&str, &EncryptedTable)> {
+        vec![(NS, &self.0)]
     }
 }
 fn disk_budget(maximum: u64) -> Result<u64> {

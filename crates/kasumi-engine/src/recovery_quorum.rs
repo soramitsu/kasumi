@@ -74,14 +74,31 @@ pub(crate) fn validate_quorum_step(
     };
     origin(state, operation)?.accepts_phase(current, expected)?;
     let input = quorum_input(state, operation)?;
-    if current.request.phase_input_sha256 != input.digest()? {
+    let complete_input = completion::completion_input(state, operation)?;
+    let digest = if phase_kind == RecoveryPhase::Complete {
+        complete_input.digest()?
+    } else {
+        input.digest()?
+    };
+    if current.request.phase_input_sha256 != digest {
         return Err(conflict("committed quorum input differs"));
     }
     match step {
-        TargetRuntimeStep::Start(TargetReplicaInput::Quorum(actual)) if actual == &input => {
+        TargetRuntimeStep::Start(TargetReplicaInput::Quorum(actual))
+            if phase_kind == RecoveryPhase::Initialize && actual == &input =>
+        {
             if admission && started_for(state, operation, node_id, current.request.command_id)? {
                 return Err(conflict(
                     "target already started under this exact Control phase",
+                ));
+            }
+        }
+        TargetRuntimeStep::Start(TargetReplicaInput::Completion(actual))
+            if phase_kind == RecoveryPhase::Complete && actual == &complete_input =>
+        {
+            if admission && started_for(state, operation, node_id, current.request.command_id)? {
+                return Err(conflict(
+                    "target already started under this exact Complete phase",
                 ));
             }
         }
@@ -97,7 +114,7 @@ pub(crate) fn validate_quorum_step(
             }
         }
         TargetRuntimeStep::Complete(actual)
-            if phase_kind == RecoveryPhase::Complete && actual == &input =>
+            if phase_kind == RecoveryPhase::Complete && actual == &complete_input =>
         {
             if admission && !all_started(state, operation, current.request.command_id)? {
                 return Err(conflict(

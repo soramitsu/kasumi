@@ -41,7 +41,9 @@ impl AuthorityTrust {
             kasumi_types::LifecyclePhase::Activate => {
                 c.application_purpose == Some(LeasePurpose::Serving)
             }
-            kasumi_types::LifecyclePhase::InspectTarget => c.application_purpose.is_some(),
+            kasumi_types::LifecyclePhase::InspectTarget
+            | kasumi_types::LifecyclePhase::ResolveComplete
+            | kasumi_types::LifecyclePhase::MaintainTarget => c.application_purpose.is_some(),
             _ => c.application_purpose == Some(LeasePurpose::RestorePreparation),
         };
         i.request.validate()?;

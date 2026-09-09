@@ -38,6 +38,7 @@ impl ValidatedApplicationSnapshot {
         result.validate_permanent(&mut check)?;
         result.validate_audits(&mut check)?;
         result.validate_targets(&mut check)?;
+        result.validate_target_resolutions(&mut check)?;
         check()?;
         Ok(result)
     }
@@ -75,7 +76,7 @@ impl ValidatedApplicationSnapshot {
         })?;
         let image = SnapshotImage::capture(
             self.image().disk(),
-            self.header.limits.max_snapshot_bytes,
+            crate::target_resolution::snapshot_limit(&self.header)?,
             |writer| {
                 let mut encoder = crate::snapshot_codec::Encoder::new(writer)?;
                 crate::snapshot_codec::visit(&mut self.image().reader(), |_, mut record| {
@@ -234,14 +235,15 @@ impl ValidatedApplicationSnapshot {
                 "pending restore lacks authenticated origin"
             );
         }
-        let headroom = crate::accounting::staged_headroom(h)?
+        let headroom = crate::accounting::snapshot_headroom(&self.target_budget_state()?)?
             .checked_add(20 - h.revision.to_string().len() as u64)
             .context("snapshot headroom overflow")?;
         ensure!(
             self.index
                 .summary()
                 .bytes
-                .checked_add(headroom)
+                .checked_sub(self.index.framed_bytes(22)?)
+                .and_then(|n| n.checked_add(headroom))
                 .is_some_and(|n| n <= h.limits.max_snapshot_bytes),
             "snapshot exceeds serialized byte quota"
         );
@@ -479,7 +481,7 @@ impl ValidatedApplicationSnapshot {
         })?;
         let mut active = 0u64;
         let mut reserved = 0u64;
-        let mut permanent_bytes = 0u64;
+        let mut permanent_bytes = h.staged_terminal_head.encoded_bytes;
         let mut terminal_reserved = 0u64;
         self.index.visit(6, |record| {
             check()?;
@@ -488,17 +490,9 @@ impl ValidatedApplicationSnapshot {
             };
             let counts = get::<staging::SnapshotChunks>(&self.lineage, &("stage", &key))?
                 .unwrap_or_default();
-            // The header omits streamed lineage. Select the original scope's
-            // verified closing link so historical stages retain their identity
-            // without materializing the complete lineage for every record.
-            let mut scope_state = h.as_ref().clone();
-            if stage.scope.incarnation != h.incarnation
-                && let Some(link) = self.lineage_source(&stage.scope.incarnation)?
-            {
-                scope_state.restore_lineage.push(link);
-            }
-            let uploading =
-                staging::validate_snapshot_record(&key, &stage, &scope_state, &counts)?;
+            let proof_state = self.staging_lineage(&stage.scope.incarnation, None)?;
+            let uploading = staging::validate_snapshot_record(&key, &stage, &proof_state, &counts)?;
+            ensure!(uploading, "resident staged record is terminal");
             let charge = staging::permanent_charge(&key, &stage)?;
             permanent_bytes = permanent_bytes
                 .checked_add(charge.0)
@@ -521,6 +515,36 @@ impl ValidatedApplicationSnapshot {
             }
             Ok(())
         })?;
+        let mut terminal_head =
+            StagedTerminalHead::empty(&h.tenant, &h.staged_terminal_head.origin_incarnation)?;
+        ensure!(
+            terminal_head.origin_incarnation == h.incarnation
+                || self
+                    .lineage_source(&terminal_head.origin_incarnation)?
+                    .is_some(),
+            "terminal origin is outside verified lineage"
+        );
+        self.index.visit(21, |record| {
+            check()?;
+            let Record::Terminal(row) = record else {
+                unreachable!()
+            };
+            let proof_state =
+                self.staging_lineage(&row.stage.scope.incarnation, Some(&row.applied.incarnation))?;
+            row.validate(&proof_state)?;
+            ensure!(
+                self.index.get(6, &row.key, "")?.is_none(),
+                "identity is both uploading and terminal"
+            );
+            insert(&self.lineage, &("terminal-key", &row.key), &row.ordinal)?;
+            crate::staged_terminal::advance(&mut terminal_head, &row)?;
+            Ok(())
+        })?;
+        ensure!(
+            terminal_head == h.staged_terminal_head
+                && terminal_head.count == self.index.count(21)?,
+            "terminal snapshot chain/count/bytes differ"
+        );
         ensure!(
             active == self.index.count(8)?
                 && reserved <= h.limits.atomic.max_reserved_staging_bytes as u64
@@ -529,6 +553,35 @@ impl ValidatedApplicationSnapshot {
             "staged reservation or active count differs"
         );
         Ok(())
+    }
+    /// One row needs the subject's closing link and both the applying
+    /// incarnation's genesis and closing links. Fetch those exact links from
+    /// the verified encrypted index without materializing the full lineage.
+    fn staging_lineage(&self, subject: &str, applied: Option<&str>) -> anyhow::Result<TenantState> {
+        let mut state = self.header.as_ref().clone();
+        for incarnation in [Some(subject), applied].into_iter().flatten() {
+            if incarnation != state.incarnation
+                && !state
+                    .restore_lineage
+                    .iter()
+                    .any(|link| link.checkpoint.source_incarnation == incarnation)
+            {
+                state.restore_lineage.push(
+                    self.lineage_source(incarnation)?
+                        .context("staged incarnation is outside verified lineage")?,
+                );
+            }
+        }
+        if let Some(applied) = applied.filter(|id| *id != state.incarnation)
+            && let Some(genesis) = self.lineage_target(applied)?
+            && !state
+                .restore_lineage
+                .iter()
+                .any(|link| link.target_incarnation == applied)
+        {
+            state.restore_lineage.push(genesis);
+        }
+        Ok(state)
     }
     fn validate_change_feed(
         &self,
@@ -794,7 +847,7 @@ impl ValidatedApplicationSnapshot {
         let h = &self.header;
         h.audit_retention.validate()?;
         ensure!(
-            h.audit_retention.hot_bytes <= h.limits.audit_retention.hot_bytes
+            crate::accounting::audit_fits(&self.target_budget_state()?)
                 && h.audit_retention.archive_bytes <= h.limits.audit_retention.archive_bytes,
             "audit history exceeds configured byte budgets"
         );
@@ -824,6 +877,109 @@ impl ValidatedApplicationSnapshot {
         );
         Ok(())
     }
+    fn validate_target_resolutions(
+        &self,
+        check: &mut impl FnMut() -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
+        let h = &self.header;
+        let mut selected = TargetResolutionPrefixHead::empty(
+            &h.tenant,
+            &h.target_resolution_head.origin_incarnation,
+        )?;
+        ensure!(
+            selected.origin_incarnation == h.incarnation
+                || self.lineage_source(&selected.origin_incarnation)?.is_some(),
+            "target terminal prefix origin is outside lineage"
+        );
+        self.index.visit(22, |record| {
+            check()?;
+            let Record::TargetResolution(row) = record else {
+                unreachable!()
+            };
+            let incarnation = row.record.origin().input.target_incarnation.to_string();
+            let mut state = self.staging_lineage(&incarnation, None)?;
+            let Record::Target(_, target) = self
+                .index
+                .get(17, &incarnation, "")?
+                .context("target terminal origin is absent")?
+            else {
+                unreachable!()
+            };
+            state.target_lifecycle.insert(incarnation.clone(), *target);
+            row.validate(&state)?;
+            let mut causal: crate::target_resolution::CausalHead =
+                get(&self.lineage, &("target-terminal-causal", &incarnation))?.unwrap_or_default();
+            crate::target_resolution::validate_causal(h, &row, &mut causal, |key| {
+                let Some(ordinal) = get::<u64>(&self.lineage, &("target-terminal-key", key))?
+                else {
+                    return Ok(None);
+                };
+                match self.index.get(22, &format!("{ordinal:020}"), "")? {
+                    Some(Record::TargetResolution(row)) => Ok(Some(*row)),
+                    _ => anyhow::bail!("target causal key redirected"),
+                }
+            })?;
+            ensure!(
+                get::<u64>(&self.lineage, &("target-terminal-key", &row.key))?.is_none(),
+                "duplicate permanent target terminal identity"
+            );
+            insert(
+                &self.lineage,
+                &("target-terminal-key", &row.key),
+                &row.ordinal,
+            )?;
+            crate::target_resolution::advance(&mut selected, &row)?;
+            insert(
+                &self.lineage,
+                &("target-terminal-causal", &incarnation),
+                &causal,
+            )?;
+            Ok(())
+        })?;
+        ensure!(
+            selected == h.target_resolution_head && selected.count == self.index.count(22)?,
+            "target terminal snapshot prefix count/root/bytes differ"
+        );
+        ensure!(
+            self.index.framed_bytes(22)? <= selected.encoded_bytes,
+            "target terminal table charge does not cover its snapshot framing"
+        );
+        let current = self.target_budget_state()?;
+        let causal: crate::target_resolution::CausalHead =
+            get(&self.lineage, &("target-terminal-causal", &h.incarnation))?.unwrap_or_default();
+        crate::target_resolution::validate_causal_current(&current, &causal, |key| {
+            let Some(ordinal) = get::<u64>(&self.lineage, &("target-terminal-key", key))? else {
+                return Ok(None);
+            };
+            match self.index.get(22, &format!("{ordinal:020}"), "")? {
+                Some(Record::TargetResolution(row)) => Ok(Some(*row)),
+                _ => anyhow::bail!("target current causal key redirected"),
+            }
+        })?;
+        crate::target_resolution::validate_current(&current, |key| {
+            check()?;
+            let Some(ordinal) = get::<u64>(&self.lineage, &("target-terminal-key", key))? else {
+                return Ok(None);
+            };
+            let Some(Record::TargetResolution(row)) =
+                self.index.get(22, &format!("{ordinal:020}"), "")?
+            else {
+                anyhow::bail!("target terminal key redirected outside ordinal prefix");
+            };
+            Ok(Some(*row))
+        })
+    }
+
+    fn target_budget_state(&self) -> anyhow::Result<TenantState> {
+        let mut state = self.header.as_ref().clone();
+        if let Some(Record::Target(_, target)) = self.index.get(17, &state.incarnation, "")? {
+            state
+                .target_lifecycle
+                .insert(state.incarnation.clone(), *target);
+        }
+        Ok(state)
+    }
+
     fn validate_targets(
         &self,
         check: &mut impl FnMut() -> anyhow::Result<()>,
@@ -887,7 +1043,11 @@ impl ValidatedApplicationSnapshot {
                 .checked_add(1)
                 .context("target history count overflow")?;
             ensure!(
-                bytes <= MAX_TARGET_HISTORY_BYTES as u64,
+                bytes
+                    .checked_add(crate::accounting::target_completion_reserve(
+                        &self.target_budget_state()?
+                    ))
+                    .is_some_and(|bytes| bytes <= MAX_TARGET_HISTORY_BYTES as u64),
                 "target history bytes exceeded"
             );
             Ok(())
@@ -1078,12 +1238,138 @@ mod tests {
     }
     fn image(state: &TenantState) -> SnapshotImage {
         SnapshotImage::capture(&kasumi_store::ScratchDisk::fixture(), 128 << 20, |writer| {
-            crate::snapshot_codec::write(state, writer)
+            crate::snapshot_codec::write(
+                state,
+                &crate::staged_terminal::View::empty(
+                    &state.tenant,
+                    &state.staged_terminal_head.origin_incarnation,
+                )?,
+                &crate::target_resolution::View::empty(
+                    &state.tenant,
+                    &state.target_resolution_head.origin_incarnation,
+                )?,
+                writer,
+            )
         })
         .unwrap()
     }
     fn indexed(state: &TenantState) -> anyhow::Result<ValidatedApplicationSnapshot> {
         ValidatedApplicationSnapshot::validate(image(state), 128 << 20, || Ok(()))
+    }
+    #[test]
+    fn indexed_terminal_provenance_retains_the_intermediate_incarnation_genesis() {
+        use crate::staged_terminal::{AppliedIdentity, AppliedOrigin, Row};
+
+        fn link(source: &str, target: &str, revision: u64) -> RestoreLineageLink {
+            RestoreLineageLink {
+                checkpoint: FullBackupCheckpoint {
+                    tenant: "tenant".into(),
+                    source_incarnation: source.into(),
+                    revision,
+                    resident_sha256: "01".repeat(32),
+                    backup_id: uuid::Uuid::from_u128(u128::from(revision)),
+                    manifest_ciphertext_sha256: "02".repeat(32),
+                    key_lineage_digest: "03".repeat(32),
+                },
+                target_incarnation: target.into(),
+            }
+        }
+        fn proof(state: &TenantState, row: &Row) -> ValidatedApplicationSnapshot {
+            let mut header = crate::snapshot_codec::metadata(state);
+            crate::staged_terminal::advance(&mut header.staged_terminal_head, row).unwrap();
+            header.permanent_staged_bytes = header.staged_terminal_head.encoded_bytes;
+            let disk = kasumi_store::ScratchDisk::fixture();
+            let image = SnapshotImage::capture(&disk, 128 << 20, |writer| {
+                let mut encoder = crate::snapshot_codec::Encoder::new(writer)?;
+                encoder.record(Record::Header(Box::new(header.clone())))?;
+                for (ordinal, link) in state.restore_lineage.iter().enumerate() {
+                    encoder.record(Record::Lineage(ordinal as u64, link.clone()))?;
+                }
+                encoder.record(Record::Terminal(Box::new(row.clone())))?;
+                encoder.finish()
+            })
+            .unwrap();
+            let proof = ValidatedApplicationSnapshot {
+                index: StagedSnapshot::new(image, 128 << 20, || Ok(())).unwrap(),
+                header: Box::new(header),
+                lineage: EncryptedTable::new(&disk, 128 << 20).unwrap(),
+            };
+            proof.validate_lineage(&mut || Ok(())).unwrap();
+            proof
+        }
+
+        let mut state = state();
+        let key = staging::identity("owner", "upload").unwrap();
+        let mut stage = state.staged_transactions.remove(&key).unwrap();
+        stage.scope.incarnation = "middle".into();
+        stage.chunks.clear();
+        stage.stored_chunk_bytes = 0;
+        stage.uploaded_payload_bytes = 0;
+        stage.uploaded_operations = 0;
+        stage.uploaded_read_assertions = 0;
+        stage.expires_at_ms = None;
+        stage.outcome = StagedOutcome::Aborted {
+            receipt: WriteReceipt {
+                revision: 12,
+                versions: Default::default(),
+            },
+        };
+        state.active_staged_transactions.clear();
+        state.reserved_staged_terminal_bytes = 0;
+        state.permanent_staged_bytes = 0;
+        state.incarnation = "current".into();
+        state.revision_base = 21;
+        state.revision = 25;
+        state.restore_lineage = vec![
+            link("generation", "middle", 10),
+            link("middle", "current", 20),
+        ];
+        state.restored_from = Some(state.restore_lineage[1].checkpoint.clone());
+        let row = Row {
+            ordinal: 1,
+            key,
+            previous_sha256: state.staged_terminal_head.sha256.clone(),
+            applied: AppliedIdentity {
+                incarnation: "middle".into(),
+                revision: 12,
+                timestamp_ms: 1000,
+                command_sha256: "ab".repeat(32),
+                origin: AppliedOrigin::Raft {
+                    term: 1,
+                    leader: 1,
+                    index: 1,
+                    context_sha256: "cd".repeat(32),
+                },
+            },
+            stage,
+        };
+        row.validate(&state).unwrap();
+        let indexed = proof(&state, &row);
+        indexed.validate_staging(&mut || Ok(())).unwrap();
+        let selected = indexed.staging_lineage("middle", Some("middle")).unwrap();
+        assert_eq!(selected.restore_lineage.len(), 2);
+        assert!(selected.restore_lineage.contains(&state.restore_lineage[0]));
+
+        // Recompute the stream's final root for each substituted row, so these
+        // failures must come from provenance rather than a stale digest.
+        let mut relabelled = row.clone();
+        relabelled.applied.incarnation = "current".into();
+        assert!(relabelled.validate(&state).is_err());
+        assert!(
+            proof(&state, &relabelled)
+                .validate_staging(&mut || Ok(()))
+                .is_err()
+        );
+        let mut wrong_position = row;
+        if let AppliedOrigin::Raft { index, .. } = &mut wrong_position.applied.origin {
+            *index = 2;
+        }
+        assert!(wrong_position.validate(&state).is_err());
+        assert!(
+            proof(&state, &wrong_position)
+                .validate_staging(&mut || Ok(()))
+                .is_err()
+        );
     }
     #[test]
     fn indexed_verification_keeps_all_staging_on_the_image_owner_until_drain() {

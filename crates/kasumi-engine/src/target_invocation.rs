@@ -76,14 +76,17 @@ impl TargetLifecycleInvocation {
         phase: LifecyclePhase,
         input_sha256: &str,
         admitted_at_ms: u64,
+        dispatch_not_after_ms: u64,
     ) -> Result<PreparedTargetAuthorization> {
         self.check()?;
         let lease = self.gate.current().map_err(unauthorized)?;
         let intent = &lease.commitment().intent;
+        let dispatch_not_after_ms =
+            dispatch_not_after_ms.min(intent.original_credential_expires_at_ms);
         if intent.request.phase != phase
             || intent.request.phase_input_sha256 != input_sha256
             || admitted_at_ms < intent.accepted_at_ms
-            || admitted_at_ms >= intent.original_credential_expires_at_ms
+            || admitted_at_ms >= dispatch_not_after_ms
         {
             return Err(Error::new(
                 ErrorCode::Conflict,
@@ -96,6 +99,7 @@ impl TargetLifecycleInvocation {
             context: context.clone(),
             grant: lease.signed().clone(),
             admitted_at_ms,
+            dispatch_not_after_ms,
         })
     }
     fn check_request_context(&self, context: &RequestContext) -> Result<()> {
@@ -124,6 +128,9 @@ pub(crate) struct PreparedTargetAuthorization {
     pub context: RequestContext,
     pub grant: SignedLifecycleLease,
     pub admitted_at_ms: u64,
+    /// Retained original native cap, bounded by the exact original Control
+    /// phase. It is independent of a later request's renewed credential.
+    pub dispatch_not_after_ms: u64,
 }
 impl PreparedTargetAuthorization {
     pub fn verify(
@@ -150,7 +157,8 @@ impl PreparedTargetAuthorization {
             || self.context.principal != intent.original_principal
             || self.context.authorization.expires_at_ms().is_none()
             || self.admitted_at_ms < intent.accepted_at_ms
-            || self.admitted_at_ms >= intent.original_credential_expires_at_ms
+            || self.admitted_at_ms >= self.dispatch_not_after_ms
+            || self.dispatch_not_after_ms > intent.original_credential_expires_at_ms
             || self.grant.claims.request.target_node.node_id != actual_leader_node
             || intent.request.phase_input_sha256 != input_sha256
             || trust.digest() != origin.authority_manifest_sha256
@@ -176,6 +184,7 @@ pub struct TargetRequestAdmission {
     elapsed: kasumi_clock::ElapsedDeadline,
     deadline: crate::backup_verify::VerificationDeadline,
     timeout_ms: u64,
+    dispatch_not_after_ms: u64,
 }
 impl TargetRequestAdmission {
     pub fn capture(context: RequestContext, timeout_ms: u64) -> Result<Self> {
@@ -213,6 +222,7 @@ impl TargetRequestAdmission {
         // Preserve the earlier paired observation, including time spent in
         // capture_with_clock itself. Its ordinary work timer can only be tighter.
         result.elapsed = elapsed;
+        result.dispatch_not_after_ms = not_after_ms;
         result.check()?;
         Ok(result)
     }
@@ -238,6 +248,7 @@ impl TargetRequestAdmission {
             elapsed,
             deadline,
             timeout_ms,
+            dispatch_not_after_ms: expires,
         })
     }
     pub fn require_context(&self, context: &RequestContext) -> Result<()> {
@@ -411,8 +422,13 @@ impl TargetOperation {
         admitted_at_ms: u64,
     ) -> Result<PreparedTargetAuthorization> {
         self.check().map_err(unauthorized)?;
-        self.invocation()
-            .prepare(self.context(), phase, input_sha256, admitted_at_ms)
+        self.invocation().prepare(
+            self.context(),
+            phase,
+            input_sha256,
+            admitted_at_ms,
+            self.admission.dispatch_not_after_ms,
+        )
     }
     pub fn run<'a, T>(
         &'a self,
@@ -560,8 +576,10 @@ mod admission_tests {
                 &epoch,
             )
             .unwrap();
+            assert_eq!(admission.dispatch_not_after_ms, cap);
             clock.0.store(26, Ordering::SeqCst);
             assert!(admission.check().is_err());
+            assert_eq!(admission.dispatch_not_after_ms, cap);
             context.authorization.check_live().unwrap();
             if cap_ms == 25 {
                 assert!(

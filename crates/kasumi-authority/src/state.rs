@@ -958,20 +958,48 @@ impl StateMachineBackend for Backend {
         self.decode_snapshot(bytes)?;
         Ok(None)
     }
-    fn restore(&self, bytes: &mut dyn std::io::Read) -> Result<()> {
-        let _lock = self
+    fn prepare_restore<'a>(
+        &'a self,
+        _context: &kasumi_raft::SnapshotRestoreContext,
+        bytes: &mut dyn std::io::Read,
+    ) -> Result<Box<dyn kasumi_raft::PreparedStateMachineRestore + 'a>> {
+        let guard = self
             .mutation
             .lock()
             .map_err(|_| anyhow::anyhow!("authority state poisoned"))?;
         let snapshot = self.decode_snapshot(bytes)?;
         self.validate_lifecycle_history(&snapshot)?;
         self.validate_roster_history(&snapshot)?;
-        snapshot.records.publish(&self.store)
+        Ok(Box::new(PreparedAuthorityRestore {
+            backend: self,
+            snapshot,
+            _mutation_guard: guard,
+        }))
     }
     fn close_application(&self) {
         self.store.seal();
     }
 }
+struct PreparedAuthorityRestore<'a> {
+    backend: &'a Backend,
+    snapshot: Snapshot,
+    _mutation_guard: std::sync::MutexGuard<'a, ()>,
+}
+impl kasumi_raft::PreparedStateMachineRestore for PreparedAuthorityRestore<'_> {
+    fn retirement(&self) -> Option<RetiredSnapshotState> {
+        None
+    }
+    fn application_replacements(&self) -> Vec<(&str, &kasumi_store::EncryptedTable)> {
+        self.snapshot.records.replacements()
+    }
+    fn application_writes(&self) -> &[kasumi_store::WriteOp] {
+        &[]
+    }
+    fn publish(self: Box<Self>) -> Result<()> {
+        self.backend.store.check_access()
+    }
+}
+
 impl Backend {
     fn decode_snapshot(&self, bytes: &mut dyn std::io::Read) -> Result<Snapshot> {
         let snapshot =
@@ -1251,3 +1279,17 @@ mod issuer_signer_state;
 pub(crate) mod signer_coverage_state;
 #[path = "signer_roster.rs"]
 mod signer_roster;
+
+#[cfg(test)]
+pub(crate) fn restore_test_context(bytes: &[u8]) -> kasumi_raft::SnapshotRestoreContext {
+    use sha2::Digest;
+    kasumi_raft::SnapshotRestoreContext {
+        mode: kasumi_raft::SnapshotRestoreMode::Install,
+        backend_sha256: hex::encode(sha2::Sha256::digest(bytes)),
+        meta: kasumi_raft::SnapshotMeta {
+            last_log_id: None,
+            last_membership: Default::default(),
+            snapshot_id: "negative-fixture".into(),
+        },
+    }
+}

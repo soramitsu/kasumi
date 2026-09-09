@@ -2,6 +2,16 @@
 //! may resolve it; absence never becomes a negative outcome or new mutation.
 use super::*;
 
+pub(crate) fn completion_input(
+    state: &TenantState,
+    operation: &RecoveryRecord,
+) -> Result<TargetCompletionInput> {
+    Ok(TargetCompletionInput {
+        quorum: quorum_input(state, operation)?,
+        predecessor: None,
+    })
+}
+
 pub(crate) fn inspection_input(
     state: &TenantState,
     operation: &RecoveryRecord,
@@ -17,6 +27,7 @@ pub(crate) fn inspection_input(
     Ok(TargetInspectionInput {
         quorum: quorum_input(state, operation)?,
         original_phase: original.clone(),
+        predecessor: completion_input(state, operation)?.predecessor,
     })
 }
 pub(crate) fn is_inspection(step: &TargetRuntimeStep) -> bool {

@@ -621,14 +621,24 @@ struct RunningTarget {
     audit: Arc<kasumi_engine::SecurityAudit>,
     owner: kasumi_engine::TargetReplica,
 }
+fn initial_complete(input: &TargetQuorumInput) -> kasumi_types::TargetCompletionInput {
+    kasumi_types::TargetCompletionInput {
+        quorum: input.clone(),
+        predecessor: None,
+    }
+}
 impl MaterialFixture {
     async fn commit_phase(
         &self,
         phase: LifecyclePhase,
         input: &TargetQuorumInput,
     ) -> SignedControlIntent {
-        self.commit_phase_input(phase, input.digest().unwrap(), 1_500_000)
-            .await
+        let digest = if phase == LifecyclePhase::Complete {
+            initial_complete(input).digest().unwrap()
+        } else {
+            input.digest().unwrap()
+        };
+        self.commit_phase_input(phase, digest, 1_500_000).await
     }
     async fn commit_phase_input(
         &self,
@@ -700,8 +710,12 @@ impl MaterialFixture {
         input: &TargetQuorumInput,
         router: &Arc<InProcessRouter>,
     ) -> Vec<RunningTarget> {
-        self.open_targets_input(phase, TargetReplicaInput::Quorum(input.clone()), router)
-            .await
+        let input = if phase.observation.intent.request.phase == LifecyclePhase::Complete {
+            TargetReplicaInput::Completion(initial_complete(input))
+        } else {
+            TargetReplicaInput::Quorum(input.clone())
+        };
+        self.open_targets_input(phase, input, router).await
     }
     async fn open_targets_input(
         &self,
@@ -796,7 +810,7 @@ async fn three_actual_materializations_initialize_and_commit_completion_with_res
         targets[0]
             .owner
             .database()
-            .complete_target(&targets[0].operation, input.clone())
+            .complete_target(&targets[0].operation, initial_complete(&input))
             .await
             .is_err()
     );
@@ -816,7 +830,7 @@ async fn three_actual_materializations_initialize_and_commit_completion_with_res
     let proof = selected
         .owner
         .database()
-        .complete_target(&selected.operation, input.clone())
+        .complete_target(&selected.operation, initial_complete(&input))
         .await
         .unwrap();
     let signed = f.signers[&selected.id]
@@ -833,7 +847,7 @@ async fn three_actual_materializations_initialize_and_commit_completion_with_res
     let again = selected
         .owner
         .database()
-        .complete_target(&selected.operation, input.clone())
+        .complete_target(&selected.operation, initial_complete(&input))
         .await
         .unwrap();
     assert_eq!(again.observation().fact, first);
@@ -887,7 +901,7 @@ async fn exact_actual_completion_is_required_for_issuer_and_target_activation() 
     let proof = targets[index]
         .owner
         .database()
-        .complete_target(&targets[index].operation, input.clone())
+        .complete_target(&targets[index].operation, initial_complete(&input))
         .await
         .unwrap();
     let signed = f.signers[&targets[index].id]
@@ -1350,14 +1364,18 @@ async fn expired_completion_with_missing_journal_recovers_only_exact_inspection_
     current_target(&targets).await;
     f.close_targets(targets, &router).await;
     let complete = f
-        .commit_phase_input(LifecyclePhase::Complete, input.digest().unwrap(), 1_000_500)
+        .commit_phase_input(
+            LifecyclePhase::Complete,
+            initial_complete(&input).digest().unwrap(),
+            1_000_500,
+        )
         .await;
     let targets = f.open_targets(&complete, &input, &router).await;
     let index = current_target(&targets).await;
     let proof = targets[index]
         .owner
         .database()
-        .complete_target(&targets[index].operation, input.clone())
+        .complete_target(&targets[index].operation, initial_complete(&input))
         .await
         .unwrap();
     let original = proof.observation().fact.clone();
@@ -1393,6 +1411,7 @@ async fn expired_completion_with_missing_journal_recovers_only_exact_inspection_
     let inspection_input = TargetInspectionInput {
         quorum: input.clone(),
         original_phase: complete.observation.intent.clone(),
+        predecessor: None,
     };
     let inspection = f
         .commit_phase_input(
@@ -1419,7 +1438,7 @@ async fn expired_completion_with_missing_journal_recovers_only_exact_inspection_
             .is_err()
     );
     assert!(
-        db.complete_target(&selected.operation, input.clone())
+        db.complete_target(&selected.operation, initial_complete(&input))
             .await
             .is_err()
     );

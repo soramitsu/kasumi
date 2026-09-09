@@ -71,7 +71,7 @@ fn historical_limits() -> Limits {
 }
 
 // Current credentials authorize access; caller-supplied scope only narrows it.
-fn authorize_scope(
+pub(crate) fn authorize_scope(
     state: &TenantState,
     context: &RequestContext,
     scope: &StagedTransactionScope,
@@ -156,6 +156,23 @@ pub(crate) fn authorize_upload(
     require_upload_incarnation(state, lookup(state, context, reference)?)
 }
 
+pub(crate) fn authorize_stop_envelope(
+    state: &TenantState,
+    context: &RequestContext,
+    request: &StopStagedTransaction,
+) -> Result<()> {
+    authorize_scope(state, context, &request.original.scope)?;
+    validate_name(&request.original.transaction_id)?;
+    if request.original.ttl_ms == 0 || request.original.ttl_ms > 86_400_000 {
+        return Err(Error::new(
+            ErrorCode::InvalidArgument,
+            "staged upload TTL outside bounds",
+        ));
+    }
+    validate_manifest(&request.original.manifest, &historical_limits())?;
+    authorize_manifest(state, context, &request.original.manifest)
+}
+
 pub(crate) fn authorize_stop(
     state: &TenantState,
     context: &RequestContext,
@@ -173,15 +190,7 @@ pub(crate) fn authorize_stop(
     } else {
         require_current_creation(state, &request.original.scope)?;
     }
-    validate_name(&request.original.transaction_id)?;
-    if request.original.ttl_ms == 0 || request.original.ttl_ms > 86_400_000 {
-        return Err(Error::new(
-            ErrorCode::InvalidArgument,
-            "staged upload TTL outside bounds",
-        ));
-    }
-    validate_manifest(&request.original.manifest, &historical_limits())?;
-    authorize_manifest(state, context, &request.original.manifest)
+    authorize_stop_envelope(state, context, request)
 }
 
 pub(crate) fn validate_admission(
@@ -254,7 +263,7 @@ pub(crate) fn lookup<'a>(
 
 /// Canonical permanent header bytes and outstanding capacity owned by an active
 /// identity. Chunk payloads have their own budget and never enter these totals.
-pub(super) fn permanent_charge(key: &str, stage: &StagedTransaction) -> Result<(u64, u64)> {
+pub(crate) fn permanent_charge(key: &str, stage: &StagedTransaction) -> Result<(u64, u64)> {
     let used = crate::accounting::staged_header(key, stage)?;
     if !stage.is_active() {
         return Ok((used, 0));
@@ -279,7 +288,7 @@ pub(super) fn permanent_charge(key: &str, stage: &StagedTransaction) -> Result<(
 
 /// Commit one permanent point record, both totals, and its active index together.
 /// A terminal transition must fit the capacity admitted by its own original Begin.
-pub(super) fn replace_record(
+pub(crate) fn replace_record(
     state: &mut TenantState,
     key: String,
     stage: StagedTransaction,
@@ -773,7 +782,7 @@ pub(super) fn changes(stage: &StagedTransaction) -> BTreeMap<String, BTreeSet<St
 /// Counters for independently bounded chunks, shared by resident and indexed
 /// restore validation. No staged payload needs to remain resident between chunks.
 #[derive(Default, serde::Serialize, serde::Deserialize)]
-pub(super) struct SnapshotChunks {
+pub(crate) struct SnapshotChunks {
     stored: usize,
     payload: usize,
     operations: usize,
@@ -815,7 +824,7 @@ impl SnapshotChunks {
     }
 }
 
-pub(super) fn validate_snapshot_record(
+pub(crate) fn validate_snapshot_record(
     key: &str,
     stage: &StagedTransaction,
     state: &TenantState,
@@ -884,9 +893,15 @@ pub(super) fn validate_snapshot_record(
 pub(super) fn validate_restored(state: &TenantState) -> Result<()> {
     validate_budget(state, &state.limits)?;
     let mut active = BTreeSet::new();
-    let mut used = 0u64;
+    let mut used = state.staged_terminal_head.encoded_bytes;
     let mut reserved = 0u64;
     for (key, stage) in &state.staged_transactions {
+        if !stage.is_active() {
+            return Err(Error::new(
+                ErrorCode::Corruption,
+                "resident staging contains a terminal identity",
+            ));
+        }
         let charge = permanent_charge(key, stage)?;
         used = used
             .checked_add(charge.0)

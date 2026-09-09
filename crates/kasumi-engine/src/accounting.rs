@@ -69,13 +69,77 @@ pub(crate) fn staged_headroom(state: &TenantState) -> Result<u64> {
     let digits = if state.reserved_staged_terminal_bytes == 0 {
         0
     } else {
-        40 - state.permanent_staged_bytes.to_string().len() as u64
+        80 - state.permanent_staged_bytes.to_string().len() as u64
             - state.reserved_staged_terminal_bytes.to_string().len() as u64
+            - state.staged_terminal_head.count.to_string().len() as u64
+            - state.staged_terminal_head.encoded_bytes.to_string().len() as u64
     };
     state
         .reserved_staged_terminal_bytes
         .checked_add(digits)
         .ok_or_else(|| Error::new(ErrorCode::Corruption, "staged snapshot headroom overflow"))
+}
+pub(crate) fn target_audit_reserve(state: &TenantState) -> u64 {
+    let Some(active) = state
+        .target_completion_head
+        .as_ref()
+        .and_then(|head| head.active.as_ref())
+    else {
+        return 0;
+    };
+    if state
+        .target_lifecycle
+        .get(&state.incarnation)
+        .is_some_and(|entry| entry.completion.is_some())
+    {
+        active
+            .reserved_audit_bytes
+            .saturating_sub(MAX_AUDIT_EVENT_BYTES as u64)
+    } else {
+        active.reserved_audit_bytes
+    }
+}
+pub(crate) fn target_completion_reserve(state: &TenantState) -> u64 {
+    if state
+        .target_completion_head
+        .as_ref()
+        .is_some_and(|head| head.active.is_some())
+        && state
+            .target_lifecycle
+            .get(&state.incarnation)
+            .is_some_and(|entry| entry.completion.is_none())
+    {
+        MAX_TARGET_COMPLETION_RECORD_BYTES
+    } else {
+        0
+    }
+}
+pub(crate) fn audit_fits(state: &TenantState) -> bool {
+    state
+        .audit_retention
+        .hot_bytes
+        .checked_add(target_audit_reserve(state))
+        .is_some_and(|bytes| bytes <= state.limits.audit_retention.hot_bytes)
+}
+pub(crate) fn snapshot_headroom(state: &TenantState) -> Result<u64> {
+    staged_headroom(state)?
+        .checked_add(target_audit_reserve(state))
+        .and_then(|n| n.checked_add(target_completion_reserve(state)))
+        // Active metadata is already charged. Reserve bounded future selector
+        // and decimal-width growth before its completion can be dispatched.
+        .and_then(|n| {
+            n.checked_add(if state.target_completion_head.is_some() {
+                64 << 10
+            } else {
+                0
+            })
+        })
+        .ok_or_else(|| {
+            Error::new(
+                ErrorCode::Corruption,
+                "target completion workspace overflow",
+            )
+        })
 }
 fn stage(key: &str, value: &StagedTransaction) -> Result<usize> {
     let mut size = usize::try_from(staged_header(key, value)?)
@@ -395,6 +459,13 @@ impl SnapshotAccounting {
         change(
             &mut total,
             0,
+            usize::try_from(state.staged_terminal_head.encoded_bytes).map_err(|_| {
+                Error::new(ErrorCode::Corruption, "terminal snapshot byte overflow")
+            })?,
+        )?;
+        change(
+            &mut total,
+            0,
             record(&Record::Header(Box::new(metadata(state))))?,
         )?;
         for (i, link) in state.restore_lineage.iter().enumerate() {
@@ -459,7 +530,7 @@ impl SnapshotAccounting {
         Ok(total)
     }
     pub fn fits(&self, state: &TenantState) -> Result<bool> {
-        let headroom = staged_headroom(state)?;
+        let headroom = snapshot_headroom(state)?;
         Ok((self.bytes(state)? as u64)
             .checked_add(20 - state.revision.to_string().len() as u64)
             .and_then(|n| n.checked_add(headroom))

@@ -38,10 +38,14 @@ pub use retirement_service::RetirementResponseFence;
 mod schema_service;
 #[path = "snapshot_leases.rs"]
 mod snapshot_leases;
+#[path = "staged_reads.rs"]
+mod staged_reads;
 #[path = "target_activation_service.rs"]
 pub(crate) mod target_activation_service;
 #[path = "target_inspection_service.rs"]
 pub(crate) mod target_inspection_service;
+#[path = "target_receiver_service.rs"]
+pub(crate) mod target_receiver_service;
 #[path = "target_service.rs"]
 pub(crate) mod target_service;
 use std::{
@@ -546,7 +550,7 @@ impl Database {
     ) -> Result<ResponseFence<'_>> {
         let mut fence = self.response_fence(context)?;
         let generation = self.engine.generation()?;
-        crate::state::staging::authorize_stop(&generation.state, context, request)?;
+        crate::state::staging::authorize_stop_envelope(&generation.state, context, request)?;
         if request.admission.len() > generation.state.limits.atomic.max_read_assertions {
             return Err(Error::new(
                 ErrorCode::ResourceExhausted,
@@ -999,14 +1003,18 @@ impl Database {
     ) -> Result<StagedTransactionStatus> {
         context.authorization.check_live()?;
         self.access()?;
-        crate::state::staging::lookup(&self.engine.generation()?.state, context, reference)?;
-        let mut reservation = self.admission().reserve(1 << 20, None)?;
+        crate::state::staging::authorize_scope(
+            &self.engine.generation()?.state,
+            context,
+            &reference.scope,
+        )?;
         self.barrier().await?;
-        let generation = self.engine.generation()?;
-        let stage = crate::state::staging::lookup(&generation.state, context, reference)?;
-        let status = stage.status();
-        let policy_epoch = generation.state.policy_epoch;
-        let revision = generation.state.revision;
+        let mut observed = self
+            .read_staged_identity(context, &reference.scope, &reference.transaction_id)
+            .await?;
+        let stage = crate::state::staging::lookup(&observed.state, context, reference)?;
+        let policy_epoch = observed.state.policy_epoch;
+        let revision = observed.state.revision;
         let mut collections = BTreeMap::new();
         for collection in &stage.manifest.read_collections {
             collections.insert(collection.clone(), "read");
@@ -1017,17 +1025,15 @@ impl Database {
         let release: Vec<_> = collections
             .into_iter()
             .map(|(collection, kind)| {
-                let strict = generation.state.policy.strict_read_audit
-                    || generation
-                        .state
-                        .collections
-                        .get(&collection)
-                        .is_some_and(|collection| collection.definition.strict_read_audit);
+                let strict = observed.state.policy.strict_read_audit
+                    || observed.strict_collections.contains(&collection);
                 (collection, kind, strict)
             })
             .collect();
-        drop(generation);
-        reservation.retain_workspace();
+        let status = observed
+            .status
+            .take()
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "staged transaction not found"))?;
         for (collection, kind, strict) in release {
             self.release_event(
                 context,
@@ -1040,7 +1046,15 @@ impl Database {
             .await?;
         }
         self.access()?;
-        crate::state::staging::lookup(&self.engine.generation()?.state, context, reference)?;
+        let current = self.engine.generation()?;
+        crate::state::staging::authorize_scope(&current.state, context, &reference.scope)?;
+        crate::state::staging::authorize_manifest(&current.state, context, &status.manifest)?;
+        if current.state.policy_epoch != policy_epoch {
+            return Err(Error::new(
+                ErrorCode::Conflict,
+                "staged status policy changed before release",
+            ));
+        }
         Ok(status)
     }
 
@@ -1218,6 +1232,11 @@ impl Database {
         if context.tenant != self.engine.generation()?.state.tenant {
             return Err(Error::new(ErrorCode::Forbidden, "tenant access denied"));
         }
+        let staged_read = self.staged_operation_read(&context, &operation).await?;
+        let preflight = self.engine.generation()?;
+        let stage_state = staged_read
+            .as_ref()
+            .map_or(&preflight.state, |read| &read.state);
         // Authorization repeats during ordered apply, so queued operations cannot bypass policy changes.
         match &operation {
             Operation::ActivateSchema(request) => crate::state::schema::authorize(
@@ -1225,29 +1244,21 @@ impl Database {
                 &context,
                 request,
             )?,
-            Operation::BeginStaged(request) => crate::state::staging::authorize_begin(
-                &self.engine.generation()?.state,
-                &context,
-                request,
-            )?,
+            Operation::BeginStaged(request) => {
+                crate::state::staging::authorize_begin(stage_state, &context, request)?
+            }
             Operation::AppendStaged(request) => {
                 crate::state::staging::authorize_upload(
-                    &self.engine.generation()?.state,
+                    stage_state,
                     &context,
                     &request.transaction,
                 )?;
             }
-            Operation::StopStaged(request) => crate::state::staging::authorize_stop(
-                &self.engine.generation()?.state,
-                &context,
-                request,
-            )?,
+            Operation::StopStaged(request) => {
+                crate::state::staging::authorize_stop(stage_state, &context, request)?
+            }
             Operation::FinalizeStaged(reference) => {
-                crate::state::staging::authorize_upload(
-                    &self.engine.generation()?.state,
-                    &context,
-                    reference,
-                )?;
+                crate::state::staging::authorize_upload(stage_state, &context, reference)?;
             }
             Operation::Mutate(batch) => {
                 for mutation in &batch.operations {
@@ -1283,7 +1294,7 @@ impl Database {
                 .iter()
                 .any(|change| has_text(change.definition())),
             Operation::FinalizeStaged(reference) => {
-                let stage = crate::state::staging::lookup(&generation.state, &context, reference)?;
+                let stage = crate::state::staging::lookup(stage_state, &context, reference)?;
                 stage.manifest.write_collections.iter().any(|name| {
                     generation
                         .state
@@ -1310,7 +1321,7 @@ impl Database {
         let staged_workspace = if matches!(operation, Operation::PublishHistoryArchive(_)) {
             MAX_ARCHIVE_SOURCE_BYTES.saturating_mul(3)
         } else if let Operation::FinalizeStaged(reference) = &operation {
-            let stage = crate::state::staging::lookup(&generation.state, &context, reference)?;
+            let stage = crate::state::staging::lookup(stage_state, &context, reference)?;
             if stage.is_active() {
                 stage
                     .manifest
@@ -1346,6 +1357,8 @@ impl Database {
             .saturating_add(if needs_writer { 15_000_000 } else { 0 })
             as u64;
         drop(generation);
+        drop(preflight);
+        drop(staged_read);
         let reservation = self.admission().reserve(command_budget, None)?;
         let release_context = context.clone();
         let command = Command {

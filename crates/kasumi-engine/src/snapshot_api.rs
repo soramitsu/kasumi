@@ -96,7 +96,14 @@ impl TenantEngine {
             })?;
         let generation = self.generation()?;
         let logical = u64::try_from(generation.snapshot_bytes()?)
-            .map_err(|_| Error::new(ErrorCode::ResourceExhausted, "snapshot size overflow"))?;
+            .map_err(|_| Error::new(ErrorCode::ResourceExhausted, "snapshot size overflow"))?
+            .checked_add(generation.state.target_resolution_head.encoded_bytes)
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorCode::ResourceExhausted,
+                    "target snapshot size overflow",
+                )
+            })?;
         let retention = &generation.state.audit_retention;
         let maximum = logical
             .checked_add(retention.archive_bytes)

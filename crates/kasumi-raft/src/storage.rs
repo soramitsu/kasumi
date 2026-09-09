@@ -785,6 +785,7 @@ fn publish_snapshot(
     domains: &TenantStorageSet,
     pending: PendingSnapshot,
     snapshot: &SnapshotEnvelope,
+    backend: Option<&dyn crate::PreparedStateMachineRestore>,
 ) -> Result<()> {
     let coverage = pending.coverage;
     let mut custody = crate::snapshot_custody::installation_writes(
@@ -800,9 +801,15 @@ fn publish_snapshot(
         serde_json::to_vec(&coverage)?,
     ));
     let replacements = custody.records.as_ref().map(|records| records.namespaces());
-    domains.write_batch_replacing_custody(
-        &pending.application,
+    let mut application = pending.application;
+    if let Some(backend) = backend {
+        application.extend_from_slice(backend.application_writes());
+    }
+    let application_replacements = backend.map_or_else(Vec::new, |b| b.application_replacements());
+    domains.write_batch_replacing(
+        &application,
         &custody.writes,
+        &application_replacements,
         replacements
             .as_ref()
             .map_or(&[], |namespaces| namespaces.as_slice()),
@@ -822,7 +829,7 @@ fn persist_snapshot(
         limit,
         snapshot,
     )?;
-    publish_snapshot(domains, pending, snapshot)?;
+    publish_snapshot(domains, pending, snapshot, None)?;
     cleanup_snapshots(domains.application(), limit)
 }
 
@@ -830,6 +837,32 @@ fn persist_snapshot(
 struct AppliedState {
     log_id: Option<LogId<u64>>,
     membership: StoredMembership<u64, BasicNode>,
+}
+
+/// Lives inside actual blocking work, not its cancellable async waiter. Failure
+/// or unwinding must close serving even if nobody remains to receive the result.
+/// Drop only publishes an atomic fence: storage drain and teardown happen later.
+struct StorageWorkFailure {
+    failed: Arc<AtomicBool>,
+    complete: bool,
+}
+impl StorageWorkFailure {
+    fn new(failed: Arc<AtomicBool>) -> Self {
+        Self {
+            failed,
+            complete: false,
+        }
+    }
+    fn complete(mut self) {
+        self.complete = true;
+    }
+}
+impl Drop for StorageWorkFailure {
+    fn drop(&mut self) {
+        if !self.complete {
+            self.failed.store(true, Ordering::Release);
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -889,13 +922,24 @@ impl StateMachine {
             if let Some(snapshot) = load_snapshot(&captured, limit)? {
                 validate_snapshot_coverage(&captured_domains, &snapshot, limit)?;
                 ensure!(snapshot.version == 1, "unsupported raft snapshot version");
-                let actual = target.validate_snapshot(&mut snapshot.backend.reader())?;
+                let context = crate::SnapshotRestoreContext {
+                    mode: crate::SnapshotRestoreMode::Reopen,
+                    backend_sha256: snapshot.backend.sha256().into(),
+                    meta: snapshot.meta.clone(),
+                };
+                let prepared = target.prepare_restore(&context, &mut snapshot.backend.reader())?;
                 crate::snapshot_custody::check_backend(
                     &snapshot.meta,
                     snapshot.retirement.as_ref(),
-                    actual,
+                    prepared.retirement(),
                 )?;
-                target.restore(&mut snapshot.backend.reader())?;
+                captured_domains.write_batch_replacing(
+                    prepared.application_writes(),
+                    &[],
+                    &prepared.application_replacements(),
+                    &[],
+                )?;
+                prepared.publish()?;
                 Ok(AppliedState {
                     log_id: snapshot.meta.last_log_id,
                     membership: snapshot.meta.last_membership,
@@ -980,8 +1024,14 @@ impl RaftSnapshotBuilder<TypeConfig> for SnapshotBuilder {
         let limit = self.machine.limits.max_snapshot_bytes;
         let applied = self.machine.state.clone();
         let control = self.machine.control_gate.clone();
+        let failed = self.machine.failure_flag();
         tokio::task::spawn_blocking(move || -> Result<Snapshot<TypeConfig>> {
+            let failure = StorageWorkFailure::new(failed.clone());
             let _gate = gate;
+            ensure!(
+                !failed.load(Ordering::Acquire),
+                "state machine requires recovery"
+            );
             domains.check_access()?;
             if let Some(current) = load_snapshot(&store, limit)?
                 && current.meta.last_log_id.map(|id| id.index)
@@ -1001,29 +1051,45 @@ impl RaftSnapshotBuilder<TypeConfig> for SnapshotBuilder {
                         captured.retirement.as_ref(),
                     )?;
                 }
-                return as_snapshot(&current, limit);
+                let snapshot = as_snapshot(&current, limit)?;
+                failure.complete();
+                return Ok(snapshot);
             }
+            let logical = captured;
             let captured = SnapshotEnvelope {
                 version: 1,
                 kind: SnapshotKind::Application,
-                meta: captured.meta.clone(),
+                meta: logical.meta.clone(),
                 backend: SnapshotImage::capture(store.scratch_disk(), limit, |writer| {
-                    captured.backend.write(writer)
+                    logical.backend.write(writer)
                 })?,
-                retirement: captured.retirement.clone(),
+                retirement: logical.retirement.clone(),
             };
             let snapshot = as_snapshot(&captured, limit)?;
-            let pending = stage_snapshot(&domains, &snapshot.snapshot.image()?, limit, &captured)?;
+            let mut pending =
+                stage_snapshot(&domains, &snapshot.snapshot.image()?, limit, &captured)?;
+            pending
+                .application
+                .extend(
+                    logical
+                        .backend
+                        .checkpoint_writes(&crate::SnapshotRestoreContext {
+                            mode: crate::SnapshotRestoreMode::Install,
+                            backend_sha256: captured.backend.sha256().into(),
+                            meta: captured.meta.clone(),
+                        })?,
+                );
             let publication = applied
                 .lock()
                 .map_err(|_| anyhow::anyhow!("applied publication lock poisoned"))?;
             let control_publication = control
                 .lock()
                 .map_err(|_| anyhow::anyhow!("control publication lock poisoned"))?;
-            publish_snapshot(&domains, pending, &captured)?;
+            publish_snapshot(&domains, pending, &captured, None)?;
             drop(control_publication);
             drop(publication);
             cleanup_snapshots(&store, limit)?;
+            failure.complete();
             Ok(snapshot)
         })
         .await
@@ -1060,6 +1126,7 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
         let entries = entries.into_iter().collect::<Vec<_>>();
         let machine = self.clone();
         tokio::task::spawn_blocking(move || -> Result<Vec<Vec<u8>>> {
+            let failure = StorageWorkFailure::new(machine.failure_flag());
             machine.domains.check_access()?;
             ensure!(!machine.failed(), "state machine requires recovery");
             let mut state = machine
@@ -1121,6 +1188,7 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
                 state.log_id = Some(entry.log_id);
                 responses.push(response.data);
             }
+            failure.complete();
             Ok(responses)
         })
         .await
@@ -1184,7 +1252,9 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
         let meta = meta.clone();
         let machine = self.clone();
         tokio::task::spawn_blocking(move || -> Result<()> {
+            let failure = StorageWorkFailure::new(machine.failure_flag());
             let _gate = gate;
+            ensure!(!machine.failed(), "state machine requires recovery");
             // Parsing stages bounded records into encrypted scratch. Keep disk,
             // crypto, validation and materialization off the async runtime.
             let snapshot = snapshot.into_image()?;
@@ -1231,12 +1301,22 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
                 )?;
                 state.log_id = envelope.meta.last_log_id;
                 state.membership = envelope.meta.last_membership;
+                failure.complete();
                 return Ok(());
             }
-            let actual = machine
+            let context = crate::SnapshotRestoreContext {
+                mode: crate::SnapshotRestoreMode::Install,
+                backend_sha256: envelope.backend.sha256().into(),
+                meta: envelope.meta.clone(),
+            };
+            let prepared = machine
                 .backend
-                .validate_snapshot(&mut envelope.backend.reader())?;
-            crate::snapshot_custody::check_backend(&meta, envelope.retirement.as_ref(), actual)?;
+                .prepare_restore(&context, &mut envelope.backend.reader())?;
+            crate::snapshot_custody::check_backend(
+                &meta,
+                envelope.retirement.as_ref(),
+                prepared.retirement(),
+            )?;
             // Durably install encrypted chunks and their manifest, then atomically publish backend state.
             // A crash between these steps recovers the new snapshot on restart.
             let pending = stage_snapshot(
@@ -1250,12 +1330,18 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
                     .control_gate
                     .lock()
                     .map_err(|_| anyhow::anyhow!("control publication lock poisoned"))?;
-                publish_snapshot(&machine.domains, pending, &envelope)?;
+                publish_snapshot(
+                    &machine.domains,
+                    pending,
+                    &envelope,
+                    Some(prepared.as_ref()),
+                )?;
             }
             cleanup_snapshots(&machine.store, machine.limits.max_snapshot_bytes)?;
-            machine.backend.restore(&mut envelope.backend.reader())?;
+            prepared.publish()?;
             state.log_id = envelope.meta.last_log_id;
             state.membership = envelope.meta.last_membership;
+            failure.complete();
             Ok(())
         })
         .await

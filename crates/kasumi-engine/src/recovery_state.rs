@@ -294,7 +294,7 @@ impl TenantEngine {
             &BTreeSet::new(),
             &BTreeSet::new(),
         )?;
-        if next.audit_retention.hot_bytes > next.limits.audit_retention.hot_bytes
+        if !crate::accounting::audit_fits(&next)
             || !accounting.fits(&next)?
             || !lifecycle::completion_fits(&next)?
         {
@@ -316,6 +316,8 @@ impl TenantEngine {
             previous.indexes.clone()
         };
         self.publish_generation(Some(Arc::new(Generation {
+            terminals: previous.terminals.clone(),
+            target_resolutions: previous.target_resolutions.clone(),
             state: next,
             indexes,
             receipt_expiry: previous.receipt_expiry.clone(),
@@ -706,8 +708,15 @@ pub(crate) fn expected_intent(
             let origin = origin(state, operation)?;
             (origin.resume_digest()?, Some(Box::new(origin)))
         }
-        LifecyclePhase::Initialize | LifecyclePhase::Complete => {
-            (quorum_input(state, operation)?.digest()?, None)
+        LifecyclePhase::Initialize => (quorum_input(state, operation)?.digest()?, None),
+        LifecyclePhase::Complete => (
+            completion::completion_input(state, operation)?.digest()?,
+            None,
+        ),
+        LifecyclePhase::ResolveComplete | LifecyclePhase::MaintainTarget => {
+            return Err(conflict(
+                "target terminal coordinator phase is not installed",
+            ));
         }
         LifecyclePhase::InspectTarget => (
             completion::inspection_input(state, operation)?.digest()?,
@@ -1213,6 +1222,16 @@ fn validate_outcome(
                     }
                 }
                 (
+                    TargetRuntimeStep::Start(TargetReplicaInput::Completion(input)),
+                    TargetRuntimeOutcome::Started { origin_sha256 },
+                ) => {
+                    if *input != completion::completion_input(state, operation)?
+                        || *origin_sha256 != input.quorum.origin_sha256
+                    {
+                        return Err(conflict("completion startup origin differs"));
+                    }
+                }
+                (
                     TargetRuntimeStep::Start(TargetReplicaInput::Inspection(input)),
                     TargetRuntimeOutcome::Started { origin_sha256 },
                 ) => {
@@ -1232,7 +1251,8 @@ fn validate_outcome(
                     if signed.observation.fact.completion_intent != *current
                         || signed.observation.fact.admitted_at_ms >= request.not_after_ms
                         || signed.observation.observer_node_id != *node_id
-                        || input != &quorum_input(state, operation)?
+                        || input != &completion::completion_input(state, operation)?
+                        || signed.observation.fact.predecessor != input.predecessor
                     {
                         return Err(conflict(
                             "target completion differs from exact retained phase or voter",
@@ -1408,6 +1428,13 @@ fn advance(
                 .get_mut(node_id)
                 .ok_or_else(|| conflict("target voter missing"))?;
             match response.outcome {
+                TargetRuntimeOutcome::PreparedCompletion(_)
+                | TargetRuntimeOutcome::ResolvedCompletion(_)
+                | TargetRuntimeOutcome::ResolutionBudget(_) => {
+                    return Err(conflict(
+                        "target receiver maintenance is not a coordinated successor phase",
+                    ));
+                }
                 TargetRuntimeOutcome::Materialized(_) => {
                     voter.materialization = Some(prepared.phase_id);
                     if operation
