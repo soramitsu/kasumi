@@ -30,6 +30,8 @@ mod authority;
 mod authority_pool;
 mod control_signer;
 pub use control_signer::CurrentControlSignerObservation;
+mod signer_publication;
+pub use signer_publication::CurrentSignerPublication;
 mod data_pool;
 mod mutation_receipt;
 pub use authority_pool::KasumiAuthorityPool;

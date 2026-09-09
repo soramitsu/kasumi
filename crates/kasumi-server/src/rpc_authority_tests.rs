@@ -43,6 +43,46 @@ pub(super) fn certificates() -> (String, TlsIdentity, Vec<TlsIdentity>) {
     )
 }
 
+struct CoverageTransport {
+    config: KasumiClientConfig,
+    trust: AuthorityTrust,
+    bearer_file: std::path::PathBuf,
+    expire_first: std::sync::atomic::AtomicBool,
+}
+#[async_trait::async_trait]
+impl kasumi_authority::SignerPublicationTransport for CoverageTransport {
+    async fn observe(
+        &self,
+        dispatch: &SignerCoverageDispatch,
+    ) -> anyhow::Result<kasumi_client::CurrentSignerPublication> {
+        let bearer = crate::runtime::file_secret(
+            self.bearer_file
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("fixture credential path is not UTF-8"))?,
+        )?;
+        let observation = kasumi_client::CurrentSignerPublication::observe(
+            &self.config,
+            &bearer,
+            self.trust.clone(),
+            dispatch,
+        )
+        .await?;
+        if self
+            .expire_first
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            // The remote effect already committed. Losing its first finite
+            // response must keep coverage pending until the original receipt is
+            // observed again through the same pinned native endpoint.
+            tokio::time::sleep(Duration::from_millis(
+                self.trust.manifest().max_lease_ms + 25,
+            ))
+            .await;
+        }
+        Ok(observation)
+    }
+}
+
 #[tokio::test]
 async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_recovery() {
     let dir = tempfile::tempdir().unwrap();
@@ -846,9 +886,17 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
             not_after_ms: deadline,
             action: AuthorityMaintenanceAction::EnrollSignerVerifier {
                 enrollment: kasumi_serving::SignerVerifierEnrollment {
+                    endpoint: if verifier == local_identity {
+                        format!("{}/", config.endpoint)
+                    } else {
+                        format!("https://verifier-admin-{index}.test/")
+                    },
+                    certificate_pins: if verifier == local_identity {
+                        BTreeSet::from([hex::encode(server_pin)])
+                    } else {
+                        BTreeSet::from([format!("{:064x}", 1000 + index)])
+                    },
                     verifier,
-                    endpoint: format!("https://verifier-admin-{index}.test/"),
-                    certificate_pins: BTreeSet::from([format!("{:064x}", 1000 + index)]),
                 },
             },
         };
@@ -1098,15 +1146,134 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
         staged.current,
         "an issuer-local abort cannot undo the committed global winner"
     );
-    let activated = client
-        .signer_maintenance(
+    let publication_bearer = dir.path().join("publication.bearer");
+    kasumi_store::private_files::create(&publication_bearer, operator.as_bytes()).unwrap();
+    let publication_transport = Arc::new(CoverageTransport {
+        config: config.clone(),
+        trust: trust.clone(),
+        bearer_file: publication_bearer,
+        expire_first: std::sync::atomic::AtomicBool::new(true),
+    });
+    leader
+        .install_signer_publication_transport(publication_transport.clone())
+        .unwrap();
+    let coverage = SignerCoverageCommand {
+        operation_id: uuid::Uuid::new_v4(),
+        expected_policy_epoch: global_activated.policy_epoch,
+        expected_operational_revision: global_activated.operational_revision,
+        not_after_ms: activation.not_after_ms,
+        publication: SignerPublicationRequest::Issuer {
+            observation_id: uuid::Uuid::new_v4(),
+            directive: Box::new(
+                IssuerSignerDirective::from_current_head(
+                    local_identity.clone(),
+                    domain.digest().unwrap(),
+                    activation.clone(),
+                    &global_activated.current,
+                )
+                .unwrap(),
+            ),
+        },
+    };
+    let started = client
+        .signer_coverage(
             &operator,
-            &signer_request(SignerVerifierAction::Administer {
-                command: activation.clone(),
-            }),
+            &SignerCoverageRequest::Start {
+                command: coverage.clone(),
+            },
         )
         .await
         .unwrap();
+    assert!(started.status.acknowledgment.is_none());
+    assert_eq!(local_owner.current().unwrap().active.identity.generation, 1);
+    let mut wrong_endpoint = config.clone();
+    wrong_endpoint.server_certificate_pins = BTreeSet::from([[7; 32]]);
+    assert!(
+        kasumi_client::CurrentSignerPublication::observe(
+            &wrong_endpoint,
+            &operator,
+            trust.clone(),
+            &started.status.dispatch
+        )
+        .await
+        .is_err()
+    );
+    let resume = SignerCoverageRequest::Resume {
+        operation_id: coverage.operation_id,
+    };
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            match client.signer_coverage(&operator, &resume).await {
+                Err(kasumi_client::ClientError::Transport(status))
+                    if matches!(
+                        status.code(),
+                        tonic::Code::Unknown | tonic::Code::Unavailable
+                    ) => {}
+                result => panic!(
+                    "expected an uncertain response before acknowledging the remote effect: {result:?}"
+                ),
+            }
+            if !publication_transport
+                .expire_first
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                break;
+            }
+            // An earlier connection or finite observation may have failed before
+            // reaching the injected expiration. Resolve only this dispatch and
+            // its unchanged local command until that boundary was exercised.
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(local_owner.current().unwrap().active.identity.generation, 2);
+    let uncertain = client
+        .signer_coverage(
+            &operator,
+            &SignerCoverageRequest::Status {
+                operation_id: coverage.operation_id,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        uncertain.status, started.status,
+        "the immutable dispatch survives lost publication acknowledgment"
+    );
+    let covered = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            match client.signer_coverage(&operator, &resume).await {
+                Ok(response) => break response,
+                Err(kasumi_client::ClientError::Transport(status))
+                    if matches!(
+                        status.code(),
+                        tonic::Code::Unknown | tonic::Code::Unavailable
+                    ) => {}
+                Err(error) => panic!("definitive coverage dispatch rejection: {error:?}"),
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let acknowledgment = covered.status.acknowledgment.as_ref().unwrap();
+    assert_eq!(
+        acknowledgment.publication.receipt().unwrap().command,
+        activation
+    );
+    assert_eq!(covered.status.dispatch, started.status.dispatch);
+    assert_eq!(
+        client.signer_coverage(&operator, &resume).await.unwrap(),
+        covered
+    );
+    assert!(
+        global_activated.current.retirement.is_some(),
+        "one physical acknowledgment is not full global retirement"
+    );
+    let SignerPublicationResponse::Issuer(activated) = &acknowledgment.publication else {
+        unreachable!()
+    };
     assert_eq!(activated.current.active.identity.generation, 2);
     assert!(activated.current.retirement.is_some());
     assert!(

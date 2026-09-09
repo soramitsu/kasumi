@@ -15,6 +15,27 @@ pub struct KasumiAuthorityClient {
     deadline: Option<tokio::time::Instant>,
 }
 impl KasumiAuthorityClient {
+    pub async fn signer_coverage(
+        &mut self,
+        bearer: &str,
+        request: &kasumi_serving::SignerCoverageRequest,
+    ) -> Result<kasumi_serving::SignerCoverageResponse, ClientError> {
+        request.validate()?;
+        let reply = self
+            .inner
+            .signer_coverage(self.authorized(
+                bearer,
+                proto::AuthorityJsonRequest {
+                    request_json: encode(request)?,
+                },
+            )?)
+            .await?
+            .into_inner();
+        let reply: kasumi_serving::SignerCoverageResponse =
+            serde_json::from_slice(&reply.response_json)?;
+        reply.validate_for(request, self.trust.manifest())?;
+        Ok(reply)
+    }
     pub async fn observe_control_signer(
         &mut self,
         bearer: &str,

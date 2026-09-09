@@ -55,3 +55,5 @@ mod control_signer;
 pub use control_signer::*;
 mod issuer_signer;
 pub use issuer_signer::*;
+mod signer_coverage;
+pub use signer_coverage::*;

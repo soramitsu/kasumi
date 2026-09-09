@@ -8,5 +8,5 @@ pub use installation::{
 pub use service::{
     AuthenticatedNode, AuthorityAdministrativeFence, AuthorityResponseFence,
     AuthoritySigningResponseFence, CommittedSignerDirective, ControlSignerObservationFence,
-    IndependentAuthority,
+    IndependentAuthority, SignerCoverageFence, SignerPublicationTransport,
 };

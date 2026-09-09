@@ -31,6 +31,7 @@ service KasumiAuthority {
   rpc ObserveControlSigner(AuthorityJsonRequest) returns (AuthorityJsonResponse);
   rpc SigningMaintenance(AuthorityJsonRequest) returns (AuthorityJsonResponse);
   rpc SignerMaintenance(AuthorityJsonRequest) returns (AuthorityJsonResponse);
+  rpc SignerCoverage(AuthorityJsonRequest) returns (AuthorityJsonResponse);
   rpc Maintenance(AuthorityJsonRequest) returns (AuthorityJsonResponse);
   rpc ExecuteLifecycle(AuthorityJsonRequest) returns (AuthorityJsonResponse);
   rpc ReadLifecycleReceipt(AuthorityJsonRequest) returns (AuthorityJsonResponse);

@@ -358,8 +358,9 @@ observation permits only resolution of an already retained local receipt.
 The Rust client's `control_signer_maintenance` requires the independently
 installed manifest when checking the typed response. The response distinguishes
 the permanent source directive, local publication receipt, and current physical
-head. The local receipt is durable but has not yet been collected into a global
-coverage acknowledgment. After global activation, a receiver that missed stage
+head. The local receipt is durable; the separate source coverage operation below
+collects its current physical publication. After global activation, a receiver
+that missed stage
 may still publish the exact original successor and proceed forward. Remote
 `StopStage` and `CompleteRetirement` are rejected; there is no activation rollback.
 
@@ -368,9 +369,71 @@ Follower authorization, complete remote acknowledgment/revocation collection and
 the full issuer drain remain required before global retirement can complete.
 The frozen roster remains in force throughout that unfinished retirement.
 
-The older issuer-local `AuthorizeSignerTrust` interface also remains a separate
-rotation prerequisite: its local stage/abort operations must be bound to the
-global winner and a committed global abort before a complete coordinator uses
-them. The remote Control path adds no authority to that interface and rejects
-remote abort outright. Passing this receiver's tests does not certify the older
-issuer-local path as a complete global rotation protocol.
+Issuer-local `AuthorizeSignerTrust` now carries the canonical exact
+`IssuerSignerDirective`. Both local and remote first publication require the
+committed global stage or activation winner and original local predecessor.
+An issuer-local `StopStage` is rejected until a durable global abort protocol
+exists; it cannot undo committed activation.
+
+## Durable publication coverage
+
+`KasumiAuthority.SignerCoverage` exposes typed `Start`, `Status`, and `Resume`.
+`Start` records a `SignerCoverageCommand` before contacting a receiver. It fixes
+the original physical verifier, enrolled administrative origin and leaf pins,
+frozen roster, global stage and activation winner, local stage predecessor,
+original local activation UUID and deadline, source policy and dispatch identity.
+A second dispatch for the same frozen stage and physical verifier conflicts.
+Replaying the same UUID returns the original record; changed inputs conflict.
+
+`Resume` first durably commits the exact source permission and its coverage phase
+marker. It then performs the original issuer or Control publication through the
+installed pinned native endpoint with a current administrative credential. The
+SDK returns an opaque `CurrentSignerPublication` only after that actual request;
+there is no constructor from a serialized response. The source retains this
+finite observation and its original current-administrator fence through
+acknowledgment consensus and response release. Expiry or a lost response yields
+an unknown outcome; resume resolves the original local receipt and never changes
+the original local command's deadline. Public clients cannot submit an
+acknowledgment DTO.
+
+Dispatches, permission markers, physical bindings and acknowledgments occupy
+immutable encrypted point records. Each pending dispatch reserves bounded space
+for the source permission, phase marker and final acknowledgment. Snapshot
+validation permits a pending dispatch with no future permission. An acknowledgment
+requires its exact earlier dispatch, frozen registration, source permission,
+phase marker and local publication receipt. Restoring a snapshot cannot remove or
+rewrite already retained coverage records. A historical status is useful for
+recovery but cannot reconstruct the SDK's current transport observation.
+
+Authority configuration requires an explicit `signer_publications` field. Set it
+to `null` when this member must not perform remote publication. Otherwise install
+`{"receivers": [...]}`; each receiver contains `verifier`, canonical `endpoint`,
+`certificate_pins`, `server_ca`, `tls: {certificate, private_key}`, and
+`bearer_file`. File paths are absolute. Endpoint and leaf pins must exactly match
+the permanent physical enrollment. A finite attempt loads one atomic private
+bearer-file snapshot; there is no environment fallback or alternate destination.
+The receiver's own current administrator policy remains mandatory.
+
+This is partial coverage collection for available issuer and current Control
+leader endpoints. It does not claim follower, data replica, prepared target,
+revocation, or full issuer-drain coverage. Global retirement remains unavailable
+until every member of the frozen roster has enforced the required permanent stop
+or exact current publication and drain. A single acknowledgment never unfreezes
+admission or retires a generation globally.
+
+Authority reopen from an older Raft snapshot with newer durable authority rows
+is a separate required recovery gate. Current history checks reject replacing
+that state with an incomplete snapshot. A checkpoint-bound logical prefix and
+exact replay of later durable positions are still required; passing a manual
+snapshot validation plus ordinary restart does not certify that case.
+Restart before the first Raft snapshot also requires reconstruction from the
+exact original genesis projection. Later durable receipts must remain invisible
+until their original positions replay, while permanent physical stops continue
+to deny admission.
+
+A pending activation that never reached its physical receiver before its original
+deadline currently remains unresolved. Replacing its local UUID or extending the
+deadline is not permitted by `Resume`. Forward progress for that case requires a
+separate durable successor phase, authorized only after the current receiver has
+permanently fenced the expired original outcome and bound the successor to the
+same committed global winner. That phase is not implemented by coverage collection.

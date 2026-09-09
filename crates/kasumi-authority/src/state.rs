@@ -36,6 +36,9 @@ use maintenance_state::{OperationalState, PreparedMaintenance, RevokedMember};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Meta {
+    coverage_dispatches: u64,
+    coverage_acknowledgments: u64,
+    coverage_permissions: u64,
     signer_rosters: u64,
     signer_verifiers: u64,
     signer_controls: u64,
@@ -72,6 +75,10 @@ pub(crate) struct TenantRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "record", deny_unknown_fields)]
 enum Record {
+    CoverageDispatch(SignerCoverageDispatch),
+    CoverageAcknowledgment(SignerCoverageAcknowledgment),
+    CoverageBinding(signer_coverage_state::CoverageBinding),
+    CoveragePermission(signer_coverage_state::CoveragePermission),
     Verifier(SignerVerifierRegistration),
     SignerRoster(signer_roster::FrozenSignerRoster),
     ControlVerifier(signer_roster::ControlVerifierRecord),
@@ -132,6 +139,7 @@ pub(crate) struct PreparedCommand {
     deny_unknown_fields
 )]
 pub(crate) enum PreparedOperation {
+    Coverage(Box<signer_coverage_state::PreparedCoverage>),
     Administrative(Box<PreparedCommand>),
     Lifecycle(Box<lifecycle_state::PreparedLifecycle>),
     Maintenance(Box<PreparedMaintenance>),
@@ -201,6 +209,9 @@ impl Backend {
             meta.signing.validate()?;
         } else {
             let meta = Meta {
+                coverage_dispatches: 0,
+                coverage_acknowledgments: 0,
+                coverage_permissions: 0,
                 signer_rosters: 0,
                 signer_verifiers: 0,
                 signer_controls: 0,
@@ -589,7 +600,11 @@ impl Backend {
                     Record::Preparation(_) => add_count(&mut meta.preparations, 1)?,
                     Record::Incarnation(_) => add_count(&mut meta.incarnations, 1)?,
                     Record::TargetStop(_) => add_count(&mut meta.target_stops, 1)?,
-                    Record::SignerRoster(_)
+                    Record::CoverageDispatch(_)
+                    | Record::CoverageAcknowledgment(_)
+                    | Record::CoverageBinding(_)
+                    | Record::CoveragePermission(_)
+                    | Record::SignerRoster(_)
                     | Record::Verifier(_)
                     | Record::ControlVerifier(_)
                     | Record::Lifecycle(_)
@@ -910,6 +925,9 @@ impl StateMachineBackend for Backend {
             .map_err(|_| anyhow::anyhow!("authority state poisoned"))?;
         let prepared: PreparedOperation = serde_json::from_slice(bytes)?;
         let bytes = match prepared {
+            PreparedOperation::Coverage(prepared) => {
+                serde_json::to_vec(&self.reduce_coverage(position, *prepared)?)?
+            }
             PreparedOperation::Maintenance(prepared) => {
                 serde_json::to_vec(&self.reduce_maintenance(position, *prepared)?)?
             }
@@ -982,7 +1000,7 @@ impl Backend {
             );
             add_count(&mut state_bytes, u64::try_from(bytes.len())?)?;
             match record {
-                Record::SignerRoster(_) | Record::Verifier(_) | Record::ControlVerifier(_) | Record::Lifecycle(_) | Record::ControlEpoch(_) | Record::Maintenance(_) | Record::RevokedMember(_) => {}
+                Record::CoverageDispatch(_) | Record::CoverageAcknowledgment(_) | Record::CoverageBinding(_) | Record::CoveragePermission(_) | Record::SignerRoster(_) | Record::Verifier(_) | Record::ControlVerifier(_) | Record::Lifecycle(_) | Record::ControlEpoch(_) | Record::Maintenance(_) | Record::RevokedMember(_) => {}
                 Record::Tenant(record) => {
                     add_count(&mut tenants, 1)?;
                     ensure!(
@@ -1215,6 +1233,8 @@ impl Backend {
         self.validate_lifecycle_snapshot(&snapshot)?;
         self.validate_maintenance_snapshot(&snapshot)?;
         self.validate_signing_snapshot(&snapshot)?;
+        self.validate_coverage_snapshot(&snapshot)?;
+        self.validate_coverage_history(&snapshot)?;
         self.validate_roster_snapshot(&snapshot)?;
         Ok(snapshot)
     }
@@ -1227,5 +1247,7 @@ mod signing_state;
 mod control_signer_state;
 #[path = "issuer_signer_state.rs"]
 mod issuer_signer_state;
+#[path = "signer_coverage_state.rs"]
+pub(crate) mod signer_coverage_state;
 #[path = "signer_roster.rs"]
 mod signer_roster;

@@ -428,25 +428,87 @@ pub(super) async fn exercise(f: Fixture<'_>) {
             ..request.directive.clone()
         },
     };
-    let permission = signing(
-        &mut issuer_client,
-        f.issuer_admin,
-        &domain,
-        AuthorityMaintenanceAction::AuthorizeControlSigner {
-            directive: Box::new(activation.directive.clone()),
-        },
-    )
-    .await;
-    assert_eq!(
-        permission.status.unwrap().phase,
-        AuthorityMaintenancePhase::Completed
-    );
-    let owner = verifier.owner(&domain).unwrap();
-    let old = owner.observe().unwrap();
-    let activated = admin_client
-        .control_signer_maintenance(f.control_admin, &activation, &f.manifest)
+    let publication_bearer = directory.join("control-publication.jwt");
+    private_files::create(&publication_bearer, f.control_admin.as_bytes()).unwrap();
+    let publication = crate::signer_publication_runtime::SignerPublicationConfig {
+        receivers: vec![
+            crate::signer_publication_runtime::SignerPublicationReceiver {
+                verifier: physical.clone(),
+                endpoint: format!("{endpoint}/"),
+                certificate_pins: BTreeSet::from([hex::encode(server.certificate_pin())]),
+                server_ca: directory.join("ca.pem"),
+                tls: tls_files("client"),
+                bearer_file: publication_bearer,
+            },
+        ],
+    };
+    f.issuer
+        .install_signer_publication_transport(publication.open(f.manifest.clone()).unwrap())
+        .unwrap();
+    let current = issuer_client
+        .signing_maintenance(
+            f.issuer_admin,
+            &AuthoritySigningRequest {
+                observation_id: Uuid::new_v4(),
+                domain_sha256: domain.digest().unwrap(),
+                action: AuthoritySigningAction::Observe,
+            },
+        )
         .await
         .unwrap();
+    let dispatch = SignerCoverageCommand {
+        operation_id: Uuid::new_v4(),
+        expected_policy_epoch: current.policy_epoch,
+        expected_operational_revision: current.operational_revision,
+        not_after_ms: activation.directive.command.not_after_ms,
+        publication: SignerPublicationRequest::Control {
+            request: Box::new(activation.clone()),
+        },
+    };
+    let pending = issuer_client
+        .signer_coverage(
+            f.issuer_admin,
+            &SignerCoverageRequest::Start {
+                command: dispatch.clone(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(pending.status.acknowledgment.is_none());
+    let owner = verifier.owner(&domain).unwrap();
+    let old = owner.observe().unwrap();
+    let resume = SignerCoverageRequest::Resume {
+        operation_id: dispatch.operation_id,
+    };
+    let covered = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            match issuer_client.signer_coverage(f.issuer_admin, &resume).await {
+                Ok(response) => break response,
+                Err(kasumi_client::ClientError::Transport(status))
+                    if matches!(
+                        status.code(),
+                        tonic::Code::Unknown | tonic::Code::Unavailable
+                    ) => {}
+                Err(error) => panic!("definitive coverage dispatch rejection: {error:?}"),
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(covered.status.dispatch, pending.status.dispatch);
+    assert_eq!(
+        issuer_client
+            .signer_coverage(f.issuer_admin, &resume)
+            .await
+            .unwrap(),
+        covered
+    );
+    let SignerPublicationResponse::Control(activated) =
+        &covered.status.acknowledgment.as_ref().unwrap().publication
+    else {
+        unreachable!()
+    };
     assert_eq!(activated.current.active, successor);
     assert!(activated.receipt.retirement_pending);
     assert!(activated.issuer.head.retirement.is_some());
