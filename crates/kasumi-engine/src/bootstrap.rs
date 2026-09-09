@@ -36,6 +36,10 @@ const CHUNK: usize = 4 << 20;
 // redb file exclusively; startup must register each returned tenant once.
 static BOOTSTRAP_GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+#[cfg(test)]
+#[path = "bootstrap_existing_tests.rs"]
+mod existing_tests;
+
 /// Operator-approved placement. Transport must authenticate the node independently
 /// of this address; a data request cannot choose a network destination.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -247,6 +251,17 @@ fn bind_deployment(stores: &TenantStorageSet, binding: &[u8]) -> anyhow::Result<
             &[WriteOp::put(DEPLOYMENT, b"mode", binding)],
             &[WriteOp::put(DEPLOYMENT, b"mode", binding)],
         )?;
+    }
+    Ok(())
+}
+
+fn require_deployment(stores: &TenantStorageSet, binding: &[u8]) -> anyhow::Result<()> {
+    stores.check_access()?;
+    for store in [stores.application(), stores.custody().store()] {
+        anyhow::ensure!(
+            store.get("engine.deployment", b"mode")?.as_deref() == Some(binding),
+            "required deployment binding is absent or differs"
+        );
     }
     Ok(())
 }
@@ -512,6 +527,35 @@ pub async fn open_local(
         security_audit,
         None,
         LocalRuntime::Production(None),
+    )
+    .await
+}
+
+/// Reopen an initialized local deployment using only its authenticated bootstrap.
+/// Missing deployment, bootstrap or custody commitment is corruption, never a
+/// request to generate a new incarnation or install default policy and limits.
+pub async fn open_existing_local(
+    stores: Arc<TenantStorageSet>,
+    security_audit: Arc<SecurityAudit>,
+) -> anyhow::Result<Arc<Database>> {
+    anyhow::ensure!(
+        stores
+            .application()
+            .storage_access()
+            .serving_gate()
+            .is_none(),
+        "independent serving authority requires replicated storage; local downgrade is forbidden"
+    );
+    let _gate = BOOTSTRAP_GATE.lock().await;
+    reject_retired_serving_open(&stores)?;
+    require_deployment(&stores, b"local-v1")?;
+    let bytes = load(stores.application())?
+        .ok_or_else(|| anyhow::anyhow!("local bootstrap is not initialized"))?;
+    start(
+        stores,
+        &bytes,
+        LocalRuntime::Production(None),
+        security_audit,
     )
     .await
 }

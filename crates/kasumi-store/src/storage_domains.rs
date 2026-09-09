@@ -73,7 +73,7 @@ impl CustodyStore {
         provider: Arc<dyn KeyProvider>,
     ) -> Result<Arc<Self>> {
         validate_application_tenant(&application_tenant)?;
-        let store = TenantStore::open(
+        let store = TenantStore::open_existing(
             node.clone(),
             Self::catalog_name(&application_tenant),
             provider,
@@ -118,6 +118,47 @@ pub struct TenantStorageSet {
 }
 
 impl TenantStorageSet {
+    /// Open both existing catalogs and their authenticated immutable binding.
+    /// Missing catalogs or binding are errors; this path never installs either.
+    pub async fn open_existing(
+        node: Arc<NodeStore>,
+        tenant: String,
+        application_provider: Arc<dyn KeyProvider>,
+        custody_provider: Arc<dyn KeyProvider>,
+        application_access: StorageAccess,
+    ) -> Result<Arc<Self>> {
+        validate_application_tenant(&tenant)?;
+        application_access.validate_tenant(&tenant)?;
+        let custody = CustodyStore::open(node.clone(), tenant.clone(), custody_provider).await?;
+        ensure!(
+            &custody.binding.application_purpose == application_access.purpose(),
+            "current serving authority differs from authenticated installed binding"
+        );
+        let application =
+            TenantStore::open_existing(node, tenant, application_provider, application_access)
+                .await?;
+        {
+            let _app_access = AccessGuard(&application);
+            let _custody_access = AccessGuard(&custody.store);
+            application.check_access()?;
+            custody.store.check_access()?;
+            let app_state = application.state.read();
+            let custody_state = custody.store.state.read();
+            application.require_access(&app_state)?;
+            custody.store.require_access(&custody_state)?;
+            validate_distinct_keys(&app_state, &custody_state)?;
+            ensure!(
+                derive_binding(&application.catalog.read(), &custody.store.catalog.read())?
+                    == custody.binding,
+                "opened storage domains differ from authenticated installed binding"
+            );
+        }
+        Ok(Arc::new(Self {
+            application,
+            custody,
+        }))
+    }
+
     pub async fn open(
         node: Arc<NodeStore>,
         tenant: String,
@@ -160,6 +201,17 @@ impl TenantStorageSet {
         .await?;
         Self::install(application, custody)
     }
+    #[cfg(any(test, feature = "test-utils"))]
+    pub async fn open_existing_fixture(
+        node: Arc<NodeStore>,
+        tenant: String,
+        application_provider: Arc<dyn KeyProvider>,
+        custody_provider: Arc<dyn KeyProvider>,
+    ) -> Result<Arc<Self>> {
+        let access = StorageAccess::fixture_for(&tenant);
+        Self::open_existing(node, tenant, application_provider, custody_provider, access).await
+    }
+
     #[cfg(any(test, feature = "test-utils"))]
     pub async fn open_fixture(
         node: Arc<NodeStore>,
@@ -372,3 +424,7 @@ fn validate_distinct_keys(application: &KeyState, custody: &KeyState) -> Result<
 #[cfg(test)]
 #[path = "storage_domains_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "storage_existing_tests.rs"]
+mod existing_tests;

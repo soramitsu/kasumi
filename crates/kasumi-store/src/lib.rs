@@ -357,6 +357,12 @@ struct BackgroundTasks {
     handles: Vec<tokio::task::JoinHandle<()>>,
 }
 
+#[derive(Clone, Copy)]
+enum CatalogOpen {
+    CreateIfAbsent,
+    Existing,
+}
+
 impl Drop for TenantStore {
     fn drop(&mut self) {
         for task in &self.background.get_mut().handles {
@@ -392,6 +398,7 @@ impl TenantStore {
             Arc::new(SystemLeaseClock),
             true,
             access,
+            CatalogOpen::CreateIfAbsent,
         )
         .await
     }
@@ -405,12 +412,26 @@ impl TenantStore {
         provider: Arc<dyn KeyProvider>,
         access: StorageAccess,
     ) -> Result<Arc<Self>> {
-        access.validate_tenant(&tenant)?;
-        ensure!(
-            node.catalog(&tenant)?.is_some(),
-            "tenant catalog is not initialized"
-        );
-        Self::open(node, tenant, provider, access).await
+        Self::open_inner(
+            node,
+            tenant,
+            provider,
+            Arc::new(SystemLeaseClock),
+            true,
+            access,
+            CatalogOpen::Existing,
+        )
+        .await
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    pub async fn open_existing_fixture(
+        node: Arc<NodeStore>,
+        tenant: String,
+        provider: Arc<dyn KeyProvider>,
+    ) -> Result<Arc<Self>> {
+        let access = StorageAccess::fixture_for(&tenant);
+        Self::open_existing(node, tenant, provider, access).await
     }
 
     #[cfg(any(test, feature = "test-utils"))]
@@ -430,7 +451,16 @@ impl TenantStore {
         clock: Arc<dyn LeaseClock>,
     ) -> Result<Arc<Self>> {
         let access = StorageAccess::fixture_for(&tenant);
-        Self::open_inner(node, tenant, provider, clock, false, access).await
+        Self::open_inner(
+            node,
+            tenant,
+            provider,
+            clock,
+            false,
+            access,
+            CatalogOpen::CreateIfAbsent,
+        )
+        .await
     }
     #[cfg(any(test, feature = "test-utils"))]
     pub async fn open_with_clock(
@@ -440,7 +470,16 @@ impl TenantStore {
         clock: Arc<dyn LeaseClock>,
         access: StorageAccess,
     ) -> Result<Arc<Self>> {
-        Self::open_inner(node, tenant, provider, clock, false, access).await
+        Self::open_inner(
+            node,
+            tenant,
+            provider,
+            clock,
+            false,
+            access,
+            CatalogOpen::CreateIfAbsent,
+        )
+        .await
     }
 
     async fn open_inner(
@@ -450,6 +489,7 @@ impl TenantStore {
         clock: Arc<dyn LeaseClock>,
         renew: bool,
         access: StorageAccess,
+        catalog_open: CatalogOpen,
     ) -> Result<Arc<Self>> {
         access.validate_tenant(&tenant)?;
         ensure!(
@@ -466,6 +506,12 @@ impl TenantStore {
             .or_default()
             .clone();
         let mut slot = gate.lock().await;
+        if matches!(catalog_open, CatalogOpen::Existing) {
+            ensure!(
+                node.catalog(&tenant)?.is_some(),
+                "tenant catalog is not initialized"
+            );
+        }
         if let Some(existing) = slot.upgrade() {
             ensure!(
                 existing.access.purpose() == access.purpose(),
@@ -504,6 +550,10 @@ impl TenantStore {
             );
             catalog
         } else {
+            ensure!(
+                matches!(catalog_open, CatalogOpen::CreateIfAbsent),
+                "tenant catalog is not initialized"
+            );
             let root = tokio::time::timeout(PROVIDER_TIMEOUT, provider.generate_key(&tenant))
                 .await
                 .context("key generation timed out")??;
