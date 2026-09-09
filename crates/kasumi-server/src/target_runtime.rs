@@ -213,12 +213,16 @@ impl TargetRecoveryRuntime {
             Ed25519KeyPair::from_pkcs8(&key).map_err(|_| anyhow::anyhow!("invalid target key"))?;
         // Only the independent journal KMS provider is constructed at startup.
         let provider = installed.journal_keys.provider(credential.clone())?;
-        let node = NodeStore::open(
+        let node = NodeStore::open_existing(
             &installed.journal_path,
+            kasumi_store::node_store_ids::target_journal(
+                installed.control_root.control_incarnation,
+                &installed.node.verifier,
+            )?,
             audit.store().scratch_disk().clone(),
         )?;
         let access = StorageAccess::target_journal(&installed.control_root, &installed.node)?;
-        let store = TenantStore::open(
+        let store = TenantStore::open_existing(
             node,
             format!(
                 "kasumi.target.{}.{}",
@@ -228,15 +232,22 @@ impl TargetRecoveryRuntime {
             access,
         )
         .await?;
-        let journal = TargetJournal::open(
-            store,
+        let journal = TargetJournal::open_existing(
+            store.clone(),
             TargetJournalInstallation {
                 root: installed.control_root.clone(),
                 node: installed.node.clone(),
             },
             installed.limits.journal.clone(),
             admission.clone(),
-        )?;
+        );
+        let journal = match journal {
+            Ok(journal) => journal,
+            Err(error) => {
+                store.shutdown().await;
+                return Err(error);
+            }
+        };
         std::fs::create_dir_all(&installed.generation_root)?;
         ensure!(
             !std::fs::symlink_metadata(&installed.generation_root)?
@@ -663,6 +674,14 @@ impl TargetRecoveryRuntime {
             ),
         })
     }
+    fn generation_file_id(&self, key: &GenerationKey) -> Result<Uuid> {
+        kasumi_store::node_store_ids::target_generation(
+            self.installed.control_root.control_incarnation,
+            &key.0,
+            key.1,
+            &self.installed.node.verifier,
+        )
+    }
     fn path(&self, key: &GenerationKey) -> Result<PathBuf> {
         ensure!(
             std::fs::canonicalize(&self.installed.generation_root)? == self.root
@@ -697,10 +716,19 @@ impl TargetRecoveryRuntime {
         );
         if g.node.is_none() {
             op.check()?;
-            g.node = Some(NodeStore::open(
-                self.path(&key)?,
-                self.audit.store().scratch_disk().clone(),
-            )?);
+            let path = self.path(&key)?;
+            let scratch = self.audit.store().scratch_disk().clone();
+            g.node = Some(if matches!(step, TargetRuntimeStep::Materialize(_)) {
+                self.journal
+                    .reserve_materialization_file(op)?
+                    .open(&path, scratch)?
+            } else {
+                NodeStore::open_existing(
+                    path,
+                    self.journal.materialization_file_id(&key.0, key.1)?,
+                    scratch,
+                )?
+            });
             op.check()?;
         }
         if g.stores.is_none() {
@@ -709,17 +737,34 @@ impl TargetRecoveryRuntime {
                 .application_keys
                 .provider(self.credential.clone())?;
             let custody = template.custody_keys.provider(self.credential.clone())?;
+            let node = g.node.as_ref().unwrap().clone();
+            let access = phase.access()?;
             g.stores = Some(
-                op.run(TenantStorageSet::open(
-                    g.node.as_ref().unwrap().clone(),
-                    key.0.clone(),
-                    app,
-                    custody,
-                    phase.access()?,
-                ))
-                .await?,
+                if matches!(
+                    step,
+                    TargetRuntimeStep::Materialize(_) | TargetRuntimeStep::ResumeMaterialization(_)
+                ) {
+                    op.run(TenantStorageSet::open(
+                        node,
+                        key.0.clone(),
+                        app,
+                        custody,
+                        access,
+                    ))
+                    .await?
+                } else {
+                    op.run(TenantStorageSet::open_existing(
+                        node,
+                        key.0.clone(),
+                        app,
+                        custody,
+                        access,
+                    ))
+                    .await?
+                },
             );
         }
+
         let stores = g.stores.as_ref().unwrap().clone();
         self.config
             .install_tenant_audit_archive(stores.application(), None)?;
@@ -1057,11 +1102,13 @@ impl TargetRecoveryRuntime {
         self.journal.stop(op, proof)?;
         let path = self.path(key)?;
         if path.exists() {
-            // An exclusive redb owner proves no other process owns the file;
-            // no application provider/key is constructed by this closed path.
-            let node = NodeStore::open(&path, self.audit.store().scratch_disk().clone())?;
-            let node = Arc::try_unwrap(node)
-                .map_err(|_| anyhow::anyhow!("target file has another owner"))?;
+            // Permanent journal stop and joined generation owners precede this
+            // exact Prepared/Ready file claim. No redb or application keys open.
+            let node = NodeStore::claim_cleanup(&path, self.generation_file_id(key)?)?;
+            ensure!(
+                kasumi_store::private_files::file_identity(&path)? == *node.identity(),
+                "target cleanup path changed after ownership"
+            );
             op.check()?;
             std::fs::remove_file(&path)?;
             std::fs::File::open(&self.root)?.sync_all()?;

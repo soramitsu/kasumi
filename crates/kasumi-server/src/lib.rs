@@ -32,6 +32,7 @@ pub mod tls_reload;
 mod target_phase_runtime;
 pub mod target_runtime_config;
 
+pub mod target_journal_installation;
 pub mod target_runtime;
 
 mod control_signer_runtime;

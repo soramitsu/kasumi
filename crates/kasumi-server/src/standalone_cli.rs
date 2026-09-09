@@ -16,6 +16,13 @@ pub async fn command(arguments: &[String]) -> Result<bool> {
         return Ok(true);
     }
     match arguments {
+        [command, configuration] if command == "initialize-target-journal" => {
+            crate::target_journal_installation::initialize_from_file(Path::new(configuration))
+                .await?;
+            println!(
+                "Target journal initialized; normal startup now requires this installed journal."
+            );
+        }
         [command, configuration] if command == "initialize-signer-verifier" => {
             crate::signer_runtime::initialize_from_file(Path::new(configuration)).await?;
             println!("Signer verifier initialized; installation roots remain operator-held.");

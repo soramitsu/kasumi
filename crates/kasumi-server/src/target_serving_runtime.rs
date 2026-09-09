@@ -161,6 +161,7 @@ impl TargetRecoveryRuntime {
         ensure!(path.is_file(), "activated target file is missing");
         g.node = Some(NodeStore::open_existing(
             path,
+            self.journal.materialization_file_id(&key.0, key.1)?,
             self.audit.store().scratch_disk().clone(),
         )?);
         self.placement(&projection.execution()?.origin.input)?;

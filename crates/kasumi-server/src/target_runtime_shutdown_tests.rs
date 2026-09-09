@@ -6,8 +6,7 @@ async fn target_monitor_and_outer_owner_survive_cancelled_shutdown_until_journal
     tokio::time::timeout(std::time::Duration::from_secs(15), async {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("target-journal.redb");
-        let node = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
-        let weak_node = Arc::downgrade(&node);
+
         let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
         let certificate = rcgen::CertificateParams::new(vec!["localhost".into()])
             .unwrap()
@@ -26,6 +25,14 @@ async fn target_monitor_and_outer_owner_survive_cancelled_shutdown_until_journal
             control_incarnation: Uuid::new_v4(),
             public_key: hex::encode(key.public_key_raw()),
         };
+        let node_id = kasumi_store::node_store_ids::target_journal(
+            root.control_incarnation,
+            &identity.verifier,
+        )
+        .unwrap();
+        let node =
+            NodeStore::create_new(&path, node_id, kasumi_store::ScratchDisk::fixture()).unwrap();
+        let weak_node = Arc::downgrade(&node);
         let provider = Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([41; 32]));
         let journal_tenant = format!("kasumi.target.{}.1", root.control_incarnation);
         let access = StorageAccess::target_journal(&root, &identity).unwrap();
@@ -38,7 +45,7 @@ async fn target_monitor_and_outer_owner_survive_cancelled_shutdown_until_journal
         .await
         .unwrap();
         let admission = NodeAdmission::new(Default::default()).unwrap();
-        let journal = TargetJournal::open(
+        let journal = TargetJournal::create_new(
             store.clone(),
             TargetJournalInstallation {
                 root: root.clone(),
@@ -122,8 +129,13 @@ async fn target_monitor_and_outer_owner_survive_cancelled_shutdown_until_journal
         // A materializer can fail after opening both key domains but before a Raft
         // owner exists. Generation close must still join those store monitors.
         let partial_path = directory.path().join("partial-target.redb");
-        let partial_node =
-            NodeStore::open(&partial_path, kasumi_store::ScratchDisk::fixture()).unwrap();
+        let partial_id = Uuid::new_v4();
+        let partial_node = NodeStore::create_new(
+            &partial_path,
+            partial_id,
+            kasumi_store::ScratchDisk::fixture(),
+        )
+        .unwrap();
         let weak_partial = Arc::downgrade(&partial_node);
         let partial_store = TenantStore::open_fixture(
             partial_node.clone(),
@@ -173,7 +185,14 @@ async fn target_monitor_and_outer_owner_survive_cancelled_shutdown_until_journal
         assert!(outer.is_none());
         assert!(weak_runtime.upgrade().is_none());
         assert!(weak_partial.upgrade().is_none());
-        drop(NodeStore::open(&partial_path, kasumi_store::ScratchDisk::fixture()).unwrap());
+        drop(
+            NodeStore::open_existing(
+                &partial_path,
+                partial_id,
+                kasumi_store::ScratchDisk::fixture(),
+            )
+            .unwrap(),
+        );
         assert!(
             store.check_access().is_err(),
             "target journal key workers were not drained"
@@ -183,7 +202,8 @@ async fn target_monitor_and_outer_owner_survive_cancelled_shutdown_until_journal
         drop(store);
         drop(node);
         assert!(weak_node.upgrade().is_none());
-        let reopened = NodeStore::open(&path, kasumi_store::ScratchDisk::fixture()).unwrap();
+        let reopened =
+            NodeStore::open_existing(&path, node_id, kasumi_store::ScratchDisk::fixture()).unwrap();
         let store = TenantStore::open_existing(reopened, journal_tenant, provider, access)
             .await
             .unwrap();

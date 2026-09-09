@@ -12,6 +12,9 @@ use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 const NS: &str = "target.journal";
+#[cfg(test)]
+#[path = "target_journal_open_tests.rs"]
+mod open_tests;
 const MAX_RECORD: usize = 256 << 10;
 const COMPLETION_RESERVE: u64 = MAX_RECORD as u64;
 // Each generation independently reserves a stop and an activation projection.
@@ -69,6 +72,38 @@ impl GenerationBinding {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct FileCreation {
+    materialization_command_id: Uuid,
+}
+
+/// One journal-selected file operation. Only the first durably accepted
+/// original materialization may create; replay always requires a ready file.
+/// An uncertain commit or lost creation response never becomes a new creator.
+pub struct MaterializationFile {
+    operation: TargetOperation,
+    node_store_id: Uuid,
+    create: bool,
+}
+impl MaterializationFile {
+    pub fn open(
+        self,
+        path: &std::path::Path,
+        scratch: Arc<kasumi_store::ScratchDisk>,
+    ) -> Result<Arc<kasumi_store::NodeStore>> {
+        self.operation.check()?;
+        let node = if self.create {
+            kasumi_store::NodeStore::create_new(path, self.node_store_id, scratch)
+        } else {
+            kasumi_store::NodeStore::open_existing(path, self.node_store_id, scratch)
+        }
+        .map_err(journal_unknown)?;
+        self.operation.check().map_err(journal_unknown)?;
+        Ok(node)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Metadata {
     format: u32,
     installation: TargetJournalInstallation,
@@ -92,11 +127,34 @@ impl TargetJournal {
         self.store.shutdown().await;
     }
 
-    pub fn open(
+    /// Explicit journal installation. Existing metadata or a live owner is an
+    /// error; this operation cannot reset permanent target stops.
+    pub fn create_new(
         store: Arc<TenantStore>,
         installed: TargetJournalInstallation,
         limits: TargetJournalLimits,
         admission: Arc<crate::admission::NodeAdmission>,
+    ) -> Result<Arc<Self>> {
+        Self::open_inner(store, installed, limits, admission, true)
+    }
+
+    /// Reopen only an authenticated installed journal, including an empty one.
+    /// An absent head is corruption and never permission to create a new head.
+    pub fn open_existing(
+        store: Arc<TenantStore>,
+        installed: TargetJournalInstallation,
+        limits: TargetJournalLimits,
+        admission: Arc<crate::admission::NodeAdmission>,
+    ) -> Result<Arc<Self>> {
+        Self::open_inner(store, installed, limits, admission, false)
+    }
+
+    fn open_inner(
+        store: Arc<TenantStore>,
+        installed: TargetJournalInstallation,
+        limits: TargetJournalLimits,
+        admission: Arc<crate::admission::NodeAdmission>,
+        create: bool,
     ) -> Result<Arc<Self>> {
         type Owner = Arc<Mutex<std::sync::Weak<TargetJournal>>>;
         static OWNERS: std::sync::OnceLock<Mutex<std::collections::HashMap<usize, Owner>>> =
@@ -116,6 +174,8 @@ impl TargetJournal {
             .lock()
             .map_err(|_| anyhow::anyhow!("target journal owner poisoned"))?;
         if let Some(existing) = owner.upgrade() {
+            ensure!(!create, "target journal is already installed");
+            existing.metadata()?;
             ensure!(
                 existing.installed == installed
                     && existing.limits == limits
@@ -141,11 +201,12 @@ impl TargetJournal {
             admission,
             mutation: Mutex::new(()),
         });
-        if journal
-            .store
-            .get_bounded(NS, b"metadata", MAX_RECORD)?
-            .is_none()
-        {
+        let installed_head = journal.store.get_bounded(NS, b"metadata", MAX_RECORD)?;
+        if create {
+            ensure!(
+                installed_head.is_none(),
+                "target journal is already installed"
+            );
             // An absent head cannot initialize over retained records or an
             // unsupported journal. Reject before writing any replacement head.
             journal.store.visit(NS, MAX_RECORD, |_, _| {
@@ -194,6 +255,12 @@ impl TargetJournal {
                 charged = charged
                     .checked_add(value.len() as u64 + GENERATION_RESERVE)
                     .context("journal bytes exhausted")?;
+            } else if key.starts_with(b"file/") {
+                let file: FileCreation = serde_json::from_slice(value)?;
+                journal.validate_file_creation(key, &file)?;
+                charged = charged
+                    .checked_add(value.len() as u64)
+                    .context("journal file bytes exhausted")?;
             } else if key.starts_with(b"serving/") {
                 journal.decode_serving_candidate(key, value)?;
             } else if key.starts_with(b"activation/") {
@@ -367,6 +434,140 @@ impl TargetJournal {
         op.check().map_err(journal_unknown)?;
         Ok(intent)
     }
+    fn validate_file_creation(
+        &self,
+        key: &[u8],
+        file: &FileCreation,
+    ) -> Result<TargetJournalIntent> {
+        let bytes = self
+            .store
+            .get_bounded(NS, &intent_key(file.materialization_command_id), MAX_RECORD)?
+            .context("target file creation original intent missing")?;
+        let intent: TargetJournalIntent = serde_json::from_slice(&bytes)?;
+        self.validate_intent(&intent)?;
+        let request = &intent.intent.request;
+        ensure!(
+            request.command_id == file.materialization_command_id
+                && request.phase == LifecyclePhase::Materialize
+                && key == file_key(&request.tenant, request.target_incarnation),
+            "target file creation identity differs"
+        );
+        let binding: GenerationBinding = serde_json::from_slice(
+            &self
+                .store
+                .get_bounded(
+                    NS,
+                    &generation_key(&request.tenant, request.target_incarnation),
+                    MAX_RECORD,
+                )?
+                .context("target file creation generation binding missing")?,
+        )?;
+        ensure!(
+            binding == GenerationBinding::from_intent(&intent),
+            "target file creation generation differs"
+        );
+        Ok(intent)
+    }
+
+    /// Require the permanent causal creation intent before opening an existing
+    /// target. The returned identifier is not a live serving authorization.
+    pub fn materialization_file_id(&self, tenant: &str, target: Uuid) -> Result<Uuid> {
+        let _workspace = self.admission.reserve((MAX_RECORD * 8) as u64, None)?;
+        kasumi_types::validate_name(tenant)?;
+        let key = file_key(tenant, target);
+        let file: FileCreation = serde_json::from_slice(
+            &self
+                .store
+                .get_bounded(NS, &key, MAX_RECORD)?
+                .context("target materialization file intent missing")?,
+        )?;
+        self.validate_file_creation(&key, &file)?;
+        kasumi_store::node_store_ids::target_generation(
+            self.installed.root.control_incarnation,
+            tenant,
+            target,
+            &self.installed.node.verifier,
+        )
+    }
+
+    /// Persist an exact original-materialization creation intent before any
+    /// node file is touched. No path existence observation selects creation.
+    pub fn reserve_materialization_file(
+        &self,
+        op: &TargetOperation,
+    ) -> Result<MaterializationFile> {
+        let _workspace = self.admission.reserve((MAX_RECORD * 8) as u64, None)?;
+        let _guard = self
+            .mutation
+            .lock()
+            .map_err(|_| anyhow::anyhow!("target journal poisoned"))?;
+        let intent = self.intent(op)?;
+        let request = &intent.intent.request;
+        ensure!(
+            request.phase == LifecyclePhase::Materialize,
+            "only original materialization may create a target file"
+        );
+        ensure!(
+            self.store
+                .get_bounded(
+                    NS,
+                    &stop_key(&request.tenant, request.target_incarnation),
+                    MAX_RECORD
+                )?
+                .is_none(),
+            "target incarnation permanently stopped locally"
+        );
+        let file = FileCreation {
+            materialization_command_id: request.command_id,
+        };
+        let key = file_key(&request.tenant, request.target_incarnation);
+        ensure!(
+            self.validate_file_creation(&key, &file)? == intent,
+            "target file creation original intent differs"
+        );
+        let node_store_id = kasumi_store::node_store_ids::target_generation(
+            self.installed.root.control_incarnation,
+            &request.tenant,
+            request.target_incarnation,
+            &self.installed.node.verifier,
+        )?;
+        if let Some(old) = self.store.get_bounded(NS, &key, MAX_RECORD)? {
+            ensure!(
+                serde_json::from_slice::<FileCreation>(&old)? == file,
+                "target file already bound to another original materialization"
+            );
+            op.check()?;
+            return Ok(MaterializationFile {
+                operation: op.clone(),
+                node_store_id,
+                create: false,
+            });
+        }
+        let bytes = serde_json::to_vec(&file)?;
+        let mut metadata = self.metadata()?;
+        metadata.charged_bytes = metadata
+            .charged_bytes
+            .checked_add(bytes.len() as u64)
+            .context("journal file bytes exhausted")?;
+        ensure!(
+            metadata.charged_bytes <= self.limits.max_metadata_bytes,
+            "target file intent exceeds permanent journal capacity"
+        );
+        op.check()?;
+        self.store
+            .write_batch(&[
+                WriteOp::put(NS, key, bytes),
+                WriteOp::put(NS, b"metadata", serde_json::to_vec(&metadata)?),
+            ])
+            .map_err(journal_unknown)?;
+        op.check().map_err(journal_unknown)?;
+        Ok(MaterializationFile {
+            operation: op.clone(),
+            node_store_id,
+            create: true,
+        })
+    }
+
     fn validate_stop(&self, stop: &TargetJournalStop) -> Result<()> {
         self.validate_intent(&stop.intent)?;
         let intent = &stop.intent.intent.request;
@@ -501,6 +702,9 @@ fn intent_key(id: Uuid) -> Vec<u8> {
 }
 fn generation_key(tenant: &str, id: Uuid) -> Vec<u8> {
     format!("generation/{tenant}/{id}").into_bytes()
+}
+fn file_key(tenant: &str, id: Uuid) -> Vec<u8> {
+    format!("file/{tenant}/{id}").into_bytes()
 }
 fn stop_key(tenant: &str, id: Uuid) -> Vec<u8> {
     format!("stop/{tenant}/{id}").into_bytes()
