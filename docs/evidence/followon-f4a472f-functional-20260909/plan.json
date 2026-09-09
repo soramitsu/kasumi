@@ -1,0 +1,677 @@
+{
+  "source": "/tmp/kasumi-production-recovery-followon",
+  "target": "/tmp/kasumi-production-root-target",
+  "expected_head": "f4a472ffa510cead0a5383a5a199a7e5f47560ef",
+  "expected_tree": "ebfb0b3592d03ed8a26bcbe0a9b106edb2ae3ef7",
+  "output": "/tmp/kasumi-f4a472f-followon-functional",
+  "scope": "Functional verification of compiled f4a472f: new external history structural/ownership regressions, corrected permanent staged outcome fixtures, terminal-only recovery and quorum/cap admission, plus previously unrun target/native/signer/lineage/lease gates. Capture libtest output so expected panics cannot interleave required-name lines. Repeat production backup workspace tests because external history admission changed. Prior b17 and NodeDisk passes retain their source scope; this cohort does not repair failed predecessor reports or claim final release acceptance. Actual source-bound results, feature graphs, executable hashes and process drain required. Stop first failure.",
+  "gates": [
+    {
+      "name": "external-history-admission",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--all-features",
+        "--message-format=json-render-diagnostics",
+        "--lib",
+        "backup_verify::history_work::tests::",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "backup_verify::history_work::tests::dense_external_body_requires_its_peak_in_addition_to_retained_point_work",
+        "backup_verify::history_work::tests::decode_failure_and_validation_panic_keep_the_expanded_charge_until_owner_drain",
+        "backup_verify::history_work::tests::cancelled_waiter_keeps_external_body_and_point_work_until_the_worker_drains"
+      ]
+    },
+    {
+      "name": "guarded-5",
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "--message-format=json-render-diagnostics",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--test",
+        "guarded_staging",
+        "--all-features",
+        "encrypted_restore_preserves_original_stage_scope_without_reviving_historical_uploads",
+        "--",
+        "--test-threads=1",
+        "--exact"
+      ],
+      "required_tests": [
+        "encrypted_restore_preserves_original_stage_scope_without_reviving_historical_uploads"
+      ],
+      "timeout_seconds": 900
+    },
+    {
+      "name": "staged-canonical-2",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--all-features",
+        "--message-format=json-render-diagnostics",
+        "--test",
+        "staged_transactions",
+        "large_transaction_stays_invisible_then_publishes_one_generation_and_permanent_receipt",
+        "--",
+        "--test-threads=1",
+        "--exact"
+      ],
+      "required_tests": [
+        "large_transaction_stays_invisible_then_publishes_one_generation_and_permanent_receipt"
+      ]
+    },
+    {
+      "name": "staged-canonical-3",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--all-features",
+        "--message-format=json-render-diagnostics",
+        "--test",
+        "staged_transactions",
+        "staged_identity_capacity_is_reserved_before_payload_and_expiry_never_reuses_identity",
+        "--",
+        "--test-threads=1",
+        "--exact"
+      ],
+      "required_tests": [
+        "staged_identity_capacity_is_reserved_before_payload_and_expiry_never_reuses_identity"
+      ]
+    },
+    {
+      "name": "staged-6",
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "--message-format=json-render-diagnostics",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--test",
+        "staged_transactions",
+        "--all-features",
+        "killed_upload_recovers_encrypted_invisible_chunks_and_finishes_exactly_once",
+        "--",
+        "--test-threads=1",
+        "--exact"
+      ],
+      "required_tests": [
+        "killed_upload_recovers_encrypted_invisible_chunks_and_finishes_exactly_once"
+      ],
+      "timeout_seconds": 900
+    },
+    {
+      "name": "staged-7",
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "--message-format=json-render-diagnostics",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--test",
+        "staged_transactions",
+        "--all-features",
+        "permanent_staged_byte_exhaustion_preserves_success_failure_and_restored_exact_replays",
+        "--",
+        "--test-threads=1",
+        "--exact"
+      ],
+      "required_tests": [
+        "permanent_staged_byte_exhaustion_preserves_success_failure_and_restored_exact_replays"
+      ],
+      "timeout_seconds": 900
+    },
+    {
+      "name": "staged-8",
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "--message-format=json-render-diagnostics",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--test",
+        "staged_transactions",
+        "--all-features",
+        "permanent_staged_snapshot_rejection_spends_original_terminal_reservation_atomically",
+        "--",
+        "--test-threads=1",
+        "--exact"
+      ],
+      "required_tests": [
+        "permanent_staged_snapshot_rejection_spends_original_terminal_reservation_atomically"
+      ],
+      "timeout_seconds": 900
+    },
+    {
+      "name": "receiver-pure",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--lib",
+        "state::recovery::receiver::tests::",
+        "--offline",
+        "--all-features",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "state::recovery::receiver::tests::lost_prepare_reply_and_expired_phase_require_persisted_positive_status_before_resolution",
+        "state::recovery::receiver::tests::absence_or_substituted_status_cannot_install_preparation_evidence",
+        "state::recovery::receiver::tests::sealed_terminal_is_retained_distinctly_and_cannot_enter_activation_inspection",
+        "state::recovery::receiver::tests::expired_unknown_resolver_uses_only_exact_positive_terminal_status",
+        "state::recovery::receiver::tests::terminal_status_absence_or_new_resolver_identity_has_no_valid_evidence_form",
+        "state::recovery::receiver::tests::established_receiver_routes_around_unknown_start_without_unanimous_reopening",
+        "state::recovery::receiver::tests::complete_reducer_rejects_both_original_cap_substitutions_before_inserting_phase"
+      ],
+      "scope": "Pure synthetic ordered Control/target facts; no network or encrypted target process."
+    },
+    {
+      "name": "recovery-replicated-1",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--test",
+        "lifecycle",
+        "recovery_control::recovery_journal_persists_before_dispatch_rejects_substitution_and_recovers_ambiguous_control_commit",
+        "--offline",
+        "--all-features",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--exact",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "recovery_control::recovery_journal_persists_before_dispatch_rejects_substitution_and_recovers_ambiguous_control_commit"
+      ],
+      "scope": "Actual replicated Control journal, synthetic signed issuer/target facts. Changed fixture retains first voter startup as unknown, permits 2+3, rejects cap \u00b11, validates snapshots."
+    },
+    {
+      "name": "recovery-replicated-2",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--test",
+        "lifecycle",
+        "recovery_control::recovery_planned_retirement_freezes_its_exact_request_only_after_target_completion",
+        "--offline",
+        "--all-features",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--exact",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "recovery_control::recovery_planned_retirement_freezes_its_exact_request_only_after_target_completion"
+      ],
+      "scope": "Actual replicated Control journal, synthetic signed issuer/target facts. Changed fixture retains first voter startup as unknown, permits 2+3, rejects cap \u00b11, validates snapshots."
+    },
+    {
+      "name": "recovery-replicated-3",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--test",
+        "lifecycle",
+        "recovery_control::recovery_uncertain_activation_resolves_original_winner_and_confirms_every_voter_forward",
+        "--offline",
+        "--all-features",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--exact",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "recovery_control::recovery_uncertain_activation_resolves_original_winner_and_confirms_every_voter_forward"
+      ],
+      "scope": "Actual replicated Control journal, synthetic signed issuer/target facts. Changed fixture retains first voter startup as unknown, permits 2+3, rejects cap \u00b11, validates snapshots."
+    },
+    {
+      "name": "recovery-replicated-4",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--test",
+        "lifecycle",
+        "recovery_control::recovery_uncertain_activation_requires_permanent_stop_before_target_cleanup",
+        "--offline",
+        "--all-features",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--exact",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "recovery_control::recovery_uncertain_activation_requires_permanent_stop_before_target_cleanup"
+      ],
+      "scope": "Actual replicated Control journal, synthetic signed issuer/target facts. Changed fixture retains first voter startup as unknown, permits 2+3, rejects cap \u00b11, validates snapshots."
+    },
+    {
+      "name": "recovery-replicated-5",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--test",
+        "lifecycle",
+        "recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation",
+        "--offline",
+        "--all-features",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--exact",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "recovery_control::recovery_expired_completion_resolves_its_exact_positive_fact_before_activation"
+      ],
+      "scope": "Actual replicated Control journal, synthetic signed issuer/target facts. Changed fixture retains first voter startup as unknown, permits 2+3, rejects cap \u00b11, validates snapshots."
+    },
+    {
+      "name": "history-graph-13",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--all-features",
+        "--message-format=json-render-diagnostics",
+        "--test",
+        "backup_checkpoint",
+        "missing_corrupt_resident_or_cold_dependency_and_history_subset_never_yield_proof",
+        "--",
+        "--test-threads=1",
+        "--exact"
+      ],
+      "required_tests": [
+        "missing_corrupt_resident_or_cold_dependency_and_history_subset_never_yield_proof"
+      ]
+    },
+    {
+      "name": "history-graph-14",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--all-features",
+        "--message-format=json-render-diagnostics",
+        "--test",
+        "backup_checkpoint",
+        "captured_and_historical_backup_verification_fit_fixed_production_workspace",
+        "--",
+        "--test-threads=1",
+        "--exact"
+      ],
+      "required_tests": [
+        "captured_and_historical_backup_verification_fit_fixed_production_workspace"
+      ]
+    },
+    {
+      "name": "history-graph-15",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--all-features",
+        "--message-format=json-render-diagnostics",
+        "--test",
+        "backup_checkpoint",
+        "restore_hands_off_verified_workspace_with_production_and_destination_reserves",
+        "--",
+        "--test-threads=1",
+        "--exact"
+      ],
+      "required_tests": [
+        "restore_hands_off_verified_workspace_with_production_and_destination_reserves"
+      ]
+    },
+    {
+      "name": "local-restore-owned-publication",
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "--message-format=json-render-diagnostics",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--test",
+        "backup_checkpoint",
+        "--all-features",
+        "cancelled_restore_publication_keeps_storage_and_workspace_until_write_drains",
+        "--",
+        "--test-threads=1",
+        "--exact"
+      ],
+      "required_tests": [
+        "cancelled_restore_publication_keeps_storage_and_workspace_until_write_drains"
+      ],
+      "timeout_seconds": 900
+    },
+    {
+      "name": "full-backup-terminal-history",
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "--message-format=json-render-diagnostics",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--test",
+        "history",
+        "--all-features",
+        "chunked_full_backup_restores_cold_history_and_permanent_identity_without_source_objects",
+        "--",
+        "--test-threads=1",
+        "--exact"
+      ],
+      "required_tests": [
+        "chunked_full_backup_restores_cold_history_and_permanent_identity_without_source_objects"
+      ],
+      "timeout_seconds": 900
+    },
+    {
+      "name": "public-snapshot-staging",
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "--message-format=json-render-diagnostics",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--lib",
+        "--all-features",
+        "state::snapshot_bundle::tests::public_capture_and_restore_preparation_are_complete_admitted_and_never_publish",
+        "--",
+        "--test-threads=1",
+        "--exact"
+      ],
+      "required_tests": [
+        "state::snapshot_bundle::tests::public_capture_and_restore_preparation_are_complete_admitted_and_never_publish"
+      ],
+      "timeout_seconds": 900
+    },
+    {
+      "name": "target-terminal-prefix",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--lib",
+        "--all-features",
+        "target_resolution::tests::",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "target_resolution::tests::exact_target_terminal_prefix_hides_unpublished_rows_and_rejects_changed_replay",
+        "target_resolution::tests::target_row_binds_actual_generation_command_and_separate_framed_budget",
+        "target_resolution::tests::target_snapshot_catalog_reopens_only_its_exact_committed_prefix",
+        "target_resolution::tests::every_historical_terminal_requires_its_exact_earlier_seal",
+        "target_resolution::tests::current_selectors_cannot_omit_a_budget_effect_or_the_last_seal",
+        "target_resolution::tests::admitted_completion_reserves_hot_audit_and_resident_completion_space"
+      ]
+    },
+    {
+      "name": "target-completion-machine",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--lib",
+        "--all-features",
+        "target_completion_machine::tests::",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "target_completion_machine::tests::exact_preparation_replays_after_completion_without_replacing_its_reservation",
+        "target_completion_machine::tests::only_an_expired_exact_prepared_attempt_can_be_sealed",
+        "target_completion_machine::tests::sealed_predecessor_orders_successor_and_rejects_a_late_original_complete",
+        "target_completion_machine::tests::committed_original_resolves_positively_and_cannot_authorize_a_successor",
+        "target_completion_machine::tests::preparation_reserves_terminal_capacity_and_resolution_does_not_reacquire_it",
+        "target_completion_machine::tests::target_budget_changes_preserve_reserves_and_replay_the_first_outcome",
+        "target_completion_machine::tests::reservation_shape_and_explicit_predecessor_are_canonical",
+        "target_completion_machine::tests::terminal_proof_binds_original_target_order_and_distinct_signature_purpose"
+      ]
+    },
+    {
+      "name": "positive-preparation-status",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--lib",
+        "--all-features",
+        "target_completion_status_tests::",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "target_completion_status_tests::fresh_status_preserves_expired_original_scope_position_and_dispatch_cap",
+        "target_completion_status_tests::status_requires_distinct_later_control_identity_and_exact_original_attempt",
+        "target_completion_status_tests::status_signature_domain_and_expected_input_cannot_be_substituted"
+      ]
+    },
+    {
+      "name": "canonical-control-completion",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--lib",
+        "--all-features",
+        "state::recovery::completion::tests::",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "state::recovery::completion::tests::retained_complete_input_requires_explicit_canonical_predecessor"
+      ]
+    },
+    {
+      "name": "authority-signer-coverage",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-authority",
+        "--lib",
+        "--all-features",
+        "service::tests::coverage_dispatch_precedes_permission_and_survives_exact_encrypted_restart",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "service::tests::coverage_dispatch_precedes_permission_and_survives_exact_encrypted_restart"
+      ]
+    },
+    {
+      "name": "native-issuer-signer-coverage",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--lib",
+        "--all-features",
+        "rpc::authority_tests::actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_recovery",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "rpc::authority_tests::actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_recovery"
+      ]
+    },
+    {
+      "name": "native-control-signer-coverage",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-server",
+        "--lib",
+        "--all-features",
+        "rpc::lifecycle_tests::pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong_resource_and_partition",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "rpc::lifecycle_tests::pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong_resource_and_partition"
+      ]
+    },
+    {
+      "name": "indexed-snapshot-lineage",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--lib",
+        "--all-features",
+        "state::snapshot_validation::tests::",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "state::snapshot_validation::tests::receipt_original_scope_and_position_are_checked_in_both_snapshot_paths"
+      ]
+    },
+    {
+      "name": "lease-retention-with-target-owner",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "kasumi-engine",
+        "--lib",
+        "--all-features",
+        "state::lease_retention::tests::",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--test-threads=1"
+      ],
+      "required_tests": [
+        "state::lease_retention::tests::publication_expires_full_roots_while_two_inflight_selections_keep_only_bounded_pages"
+      ]
+    },
+    {
+      "name": "workspace-strict",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "clippy",
+        "--locked",
+        "--offline",
+        "-j1",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "required_tests": []
+    }
+  ]
+}
