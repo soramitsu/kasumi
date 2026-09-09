@@ -1,0 +1,32 @@
+[
+  {
+    "path": "combined-all-targets-check.log",
+    "original": "/tmp/kasumi-a159ebc-combined-check/combined-all-targets-check.log",
+    "sha256": "0dbfae7ce8e7620aac64697dcd6e0f057dd58521dc6c16d349ad20b791324938",
+    "bytes": 462768
+  },
+  {
+    "path": "evidence.json",
+    "original": "/tmp/kasumi-a159ebc-combined-check/evidence.json",
+    "sha256": "b04a4f2d3776bea68ed19b6ec17749b799968ae660fbd96e7b1bc69096f1ef90",
+    "bytes": 490096
+  },
+  {
+    "path": "plan.json",
+    "original": "/tmp/kasumi-a159ebc-combined-check/plan.json",
+    "sha256": "0eaa5c265d9634ff5430e047a3eb34d421343afee388d0be6f465ce9c4fd8476",
+    "bytes": 1358
+  },
+  {
+    "path": "runner.py",
+    "original": "/tmp/kasumi-a159ebc-combined-check/runner.py",
+    "sha256": "ad3d647fbb73d9d32e04e4e202814f68aea2cb5aa80acbed03a10fa8a3855a6f",
+    "bytes": 10765
+  },
+  {
+    "path": "source-before.json",
+    "original": "/tmp/kasumi-a159ebc-combined-check/source-before.json",
+    "sha256": "975a0ea178b8d4be03b46d74332b0a40bdc1e225b49e471dc369539911a1c75a",
+    "bytes": 304714
+  }
+]

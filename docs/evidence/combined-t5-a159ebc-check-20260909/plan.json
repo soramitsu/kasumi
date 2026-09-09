@@ -1,0 +1,36 @@
+{
+  "source": "/tmp/kasumi-production-next-reconcile",
+  "target": "/tmp/kasumi-production-root-target",
+  "expected_head": "a159ebc78abfa8acbefd66e54e102f96b64c819e",
+  "expected_tree": "c6e88007e653a38845e54294994d5a4185a24354",
+  "output": "/tmp/kasumi-a159ebc-combined-check",
+  "scope": "Compile-only and formatting validation of KASUMIT5 structural admission plus durable recovery preparation/terminal phase coordinator, permanent point prefixes, signer dispatch and fixture admission successors. No functional or final release claim. All preceding failures and source-specific passes remain separately preserved. Successor a159ebc corrects borrowed verifier admission and explicitly retains an owned governor for the relocation worker, removes two unused bindings; 77bddb1 compile failure preserved.",
+  "gates": [
+    {
+      "name": "combined-all-targets-check",
+      "timeout_seconds": 900,
+      "cargo_args": [
+        "check",
+        "--locked",
+        "--offline",
+        "-j1",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--message-format=json-render-diagnostics"
+      ],
+      "required_tests": []
+    },
+    {
+      "name": "format",
+      "timeout_seconds": 60,
+      "cargo_args": [
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "required_tests": []
+    }
+  ]
+}
