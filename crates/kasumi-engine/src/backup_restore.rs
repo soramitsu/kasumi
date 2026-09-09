@@ -334,11 +334,7 @@ pub(super) async fn load_authorized(
         token,
     };
     let verified = Box::pin(crate::backup_verify::verify(
-        &reader,
-        backup_id,
-        admission,
-        deadline,
-        None,
+        &reader, backup_id, admission, deadline, None,
     ))
     .await?;
     if let Some(expected) = &reader.bound_checkpoint {
