@@ -679,6 +679,19 @@ async fn start(
         stores.application().tenant(),
         bytes,
     )?);
+    if let kasumi_store::StoragePurpose::Standalone {
+        tenant,
+        incarnation,
+        ..
+    } = stores.application().storage_access().purpose()
+    {
+        let generation = engine.generation()?;
+        anyhow::ensure!(
+            generation.state.tenant == *tenant
+                && generation.state.incarnation == incarnation.to_string(),
+            "local bootstrap differs from authenticated standalone identity"
+        );
+    }
     start_prepared(stores, engine, runtime, security_audit).await
 }
 

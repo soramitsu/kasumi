@@ -22,11 +22,17 @@ unsupported or corrupt state is an error. Ordinary Raft replay and maintenance
 startup remain part of opening an existing database; this API is not a promise
 that a successful restart performs no storage writes.
 
-Seven source regressions cover partial catalogs, a catalog disappearing while
+For standalone application catalogs, the decoded bootstrap tenant and incarnation
+must also equal the authenticated storage purpose before engine installation or
+Raft startup. An otherwise valid authenticated bootstrap cannot substitute a
+different standalone generation.
+
+Eight source regressions cover partial catalogs, a catalog disappearing while
 an existing-only opener waits, missing/corrupt/authenticated-wrong domain
 binding, exact standalone domain reopen after both stores drain, missing or
 wrong local deployment, corrupt bootstrap manifest/body/custody commitment,
-and the same committed local database reopening after complete shutdown.
+an authenticated bootstrap naming another standalone incarnation, and the same
+committed local database reopening after complete shutdown.
 These are uncompiled source tests until the scheduled frozen-source gates run.
 
 The next integration boundary is explicit creation versus restart. At this

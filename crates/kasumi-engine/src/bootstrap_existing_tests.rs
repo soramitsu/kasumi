@@ -178,6 +178,32 @@ async fn existing_local_rejects_corrupt_manifest_body_and_custody_commitment_wit
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn authenticated_bootstrap_cannot_change_the_standalone_catalog_incarnation()
+-> anyhow::Result<()> {
+    let fixture = Installation::new().await?;
+    bind_deployment(&fixture.stores, b"local-v1")?;
+    let wrong = TenantEngine::new(
+        "tenant".into(),
+        uuid::Uuid::new_v4().to_string(),
+        policy(),
+        Limits::default(),
+    )?;
+    persist_new(
+        &fixture.stores,
+        &wrong.logical_snapshot(fixture.node.scratch_disk())?,
+    )?;
+    let before = retained(&fixture.stores)?;
+    assert!(
+        open_existing_local(fixture.stores.clone(), fixture.audit.clone())
+            .await
+            .is_err()
+    );
+    assert_eq!(retained(&fixture.stores)?, before);
+    fixture.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn existing_local_reopens_the_same_committed_standalone_after_complete_shutdown()
 -> anyhow::Result<()> {
     let fixture = Installation::new().await?;
