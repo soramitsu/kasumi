@@ -36,13 +36,22 @@ are excluded from the failed `3b932ee` cohort.
 
 Authority memory admission is now an explicitly required operational setting
 (`ed0507a`); its signer-worker caller migration is pending the worker ownership
-checkpoint. Database inner blocking-child outcomes, live signer-worker custody,
-and cancellation-safe outer serving ownership are active separate changes.
+checkpoint. Database inner blocking-child custody is integrated (`61ce101`):
+cooperative worker shutdown retains actual child failures and cancels only
+undispatched waits for shared maintenance capacity. Its four encrypted-store
+regressions remain **UNRUN**. Live signer-worker custody and cancellation-safe
+outer serving ownership are active separate changes.
 Neither typed parent results nor cooperative loops alone establish a complete
 child census. Standalone staging is integrated in source, while incomplete
 creation cleanup, replacement enrollment and the full local lifecycle remain
 unfinished. No implementation or release gate is accepted by these source-only
 checkpoints.
+
+Retained original error objects can themselves carry opaque owner references.
+The [database-worker qualification](database-worker-outcomes.md) distinguishes
+structural ownership from arbitrary Rust panic payload disposal. No checkpoint
+claims those payloads are resource-free or treats an elapsed timeout as evidence
+that physical owners disappeared.
 
 The preceding [frozen compiler/store cohort](evidence/first-release-7a21995-check-20260909/README.md)
 passed workspace compilation and formatting, then failed one store identity
