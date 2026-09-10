@@ -35,12 +35,16 @@ baseline to enrollment. These changes and their new tests remain **UNRUN** and
 are excluded from the failed `3b932ee` cohort.
 
 Authority memory admission is now an explicitly required operational setting
-(`ed0507a`); its signer-worker caller migration is pending the worker ownership
-checkpoint. Database inner blocking-child custody is integrated (`61ce101`):
+(`ed0507a`). Database inner blocking-child custody is integrated (`61ce101`):
 cooperative worker shutdown retains actual child failures and cancels only
 undispatched waits for shared maintenance capacity. Its four encrypted-store
-regressions remain **UNRUN**. Live signer-worker custody and cancellation-safe
-outer serving ownership are active separate changes.
+regressions remain **UNRUN**. Live signer-worker custody (`309b3e5`) now retains
+one actual child handle with bounded synchronous reaping and no helper supervisor.
+Outer serving ownership (`63a5951`) retains the runtime separately from its
+supervisor and the listener's nested connection/HTTP2 task inventories. Shared
+runtime admission and typed lease callers are reconciled in `bb2f22a`. Static
+metadata keeps its byte charge while releasing the in-flight operation slot.
+All worker and serving regressions remain **UNRUN** pending the combined cohort.
 Neither typed parent results nor cooperative loops alone establish a complete
 child census. Standalone staging is integrated in source, while incomplete
 creation cleanup, replacement enrollment and the full local lifecycle remain
