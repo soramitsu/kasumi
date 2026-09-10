@@ -850,20 +850,21 @@ struct BoundListener {
     router: axum::Router,
 }
 
-/// Listeners own their connection tasks. They must receive shutdown and finish
-/// their own bounded connection drain, including while startup is incomplete.
-/// Canceling an outer listener task would detach those nested owners instead.
-struct ServingTasks {
-    listeners: JoinSet<Result<()>>,
+/// Retain every installed listener's nested inventory separately from its task.
+/// Cooperative shutdown and abnormal listener exit both join connections and
+/// Hyper stream tasks before releasing the runtime's physical ownership.
+pub(crate) struct ServingTasks {
+    pub(crate) listeners: JoinSet<Result<()>>,
     maintenance: JoinSet<Result<()>>,
     data_stop: watch::Sender<bool>,
-    cluster_stop: watch::Sender<bool>,
+    pub(crate) cluster_stop: watch::Sender<bool>,
     report: kasumi_types::drain::DrainReport,
     failed_tasks: BTreeMap<tokio::task::Id, usize>,
+    listener_inventories: Vec<Arc<tls::ListenerInventory>>,
 }
 
 impl ServingTasks {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             listeners: JoinSet::new(),
             maintenance: JoinSet::new(),
@@ -871,10 +872,18 @@ impl ServingTasks {
             cluster_stop: watch::channel(false).0,
             report: Default::default(),
             failed_tasks: BTreeMap::new(),
+            listener_inventories: Vec::new(),
         }
     }
 
-    async fn shutdown(&mut self) -> kasumi_types::drain::DrainResult {
+    pub(crate) fn spawn_listener(&mut self, listener: tls::ServingListener) {
+        // Retain nested connection/HTTP2 inventories before dispatch. Aborting
+        // or panicking this listener handle cannot drop those actual owners.
+        self.listener_inventories.push(listener.inventory());
+        self.listeners.spawn(listener);
+    }
+
+    pub(crate) async fn shutdown(&mut self) -> kasumi_types::drain::DrainResult {
         self.data_stop.send_replace(true);
         self.cluster_stop.send_replace(true);
         // Reconciliation may be rebuilding an admitted tenant and own Raft or
@@ -900,7 +909,56 @@ impl ServingTasks {
                 }
             }
         }
+        for inventory in &self.listener_inventories {
+            if let Err(failure) = inventory.drain().await {
+                self.report.merge(&failure);
+            }
+        }
         self.report.complete()
+    }
+}
+
+// Tasks precede the runtime: its exclusive installation lock outlives every
+// listener and maintenance owner even if the composite is unexpectedly dropped.
+struct NodeServing {
+    tasks: ServingTasks,
+    report: kasumi_types::drain::DrainReport,
+    runtime: NodeRuntime,
+}
+impl crate::serving_owner::Owner for NodeServing {
+    fn run<'a>(
+        &'a mut self,
+        shutdown: &'a mut crate::serving_owner::Shutdown,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(self.runtime.serve_owned(&mut self.tasks, shutdown))
+    }
+    fn close(
+        &mut self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = kasumi_types::drain::DrainResult> + Send + '_>,
+    > {
+        Box::pin(async move {
+            self.runtime
+                .telemetry
+                .set_lifecycle(crate::observability::Lifecycle::Draining);
+            for lease in &self.runtime.serving_leases {
+                lease.close();
+            }
+            #[cfg(test)]
+            crate::startup_preparation::failure_checkpoint(self.runtime.config.database_id).await;
+            let mut retained = None;
+            crate::runtime_drain::observe(
+                &mut self.report,
+                &mut retained,
+                self.tasks.shutdown().await,
+            );
+            crate::runtime_drain::observe(
+                &mut self.report,
+                &mut retained,
+                self.runtime.shutdown().await,
+            );
+            self.report.outcome(retained)
+        })
     }
 }
 
@@ -909,6 +967,7 @@ impl ServingTasks {
 mod serving_task_drain_tests;
 
 pub struct NodeRuntime {
+    serving_registration: Option<crate::serving_owner::Registration>,
     startup_drain: kasumi_types::drain::DrainReport,
     telemetry: Arc<crate::observability::Telemetry>,
     config: RuntimeConfig,
@@ -1163,7 +1222,9 @@ impl NodeRuntime {
             Err(error) => return Err(error),
         };
         control.database.install_admission(admission.clone())?;
+        let serving_registration = crate::serving_owner::Registration::new(crate::serving_owner::Kind::Data, config.database_id, audit.admission())?;
         retained_runtime = Some(Self {
+            serving_registration: Some(serving_registration),
             telemetry: crate::observability::Telemetry::new(),
             _standalone_lock: None,
             startup_stores: pending.stores.iter().filter(|store| store.tenant() != SECURITY_TENANT).cloned().collect(),
@@ -1583,13 +1644,43 @@ impl NodeRuntime {
 
     /// TLS listeners start together. Raft groups remain unavailable until their
     /// configured quorum is elected; initial membership never shrinks on failure.
-    pub async fn serve(mut self, mut shutdown: watch::Receiver<bool>) -> Result<()> {
-        if *shutdown.borrow() {
-            return crate::startup_owner::finish(&mut self).await;
+    pub fn serve(
+        mut self,
+        shutdown: watch::Receiver<bool>,
+    ) -> impl std::future::Future<Output = Result<()>> + Send + 'static {
+        let registration = self
+            .serving_registration
+            .take()
+            .expect("opened runtime has one serving registration");
+        crate::serving_owner::serve(
+            crate::serving_owner::Kind::Data,
+            registration,
+            NodeServing {
+                tasks: ServingTasks::new(),
+                report: Default::default(),
+                runtime: self,
+            },
+            shutdown,
+        )
+    }
+
+    /// Stop opening new instances before joining all retained serving owners.
+    pub async fn drain_serving() -> Result<()> {
+        crate::serving_owner::drain(crate::serving_owner::Kind::Data).await
+    }
+
+    async fn serve_owned(
+        &mut self,
+        tasks: &mut ServingTasks,
+        shutdown: &mut crate::serving_owner::Shutdown,
+    ) -> Result<()> {
+        #[cfg(test)]
+        crate::startup_preparation::checkpoint(self.config.database_id, "data-serving");
+        if shutdown.requested() {
+            return Ok(());
         }
-        let mut tasks = ServingTasks::new();
         if let Some(listener) = self.cluster_listener.take() {
-            tasks.listeners.spawn(tls::serve_tls(
+            tasks.spawn_listener(tls::serve_tls(
                 listener.listener,
                 listener.tls,
                 listener.router,
@@ -1616,24 +1707,13 @@ impl NodeRuntime {
             self.audit.record(lifecycle(SecurityEventKind::NodeStarted)).await?;
             Ok::<_,anyhow::Error>(true)
         }.await;
-        if let Err(mut error) = startup {
-            if let Err(drain) = tasks.shutdown().await {
-                error = error.context(drain);
-            }
-            if let Err(drain) = crate::startup_owner::finish(&mut self).await {
-                error = error.context(drain);
-            }
-            return Err(error);
-        }
-        if matches!(startup, Ok(false)) {
-            let drain = tasks.shutdown().await.map_err(Into::into);
-            let cleanup = crate::startup_owner::finish(&mut self).await;
-            return crate::runtime_drain::combine(drain, cleanup);
+        if !startup? {
+            return Ok(());
         }
         self.telemetry
             .set_lifecycle(crate::observability::Lifecycle::Serving);
         for listener in self.data_listeners.drain(..) {
-            tasks.listeners.spawn(tls::serve_tls(
+            tasks.spawn_listener(tls::serve_tls(
                 listener.listener,
                 listener.tls,
                 listener.router,
@@ -1646,7 +1726,7 @@ impl NodeRuntime {
             let mut stop = tasks.data_stop.subscribe();
             tasks.maintenance.spawn(async move { loop { tokio::select! { _=stop.changed()=>return Ok(()), _=tokio::time::sleep(Duration::from_millis(250))=>{ if manager.reconcile().await.is_err() { tracing::warn!("serving reconciliation unavailable; will retry"); } } } } });
         }
-        let result = if *shutdown.borrow() {
+        let result = if shutdown.requested() {
             Ok(())
         } else {
             tokio::select! {
@@ -1655,11 +1735,7 @@ impl NodeRuntime {
                 result=tasks.maintenance.join_next(), if !tasks.maintenance.is_empty()=> match result { Some(Ok(Err(error)))=>Err(error),Some(Err(error))=>Err(error.into()),_=>Err(anyhow::anyhow!("required reconciliation stopped unexpectedly")) },
             }
         };
-        self.telemetry
-            .set_lifecycle(crate::observability::Lifecycle::Draining);
-        let drain = tasks.shutdown().await.map_err(Into::into);
-        let cleanup = crate::startup_owner::finish(&mut self).await;
-        crate::runtime_drain::combine(crate::runtime_drain::combine(result, drain), cleanup)
+        result
     }
 
     fn expected_topology(&self) -> Result<kasumi_engine::control::ControlTopology> {
@@ -2919,7 +2995,7 @@ mod lifecycle_tests {
             } else {
                 tasks.data_stop.subscribe()
             };
-            tasks.listeners.spawn(tls::serve_tls(
+            tasks.spawn_listener(tls::serve_tls(
                 socket,
                 kasumi_transport::server_config(
                     &files.load().unwrap(),

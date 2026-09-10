@@ -27,6 +27,7 @@ pub mod rpc;
 pub mod runtime;
 mod runtime_drain;
 mod runtime_worker;
+mod serving_owner;
 pub mod serving_runtime;
 pub mod standalone;
 pub mod standalone_cli;
@@ -36,6 +37,7 @@ mod startup_preparation;
 mod startup_resources;
 pub mod tls;
 pub mod tls_reload;
+mod tls_tasks;
 
 mod target_phase_runtime;
 pub mod target_runtime_config;

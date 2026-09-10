@@ -3,7 +3,7 @@ use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
 use axum::{Extension, Router};
 use hyper_util::{
-    rt::{TokioExecutor, TokioIo, TokioTimer},
+    rt::{TokioIo, TokioTimer},
     server::conn::auto::Builder,
     service::TowerToHyperService,
 };
@@ -14,7 +14,6 @@ use std::{future::Future, sync::Arc, time::Duration};
 use tokio::{
     net::TcpListener,
     sync::{Semaphore, watch},
-    task::JoinSet,
 };
 use tokio_rustls::TlsAcceptor;
 
@@ -102,24 +101,91 @@ impl Default for ListenerLimits {
 
 /// Serves an Axum router over strict TLS. Stops accepting on shutdown, requests
 /// graceful connection shutdown, then bounds draining before aborting leftovers.
-pub async fn serve_tls(
+pub fn serve_tls(
     listener: TcpListener,
     config: impl Into<kasumi_transport::ReloadableServerConfig>,
     router: Router,
     limits: ListenerLimits,
     audit: Arc<dyn TlsHandshakeAudit>,
     shutdown: watch::Receiver<bool>,
-) -> Result<()> {
-    serve_tls_source(
-        listener,
-        config,
-        router,
-        limits,
-        audit,
-        shutdown,
-        |socket| socket.set_nodelay(true),
-    )
-    .await
+) -> ServingListener {
+    let config = config.into();
+    let inventory = Arc::new(ListenerInventory::new(&limits));
+    ServingListener {
+        inventory: inventory.clone(),
+        running: Box::pin(serve_tls_source(
+            listener,
+            config,
+            router,
+            limits,
+            audit,
+            shutdown,
+            |socket| socket.set_nodelay(true),
+            inventory,
+        )),
+    }
+}
+
+/// The runtime retains `inventory` separately from this future's task handle.
+/// An externally aborted listener cannot destroy its nested connection census.
+pub struct ServingListener {
+    inventory: Arc<ListenerInventory>,
+    running: std::pin::Pin<Box<dyn Future<Output = Result<()>> + Send>>,
+}
+impl Future for ServingListener {
+    type Output = Result<()>;
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        self.running.as_mut().poll(cx)
+    }
+}
+impl ServingListener {
+    pub(crate) fn inventory(&self) -> Arc<ListenerInventory> {
+        self.inventory.clone()
+    }
+}
+pub(crate) struct ListenerInventory {
+    connections: crate::tls_tasks::Tasks,
+    streams: crate::tls_tasks::Tasks,
+    stop: watch::Sender<bool>,
+    timeout: Duration,
+    report: tokio::sync::Mutex<kasumi_types::drain::DrainReport>,
+}
+impl ListenerInventory {
+    fn new(limits: &ListenerLimits) -> Self {
+        Self {
+            connections: crate::tls_tasks::Tasks::new(limits.max_connections),
+            // Invalid/overflowing settings fail before accepting any socket.
+            // Hyper 1.11.1 dispatches H2Stream and, for a successful
+            // CONNECT, UpgradedSendStreamTask before that H2Stream exits.
+            // Account for both concurrently, including the transition overlap.
+            streams: crate::tls_tasks::Tasks::new(
+                limits
+                    .max_connections
+                    .checked_mul(limits.max_http2_streams as usize)
+                    .and_then(|streams| streams.checked_mul(2))
+                    .unwrap_or(0),
+            ),
+            stop: watch::channel(false).0,
+            timeout: limits.drain_timeout,
+            report: Default::default(),
+        }
+    }
+    pub(crate) async fn drain(&self) -> kasumi_types::drain::DrainResult {
+        self.stop.send_replace(true);
+        let mut report = self.report.lock().await;
+        if let Err(failure) = self.connections.drain(self.timeout).await {
+            report.merge(&failure);
+        }
+        // Connections have stopped dispatching new streams. Seal and join the
+        // exact Hyper executor task inventory before declaring listener drain.
+        if let Err(failure) = self.streams.drain(self.timeout).await {
+            report.merge(&failure);
+        }
+        report.complete()
+    }
 }
 
 trait ConnectionSource: Send {
@@ -146,27 +212,40 @@ async fn serve_tls_source(
     + Send
     + Sync
     + 'static,
+    inventory: Arc<ListenerInventory>,
 ) -> Result<()> {
     ensure!(
         limits.max_connections > 0
+            && limits.max_connections <= Semaphore::MAX_PERMITS
             && limits.max_http2_streams > 0
             && !limits.handshake_timeout.is_zero()
-            && !limits.drain_timeout.is_zero(),
+            && !limits.drain_timeout.is_zero()
+            && limits
+                .max_connections
+                .checked_mul(limits.max_http2_streams as usize)
+                .and_then(|streams| streams.checked_mul(2))
+                .is_some(),
         "invalid TLS listener limits"
     );
     let config = config.into();
     let connections = Arc::new(Semaphore::new(limits.max_connections));
-    let mut tasks = JoinSet::new();
-    let (connection_stop, connection_shutdown) = watch::channel(false);
+    let tasks = inventory.connections.clone();
+    let connection_shutdown = inventory.stop.subscribe();
+    let mut task_failure = tasks.failure();
+    let mut stream_failure = inventory.streams.failure();
+    let outcome = crate::startup_preparation::capture("TLS listener", async {
     let mut outcome = Ok(());
     loop {
-        if *shutdown.borrow() {
+        if *shutdown.borrow() || *task_failure.borrow() || *stream_failure.borrow() {
             break;
         }
         tokio::select! {
             biased;
             _ = shutdown.changed() => break,
-            Some(_) = tasks.join_next(), if !tasks.is_empty() => {},
+            _ = task_failure.changed() => break,
+            _ = stream_failure.changed() => break,
+            _ = tasks.next(), if !tasks.is_empty() => {},
+            _ = inventory.streams.next(), if !inventory.streams.is_empty() => {},
             connection = listener.accept() => {
                 let (socket, address) = match connection {
                     Ok(connection) => connection,
@@ -181,6 +260,7 @@ async fn serve_tls_source(
                 let limits = limits.clone();
                 let audit = audit.clone();
                 let mut shutdown = connection_shutdown.clone();
+                let executor = inventory.streams.clone();
                 tasks.spawn(async move {
                     let _permit = permit;
                     // A peer can reset while queued before the listener starts.
@@ -205,7 +285,7 @@ async fn serve_tls_source(
                         return;
                     }
                     let service = TowerToHyperService::new(router.layer(Extension(peer)));
-                    let mut builder = Builder::new(TokioExecutor::new());
+                    let mut builder = Builder::new(executor);
                     builder.http1().max_buf_size(32 * 1024).timer(TokioTimer::new()).header_read_timeout(limits.handshake_timeout);
                     builder.http2().max_concurrent_streams(limits.max_http2_streams);
                     let connection = builder.serve_connection_with_upgrades(TokioIo::new(stream), service);
@@ -225,20 +305,14 @@ async fn serve_tls_source(
             }
         }
     }
-    // A listener I/O error also requests graceful connection shutdown. Always
-    // join the nested owners before returning its original error to the runtime.
-    connection_stop.send_replace(true);
-    drop(listener);
-    if tokio::time::timeout(limits.drain_timeout, async {
-        while tasks.join_next().await.is_some() {}
-    })
-    .await
-    .is_err()
-    {
-        tasks.abort_all();
-        while tasks.join_next().await.is_some() {}
-    }
     outcome
+    }).await;
+    // The inventory lives outside the caught accept loop and is also held by
+    // the outer serving owner. Poll panic, I/O error and snapshot errors all use
+    // the same positive nested-task drain before returning their original cause.
+    drop(listener);
+    let drain = inventory.drain().await.map_err(Into::into);
+    crate::runtime_drain::combine(outcome, drain)
 }
 
 #[cfg(test)]
@@ -273,6 +347,45 @@ mod lifecycle_tests {
             Ok(())
         }
     }
+    #[tokio::test]
+    async fn unsupported_listener_capacity_returns_error_without_spawning_owners() {
+        let rcgen::CertifiedKey { cert, signing_key } =
+            rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let identity = TlsIdentity::from_pem(
+            cert.pem().as_bytes(),
+            signing_key.serialize_pem().as_bytes(),
+        )
+        .unwrap();
+        for (connections, streams) in [
+            (Semaphore::MAX_PERMITS + 1, 1),
+            (Semaphore::MAX_PERMITS, u32::MAX),
+        ] {
+            let socket = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let (_stop, shutdown) = watch::channel(false);
+            let listener = serve_tls(
+                socket,
+                server_config(&identity, ClientAuthentication::OAuth).unwrap(),
+                Router::new(),
+                ListenerLimits {
+                    max_connections: connections,
+                    max_http2_streams: streams,
+                    ..Default::default()
+                },
+                Arc::new(Audit),
+                shutdown,
+            );
+            let inventory = listener.inventory();
+            let error = tokio::time::timeout(Duration::from_secs(5), listener)
+                .await
+                .unwrap()
+                .unwrap_err();
+            assert!(error.to_string().contains("invalid TLS listener limits"));
+            assert!(inventory.connections.is_empty());
+            assert!(inventory.streams.is_empty());
+            inventory.drain().await.unwrap();
+        }
+    }
+
     struct RequestState {
         node: Arc<NodeStore>,
         entered: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
@@ -339,6 +452,7 @@ mod lifecycle_tests {
             Arc::new(Audit),
             shutdown,
             |socket| socket.set_nodelay(true),
+            Arc::new(ListenerInventory::new(&ListenerLimits::default())),
         ));
         let client = reqwest::Client::builder()
             .no_proxy()
@@ -486,6 +600,7 @@ mod lifecycle_tests {
                 }
                 result
             },
+            Arc::new(ListenerInventory::new(&ListenerLimits::default())),
         ));
         let denied = tokio::time::timeout(Duration::from_secs(10), records.recv())
             .await

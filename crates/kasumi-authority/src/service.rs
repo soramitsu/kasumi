@@ -772,8 +772,12 @@ impl IndependentAuthority {
         fence.check()?;
         Ok((signed, fence))
     }
-    pub async fn shutdown(&self) -> anyhow::Result<()> {
+    /// Close admission and response release synchronously before listener drain.
+    pub fn close_admission(&self) {
         self.requests.close();
+    }
+    pub async fn shutdown(&self) -> anyhow::Result<()> {
+        self.close_admission();
         // Never hold proposal while draining admitted jobs: a detached accepted
         // job may still be waiting to acquire it. Cancelling this waiter leaves
         // every original read owner installed until its work/fence is dropped.

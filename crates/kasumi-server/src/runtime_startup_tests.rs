@@ -158,3 +158,102 @@ async fn completed_runtime_shutdown_failure_retains_diagnostic_and_installation_
     drop(owner);
     Ok(())
 }
+
+#[tokio::test]
+async fn actual_standalone_unpolled_serve_and_serving_panic_retain_installation_until_join()
+-> Result<()> {
+    let _gate = LIFECYCLE_GATE.lock().await;
+    let directory = tempfile::tempdir()?;
+    let installed =
+        crate::standalone::initialize(&directory.path().join("installed"), "acme").await?;
+    let mut config = RuntimeConfig::load(&installed.configuration)?;
+    let [mcp, native, admin] = listening_addresses();
+    config.mcp.listen = mcp;
+    config.native.listen = native;
+    config.admin.listen = admin;
+    config.mcp.protocol = McpConfig::new(format!("https://localhost:{}/mcp", mcp.port()))?;
+    for panicking in [false, true] {
+        let runtime = NodeRuntime::open(config.clone()).await?;
+        let pause = crate::startup_preparation::pause_failure(config.database_id);
+        let fault = panicking
+            .then(|| crate::startup_preparation::install(config.database_id, "data-serving"));
+        let (_stop, shutdown) = watch::channel(false);
+        let waiter = runtime.serve(shutdown);
+        // Registration happened synchronously. Even this completely unpolled
+        // caller future cannot abandon the real initialized runtime.
+        drop(waiter);
+        tokio::time::timeout(Duration::from_secs(10), pause.entered()).await?;
+        assert!(crate::standalone::claim(&config).is_err());
+        assert!(
+            NodeStore::open_existing(
+                &config.database_path,
+                config.database_id,
+                kasumi_store::ScratchDisk::open(config.scratch_disk.clone())?
+            )
+            .is_err()
+        );
+        let mut first = Box::pin(crate::serving_owner::drain_test_instance(
+            crate::serving_owner::Kind::Data,
+            config.database_id,
+        ));
+        std::future::poll_fn(|cx| {
+            assert!(std::future::Future::poll(first.as_mut(), cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        drop(first);
+        assert!(crate::standalone::claim(&config).is_err());
+        pause.release();
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(10),
+            crate::serving_owner::drain_test_instance(
+                crate::serving_owner::Kind::Data,
+                config.database_id,
+            ),
+        )
+        .await?;
+        if panicking {
+            let error = outcome.unwrap_err();
+            let failure = error
+                .downcast_ref::<kasumi_types::drain::DrainFailure>()
+                .context("serving panic did not preserve typed drain evidence")?;
+            assert_eq!(
+                failure.completion(),
+                kasumi_types::drain::DrainCompletion::Complete
+            );
+            assert!(failure.issues().iter().any(|issue| {
+                issue
+                    .error()
+                    .downcast_ref::<crate::startup_preparation::PreparationPanic>()
+                    .is_some()
+            }));
+        } else {
+            outcome?;
+        }
+        drop(fault);
+        drop(pause);
+        let lock = crate::standalone::claim(&config)?;
+        let node = NodeStore::open_existing(
+            &config.database_path,
+            config.database_id,
+            kasumi_store::ScratchDisk::open(config.scratch_disk.clone())?,
+        )?;
+        let store = TenantStore::open_existing(
+            node.clone(),
+            SECURITY_TENANT.into(),
+            config.security_audit.keys.provider(Arc::new(file_secret))?,
+            kasumi_store::StorageAccess::security_audit(),
+        )
+        .await?;
+        assert!(store.get("security.audit.meta", b"head")?.is_some());
+        store.shutdown().await?;
+        node.drain_initializers().await?;
+        drop(store);
+        drop(node);
+        drop(lock);
+        let mut reopened = NodeRuntime::open(config.clone()).await?;
+        reopened.shutdown().await?;
+        drop(reopened);
+    }
+    Ok(())
+}

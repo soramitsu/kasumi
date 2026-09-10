@@ -166,3 +166,149 @@ async fn serving_drain_keeps_every_panic_abort_and_returned_error() {
     }
     assert_eq!(tasks.failed_tasks.len(), 3);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn aborted_listener_retains_http1_and_http2_requests_until_exact_nested_join() {
+    use crate::tls::{self, TlsHandshakeAudit, TlsHandshakeEvent};
+    use axum::{Router, extract::State, routing::post};
+    use kasumi_transport::{ClientAuthentication, TlsIdentity};
+    use tokio::sync::{Notify, oneshot, watch};
+    struct Audit;
+    #[async_trait::async_trait]
+    impl TlsHandshakeAudit for Audit {
+        async fn record(&self, _: &TlsHandshakeEvent) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+    struct Request {
+        _node: Arc<kasumi_store::NodeStore>,
+        entered: std::sync::Mutex<Option<oneshot::Sender<()>>>,
+        release: Arc<Notify>,
+    }
+    async fn held(State(request): State<Arc<Request>>) -> &'static str {
+        request
+            .entered
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap()
+            .send(())
+            .unwrap();
+        request.release.notified().await;
+        "joined request"
+    }
+    for http2 in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("nested-listener.redb");
+        let node = kasumi_store::NodeStore::create_new(
+            &path,
+            kasumi_store::test_utils::NODE_STORE_ID,
+            kasumi_store::ScratchDisk::fixture(),
+        )
+        .unwrap();
+        let weak = Arc::downgrade(&node);
+        let rcgen::CertifiedKey { cert, signing_key } =
+            rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let identity = TlsIdentity::from_pem(
+            cert.pem().as_bytes(),
+            signing_key.serialize_pem().as_bytes(),
+        )
+        .unwrap();
+        let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!(
+            "https://localhost:{}/held",
+            socket.local_addr().unwrap().port()
+        );
+        let (entered, ready) = oneshot::channel();
+        let release = Arc::new(Notify::new());
+        let router = Router::new()
+            .route("/held", post(held))
+            .with_state(Arc::new(Request {
+                _node: node,
+                entered: std::sync::Mutex::new(Some(entered)),
+                release: release.clone(),
+            }));
+        let mut tasks = ServingTasks::new();
+        let (_stop, shutdown) = watch::channel(false);
+        tasks.spawn_listener(tls::serve_tls(
+            socket,
+            kasumi_transport::server_config(&identity, ClientAuthentication::OAuth).unwrap(),
+            router,
+            tls::ListenerLimits::default(),
+            Arc::new(Audit),
+            shutdown,
+        ));
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .add_root_certificate(reqwest::Certificate::from_pem(cert.pem().as_bytes()).unwrap());
+        let client = if http2 {
+            client.http2_prior_knowledge()
+        } else {
+            client.http1_only()
+        }
+        .build()
+        .unwrap();
+        let response = tokio::spawn(async move {
+            client
+                .post(endpoint)
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap()
+        });
+        tokio::time::timeout(Duration::from_secs(5), ready)
+            .await
+            .unwrap()
+            .unwrap();
+        // This aborts only the listener task. Its nested inventory is already in
+        // ServingTasks, so neither HTTP/1 requests nor Hyper H2 streams detach.
+        tasks.listeners.abort_all();
+        let mut first = Box::pin(tasks.shutdown());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut first)
+                .await
+                .is_err()
+        );
+        drop(first);
+        assert!(weak.upgrade().is_some());
+        assert!(
+            kasumi_store::NodeStore::open_existing(
+                &path,
+                kasumi_store::test_utils::NODE_STORE_ID,
+                kasumi_store::ScratchDisk::fixture()
+            )
+            .is_err()
+        );
+        let issue = tasks.report.issues()[0].clone();
+        assert!(
+            issue
+                .error()
+                .downcast_ref::<tokio::task::JoinError>()
+                .unwrap()
+                .is_cancelled()
+        );
+        release.notify_one();
+        let failure = tokio::time::timeout(Duration::from_secs(5), tasks.shutdown())
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(failure.completion(), DrainCompletion::Complete);
+        assert!(Arc::ptr_eq(&issue, &failure.issues()[0]));
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), response)
+                .await
+                .unwrap()
+                .unwrap(),
+            "joined request"
+        );
+        assert!(weak.upgrade().is_none());
+        let _reopened = kasumi_store::NodeStore::open_existing(
+            &path,
+            kasumi_store::test_utils::NODE_STORE_ID,
+            kasumi_store::ScratchDisk::fixture(),
+        )
+        .unwrap();
+    }
+}

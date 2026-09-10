@@ -22,7 +22,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tokio::{net::TcpListener, sync::watch, task::JoinSet};
+use tokio::{net::TcpListener, sync::watch};
 use uuid::Uuid;
 fn listener_outcome(
     result: Option<std::result::Result<Result<()>, tokio::task::JoinError>>,
@@ -172,6 +172,7 @@ impl AuthorityRuntimeConfig {
     }
 }
 pub struct AuthorityRuntime {
+    serving_registration: Option<crate::serving_owner::Registration>,
     startup_drain: kasumi_types::drain::DrainReport,
     config: AuthorityRuntimeConfig,
     authority: Arc<IndependentAuthority>,
@@ -180,8 +181,8 @@ pub struct AuthorityRuntime {
     audit: Arc<SecurityAudit>,
     audit_store: Arc<TenantStore>,
     network: Arc<ClusterNetwork>,
-    native: TcpListener,
-    cluster: TcpListener,
+    native: Option<TcpListener>,
+    cluster: Option<TcpListener>,
     native_tls: kasumi_transport::ReloadableServerConfig,
     tls_reload: crate::tls_reload::RuntimeTlsReload,
     auth: Arc<Authenticator>,
@@ -392,7 +393,13 @@ impl AuthorityRuntime {
                 None,
                 audit.clone(),
             );
+            let serving_registration = crate::serving_owner::Registration::new(
+                crate::serving_owner::Kind::Authority,
+                config.database_id,
+                audit.admission(),
+            )?;
             Ok(Self {
+                serving_registration: Some(serving_registration),
                 startup_drain: Default::default(),
                 tls_reload,
                 config,
@@ -402,8 +409,8 @@ impl AuthorityRuntime {
                 audit,
                 audit_store,
                 network,
-                native,
-                cluster,
+                native: Some(native),
+                cluster: Some(cluster),
                 native_tls,
                 auth,
             })
@@ -420,11 +427,42 @@ impl AuthorityRuntime {
         }
         outcome
     }
-    pub async fn serve(mut self, mut shutdown: watch::Receiver<bool>) -> Result<()> {
-        let (stop, stopped) = watch::channel(false);
-        let mut tasks = JoinSet::new();
-        tasks.spawn(tls::serve_tls(
-            self.cluster,
+    pub fn serve(
+        mut self,
+        shutdown: watch::Receiver<bool>,
+    ) -> impl std::future::Future<Output = Result<()>> + Send + 'static {
+        let registration = self
+            .serving_registration
+            .take()
+            .expect("opened runtime has one serving registration");
+        crate::serving_owner::serve(
+            crate::serving_owner::Kind::Authority,
+            registration,
+            AuthorityServing {
+                tasks: crate::runtime::ServingTasks::new(),
+                report: Default::default(),
+                runtime: self,
+            },
+            shutdown,
+        )
+    }
+
+    /// Stop opening new instances before joining all retained serving owners.
+    pub async fn drain_serving() -> Result<()> {
+        crate::serving_owner::drain(crate::serving_owner::Kind::Authority).await
+    }
+
+    async fn serve_owned(
+        &mut self,
+        tasks: &mut crate::runtime::ServingTasks,
+        shutdown: &mut crate::serving_owner::Shutdown,
+    ) -> Result<()> {
+        if shutdown.requested() {
+            return Ok(());
+        }
+        let stopped = tasks.cluster_stop.subscribe();
+        tasks.spawn_listener(tls::serve_tls(
+            self.cluster.take().expect("cluster listener starts once"),
             self.network.server_tls(),
             self.network.router(),
             tls::ListenerLimits::default(),
@@ -456,26 +494,26 @@ impl AuthorityRuntime {
             }
             Ok::<_, anyhow::Error>(())
         };
-        let (mut outcome, initialized) = if *shutdown.borrow() {
+        let (mut outcome, initialized) = if shutdown.requested() {
             (Ok(()), false)
         } else {
             tokio::select! {
                 result = startup => (result, true),
                 _ = shutdown.changed() => (Ok(()), false),
-                result = tasks.join_next() => (listener_outcome(result), false),
+                result = tasks.listeners.join_next() => (listener_outcome(result), false),
             }
         };
-        if initialized && outcome.is_ok() && !*shutdown.borrow() {
+        if initialized && outcome.is_ok() && !shutdown.requested() {
             let router = tonic::service::Routes::new(
-                NativeAuthority::new(self.authority.clone(), self.auth)
+                NativeAuthority::new(self.authority.clone(), self.auth.clone())
                     .with_signer_verifier(self.signer_verifier.clone())
                     .with_operational_signer_file(self.config.operational_signer_file.clone())
                     .service(),
             )
             .into_axum_router();
-            tasks.spawn(tls::serve_tls(
-                self.native,
-                self.native_tls,
+            tasks.spawn_listener(tls::serve_tls(
+                self.native.take().expect("native listener starts once"),
+                self.native_tls.clone(),
                 router,
                 tls::ListenerLimits::default(),
                 self.audit.clone(),
@@ -483,42 +521,10 @@ impl AuthorityRuntime {
             ));
             outcome = tokio::select! {
                 _ = shutdown.changed() => Ok(()),
-                result = tasks.join_next() => listener_outcome(result),
+                result = tasks.listeners.join_next() => listener_outcome(result),
             };
         }
-        stop.send_replace(true);
-        while let Some(result) = tasks.join_next().await {
-            outcome = crate::runtime_drain::combine(
-                outcome,
-                result.map_err(Into::into).and_then(|value| value),
-            );
-        }
-        // During cooperative shutdown, retain service fields until actual drain.
-        // Listener fields have moved. Cancellation of this consuming outer
-        // future still requires a separate retained serving owner.
-        let mut delay = std::time::Duration::from_secs(1);
-        let close = loop {
-            let result = Self::drain_owned(
-                &mut self.startup_drain,
-                &self.authority,
-                &self.stores,
-                &self.audit,
-                &self.audit_store,
-                &self.signer_verifier,
-            )
-            .await;
-            if let Err(error) = &result
-                && error.completion() == kasumi_types::drain::DrainCompletion::Retained
-            {
-                tracing::error!(error = %error, retry_after_secs = delay.as_secs(),
-                    "authority serving owner drain incomplete; retaining resources for retry");
-                tokio::time::sleep(delay).await;
-                delay = (delay * 2).min(std::time::Duration::from_secs(30));
-                continue;
-            }
-            break result.map_err(Into::into);
-        };
-        crate::runtime_drain::combine(outcome, close)
+        outcome
     }
 }
 
@@ -529,5 +535,40 @@ impl crate::startup_owner::Runtime for AuthorityRuntime {
         Box<dyn std::future::Future<Output = kasumi_types::drain::DrainResult> + Send + '_>,
     > {
         Box::pin(AuthorityRuntime::shutdown(self))
+    }
+}
+
+struct AuthorityServing {
+    tasks: crate::runtime::ServingTasks,
+    report: kasumi_types::drain::DrainReport,
+    runtime: AuthorityRuntime,
+}
+impl crate::serving_owner::Owner for AuthorityServing {
+    fn run<'a>(
+        &'a mut self,
+        shutdown: &'a mut crate::serving_owner::Shutdown,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(self.runtime.serve_owned(&mut self.tasks, shutdown))
+    }
+    fn close(
+        &mut self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = kasumi_types::drain::DrainResult> + Send + '_>,
+    > {
+        Box::pin(async move {
+            self.runtime.authority.close_admission();
+            let mut retained = None;
+            crate::runtime_drain::observe(
+                &mut self.report,
+                &mut retained,
+                self.tasks.shutdown().await,
+            );
+            crate::runtime_drain::observe(
+                &mut self.report,
+                &mut retained,
+                self.runtime.shutdown().await,
+            );
+            self.report.outcome(retained)
+        })
     }
 }
