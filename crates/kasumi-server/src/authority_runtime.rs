@@ -287,6 +287,7 @@ impl AuthorityRuntime {
                     std::collections::BTreeMap::from([(domain.digest()?, domain)]),
                     Arc::new(file_secret),
                     scratch_disk.clone(),
+                    admission.clone(),
                 )
                 .await?;
             pending.verifiers.push(signer_verifier.clone());

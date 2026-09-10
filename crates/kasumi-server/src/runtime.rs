@@ -1047,7 +1047,7 @@ impl NodeRuntime {
             }
             Some(
                 verifier
-                    .open(domains, credential.clone(), scratch_disk.clone())
+                    .open(domains, credential.clone(), scratch_disk.clone(), admission.clone())
                     .await?,
             )
         } else {
@@ -1933,12 +1933,12 @@ impl NodeRuntime {
                 ),
             );
         }
-        for (index, lease) in self.serving_leases.iter().enumerate() {
-            if let Err(error) = lease.shutdown().await {
-                // This concrete API closes its gate and returns only after its
-                // sole renewal JoinHandle joins. Retain that completed failure.
-                self.startup_drain.record("serving lease", index, error);
-            }
+        for lease in &self.serving_leases {
+            observe(
+                &mut self.startup_drain,
+                &mut retained,
+                lease.shutdown().await,
+            );
         }
         if let Some(manager) = &self.administration {
             observe(
@@ -2172,6 +2172,7 @@ pub fn example_config() -> RuntimeConfig {
         },
         tenant_audit_archives: BTreeMap::new(),
         signer_verifier: Some(crate::signer_runtime::SignerVerifierConfig {
+            max_background_workers: 64,
             identity: kasumi_serving::TrustVerifierIdentity {
                 installation_id: uuid::Uuid::from_u128(7),
                 node_id: 1,
