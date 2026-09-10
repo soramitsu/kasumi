@@ -24,10 +24,12 @@ pub struct SignerVerifierConfig {
     pub identity: TrustVerifierIdentity,
     pub database_path: PathBuf,
     pub keys: KeyProviderSettings,
+    pub max_background_workers: usize,
 }
 impl SignerVerifierConfig {
     pub fn validate(&self) -> Result<()> {
         self.identity.validate()?;
+        BackgroundWorkBudget::required_bytes(self.max_background_workers, 1)?;
         ensure!(
             self.database_path.is_absolute(),
             "verifier storage requires an installed absolute path"
@@ -79,11 +81,18 @@ impl SignerVerifierConfig {
         domains: BTreeMap<String, SigningDomain>,
         credential: CredentialSource,
         scratch_disk: Arc<kasumi_store::ScratchDisk>,
+        admission: Arc<kasumi_engine::admission::NodeAdmission>,
     ) -> Result<Arc<InstalledSignerVerifier>> {
         ensure!(
             self.database_path.is_file(),
             "signer verifier must be explicitly initialized before runtime startup"
         );
+        self.validate()?;
+        let bytes =
+            BackgroundWorkBudget::required_bytes(self.max_background_workers, domains.len())?;
+        let mut reserved = admission.reserve(bytes, None)?;
+        reserved.retain(bytes);
+        let charge: Arc<dyn Send + Sync> = Arc::new(reserved);
         let store = self.store(credential, false, scratch_disk).await?;
         let administrator = Arc::new(ScopedSignerAdministrator::default());
         let result = (|| -> Result<BTreeMap<String, Arc<LiveSignerTrust>>> {
@@ -100,8 +109,12 @@ impl SignerVerifierConfig {
             let mut owners = BTreeMap::new();
             for (digest, domain) in domains {
                 ensure!(digest == domain.digest()?, "noncanonical verifier domain");
-                let owner =
-                    store.open_live_signer_trust(&self.identity, domain, administrator.clone())?;
+                let owner = store.open_live_signer_trust(
+                    &self.identity,
+                    domain,
+                    administrator.clone(),
+                    BackgroundWorkBudget::new(self.max_background_workers, charge.clone())?,
+                )?;
                 let current = owner.current()?;
                 ensure!(
                     current.revision != 0 || current.active.digest()? == installed.domains[&digest],
@@ -124,6 +137,7 @@ impl SignerVerifierConfig {
             store,
             owners,
             administrator,
+            drain_report: Default::default(),
         }))
     }
 }
@@ -131,6 +145,7 @@ pub(crate) struct InstalledSignerVerifier {
     store: Arc<TenantStore>,
     owners: BTreeMap<String, Arc<LiveSignerTrust>>,
     administrator: Arc<ScopedSignerAdministrator>,
+    drain_report: std::sync::Mutex<kasumi_types::drain::DrainReport>,
 }
 impl InstalledSignerVerifier {
     pub(crate) async fn authorize_control(
@@ -218,13 +233,37 @@ impl InstalledSignerVerifier {
             .context("installed signer domain absent")
     }
     pub(crate) async fn shutdown(&self) -> kasumi_types::drain::DrainResult {
+        use kasumi_types::drain::DrainCompletion;
         for owner in self.owners.values() {
             owner.close();
         }
+        let mut retained = None;
         for owner in self.owners.values() {
-            owner.drain_background_work().await;
+            if let Err(error) = owner.drain_background_work().await {
+                self.drain_report
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .merge(&error);
+                if error.completion() == DrainCompletion::Retained {
+                    retained = Some(error);
+                }
+            }
         }
-        self.store.shutdown().await
+        if retained.is_none()
+            && let Err(error) = self.store.shutdown().await
+        {
+            self.drain_report
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .merge(&error);
+            if error.completion() == DrainCompletion::Retained {
+                retained = Some(error);
+            }
+        }
+        self.drain_report
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .outcome(retained)
     }
 }
 
@@ -292,6 +331,7 @@ impl VerifierInstallation {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InitializeSignerVerifier {
+    pub admission: kasumi_engine::admission::AdmissionConfig,
     pub scratch_disk: kasumi_store::ScratchDiskConfig,
     pub verifier: SignerVerifierConfig,
     pub initial_certificates: Vec<SigningCertificate>,
@@ -306,6 +346,14 @@ impl InitializeSignerVerifier {
     async fn initialize_owned(self) -> Result<()> {
         self.verifier.validate()?;
         self.scratch_disk.validate()?;
+        let admission = kasumi_engine::admission::NodeAdmission::new(self.admission.clone())?;
+        let bytes = BackgroundWorkBudget::required_bytes(
+            self.verifier.max_background_workers,
+            self.initial_certificates.len(),
+        )?;
+        let mut reserved = admission.reserve(bytes, None)?;
+        reserved.retain(bytes);
+        let charge: Arc<dyn Send + Sync> = Arc::new(reserved);
         ensure!(
             !self.initial_certificates.is_empty() && self.initial_certificates.len() <= 1024,
             "verifier requires a bounded explicit domain set"
@@ -360,6 +408,10 @@ impl InitializeSignerVerifier {
                     &self.verifier.identity,
                     certificate.clone(),
                     administrator.clone(),
+                    BackgroundWorkBudget::new(
+                        self.verifier.max_background_workers,
+                        charge.clone(),
+                    )?,
                 )?;
             }
             store.write_batch(&[WriteOp::put(

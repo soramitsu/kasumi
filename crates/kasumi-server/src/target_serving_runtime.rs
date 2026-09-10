@@ -4,10 +4,13 @@ use super::*;
 use crate::{api::DatabaseRegistry, serving_runtime::RuntimeLease};
 use std::ops::Bound;
 impl TargetRecoveryRuntime {
-    pub(super) fn start_serving_reconciliation(self: &Arc<Self>) {
+    pub(super) fn start_serving_reconciliation(
+        self: &Arc<Self>,
+        budget: &kasumi_serving::BackgroundWorkBudget,
+    ) -> Result<()> {
         let weak = Arc::downgrade(self);
         let wake = self.serving_monitor.wake();
-        let task = tokio::spawn(async move {
+        let task = async move {
             let mut after = None::<String>;
             loop {
                 tokio::select! {
@@ -54,8 +57,8 @@ impl TargetRecoveryRuntime {
                     }
                 }
             }
-        });
-        self.serving_monitor.register(task);
+        };
+        self.serving_monitor.start(task, budget)
     }
     async fn prune_inactive_serving(&self) {
         let candidates: Vec<_> = self

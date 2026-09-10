@@ -1451,13 +1451,12 @@ impl Administration {
                     }
                 }
             }
-            if let Some(lease) = &tenant.lease {
-                if let Err(error) = lease.shutdown().await {
-                    retained = Some(DrainFailure::retained(report.record(
-                        "generation lease",
-                        index,
-                        error,
-                    )));
+            if let Some(lease) = &tenant.lease
+                && let Err(error) = lease.shutdown().await
+            {
+                report.merge(&error);
+                if error.completion() == DrainCompletion::Retained {
+                    retained = Some(error);
                 }
             }
             if let Err(failure) = tenant.database.shutdown().await {

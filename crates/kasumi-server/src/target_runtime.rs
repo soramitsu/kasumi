@@ -170,11 +170,12 @@ impl Generation {
                     self.phase.take();
                 }
                 Err(error) => {
-                    retained = Some(DrainFailure::retained(self.report.record(
-                        "target phase",
-                        0,
-                        error,
-                    )))
+                    self.report.merge(&error);
+                    if error.completion() == DrainCompletion::Retained {
+                        retained = Some(error);
+                    } else {
+                        self.phase.take();
+                    }
                 }
             }
         }
@@ -184,11 +185,12 @@ impl Generation {
                     self.lease.take();
                 }
                 Err(error) => {
-                    retained = Some(DrainFailure::retained(self.report.record(
-                        "target lease",
-                        0,
-                        error,
-                    )))
+                    self.report.merge(&error);
+                    if error.completion() == DrainCompletion::Retained {
+                        retained = Some(error);
+                    } else {
+                        self.lease.take();
+                    }
                 }
             }
         }
@@ -348,6 +350,11 @@ impl TargetRecoveryRuntime {
             .clone()
             .context("target recovery not configured")?;
         installed.validate(&config)?;
+        let monitor_bytes = kasumi_serving::BackgroundWorkBudget::required_bytes(1, 1)?;
+        let mut monitor_charge = admission.reserve(monitor_bytes, None)?;
+        monitor_charge.retain(monitor_bytes);
+        let monitor_budget =
+            kasumi_serving::BackgroundWorkBudget::new(1, Arc::new(monitor_charge))?;
         // Finish fallible filesystem setup before a journal catalog can start
         // renewal workers. A rejected root must not detach storage ownership.
         std::fs::create_dir_all(&installed.generation_root)?;
@@ -423,7 +430,24 @@ impl TargetRecoveryRuntime {
             calls: Arc::new(Semaphore::new(MAX_CALLS as usize)),
             closing: AtomicBool::new(false),
         });
-        runtime.start_serving_reconciliation();
+        if let Err(error) = runtime.start_serving_reconciliation(&monitor_budget) {
+            // The actual unpublished target remains owned while its journal and
+            // any started monitor drain, even if the outer request loses its reply.
+            struct FailedMonitor(Arc<TargetRecoveryRuntime>);
+            impl crate::startup_owner::Runtime for FailedMonitor {
+                fn close(
+                    &mut self,
+                ) -> std::pin::Pin<Box<dyn std::future::Future<Output = DrainResult> + Send + '_>>
+                {
+                    Box::pin(self.0.shutdown())
+                }
+            }
+            let mut failed = FailedMonitor(runtime);
+            return Err(match crate::startup_owner::finish(&mut failed).await {
+                Ok(()) => error,
+                Err(drain) => error.context(drain),
+            });
+        }
         Ok(runtime)
     }
     pub fn control_root(&self) -> &ControlSigningRoot {
@@ -1322,7 +1346,10 @@ impl TargetRecoveryRuntime {
         // RuntimeWorker returns only after its exact handle joins. Retain its
         // actual JoinError before waiting for any target or admitted call.
         if let Err(error) = self.serving_monitor.drain().await {
-            report.record("target serving monitor", 0, error.into());
+            report.merge(&error);
+            if error.completion() == DrainCompletion::Retained {
+                retained = Some(error);
+            }
         }
         let targets = self
             .generations

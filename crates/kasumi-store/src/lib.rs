@@ -422,7 +422,15 @@ pub struct TenantStore {
     shutdown_signal: watch::Sender<bool>,
     background: AsyncMutex<BackgroundTasks>,
     audit_placement: Mutex<Option<Arc<TenantAuditPlacement>>>,
-    live_trust: Mutex<BTreeMap<String, Weak<kasumi_serving::LiveSignerTrust>>>,
+    live_trust: Mutex<
+        BTreeMap<
+            String,
+            (
+                Weak<kasumi_serving::LiveSignerTrust>,
+                kasumi_serving::BackgroundWorkScope,
+            ),
+        >,
+    >,
 }
 
 #[derive(Default)]

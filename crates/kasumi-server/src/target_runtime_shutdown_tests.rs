@@ -160,7 +160,11 @@ async fn target_monitor_and_outer_owner_survive_cancelled_shutdown_until_journal
             })),
         );
         let pause = runtime.serving_monitor.pause_next_upgrade();
-        runtime.start_serving_reconciliation();
+        let bytes = kasumi_serving::BackgroundWorkBudget::required_bytes(1, 1).unwrap();
+        let mut charge = runtime.admission.reserve(bytes, None).unwrap();
+        charge.retain(bytes);
+        let budget = kasumi_serving::BackgroundWorkBudget::new(1, Arc::new(charge)).unwrap();
+        runtime.start_serving_reconciliation(&budget).unwrap();
         pause.entered.notified().await;
         assert_eq!(runtime.calls.available_permits(), MAX_CALLS as usize);
         let mut outer = Some(runtime);

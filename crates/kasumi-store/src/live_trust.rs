@@ -208,12 +208,13 @@ impl TenantStore {
         verifier: &TrustVerifierIdentity,
         initial: SigningCertificate,
         administrator: Arc<dyn LiveTrustAdministrator>,
+        work_budget: kasumi_serving::BackgroundWorkBudget,
     ) -> Result<Arc<LiveSignerTrust>> {
         let domain = initial.identity.domain.clone();
         let persistence = self.trust_persistence(verifier, &domain)?;
         let record = LocalSignerTrustRecord::initial(verifier.clone(), initial)?;
         persistence.publish(None, &record, None)?;
-        self.open_live_signer_trust(verifier, domain, administrator)
+        self.open_live_signer_trust(verifier, domain, administrator, work_budget)
     }
     /// Presence is checked independently from decoding, so an explicit installer
     /// can resume an absent initial record without treating corrupt state as new.
@@ -236,19 +237,29 @@ impl TenantStore {
         verifier: &TrustVerifierIdentity,
         domain: SigningDomain,
         administrator: Arc<dyn LiveTrustAdministrator>,
+        work_budget: kasumi_serving::BackgroundWorkBudget,
     ) -> Result<Arc<LiveSignerTrust>> {
         let persistence = self.trust_persistence(verifier, &domain)?;
         let key = domain.digest()?;
         let mut owners = self.live_trust.lock();
-        owners.retain(|_, owner| owner.strong_count() > 0);
-        if let Some(owner) = owners.get(&key).and_then(Weak::upgrade) {
-            ensure!(
-                owner.same_administrator(&administrator),
-                "live trust administrator provider changed"
-            );
-            if !owner.is_closed() {
-                return Ok(owner);
+        if let Some((prior, scope)) = owners.get(&key) {
+            if let Some(owner) = prior.upgrade() {
+                ensure!(
+                    owner.same_administrator(&administrator),
+                    "live trust administrator provider changed"
+                );
+                ensure!(
+                    owner.background_capacity() == work_budget.max_registered(),
+                    "cached verifier background capacity changed"
+                );
+                if !owner.is_closed() {
+                    return Ok(owner);
+                }
             }
+            ensure!(
+                scope.drained(),
+                "closed verifier has unjoined work or an unreported background failure"
+            );
         }
         let owner = LiveSignerTrust::open(
             verifier,
@@ -256,8 +267,9 @@ impl TenantStore {
             Arc::new(persistence),
             administrator,
             self.clock.clone(),
+            work_budget,
         )?;
-        owners.insert(key, Arc::downgrade(&owner));
+        owners.insert(key, (Arc::downgrade(&owner), owner.background_scope()));
         Ok(owner)
     }
 }

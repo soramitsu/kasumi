@@ -83,10 +83,11 @@ impl AuthorityTrust {
     pub fn start_background_work(
         &self,
         partition: u16,
-        install: impl FnOnce() -> Arc<dyn crate::LiveTrustBackgroundWork>,
+        worker: Arc<crate::BackgroundWork>,
+        task: impl std::future::Future<Output = ()> + Send + 'static,
     ) -> Result<()> {
         self.require_live_partition(partition)?
-            .start_background_work(install)
+            .start_background_work(worker, task)
     }
     pub fn install(manifest: AuthorityManifest) -> Result<Self> {
         manifest.validate()?;

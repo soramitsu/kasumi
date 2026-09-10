@@ -188,119 +188,6 @@ pub trait LiveTrustPersistence: Send + Sync {
     ) -> Result<()>;
 }
 
-/// Local background ownership only; this grants no authority. A worker that
-/// retains verifier storage must keep its registered owner strongly reachable
-/// until its actual task completes, including during cancelled setup.
-pub trait LiveTrustBackgroundWork: Send + Sync {
-    fn close(&self);
-    fn drain(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>>;
-}
-
-#[cfg(test)]
-mod background_tests {
-    use super::*;
-    use std::{
-        future::Future,
-        sync::atomic::{AtomicBool, Ordering},
-        task::Poll,
-    };
-
-    struct Worker {
-        closed: AtomicBool,
-        task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
-    }
-    impl LiveTrustBackgroundWork for Worker {
-        fn close(&self) {
-            self.closed.store(true, Ordering::Release);
-        }
-        fn drain(&self) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send + '_>> {
-            Box::pin(async move {
-                let mut owner = self.task.lock().await;
-                if let Some(task) = owner.as_mut() {
-                    task.await.unwrap();
-                    owner.take();
-                }
-            })
-        }
-    }
-    #[tokio::test]
-    async fn task_installation_is_atomic_with_close_and_cancelled_drain_retains_ownership() {
-        tokio::time::timeout(std::time::Duration::from_secs(15), async {
-            let key =
-                ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
-                    .unwrap();
-            let root = crate::test_utils::FixtureSigningRoot::from_pkcs8(key.as_ref()).unwrap();
-            let signing = root
-                .install(
-                    crate::AuthorityManifest {
-                        authority_id: Uuid::new_v4(),
-                        partitions: std::collections::BTreeMap::from([(
-                            0,
-                            crate::AuthorityPartition {
-                                group: "worker-test".into(),
-                                public_key: root.public_key(),
-                            },
-                        )]),
-                        lifecycle_controls: Default::default(),
-                        max_lease_ms: 1000,
-                        clock_rate_error_ppm: 0,
-                    },
-                    0,
-                )
-                .unwrap();
-            let live = signing.verifier;
-            let worker = Arc::new(Worker {
-                closed: AtomicBool::new(false),
-                task: Default::default(),
-            });
-            let weak = Arc::downgrade(&worker);
-            let release = Arc::new(tokio::sync::Notify::new());
-            live.start_background_work(|| {
-                // Close uses this same mutex. It cannot see the worker before its
-                // handle is installed, nor finish and let this factory spawn later.
-                assert!(live.state.try_lock().is_err());
-                let owner = worker.clone();
-                let live = live.clone();
-                let release = release.clone();
-                *worker.task.try_lock().unwrap() = Some(tokio::spawn(async move {
-                    release.notified().await;
-                    assert!(owner.closed.load(Ordering::Acquire));
-                    drop(live);
-                    drop(owner);
-                }));
-                worker.clone()
-            })
-            .unwrap();
-            live.close();
-            assert!(worker.closed.load(Ordering::Acquire));
-            assert!(
-                live.start_background_work(|| panic!("late task installed after close"))
-                    .is_err()
-            );
-            drop(worker);
-            let mut first = Box::pin(live.drain_background_work());
-            std::future::poll_fn(|cx| {
-                assert!(first.as_mut().poll(cx).is_pending());
-                Poll::Ready(())
-            })
-            .await;
-            drop(first);
-            assert!(weak.upgrade().is_some());
-            let mut retry = Box::pin(live.drain_background_work());
-            std::future::poll_fn(|cx| {
-                assert!(retry.as_mut().poll(cx).is_pending());
-                Poll::Ready(())
-            })
-            .await;
-            release.notify_one();
-            retry.await;
-            assert!(weak.upgrade().is_none());
-        })
-        .await
-        .expect("shutdown ownership fixture timed out");
-    }
-}
-
 struct RetirementWitness {
     started: Duration,
     last: Duration,
@@ -310,15 +197,32 @@ struct LiveState {
     active_certificate_sha256: String,
     witness: Option<RetirementWitness>,
     closed: bool,
-    workers: Vec<std::sync::Weak<dyn LiveTrustBackgroundWork>>,
+    workers: Vec<Arc<crate::BackgroundWork>>,
+    work_budget: crate::BackgroundWorkBudget,
+    work_report: kasumi_types::drain::DrainReport,
+}
+/// Retained cache fence without structural persistence/runtime back-references.
+/// Original panic payloads inside worker reports may themselves retain owners.
+#[derive(Clone)]
+pub struct BackgroundWorkScope(Arc<Mutex<LiveState>>);
+impl BackgroundWorkScope {
+    pub fn drained(&self) -> bool {
+        let state = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        state.closed && state.workers.iter().all(|worker| worker.drained())
+    }
 }
 pub struct LiveSignerTrust {
     historical: HistoricalSigningTrust,
     persistence: Arc<dyn LiveTrustPersistence>,
     administrator: Arc<dyn LiveTrustAdministrator>,
     clock: Arc<dyn LeaseClock>,
-    state: Mutex<LiveState>,
+    state: Arc<Mutex<LiveState>>,
     generation: watch::Sender<u64>,
+}
+impl Drop for LiveSignerTrust {
+    fn drop(&mut self) {
+        self.close();
+    }
 }
 impl LiveSignerTrust {
     /// Trusted local installer only. The persistence provider has already bound
@@ -330,6 +234,7 @@ impl LiveSignerTrust {
         persistence: Arc<dyn LiveTrustPersistence>,
         administrator: Arc<dyn LiveTrustAdministrator>,
         clock: Arc<dyn LeaseClock>,
+        work_budget: crate::BackgroundWorkBudget,
     ) -> Result<Arc<Self>> {
         persistence.check_access()?;
         let record = persistence.load()?;
@@ -351,13 +256,15 @@ impl LiveSignerTrust {
             administrator,
             clock,
             generation: watch::channel(record.active.identity.generation).0,
-            state: Mutex::new(LiveState {
+            state: Arc::new(Mutex::new(LiveState {
                 active_certificate_sha256: record.active.digest()?,
                 record,
                 witness,
                 closed: false,
                 workers: Vec::new(),
-            }),
+                work_budget,
+                work_report: Default::default(),
+            })),
         }))
     }
     pub fn same_administrator(&self, administrator: &Arc<dyn LiveTrustAdministrator>) -> bool {
@@ -367,29 +274,33 @@ impl LiveSignerTrust {
         self.state.lock().map_or(true, |state| state.closed)
     }
     pub fn close(&self) {
-        let workers = {
-            let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
-            state.closed = true;
-            state.workers.retain(|worker| worker.strong_count() > 0);
-            state
-                .workers
-                .iter()
-                .filter_map(std::sync::Weak::upgrade)
-                .collect::<Vec<_>>()
-        };
-        self.generation.send_replace(0);
-        // Never call a worker while holding the live-trust mutex: renewal may
-        // already hold a serving gate while checking this exact trust owner.
-        for worker in workers {
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        state.closed = true;
+        // Concrete cells only flip admission/notify; they cannot call back into
+        // trust or hold a resource gate while this shared boundary is held.
+        for worker in &state.workers {
             worker.close();
         }
+        self.generation.send_replace(0);
     }
-    /// Install the fully registered task while holding the same gate as close.
-    /// The closure must not call back into this owner or await. If close wins,
-    /// the closure is never called and no background task may be spawned.
+    pub fn background_capacity(&self) -> usize {
+        self.state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .work_budget
+            .max_registered()
+    }
+    /// Reuse requires closed admission and every exact registered child joined.
+    pub fn background_drained(&self) -> bool {
+        self.background_scope().drained()
+    }
+    pub fn background_scope(&self) -> BackgroundWorkScope {
+        BackgroundWorkScope(self.state.clone())
+    }
     pub fn start_background_work(
         &self,
-        install: impl FnOnce() -> Arc<dyn LiveTrustBackgroundWork>,
+        worker: Arc<crate::BackgroundWork>,
+        task: impl std::future::Future<Output = ()> + Send + 'static,
     ) -> Result<()> {
         self.check_persistence()?;
         let mut state = self
@@ -397,27 +308,70 @@ impl LiveSignerTrust {
             .lock()
             .map_err(|_| anyhow::anyhow!("live trust poisoned"))?;
         ensure!(!state.closed, "live signer trust closed");
-        state.workers.retain(|worker| worker.strong_count() > 0);
-        let worker = install();
-        state.workers.push(Arc::downgrade(&worker));
+        state
+            .workers
+            .retain(|worker| !matches!(worker.observed(), Some(Ok(()))));
+        let failures = state
+            .workers
+            .iter()
+            .filter_map(|worker| match worker.observed() {
+                Some(Err(error)) => Some(error),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if !failures.is_empty() {
+            for error in failures {
+                state.work_report.merge(&error);
+            }
+            state.closed = true;
+            for worker in &state.workers {
+                worker.close();
+            }
+            self.generation.send_replace(0);
+            anyhow::bail!("background worker failed; verifier must drain");
+        }
+        ensure!(
+            state.workers.len() < state.work_budget.max_registered(),
+            "background registration capacity exhausted"
+        );
+        state
+            .workers
+            .try_reserve(1)
+            .context("background registry allocation failed")?;
+        // No task can be spawned before both the registry and shared node-memory
+        // slot are reserved. Close cannot cross this synchronous publication.
+        worker.start(task, &state.work_budget)?;
+        state.workers.push(worker);
         Ok(())
     }
-    /// Close registration first, then join every remaining exact local worker.
-    /// A cancelled waiter does not remove registry entries or task handles.
-    pub async fn drain_background_work(&self) {
+    pub async fn drain_background_work(&self) -> kasumi_types::drain::DrainResult {
+        use kasumi_types::drain::{DrainCompletion, DrainFailure};
         self.close();
-        let workers = {
-            let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
-            state.workers.retain(|worker| worker.strong_count() > 0);
-            state
-                .workers
-                .iter()
-                .filter_map(std::sync::Weak::upgrade)
-                .collect::<Vec<_>>()
-        };
+        let workers = self
+            .state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .workers
+            .clone();
+        let mut retained: Option<DrainFailure> = None;
         for worker in workers {
-            worker.drain().await;
+            if let Err(error) = worker.drain().await {
+                // Persist every joined outcome before awaiting another worker.
+                self.state
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .work_report
+                    .merge(&error);
+                if error.completion() == DrainCompletion::Retained {
+                    retained = Some(error);
+                }
+            }
         }
+        self.state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .work_report
+            .outcome(retained)
     }
     pub fn historical(&self) -> &HistoricalSigningTrust {
         &self.historical
@@ -701,3 +655,7 @@ impl SignerGenerationFence {
         self.owner.generation.subscribe()
     }
 }
+
+#[cfg(test)]
+#[path = "live_trust_background_tests.rs"]
+mod background_tests;

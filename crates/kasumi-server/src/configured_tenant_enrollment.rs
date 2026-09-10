@@ -778,11 +778,12 @@ impl crate::startup_owner::Runtime for PreparedTenant {
                         self.lease.take();
                     }
                     Err(error) => {
-                        retained = Some(DrainFailure::retained(self.drain_report.record(
-                            "enrollment renewal",
-                            0,
-                            error,
-                        )));
+                        self.drain_report.merge(&error);
+                        if error.completion() == DrainCompletion::Retained {
+                            retained = Some(error);
+                        } else {
+                            self.lease.take();
+                        }
                     }
                 }
             }

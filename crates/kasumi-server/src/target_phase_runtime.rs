@@ -28,22 +28,36 @@ pub(crate) struct RuntimeTargetPhase {
     authority_admin: AsyncMutex<KasumiAuthorityPool>,
     boot: LifecycleBoot,
     renewal: Arc<crate::runtime_worker::RuntimeWorker>,
+    drain_report: AsyncMutex<kasumi_types::drain::DrainReport>,
 }
 impl Drop for RuntimeTargetPhase {
     fn drop(&mut self) {
         self.scope.close();
-        self.renewal.abort();
+        self.renewal.close();
     }
 }
 impl RuntimeTargetPhase {
-    pub(crate) async fn shutdown(&self) -> Result<()> {
+    pub(crate) async fn shutdown(&self) -> kasumi_types::drain::DrainResult {
+        use kasumi_types::drain::DrainCompletion;
         self.close();
-        self.renewal.drain().await?;
-        if let Some(serving) = &self.serving {
-            serving.shutdown().await?;
+        let mut report = self.drain_report.lock().await;
+        let mut retained = None;
+        if let Err(error) = self.renewal.drain().await {
+            report.merge(&error);
+            if error.completion() == DrainCompletion::Retained {
+                retained = Some(error);
+            }
+        }
+        if let Some(serving) = &self.serving
+            && let Err(error) = serving.shutdown().await
+        {
+            report.merge(&error);
+            if error.completion() == DrainCompletion::Retained {
+                retained = Some(error);
+            }
         }
         self.scope.drain().await;
-        Ok(())
+        report.outcome(retained)
     }
     pub(crate) fn close(&self) {
         self.scope.close();
@@ -217,6 +231,7 @@ impl RuntimeTargetPhase {
             boot,
             authority_admin: AsyncMutex::new(issuer_admin),
             renewal: Default::default(),
+            drain_report: Default::default(),
         });
         admission.run(runtime.check_current()).await?;
         let weak = Arc::downgrade(&runtime);
@@ -226,55 +241,51 @@ impl RuntimeTargetPhase {
             .authority()
             .manifest()
             .partition(&runtime.original.observation().intent.request.tenant)?;
-        runtime
-            .boot
-            .authority()
-            .start_background_work(partition, || {
-                let worker = tokio::spawn(async move {
-                    let mut failed = false;
-                    loop {
-                        let delay = {
-                            let Some(runtime) = weak.upgrade() else { break };
-                            if runtime.renewal.is_closed() {
-                                break;
-                            }
-                            let Ok(remaining) = runtime.scope.invocation().gate().remaining()
-                            else {
-                                break;
-                            };
-                            if failed {
-                                (remaining / 4).min(Duration::from_millis(100))
-                            } else {
-                                remaining / 3
-                            }
-                        };
-                        tokio::select! {
-                            _ = wake.notified() => {},
-                            _ = tokio::time::sleep(delay) => {},
-                        }
+        runtime.boot.authority().start_background_work(
+            partition,
+            runtime.renewal.work(),
+            async move {
+                let mut failed = false;
+                loop {
+                    let delay = {
                         let Some(runtime) = weak.upgrade() else { break };
-                        #[cfg(test)]
-                        runtime.renewal.after_upgrade().await;
                         if runtime.renewal.is_closed() {
                             break;
                         }
                         let Ok(remaining) = runtime.scope.invocation().gate().remaining() else {
-                            runtime.scope.close();
                             break;
                         };
-                        failed = !matches!(
-                            tokio::time::timeout(remaining, runtime.renew()).await,
-                            Ok(Ok(()))
-                        );
-                        if runtime.scope.invocation().check().is_err() {
-                            runtime.scope.close();
-                            break;
+                        if failed {
+                            (remaining / 4).min(Duration::from_millis(100))
+                        } else {
+                            remaining / 3
                         }
+                    };
+                    tokio::select! {
+                        _ = wake.notified() => {},
+                        _ = tokio::time::sleep(delay) => {},
                     }
-                });
-                runtime.renewal.register(worker);
-                runtime.renewal.clone()
-            })?;
+                    let Some(runtime) = weak.upgrade() else { break };
+                    #[cfg(test)]
+                    runtime.renewal.after_upgrade().await;
+                    if runtime.renewal.is_closed() {
+                        break;
+                    }
+                    let Ok(remaining) = runtime.scope.invocation().gate().remaining() else {
+                        runtime.scope.close();
+                        break;
+                    };
+                    failed = !matches!(
+                        tokio::time::timeout(remaining, runtime.renew()).await,
+                        Ok(Ok(()))
+                    );
+                    if runtime.scope.invocation().check().is_err() {
+                        runtime.scope.close();
+                        break;
+                    }
+                }
+            },
+        )?;
         admission.check()?;
         Ok(runtime)
     }

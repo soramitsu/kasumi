@@ -1,14 +1,9 @@
-//! A background task remains owned until its actual future has been dropped.
-use tokio::{
-    sync::{Mutex, Notify},
-    task::JoinHandle,
-};
+//! Retain the exact background task handle and its stable terminal outcome.
+use tokio::sync::Notify;
 
 #[derive(Default)]
 pub(crate) struct RuntimeWorker {
-    task: Mutex<Option<JoinHandle<()>>>,
-    wake: std::sync::Arc<Notify>,
-    closed: std::sync::atomic::AtomicBool,
+    work: std::sync::Arc<kasumi_serving::BackgroundWork>,
     #[cfg(test)]
     pause: std::sync::Mutex<Option<std::sync::Arc<WorkerPause>>>,
 }
@@ -24,7 +19,7 @@ impl RuntimeWorker {
     pub(crate) fn pause_next_upgrade(&self) -> std::sync::Arc<WorkerPause> {
         let pause = std::sync::Arc::new(WorkerPause::default());
         *self.pause.lock().unwrap() = Some(pause.clone());
-        self.wake.notify_one();
+        self.work.wake().notify_one();
         pause
     }
     pub(crate) async fn after_upgrade(&self) {
@@ -35,51 +30,27 @@ impl RuntimeWorker {
         }
     }
 }
-impl kasumi_serving::LiveTrustBackgroundWork for RuntimeWorker {
-    fn close(&self) {
-        RuntimeWorker::close(self);
-    }
-    fn drain(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
-        Box::pin(async move {
-            let _ = RuntimeWorker::drain(self).await;
-        })
-    }
-}
 impl RuntimeWorker {
+    pub(crate) fn work(&self) -> std::sync::Arc<kasumi_serving::BackgroundWork> {
+        self.work.clone()
+    }
     pub(crate) fn is_closed(&self) -> bool {
-        self.closed.load(std::sync::atomic::Ordering::Acquire)
+        self.work.is_closed()
     }
     pub(crate) fn close(&self) {
-        self.closed
-            .store(true, std::sync::atomic::Ordering::Release);
-        self.wake.notify_one();
+        self.work.close();
     }
     pub(crate) fn wake(&self) -> std::sync::Arc<Notify> {
-        self.wake.clone()
+        self.work.wake()
     }
-    pub(crate) fn register(&self, task: JoinHandle<()>) {
-        let mut owner = self.task.try_lock().expect("new background worker owner");
-        assert!(owner.is_none(), "background worker already registered");
-        *owner = Some(task);
+    pub(crate) fn start(
+        &self,
+        task: impl std::future::Future<Output = ()> + Send + 'static,
+        budget: &kasumi_serving::BackgroundWorkBudget,
+    ) -> anyhow::Result<()> {
+        self.work.start(task, budget)
     }
-    /// The caller closes admission first. Wake idle work, but never abort an
-    /// admitted operation. A cancelled waiter leaves this exact handle installed.
-    pub(crate) async fn drain(&self) -> Result<(), tokio::task::JoinError> {
-        self.close();
-        let mut owner = self.task.lock().await;
-        let result = match owner.as_mut() {
-            Some(task) => task.await,
-            None => return Ok(()),
-        };
-        owner.take();
-        result
-    }
-    /// Best effort when an owner is abandoned without its explicit async drain.
-    pub(crate) fn abort(&self) {
-        if let Ok(mut owner) = self.task.try_lock()
-            && let Some(task) = owner.take()
-        {
-            task.abort();
-        }
+    pub(crate) async fn drain(&self) -> kasumi_types::drain::DrainResult {
+        self.work.drain().await
     }
 }

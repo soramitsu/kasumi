@@ -125,7 +125,16 @@ Each authority and data/Control runtime configures `signer_verifier` with:
 
 - `identity`: immutable `installation_id` and this runtime's `node_id`;
 - `database_path`: an absolute path to its separately encrypted metadata file;
-- `keys`: its own installed file or Transit key-provider domain.
+- `keys`: its own installed file or Transit key-provider domain;
+- `max_background_workers`: required positive concurrent registration capacity per
+  signing domain. This operational setting is not part of the immutable identity.
+
+Data/Control and authority nodes use one shared configured `admission` owner for
+verifier metadata and their other work. Before opening verifier storage, startup
+reserves `domain_count * (max_background_workers * 16384 + 135168)` bytes with checked
+arithmetic. Retained background cells keep that reservation through actual joins;
+capacity exhaustion rejects registration before spawning. This is a metadata
+workspace estimate, alongside sampled RSS, not exact allocator accounting.
 
 Every enrolled HA `NodeIdentity`, lifecycle target node and authority member
 contains the exact `verifier` identity. Its node ID must agree with the member's
@@ -143,13 +152,13 @@ exact union of all installed authority manifest partitions. Configured metadata
 and application files and their wrapping domains must differ.
 
 Before first HA startup, write an `InitializeSignerVerifier` JSON input containing
-that `verifier` config and the explicit `initial_certificates` for every domain.
+that `verifier` config, explicit `admission` and `scratch_disk` settings, and the
+`initial_certificates` for every domain.
 Run `kasumid initialize-signer-verifier /absolute/path/input.json`. The initializer
 requires generation one, verifies each root certificate, opens exclusive
 owner-only storage and publishes a completion record after every head and
-permanent key binding is durable. The same exact input may be retried. A partial
-initialization can resume only from the exact initial heads; a corrupt or changed
-head is never recreated. Ordinary runtime startup requires the completion record
+permanent key binding is durable. This exclusively creates a new installation;
+existing or partial storage is never adopted or reseeded. Ordinary runtime startup requires the completion record
 and every current head and does not create missing trust.
 
 `AuthorityTrust::install` supplies historical verification only. The trusted

@@ -191,11 +191,13 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
             let keys = directory.join("keys.json");
             kasumi_store::FileKeyProvider::initialize(&keys, "signer-verifier").unwrap();
             let config = SignerVerifierConfig {
+                max_background_workers: 64,
                 identity: verifier,
                 database_path: directory.join("trust.redb"),
                 keys: crate::runtime::KeyProviderSettings::File { path: keys },
             };
             InitializeSignerVerifier {
+                admission: Default::default(),
                 scratch_disk: kasumi_store::ScratchDiskConfig {
                     directory: directory.join("scratch"),
                     max_bytes: 64 << 30,
@@ -217,6 +219,7 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
                         min_free_bytes: 256 << 20,
                     })
                     .unwrap(),
+                    kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
                 )
                 .await
                 .unwrap();
@@ -244,6 +247,7 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
                 Arc::new(CurrentFixtureAdministrator {
                     authority_id: manifest.authority_id,
                 }),
+                kasumi_serving::BackgroundWorkBudget::new(64, Arc::new(())).unwrap(),
             )
             .unwrap();
         verifier_stores.push(store);

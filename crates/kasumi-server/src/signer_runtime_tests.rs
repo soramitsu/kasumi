@@ -3,6 +3,68 @@ use kasumi_store::FileKeyProvider;
 use std::future::Future;
 use uuid::Uuid;
 
+#[tokio::test]
+async fn complete_domain_worker_budget_is_reserved_before_verifier_storage_open() {
+    let fixture = Fixture::new();
+    fixture.input.initialize().await.unwrap();
+    let before = std::fs::read(&fixture.input.verifier.database_path).unwrap();
+    let admission =
+        kasumi_engine::admission::NodeAdmission::new(kasumi_engine::admission::AdmissionConfig {
+            max_inflight_bytes: Some(1024),
+            ..Default::default()
+        })
+        .unwrap();
+    let domain = fixture.manifest.signing_domain(0).unwrap();
+    assert!(
+        fixture
+            .input
+            .verifier
+            .open(
+                BTreeMap::from([(domain.digest().unwrap(), domain)]),
+                Arc::new(file_secret),
+                kasumi_store::ScratchDisk::open(fixture.input.scratch_disk.clone()).unwrap(),
+                admission,
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        std::fs::read(&fixture.input.verifier.database_path).unwrap(),
+        before
+    );
+    let admission =
+        kasumi_engine::admission::NodeAdmission::new(kasumi_engine::admission::AdmissionConfig {
+            max_inflight_operations: 1,
+            ..Default::default()
+        })
+        .unwrap();
+    let domain = fixture.manifest.signing_domain(0).unwrap();
+    let opened = fixture
+        .input
+        .verifier
+        .open(
+            BTreeMap::from([(domain.digest().unwrap(), domain)]),
+            Arc::new(file_secret),
+            kasumi_store::ScratchDisk::open(fixture.input.scratch_disk.clone()).unwrap(),
+            admission.clone(),
+        )
+        .await
+        .unwrap();
+    let expected =
+        BackgroundWorkBudget::required_bytes(fixture.input.verifier.max_background_workers, 1)
+            .unwrap();
+    assert_eq!(admission.snapshot().reserved_bytes, expected);
+    assert_eq!(admission.snapshot().inflight_operations, 0);
+    // Installed metadata must leave the sole operation slot usable.
+    let request = admission.reserve(1, None).unwrap();
+    assert_eq!(admission.snapshot().inflight_operations, 1);
+    drop(request);
+    opened.shutdown().await.unwrap();
+    assert_eq!(admission.snapshot().reserved_bytes, expected);
+    drop(opened);
+    assert_eq!(admission.snapshot().reserved_bytes, 0);
+}
+
 struct Fixture {
     _directory: tempfile::TempDir,
     input: InitializeSignerVerifier,
@@ -42,12 +104,14 @@ impl Fixture {
         private_files::create(&key_file, &key.serialize_der()).unwrap();
         Self {
             input: InitializeSignerVerifier {
+                admission: Default::default(),
                 scratch_disk: kasumi_store::ScratchDiskConfig {
                     directory: directory.path().join("scratch"),
                     max_bytes: 64 << 30,
                     min_free_bytes: 256 << 20,
                 },
                 verifier: SignerVerifierConfig {
+                    max_background_workers: 64,
                     identity: TrustVerifierIdentity {
                         installation_id: Uuid::new_v4(),
                         node_id: 1,
@@ -74,6 +138,7 @@ impl Fixture {
                 BTreeMap::from([(domain.digest()?, domain)]),
                 Arc::new(file_secret),
                 kasumi_store::ScratchDisk::open(self.input.scratch_disk.clone())?,
+                kasumi_engine::admission::NodeAdmission::new(Default::default())?,
             )
             .await
     }
@@ -206,7 +271,9 @@ async fn verifier_shutdown_joins_renewal_after_setup_owner_is_dropped() {
             .unwrap();
         assert!(
             owner
-                .start_background_work(|| panic!("closed verifier spawned a late worker"))
+                .start_background_work(Arc::new(BackgroundWork::default()), async {
+                    panic!("closed verifier spawned a late worker")
+                })
                 .is_err()
         );
         drop(owner);
@@ -306,6 +373,7 @@ async fn partial_verifier_is_never_adopted_and_corrupt_complete_head_is_never_re
             &f.input.verifier.identity,
             f.operational.certificate.clone(),
             Arc::new(ScopedSignerAdministrator::default()),
+            BackgroundWorkBudget::new(64, Arc::new(())).unwrap(),
         )
         .unwrap();
     let digest = f.manifest.signing_domain(0).unwrap().digest().unwrap();
@@ -411,7 +479,8 @@ async fn initialization_rejects_noninitial_and_mismatched_domains_without_publis
             .open(
                 BTreeMap::new(),
                 Arc::new(file_secret),
-                kasumi_store::ScratchDisk::fixture()
+                kasumi_store::ScratchDisk::fixture(),
+                kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
             )
             .await
             .is_err()
@@ -423,7 +492,8 @@ async fn initialization_rejects_noninitial_and_mismatched_domains_without_publis
             .open(
                 BTreeMap::from([(domain.digest().unwrap(), domain)]),
                 Arc::new(file_secret),
-                kasumi_store::ScratchDisk::fixture()
+                kasumi_store::ScratchDisk::fixture(),
+                kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
             )
             .await
             .is_err()

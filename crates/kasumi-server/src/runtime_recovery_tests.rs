@@ -534,6 +534,7 @@ impl Fixture {
         let mut keys = config.control.keys.clone();
         keys.transit_mut().unwrap().key_name = format!("verifier-{}", index + 1);
         let verifier = crate::signer_runtime::SignerVerifierConfig {
+            max_background_workers: 64,
             identity: self.verifier_ids[index].clone(),
             database_path: self
                 .directory
@@ -541,6 +542,7 @@ impl Fixture {
             keys,
         };
         crate::signer_runtime::InitializeSignerVerifier {
+            admission: Default::default(),
             scratch_disk: config.scratch_disk.clone(),
             verifier: verifier.clone(),
             initial_certificates: vec![self.signing.signer.certificate().clone()],

@@ -19,7 +19,7 @@ pub(crate) async fn initialize(config: AuthorityRuntimeConfig) -> Result<()> {
     // The detached owner has only a unit result: resources are explicitly drained
     // before completion, so a lost successful CLI reply cannot lose live scopes.
     tokio::spawn(async move {
-        let admission = kasumi_engine::admission::NodeAdmission::new(Default::default())?;
+        let admission = kasumi_engine::admission::NodeAdmission::new(config.admission.clone())?;
         let (node, audit) = crate::node_provision::create(
             &config.database_path,
             config.database_id,
@@ -49,6 +49,7 @@ pub(crate) async fn initialize(config: AuthorityRuntimeConfig) -> Result<()> {
                     std::collections::BTreeMap::from([(domain.digest()?, domain.clone())]),
                     credential.clone(),
                     node.scratch_disk().clone(),
+                    admission.clone(),
                 )
                 .await?;
             verifier = Some(installed.clone());

@@ -95,6 +95,7 @@ async fn fenced_source_startup_keeps_control_handle_without_constructing_applica
     verifier.database_path = trust_directory.join("trust.redb");
     verifier.keys = KeyProviderSettings::File { path: wrapping };
     crate::signer_runtime::InitializeSignerVerifier {
+        admission: Default::default(),
         scratch_disk: config.scratch_disk.clone(),
         verifier: verifier.clone(),
         initial_certificates: vec![

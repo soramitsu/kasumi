@@ -118,7 +118,12 @@ pub(crate) async fn provision(
         let verifier = match &config.signer_verifier {
             Some(configured) => Some(
                 configured
-                    .open(domains, credential.clone(), node.scratch_disk().clone())
+                    .open(
+                        domains,
+                        credential.clone(),
+                        node.scratch_disk().clone(),
+                        audit.admission().clone(),
+                    )
                     .await?,
             ),
             None => {

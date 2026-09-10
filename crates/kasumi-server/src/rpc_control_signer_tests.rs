@@ -139,12 +139,14 @@ pub(super) async fn exercise(f: Fixture<'_>) {
     let wrapping = directory.join("wrapping.json");
     kasumi_store::FileKeyProvider::initialize(&wrapping, "remote-control-trust").unwrap();
     let initialization = InitializeSignerVerifier {
+        admission: Default::default(),
         scratch_disk: kasumi_store::ScratchDiskConfig {
             directory: directory.join("scratch"),
             max_bytes: 64 << 30,
             min_free_bytes: 256 << 20,
         },
         verifier: SignerVerifierConfig {
+            max_background_workers: 64,
             identity: physical.clone(),
             database_path: directory.join("verifier.redb"),
             keys: KeyProviderSettings::File { path: wrapping },
@@ -156,7 +158,12 @@ pub(super) async fn exercise(f: Fixture<'_>) {
     let domains = BTreeMap::from([(domain.digest().unwrap(), domain.clone())]);
     let verifier = initialization
         .verifier
-        .open(domains.clone(), Arc::new(file_secret), scratch.clone())
+        .open(
+            domains.clone(),
+            Arc::new(file_secret),
+            scratch.clone(),
+            kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+        )
         .await
         .unwrap();
     let trust = verifier.trust(f.manifest.clone()).unwrap();
@@ -546,7 +553,12 @@ pub(super) async fn exercise(f: Fixture<'_>) {
     drop(verifier);
     let reopened = initialization
         .verifier
-        .open(domains, Arc::new(file_secret), scratch)
+        .open(
+            domains,
+            Arc::new(file_secret),
+            scratch,
+            kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(
