@@ -203,6 +203,31 @@ impl kasumi_data_server::KasumiData for NativeData {
             .map_err(status)?;
         Ok(Response::new(response))
     }
+    async fn ordered_seek(
+        &self,
+        request: Request<OrderedSeekRequest>,
+    ) -> Result<Response<OrderedSeekResponse>, Status> {
+        let context = verified(&self.auth, &request).await?;
+        let input = decode_json(&request.into_inner().request_json).map_err(status)?;
+        let database = routed(&self.registry, &self.auth, &context).await?;
+        let fence = self
+            .auth
+            .audit_result(&context, database.response_fence(&context))
+            .await
+            .map_err(status)?;
+        let result = database
+            .ordered_seek(&context, input)
+            .await
+            .map_err(|error| self.registry.status(&context, error))?;
+        let response = OrderedSeekResponse {
+            response_json: encode_json(&result).map_err(status)?,
+        };
+        Ok(Response::new(
+            release_response(&self.auth, &context, fence, response, false)
+                .await
+                .map_err(status)?,
+        ))
+    }
     async fn read_restore_lineage(
         &self,
         request: Request<ReadRestoreLineageRequest>,

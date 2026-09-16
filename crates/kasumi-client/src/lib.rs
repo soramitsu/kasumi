@@ -33,7 +33,7 @@ pub use control_signer::CurrentControlSignerObservation;
 mod data_pool;
 mod mutation_receipt;
 pub use authority_pool::KasumiAuthorityPool;
-pub use data_pool::{KasumiClientPool, RoutedQueryPage, RoutedSnapshotLease};
+pub use data_pool::{KasumiClientPool, RoutedOrderedSeekPage, RoutedQueryPage, RoutedSnapshotLease};
 pub use mutation_receipt::verify_mutation_receipt;
 mod restore_lineage_proof;
 mod retirement_proof;

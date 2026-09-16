@@ -2,6 +2,8 @@ use crate::admission::{CancelOnDrop, NodeAdmission, Reservation, WorkFence, Work
 use crate::{SecurityAudit, SecurityEvent, SecurityEventKind, SecurityOutcome, TenantEngine};
 #[path = "audit_maintenance_service.rs"]
 mod audit_maintenance_service;
+#[path = "ordered_seek_service.rs"]
+mod ordered_seek_service;
 #[path = "control_administration.rs"]
 pub(crate) mod control_administration;
 use kasumi_clock::{LeaseClock, SystemLeaseClock};

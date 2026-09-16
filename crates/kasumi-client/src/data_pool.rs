@@ -49,6 +49,23 @@ pub struct RoutedSnapshotLease {
     member: u64,
     lease: AdmittedResponse<SnapshotLease>,
 }
+/// A bounded page and its original admitted native owner. Continuation stays
+/// on the installed originating member and cannot be supplied as detached JSON.
+#[derive(Clone)]
+pub struct RoutedOrderedSeekPage {
+    installation: uuid::Uuid,
+    member: u64,
+    prepared: Arc<crate::literal_decode::Prepared>,
+    response: AdmittedResponse<OrderedSeekResponse>,
+}
+impl RoutedOrderedSeekPage {
+    pub fn response(&self) -> &OrderedSeekResponse {
+        &self.response
+    }
+    pub fn member(&self) -> u64 {
+        self.member
+    }
+}
 impl RoutedSnapshotLease {
     pub fn lease(&self) -> &SnapshotLease {
         &self.lease
@@ -342,6 +359,72 @@ impl KasumiClientPool {
             .query_request(None, prepared.clone(), call, options)
             .await?;
         Ok(RoutedQueryPage {
+            installation: self.installation,
+            member,
+            prepared,
+            response,
+        })
+    }
+    pub async fn ordered_seek(
+        &mut self,
+        request: &OrderedSeekRequest,
+        options: &JsonReadOptions,
+    ) -> NativeResult<RoutedOrderedSeekPage> {
+        let call = options.admit()?;
+        if request.continuation.is_some() {
+            return Err(snapshot_decode::resources::invalid(
+                "continue ordered seeks through their routed page",
+            ));
+        }
+        let prepared = crate::literal_decode::prepare_ordered_seek(request, &call)?;
+        let (member, response) = self
+            .ordered_seek_request(None, prepared.clone(), call, options)
+            .await?;
+        Ok(RoutedOrderedSeekPage {
+            installation: self.installation,
+            member,
+            prepared,
+            response,
+        })
+    }
+    async fn ordered_seek_request(
+        &mut self,
+        member: Option<u64>,
+        prepared: Arc<crate::literal_decode::Prepared>,
+        first: snapshot_decode::Call,
+        options: &JsonReadOptions,
+    ) -> NativeResult<(u64, AdmittedResponse<OrderedSeekResponse>)> {
+        let mut first = Some(first);
+        let options = options.clone();
+        self.request_until(member, true, options.deadline, |client, token| {
+            let call = first.take().map_or_else(|| options.admit(), Ok);
+            let prepared = prepared.clone();
+            Box::pin(async move { client.ordered_seek_prepared(token, prepared, call?).await })
+        })
+        .await
+        .map_err(snapshot_decode::normalize)
+    }
+    pub async fn next_ordered_seek_page(
+        &mut self,
+        page: &RoutedOrderedSeekPage,
+        options: &JsonReadOptions,
+    ) -> NativeResult<RoutedOrderedSeekPage> {
+        let call = options.admit()?;
+        self.require_installation(page.installation)
+            .map_err(snapshot_decode::normalize)?;
+        let continuation =
+            page.response.continuation.as_ref().ok_or_else(|| {
+                snapshot_decode::resources::invalid("ordered seek has no next page")
+            })?;
+        let prepared = crate::literal_decode::prepare_ordered_seek_page(
+            page.prepared.ordered_seek(),
+            Some(continuation),
+            &call,
+        )?;
+        let (member, response) = self
+            .ordered_seek_request(Some(page.member), prepared.clone(), call, options)
+            .await?;
+        Ok(RoutedOrderedSeekPage {
             installation: self.installation,
             member,
             prepared,

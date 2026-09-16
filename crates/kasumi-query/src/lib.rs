@@ -12,6 +12,8 @@ pub use cancellation::QueryCancellation;
 mod scalar;
 mod search;
 mod structured;
+mod ordered_seek;
+pub use ordered_seek::{OrderedSeekPage, ordered_seek_request_sha256};
 mod validation;
 
 pub use validation::{check_unique, unique_index_key, validate_collection, validate_document};
@@ -623,6 +625,7 @@ fn group_value(key: Scalar, kind: Option<ScalarType>) -> Result<Option<Value>> {
         Scalar::Null => Some(Value::Null),
         Scalar::Boolean(value) => Some(Value::Bool(value)),
         Scalar::String(value) => Some(Value::String(value)),
+        Scalar::UpperBound => return Err(invalid("internal bound cannot be a stored value")),
         Scalar::Number(value) if kind == Some(ScalarType::Decimal) => Some(numeric_value(&value)),
         Scalar::Number(value) => Some(
             serde_json::from_str(&value.normalized().to_string())

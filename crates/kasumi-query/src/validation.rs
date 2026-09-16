@@ -304,6 +304,7 @@ pub fn unique_index_key(index: &IndexDefinition, body: &Value) -> Result<Option<
             Scalar::Boolean(value) => serde_json::json!(["boolean", value]),
             Scalar::Number(value) => serde_json::json!(["number", value.normalized().to_string()]),
             Scalar::String(value) => serde_json::json!(["string", value]),
+            Scalar::UpperBound => return Err(invalid("internal bound cannot be an indexed value")),
         };
         key.push(encoded);
     }

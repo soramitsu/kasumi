@@ -18,13 +18,13 @@ pub(crate) struct FieldIndex {
 pub(crate) struct Structured {
     pub fields: BTreeMap<String, FieldIndex>,
     pub ids: IdSet,
-    unique: BTreeMap<String, UniqueIndex>,
+    pub(crate) unique: BTreeMap<String, UniqueIndex>,
 }
 
 #[derive(Debug, Clone)]
-struct UniqueIndex {
-    fields: Vec<IndexField>,
-    entries: OrdMap<Vec<Scalar>, String>,
+pub(crate) struct UniqueIndex {
+    pub(crate) fields: Vec<IndexField>,
+    pub(crate) entries: OrdMap<Vec<Scalar>, String>,
 }
 
 impl UniqueIndex {

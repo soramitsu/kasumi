@@ -8,6 +8,7 @@ package kasumi.v1;
 service KasumiData {
   rpc Get(GetRequest) returns (Document);
   rpc Query(QueryRequest) returns (QueryResponse);
+  rpc OrderedSeek(OrderedSeekRequest) returns (OrderedSeekResponse);
   rpc ReadSnapshot(ReadSnapshotRequest) returns (ReadSnapshotResponse);
   rpc ReadRestoreLineage(ReadRestoreLineageRequest) returns (ReadRestoreLineageResponse);
   rpc ReadChangeFeed(ReadChangeFeedRequest) returns (ReadChangeFeedResponse);
@@ -90,6 +91,8 @@ message CredentialJsonRequest { bytes request_json = 1; }
 message CredentialJsonResponse { bytes response_json = 1; }
 message Document { string id = 1; uint64 version = 2; bytes body_json = 3; }
 message QueryRequest { bytes query_json = 1; }
+message OrderedSeekRequest { bytes request_json = 1; }
+message OrderedSeekResponse { bytes response_json = 1; }
 message ReadSnapshotRequest { bytes request_json = 1; }
 message ReadRestoreLineageRequest { bytes request_json = 1; }
 message ReadRestoreLineageResponse { bytes response_json = 1; }

@@ -1,6 +1,7 @@
 //! SDK-owned literal byte boundaries, independent of a caller's Cargo patches.
 mod inputs;
 mod json;
+mod ordered_seek;
 mod wire;
 use crate::{
     AdmittedResponse, ClientError, JsonReadOptions, KasumiAdminClient, KasumiClient, proto,
@@ -11,13 +12,18 @@ use crate::{
     },
 };
 use kasumi_types::{
-    Aggregation, ChangeFeedPage, MAX_SECURITY_AUDIT_PAGE_BYTES, MutationBatch, Predicate,
-    QueryRequest, QueryResponse, ReadChangeFeed, ReadSchema, SchemaChangeSet, SchemaSnapshot,
-    SecurityAuditExportRequest, SecurityAuditPage, Sort, StagedChunk, TextSearch,
+    Aggregation, ChangeFeedPage, MAX_SECURITY_AUDIT_PAGE_BYTES, MutationBatch, OrderedSeekRequest,
+    OrderedSeekResponse, Predicate, QueryRequest, QueryResponse, ReadChangeFeed, ReadSchema,
+    SchemaChangeSet, SchemaSnapshot, SecurityAuditExportRequest, SecurityAuditPage, Sort,
+    StagedChunk, TextSearch,
 };
 use std::sync::Arc;
 
 enum Kind {
+    OrderedSeek {
+        request: OrderedSeekRequest,
+        digest: String,
+    },
     Query {
         request: QueryRequest,
         revision: Option<u64>,
@@ -33,6 +39,12 @@ pub(crate) struct Prepared {
     _owner: Call,
 }
 impl Prepared {
+    pub(crate) fn ordered_seek(&self) -> &OrderedSeekRequest {
+        match &self.kind {
+            Kind::OrderedSeek { request, .. } => request,
+            _ => unreachable!("internal ordered seek handle"),
+        }
+    }
     pub(crate) fn query(&self) -> &QueryRequest {
         match &self.kind {
             Kind::Query { request, .. } => request,
@@ -62,6 +74,65 @@ pub(crate) fn prepare_query(
             revision,
         },
         path: "/kasumi.v1.KasumiData/Query",
+        _owner: call.clone(),
+    }))
+}
+pub(crate) fn prepare_ordered_seek(
+    request: &OrderedSeekRequest,
+    call: &Call,
+) -> Result<Arc<Prepared>, ClientError> {
+    prepare_ordered_seek_page(request, request.continuation.as_ref(), call)
+}
+pub(crate) fn prepare_ordered_seek_page(
+    request: &OrderedSeekRequest,
+    continuation: Option<&kasumi_types::OrderedSeekContinuation>,
+    call: &Call,
+) -> Result<Arc<Prepared>, ClientError> {
+    use sha2::{Digest, Sha256};
+    #[derive(serde::Serialize)]
+    struct Borrowed<'a> {
+        collection: &'a str,
+        index: &'a str,
+        prefix: &'a [serde_json::Value],
+        lower: &'a Option<kasumi_types::OrderedSeekBound>,
+        upper: &'a Option<kasumi_types::OrderedSeekBound>,
+        direction: kasumi_types::Direction,
+        limit: usize,
+        continuation: Option<&'a kasumi_types::OrderedSeekContinuation>,
+    }
+    let mut borrowed = Borrowed {
+        collection: &request.collection,
+        index: &request.index,
+        prefix: &request.prefix,
+        lower: &request.lower,
+        upper: &request.upper,
+        direction: request.direction,
+        limit: request.limit,
+        continuation,
+    };
+    let input = snapshot_decode::encode(&borrowed, call)?;
+    if request.limit == 0 || request.limit > call.limits.max_rows || request.limit > 1000 {
+        return Err(exhausted());
+    }
+    borrowed.continuation = None;
+    let digest = hex::encode(Sha256::digest(snapshot_decode::encode(&borrowed, call)?));
+    if continuation.is_some_and(|c| c.request_sha256 != digest) {
+        return Err(ClientError::DecodeRejected {
+            code: tonic::Code::InvalidArgument,
+            reason: "ordered seek continuation request differs",
+        });
+    }
+    // Both original request and replacement cursor have passed this call's
+    // actual limits before any retained typed clone is allocated.
+    let mut original = request.clone();
+    original.continuation = continuation.cloned();
+    Ok(Arc::new(Prepared {
+        input,
+        kind: Kind::OrderedSeek {
+            request: original,
+            digest,
+        },
+        path: "/kasumi.v1.KasumiData/OrderedSeek",
         _owner: call.clone(),
     }))
 }
@@ -116,6 +187,7 @@ pub(crate) fn prepare_query_page(
     }))
 }
 pub(crate) enum Decoded {
+    OrderedSeek(OrderedSeekResponse),
     Query(QueryResponse),
     Feed(ChangeFeedPage),
     Schema(SchemaSnapshot),
@@ -139,6 +211,7 @@ macro_rules! output {
     };
 }
 output!(QueryResponse, Query);
+output!(OrderedSeekResponse, OrderedSeek);
 output!(ChangeFeedPage, Feed);
 output!(SchemaSnapshot, Schema);
 output!(SecurityAuditPage, Audit);
@@ -152,6 +225,9 @@ fn decode<T: Output>(bytes: &[u8], prepared: &Prepared, call: &Call) -> Result<T
         tokens::admit(bytes, call)?;
         let raw: &serde_json::value::RawValue = serde_json::from_slice(bytes)?;
         match &prepared.kind {
+            Kind::OrderedSeek { request, digest } => {
+                Decoded::OrderedSeek(ordered_seek::decode(raw, request, digest, call)?)
+            }
             Kind::Feed(request) => Decoded::Feed(json::feed(raw, request, call)?),
             Kind::Schema(request) => Decoded::Schema(json::schema(raw, request, call)?),
             Kind::Audit(request) => Decoded::Audit(json::audit(raw, request, call)?),
@@ -205,6 +281,26 @@ async fn execute<T: Output>(
     Ok(response)
 }
 impl KasumiClient {
+    /// Bounded unique-index discovery, with exact source identity on continuation.
+    /// Conditional effects must still reread selected records and range guards.
+    pub async fn ordered_seek(
+        &mut self,
+        bearer: &str,
+        request: &OrderedSeekRequest,
+        options: &JsonReadOptions,
+    ) -> Result<AdmittedResponse<OrderedSeekResponse>, ClientError> {
+        let call = options.admit()?;
+        self.ordered_seek_prepared(bearer, prepare_ordered_seek(request, &call)?, call)
+            .await
+    }
+    pub(crate) async fn ordered_seek_prepared(
+        &mut self,
+        bearer: &str,
+        prepared: Arc<Prepared>,
+        call: Call,
+    ) -> Result<AdmittedResponse<OrderedSeekResponse>, ClientError> {
+        execute(self.snapshot_channel.clone(), bearer, prepared, call).await
+    }
     /// Ordinary query results are not a complete conditional-write dependency
     /// set. Use coherent snapshot reads when writes depend on completeness.
     pub async fn query(
