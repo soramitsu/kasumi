@@ -179,8 +179,33 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kasumi_store::{NodeStore, test_utils::LocalKeyProvider};
+    use kasumi_store::{
+        AuditArchiveDestination, FilesystemAuditArchive, NodeStore, PreparedAuditSegment,
+        test_utils::LocalKeyProvider,
+    };
     use std::future::Future;
+
+    struct UncertainArchive {
+        inner: FilesystemAuditArchive,
+        fail: AtomicBool,
+    }
+    #[async_trait::async_trait]
+    impl AuditArchiveDestination for UncertainArchive {
+        fn identity(&self) -> String {
+            self.inner.identity()
+        }
+        async fn publish(&self, segment: &PreparedAuditSegment) -> anyhow::Result<()> {
+            self.inner.publish(segment).await?;
+            anyhow::ensure!(
+                !self.fail.load(Ordering::Acquire),
+                "injected uncertain external publication"
+            );
+            Ok(())
+        }
+        async fn read(&self, link: &AuditArchiveLink) -> anyhow::Result<Vec<u8>> {
+            self.inner.read(link).await
+        }
+    }
 
     #[tokio::test]
     async fn tenant_audit_worker_keeps_its_owner_through_cancelled_shutdown() {
@@ -326,6 +351,15 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn encrypted_worker_drains_hot_history_when_ordinary_capacity_is_full() {
+        worker_drains_hot_history(false).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn external_archive_outage_before_proposal_preserves_hot_history_and_raft_availability() {
+        worker_drains_hot_history(true).await;
+    }
+
+    async fn worker_drains_hot_history(outage: bool) {
         let directory = tempfile::tempdir().unwrap();
         let node = NodeStore::create_new(
             directory.path().join("node.redb"),
@@ -345,6 +379,19 @@ mod tests {
         )
         .await
         .unwrap();
+        let archive = Arc::new(UncertainArchive {
+            inner: FilesystemAuditArchive::open(directory.path().join("external")).unwrap(),
+            fail: AtomicBool::new(outage),
+        });
+        store
+            .install_tenant_audit_archive(
+                Arc::new(
+                    FilesystemAuditArchive::open(directory.path().join("tenant-audit-archives"))
+                        .unwrap(),
+                ),
+                archive.clone(),
+            )
+            .unwrap();
         let audit_store = TenantStore::initialize_catalog_fixture(
             node,
             crate::SECURITY_TENANT.into(),
@@ -432,7 +479,28 @@ mod tests {
             .reserve((512 << 20) - admission.snapshot().reserved_bytes, None)
             .unwrap();
         assert!(admission.reserve(1, None).is_err());
+        let before = engine.generation().unwrap();
         drop(pause);
+        if outage {
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while database.audit_maintenance_status().unwrap().failures == 0 {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+            let current = engine.generation().unwrap();
+            assert_eq!(current.state.audit_retention, before.state.audit_retention);
+            assert_eq!(current.state.revision, before.state.revision);
+            group.check_access().unwrap();
+            assert_eq!(
+                group.linearizable_barrier().await.unwrap().unwrap().index,
+                before.state.revision
+            );
+            archive.fail.store(false, Ordering::Release);
+            database.audit_worker_wake.notify_one();
+        }
+        drop(before);
         tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 let current = engine.generation().unwrap();
@@ -458,7 +526,7 @@ mod tests {
             50
         );
         let status = database.audit_maintenance_status().unwrap();
-        assert_eq!(status.failures, 0);
+        assert_eq!(status.failures > 0, outage);
         assert!(status.committed_segments > 0);
         drop(current);
         drop(ordinary);

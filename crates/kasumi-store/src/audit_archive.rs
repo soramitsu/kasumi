@@ -552,13 +552,19 @@ impl TenantAuditPlacement {
     pub fn destination_identity(&self) -> String {
         self.destination.identity()
     }
-    /// Use in an owned blocking apply worker. Publication uncertainty cannot
-    /// authorize pruning, even if the local cache already contains the object.
-    pub fn preserve_blocking(&self, segment: &PreparedAuditSegment) -> Result<()> {
-        self.cache.publish_blocking(segment)?;
-        if self.cache.identity() != self.destination.identity() {
-            tokio::runtime::Handle::try_current()?.block_on(self.destination.publish(segment))?;
-        }
+    /// The preparing leader publishes before proposing any pruning transition.
+    /// An uncertain external write remains retryable outside committed Raft
+    /// application. Every applying replica separately preserves its local cache.
+    pub fn publish_destination_blocking(&self, segment: &PreparedAuditSegment) -> Result<()> {
+        tokio::runtime::Handle::try_current()?.block_on(async {
+            self.destination.publish(segment).await?;
+            let published = self.destination.read(&segment.reference.object).await?;
+            ensure!(
+                published == segment.ciphertext,
+                "audit destination differs from prepared segment"
+            );
+            Ok::<_, anyhow::Error>(())
+        })?;
         Ok(())
     }
 }

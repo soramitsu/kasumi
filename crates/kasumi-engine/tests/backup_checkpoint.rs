@@ -1230,7 +1230,12 @@ async fn archived_audit_backup_is_self_contained_and_source_unavailable_restore_
                 .unwrap()
                 .unwrap();
         }
-        let command = fixture.db.engine().prepare_audit_prune().unwrap().unwrap();
+        let engine = fixture.db.engine().clone();
+        let command = tokio::task::spawn_blocking(move || engine.prepare_audit_prune())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
         let result = fixture.db.raft_group().write(command).await.unwrap();
         serde_json::from_slice::<Result<()>>(&result)
             .unwrap()
