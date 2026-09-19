@@ -212,13 +212,15 @@ async fn control_genesis_rejects_wrong_storage_purpose_before_deployment_publica
         uuid::Uuid::new_v4(),
         kasumi_store::ScratchDisk::fixture(),
     )?;
-    let pair = TenantStorageSet::initialize_catalogs_fixture(
-        node.clone(),
-        CONTROL_TENANT.into(),
-        Arc::new(LocalKeyProvider::new([91; 32])),
-        Arc::new(LocalKeyProvider::new([92; 32])),
-    )
-    .await?;
+    // The tenant-aware fixture helper deliberately assigns NodeControl to this
+    // reserved tenant. Install the wrong purpose explicitly for this rejection.
+    let pair = stores(node.clone(), StorageAccess::fixture()).await?;
+    assert!(
+        pair.application()
+            .storage_access()
+            .purpose()
+            .is_local_fixture()
+    );
     let first_audit = audit(node.clone()).await?;
     let before = retained(&pair)?;
     assert!(
@@ -246,6 +248,10 @@ async fn control_genesis_rejects_wrong_storage_purpose_before_deployment_publica
         kasumi_store::ScratchDisk::fixture(),
     )?;
     let pair = stores(node.clone(), StorageAccess::node_control()).await?;
+    assert_eq!(
+        pair.application().storage_access().purpose(),
+        &kasumi_store::StoragePurpose::NodeControl
+    );
     let second_audit = audit(node.clone()).await?;
     let before = retained(&pair)?;
     let mut wrong = installed();
