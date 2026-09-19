@@ -586,3 +586,151 @@ async fn operational_source_is_private_bounded_and_cannot_substitute_installed_t
         .unwrap();
     reopened.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn panicked_verifier_initialization_drains_each_acquired_encrypted_owner() -> Result<()> {
+    for phase in [
+        "verifier-storage-node",
+        "verifier-storage-catalog",
+        "verifier-installation-store",
+        "verifier-installation-domains",
+        "verifier-installation-complete",
+    ] {
+        let fixture = Fixture::new();
+        let id = kasumi_store::node_store_ids::signer_verifier(&fixture.input.verifier.identity)?;
+        let _fault = crate::startup_preparation::install(id, phase);
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            fixture.input.initialize(),
+        )
+        .await?
+        .unwrap_err();
+        assert!(
+            error
+                .downcast_ref::<crate::startup_preparation::PreparationPanic>()
+                .is_some(),
+            "{phase}: {error:#}"
+        );
+        let node = NodeStore::open_existing(
+            &fixture.input.verifier.database_path,
+            id,
+            kasumi_store::ScratchDisk::open(fixture.input.scratch_disk.clone())?,
+        )?;
+        if phase != "verifier-storage-node" {
+            let store = TenantStore::open_existing(
+                node.clone(),
+                fixture.input.verifier.identity.tenant(),
+                fixture
+                    .input
+                    .verifier
+                    .keys
+                    .provider(Arc::new(file_secret))?,
+                StorageAccess::live_signer_trust(fixture.input.verifier.identity.clone())?,
+            )
+            .await?;
+            let complete = store.get(NS, b"installation")?.is_some();
+            assert_eq!(complete, phase == "verifier-installation-complete");
+            let domain = fixture.manifest.signing_domain(0)?.digest()?;
+            assert_eq!(
+                store.get("live.signer.trust", domain.as_bytes())?.is_some(),
+                matches!(
+                    phase,
+                    "verifier-installation-domains" | "verifier-installation-complete"
+                )
+            );
+            store.shutdown().await?;
+            drop(store);
+        }
+        node.drain_initializers().await?;
+        drop(node);
+        let before = std::fs::read(&fixture.input.verifier.database_path)?;
+        assert!(fixture.input.initialize().await.is_err());
+        assert_eq!(
+            std::fs::read(&fixture.input.verifier.database_path)?,
+            before
+        );
+        if phase == "verifier-installation-complete" {
+            let installed = fixture.open().await?;
+            fixture.operational.open(&installed)?.check()?;
+            installed.shutdown().await?;
+        } else {
+            assert!(
+                fixture.open().await.is_err(),
+                "partial trust cannot be resumed"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancelled_verifier_initialization_retains_physical_owner_and_unclaimed_panic() -> Result<()>
+{
+    use std::task::Poll;
+    for phase in ["verifier-storage-catalog", "verifier-installation-complete"] {
+        let fixture = Fixture::new();
+        let registry = crate::startup_owner::TestRegistry::default();
+        let id = kasumi_store::node_store_ids::signer_verifier(&fixture.input.verifier.identity)?;
+        let _fault = crate::startup_preparation::install(id, phase);
+        // This guard releases the retained operation even if an assertion fails.
+        let pause = crate::startup_preparation::pause_failure(id);
+        let mut initialize = Box::pin(registry.open(fixture.input.clone().initialize_owned()));
+        std::future::poll_fn(|cx| {
+            assert!(initialize.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        tokio::time::timeout(std::time::Duration::from_secs(10), pause.entered()).await?;
+        drop(initialize);
+        let reopen = || {
+            NodeStore::open_existing(
+                &fixture.input.verifier.database_path,
+                id,
+                kasumi_store::ScratchDisk::open(fixture.input.scratch_disk.clone())?,
+            )
+        };
+        assert!(
+            reopen().is_err(),
+            "{phase}: caller cancellation lost ownership"
+        );
+        let mut drain = Box::pin(registry.drain());
+        std::future::poll_fn(|cx| {
+            assert!(drain.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        drop(drain);
+        assert!(reopen().is_err(), "{phase}: cancelled drain lost ownership");
+        let mut drain = Box::pin(registry.drain());
+        std::future::poll_fn(|cx| {
+            assert!(drain.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        pause.release();
+        let error = tokio::time::timeout(std::time::Duration::from_secs(10), drain)
+            .await?
+            .unwrap_err();
+        assert!(
+            error
+                .downcast_ref::<crate::startup_preparation::PreparationPanic>()
+                .is_some(),
+            "original unclaimed panic must survive both cancellations: {error:#}"
+        );
+        let node = reopen()?;
+        node.drain_initializers().await?;
+        drop(node);
+        registry.drain().await?;
+        if phase == "verifier-installation-complete" {
+            let installed = fixture.open().await?;
+            fixture.operational.open(&installed)?.check()?;
+            installed.shutdown().await?;
+        } else {
+            assert!(
+                fixture.open().await.is_err(),
+                "partial trust cannot be resumed"
+            );
+        }
+    }
+    Ok(())
+}

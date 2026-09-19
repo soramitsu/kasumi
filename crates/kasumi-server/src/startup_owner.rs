@@ -25,6 +25,7 @@ pub(crate) enum Kind {
     Authority,
     LocalOperator,
     TenantEnrollment,
+    SignerVerifier,
 }
 
 fn tasks(kind: Kind) -> &'static Tasks {
@@ -32,11 +33,13 @@ fn tasks(kind: Kind) -> &'static Tasks {
     static AUTHORITY: OnceLock<Tasks> = OnceLock::new();
     static LOCAL_OPERATOR: OnceLock<Tasks> = OnceLock::new();
     static TENANT_ENROLLMENT: OnceLock<Tasks> = OnceLock::new();
+    static SIGNER_VERIFIER: OnceLock<Tasks> = OnceLock::new();
     match kind {
         Kind::Data => &DATA,
         Kind::Authority => &AUTHORITY,
         Kind::LocalOperator => &LOCAL_OPERATOR,
         Kind::TenantEnrollment => &TENANT_ENROLLMENT,
+        Kind::SignerVerifier => &SIGNER_VERIFIER,
     }
     .get_or_init(Default::default)
 }
@@ -99,7 +102,15 @@ where
     T: Runtime,
     Opening: Future<Output = Result<T>> + Send + 'static,
 {
-    let receive = begin(tasks(kind), opening).await?;
+    open_in(tasks(kind), opening).await
+}
+
+async fn open_in<T, Opening>(tasks: &Tasks, opening: Opening) -> Result<T>
+where
+    T: Runtime,
+    Opening: Future<Output = Result<T>> + Send + 'static,
+{
+    let receive = begin(tasks, opening).await?;
     // No await or fallible work between actual receipt and public ownership.
     receive.await.context("startup owner stopped")?.claim()
 }
@@ -174,6 +185,24 @@ async fn drain_tasks(tasks: &Tasks) -> Result<()> {
         }
     }
     tasks.failure.take().map_or(Ok(()), Err)
+}
+
+/// Isolate faulting ownership tests from other process-wide startup kinds while
+/// exercising the same publication, acknowledgement and retained-join code.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct TestRegistry(Tasks);
+#[cfg(test)]
+impl TestRegistry {
+    pub(crate) async fn open<T: Runtime>(
+        &self,
+        opening: impl Future<Output = Result<T>> + Send + 'static,
+    ) -> Result<T> {
+        open_in(&self.0, opening).await
+    }
+    pub(crate) async fn drain(&self) -> Result<()> {
+        drain_tasks(&self.0).await
+    }
 }
 
 #[cfg(test)]

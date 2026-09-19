@@ -50,32 +50,56 @@ impl SignerVerifierConfig {
                 .context("verifier directory missing")?,
         )?;
         let database_id = kasumi_store::node_store_ids::signer_verifier(&self.identity)?;
-        let node = if initialize {
-            NodeStore::create_new(&self.database_path, database_id, scratch_disk.clone())?
-        } else {
-            NodeStore::open_existing(&self.database_path, database_id, scratch_disk.clone())?
-        };
-        let provider = self.keys.provider(credential)?;
-        let access = StorageAccess::live_signer_trust(self.identity.clone())?;
-        let prepared = if initialize {
-            TenantStore::initialize_catalog(node.clone(), self.identity.tenant(), provider, access)
-                .await
-        } else {
-            TenantStore::open_existing(node.clone(), self.identity.tenant(), provider, access).await
-        };
-        let drained = node.drain_initializers().await;
-        match (prepared, drained) {
-            (Ok(store), Ok(())) => Ok(store),
-            (Ok(store), Err(error)) => Err(match store.shutdown().await {
-                Ok(()) => error,
-                Err(failure) => error.context(failure),
-            }),
-            (Err(error), Ok(())) => Err(error),
-            (Err(error), Err(drain)) => {
-                Err(error.context(format!("singleton drain failed: {drain:#}")))
+        // Preparation is called only inside a retained startup/installation
+        // owner. Keep acquired scopes outside the caught future until cleanup
+        // has actually joined every initializer and worker.
+        let mut pending = crate::startup_resources::Resources::default();
+        let prepared = crate::startup_preparation::capture("signer verifier storage", async {
+            let provider = self.keys.provider(credential)?;
+            let access = StorageAccess::live_signer_trust(self.identity.clone())?;
+            let node = if initialize {
+                NodeStore::create_new(&self.database_path, database_id, scratch_disk.clone())?
+            } else {
+                NodeStore::open_existing(&self.database_path, database_id, scratch_disk.clone())?
+            };
+            pending.nodes.push(node.clone());
+            #[cfg(test)]
+            crate::startup_preparation::checkpoint(database_id, "verifier-storage-node");
+            let store = if initialize {
+                TenantStore::initialize_catalog(
+                    node.clone(),
+                    self.identity.tenant(),
+                    provider,
+                    access,
+                )
+                .await?
+            } else {
+                TenantStore::open_existing(node.clone(), self.identity.tenant(), provider, access)
+                    .await?
+            };
+            pending.stores.push(store.clone());
+            #[cfg(test)]
+            crate::startup_preparation::checkpoint(database_id, "verifier-storage-catalog");
+            node.drain_initializers().await?;
+            Ok(store)
+        })
+        .await;
+        match prepared {
+            Ok(store) => Ok(store),
+            Err(error) => {
+                #[cfg(test)]
+                crate::startup_preparation::failure_checkpoint(database_id).await;
+                match crate::startup_owner::finish(&mut pending).await {
+                    Ok(()) => Err(error),
+                    Err(drain) => {
+                        Err(error
+                            .context(format!("signer verifier storage drain failed: {drain:#}")))
+                    }
+                }
             }
         }
     }
+
     pub(crate) async fn open(
         &self,
         domains: BTreeMap<String, SigningDomain>,
@@ -336,14 +360,33 @@ pub struct InitializeSignerVerifier {
     pub verifier: SignerVerifierConfig,
     pub initial_certificates: Vec<SigningCertificate>,
 }
+// Only a drained result crosses the acknowledged startup handoff. Abandoned
+// errors remain observable through the retained initialization registry.
+struct InitializedVerifier;
+impl crate::startup_owner::Runtime for InitializedVerifier {
+    fn close(
+        &mut self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = kasumi_types::drain::DrainResult> + Send + '_>,
+    > {
+        Box::pin(async { Ok(()) })
+    }
+}
 impl InitializeSignerVerifier {
     pub async fn initialize(&self) -> Result<()> {
-        let input = self.clone();
-        // Only the drained unit outcome crosses this CLI task boundary. Lost
-        // replies cannot cancel catalog preparation or release its file owner.
-        tokio::spawn(async move { input.initialize_owned().await }).await?
+        crate::startup_owner::open(
+            crate::startup_owner::Kind::SignerVerifier,
+            self.clone().initialize_owned(),
+        )
+        .await?;
+        Ok(())
     }
-    async fn initialize_owned(self) -> Result<()> {
+    /// Stop admitting new initializations before joining abandoned operations.
+    /// Cancellation retains the exact pending task and its original failure.
+    pub async fn drain_initializations() -> Result<()> {
+        crate::startup_owner::drain(crate::startup_owner::Kind::SignerVerifier).await
+    }
+    async fn initialize_owned(self) -> Result<InitializedVerifier> {
         self.verifier.validate()?;
         self.scratch_disk.validate()?;
         let admission = kasumi_engine::admission::NodeAdmission::new(self.admission.clone())?;
@@ -386,15 +429,21 @@ impl InitializeSignerVerifier {
         if !parent.exists() {
             private_files::create_directory(parent)?;
         }
-        let store = self
-            .verifier
-            .store(
-                Arc::new(file_secret),
-                true,
-                kasumi_store::ScratchDisk::open(self.scratch_disk.clone())?,
-            )
-            .await?;
-        let result = (|| -> Result<()> {
+        #[cfg(test)]
+        let database_id = kasumi_store::node_store_ids::signer_verifier(&self.verifier.identity)?;
+        let mut pending = crate::startup_resources::Resources::default();
+        let result = crate::startup_preparation::capture("signer verifier installation", async {
+            let store = self
+                .verifier
+                .store(
+                    Arc::new(file_secret),
+                    true,
+                    kasumi_store::ScratchDisk::open(self.scratch_disk.clone())?,
+                )
+                .await?;
+            pending.stores.push(store.clone());
+            #[cfg(test)]
+            crate::startup_preparation::checkpoint(database_id, "verifier-installation-store");
             ensure!(
                 store.get_bounded(NS, b"installation", 256 << 10)?.is_none(),
                 "fresh verifier unexpectedly contains an installation"
@@ -414,20 +463,33 @@ impl InitializeSignerVerifier {
                     )?,
                 )?;
             }
+            #[cfg(test)]
+            crate::startup_preparation::checkpoint(database_id, "verifier-installation-domains");
             store.write_batch(&[WriteOp::put(
                 NS,
                 b"installation",
                 serde_json::to_vec(&installed)?,
             )])?;
+            #[cfg(test)]
+            crate::startup_preparation::checkpoint(database_id, "verifier-installation-complete");
             Ok(())
-        })();
-        match (result, store.shutdown().await) {
-            (Ok(()), close) => close.map_err(Into::into),
-            (Err(error), Ok(())) => Err(error),
-            (Err(error), Err(failure)) => Err(error.context(failure)),
+        })
+        .await;
+        #[cfg(test)]
+        if result.is_err() {
+            crate::startup_preparation::failure_checkpoint(database_id).await;
+        }
+        let drained = crate::startup_owner::finish(&mut pending).await;
+        match (result, drained) {
+            (Ok(()), Ok(())) => Ok(InitializedVerifier),
+            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+            (Err(error), Err(drain)) => Err(error.context(format!(
+                "signer verifier installation drain failed: {drain:#}"
+            ))),
         }
     }
 }
+
 pub async fn initialize_from_file(path: &Path) -> Result<()> {
     let input: InitializeSignerVerifier = serde_json::from_slice(&read_bounded(path, 2 << 20)?)?;
     input.initialize().await
