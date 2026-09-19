@@ -372,7 +372,11 @@ fn a_closed_predecessor_cannot_unregister_the_new_owner_of_the_same_inode() {
     let current = disk.open_file("data", Path::new("file")).unwrap();
     release.send(()).unwrap();
     closing.join().unwrap();
-    let same = disk.open_file("data", Path::new("file")).unwrap();
+    assert!(disk.open_file("data", Path::new("file")).is_err());
+    // A missing/newly unregistered entry would instead reach flock, fail, and
+    // poison admission. The new owner must still have its exclusive slot.
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+    let same = current.clone();
     assert_eq!(disk.snapshot().open_files, 1);
     assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
     drop(same);
@@ -411,4 +415,227 @@ fn unknown_filesystem_observation_fences_scratch_until_a_drained_census() {
     drop(scratch_file);
     drop(charge);
     clean(&disk, &["file"]);
+}
+
+#[test]
+fn duplicate_live_inode_open_requires_explicit_owner_clone() {
+    let (_directory, config) = installation();
+    seed(&config, "data", 64 << 10);
+    let disk = open(config);
+    let file = disk.open_file("data", Path::new("data")).unwrap();
+    let before = disk.snapshot();
+    assert!(disk.open_file("data", Path::new("data")).is_err());
+    let shared = file.clone();
+    drop(file);
+    assert!(disk.open_file("data", Path::new("data")).is_err());
+    assert_eq!(disk.snapshot().open_files, 1);
+    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+    assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+    assert!(disk.snapshot().filesystem_admission_ready);
+    drop(shared);
+    let reopened = disk.open_file("data", Path::new("data")).unwrap();
+    assert_eq!(disk.snapshot().open_files, 1);
+    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+    assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);
+    drop(reopened);
+    clean(&disk, &["data"]);
+}
+
+#[test]
+fn live_shrink_requires_the_only_mutable_file_owner() {
+    let (_directory, config) = installation();
+    seed(&config, "data", 128 << 10);
+    let disk = open(config);
+    let mut file = disk.open_file("data", Path::new("data")).unwrap();
+    file.write_all_at(b"retained encrypted payload", 0).unwrap();
+    file.sync_all().unwrap();
+    let reader = file.clone();
+    let before = disk.snapshot();
+    assert!(file.shrink(32 << 10).is_err());
+    assert_eq!(file.observed_len().unwrap(), 128 << 10);
+    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+    assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);
+    let mut payload = [0; 26];
+    reader.read_exact_at(&mut payload, 0).unwrap();
+    assert_eq!(&payload, b"retained encrypted payload");
+    drop(reader);
+    assert!(file.shrink(256 << 10).is_err());
+    assert_eq!(file.observed_len().unwrap(), 128 << 10);
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+    file.shrink(32 << 10).unwrap();
+    assert_eq!(file.observed_len().unwrap(), 32 << 10);
+    file.read_exact_at(&mut payload, 0).unwrap();
+    assert_eq!(&payload, b"retained encrypted payload");
+    drop(file);
+    clean(&disk, &["data"]);
+}
+
+#[test]
+fn live_shrink_cannot_release_unmaterialized_or_unsynced_growth() {
+    let (_directory, config) = installation();
+    seed(&config, "data", 64 << 10);
+    let disk = open(config);
+    let mut file = disk.open_file("data", Path::new("data")).unwrap();
+    file.reserve_growth(64 << 10, 128 << 10, DiskWork::Foreground)
+        .unwrap();
+    let before = disk.snapshot();
+    assert!(file.shrink(32 << 10).is_err());
+    assert_eq!(file.observed_len().unwrap(), 64 << 10);
+    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+    assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);
+    // Syncing a short file does not materialize the accepted reservation.
+    file.sync_all().unwrap();
+    assert!(file.shrink(32 << 10).is_err());
+    file.grow_reserved(128 << 10).unwrap();
+    assert!(file.shrink(32 << 10).is_err());
+    assert_eq!(file.observed_len().unwrap(), 128 << 10);
+    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+    file.sync_all().unwrap();
+    file.shrink(32 << 10).unwrap();
+    assert_eq!(file.observed_len().unwrap(), 32 << 10);
+    assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+    drop(file);
+    clean(&disk, &["data"]);
+}
+
+#[test]
+fn live_shrink_retains_identity_and_lock_with_exact_reopen_accounting() {
+    let (_directory, config) = installation();
+    let path = config.roots["data"].join("data");
+    seed(&config, "data", 128 << 10);
+    seed(&config, "bystander", 32 << 10);
+    let identity = crate::private_files::file_identity(&path).unwrap();
+    let disk = open(config.clone());
+    let mut file = disk.open_file("data", Path::new("data")).unwrap();
+    file.write_all_at(b"retained encrypted payload", 0).unwrap();
+    file.sync_all().unwrap();
+    let contender = File::open(&path).unwrap();
+    assert!(contender.try_lock().is_err());
+    file.shrink(32 << 10).unwrap();
+    assert!(contender.try_lock().is_err());
+    assert_eq!(
+        crate::private_files::file_identity(&path).unwrap(),
+        identity
+    );
+    assert_eq!(std::fs::metadata(&path).unwrap().len(), 32 << 10);
+    assert_eq!(disk.snapshot().charged_bytes, 64 << 10);
+    assert_eq!(disk.snapshot().open_files, 1);
+    assert_eq!(disk.snapshot().persistent_files, 2);
+    assert!(disk.open_file("data", Path::new("data")).is_err());
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+    let shrunk = disk.snapshot();
+    drop(file);
+    assert_eq!(disk.snapshot().charged_bytes, shrunk.charged_bytes);
+    assert_eq!(disk.snapshot().pending_bytes, shrunk.pending_bytes);
+    let reopened = disk.open_file("data", Path::new("data")).unwrap();
+    assert_eq!(disk.snapshot().charged_bytes, shrunk.charged_bytes);
+    assert_eq!(disk.snapshot().pending_bytes, shrunk.pending_bytes);
+    reopened
+        .reserve_growth(32 << 10, 64 << 10, DiskWork::Foreground)
+        .unwrap();
+    reopened.grow_reserved(64 << 10).unwrap();
+    reopened.sync_all().unwrap();
+    assert_eq!(disk.snapshot().charged_bytes, 96 << 10);
+    let mut payload = [0; 26];
+    reopened.read_exact_at(&mut payload, 0).unwrap();
+    assert_eq!(&payload, b"retained encrypted payload");
+    drop(reopened);
+    drop(contender);
+    clean(&disk, &["data", "bystander"]);
+}
+
+#[test]
+fn live_shrink_failure_retains_charges_through_drop_and_fences_shared_device() {
+    for failure in [
+        file::ShrinkFailure::Truncate,
+        file::ShrinkFailure::FileSync,
+        file::ShrinkFailure::DirectorySync,
+    ] {
+        let (directory, config) = installation();
+        seed(&config, "data", 128 << 10);
+        let disk = open(config);
+        let scratch = crate::ScratchDisk::test_with_device(
+            directory.path().join("scratch"),
+            disk.device.share(0),
+            16 << 20,
+        );
+        let (scratch_file, mut scratch_charge) = scratch.file().unwrap();
+        let mut file = disk.open_file("data", Path::new("data")).unwrap();
+        file.write_all_at(b"retained encrypted payload", 0).unwrap();
+        file.sync_all().unwrap();
+        let before = disk.snapshot();
+        *disk.shrink_failure.lock().unwrap() = Some(failure);
+        assert!(file.shrink(32 << 10).is_err());
+        assert_eq!(
+            file.observed_len().unwrap(),
+            if failure == file::ShrinkFailure::Truncate {
+                128 << 10
+            } else {
+                32 << 10
+            }
+        );
+        assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+        assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);
+        assert_eq!(
+            disk.snapshot().filesystem_pending_bytes,
+            before.filesystem_pending_bytes
+        );
+        assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+        assert!(!disk.snapshot().filesystem_admission_ready);
+        assert!(scratch_charge.grow(4096).is_err());
+        assert!(disk.reconcile(&CensusCancellation::default()).is_err());
+        assert!(file.shrink(0).is_err());
+        drop(file);
+        assert_eq!(disk.snapshot().open_files, 0);
+        assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+        assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);
+        assert_eq!(
+            disk.snapshot().filesystem_pending_bytes,
+            before.filesystem_pending_bytes
+        );
+        assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+        assert!(!scratch.snapshot().filesystem_admission_ready);
+        assert!(disk.open_file("data", Path::new("data")).is_err());
+        disk.reconcile(&CensusCancellation::default()).unwrap();
+        assert_eq!(
+            disk.snapshot().charged_bytes,
+            if failure == file::ShrinkFailure::Truncate {
+                128 << 10
+            } else {
+                32 << 10
+            }
+        );
+        assert!(scratch.snapshot().filesystem_admission_ready);
+        scratch_charge.grow(4096).unwrap();
+        drop(scratch_file);
+        drop(scratch_charge);
+        clean(&disk, &["data"]);
+    }
+
+    // Binding uncertainty cannot authorize truncating an unrelated replacement.
+    let (_directory, config) = installation();
+    seed(&config, "data", 128 << 10);
+    let root = config.roots["data"].clone();
+    let disk = open(config.clone());
+    let mut file = disk.open_file("data", Path::new("data")).unwrap();
+    let before = disk.snapshot();
+    std::fs::rename(root.join("data"), root.join("retained")).unwrap();
+    seed(&config, "data", 4096);
+    assert!(file.shrink(0).is_err());
+    assert_eq!(std::fs::metadata(root.join("data")).unwrap().len(), 4096);
+    assert_eq!(
+        std::fs::metadata(root.join("retained")).unwrap().len(),
+        128 << 10
+    );
+    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+    assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+    drop(file);
+    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+    assert!(!disk.snapshot().filesystem_admission_ready);
+    std::fs::remove_file(root.join("data")).unwrap();
+    std::fs::rename(root.join("retained"), root.join("data")).unwrap();
+    clean(&disk, &["data"]);
 }

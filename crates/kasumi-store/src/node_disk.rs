@@ -171,6 +171,8 @@ pub struct NodeDisk {
     available_error: AtomicBool,
     #[cfg(test)]
     after_file_close: Mutex<Option<file::ClosePause>>,
+    #[cfg(test)]
+    shrink_failure: Mutex<Option<file::ShrinkFailure>>,
 }
 
 impl std::fmt::Debug for NodeDisk {
@@ -261,6 +263,8 @@ impl NodeDisk {
             available_error: AtomicBool::new(false),
             #[cfg(test)]
             after_file_close: Mutex::new(None),
+            #[cfg(test)]
+            shrink_failure: Mutex::new(None),
         });
         let mut promises = disk.device.lock();
         let next = promises

@@ -26,7 +26,9 @@ partially counted owner. A successful census synchronizes inspected files and
 directories before publishing its aggregate.
 
 `NodeDiskFile` binds its opaque descriptor to root, parent, relative name and
-device/inode. It exposes no raw descriptor or `File` clone. Its Arc clones keep
+device/inode. It exposes no raw descriptor or `File` clone. Reopening an already-live inode
+is rejected: only an explicit `NodeDiskFile::clone` shares its registered owner.
+Duplicate acquisition does not create a second backend or change accounting. Its Arc clones keep
 the same registered owner alive. Explicit reservations precede physical growth,
 and a failed budget check changes neither the file nor accounting. Mutation
 rechecks the descriptor/name binding; substitution closes admission and cannot
@@ -63,6 +65,28 @@ file/parent as applicable, close the descriptor, and then release the verified
 charge. Failure or uncertain directory synchronization keeps all prior charge
 and closes admission. Whole-owner reconciliation may resolve this only after
 every file owner has closed under the retained root locks.
+
+`NodeDiskFile::shrink(&mut self, len)` shortens a settled file while retaining
+its descriptor, exclusive lock and registration. It requires the sole strong file
+owner, checked under the registration mutex; explicit reader/backend clones must
+have drained. Growth that has not materialized or synchronized cannot be
+reclaimed through this API. A larger requested length is rejected without effects.
+The operation verifies the physical binding, truncates, synchronizes the file and
+parent, and verifies the same binding and resulting extent again before publishing
+checked quota and shared-device promise reductions. The resulting per-file budget
+matches the synchronized extent, so closing and reopening cannot lose or charge
+the old extent again. It grants no permission to truncate pages still needed by a
+higher-level database; a future backend adapter must separately serialize its own
+read/write users around this mutable owner.
+
+Any uncertain truncate, synchronization, binding or accounting failure preserves
+all prior byte/promise charges, marks the file unsettled, and closes both persistent
+and shared filesystem admission. Dropping that failed descriptor cannot release
+those charges or reopen admission. Only a complete census after all owners close
+may reconcile the physical result. Precondition rejection for explicit clones or
+unsettled growth changes no file or accounting. This is an isolated primitive;
+production constructors still use their existing backend and the uninstalled redb
+preflight prototype is not qualified by this change.
 
 Scratch and persistent owners now use one `DeviceDisk` promise mutex and the
 maximum free-space floor of its installed registrations. The quota transition
@@ -106,3 +130,27 @@ deletion must hold these exact owners through final directory synchronization;
 S3 objects need their separate installed capacity policy. Runtime configuration,
 health/readiness reporting, durable startup enrollment, cross-platform tests and
 the full upstream redb/fuzz gates all remain open.
+
+## Exclusive-open and live-shrink source checkpoint
+
+The September 19 successor adds five regression sources, all **UNRUN** until a
+fresh frozen-source gate executes:
+
+- `duplicate_live_inode_open_requires_explicit_owner_clone`
+- `live_shrink_requires_the_only_mutable_file_owner`
+- `live_shrink_cannot_release_unmaterialized_or_unsynced_growth`
+- `live_shrink_retains_identity_and_lock_with_exact_reopen_accounting`
+- `live_shrink_failure_retains_charges_through_drop_and_fences_shared_device`
+
+They use real private files, file locks, distinctive payload bytes and the
+installed accounting owners. These primitive cases do not exercise encryption. The failure case injects errors before truncation,
+after actual truncation but before file sync, and after file sync but before parent
+sync. It checks physical length, retained charges before and after descriptor Drop,
+shared scratch exclusion, and recovery only through a drained census. It also
+substitutes a path and verifies the unrelated replacement is never truncated.
+The existing destructor/predecessor regression now requires duplicate acquisition
+to fail while its new owner remains registered and healthy.
+
+Only direct Rust 1.97.1 formatting and Git whitespace checks have run for this
+successor. These cases do not execute redb, wire production disk admission, qualify
+recoverable quota errors, or replace the release's capacity and platform gates.

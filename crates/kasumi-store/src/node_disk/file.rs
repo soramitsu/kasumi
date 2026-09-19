@@ -36,6 +36,14 @@ pub(super) struct ClosePause {
     pub(super) release: std::sync::mpsc::Receiver<()>,
 }
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ShrinkFailure {
+    Truncate,
+    FileSync,
+    DirectorySync,
+}
+
 /// An opaque descriptor owner. There is no raw File/fd escape: every clone keeps
 /// the registration live, and mutation validates the physical path binding.
 #[derive(Clone)]
@@ -119,13 +127,16 @@ impl NodeDisk {
             .metadata()
             .inspect_err(|_| self.fail_locked(&mut state))?;
         let identity = Identity::of(&metadata);
-        if let Some(existing) = state.live.get(&identity).and_then(std::sync::Weak::upgrade) {
-            ensure!(
-                existing.root == root && existing.relative == relative,
-                "live persistent file has another name"
-            );
-            return Ok(NodeDiskFile(existing));
-        }
+        // Opening is an exclusive acquisition, never an implicit clone. Avoid
+        // upgrading the Weak under this mutex: dropping the last temporary Arc
+        // could otherwise run FileOwner::drop while its registration is locked.
+        ensure!(
+            !state
+                .live
+                .get(&identity)
+                .is_some_and(|owner| owner.strong_count() != 0),
+            "persistent file is already owned"
+        );
         census::lock(&file, libc::LOCK_EX).inspect_err(|_| self.fail_locked(&mut state))?;
         let (bytes, pending) =
             extent(&metadata, self.unit).inspect_err(|_| self.fail_locked(&mut state))?;
@@ -282,6 +293,18 @@ impl NodeDisk {
 }
 
 impl FileOwner {
+    #[cfg(test)]
+    fn shrink_checkpoint(&self, stage: ShrinkFailure) -> io::Result<()> {
+        let mut fault = self.disk.shrink_failure.lock().unwrap();
+        if *fault == Some(stage) {
+            fault.take();
+            return Err(io::Error::other(format!(
+                "injected shrink failure at {stage:?}"
+            )));
+        }
+        Ok(())
+    }
+
     fn lock_budget(&self) -> io::Result<std::sync::MutexGuard<'_, Budget>> {
         self.budget.lock().map_err(|_| {
             self.disk.fail();
@@ -372,6 +395,129 @@ impl FileOwner {
 }
 
 impl NodeDiskFile {
+    /// Truncate a settled file while retaining its exact descriptor and lock.
+    /// The mutable handle must be the sole owner: all cloned readers/backends
+    /// must have drained first. Unused or unsynchronized growth cannot be
+    /// reclaimed by this operation. Only verified durable shrink credits bytes;
+    /// uncertainty retains all prior charges and seals shared device admission.
+    pub fn shrink(&mut self, len: u64) -> io::Result<()> {
+        let owner = &self.0;
+        let mut state = owner.disk.lock_state();
+        if Arc::strong_count(owner) != 1 {
+            return Err(io::Error::other(
+                "persistent file still has readers or backend owners",
+            ));
+        }
+        if state.phase == NodeDiskPhase::Failed || !owner.disk.device.lock().admission_ready() {
+            return Err(io::Error::other("persistent shrink admission is closed"));
+        }
+        // Exclusive &mut plus the sole Arc and registration mutex guarantee
+        // that no other file operation can wait for this budget while holding
+        // an older reference. General file I/O takes budget before disk state.
+        let mut budget = match owner.budget.lock() {
+            Ok(budget) => budget,
+            Err(_) => {
+                owner.disk.fail_locked(&mut state);
+                return Err(io::Error::other("persistent file ownership is poisoned"));
+            }
+        };
+        if !budget.settled {
+            return Err(io::Error::other(
+                "persistent shrink requires settled growth",
+            ));
+        }
+        let file = budget.file.as_ref().expect("live persistent descriptor");
+        let current = match owner.verify(file).and_then(|()| Ok(file.metadata()?.len())) {
+            Ok(current) => current,
+            Err(error) => {
+                budget.settled = false;
+                owner.disk.fail_locked(&mut state);
+                return Err(io::Error::other(error));
+            }
+        };
+        if current != budget.reserved_len {
+            budget.settled = false;
+            owner.disk.fail_locked(&mut state);
+            return Err(io::Error::other("persistent shrink extent changed"));
+        }
+        if len > current {
+            return Err(io::Error::other("physical shrink cannot grow a file"));
+        }
+        // From the first physical operation onward every error is uncertain.
+        // Keep the previous budget until both syncs and exact observations pass.
+        budget.settled = false;
+        let outcome = (|| -> Result<(u64, u64)> {
+            let file = budget.file.as_ref().expect("live persistent descriptor");
+            #[cfg(test)]
+            owner.shrink_checkpoint(ShrinkFailure::Truncate)?;
+            file.set_len(len)?;
+            #[cfg(test)]
+            owner.shrink_checkpoint(ShrinkFailure::FileSync)?;
+            file.sync_all()?;
+            owner.verify(file)?;
+            ensure!(
+                file.metadata()?.len() == len,
+                "physical shrink length changed"
+            );
+            #[cfg(test)]
+            owner.shrink_checkpoint(ShrinkFailure::DirectorySync)?;
+            owner.parent.sync_all()?;
+            // A new path observation after directory sync must still identify
+            // the same physical file before any capacity is released.
+            owner.verify(file)?;
+            let metadata = file.metadata()?;
+            ensure!(metadata.len() == len, "physical shrink length changed");
+            extent(&metadata, owner.disk.unit).map_err(Into::into)
+        })();
+        let (bytes, pending) = match outcome {
+            Ok((bytes, pending)) if bytes <= budget.bytes => (bytes, pending),
+            Ok(_) => {
+                owner.disk.fail_locked(&mut state);
+                return Err(io::Error::other(
+                    "physical shrink increased allocated extent",
+                ));
+            }
+            Err(error) => {
+                owner.disk.fail_locked(&mut state);
+                return Err(io::Error::other(error));
+            }
+        };
+        let mut promises = owner.disk.device.lock();
+        let next = promises
+            .checked_sub(budget.pending)
+            .and_then(|n| n.checked_add(pending));
+        let own_next = state
+            .pending
+            .checked_sub(budget.pending)
+            .and_then(|n| n.checked_add(pending));
+        let owned = state
+            .bytes
+            .checked_sub(budget.bytes)
+            .and_then(|n| n.checked_add(bytes));
+        let (Some(next), Some(own_next), Some(owned)) = (next, own_next, owned) else {
+            state.phase = NodeDiskPhase::Failed;
+            promises.fail_owner();
+            return Err(io::Error::other("persistent shrink accounting overflow"));
+        };
+        if !promises.admission_ready() {
+            state.phase = NodeDiskPhase::Failed;
+            promises.fail_owner();
+            return Err(io::Error::other("shared filesystem admission is closed"));
+        }
+        if let Err(error) = promises.set_pending(next) {
+            state.phase = NodeDiskPhase::Failed;
+            promises.fail_owner();
+            return Err(error);
+        }
+        state.bytes = owned;
+        state.pending = own_next;
+        budget.bytes = bytes;
+        budget.pending = pending;
+        budget.reserved_len = len;
+        budget.settled = true;
+        Ok(())
+    }
+
     pub fn observed_len(&self) -> io::Result<u64> {
         let budget = self.0.lock_budget()?;
         let file = budget.file.as_ref().expect("live persistent descriptor");
