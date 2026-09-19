@@ -2,9 +2,7 @@
 //! operational configuration or from a missing applied Control document.
 use crate::runtime::{DeploymentMode, RuntimeConfig};
 use anyhow::{Context, Result, ensure};
-use kasumi_engine::control::{
-    ControlTopology, DeploymentMode as RouteMode, TenantRoute,
-};
+use kasumi_engine::control::{ControlTopology, DeploymentMode as RouteMode, TenantRoute};
 use kasumi_engine::{
     ControlGenesis, ControlLifecycleGenesis, ReplicatedBootstrap, ReplicatedGenesis,
 };

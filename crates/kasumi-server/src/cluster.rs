@@ -472,7 +472,9 @@ impl ClusterNetwork {
     /// It can only deny peer traffic; configured and durable admission still apply.
     #[cfg(test)]
     pub(crate) fn set_test_group_isolated(&self, group: &str, isolated: bool) -> Result<()> {
-        let mut groups = self.test_isolated_groups.write()
+        let mut groups = self
+            .test_isolated_groups
+            .write()
             .map_err(|_| anyhow::anyhow!("test network partition unavailable"))?;
         if isolated {
             groups.insert(group.into());
@@ -523,9 +525,12 @@ impl ClusterNetwork {
         }
         #[cfg(test)]
         ensure!(
-            peer == self.local_node_id || !self.test_isolated_groups.read()
-                .map_err(|_| anyhow::anyhow!("test network partition unavailable"))?
-                .contains(group),
+            peer == self.local_node_id
+                || !self
+                    .test_isolated_groups
+                    .read()
+                    .map_err(|_| anyhow::anyhow!("test network partition unavailable"))?
+                    .contains(group),
             "test network partition blocks this group peer"
         );
         Ok(route.raft.clone())

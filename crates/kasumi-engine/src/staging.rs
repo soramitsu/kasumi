@@ -631,9 +631,7 @@ pub(super) fn apply(
                     command.timestamp_ms,
                     staged.limits.atomic.max_read_assertions,
                 )?;
-                let receipt = apply_mutations(
-                    &mut staged, &operations, revision, false, indexes,
-                )?;
+                let receipt = apply_mutations(&mut staged, &operations, revision, false, indexes)?;
                 indexes.validate_unique_changes(
                     &state.collections,
                     &staged.collections,

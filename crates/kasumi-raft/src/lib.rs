@@ -419,6 +419,19 @@ impl RaftGroup {
         ))
     }
 
+    /// Local point lookup only; the caller must establish current quorum and
+    /// custody authorization before releasing this historical observation.
+    pub fn custody_receipt(
+        &self,
+        command_id: &str,
+    ) -> Result<Option<kasumi_types::CustodyReceipt>> {
+        self.check_access()?;
+        kasumi_types::validate_name(command_id)?;
+        let receipt = crate::custody_tables::receipt(self.store.custody().store(), command_id)?;
+        self.check_access()?;
+        Ok(receipt)
+    }
+
     pub async fn write_custody(&self, command: CustodyCommand) -> Result<Vec<u8>> {
         self.check_proposal()?;
         let response = self

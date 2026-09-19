@@ -869,7 +869,9 @@ impl TenantEngine {
     /// authorize an operation. Normal generation() remains access-fenced.
     #[cfg(any(test, feature = "test-utils"))]
     pub fn fixture_pending_restore(&self) -> Result<Option<kasumi_types::PendingRestore>> {
-        self.current.load().as_ref()
+        self.current
+            .load()
+            .as_ref()
             .map(|generation| generation.state.pending_restore.clone())
             .ok_or_else(|| Error::new(ErrorCode::Sealed, "fixture engine state is closed"))
     }
@@ -926,8 +928,10 @@ impl TenantEngine {
     /// apply fence. No storage, serving lease or generation handle is retained.
     #[cfg(any(test, feature = "test-utils"))]
     pub fn fixture_pending_restore_at_seal(&self) -> Result<Option<kasumi_types::PendingRestore>> {
-        self.sealed_restore_observation.lock()
-            .unwrap_or_else(|p| p.into_inner()).clone()
+        self.sealed_restore_observation
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
             .ok_or_else(|| Error::new(ErrorCode::Sealed, "no sealed restore observation"))
     }
 
@@ -939,7 +943,9 @@ impl TenantEngine {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         #[cfg(any(test, feature = "test-utils"))]
         if let Some(generation) = self.current.load().as_ref() {
-            *self.sealed_restore_observation.lock()
+            *self
+                .sealed_restore_observation
+                .lock()
                 .unwrap_or_else(|p| p.into_inner()) =
                 Some(generation.state.pending_restore.clone());
         }

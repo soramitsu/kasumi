@@ -206,7 +206,11 @@ struct SelectedTenant {
 }
 impl SelectedTenant {
     fn new(database: Arc<Database>) -> Self {
-        let store = database.raft_group().storage_domains().application().clone();
+        let store = database
+            .raft_group()
+            .storage_domains()
+            .application()
+            .clone();
         Self { database, store }
     }
 }

@@ -59,16 +59,17 @@ struct Generation {
 /// Raft task, key provider, database, route, or serving authority alive.
 #[cfg(test)]
 #[derive(Clone, Default)]
-pub(crate) struct RestoreDrainObservation(
-    Arc<std::sync::Mutex<Option<Option<PendingRestore>>>>,
-);
+pub(crate) struct RestoreDrainObservation(Arc<std::sync::Mutex<Option<Option<PendingRestore>>>>);
 #[cfg(test)]
 impl RestoreDrainObservation {
     fn record(&self, marker: Option<PendingRestore>) {
         *self.0.lock().unwrap_or_else(|p| p.into_inner()) = Some(marker);
     }
     pub(crate) fn marker(&self) -> Result<Option<PendingRestore>> {
-        self.0.lock().unwrap_or_else(|p| p.into_inner()).clone()
+        self.0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
             .context("no actual committed marker captured at target drain")
     }
 }
@@ -172,8 +173,15 @@ impl Generation {
             match replica.close().await {
                 Ok(()) => {
                     #[cfg(test)]
-                    { self.sealed_restore_observation.record(replica.database().engine()
-                        .fixture_pending_restore_at_seal().expect("drained replica seal observation")); }
+                    {
+                        self.sealed_restore_observation.record(
+                            replica
+                                .database()
+                                .engine()
+                                .fixture_pending_restore_at_seal()
+                                .expect("drained replica seal observation"),
+                        );
+                    }
                     self.replica.take();
                 }
                 Err(failure) => {
@@ -182,8 +190,15 @@ impl Generation {
                         retained = Some(failure);
                     } else {
                         #[cfg(test)]
-                        { self.sealed_restore_observation.record(replica.database().engine()
-                            .fixture_pending_restore_at_seal().expect("completed replica seal observation")); }
+                        {
+                            self.sealed_restore_observation.record(
+                                replica
+                                    .database()
+                                    .engine()
+                                    .fixture_pending_restore_at_seal()
+                                    .expect("completed replica seal observation"),
+                            );
+                        }
                         self.replica.take();
                     }
                 }
@@ -362,10 +377,16 @@ impl TargetRecoveryRuntime {
     /// Observe the next actual drain without retaining its generation owner.
     #[cfg(test)]
     pub(crate) async fn test_restore_drain_observer(
-        &self, tenant: &str, incarnation: Uuid,
+        &self,
+        tenant: &str,
+        incarnation: Uuid,
     ) -> Result<RestoreDrainObservation> {
-        let generation = self.generations.lock().await
-            .get(&(tenant.to_owned(), incarnation)).cloned()
+        let generation = self
+            .generations
+            .lock()
+            .await
+            .get(&(tenant.to_owned(), incarnation))
+            .cloned()
             .context("target generation absent")?;
         let generation = generation.lock().await;
         Ok(generation.sealed_restore_observation.clone())

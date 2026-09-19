@@ -422,7 +422,8 @@ impl ValidatedApplicationSnapshot {
                     QueryIndexes::build(&BTreeMap::from([(name.clone(), collection.clone())]))?;
                 current = Some((name.clone(), collection, validators));
             }
-            let (_, collection, validators) = current.as_ref().context("snapshot collection missing")?;
+            let (_, collection, validators) =
+                current.as_ref().context("snapshot collection missing")?;
             validate_name(&document.id)?;
             ensure!(
                 document.version <= collection.data_epoch,

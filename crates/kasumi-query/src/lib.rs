@@ -9,10 +9,10 @@
 
 mod cancellation;
 pub use cancellation::QueryCancellation;
+mod ordered_seek;
 mod scalar;
 mod search;
 mod structured;
-mod ordered_seek;
 pub use ordered_seek::{OrderedSeekPage, ordered_seek_request_sha256};
 mod validation;
 
@@ -82,7 +82,11 @@ impl QueryIndexes {
         if let Some(indexes) = self.collections.get(&definition.name)
             && indexes.schema_sha256 == validation::schema_sha256(&definition.schema)?
         {
-            return validation::validate_document_with_validator(definition, body, &indexes.validator);
+            return validation::validate_document_with_validator(
+                definition,
+                body,
+                &indexes.validator,
+            );
         }
         validate_document(definition, body)
     }
@@ -166,7 +170,8 @@ impl QueryIndexes {
                 return Err(invalid("collection map key differs from its definition"));
             }
             let validator = validation::validate_collection_and_compile(
-                &collection.definition, &collection.documents,
+                &collection.definition,
+                &collection.documents,
             )?;
             indexes.insert(
                 name.clone(),
@@ -211,7 +216,9 @@ impl QueryIndexes {
                                 return Err(invalid("document map key differs from its id"));
                             }
                             validation::validate_document_with_validator(
-                                &collection.definition, &document.body, &indexes.validator,
+                                &collection.definition,
+                                &document.body,
+                                &indexes.validator,
                             )?;
                         }
                     }

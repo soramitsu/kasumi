@@ -27,9 +27,7 @@ where
     V: Deserialize<'de>,
 {
     struct Canonical<K, V>(PhantomData<(K, V)>);
-    impl<'de, K: Ord + FromStr + fmt::Display, V: Deserialize<'de>> Visitor<'de>
-        for Canonical<K, V>
-    {
+    impl<'de, K: Ord + FromStr + fmt::Display, V: Deserialize<'de>> Visitor<'de> for Canonical<K, V> {
         type Value = BTreeMap<K, V>;
         fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
             f.write_str("an object with unique canonical unsigned decimal keys")
