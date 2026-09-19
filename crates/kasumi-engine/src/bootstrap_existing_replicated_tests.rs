@@ -3,7 +3,7 @@ use kasumi_raft::InProcessRouter;
 use kasumi_store::{NodeStore, test_utils::LocalKeyProvider};
 use std::time::Duration;
 
-const NODE_STORE_ID: uuid::Uuid = uuid::Uuid::from_u128(0xa1f9_93e5_2727_480a_9e7c_6e39eb515f01);
+const NODE_STORE_ID: uuid::Uuid = uuid::Uuid::from_u128(0xa1f9_93e5_2727_480a_9e7c_6e39_eb51_5f01);
 
 struct Replica {
     directory: tempfile::TempDir,

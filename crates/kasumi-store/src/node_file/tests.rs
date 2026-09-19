@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const ID: Uuid = Uuid::from_u128(0xac08_d6b1_a41e_47f1_9a86_8bd6c541d550);
+const ID: Uuid = Uuid::from_u128(0xac08_d6b1_a41e_47f1_9a86_8bd6_c541_d550);
 const PROBE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("node_crash_probe");
 
 fn directory() -> tempfile::TempDir {
