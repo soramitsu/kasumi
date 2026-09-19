@@ -16,8 +16,9 @@ pub use audit_archive::{
 mod backup;
 mod backup_sessions;
 pub use backup_sessions::{
-    BackupSessionObjectPage, BackupSessionObjects, BackupSessionSlot, MAX_SESSION_GC_OBJECTS,
-    MAX_SESSION_RECORD_BYTES, VerifiedBackupAbort, VerifiedBackupSession, verify_backup_session,
+    BackupSessionObject, BackupSessionObjectPage, BackupSessionObjects, BackupSessionSlot,
+    MAX_SESSION_GC_OBJECTS, MAX_SESSION_RECORD_BYTES, VerifiedBackupAbort, VerifiedBackupSession,
+    verify_backup_session,
 };
 mod device_disk;
 mod keys;

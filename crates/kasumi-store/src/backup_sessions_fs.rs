@@ -293,21 +293,38 @@ impl Directory {
             found.pop_last();
         }
         Ok(BackupSessionObjectPage {
-            objects: found.into_iter().collect(),
+            objects: found
+                .into_iter()
+                .map(|id| BackupSessionObject::File { id })
+                .collect(),
             more,
         })
     }
-    pub fn delete(&self, proof: &VerifiedBackupAbort, ids: &[Uuid]) -> Result<()> {
+    pub fn delete(
+        &self,
+        proof: &VerifiedBackupAbort,
+        entries: &[BackupSessionObject],
+    ) -> Result<()> {
         ensure!(
-            ids.len() <= MAX_SESSION_GC_OBJECTS,
+            entries.len() <= MAX_SESSION_GC_OBJECTS,
             "backup cleanup deletion exceeds page limit"
         );
+        // Reject the entire page before any deletion, including mixed backends.
+        let mut ids = BTreeSet::new();
+        for entry in entries {
+            let BackupSessionObject::File { id } = entry else {
+                anyhow::bail!("filesystem cleanup requires file selectors");
+            };
+            ensure!(
+                !id.is_nil() && ids.insert(*id),
+                "invalid or duplicate cleanup object"
+            );
+        }
         let Some(objects) = self.aborted_objects(proof)? else {
             return Ok(());
         };
         for id in ids {
             proof.check()?;
-            ensure!(!id.is_nil(), "nil cleanup object");
             objects.unlink(&format!("{id}.kasumi"))?;
         }
         objects.0.sync_all()?;

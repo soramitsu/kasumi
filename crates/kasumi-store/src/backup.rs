@@ -351,7 +351,7 @@ pub trait BackupDestination: Send + Sync {
     async fn session_delete(
         &self,
         _aborted: &crate::VerifiedBackupAbort,
-        _objects: &[Uuid],
+        _objects: &[crate::BackupSessionObject],
     ) -> Result<()> {
         anyhow::bail!("backup destination lacks managed session reclamation")
     }
@@ -416,7 +416,7 @@ impl BackupDestination for FilesystemBackupDestination {
     async fn session_delete(
         &self,
         aborted: &crate::VerifiedBackupAbort,
-        objects: &[Uuid],
+        objects: &[crate::BackupSessionObject],
     ) -> Result<()> {
         ensure!(
             objects.len() <= crate::MAX_SESSION_GC_OBJECTS,
@@ -715,7 +715,7 @@ impl BackupDestination for S3BackupDestination {
     async fn session_delete(
         &self,
         aborted: &crate::VerifiedBackupAbort,
-        objects: &[Uuid],
+        objects: &[crate::BackupSessionObject],
     ) -> Result<()> {
         self.managed_delete(aborted, objects).await
     }
@@ -1028,9 +1028,17 @@ mod s3_tests {
         ));
     }
 
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct ObjectVersion {
+        id: String,
+        data: Option<Vec<u8>>,
+    }
     #[derive(Default)]
     struct Objects {
-        values: parking_lot::Mutex<std::collections::HashMap<String, Vec<u8>>>,
+        // Each key keeps every version, newest first. None is a delete marker.
+        values: parking_lot::Mutex<std::collections::BTreeMap<String, Vec<ObjectVersion>>>,
+        deletes: parking_lot::Mutex<Vec<(String, Option<String>)>>,
+        list_response: parking_lot::Mutex<Option<String>>,
         signer: parking_lot::Mutex<Option<S3BackupDestination>>,
     }
     async fn object(
@@ -1074,52 +1082,361 @@ mod s3_tests {
             if headers.get("if-none-match").is_none_or(|v| v != "*") {
                 return StatusCode::BAD_REQUEST.into_response();
             }
-            if values.contains_key(uri.path()) {
+            if values
+                .get(uri.path())
+                .and_then(|versions| versions.first())
+                .is_some_and(|version| version.data.is_some())
+            {
                 return StatusCode::PRECONDITION_FAILED.into_response();
             }
-            values.insert(uri.path().into(), bytes.to_vec());
+            values.entry(uri.path().into()).or_default().insert(
+                0,
+                ObjectVersion {
+                    id: Uuid::new_v4().to_string(),
+                    data: Some(bytes.to_vec()),
+                },
+            );
             StatusCode::OK.into_response()
         } else if method == Method::GET && uri.query().is_some() {
             let url = Url::parse(&format!("https://fixture{uri}")).unwrap();
             let query = url
                 .query_pairs()
                 .collect::<std::collections::BTreeMap<_, _>>();
-            if query.get("list-type").map(|v| v.as_ref()) != Some("2") {
+            if !query.contains_key("versions")
+                || query.contains_key("key-marker")
+                || query.contains_key("version-id-marker")
+            {
                 return StatusCode::BAD_REQUEST.into_response();
+            }
+            if let Some(response) = state.list_response.lock().as_ref() {
+                return response.clone().into_response();
             }
             let prefix = query.get("prefix").unwrap();
             let maximum: usize = query.get("max-keys").unwrap().parse().unwrap();
             let bucket = format!("{}/", uri.path());
-            let mut keys = values
-                .keys()
-                .filter_map(|key| key.strip_prefix(&bucket))
-                .filter(|key| {
-                    key.starts_with(prefix.as_ref())
-                        && query
-                            .get("start-after")
-                            .is_none_or(|after| *key > after.as_ref())
-                })
-                .collect::<Vec<_>>();
-            keys.sort();
-            let truncated = keys.len() > maximum;
-            keys.truncate(maximum);
-            let records = keys
+            let mut entries = values
                 .iter()
-                .map(|key| format!("<Contents><Key>{key}</Key><Size>1</Size></Contents>"))
+                .filter_map(|(key, versions)| key.strip_prefix(&bucket).map(|key| (key, versions)))
+                .filter(|(key, _)| key.starts_with(prefix.as_ref()))
+                .flat_map(|(key, versions)| versions.iter().map(move |version| (key, version)))
+                .collect::<Vec<_>>();
+            let truncated = entries.len() > maximum;
+            entries.truncate(maximum);
+            let records = entries
+                .iter()
+                .map(|(key, version)| {
+                    let tag = if version.data.is_some() {
+                        "Version"
+                    } else {
+                        "DeleteMarker"
+                    };
+                    let version_id = quick_xml::escape::escape(&version.id);
+                    format!("<{tag}><Key>{key}</Key><VersionId>{version_id}</VersionId></{tag}>")
+                })
                 .collect::<String>();
-            format!("<ListBucketResult><Prefix>{prefix}</Prefix>{records}<IsTruncated>{truncated}</IsTruncated></ListBucketResult>").into_response()
+            format!("<ListVersionsResult><Prefix>{prefix}</Prefix>{records}<IsTruncated>{truncated}</IsTruncated></ListVersionsResult>").into_response()
         } else if method == Method::DELETE {
-            values.remove(uri.path());
+            let url = Url::parse(&format!("https://fixture{uri}")).unwrap();
+            let version_id = url
+                .query_pairs()
+                .find(|(name, _)| name == "versionId")
+                .map(|(_, value)| value.into_owned());
+            state
+                .deletes
+                .lock()
+                .push((uri.path().into(), version_id.clone()));
+            if let Some(version_id) = version_id {
+                if let Some(versions) = values.get_mut(uri.path()) {
+                    versions.retain(|version| version.id != version_id);
+                    if versions.is_empty() {
+                        values.remove(uri.path());
+                    }
+                }
+            } else {
+                // Model S3 faithfully: a simple DELETE retains every data version.
+                values.entry(uri.path().into()).or_default().insert(
+                    0,
+                    ObjectVersion {
+                        id: Uuid::new_v4().to_string(),
+                        data: None,
+                    },
+                );
+            }
             StatusCode::NO_CONTENT.into_response()
         } else if method == Method::GET {
             values
                 .get(uri.path())
-                .cloned()
+                .and_then(|versions| versions.first())
+                .and_then(|version| version.data.clone())
                 .map(|bytes| bytes.into_response())
                 .unwrap_or_else(|| StatusCode::NOT_FOUND.into_response())
         } else {
             StatusCode::METHOD_NOT_ALLOWED.into_response()
         }
+    }
+
+    async fn assert_versioned_session_cleanup(
+        destination: &S3BackupDestination,
+        state: &Objects,
+        store: &TenantStore,
+        keys: Arc<dyn KeyProvider>,
+        proof: &crate::VerifiedBackupAbort,
+    ) {
+        use crate::{BackupSessionObject, BackupSessionSlot, verify_backup_session};
+        use kasumi_types::{BackupSessionIntent, BackupSessionOutcome, FullBackupCheckpoint};
+        let session = proof.session_id();
+        let id = Uuid::from_u128(1);
+        let path = |session: Uuid, slot: BackupSessionSlot| {
+            format!(
+                "/{}/{}",
+                destination.bucket,
+                if destination.prefix.is_empty() {
+                    slot.relative(session).unwrap()
+                } else {
+                    format!("{}/{}", destination.prefix, slot.relative(session).unwrap())
+                }
+            )
+        };
+        let object_path = path(session, BackupSessionSlot::Object(id));
+        let marker_path = path(session, BackupSessionSlot::Object(Uuid::from_u128(2)));
+        let prefix = object_path
+            .strip_suffix(&format!("{id}.kasumi"))
+            .unwrap()
+            .to_owned();
+        let key_prefix = prefix
+            .strip_prefix(&format!("/{}/", destination.bucket))
+            .unwrap();
+        let selector = |version_id: &str| BackupSessionObject::S3Version {
+            id,
+            version_id: version_id.into(),
+        };
+
+        // A completed backup and an independent archive share this destination.
+        let complete_session = Uuid::new_v4();
+        let intent = BackupSessionIntent {
+            session_id: complete_session,
+            tenant: "tenant".into(),
+            source_incarnation: "source".into(),
+            revision: 3,
+            principal: "admin".into(),
+            request_id: "complete".into(),
+        };
+        destination
+            .session_put(
+                complete_session,
+                BackupSessionSlot::Intent,
+                store.encrypt_session_record(3, &intent).unwrap(),
+            )
+            .await
+            .unwrap();
+        let pending = verify_backup_session(
+            destination,
+            complete_session,
+            "tenant",
+            keys.clone(),
+            store.storage_access(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let complete = BackupSessionOutcome::Complete {
+            intent_ciphertext_sha256: pending.intent_ciphertext_sha256().into(),
+            checkpoint: FullBackupCheckpoint {
+                tenant: "tenant".into(),
+                source_incarnation: "source".into(),
+                revision: 3,
+                resident_sha256: "a".repeat(64),
+                backup_id: complete_session,
+                manifest_ciphertext_sha256: "b".repeat(64),
+                key_lineage_digest: "c".repeat(64),
+            },
+        };
+        destination
+            .session_put(
+                complete_session,
+                BackupSessionSlot::Object(id),
+                b"complete root".to_vec(),
+            )
+            .await
+            .unwrap();
+        destination
+            .session_put(
+                complete_session,
+                BackupSessionSlot::Outcome,
+                store.encrypt_session_record(3, &complete).unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            verify_backup_session(
+                destination,
+                complete_session,
+                "tenant",
+                keys.clone(),
+                store.storage_access()
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .aborted()
+            .is_err()
+        );
+        destination
+            .put(Uuid::new_v4(), b"independent archive".to_vec())
+            .await
+            .unwrap();
+        let preserved = state.values.lock().clone();
+        state.deletes.lock().clear();
+        state.values.lock().insert(
+            object_path.clone(),
+            vec![
+                ObjectVersion {
+                    id: "z/+&=".into(),
+                    data: None,
+                },
+                ObjectVersion {
+                    id: "a".into(),
+                    data: Some(vec![1]),
+                },
+                ObjectVersion {
+                    id: "null".into(),
+                    data: Some(vec![2]),
+                },
+            ],
+        );
+        state.values.lock().insert(
+            marker_path,
+            vec![ObjectVersion {
+                id: "null".into(),
+                data: None,
+            }],
+        );
+        assert!(
+            destination
+                .session_get(session, BackupSessionSlot::Object(id), 1024)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let page = destination.session_objects(proof, 2).await.unwrap();
+        assert_eq!(page.objects, vec![selector("z/+&="), selector("a")]);
+        assert!(page.more);
+        // Reject every malformed page before issuing even its first valid DELETE.
+        for invalid in [
+            vec![selector("a"), BackupSessionObject::File { id }],
+            vec![selector("a"), selector("a")],
+            vec![selector("a"), selector("")],
+            vec![selector("a"), selector(&"x".repeat(1025))],
+            vec![
+                selector("a"),
+                BackupSessionObject::S3Version {
+                    id: Uuid::nil(),
+                    version_id: "v".into(),
+                },
+            ],
+        ] {
+            assert!(destination.session_delete(proof, &invalid).await.is_err());
+            assert!(state.deletes.lock().is_empty());
+        }
+        *state.list_response.lock() = Some(format!(
+            "<ListVersionsResult><Prefix>{key_prefix}</Prefix>
+            <Version><Key>{key_prefix}{id}.kasumi</Key><VersionId>a</VersionId></Version>
+            <DeleteMarker><Key>outside/key.kasumi</Key><VersionId>v</VersionId></DeleteMarker>
+            <IsTruncated>false</IsTruncated></ListVersionsResult>"
+        ));
+        assert!(destination.session_objects(proof, 2).await.is_err());
+        assert!(state.deletes.lock().is_empty());
+        *state.list_response.lock() = None;
+
+        // An upload admitted before abort finishes after listing. Its new version
+        // must survive deletion of the exact older page, then be found on rescan.
+        destination
+            .session_put(session, BackupSessionSlot::Object(id), vec![9])
+            .await
+            .unwrap();
+        destination
+            .session_delete(proof, &page.objects)
+            .await
+            .unwrap();
+        destination
+            .session_delete(proof, &page.objects)
+            .await
+            .unwrap();
+        assert_eq!(
+            destination
+                .session_get(session, BackupSessionSlot::Object(id), 1024)
+                .await
+                .unwrap(),
+            Some(vec![9])
+        );
+        let tail = destination.session_objects(proof, 2).await.unwrap();
+        assert_eq!(tail.objects.len(), 2);
+        assert_eq!(tail.objects[1], selector("null"));
+        assert!(tail.more);
+        destination
+            .session_delete(proof, &tail.objects)
+            .await
+            .unwrap();
+        let markers = destination.session_objects(proof, 2).await.unwrap();
+        assert_eq!(
+            markers.objects,
+            vec![BackupSessionObject::S3Version {
+                id: Uuid::from_u128(2),
+                version_id: "null".into()
+            }]
+        );
+        assert!(!markers.more);
+        destination
+            .session_delete(proof, &markers.objects)
+            .await
+            .unwrap();
+        assert!(
+            destination
+                .session_objects(proof, 2)
+                .await
+                .unwrap()
+                .objects
+                .is_empty()
+        );
+        // A pass that observed an empty namespace is not a permanent GC receipt.
+        destination
+            .session_put(session, BackupSessionSlot::Object(id), vec![8])
+            .await
+            .unwrap();
+        let late = destination.session_objects(proof, 2).await.unwrap();
+        assert_eq!(late.objects.len(), 1);
+        destination
+            .session_delete(proof, &late.objects)
+            .await
+            .unwrap();
+        assert!(
+            destination
+                .session_objects(proof, 2)
+                .await
+                .unwrap()
+                .objects
+                .is_empty()
+        );
+        assert_eq!(
+            *state.values.lock(),
+            preserved,
+            "only aborted object versions may be removed"
+        );
+        assert!(
+            state
+                .deletes
+                .lock()
+                .iter()
+                .all(|(key, version)| key.starts_with(&prefix) && version.is_some())
+        );
+        assert!(
+            verify_backup_session(destination, session, "tenant", keys, store.storage_access())
+                .await
+                .unwrap()
+                .unwrap()
+                .aborted()
+                .is_ok()
+        );
     }
 
     #[tokio::test]
@@ -1198,7 +1515,7 @@ mod s3_tests {
             &destination,
             session,
             "tenant",
-            keys,
+            keys.clone(),
             store.storage_access(),
         )
         .await
@@ -1217,7 +1534,13 @@ mod s3_tests {
                 .unwrap();
         }
         let page = destination.session_objects(&proof, 2).await.unwrap();
-        assert_eq!(page.objects, vec![Uuid::from_u128(1), Uuid::from_u128(2)]);
+        assert_eq!(
+            page.objects
+                .iter()
+                .map(crate::BackupSessionObject::id)
+                .collect::<Vec<_>>(),
+            vec![Uuid::from_u128(1), Uuid::from_u128(2)]
+        );
         assert!(page.more);
         destination
             .session_delete(&proof, &page.objects)
@@ -1232,7 +1555,13 @@ mod s3_tests {
             .await
             .unwrap();
         let tail = destination.session_objects(&proof, 2).await.unwrap();
-        assert_eq!(tail.objects, vec![Uuid::from_u128(1), Uuid::from_u128(3)]);
+        assert_eq!(
+            tail.objects
+                .iter()
+                .map(crate::BackupSessionObject::id)
+                .collect::<Vec<_>>(),
+            vec![Uuid::from_u128(1), Uuid::from_u128(3)]
+        );
         destination
             .session_delete(&proof, &tail.objects)
             .await
@@ -1246,7 +1575,13 @@ mod s3_tests {
             .await
             .unwrap();
         let late = destination.session_objects(&proof, 2).await.unwrap();
-        assert_eq!(late.objects, vec![Uuid::from_u128(1)]);
+        assert_eq!(
+            late.objects
+                .iter()
+                .map(crate::BackupSessionObject::id)
+                .collect::<Vec<_>>(),
+            vec![Uuid::from_u128(1)]
+        );
         destination
             .session_delete(&proof, &late.objects)
             .await
@@ -1266,6 +1601,7 @@ mod s3_tests {
                 .unwrap()
                 .is_some()
         );
+        assert_versioned_session_cleanup(&destination, &state, &store, keys, &proof).await;
         let id = Uuid::new_v4();
         destination
             .put(id, b"encrypted snapshot bytes".to_vec())

@@ -32,10 +32,25 @@ impl BackupSessionSlot {
         Ok(format!("sessions/{session}/{leaf}"))
     }
 }
+/// One exact reclaimable object. S3 selectors include a version ID for both
+/// object versions and delete markers; the literal `null` is a version ID.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "storage", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BackupSessionObject {
+    File { id: Uuid },
+    S3Version { id: Uuid, version_id: String },
+}
+impl BackupSessionObject {
+    pub fn id(&self) -> Uuid {
+        match self {
+            Self::File { id } | Self::S3Version { id, .. } => *id,
+        }
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BackupSessionObjectPage {
-    pub objects: Vec<Uuid>,
+    pub objects: Vec<BackupSessionObject>,
     /// More objects were observed. A new pass always starts at the namespace head.
     pub more: bool,
 }
@@ -428,6 +443,23 @@ mod tests {
         let proof = abort(&destination, &store, keys.clone(), &session).await;
         let page = destination.session_objects(&proof, 256).await.unwrap();
         assert_eq!(page.objects.len(), 256);
+        // A mixed or invalid page cannot partially remove its leading valid file.
+        for invalid in [
+            vec![
+                page.objects[0].clone(),
+                BackupSessionObject::S3Version {
+                    id: page.objects[0].id(),
+                    version_id: "null".into(),
+                },
+            ],
+            vec![page.objects[0].clone(), page.objects[0].clone()],
+            vec![
+                page.objects[0].clone(),
+                BackupSessionObject::File { id: Uuid::nil() },
+            ],
+        ] {
+            assert!(destination.session_delete(&proof, &invalid).await.is_err());
+        }
         let denied = proof
             .clone()
             .with_request_guard(Arc::new(|| anyhow::bail!("original request revoked")));
@@ -447,7 +479,7 @@ mod tests {
             page.objects
         );
         assert!(page.more);
-        let late_id = page.objects[0];
+        let late_id = page.objects[0].id();
         destination
             .session_delete(&proof, &page.objects)
             .await
@@ -469,7 +501,10 @@ mod tests {
             .await
             .unwrap();
         let late = destination.session_objects(&proof, 256).await.unwrap();
-        assert_eq!(late.objects, vec![late_id]);
+        assert_eq!(
+            late.objects,
+            vec![BackupSessionObject::File { id: late_id }]
+        );
         destination
             .session_delete(&proof, &late.objects)
             .await
@@ -595,7 +630,12 @@ mod tests {
         )
         .unwrap();
         assert!(destination.session_objects(&proof, 1).await.is_err());
-        assert!(destination.session_delete(&proof, &[object]).await.is_err());
+        assert!(
+            destination
+                .session_delete(&proof, &[BackupSessionObject::File { id: object }])
+                .await
+                .is_err()
+        );
         assert!(
             verify_backup_session(
                 &destination,
@@ -702,14 +742,19 @@ mod tests {
                     // abort. Even an older verified proof cannot bypass failure.
                     let fault = fail(&directory, "outcome.kasumi", &[point]).unwrap();
                     assert!(destination.session_objects(&proof, 1).await.is_err());
-                    assert!(destination.session_delete(&proof, &[object]).await.is_err());
+                    assert!(
+                        destination
+                            .session_delete(&proof, &[BackupSessionObject::File { id: object }])
+                            .await
+                            .is_err()
+                    );
                     assert_eq!(
                         std::fs::read(directory.join(format!("objects/{object}.kasumi"))).unwrap(),
                         [42],
                     );
                     drop(fault);
                     let page = destination.session_objects(&proof, 1).await.unwrap();
-                    assert_eq!(page.objects, vec![object]);
+                    assert_eq!(page.objects, vec![BackupSessionObject::File { id: object }]);
                     destination
                         .session_delete(&proof, &page.objects)
                         .await
@@ -779,7 +824,12 @@ mod tests {
         std::fs::remove_dir(&objects).unwrap();
         symlink(&external, &objects).unwrap();
         assert!(destination.session_objects(&proof, 1).await.is_err());
-        assert!(destination.session_delete(&proof, &[object]).await.is_err());
+        assert!(
+            destination
+                .session_delete(&proof, &[BackupSessionObject::File { id: object }])
+                .await
+                .is_err()
+        );
         assert!(
             destination
                 .session_put(

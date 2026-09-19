@@ -1,0 +1,33 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadAndPublishWithinInstalledPrefix",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:PutObject"],
+      "Resource": "arn:aws:s3:::kasumi-backups/kasumi/*"
+    },
+    {
+      "Sid": "ResolveMissingSessionRecords",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::kasumi-backups"
+    },
+    {
+      "Sid": "EnumerateSessionObjectVersions",
+      "Effect": "Allow",
+      "Action": "s3:ListBucketVersions",
+      "Resource": "arn:aws:s3:::kasumi-backups",
+      "Condition": {
+        "StringLike": {"s3:prefix": "kasumi/sessions/*/objects/"},
+        "NumericLessThanEquals": {"s3:max-keys": "256"}
+      }
+    },
+    {
+      "Sid": "DeleteExactSessionObjectVersions",
+      "Effect": "Allow",
+      "Action": "s3:DeleteObjectVersion",
+      "Resource": "arn:aws:s3:::kasumi-backups/kasumi/sessions/*/objects/*.kasumi"
+    }
+  ]
+}
