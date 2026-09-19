@@ -209,5 +209,5 @@ async fn actual_store_ordered_seek_has_bounded_visits_and_epoch_fenced_continuat
         ErrorCode::Forbidden
     );
     database.shutdown().await.unwrap();
-    audit.shutdown().await;
+    audit.shutdown().await.unwrap();
 }

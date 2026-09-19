@@ -53,10 +53,12 @@ where
         #[serde(deserialize_with = "kasumi_types::deserialize_u64_map")]
         BTreeMap<u64, AuthorityEndpoint>,
     );
-    Ok(kasumi_types::deserialize_u16_map::<D, Members>(deserializer)?
-        .into_iter()
-        .map(|(partition, members)| (partition, members.0))
-        .collect())
+    Ok(
+        kasumi_types::deserialize_u16_map::<D, Members>(deserializer)?
+            .into_iter()
+            .map(|(partition, members)| (partition, members.0))
+            .collect(),
+    )
 }
 fn deserialize_bearer_files<'de, D>(
     deserializer: D,
@@ -367,23 +369,6 @@ impl RuntimeLease {
     pub(crate) fn access(&self) -> Result<StorageAccess> {
         StorageAccess::serving(self.gate.clone())
     }
-    pub(crate) async fn promote(&self) -> Result<()> {
-        tokio::time::timeout(Duration::from_secs(5), async {
-            let mut client = self.client.lock().await;
-            if self.serving.load(Ordering::Acquire) {
-                return self.gate.check_serving();
-            }
-            let attempt = self.boot.clone().for_serving().begin_acquisition()?;
-            let lease = client
-                .acquire_lease(&attempt, self.gate.remaining()?.min(Duration::from_secs(5)))
-                .await?;
-            self.gate.promote_prepared(lease)?;
-            self.serving.store(true, Ordering::Release);
-            Ok(())
-        })
-        .await
-        .context("active target lease acquisition timed out")?
-    }
 }
 
 pub(crate) async fn acquire_tenant_access(
@@ -507,7 +492,9 @@ mod partition_credential_tests {
     #[test]
     fn enrollment_input_preserves_nested_authority_endpoints_and_serialized_identity() {
         let mut configuration = crate::runtime::example_config();
-        configuration.serving_authorities.insert("storage-fence".into(), configured());
+        configuration
+            .serving_authorities
+            .insert("storage-fence".into(), configured());
         let input = crate::node_enrollment::Input::Data {
             configuration: Box::new(configuration),
         };
@@ -520,7 +507,9 @@ mod partition_credential_tests {
             let crate::node_enrollment::Input::Data { configuration } = decoded else {
                 panic!("data enrollment changed kind");
             };
-            configuration.serving_authorities["storage-fence"].validate().unwrap();
+            configuration.serving_authorities["storage-fence"]
+                .validate()
+                .unwrap();
         }
     }
 
@@ -530,10 +519,13 @@ mod partition_credential_tests {
         let authority = configured();
         let endpoint = serde_json::to_string(&authority.endpoints[&0][&1]).unwrap();
         let valid = serde_json::to_string(&authority.endpoints).unwrap();
-        configuration.serving_authorities.insert("storage-fence".into(), authority);
+        configuration
+            .serving_authorities
+            .insert("storage-fence".into(), authority);
         let encoded = serde_json::to_string(&crate::node_enrollment::Input::Data {
             configuration: Box::new(configuration),
-        }).unwrap();
+        })
+        .unwrap();
         let member = format!("{{\"1\":{endpoint}}}");
         let invalid = [
             format!("{{\"00\":{member}}}"),

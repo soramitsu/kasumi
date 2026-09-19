@@ -145,7 +145,7 @@ async fn committed_log_replay_survives_every_append_and_commit_io_failure() -> R
             )
             .await
         })?;
-        (if create {
+        if create {
             kasumi_store::test_utils::initialize_custody_fixture(
                 application,
                 Arc::new(LocalKeyProvider::new([241; 32])),
@@ -157,7 +157,7 @@ async fn committed_log_replay_survives_every_append_and_commit_io_failure() -> R
                 Arc::new(LocalKeyProvider::new([241; 32])),
             )
             .await
-        })
+        }
     }
     async fn append_commit(log: &mut LogStore) -> Result<()> {
         log.blocking_append([entry(1, b"new-a"), entry(2, b"new-b")])

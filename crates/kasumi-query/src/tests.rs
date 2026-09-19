@@ -828,8 +828,11 @@ fn generation_validators_survive_cache_eviction_without_recompiling_or_retaining
         previous.insert(name, value.remove("docs").unwrap());
     }
     let indexes = QueryIndexes::build(&previous).unwrap();
-    let validators: Vec<_> = indexes.collections.values()
-        .map(|value| Arc::downgrade(&value.validator)).collect();
+    let validators: Vec<_> = indexes
+        .collections
+        .values()
+        .map(|value| Arc::downgrade(&value.validator))
+        .collect();
     let compiled = validation::compilation_count();
     let mut next = previous.clone();
     let mut changed = BTreeMap::new();
@@ -837,21 +840,33 @@ fn generation_validators_survive_cache_eviction_without_recompiling_or_retaining
         let body = json!({"n":n,"updated":true});
         indexes.validate_document(&value.definition, &body).unwrap();
         assert_eq!(
-            indexes.validate_document(&value.definition, &json!({"n":n+1}))
-                .unwrap_err().code,
+            indexes
+                .validate_document(&value.definition, &json!({"n":n+1}))
+                .unwrap_err()
+                .code,
             ErrorCode::SchemaViolation
         );
-        value.documents.insert("000".into(), Arc::new(Document {
-            id: "000".into(), version: 8, body,
-        }));
+        value.documents.insert(
+            "000".into(),
+            Arc::new(Document {
+                id: "000".into(),
+                version: 8,
+                body,
+            }),
+        );
         changed.insert(name.clone(), BTreeSet::from(["000".into()]));
     }
     let updated = indexes.update(&previous, &next, &changed).unwrap();
     for value in next.values() {
-        updated.validate_document(&value.definition, &value.documents["000"].body).unwrap();
+        updated
+            .validate_document(&value.definition, &value.documents["000"].body)
+            .unwrap();
     }
-    assert_eq!(validation::compilation_count(), compiled,
-        "document checks and index updates must reuse every generation-owned schema");
+    assert_eq!(
+        validation::compilation_count(),
+        compiled,
+        "document checks and index updates must reuse every generation-owned schema"
+    );
     drop(indexes);
     assert!(validators.iter().all(|value| value.upgrade().is_some()));
     drop(updated);
@@ -866,42 +881,97 @@ fn generation_validator_never_substitutes_for_changed_or_foreign_schema() {
     let indexes = QueryIndexes::build(&previous).unwrap();
     let mut replacement = original.clone();
     replacement.schema = json!({"type":"object","required":["n"],"properties":{"n":{"const":9}}});
-    assert_eq!(indexes.validate_document(&replacement, &json!({"n":7})).unwrap_err().code,
-        ErrorCode::SchemaViolation);
-    indexes.validate_document(&replacement, &json!({"n":9})).unwrap();
+    assert_eq!(
+        indexes
+            .validate_document(&replacement, &json!({"n":7}))
+            .unwrap_err()
+            .code,
+        ErrorCode::SchemaViolation
+    );
+    indexes
+        .validate_document(&replacement, &json!({"n":9}))
+        .unwrap();
     replacement.name = "foreign".into();
-    assert_eq!(indexes.validate_document(&replacement, &json!({"n":7})).unwrap_err().code,
-        ErrorCode::SchemaViolation);
-    indexes.validate_document(&replacement, &json!({"n":9})).unwrap();
+    assert_eq!(
+        indexes
+            .validate_document(&replacement, &json!({"n":7}))
+            .unwrap_err()
+            .code,
+        ErrorCode::SchemaViolation
+    );
+    indexes
+        .validate_document(&replacement, &json!({"n":9}))
+        .unwrap();
     replacement.name = "docs".into();
     let next = collection(replacement, vec![json!({"n":9})]);
-    let updated = indexes.update(&previous, &next,
-        &BTreeMap::from([("docs".into(), BTreeSet::from(["000".into()]))])).unwrap();
-    assert_eq!(updated.validate_document(&next["docs"].definition, &json!({"n":7})).unwrap_err().code,
-        ErrorCode::SchemaViolation);
-    indexes.validate_document(&original, &json!({"n":7})).unwrap();
+    let updated = indexes
+        .update(
+            &previous,
+            &next,
+            &BTreeMap::from([("docs".into(), BTreeSet::from(["000".into()]))]),
+        )
+        .unwrap();
+    assert_eq!(
+        updated
+            .validate_document(&next["docs"].definition, &json!({"n":7}))
+            .unwrap_err()
+            .code,
+        ErrorCode::SchemaViolation
+    );
+    indexes
+        .validate_document(&original, &json!({"n":7}))
+        .unwrap();
 }
 
 #[test]
 fn generation_validator_preserves_document_shape_typed_index_and_text_limits() {
-    let previous = text_collection(Analyzer::English, &["bounded text"]);
+    let previous = text_collection(Analyzer::EnglishV1, &["bounded text"]);
     let indexes = QueryIndexes::build(&previous).unwrap();
     let definition = &previous["docs"].definition;
-    assert_eq!(indexes.validate_document(definition, &json!([])).unwrap_err().code,
-        ErrorCode::SchemaViolation);
-    assert_eq!(indexes.validate_document(definition, &json!({"text":123})).unwrap_err().code,
-        ErrorCode::SchemaViolation);
-    assert_eq!(indexes.validate_document(definition, &json!({"text":"x".repeat(241)})).unwrap_err().code,
-        ErrorCode::SchemaViolation);
+    assert_eq!(
+        indexes
+            .validate_document(definition, &json!([]))
+            .unwrap_err()
+            .code,
+        ErrorCode::SchemaViolation
+    );
+    assert_eq!(
+        indexes
+            .validate_document(definition, &json!({"text":123}))
+            .unwrap_err()
+            .code,
+        ErrorCode::SchemaViolation
+    );
+    assert_eq!(
+        indexes
+            .validate_document(definition, &json!({"text":"x".repeat(241)}))
+            .unwrap_err()
+            .code,
+        ErrorCode::SchemaViolation
+    );
     let mut deeply_nested = json!({});
-    for _ in 0..50 { deeply_nested = json!({"next":deeply_nested}); }
-    assert_eq!(indexes.validate_document(definition, &deeply_nested).unwrap_err().code,
-        ErrorCode::InvalidArgument);
+    for _ in 0..50 {
+        deeply_nested = json!({"next":deeply_nested});
+    }
+    assert_eq!(
+        indexes
+            .validate_document(definition, &deeply_nested)
+            .unwrap_err()
+            .code,
+        ErrorCode::InvalidArgument
+    );
     let mut changed_index = definition.clone();
     changed_index.indexes[0].fields[0].kind = ScalarType::Number;
-    assert_eq!(indexes.validate_document(&changed_index, &json!({"text":"bounded text"})).unwrap_err().code,
-        ErrorCode::SchemaViolation);
-    indexes.validate_document(definition, &json!({"text":"bounded text"})).unwrap();
+    assert_eq!(
+        indexes
+            .validate_document(&changed_index, &json!({"text":"bounded text"}))
+            .unwrap_err()
+            .code,
+        ErrorCode::SchemaViolation
+    );
+    indexes
+        .validate_document(definition, &json!({"text":"bounded text"}))
+        .unwrap();
 }
 
 #[test]

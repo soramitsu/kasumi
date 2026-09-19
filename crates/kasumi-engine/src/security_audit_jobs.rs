@@ -23,9 +23,7 @@ mod tests {
     use crate::security_audit::{
         SECURITY_TENANT, SecurityEvent, SecurityEventKind, SecurityOutcome,
     };
-    use kasumi_store::{
-        AuditArchiveDestination, NodeStore, TenantStore, test_utils::LocalKeyProvider,
-    };
+    use kasumi_store::{NodeStore, TenantStore, test_utils::LocalKeyProvider};
     use kasumi_types::drain::DrainCompletion;
     use std::{task::Poll, time::Duration};
 
