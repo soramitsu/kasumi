@@ -6,6 +6,37 @@ use crate::{
 use kasumi_types::*;
 use std::collections::BTreeSet;
 
+static CLEANUP_SYNC_FAILURE: std::sync::Mutex<Option<(PathBuf, u32)>> = std::sync::Mutex::new(None);
+
+struct CleanupSyncFailure(PathBuf);
+impl CleanupSyncFailure {
+    fn install(path: &Path, attempts: u32) -> Self {
+        let mut failure = CLEANUP_SYNC_FAILURE.lock().unwrap();
+        assert!(failure.is_none());
+        *failure = Some((path.to_owned(), attempts));
+        Self(path.to_owned())
+    }
+}
+impl Drop for CleanupSyncFailure {
+    fn drop(&mut self) {
+        let mut failure = CLEANUP_SYNC_FAILURE.lock().unwrap();
+        if failure.as_ref().is_some_and(|(path, _)| path == &self.0) {
+            *failure = None;
+        }
+    }
+}
+pub(super) fn before_cleanup_parent_sync(path: &Path) -> Result<()> {
+    let mut failure = CLEANUP_SYNC_FAILURE.lock().unwrap();
+    if let Some((selected, remaining)) = failure.as_mut()
+        && selected == path
+        && *remaining > 0
+    {
+        *remaining -= 1;
+        anyhow::bail!("injected target cleanup parent synchronization failure");
+    }
+    Ok(())
+}
+
 fn context() -> RequestContext {
     RequestContext {
         authorization: RequestAuthorization::service_identity(),
@@ -296,6 +327,58 @@ async fn local_recovery_resumes_each_phase_and_fences_old_resources_after_activa
     std::fs::rename(&target, target.with_extension("missing")).unwrap();
     assert!(NodeRuntime::open(config).await.is_err());
     assert!(!target.exists());
+}
+
+#[tokio::test]
+async fn local_cleanup_absence_requires_durable_parent_sync_after_operator_restart() {
+    let root = tempfile::tempdir().unwrap();
+    let (configuration, request, _) = backup(root.path()).await;
+    start(&configuration, request.clone()).await.unwrap();
+    let mut operator = Operator::open(&configuration).await.unwrap();
+    let mut journal = record(operator.store(), request.operation_id).unwrap();
+    operator.step(&mut journal).await.unwrap();
+    assert_eq!(journal.status.phase, LocalRecoveryPhase::Complete);
+    let target = journal.target_directory.clone();
+    crate::startup_owner::finish(&mut operator).await.unwrap();
+    drop(operator);
+    assert!(target.is_dir());
+    let unrelated = target.parent().unwrap().join("unrelated.txt");
+    private_files::create(&unrelated, b"retained sibling").unwrap();
+    let failure = CleanupSyncFailure::install(&target, 2);
+
+    // The first failure follows actual directory removal. The second caller
+    // reopens the operator and encounters an already absent target; that is not
+    // durable cleanup evidence and must attempt the parent sync again.
+    for attempt in 0..2 {
+        let result = if attempt == 0 {
+            stop(&configuration, request.operation_id).await
+        } else {
+            resume(&configuration, request.operation_id).await
+        };
+        let error = result.unwrap_err();
+        assert!(format!("{error:#}").contains("target cleanup parent synchronization failure"));
+        assert!(!target.try_exists().unwrap());
+        let pending = status(&configuration, request.operation_id).await.unwrap();
+        assert_eq!(pending.phase, LocalRecoveryPhase::Stopping);
+        assert!(pending.cleanup_evidence.is_none());
+        assert_eq!(std::fs::read(&unrelated).unwrap(), b"retained sibling");
+    }
+    drop(failure);
+    let stopped = resume(&configuration, request.operation_id).await.unwrap();
+    assert_eq!(stopped.phase, LocalRecoveryPhase::Stopped);
+    assert!(stopped.cleanup_evidence.is_some());
+    assert!(!target.try_exists().unwrap());
+    assert_eq!(std::fs::read(&unrelated).unwrap(), b"retained sibling");
+    assert_eq!(
+        status(&configuration, request.operation_id)
+            .await
+            .unwrap()
+            .cleanup_evidence,
+        stopped.cleanup_evidence
+    );
+    let mut reused = request;
+    reused.operation_id = Uuid::new_v4();
+    assert!(start(&configuration, reused).await.is_err());
 }
 
 #[tokio::test]

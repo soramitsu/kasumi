@@ -1263,7 +1263,23 @@ impl Operator {
                 private_files::sync_parent(&marker)?;
             }
             std::fs::remove_dir(&journal.target_directory)?;
+        }
+        // Absence can be the visible result of an earlier removal whose parent
+        // sync failed. Resolve that uncertainty before publishing completion,
+        // including after a stopped operator is reopened for a retry.
+        #[cfg(test)]
+        tests::before_cleanup_parent_sync(&journal.target_directory)?;
+        let parent = journal
+            .target_directory
+            .parent()
+            .context("target directory has no parent")?;
+        if parent.try_exists()? {
+            private_files::check_directory(parent)?;
             private_files::sync_parent(&journal.target_directory)?;
+        } else {
+            // A stop before materialization may have no generations directory.
+            // Resolve that directory's absence at the installed data directory.
+            private_files::sync_parent(parent)?;
         }
         journal.status.cleanup_evidence = Some(
             kasumi_types::staged_digest(&(
