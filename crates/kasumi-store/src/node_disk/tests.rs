@@ -639,3 +639,143 @@ fn live_shrink_failure_retains_charges_through_drop_and_fences_shared_device() {
     std::fs::rename(root.join("retained"), root.join("data")).unwrap();
     clean(&disk, &["data"]);
 }
+
+#[test]
+fn envelope_identity_and_durability_retain_custody_until_the_last_handle_closes() {
+    let (_directory, config) = installation();
+    let path = config.roots["data"].join("node");
+    let disk = open(config);
+    let file = disk
+        .create_file("data", Path::new("node"), DiskWork::Foreground)
+        .unwrap();
+    let identity = file.identity().unwrap();
+    assert_eq!(
+        identity,
+        crate::private_files::file_identity(&path).unwrap()
+    );
+    file.reserve_growth(0, 8192, DiskWork::Foreground).unwrap();
+    file.grow_reserved(8192).unwrap();
+    file.write_all_at(b"canonical envelope", 0).unwrap();
+    file.sync_all_and_parent().unwrap();
+    assert_eq!(file.identity().unwrap(), identity);
+    assert_eq!(file.observed_len().unwrap(), 8192);
+    let retained = file.clone();
+    let before = disk.snapshot();
+    let contender = File::open(&path).unwrap();
+    assert!(contender.try_lock().is_err());
+    assert!(disk.open_file("data", Path::new("node")).is_err());
+    drop(file);
+    assert_eq!(retained.identity().unwrap(), identity);
+    assert!(contender.try_lock().is_err());
+    assert_eq!(disk.snapshot().open_files, 1);
+    drop(retained);
+    assert_eq!(disk.snapshot().open_files, 0);
+    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+    assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);
+    contender.try_lock().unwrap();
+    drop(contender);
+    let reopened = disk.open_file("data", Path::new("node")).unwrap();
+    assert_eq!(reopened.identity().unwrap(), identity);
+    let mut header = [0; 18];
+    reopened.read_exact_at(&mut header, 0).unwrap();
+    assert_eq!(&header, b"canonical envelope");
+    drop(reopened);
+    clean(&disk, &["node"]);
+}
+
+#[test]
+fn envelope_inspection_and_publication_reject_inode_and_parent_substitution() {
+    for replace_parent in [false, true] {
+        let (_directory, config) = installation();
+        let root = config.roots["data"].clone();
+        crate::private_files::create_directory(&root.join("parent")).unwrap();
+        seed(&config, "parent/node", 8192);
+        let disk = open(config.clone());
+        let file = disk.open_file("data", Path::new("parent/node")).unwrap();
+        let identity = file.identity().unwrap();
+        let before = disk.snapshot();
+        if replace_parent {
+            std::fs::rename(root.join("parent"), root.join("retained")).unwrap();
+            crate::private_files::create_directory(&root.join("parent")).unwrap();
+        } else {
+            std::fs::rename(root.join("parent/node"), root.join("retained")).unwrap();
+        }
+        seed(&config, "parent/node", 4096);
+        let replacement = std::fs::read(root.join("parent/node")).unwrap();
+        let retained = root.join(if replace_parent {
+            "retained/node"
+        } else {
+            "retained"
+        });
+        assert_eq!(
+            crate::private_files::file_identity(&retained).unwrap(),
+            identity
+        );
+        if replace_parent {
+            assert!(file.sync_all_and_parent().is_err());
+            assert!(file.identity().is_err());
+        } else {
+            assert!(file.identity().is_err());
+            assert!(file.sync_all_and_parent().is_err());
+        }
+        assert_eq!(
+            std::fs::read(root.join("parent/node")).unwrap(),
+            replacement
+        );
+        assert_eq!(std::fs::metadata(&retained).unwrap().len(), 8192);
+        assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+        assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);
+        assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+        drop(file);
+        std::fs::remove_file(root.join("parent/node")).unwrap();
+        if replace_parent {
+            std::fs::remove_dir(root.join("parent")).unwrap();
+            std::fs::rename(root.join("retained"), root.join("parent")).unwrap();
+        } else {
+            std::fs::rename(root.join("retained"), root.join("parent/node")).unwrap();
+        }
+        clean(&disk, &["parent/node"]);
+    }
+}
+
+#[test]
+fn uncertain_envelope_parent_sync_preserves_charges_through_close_and_census() {
+    let (_directory, config) = installation();
+    let disk = open(config);
+    let file = disk
+        .create_file("data", Path::new("node"), DiskWork::Foreground)
+        .unwrap();
+    file.reserve_growth(0, 64 << 10, DiskWork::Foreground)
+        .unwrap();
+    file.grow_reserved(64 << 10).unwrap();
+    file.write_all_at(&vec![0xa5; 64 << 10], 0).unwrap();
+    let identity = file.identity().unwrap();
+    let before = disk.snapshot();
+    disk.parent_sync_failure.store(true, Ordering::Relaxed);
+    assert!(file.sync_all_and_parent().is_err());
+    assert_eq!(file.identity().unwrap(), identity);
+    assert_eq!(file.observed_len().unwrap(), 64 << 10);
+    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+    assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);
+    assert_eq!(
+        disk.snapshot().filesystem_pending_bytes,
+        before.filesystem_pending_bytes
+    );
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+    assert!(!disk.snapshot().filesystem_admission_ready);
+    disk.parent_sync_failure.store(false, Ordering::Relaxed);
+    assert!(file.sync_all_and_parent().is_err());
+    assert!(disk.reconcile(&CensusCancellation::default()).is_err());
+    drop(file);
+    assert_eq!(disk.snapshot().open_files, 0);
+    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+    assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);
+    disk.reconcile(&CensusCancellation::default()).unwrap();
+    assert_eq!(disk.snapshot().charged_bytes, 64 << 10);
+    assert!(disk.snapshot().filesystem_admission_ready);
+    let reopened = disk.open_file("data", Path::new("node")).unwrap();
+    assert_eq!(reopened.identity().unwrap(), identity);
+    reopened.sync_all_and_parent().unwrap();
+    drop(reopened);
+    clean(&disk, &["node"]);
+}

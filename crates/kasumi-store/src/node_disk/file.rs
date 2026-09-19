@@ -395,6 +395,21 @@ impl FileOwner {
 }
 
 impl NodeDiskFile {
+    /// Inspect the same physical identity used by installation/cleanup journals.
+    /// The value grants no descriptor access or ownership; this handle retains
+    /// the exclusive lock, and every observation verifies the installed binding.
+    pub fn identity(&self) -> io::Result<crate::private_files::FileIdentity> {
+        let budget = self.0.lock_budget()?;
+        let file = budget.file.as_ref().expect("live persistent descriptor");
+        self.0.check(file)?;
+        let identity = crate::private_files::descriptor_identity(file).map_err(|error| {
+            self.0.disk.fail();
+            io::Error::other(error)
+        })?;
+        self.0.check(file)?;
+        Ok(identity)
+    }
+
     /// Truncate a settled file while retaining its exact descriptor and lock.
     /// The mutable handle must be the sole owner: all cloned readers/backends
     /// must have drained first. Unused or unsynchronized growth cannot be
@@ -619,6 +634,43 @@ impl NodeDiskFile {
         let file = budget.file.as_ref().expect("live persistent descriptor");
         self.0.check(file)?;
         file.sync_all().inspect_err(|_| self.0.disk.fail())?;
+        self.0.observe(&mut budget)
+    }
+
+    /// Durably publish an initialized envelope without releasing or reopening
+    /// its descriptor. Growth promises settle only after the file, its held
+    /// parent and the exact installed binding have all been verified. Failure
+    /// keeps existing charges and fences admission until an exclusive census.
+    pub fn sync_all_and_parent(&self) -> io::Result<()> {
+        let mut budget = self.0.lock_budget()?;
+        let mut state = self.0.disk.lock_state();
+        if state.phase == NodeDiskPhase::Failed || !self.0.disk.device.lock().admission_ready() {
+            return Err(io::Error::other(
+                "persistent publication admission is closed",
+            ));
+        }
+        budget.settled = false;
+        let file = budget.file.as_ref().expect("live persistent descriptor");
+        let outcome = (|| -> Result<()> {
+            self.0.verify(file)?;
+            file.sync_all()?;
+            #[cfg(test)]
+            ensure!(
+                !self
+                    .0
+                    .disk
+                    .parent_sync_failure
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                "injected parent sync failure"
+            );
+            self.0.parent.sync_all()?;
+            self.0.verify(file)
+        })();
+        if let Err(error) = outcome {
+            self.0.disk.fail_locked(&mut state);
+            return Err(io::Error::other(error));
+        }
+        drop(state);
         self.0.observe(&mut budget)
     }
 }

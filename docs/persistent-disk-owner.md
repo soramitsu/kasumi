@@ -154,3 +154,24 @@ to fail while its new owner remains registered and healthy.
 Only direct Rust 1.97.1 formatting and Git whitespace checks have run for this
 successor. These cases do not execute redb, wire production disk admission, qualify
 recoverable quota errors, or replace the release's capacity and platform gates.
+
+## Node envelope inspection and publication prerequisite
+
+`NodeDiskFile::identity` returns the existing opaque journal identity after
+checking its exact root, parent, name and descriptor. It grants no file access or
+ownership. `sync_all_and_parent` retains that same owner while synchronizing the
+file and its held parent, then checks the binding again before settling growth
+promises. A failed sync retains prior charges and seals admission; retry or handle
+Drop cannot reopen it. Existing length and bounded-read methods provide envelope
+inspection without exposing a descriptor or creating a second acquisition.
+
+Three additional real-file regression sources are **UNRUN**:
+
+- `envelope_identity_and_durability_retain_custody_until_the_last_handle_closes`
+- `envelope_inspection_and_publication_reject_inode_and_parent_substitution`
+- `uncertain_envelope_parent_sync_preserves_charges_through_close_and_census`
+
+Only direct Rust 1.97.1 formatting and Git whitespace checks have run. These
+methods prepare the future canonical NodeFile adapter; they add no alternate
+backend, production constructor, or recoverable redb capacity contract. Production
+persistent disk admission remains unwired.
