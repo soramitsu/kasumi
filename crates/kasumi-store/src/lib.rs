@@ -527,7 +527,7 @@ impl TenantStore {
         Ok(catalog)
     }
 
-    #[cfg(any(test, feature = "test-utils"))]
+    #[cfg(test)]
     async fn start_renewal(store: &Arc<Self>) {
         let (ready, receive) = watch::channel(true);
         Self::prepare_renewal(store, receive).await;

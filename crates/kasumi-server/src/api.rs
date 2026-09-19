@@ -222,38 +222,6 @@ impl DatabaseRegistry {
             .remove(tenant))
     }
 
-    /// Publish one fully recovered generation after the durable control route CAS.
-    /// Existing request handles remain fenced by the retired source engine.
-    pub(crate) fn replace_generation(&self, expected: &str, database: Arc<Database>) -> Result<()> {
-        database.check_serving()?;
-        let state = database.engine().generation()?;
-        if state.state.retired {
-            return Err(Error::new(
-                ErrorCode::Sealed,
-                "retired source cannot enter data routing",
-            ));
-        }
-        let tenant = state.state.tenant.clone();
-        if tenant.starts_with("__kasumi_") {
-            return Err(Error::new(ErrorCode::Forbidden, "reserved tenant"));
-        }
-        let mut databases = self
-            .databases
-            .write()
-            .map_err(|_| Error::new(ErrorCode::Unavailable, "tenant registry unavailable"))?;
-        let previous = databases
-            .get(&tenant)
-            .ok_or_else(|| Error::new(ErrorCode::Conflict, "tenant generation absent"))?;
-        if previous.engine().generation()?.state.incarnation != expected {
-            return Err(Error::new(ErrorCode::Conflict, "tenant generation changed"));
-        }
-        self.install_retirement_source(kasumi_engine::InstalledRetirementSource::Serving(
-            database.clone(),
-        ))?;
-        databases.insert(tenant, database);
-        Ok(())
-    }
-
     /// Only a verified context selects the tenant. No data request has a tenant
     /// override, and unknown tenants do not reveal the registry's contents.
     pub fn database(&self, context: &RequestContext) -> Result<Arc<Database>> {

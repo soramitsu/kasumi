@@ -1,5 +1,4 @@
 use super::*;
-use kasumi_store::KeyProvider;
 use std::{collections::BTreeSet, future::Future, task::Poll};
 
 #[tokio::test]
