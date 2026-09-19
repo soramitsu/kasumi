@@ -78,15 +78,25 @@ impl Directory {
             }
             return Err(error.into());
         }
-        let file = unsafe { File::from_raw_fd(fd) };
+        let mut file = unsafe { File::from_raw_fd(fd) };
         let metadata = file.metadata()?;
         ensure!(
             metadata.is_file() && metadata.len() <= limit as u64,
             "invalid or oversized backup session object"
         );
         let mut bytes = Vec::new();
-        file.take(limit as u64 + 1).read_to_end(&mut bytes)?;
+        (&mut file).take(limit as u64 + 1).read_to_end(&mut bytes)?;
         ensure!(bytes.len() <= limit, "backup session object exceeds limit");
+        // A prior create-only publication may have linked this name and then
+        // failed to synchronize its directory. Readback must establish actual
+        // durability before it can resolve completion or authorize reclamation.
+        // This also covers dependencies/root objects recovered after a lost PUT.
+        #[cfg(test)]
+        test_sync::check(self, name.to_str()?, test_sync::Point::ReadFile)?;
+        file.sync_all()?;
+        #[cfg(test)]
+        test_sync::check(self, name.to_str()?, test_sync::Point::ReadDirectory)?;
+        self.0.sync_all()?;
         Ok(Some(bytes))
     }
     fn unlink(&self, name: &str) -> Result<()> {
@@ -147,6 +157,12 @@ impl Directory {
                 "publishing create-only backup session object: {}",
                 std::io::Error::last_os_error()
             );
+            #[cfg(test)]
+            test_sync::check(
+                destination,
+                name.to_str()?,
+                test_sync::Point::PublishDirectory,
+            )?;
             destination.0.sync_all()?;
             Ok(())
         })();
@@ -295,6 +311,61 @@ impl Directory {
             objects.unlink(&format!("{id}.kasumi"))?;
         }
         objects.0.sync_all()?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test_sync {
+    use super::*;
+    use std::{
+        os::unix::fs::MetadataExt,
+        sync::{Mutex, OnceLock},
+    };
+
+    #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    pub(crate) enum Point {
+        PublishDirectory,
+        ReadFile,
+        ReadDirectory,
+    }
+    type Key = (u64, u64, String, Point);
+    fn faults() -> &'static Mutex<BTreeSet<Key>> {
+        static FAULTS: OnceLock<Mutex<BTreeSet<Key>>> = OnceLock::new();
+        FAULTS.get_or_init(Default::default)
+    }
+    pub(crate) struct Guard(Vec<Key>);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            let mut faults = faults().lock().unwrap();
+            for key in &self.0 {
+                faults.remove(key);
+            }
+        }
+    }
+    pub(crate) fn fail(directory: &Path, name: &str, points: &[Point]) -> Result<Guard> {
+        let directory = std::fs::metadata(directory)?;
+        let keys = points
+            .iter()
+            .map(|point| (directory.dev(), directory.ino(), name.to_owned(), *point))
+            .collect::<Vec<_>>();
+        let mut faults = faults().lock().unwrap();
+        for key in &keys {
+            assert!(faults.insert(key.clone()), "duplicate session sync fault");
+        }
+        Ok(Guard(keys))
+    }
+    pub(super) fn check(directory: &Directory, name: &str, point: Point) -> Result<()> {
+        let directory = directory.0.metadata()?;
+        ensure!(
+            !faults().lock().unwrap().contains(&(
+                directory.dev(),
+                directory.ino(),
+                name.to_owned(),
+                point,
+            )),
+            "injected backup session synchronization failure"
+        );
         Ok(())
     }
 }

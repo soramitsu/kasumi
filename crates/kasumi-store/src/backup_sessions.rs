@@ -616,6 +616,151 @@ mod tests {
             [1]
         );
     }
+
+    #[tokio::test]
+    async fn visible_session_outcomes_require_durable_readback_before_resolution_or_cleanup() {
+        use filesystem::test_sync::{Point, fail};
+        let (dir, store, keys, destination) = fixture().await;
+        for complete in [false, true] {
+            for point in [Point::ReadFile, Point::ReadDirectory] {
+                let session = begin(&destination, &store, keys.clone()).await;
+                let id = session.intent().session_id;
+                let object = Uuid::new_v4();
+                destination
+                    .session_put(id, BackupSessionSlot::Object(object), vec![42])
+                    .await
+                    .unwrap();
+                let outcome = if complete {
+                    BackupSessionOutcome::Complete {
+                        intent_ciphertext_sha256: session.intent_ciphertext_sha256().into(),
+                        checkpoint: FullBackupCheckpoint {
+                            tenant: "tenant".into(),
+                            source_incarnation: "source".into(),
+                            revision: 7,
+                            resident_sha256: "a".repeat(64),
+                            backup_id: id,
+                            manifest_ciphertext_sha256: "b".repeat(64),
+                            key_lineage_digest: "c".repeat(64),
+                        },
+                    }
+                } else {
+                    BackupSessionOutcome::Aborted {
+                        intent_ciphertext_sha256: session.intent_ciphertext_sha256().into(),
+                        session_id: id,
+                        principal: "admin".into(),
+                        reason: "cancelled publication".into(),
+                    }
+                };
+                let directory = dir.path().join(format!("backup/sessions/{id}"));
+                let fault = fail(
+                    &directory,
+                    "outcome.kasumi",
+                    &[Point::PublishDirectory, point],
+                )
+                .unwrap();
+                let bytes = store.encrypt_session_record(7, &outcome).unwrap();
+                assert!(
+                    destination
+                        .session_put(id, BackupSessionSlot::Outcome, bytes.clone())
+                        .await
+                        .is_err()
+                );
+                // The actual link exists even though its publication returned
+                // failure. Visibility alone cannot produce a verified outcome.
+                assert_eq!(
+                    std::fs::read(directory.join("outcome.kasumi")).unwrap(),
+                    bytes
+                );
+                assert!(
+                    verify_backup_session(
+                        &destination,
+                        id,
+                        "tenant",
+                        keys.clone(),
+                        store.storage_access(),
+                    )
+                    .await
+                    .is_err()
+                );
+                drop(fault);
+                let verified = verify_backup_session(
+                    &destination,
+                    id,
+                    "tenant",
+                    keys.clone(),
+                    store.storage_access(),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                assert_eq!(verified.outcome(), Some(&outcome));
+                if complete {
+                    assert!(verified.aborted().is_err());
+                } else {
+                    let proof = verified.aborted().unwrap();
+                    // Every cleanup pass independently confirms the retained
+                    // abort. Even an older verified proof cannot bypass failure.
+                    let fault = fail(&directory, "outcome.kasumi", &[point]).unwrap();
+                    assert!(destination.session_objects(&proof, 1).await.is_err());
+                    assert!(destination.session_delete(&proof, &[object]).await.is_err());
+                    assert_eq!(
+                        std::fs::read(directory.join(format!("objects/{object}.kasumi"))).unwrap(),
+                        [42],
+                    );
+                    drop(fault);
+                    let page = destination.session_objects(&proof, 1).await.unwrap();
+                    assert_eq!(page.objects, vec![object]);
+                    destination
+                        .session_delete(&proof, &page.objects)
+                        .await
+                        .unwrap();
+                }
+                assert!(directory.join("intent.kasumi").is_file());
+                assert!(directory.join("outcome.kasumi").is_file());
+                assert_eq!(
+                    directory.join(format!("objects/{object}.kasumi")).is_file(),
+                    complete,
+                );
+            }
+        }
+        store.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn recovered_session_root_requires_file_and_directory_sync_before_readback() {
+        use filesystem::test_sync::{Point, fail};
+        let (dir, store, keys, destination) = fixture().await;
+        for point in [Point::ReadFile, Point::ReadDirectory] {
+            let session = begin(&destination, &store, keys.clone()).await;
+            let id = session.intent().session_id;
+            let directory = dir.path().join(format!("backup/sessions/{id}/objects"));
+            let name = format!("{id}.kasumi");
+            let fault = fail(&directory, &name, &[Point::PublishDirectory, point]).unwrap();
+            assert!(
+                destination
+                    .session_put(id, BackupSessionSlot::Object(id), vec![41])
+                    .await
+                    .is_err()
+            );
+            assert_eq!(std::fs::read(directory.join(&name)).unwrap(), [41]);
+            assert!(
+                destination
+                    .session_get(id, BackupSessionSlot::Object(id), 1)
+                    .await
+                    .is_err()
+            );
+            drop(fault);
+            assert_eq!(
+                destination
+                    .session_get(id, BackupSessionSlot::Object(id), 1)
+                    .await
+                    .unwrap(),
+                Some(vec![41]),
+            );
+        }
+        store.shutdown().await.unwrap();
+    }
+
     #[tokio::test]
     #[cfg(unix)]
     async fn filesystem_cleanup_rejects_directory_symlink_substitution() {
