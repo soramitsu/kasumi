@@ -133,6 +133,8 @@ async fn initialize_owned(config: AuthorityRuntimeConfig) -> Result<Enrolled> {
     }
     let mut report = kasumi_types::drain::DrainReport::default();
     if let Some(child) = genesis.as_mut() {
+        #[cfg(test)]
+        tests::joining_checkpoint(config.database_id);
         match child.await {
             Ok(Ok(())) => {}
             Ok(Err(error)) => {

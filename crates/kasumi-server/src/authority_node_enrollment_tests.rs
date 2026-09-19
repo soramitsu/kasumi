@@ -286,6 +286,7 @@ impl Fixture {
 #[derive(Default)]
 struct BlockingPause {
     entered: Notify,
+    joining: Notify,
     released: Mutex<bool>,
     changed: Condvar,
 }
@@ -317,8 +318,14 @@ impl Drop for BlockingGuard {
         self.release();
     }
 }
+pub(super) fn joining_checkpoint(id: Uuid) {
+    if let Some(pause) = blocking_pauses().lock().unwrap().get(&id) {
+        pause.joining.notify_one();
+    }
+}
+
 pub(super) fn blocking_checkpoint(id: Uuid) {
-    let pause = blocking_pauses().lock().unwrap().remove(&id);
+    let pause = blocking_pauses().lock().unwrap().get(&id).cloned();
     if let Some(pause) = pause {
         pause.entered.notify_one();
         let (released, _) = pause
@@ -400,7 +407,7 @@ async fn cancelled_authority_enrollment_joins_dispatched_genesis_and_preserves_b
     // The cleanup path has left the preparation pause and now must join its
     // original blocking child, which still owns the actual encrypted pair.
     pause.release();
-    tokio::task::yield_now().await;
+    tokio::time::timeout(Duration::from_secs(10), blocking.1.joining.notified()).await?;
     let mut drain = Box::pin(registry.drain());
     std::future::poll_fn(|cx| {
         assert!(drain.as_mut().poll(cx).is_pending());
@@ -432,6 +439,11 @@ async fn cancelled_authority_enrollment_joins_dispatched_genesis_and_preserves_b
         .downcast_ref::<tokio::task::JoinError>()
         .unwrap();
     assert!(child.is_panic());
+    assert!(
+        child
+            .to_string()
+            .contains("original authority genesis blocking panic")
+    );
     fixture.verify_retained_state(true, false, false).await?;
     registry.drain().await?;
     Ok(())
