@@ -224,7 +224,7 @@ pub struct ReplicaConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReplicationConfig {
-    #[serde(default)]
+    /// Explicit original voter identities, retained when the peer pool grows.
     pub initial_voters: BTreeSet<u64>,
     pub node_id: u64,
     pub listener: MutualTlsEndpoint,
@@ -658,19 +658,15 @@ impl ReplicationConfig {
     }
 
     pub(crate) fn voters(&self) -> Result<BTreeSet<u64>> {
-        let voters = if self.initial_voters.is_empty() && self.peers.len() == 3 {
-            self.peers.iter().map(|p| p.node_id).collect()
-        } else {
-            self.initial_voters.clone()
-        };
         ensure!(
-            voters.len() == 3
-                && voters
+            self.initial_voters.len() == 3
+                && self
+                    .initial_voters
                     .iter()
                     .all(|id| self.peers.iter().any(|p| p.node_id == *id)),
-            "initial membership requires exactly three configured voters"
+            "initial_voters must explicitly name exactly three configured original voters"
         );
-        Ok(voters)
+        Ok(self.initial_voters.clone())
     }
     pub(crate) fn validate(&self) -> Result<()> {
         self.listener.validate()?;
@@ -2643,7 +2639,7 @@ mod tests {
         let mut listener = config.admin.clone();
         listener.listen = "127.0.0.1:9446".parse().unwrap();
         config.replication = Some(ReplicationConfig {
-            initial_voters: BTreeSet::new(),
+            initial_voters: BTreeSet::from([1, 2, 3]),
             node_id: 1,
             listener,
             peers: (1..=3)
@@ -2656,6 +2652,39 @@ mod tests {
                 .collect(),
         });
         config
+    }
+
+    #[test]
+    fn replication_requires_explicit_original_voters_when_decoding_and_validating() {
+        let original = replicated().replication.unwrap();
+        let mut encoded = serde_json::to_value(&original).unwrap();
+        encoded.as_object_mut().unwrap().remove("initial_voters");
+        assert!(serde_json::from_value::<ReplicationConfig>(encoded.clone()).is_err());
+        encoded["initial_voters"] = serde_json::Value::Null;
+        assert!(serde_json::from_value::<ReplicationConfig>(encoded.clone()).is_err());
+        encoded["initial_voters"] = serde_json::json!([]);
+        let empty: ReplicationConfig = serde_json::from_value(encoded).unwrap();
+        assert!(empty.voters().is_err());
+        assert!(empty.validate().is_err());
+        let mut expanded = original;
+        expanded.peers.push(ReplicaConfig {
+            node_id: 4,
+            endpoint: "https://node-4.example:9446".into(),
+            certificate_pins: vec![format!("{:064x}", 4)],
+            failure_domain: "zone-4".into(),
+        });
+        expanded.node_id = 4;
+        expanded.validate().unwrap();
+        assert_eq!(expanded.voters().unwrap(), BTreeSet::from([1, 2, 3]));
+        for invalid in [
+            BTreeSet::new(),
+            BTreeSet::from([1, 2]),
+            BTreeSet::from([1, 2, 5]),
+            BTreeSet::from([1, 2, 3, 4]),
+        ] {
+            expanded.initial_voters = invalid;
+            assert!(expanded.validate().is_err());
+        }
     }
 
     #[test]

@@ -195,7 +195,7 @@ never rewrites an already-created replicated bootstrap in place.
 
 ## Membership replacement
 
-`replication.peers` is an operator-approved pinned peer pool (3–64 nodes). If it contains more than three nodes, set explicit `initial_voters` to the immutable original three IDs. New learners use that same original bootstrap and distinct node identity. Never edit initial voters to shrink an existing group or recover quorum. The final placement must have exactly three voters across independent failure domains recorded by the control database.
+`replication.peers` is an operator-approved pinned peer pool (3–64 nodes). Every replicated configuration must set `initial_voters` to the immutable original three IDs, including a pool of exactly three peers. Missing or empty voter configuration is rejected. New learners use that same original bootstrap and distinct node identity. Never edit initial voters to shrink an existing group or recover quorum. The final placement must have exactly three voters across independent failure domains recorded by the control database.
 
 Start the spare with its configured identity and original bootstrap. On the control leader, using a control-tenant administrator token, run `{"operation":"add_learner","node_id":4}`; it waits for catch-up. Once the spare has the committed topology, add it to the tenant group on that tenant's leader using the same command with the tenant token. The peer must exist in both configured pinned transport and approved control metadata.
 
