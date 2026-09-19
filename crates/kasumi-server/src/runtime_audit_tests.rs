@@ -77,7 +77,8 @@ async fn audit_native_tls_fixed_history_and_original_authorization_release() {
     for profile in [&mut control, &mut tenant] {
         profile.mcp_endpoint = config.mcp.protocol.public_url.clone();
         profile.native_endpoint = format!("https://localhost:{}", config.native.listen.port());
-        profile.admin_endpoint = format!("https://localhost:{}", config.admin.listen.port());
+        profile.administrative_members.get_mut(&1).unwrap().endpoint =
+            format!("https://localhost:{}", config.admin.listen.port());
     }
     private_files::replace(
         &installation.control_profile,

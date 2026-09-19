@@ -51,7 +51,7 @@ Snapshot publication joins the receipt namespace replacement and checkpoint
 binding with the existing application tables, snapshot, and applied cursor in
 the same durable publication. Old live views retain their exact earlier prefix.
 
-The canonical tenant stream is `KASUMIT6`. Rank 5 is now a typed receipt point row;
+The canonical tenant stream is `KASUMIT7`. Rank 5 is now a typed receipt point row;
 T4/T5 images, the old tuple record, resident `receipts` headers, and old limit
 fields reject. Full backups copy these rows; both full and indexed restore
 validate their root/count/bytes, uniqueness, and original provenance before

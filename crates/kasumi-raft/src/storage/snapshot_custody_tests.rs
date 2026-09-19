@@ -7,7 +7,7 @@ use crate::{RetiredSnapshotState, StateMachineBackend};
 use openraft::storage::RaftLogStorageExt;
 
 async fn accepted_snapshot() -> Result<SnapshotEnvelope> {
-    let (domains, _, _, mut log) = fixture(FaultBackend::new()).await?;
+    let (domains, _, _, mut log) = fixture(FaultBackend::new(), true).await?;
     let entry = retirement_entry()?;
     let command = match &entry.payload {
         EntryPayload::Normal(value) => value,
@@ -101,7 +101,7 @@ impl StateMachineBackend for ClosedBackend {
 async fn same_position_reencoding_preserves_custody_and_reuses_verified_current_image() -> Result<()>
 {
     let original = accepted_snapshot().await?;
-    let (domains, _, _, _) = fixture(FaultBackend::new()).await?;
+    let (domains, _, _, _) = fixture(FaultBackend::new(), true).await?;
     let backend = Arc::new(ClosedBackend::default());
     let mut machine = StateMachine::open(domains.clone(), backend).await?;
     machine
@@ -143,7 +143,7 @@ async fn same_position_reencoding_preserves_custody_and_reuses_verified_current_
 async fn same_position_cannot_substitute_matching_backend_and_custody_policy() -> Result<()> {
     let original = accepted_snapshot().await?;
     for change_epoch in [false, true] {
-        let (domains, _, _, _) = fixture(FaultBackend::new()).await?;
+        let (domains, _, _, _) = fixture(FaultBackend::new(), true).await?;
         let backend = Arc::new(ClosedBackend::default());
         let mut machine = StateMachine::open(domains.clone(), backend.clone()).await?;
         machine
@@ -202,7 +202,7 @@ async fn retired_snapshot_installs_without_original_log_and_recovers_with_only_c
 -> Result<()> {
     let snapshot = accepted_snapshot().await?;
     let disk = FaultBackend::new();
-    let (domains, app_provider, custody_provider, mut log) = fixture(disk.clone()).await?;
+    let (domains, app_provider, custody_provider, mut log) = fixture(disk.clone(), true).await?;
     let backend = Arc::new(ClosedBackend::default());
     let mut machine = StateMachine::open(domains.clone(), backend.clone()).await?;
     machine
@@ -255,7 +255,7 @@ async fn snapshot_rejects_missing_substituted_stale_and_payload_custody_before_p
 -> Result<()> {
     let original = accepted_snapshot().await?;
     for case in 0..8 {
-        let (domains, _, _, _) = fixture(FaultBackend::new()).await?;
+        let (domains, _, _, _) = fixture(FaultBackend::new(), true).await?;
         let mut machine =
             StateMachine::open(domains.clone(), Arc::new(ClosedBackend::default())).await?;
         let mut changed = original.clone();
@@ -319,7 +319,7 @@ async fn snapshot_rejects_missing_substituted_stale_and_payload_custody_before_p
 async fn accepted_snapshot_supersedes_uncommitted_candidate_and_survives_late_truncation()
 -> Result<()> {
     let accepted = accepted_snapshot().await?;
-    let (domains, _, _, mut log) = fixture(FaultBackend::new()).await?;
+    let (domains, _, _, mut log) = fixture(FaultBackend::new(), true).await?;
     // UUID-backed checkpoint differs, so this is a conflicting candidate.
     log.blocking_append([ordinary(0), retirement_entry()?])
         .await?;
@@ -352,7 +352,7 @@ async fn accepted_snapshot_supersedes_uncommitted_candidate_and_survives_late_tr
 #[tokio::test]
 async fn nonretired_snapshot_discards_stale_candidate_coverage_without_retirement_projection()
 -> Result<()> {
-    let (domains, _, _, mut log) = fixture(FaultBackend::new()).await?;
+    let (domains, _, _, mut log) = fixture(FaultBackend::new(), true).await?;
     log.blocking_append([ordinary(0), retirement_entry()?])
         .await?;
     let mut value = envelope(b"not-retired".to_vec());
@@ -381,24 +381,24 @@ async fn retired_snapshot_power_loss_never_tears_image_seed_boundary_or_applied_
     let value = accepted_snapshot().await?;
     let bytes = value.encode(64 << 20)?.read_bounded(64 << 20)?;
     let seed = FaultBackend::new();
-    let (initial, _, _, _) = fixture(seed.clone()).await?;
+    let (initial, _, _, _) = fixture(seed.clone(), true).await?;
     let baseline = seed.crash();
     drop(initial);
     let measured_disk = baseline.crash();
-    let (domains, _, _, _) = fixture(measured_disk.clone()).await?;
+    let (domains, _, _, _) = fixture(measured_disk.clone(), false).await?;
     let start = measured_disk.operations();
     persist_snapshot(&domains, &bytes, 1 << 20, &value)?;
     let operations = measured_disk.operations() - start;
     assert!(operations > 10);
     for failure in 0..=operations {
         let disk = baseline.crash();
-        let (domains, _, _, _) = fixture(disk.clone()).await?;
+        let (domains, _, _, _) = fixture(disk.clone(), false).await?;
         disk.fail_after(failure);
         let result = persist_snapshot(&domains, &bytes, 1 << 20, &value);
         let crash = disk.crash();
         disk.disarm();
         drop(domains);
-        let (reopened, _, _, _) = fixture(crash).await?;
+        let (reopened, _, _, _) = fixture(crash, false).await?;
         cleanup_snapshots(reopened.application(), 1 << 20)?;
         let image = load_snapshot(reopened.application(), 1 << 20)?;
         let boundary = control::retired_boundary(reopened.custody())?;
@@ -435,7 +435,7 @@ async fn retired_snapshot_power_loss_never_tears_image_seed_boundary_or_applied_
 #[tokio::test]
 async fn equal_index_different_term_log_and_snapshot_coverage_is_rejected() -> Result<()> {
     let value = accepted_snapshot().await?;
-    let (domains, _, _, _) = fixture(FaultBackend::new()).await?;
+    let (domains, _, _, _) = fixture(FaultBackend::new(), true).await?;
     persist_snapshot(
         &domains,
         &value.encode(64 << 20)?.read_bounded(64 << 20)?,
@@ -456,7 +456,7 @@ async fn equal_index_different_term_log_and_snapshot_coverage_is_rejected() -> R
 
 #[tokio::test]
 async fn old_snapshot_capture_cannot_regress_newer_accepted_cursor() -> Result<()> {
-    let (domains, _, _, mut log) = fixture(FaultBackend::new()).await?;
+    let (domains, _, _, mut log) = fixture(FaultBackend::new(), true).await?;
     let mut machine =
         StateMachine::open(domains.clone(), Arc::new(BytesBackend::default())).await?;
     let one = ordinary(1);
@@ -484,7 +484,7 @@ async fn old_snapshot_capture_cannot_regress_newer_accepted_cursor() -> Result<(
 async fn published_retirement_projection_substitution_fails_closed_after_reopen() -> Result<()> {
     let value = accepted_snapshot().await?;
     let disk = FaultBackend::new();
-    let (domains, _, _, _) = fixture(disk.clone()).await?;
+    let (domains, _, _, _) = fixture(disk.clone(), true).await?;
     let mut machine =
         StateMachine::open(domains.clone(), Arc::new(ClosedBackend::default())).await?;
     let mut older_capture = machine.get_snapshot_builder().await;
@@ -511,7 +511,7 @@ async fn published_retirement_projection_substitution_fails_closed_after_reopen(
         older_capture.build_snapshot().await.is_err(),
         "cached newer snapshot cannot bypass custody validation"
     );
-    let (reopened, _, _, _) = fixture(disk.crash()).await?;
+    let (reopened, _, _, _) = fixture(disk.crash(), false).await?;
     assert!(
         StateMachine::open(reopened.clone(), Arc::new(ClosedBackend::default()))
             .await

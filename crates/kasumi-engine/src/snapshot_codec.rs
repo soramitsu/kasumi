@@ -9,9 +9,9 @@ use std::{
     sync::Arc,
 };
 
-const MAGIC: &[u8; 8] = b"KASUMIT6";
+const MAGIC: &[u8; 8] = b"KASUMIT7";
 const MAX_RECORD: usize = 32 << 20;
-pub(crate) const RECORD_KINDS: u8 = 23;
+pub(crate) const RECORD_KINDS: u8 = 24;
 pub(crate) const FRAME_HEADER_BYTES: usize = 9;
 #[path = "snapshot_record_work.rs"]
 mod record_work;
@@ -52,7 +52,7 @@ pub(crate) fn inspect_typed_json_work(value: &impl Serialize) -> anyhow::Result<
 pub(crate) fn record_limit(kind: u8) -> anyhow::Result<u64> {
     Ok(match kind {
         5 => crate::mutation_receipt::MAX_SNAPSHOT_RECORD_BYTES as u64,
-        0..=20 => MAX_RECORD as u64,
+        0..=20 | 23 => MAX_RECORD as u64,
         21 => crate::staged_terminal::MAX_SNAPSHOT_RECORD_BYTES as u64,
         22 => crate::target_resolution::MAX_SNAPSHOT_RECORD_BYTES as u64,
         _ => anyhow::bail!("unsupported snapshot record kind"),
@@ -85,6 +85,7 @@ pub(crate) enum Record {
     RecoveryTarget(String, uuid::Uuid),
     Terminal(Box<crate::staged_terminal::Row>),
     TargetResolution(Box<crate::target_resolution::Row>),
+    RecoveryCompletionHistory(String, Box<RecoveryCompletionHistory>),
 }
 impl Record {
     pub(crate) fn order(&self) -> (u8, String, String) {
@@ -112,6 +113,7 @@ impl Record {
             Self::RecoveryTarget(k, _) => (20, k.clone(), String::new()),
             Self::Terminal(row) => (21, format!("{:020}", row.ordinal), String::new()),
             Self::TargetResolution(row) => (22, format!("{:020}", row.ordinal), String::new()),
+            Self::RecoveryCompletionHistory(k, _) => (23, k.clone(), String::new()),
         }
     }
 }
@@ -277,6 +279,15 @@ pub(crate) fn records<'a>(
                     .targets
                     .iter()
                     .map(|(key, value)| Record::RecoveryTarget(key.clone(), *value)),
+            ),
+            23 => Box::new(
+                state
+                    .recovery_control
+                    .completion_history
+                    .iter()
+                    .map(|(key, value)| {
+                        Record::RecoveryCompletionHistory(key.clone(), Box::new(value.clone()))
+                    }),
             ),
             _ => anyhow::bail!("unsupported snapshot record kind"),
         };
@@ -474,6 +485,9 @@ pub(crate) fn write(
     }
     for row in target_resolutions.records() {
         encoder.record(Record::TargetResolution(Box::new(row?)))?;
+    }
+    for record in records(state, 23, None)? {
+        encoder.record(record?)?;
     }
     encoder.finish()
 }
@@ -756,6 +770,13 @@ pub(crate) fn visit(
                     "recovery operation key differs"
                 );
             }
+            Record::RecoveryCompletionHistory(key, value) => {
+                value.validate()?;
+                anyhow::ensure!(
+                    *key == value.scope.intent.to_string(),
+                    "closed completion key differs"
+                );
+            }
             Record::RecoveryPhase(key, value) => {
                 value.validate()?;
                 anyhow::ensure!(
@@ -980,6 +1001,19 @@ pub(crate) fn read(
                     "recovery phase operation missing"
                 );
                 state.recovery_control.phases.insert(key, *record);
+            }
+            Record::RecoveryCompletionHistory(key, history) => {
+                anyhow::ensure!(
+                    state
+                        .recovery_control
+                        .operations
+                        .contains_key(&history.operation_id.to_string()),
+                    "closed completion operation missing"
+                );
+                state
+                    .recovery_control
+                    .completion_history
+                    .insert(key, *history);
             }
             Record::RecoveryTarget(key, operation) => {
                 anyhow::ensure!(

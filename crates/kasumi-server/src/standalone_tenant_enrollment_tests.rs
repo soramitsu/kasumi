@@ -17,10 +17,16 @@ fn context(tenant: &str) -> RequestContext {
 
 async fn manage(profile: &ClientProfile, command: ManagementCommand) -> Result<()> {
     let connection = crate::runtime::AdminClientConfig {
-        endpoint: profile.admin_endpoint.clone(),
+        endpoint: profile.administrative_member().unwrap().endpoint.clone(),
         identity: profile.identity.clone(),
         server_ca: profile.server_ca.clone(),
-        server_certificate_pins: vec![profile.admin_certificate_pin.clone()],
+        server_certificate_pins: profile
+            .administrative_member()
+            .unwrap()
+            .certificate_pins
+            .iter()
+            .cloned()
+            .collect(),
         token_file: profile.bearer_file.to_string_lossy().into_owned(),
     };
     let (mut client, authorization) = connection.connect().await?;
@@ -57,7 +63,8 @@ async fn installation() -> Result<(
         let mut profile = ClientProfile::load(path)?;
         profile.mcp_endpoint = config.mcp.protocol.public_url.clone();
         profile.native_endpoint = format!("https://localhost:{}", config.native.listen.port());
-        profile.admin_endpoint = format!("https://localhost:{}", config.admin.listen.port());
+        profile.administrative_members.get_mut(&1).unwrap().endpoint =
+            format!("https://localhost:{}", config.admin.listen.port());
         private_files::replace(path, &serde_json::to_vec_pretty(&profile)?)?;
     }
     configure_test_topology(&config).await;

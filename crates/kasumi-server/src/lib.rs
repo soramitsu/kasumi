@@ -11,6 +11,7 @@ mod backup_cli;
 pub mod cluster;
 mod control_genesis;
 mod data_node_enrollment;
+mod installed_clients;
 #[cfg(test)]
 mod json_literal_tests;
 pub mod lifecycle_runtime;

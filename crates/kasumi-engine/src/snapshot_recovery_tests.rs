@@ -3,13 +3,20 @@ use std::collections::BTreeMap;
 use uuid::Uuid;
 
 fn coordinator() -> TenantState {
-    let mut state = super::tests::state();
-    state.tenant = crate::control::CONTROL_TENANT.into();
-    state.incarnation = Uuid::new_v4().to_string();
-    state.staged_terminal_head =
-        StagedTerminalHead::empty(&state.tenant, &state.incarnation).unwrap();
-    state.target_resolution_head =
-        TargetResolutionPrefixHead::empty(&state.tenant, &state.incarnation).unwrap();
+    let template = super::tests::state();
+    // Build every generation-bound native head for the actual Control identity.
+    // Relabeling an application fixture leaves its receipt origin outside lineage.
+    let mut state = crate::TenantEngine::new(
+        crate::control::CONTROL_TENANT.into(),
+        Uuid::new_v4().to_string(),
+        template.policy,
+        template.limits,
+    )
+    .unwrap()
+    .generation()
+    .unwrap()
+    .state
+    .clone();
     state.revision = 3;
     state.policy_epoch = 1;
     let partition = ControlAuthorityPartition {
@@ -121,6 +128,7 @@ fn coordinator() -> TenantState {
         materialization_intent: None,
         initialization: None,
         completion_intent: None,
+        completion_predecessor: None,
         completion_preparation_attempt: None,
         completion_preparation: None,
         completion_resolution_attempt: None,
@@ -156,6 +164,7 @@ fn coordinator() -> TenantState {
         phase_id: Uuid::new_v4(),
         sequence: 1,
         phase: RecoveryPhase::Publish,
+        completion_scope: None,
         previous_phase: None,
         input_sha256: staged_digest(&input).unwrap().0,
         input,

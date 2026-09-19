@@ -114,7 +114,9 @@ pub(crate) fn terminal_status_input(
     value.digest()?;
     Ok(value)
 }
-fn terminal_response(response: &TargetRuntimeResponse) -> Result<&TargetCompletionResolutionFact> {
+pub(crate) fn terminal_response(
+    response: &TargetRuntimeResponse,
+) -> Result<&TargetCompletionResolutionFact> {
     match &response.outcome {
         TargetRuntimeOutcome::ResolvedCompletion(signed) => Ok(&signed.observation.fact),
         TargetRuntimeOutcome::CompletionTerminalStatus(signed) => Ok(&signed.observation.fact),
@@ -150,10 +152,7 @@ pub(crate) fn fresh_phase(
     if operation.completion_terminal.is_some() {
         return match &terminal(state, operation)?.terminal {
             TargetCompletionTerminal::Committed(_) => Ok(LifecyclePhase::InspectTarget),
-            TargetCompletionTerminal::Sealed => Err(error(
-                ErrorCode::Unavailable,
-                "completion is durably sealed; linked successor dispatch is not installed",
-            )),
+            TargetCompletionTerminal::Sealed => Ok(LifecyclePhase::Complete),
         };
     }
     if operation.completion_resolution_attempt.is_some() {

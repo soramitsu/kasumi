@@ -20,7 +20,7 @@ pub(crate) fn completion_input(
 ) -> Result<TargetCompletionInput> {
     Ok(TargetCompletionInput {
         quorum: quorum_input(state, operation)?,
-        predecessor: None,
+        predecessor: attempts::predecessor(state, operation)?,
     })
 }
 

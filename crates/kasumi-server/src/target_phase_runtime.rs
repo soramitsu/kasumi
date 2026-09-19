@@ -5,7 +5,7 @@ use crate::{
     serving_runtime::{CredentialSource, RuntimeLease, ServingAuthorityConfig},
 };
 use anyhow::{Context, Result, ensure};
-use kasumi_client::{KasumiAuthorityPool, KasumiClientConfig, KasumiLifecycleClient};
+use kasumi_client::{KasumiAuthorityPool, KasumiClientConfig, KasumiLifecyclePool};
 use kasumi_engine::{
     TargetLifecycleInvocation, TargetOperation, TargetOperationScope, TargetRequestAdmission,
 };
@@ -21,9 +21,8 @@ use zeroize::Zeroizing;
 pub(crate) struct RuntimeTargetPhase {
     scope: Arc<TargetOperationScope>,
     serving: Option<Arc<RuntimeLease>>,
-    control: AsyncMutex<KasumiLifecycleClient>,
+    control: AsyncMutex<KasumiLifecyclePool>,
     original: VerifiedControlIntent,
-    control_bearer: Zeroizing<String>,
     authority: AsyncMutex<KasumiAuthorityPool>,
     authority_admin: AsyncMutex<KasumiAuthorityPool>,
     boot: LifecycleBoot,
@@ -91,19 +90,20 @@ impl RuntimeTargetPhase {
             "current installed Control Admin required"
         );
         authority.validate()?;
-        let control_connection = configured.control_connection()?;
+        let control_connections = configured.control_connections()?;
         let control_trust = ControlTrust::install(configured.control_root.clone())?;
-        let mut control = admission
-            .run(async {
-                Ok(tokio::time::timeout(
-                    Duration::from_secs(5),
-                    KasumiLifecycleClient::connect(&control_connection, control_trust),
-                )
-                .await??)
-            })
-            .await?;
+        let original_credential = original_bearer.clone();
+        let mut control = KasumiLifecyclePool::new(
+            control_connections,
+            control_trust,
+            Arc::new(move || Ok(original_credential.clone())),
+        )?;
         let original = admission
-            .run(async { Ok(control.observe_intent(&original_bearer, command_id).await?) })
+            .run(async {
+                Ok(control
+                    .observe_intent(command_id, Duration::from_secs(5))
+                    .await?)
+            })
             .await?;
         let intent = &original.observation().intent;
         ensure!(
@@ -226,7 +226,6 @@ impl RuntimeTargetPhase {
             serving,
             control: AsyncMutex::new(control),
             original,
-            control_bearer: original_bearer,
             authority: AsyncMutex::new(issuer),
             boot,
             authority_admin: AsyncMutex::new(issuer_admin),
@@ -313,8 +312,8 @@ impl RuntimeTargetPhase {
         let mut control = self.control.lock().await;
         let fresh = control
             .observe_intent(
-                &self.control_bearer,
                 self.original.observation().intent.request.command_id,
+                Duration::from_secs(5),
             )
             .await?;
         ensure!(
@@ -371,11 +370,17 @@ impl RuntimeTargetPhase {
         operation.check()
     }
     async fn observe_with(&self, bearer: &str) -> Result<()> {
-        let mut control = self.control.lock().await;
+        let credential = Zeroizing::new(bearer.to_owned());
+        let mut control = self
+            .control
+            .lock()
+            .await
+            .clone()
+            .with_credential(Arc::new(move || Ok(credential.clone())));
         let fresh = control
             .observe_intent(
-                bearer,
                 self.original.observation().intent.request.command_id,
+                Duration::from_secs(5),
             )
             .await?;
         ensure!(

@@ -12,6 +12,8 @@ pub(crate) enum Scalar {
     Boolean(bool),
     Number(BigDecimal),
     String(String),
+    /// Internal ordered-prefix upper bound; never parsed from or stored as JSON.
+    UpperBound,
 }
 
 pub(crate) fn invalid(message: impl Into<String>) -> Error {

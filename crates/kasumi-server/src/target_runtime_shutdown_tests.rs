@@ -84,10 +84,13 @@ async fn target_monitor_and_outer_owner_survive_cancelled_shutdown_until_journal
         // The actual monitor is stopped at its first upgrade, before discovery.
         let installed = TargetRecoveryConfig {
             control_root: root,
-            control_endpoint: crate::serving_runtime::AuthorityEndpoint {
-                endpoint: "https://localhost:9".into(),
-                certificate_pins: BTreeSet::from(["ab".repeat(32)]),
-            },
+            control_endpoints: BTreeMap::from([(
+                1,
+                crate::serving_runtime::AuthorityEndpoint {
+                    endpoint: "https://localhost:9".into(),
+                    certificate_pins: BTreeSet::from(["ab".repeat(32)]),
+                },
+            )]),
             control_tls: config.native.tls.clone(),
             control_ca: directory.path().join("ca.pem"),
             node: identity.clone(),

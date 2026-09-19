@@ -1,4 +1,4 @@
-use crate::{ClientError, KasumiClientConfig, authorized, encode, proto};
+use crate::{ClientError, KasumiClientConfig, encode, proto};
 use kasumi_serving::{ControlTrust, VerifiedControlChange, VerifiedControlIntent};
 use kasumi_types::*;
 use tonic::transport::Channel;
@@ -7,10 +7,17 @@ use tonic::transport::Channel;
 /// commitments are not live phase grants; the independent issuer supplies those.
 #[derive(Clone)]
 pub struct KasumiLifecycleClient {
+    deadline: Option<tokio::time::Instant>,
     inner: proto::kasumi_lifecycle_control_client::KasumiLifecycleControlClient<Channel>,
     trust: ControlTrust,
 }
 impl KasumiLifecycleClient {
+    pub(crate) fn set_deadline(&mut self, deadline: tokio::time::Instant) {
+        self.deadline = Some(deadline);
+    }
+    fn authorized<T>(&self, bearer: &str, value: T) -> std::result::Result<tonic::Request<T>, ClientError> {
+        crate::authorized_until(bearer, value, self.deadline)
+    }
     pub async fn connect(
         config: &KasumiClientConfig,
         trust: ControlTrust,
@@ -23,6 +30,7 @@ impl KasumiLifecycleClient {
         )
         .await?;
         Ok(Self {
+            deadline: None,
             inner: proto::kasumi_lifecycle_control_client::KasumiLifecycleControlClient::new(
                 channel,
             )
@@ -38,7 +46,7 @@ impl KasumiLifecycleClient {
     ) -> std::result::Result<WriteReceipt, ClientError> {
         let response = self
             .inner
-            .execute(authorized(
+            .execute(self.authorized(
                 bearer,
                 proto::ControlJsonRequest {
                     request_json: encode(command)?,
@@ -55,7 +63,7 @@ impl KasumiLifecycleClient {
     ) -> std::result::Result<VerifiedControlIntent, ClientError> {
         let response = self
             .inner
-            .observe_intent(authorized(
+            .observe_intent(self.authorized(
                 bearer,
                 proto::ControlIntentReference {
                     command_id: id.to_string(),
@@ -77,7 +85,7 @@ impl KasumiLifecycleClient {
     ) -> std::result::Result<VerifiedControlChange, ClientError> {
         let response = self
             .inner
-            .observe_change(authorized(
+            .observe_change(self.authorized(
                 bearer,
                 proto::ControlChangeReference {
                     command_id: id.to_string(),
@@ -106,7 +114,7 @@ impl KasumiLifecycleClient {
         }
         let response = self
             .inner
-            .read_status(authorized(
+            .read_status(self.authorized(
                 bearer,
                 proto::ControlJsonRequest {
                     request_json: encode(request)?,

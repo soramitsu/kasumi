@@ -12,7 +12,7 @@ use kasumi_store::{FileKeyProvider, NodeStore, StorageAccess, TenantStore, priva
 use kasumi_types::{Action, CreateCredential, CredentialResource, Grant, Policy};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -105,12 +105,12 @@ pub struct ClientProfile {
     pub tenant: String,
     pub resource: CredentialResource,
     pub native_endpoint: String,
-    pub admin_endpoint: String,
+    #[serde(deserialize_with = "kasumi_types::deserialize_u64_map")]
+    pub administrative_members: BTreeMap<u64, crate::serving_runtime::AuthorityEndpoint>,
     pub mcp_endpoint: String,
     pub identity: TlsFiles,
     pub server_ca: PathBuf,
     pub native_certificate_pin: String,
-    pub admin_certificate_pin: String,
     pub bearer_file: PathBuf,
 }
 impl ClientProfile {
@@ -121,20 +121,43 @@ impl ClientProfile {
             "unsupported client profile"
         );
         profile.resource.validate()?;
+        crate::installed_clients::validate(&profile.administrative_members)?;
         kasumi_types::validate_name(&profile.tenant)?;
         Ok(profile)
     }
+    pub fn administrative_member(&self) -> Result<&crate::serving_runtime::AuthorityEndpoint> {
+        crate::installed_clients::validate(&self.administrative_members)?;
+        ensure!(
+            self.administrative_members.len() == 1,
+            "this member-specific operation requires a profile with exactly one administrative member"
+        );
+        Ok(self.administrative_members.values().next().unwrap())
+    }
+    pub fn administrative_connections(
+        &self,
+    ) -> Result<BTreeMap<u64, kasumi_client::KasumiClientConfig>> {
+        crate::installed_clients::connections(
+            &self.administrative_members,
+            &self.identity,
+            &self.server_ca,
+        )
+    }
     pub fn connection(&self, administrative: bool) -> Result<kasumi_client::KasumiClientConfig> {
-        let (endpoint, pin) = if administrative {
-            (&self.admin_endpoint, &self.admin_certificate_pin)
-        } else {
-            (&self.native_endpoint, &self.native_certificate_pin)
-        };
+        if administrative {
+            self.administrative_member()?;
+            return Ok(self
+                .administrative_connections()?
+                .into_values()
+                .next()
+                .unwrap());
+        }
         Ok(kasumi_client::KasumiClientConfig {
-            endpoint: endpoint.clone(),
+            endpoint: self.native_endpoint.clone(),
             identity: self.identity.load()?,
             trusted_ca_pem: crate::runtime::read_bounded(&self.server_ca, 1 << 20)?,
-            server_certificate_pins: BTreeSet::from([crate::runtime::parse_certificate_pin(pin)?]),
+            server_certificate_pins: BTreeSet::from([crate::runtime::parse_certificate_pin(
+                &self.native_certificate_pin,
+            )?]),
         })
     }
     pub fn bearer(&self) -> Result<zeroize::Zeroizing<String>> {
@@ -616,6 +639,7 @@ async fn rotate_certificates_owned(configuration: &Path) -> Result<serde_json::V
                 certificate: root.join("profiles/client.pem"),
                 private_key: root.join("profiles/client-key.pem"),
             };
+            let old_admin_pin = hex::encode(config.admin.tls.load()?.certificate_pin());
             let mut replacements = Vec::with_capacity(4);
             for (name, files, client_auth) in [
                 ("mcp", &config.mcp.tls, false),
@@ -689,7 +713,11 @@ async fn rotate_certificates_owned(configuration: &Path) -> Result<serde_json::V
                     && let Ok(mut profile) = ClientProfile::load(&path)
                 {
                     profile.native_certificate_pin = native_pin.clone();
-                    profile.admin_certificate_pin = admin_pin.clone();
+                    for member in profile.administrative_members.values_mut() {
+                        if member.certificate_pins.remove(&old_admin_pin) {
+                            member.certificate_pins.insert(admin_pin.clone());
+                        }
+                    }
                     private_files::replace(&path, &serde_json::to_vec_pretty(&profile)?)?;
                 }
             }
@@ -990,12 +1018,17 @@ async fn initialize_owned(
                     tenant: tenant.into(),
                     resource,
                     native_endpoint: "https://localhost:9444".into(),
-                    admin_endpoint: "https://localhost:9445".into(),
+                    administrative_members: BTreeMap::from([(
+                        1,
+                        crate::serving_runtime::AuthorityEndpoint {
+                            endpoint: "https://localhost:9445".into(),
+                            certificate_pins: BTreeSet::from([admin_pin.clone()]),
+                        },
+                    )]),
                     mcp_endpoint: "https://localhost:9443/mcp".into(),
                     identity: client_identity.clone(),
                     server_ca: tls.join("ca.pem"),
                     native_certificate_pin: native_pin.clone(),
-                    admin_certificate_pin: admin_pin.clone(),
                     bearer_file,
                 };
                 private_files::create(

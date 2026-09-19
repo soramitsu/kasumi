@@ -19,6 +19,7 @@ pub(crate) struct SnapshotAccounting {
     recovery_operations: usize,
     recovery_phases: usize,
     recovery_targets: usize,
+    recovery_completion_history: usize,
 }
 pub(crate) fn encoded_len(value: &impl Serialize) -> Result<usize> {
     struct Counter(usize);
@@ -200,6 +201,12 @@ fn recovery_operation(key: &str, value: &RecoveryRecord) -> Result<usize> {
 fn recovery_phase(key: &str, value: &RecoveryPhaseRecord) -> Result<usize> {
     record(&Record::RecoveryPhase(key.into(), Box::new(value.clone())))
 }
+fn recovery_completion_history(key: &str, value: &RecoveryCompletionHistory) -> Result<usize> {
+    record(&Record::RecoveryCompletionHistory(
+        key.into(),
+        Box::new(value.clone()),
+    ))
+}
 fn recovery_target(key: &str, value: &uuid::Uuid) -> Result<usize> {
     record(&Record::RecoveryTarget(key.into(), *value))
 }
@@ -260,6 +267,12 @@ impl SnapshotAccounting {
             &Default::default(),
             &state.recovery_control.phases,
             recovery_phase,
+        )?;
+        map_changes(
+            &mut result.recovery_completion_history,
+            &Default::default(),
+            &state.recovery_control.completion_history,
+            recovery_completion_history,
         )?;
         map_changes(
             &mut result.recovery_targets,
@@ -427,6 +440,12 @@ impl SnapshotAccounting {
             recovery_phase,
         )?;
         map_changes(
+            &mut result.recovery_completion_history,
+            &previous.recovery_control.completion_history,
+            &next.recovery_control.completion_history,
+            recovery_completion_history,
+        )?;
+        map_changes(
             &mut result.recovery_targets,
             &previous.recovery_control.targets,
             &next.recovery_control.targets,
@@ -504,6 +523,7 @@ impl SnapshotAccounting {
             self.recovery_operations,
             self.recovery_phases,
             self.recovery_targets,
+            self.recovery_completion_history,
         ] {
             change(&mut total, 0, size)?;
         }

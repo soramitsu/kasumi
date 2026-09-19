@@ -1,7 +1,7 @@
 # Restore admission for permanent point history
 
 This first-release change replaces the tenant logical codec directly with
-`KASUMIT6`. There is no T4/T5 reader or conversion path. Each nonterminal frame is
+`KASUMIT7`. There is no T4/T5 reader or conversion path. Each nonterminal frame is
 `u64 payload_bytes | u8 semantic_rank | canonical_json`; the zero-length footer
 still verifies exact 64-bit count, framed bytes, digest and EOF. The outer bundle
 also checks its logical/archive counts and digest. Encrypted envelopes and

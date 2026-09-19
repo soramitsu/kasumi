@@ -427,8 +427,8 @@ class Runner:
             connection.connect()
             require(connection.sock.version() == "TLSv1.3", "unexpected TLS protocol")
             pin = hashlib.sha256(connection.sock.getpeercert(binary_form=True)).hexdigest()
-            expected_pin = profile["admin_certificate_pin"] if endpoint == profile["admin_endpoint"] else self.mcp_pin
-            require(pin == expected_pin, "installed TLS leaf pin differs")
+            expected_pin = profile["administrative_members"]["1"]["certificate_pins"] if endpoint == profile["administrative_members"]["1"]["endpoint"] else [self.mcp_pin]
+            require(pin in expected_pin, "installed TLS leaf pin differs")
             request_headers = {"Authorization": "Bearer " + bearer(profile["bearer_file"]),
                                "Accept": "application/json", **(headers or {})}
             connection.request(method, path, body=None if data is None else json.dumps(data), headers=request_headers)
@@ -448,7 +448,7 @@ class Runner:
             while time.monotonic() < deadline:
                 require(self.daemon.process.poll() is None, "daemon exited before protected readiness")
                 try:
-                    code, body, tls = self.http(self.control, self.control["admin_endpoint"], "/ready")
+                    code, body, tls = self.http(self.control, self.control["administrative_members"]["1"]["endpoint"], "/ready")
                     observations.append({"status": code, "body_sha256": hashlib.sha256(body).hexdigest(), **tls})
                     if code == 200:
                         value = json.loads(body)
@@ -551,8 +551,8 @@ class Runner:
             for path in (profile_file, control_file):
                 profile = read_json(path)
                 profile.update(native_endpoint=f"https://localhost:{ports['native']}",
-                               admin_endpoint=f"https://localhost:{ports['admin']}",
                                mcp_endpoint=config["mcp"]["protocol"]["public_url"])
+                profile["administrative_members"]["1"]["endpoint"] = f"https://localhost:{ports['admin']}"
                 write_json(path, profile)
             profile, self.control = read_json(profile_file), read_json(control_file)
             self.record["ports"] = ports
@@ -565,9 +565,9 @@ class Runner:
         # as a failed startup, never repaired by silently changing identities.
         self.start("daemon-initial")
         admin_file = self.output / "admin.json"
-        write_json(admin_file, {"endpoint": profile["admin_endpoint"], "identity": profile["identity"],
+        write_json(admin_file, {"endpoint": profile["administrative_members"]["1"]["endpoint"], "identity": profile["identity"],
                                "server_ca": profile["server_ca"],
-                               "server_certificate_pins": [profile["admin_certificate_pin"]],
+                               "server_certificate_pins": profile["administrative_members"]["1"]["certificate_pins"],
                                "token_file": profile["bearer_file"]})
         self.command("create-collection", [self.binaries["kasumictl"], "--config", admin_file,
                                            "create-collection", self.output / "collection.json"])

@@ -259,7 +259,9 @@ impl TenantEngine {
         let mut next = baseline.clone();
         let changed = batch_changes(batch);
         let attempt = (|| -> Result<(WriteReceipt, Arc<QueryIndexes>)> {
-            let receipt = apply_batch(&mut next, batch, revision, command.timestamp_ms)?;
+            let receipt = apply_batch(
+                &mut next, batch, revision, command.timestamp_ms, &previous.indexes,
+            )?;
             previous.indexes.validate_unique_changes(
                 &state.collections,
                 &next.collections,

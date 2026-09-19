@@ -32,7 +32,8 @@ async fn backup(root: &Path) -> (PathBuf, LocalRecoveryStart, ClientProfile) {
     .unwrap();
     profile.mcp_endpoint = config.mcp.protocol.public_url.clone();
     profile.native_endpoint = format!("https://localhost:{}", config.native.listen.port());
-    profile.admin_endpoint = format!("https://localhost:{}", config.admin.listen.port());
+    profile.administrative_members.get_mut(&1).unwrap().endpoint =
+        format!("https://localhost:{}", config.admin.listen.port());
     private_files::replace(
         &installed.configuration,
         &serde_json::to_vec_pretty(&config).unwrap(),

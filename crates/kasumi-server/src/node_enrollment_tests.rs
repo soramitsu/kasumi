@@ -187,6 +187,31 @@ async fn explicit_tenant_dispatch_and_prepared_outcome_never_restore_creation_pe
     };
     assert!(tenant_record(&store, &proposal.tenant)?.is_none());
     let original = dispatch_tenant(&store, proposal.clone(), "exact-original-request".into())?;
+    let encoded = serde_json::to_vec(&original)?;
+    let from_bytes: tenants::TenantRecord = serde_json::from_slice(&encoded)?;
+    let from_value: tenants::TenantRecord =
+        serde_json::from_value(serde_json::to_value(&original)?)?;
+    for decoded in [from_bytes, from_value] {
+        assert_eq!(serde_json::to_vec(&decoded)?, encoded);
+        decoded.require_proposal(&proposal)?;
+    }
+    let encoded_text = std::str::from_utf8(&encoded)?;
+    let valid_nodes = serde_json::to_string(&proposal.nodes)?;
+    let node = serde_json::to_string(&proposal.nodes[&1])?;
+    for invalid in [
+        format!("{{\"01\":{node}}}"),
+        format!("{{\"+1\":{node}}}"),
+        format!("{{\"-1\":{node}}}"),
+        format!("{{\"18446744073709551616\":{node}}}"),
+        format!("{{\"1\":{node},\"1\":{node}}}"),
+    ] {
+        let replaced = encoded_text.replace(
+            &format!("\"nodes\":{valid_nodes}"),
+            &format!("\"nodes\":{invalid}"),
+        );
+        assert_ne!(replaced, encoded_text);
+        assert!(serde_json::from_str::<tenants::TenantRecord>(&replaced).is_err());
+    }
     let before = records(&store)?;
     assert!(dispatch_tenant(&store, proposal.clone(), "retry".into()).is_err());
     assert_eq!(records(&store)?, before);

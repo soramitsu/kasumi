@@ -77,10 +77,10 @@ Use the existing mTLS management endpoint with the private Control credential. A
 
 | AdminClientConfig field | Control profile field |
 | --- | --- |
-| `endpoint` | `admin_endpoint` |
+| `endpoint` | The selected `administrative_members` entry’s `endpoint` |
 | `identity` | `identity` |
 | `server_ca` | `server_ca` |
-| `server_certificate_pins` | Array containing `admin_certificate_pin` |
+| `server_certificate_pins` | The selected `administrative_members` entry’s `certificate_pins` array |
 | `token_file` | `bearer_file` |
 
 Store the client configuration as an owner-only file. For each operation, write the

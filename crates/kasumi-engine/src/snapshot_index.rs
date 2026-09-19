@@ -81,6 +81,21 @@ impl StagedSnapshot {
                         &(18, record.operation_id.to_string(), String::new()),
                     )?;
                 }
+                Record::RecoveryCompletionHistory(_, history) => {
+                    require(
+                        &index,
+                        &(18, history.operation_id.to_string(), String::new()),
+                    )?;
+                    require(
+                        &index,
+                        &(19, history.scope.intent.to_string(), String::new()),
+                    )?;
+                    require(&index, &(19, history.terminal.to_string(), String::new()))?;
+                    require(
+                        &index,
+                        &(19, history.successor_intent.to_string(), String::new()),
+                    )?;
+                }
                 Record::RecoveryTarget(_, operation) => {
                     require(&index, &(18, operation.to_string(), String::new()))?;
                 }

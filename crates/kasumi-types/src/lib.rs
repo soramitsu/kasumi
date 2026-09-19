@@ -1,5 +1,7 @@
 //! Transport-independent, exact JSON contracts shared by every Kasumi interface.
 pub mod drain;
+mod ordered_seek;
+pub use ordered_seek::*;
 mod security_audit;
 pub use security_audit::*;
 mod audit;
@@ -7,7 +9,7 @@ pub use audit::*;
 mod canonical_json;
 pub use canonical_json::CanonicalJsonValue;
 mod canonical_keys;
-pub use canonical_keys::deserialize_u64_map;
+pub use canonical_keys::{deserialize_u16_map, deserialize_u64_map};
 mod target;
 pub use target::*;
 mod target_completion;

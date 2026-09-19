@@ -121,6 +121,8 @@ pub struct ClusterNetwork {
     clients: BTreeMap<u64, PeerClient>,
     certificate_nodes: BTreeMap<CertificatePin, u64>,
     groups: RwLock<BTreeMap<String, GroupRoute>>,
+    #[cfg(test)]
+    test_isolated_groups: RwLock<BTreeSet<String>>,
     server_tls: Arc<rustls::ServerConfig>,
     incoming: Arc<Semaphore>,
     outgoing: Arc<Semaphore>,
@@ -237,6 +239,8 @@ impl ClusterNetwork {
             clients,
             certificate_nodes,
             groups: RwLock::new(BTreeMap::new()),
+            #[cfg(test)]
+            test_isolated_groups: RwLock::new(BTreeSet::new()),
             server_tls: server_config(identity, ClientAuthentication::Required { trusted_ca_pem })?,
             incoming: Arc::new(Semaphore::new(limits.max_inflight_requests)),
             outgoing: Arc::new(Semaphore::new(limits.max_inflight_requests)),
@@ -464,6 +468,20 @@ impl ClusterNetwork {
         Ok(())
     }
 
+    /// Test-only network partition, retained when a phase reopens its Raft route.
+    /// It can only deny peer traffic; configured and durable admission still apply.
+    #[cfg(test)]
+    pub(crate) fn set_test_group_isolated(&self, group: &str, isolated: bool) -> Result<()> {
+        let mut groups = self.test_isolated_groups.write()
+            .map_err(|_| anyhow::anyhow!("test network partition unavailable"))?;
+        if isolated {
+            groups.insert(group.into());
+        } else {
+            groups.remove(group);
+        }
+        Ok(())
+    }
+
     /// Install a durable membership/revocation check in addition to static pins.
     pub fn install_group_peer_fence(&self, group: &str, fence: PeerAccessFence) -> Result<()> {
         let mut groups = self
@@ -503,6 +521,13 @@ impl ClusterNetwork {
         if let Some(fence) = &route.peer_fence {
             fence(peer)?;
         }
+        #[cfg(test)]
+        ensure!(
+            peer == self.local_node_id || !self.test_isolated_groups.read()
+                .map_err(|_| anyhow::anyhow!("test network partition unavailable"))?
+                .contains(group),
+            "test network partition blocks this group peer"
+        );
         Ok(route.raft.clone())
     }
 }

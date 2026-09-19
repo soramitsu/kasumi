@@ -641,7 +641,7 @@ pub async fn status(configuration: &Path, operation: Uuid) -> Result<LocalRecove
 
 async fn status_owned(configuration: &Path, operation: Uuid) -> Result<LocalRecoveryStatus> {
     let mut operator = Operator::open(configuration).await?;
-    let result = (|| {
+    let result: Result<LocalRecoveryStatus> = (|| {
         let journal = record(operator.store(), operation)?;
         operator.validate(&journal)?;
         Ok(journal.status)
@@ -1495,7 +1495,15 @@ impl Operator {
             tenant: journal.status.request.tenant.clone(),
             resource,
             native_endpoint: format!("https://localhost:{}", self.config.native.listen.port()),
-            admin_endpoint: format!("https://localhost:{}", self.config.admin.listen.port()),
+            administrative_members: std::collections::BTreeMap::from([(
+                1,
+                crate::serving_runtime::AuthorityEndpoint {
+                    endpoint: format!("https://localhost:{}", self.config.admin.listen.port()),
+                    certificate_pins: std::collections::BTreeSet::from([hex::encode(
+                        self.config.admin.tls.load()?.certificate_pin(),
+                    )]),
+                },
+            )]),
             mcp_endpoint: self.config.mcp.protocol.public_url.clone(),
             identity: crate::runtime::TlsFiles {
                 certificate: root.join("profiles/client.pem"),
@@ -1503,7 +1511,6 @@ impl Operator {
             },
             server_ca: root.join("tls/ca.pem"),
             native_certificate_pin: hex::encode(self.config.native.tls.load()?.certificate_pin()),
-            admin_certificate_pin: hex::encode(self.config.admin.tls.load()?.certificate_pin()),
             bearer_file,
         };
         private_files::replace(&profile_path, &encoded(&profile)?)?;

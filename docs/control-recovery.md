@@ -96,11 +96,11 @@ policy/quorum release fences through serialization.
 
 ```sh
 kasumid control-recovery configuration-digest /private/node.json city
-kasumid control-recovery start /private/control-profile.json /private/start.json /private/start-attempt.json
-kasumid control-recovery status /private/control-profile.json OPERATION_UUID
-kasumid control-recovery resume /private/control-profile.json OPERATION_UUID 2
-kasumid control-recovery phase /private/control-profile.json OPERATION_UUID PHASE_UUID
-kasumid control-recovery stop /private/control-profile.json OPERATION_UUID /private/stop-attempt.json
+kasumid control-recovery start /private/control-profile.json /private/start.json /private/start-attempt.json 5000
+kasumid control-recovery status /private/control-profile.json OPERATION_UUID 5000
+kasumid control-recovery resume /private/control-profile.json OPERATION_UUID 2 60000
+kasumid control-recovery phase /private/control-profile.json OPERATION_UUID PHASE_UUID 5000
+kasumid control-recovery stop /private/control-profile.json OPERATION_UUID /private/stop-attempt.json 5000
 ```
 
 The start request contains an explicit operation UUID. The CLI durably writes the
@@ -165,3 +165,18 @@ rejection of the former application token. A complete coordinator-driven planned
 recovery with all target processes remains an acceptance gate.
 Actual encrypted target execution has separate target-runner tests. These checks
 do not substitute for the planned final multi-process recovery acceptance run.
+
+The Control profile installs `administrative_members`, a closed map from nonzero
+member IDs to HTTPS origins and explicit certificate pin sets. Target recovery
+installs the corresponding `control_endpoints` map. Planned source and custody
+services each install their own `members`, TLS identity, CA and credential file;
+source and custody credential files remain independent. All members are included
+in the frozen dispatch or CLI attempt binding. Peer replies cannot add routes.
+
+Every network command takes a final `TIMEOUT_MS` argument (1 to 600000). One
+suspend-aware budget covers connection and endpoint attempts. Credentials are
+loaded once for that invocation. Read, start, stop and exact retirement retries
+retain their original identities. An ambiguous `resume` returns to the operator;
+it is never redispatched automatically because its work limit could advance
+additional phases. Read status and explicitly resume the same durable operation.
+Existing phase deadlines and target admission remain authoritative.

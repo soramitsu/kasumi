@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 use anyhow::{Context, Result, bail};
 use kasumi_server::runtime::{NodeRuntime, RuntimeConfig, example_config};
 

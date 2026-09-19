@@ -9,6 +9,7 @@ pub(crate) struct Proposal {
     pub format: u32,
     pub tenant: String,
     pub route: kasumi_engine::control::TenantRoute,
+    #[serde(deserialize_with = "kasumi_types::deserialize_u64_map")]
     pub nodes: BTreeMap<u64, kasumi_engine::control::ControlNode>,
     pub initial_policy: kasumi_types::Policy,
     pub initial_limits: kasumi_types::Limits,

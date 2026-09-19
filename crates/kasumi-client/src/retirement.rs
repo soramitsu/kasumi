@@ -53,7 +53,7 @@ impl KasumiAdminClient {
         reference.validate().map_err(invalid)?;
         let response = self
             .inner
-            .read_custody(authorized(
+            .read_custody(self.authorized(
                 bearer,
                 proto::RetirementReference {
                     request_json: encode(reference)?,
@@ -77,7 +77,7 @@ impl KasumiAdminClient {
         request.validate().map_err(invalid)?;
         let response = self
             .inner
-            .execute_custody(authorized(
+            .execute_custody(self.authorized(
                 bearer,
                 proto::CustodyCommandRequest {
                     request_json: encode(request)?,
@@ -105,13 +105,15 @@ impl KasumiAdminClient {
         request: &RetireSourceRequest,
     ) -> Result<VerifiedRetirementReceipt, ClientError> {
         let reference = request.reference().map_err(invalid)?;
-        let mut wire = authorized(
+        let mut wire = self.authorized(
             bearer,
             proto::RetireSourceRequest {
                 request_json: encode(request)?,
             },
         )?;
-        wire.set_timeout(std::time::Duration::from_secs(310));
+        if self.deadline.is_none() {
+            wire.set_timeout(std::time::Duration::from_secs(310));
+        }
         let response = self.inner.retire_source(wire).await?.into_inner();
         let proof = verified(&response.response_json, &reference)?;
         if proof.checkpoint() != &request.checkpoint
@@ -131,7 +133,7 @@ impl KasumiAdminClient {
         reference.validate().map_err(invalid)?;
         let response = self
             .inner
-            .retirement_status(authorized(
+            .retirement_status(self.authorized(
                 bearer,
                 proto::RetirementReference {
                     request_json: encode(reference)?,
@@ -150,7 +152,7 @@ impl KasumiAdminClient {
         let reference = request.reference().map_err(invalid)?;
         let response = self
             .inner
-            .abort_retirement(authorized(
+            .abort_retirement(self.authorized(
                 bearer,
                 proto::RetireSourceRequest {
                     request_json: encode(request)?,
@@ -191,7 +193,7 @@ impl KasumiAdminClient {
         reference.validate().map_err(invalid)?;
         let response = self
             .inner
-            .verify_retirement_receipt(authorized(
+            .verify_retirement_receipt(self.authorized(
                 bearer,
                 proto::RetirementReference {
                     request_json: encode(reference)?,

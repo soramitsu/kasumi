@@ -6,7 +6,7 @@ are rejected. `Limits.max_snapshot_bytes` is a checked `u64` resource quota;
 there is no 2 GiB format ceiling. Documents, requests, transactions, individual
 records, results and admitted node work retain independent bounds.
 
-Tenant images begin with `KASUMIT6`. Every record has an eight-byte big-endian
+Tenant images begin with `KASUMIT7`. Every record has an eight-byte big-endian
 payload length, one explicit category byte, then canonical JSON. The category
 byte is included in the digest and must equal the decoded semantic record kind
 before the record reaches a resident-state or permanent-table consumer. Records explicitly identify metadata,
@@ -97,7 +97,7 @@ in backup/replacement workflows before their pruning transitions become usable.
 
 Application Raft backends use the canonical `KASUMID1` dependency bundle inside
 `KASUMIS2`. A bounded canonical source-purpose header precedes 64 KiB frames of
-`KASUMIT6`, an explicit logical-stream terminator, and the audit ciphertext chain
+`KASUMIT7`, an explicit logical-stream terminator, and the audit ciphertext chain
 in reverse sequence order. Each archive record is at most 8 MiB. The final record
 binds checked logical/archive byte and record totals and the complete bundle
 digest; missing dependencies, extra records and logical-only transport are

@@ -3,7 +3,7 @@
 use crate::runtime::{DeploymentMode, RuntimeConfig};
 use anyhow::{Context, Result, ensure};
 use kasumi_engine::control::{
-    ControlNode, ControlTopology, DeploymentMode as RouteMode, TenantRoute,
+    ControlTopology, DeploymentMode as RouteMode, TenantRoute,
 };
 use kasumi_engine::{
     ControlGenesis, ControlLifecycleGenesis, ReplicatedBootstrap, ReplicatedGenesis,
@@ -20,26 +20,7 @@ pub(crate) fn bootstrap(config: &RuntimeConfig) -> Result<ReplicatedBootstrap> {
         .as_ref()
         .context("Control genesis peers missing")?;
     let voters = replication.voters()?;
-    let nodes = replication
-        .peers
-        .iter()
-        .map(|peer| {
-            Ok((
-                peer.node_id,
-                ControlNode {
-                    endpoint: url::Url::parse(&peer.endpoint)?
-                        .origin()
-                        .ascii_serialization(),
-                    failure_domain: peer.failure_domain.clone(),
-                    certificate_pins: peer
-                        .certificate_pins
-                        .iter()
-                        .map(|pin| pin.to_ascii_lowercase())
-                        .collect(),
-                },
-            ))
-        })
-        .collect::<Result<BTreeMap<_, _>>>()?;
+    let nodes = replication.control_nodes()?;
     let tenants = config
         .tenants
         .iter()

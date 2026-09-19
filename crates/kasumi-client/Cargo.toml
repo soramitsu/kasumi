@@ -16,6 +16,7 @@ kasumi-types.workspace = true
 kasumi-serving.workspace = true
 kasumi-clock.workspace = true
 hex.workspace = true
+sha2.workspace = true
 kasumi-transport.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }

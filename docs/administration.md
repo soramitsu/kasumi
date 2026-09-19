@@ -87,10 +87,10 @@ mode; it requires the complete issuer drain and cannot claim source retirement
 evidence. Never reuse a source credential to authorize the target.
 
 ```sh
-kasumid control-recovery start /private/control-profile.json /private/start.json /private/start-attempt.json
-kasumid control-recovery status /private/control-profile.json OPERATION_UUID
-kasumid control-recovery resume /private/control-profile.json OPERATION_UUID 2
-kasumid control-recovery stop /private/control-profile.json OPERATION_UUID /private/stop-attempt.json
+kasumid control-recovery start /private/control-profile.json /private/start.json /private/start-attempt.json 5000
+kasumid control-recovery status /private/control-profile.json OPERATION_UUID 5000
+kasumid control-recovery resume /private/control-profile.json OPERATION_UUID 2 60000
+kasumid control-recovery stop /private/control-profile.json OPERATION_UUID /private/stop-attempt.json 5000
 ```
 
 Persist the original start/stop attempt files and resolve their retained

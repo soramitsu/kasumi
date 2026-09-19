@@ -34,7 +34,7 @@ The current head records the initial table budget and last budget operation;
 snapshots validate every historical completion predecessor and budget
 compare-and-set with bounded encrypted per-origin cursors. Both target terminal
 storage and canonical snapshot formats replace the preceding development format
-directly (`KASUMI_TARGET_V2`, `KASUMIT6`). No preceding decoder is retained.
+directly (`KASUMI_TARGET_V2`, `KASUMIT7`). No preceding decoder is retained.
 
 A distinct `InspectCompletionAttempt` phase recovers a positive original
 preparation after a lost reply, including after the original credential and
@@ -107,3 +107,21 @@ Only direct Rust 1.97.1 rustfmt and whitespace checks have been run for this
 source. Compilation and all functional tests require the scheduled frozen
 validation cohort; earlier prepared-prefix check evidence is not evidence for
 this combined source.
+
+## Linked coordinator completion attempts
+
+A positive sealed native resolution authorizes a distinct logical Complete whose
+canonical input names that exact predecessor. The previous intent, dispatch cap
+and terminal outcome remain permanent. Missing or committed terminal evidence
+cannot authorize a successor. The current recovery head contains bounded point
+references; closed completion cursors have separate immutable native records.
+Every Complete phase names its exact original scope, so later preparation and
+activation cannot change historical proof interpretation. Stopping an unresolved
+Control birth preserves its exact input without installing a successor.
+
+Canonical tenant streams include a separate closed-completion record at rank23.
+Encoding, full decoding, point indexing and incremental resident accounting all
+include these records. Application backups reject them. Snapshot advancement
+preserves every previous phase and closed cursor and permits current cursor
+rotation only along the exact positively sealed predecessor chain. This is a
+first-release direct contract change; no prior stream decoder is retained.

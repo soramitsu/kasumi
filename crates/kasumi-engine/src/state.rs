@@ -10,7 +10,7 @@ mod snapshot_bundle;
 pub(crate) mod snapshot_validation;
 use crate::accounting::{SnapshotAccounting, encoded_len};
 use arc_swap::ArcSwapOption;
-use kasumi_query::{QueryIndexes, check_unique, validate_collection, validate_document};
+use kasumi_query::{QueryIndexes, check_unique, validate_collection};
 use kasumi_types::*;
 use sha2::{Digest, Sha256};
 pub use snapshot_api::PreparedSnapshotRestore;
@@ -87,6 +87,8 @@ impl Generation {
 /// Only ordered consensus application may publish generations.
 pub struct TenantEngine {
     current: ArcSwapOption<Generation>,
+    #[cfg(any(test, feature = "test-utils"))]
+    sealed_restore_observation: Mutex<Option<Option<kasumi_types::PendingRestore>>>,
     pub(crate) leases: lease_retention::LeaseManager,
     apply_lock: Mutex<()>,
     tenant: String,
@@ -645,6 +647,8 @@ impl TenantEngine {
                 _read_reservations: vec![],
             }),
             apply_lock: Mutex::new(()),
+            #[cfg(any(test, feature = "test-utils"))]
+            sealed_restore_observation: Mutex::new(None),
             tenant,
             incarnation,
             revision_base,
@@ -695,6 +699,8 @@ impl TenantEngine {
             restoration_identity: staged_digest(&(&state.restored_from, &state.restore_lineage))?.0,
             bootstrap_sha256: std::sync::OnceLock::new(),
             apply_lock: Mutex::new(()),
+            #[cfg(any(test, feature = "test-utils"))]
+            sealed_restore_observation: Mutex::new(None),
             current: ArcSwapOption::empty(),
         };
         let generation = engine.prepare_state(state, receipts, terminals, target_resolutions)?;
@@ -858,6 +864,16 @@ impl TenantEngine {
         Ok((image, engine))
     }
 
+    /// Inspect only the committed restore marker in native recovery tests.
+    /// This cannot open storage, expose a generation, renew a serving lease, or
+    /// authorize an operation. Normal generation() remains access-fenced.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn fixture_pending_restore(&self) -> Result<Option<kasumi_types::PendingRestore>> {
+        self.current.load().as_ref()
+            .map(|generation| generation.state.pending_restore.clone())
+            .ok_or_else(|| Error::new(ErrorCode::Sealed, "fixture engine state is closed"))
+    }
+
     pub fn generation(&self) -> Result<Arc<Generation>> {
         if let Some(access) = self.access.get() {
             access.check().map_err(|_| {
@@ -891,6 +907,8 @@ impl TenantEngine {
             restoration_identity: staged_digest(&(&state.restored_from, &state.restore_lineage))?.0,
             bootstrap_sha256: std::sync::OnceLock::new(),
             apply_lock: Mutex::new(()),
+            #[cfg(any(test, feature = "test-utils"))]
+            sealed_restore_observation: Mutex::new(None),
             current: ArcSwapOption::empty(),
         };
         let decoded = crate::snapshot_codec::read(_bytes.disk(), &mut _bytes.reader())
@@ -904,12 +922,27 @@ impl TenantEngine {
         Ok(())
     }
 
+    /// Metadata captured from the actual committed generation under the seal
+    /// apply fence. No storage, serving lease or generation handle is retained.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn fixture_pending_restore_at_seal(&self) -> Result<Option<kasumi_types::PendingRestore>> {
+        self.sealed_restore_observation.lock()
+            .unwrap_or_else(|p| p.into_inner()).clone()
+            .ok_or_else(|| Error::new(ErrorCode::Sealed, "no sealed restore observation"))
+    }
+
     /// Drop resident state under the apply fence. Already returned client data cannot be recalled.
     pub fn seal(&self) {
         let _guard = self
             .apply_lock
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        #[cfg(any(test, feature = "test-utils"))]
+        if let Some(generation) = self.current.load().as_ref() {
+            *self.sealed_restore_observation.lock()
+                .unwrap_or_else(|p| p.into_inner()) =
+                Some(generation.state.pending_restore.clone());
+        }
         self.publish_generation(None);
         self.audit_maintenance
             .lock()
@@ -2052,6 +2085,7 @@ fn apply_batch(
     batch: &MutationBatch,
     revision: u64,
     evaluated_at_ms: u64,
+    indexes: &QueryIndexes,
 ) -> Result<WriteReceipt> {
     if batch.operations.len() > state.limits.max_batch_operations
         || encoded_len(batch)? > state.limits.max_batch_bytes
@@ -2072,6 +2106,7 @@ fn apply_batch(
         &batch.operations.iter().collect::<Vec<_>>(),
         revision,
         true,
+        indexes,
     )
 }
 
@@ -2080,6 +2115,7 @@ fn apply_mutations(
     operations: &[&Mutation],
     revision: u64,
     include_versions: bool,
+    indexes: &QueryIndexes,
 ) -> Result<WriteReceipt> {
     let mut targets = BTreeSet::new();
     let mut versions = BTreeMap::new();
@@ -2132,7 +2168,7 @@ fn apply_mutations(
                         "document exceeds byte limit",
                     ));
                 }
-                validate_document(&collection.definition, body)?;
+                indexes.validate_document(&collection.definition, body)?;
                 if old.is_none() {
                     state.document_count += 1;
                 }

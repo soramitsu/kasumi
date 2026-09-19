@@ -10,6 +10,22 @@ use std::{
 const MAX_SCHEMA_BYTES: usize = 256 * 1024;
 const MAX_DEPTH: usize = 48;
 
+#[cfg(test)]
+thread_local! {
+    static COMPILATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn compilation_count() -> usize {
+    COMPILATIONS.with(std::cell::Cell::get)
+}
+
+pub(crate) fn schema_sha256(schema: &Value) -> Result<[u8; 32]> {
+    serde_json::to_vec(schema)
+        .map(|encoded| Sha256::digest(encoded).into())
+        .map_err(|e| invalid(e.to_string()))
+}
+
 fn inspect(value: &Value, depth: usize, nodes: &mut usize) -> Result<()> {
     *nodes += 1;
     if depth > MAX_DEPTH || *nodes > 20_000 {
@@ -132,6 +148,8 @@ pub(crate) fn compile(schema: &Value) -> Result<Arc<jsonschema::Validator>> {
     {
         return Ok(validator);
     }
+    #[cfg(test)]
+    COMPILATIONS.with(|count| count.set(count.get() + 1));
     jsonschema::draft202012::meta::validate(schema)
         .map_err(|e| invalid(format!("invalid schema: {e}")))?;
     let validator = Arc::new(
@@ -153,14 +171,36 @@ pub(crate) fn compile(schema: &Value) -> Result<Arc<jsonschema::Validator>> {
 }
 
 pub fn validate_document(definition: &CollectionDefinition, body: &Value) -> Result<()> {
+    validate_document_shape(body)?;
+    let validator = compile(&definition.schema)?;
+    validate_document_fields(definition, body, &validator)
+}
+
+pub(crate) fn validate_document_with_validator(
+    definition: &CollectionDefinition,
+    body: &Value,
+    validator: &jsonschema::Validator,
+) -> Result<()> {
+    validate_document_shape(body)?;
+    validate_document_fields(definition, body, validator)
+}
+
+fn validate_document_shape(body: &Value) -> Result<()> {
     if !body.is_object() {
         return Err(Error::new(
             ErrorCode::SchemaViolation,
             "document body must be a JSON object",
         ));
     }
-    inspect(body, 0, &mut 0)?;
-    compile(&definition.schema)?.validate(body).map_err(|e| {
+    inspect(body, 0, &mut 0)
+}
+
+fn validate_document_fields(
+    definition: &CollectionDefinition,
+    body: &Value,
+    validator: &jsonschema::Validator,
+) -> Result<()> {
+    validator.validate(body).map_err(|e| {
         Error::new(
             ErrorCode::SchemaViolation,
             format!("{}: {}", e.instance_path(), e.masked()),
@@ -184,13 +224,20 @@ pub fn validate_collection(
     definition: &CollectionDefinition,
     documents: &imbl::OrdMap<String, std::sync::Arc<Document>>,
 ) -> Result<()> {
+    validate_collection_and_compile(definition, documents).map(|_| ())
+}
+
+pub(crate) fn validate_collection_and_compile(
+    definition: &CollectionDefinition,
+    documents: &imbl::OrdMap<String, std::sync::Arc<Document>>,
+) -> Result<Arc<jsonschema::Validator>> {
     validate_name(&definition.name)?;
     if definition.retention_class == CollectionRetentionClass::ArchivableHistory
         && definition.write_mode != CollectionWriteMode::AppendOnly
     {
         return Err(invalid("archivable history must be append-only"));
     }
-    let _validator = compile(&definition.schema)?;
+    let validator = compile(&definition.schema)?;
     if definition.indexes.len() > 64 {
         return Err(invalid("a collection supports at most 64 indexes"));
     }
@@ -240,7 +287,7 @@ pub fn validate_collection(
         if id != &document.id {
             return Err(invalid("document map key differs from its id"));
         }
-        validate_document(definition, &document.body)?;
+        validate_document_with_validator(definition, &document.body, &validator)?;
     }
     check_unique(&CollectionState {
         archived_documents: Default::default(),
@@ -248,7 +295,8 @@ pub fn validate_collection(
         data_epoch: 0,
         definition: definition.clone(),
         documents: documents.clone(),
-    })
+    })?;
+    Ok(validator)
 }
 
 pub fn check_unique(collection: &CollectionState) -> Result<()> {
@@ -304,6 +352,7 @@ pub fn unique_index_key(index: &IndexDefinition, body: &Value) -> Result<Option<
             Scalar::Boolean(value) => serde_json::json!(["boolean", value]),
             Scalar::Number(value) => serde_json::json!(["number", value.normalized().to_string()]),
             Scalar::String(value) => serde_json::json!(["string", value]),
+            Scalar::UpperBound => return Err(invalid("internal bound cannot be an indexed value")),
         };
         key.push(encoded);
     }

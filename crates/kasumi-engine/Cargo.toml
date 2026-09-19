@@ -23,6 +23,7 @@ kasumi-query.workspace = true
 kasumi-raft.workspace = true
 kasumi-store.workspace = true
 tokio.workspace = true
+tracing.workspace = true
 uuid.workspace = true
 sha2.workspace = true
 hex.workspace = true

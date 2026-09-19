@@ -633,6 +633,28 @@ impl TransitSettings {
     }
 }
 impl ReplicationConfig {
+    pub(crate) fn control_nodes(
+        &self,
+    ) -> Result<BTreeMap<u64, kasumi_engine::control::ControlNode>> {
+        self.peers
+            .iter()
+            .map(|peer| {
+                Ok((
+                    peer.node_id,
+                    kasumi_engine::control::ControlNode {
+                        endpoint: origin(&peer.endpoint)?.origin().ascii_serialization(),
+                        failure_domain: peer.failure_domain.clone(),
+                        certificate_pins: peer
+                            .certificate_pins
+                            .iter()
+                            .map(|pin| pin.to_ascii_lowercase())
+                            .collect(),
+                    },
+                ))
+            })
+            .collect()
+    }
+
     pub(crate) fn voters(&self) -> Result<BTreeSet<u64>> {
         let voters = if self.initial_voters.is_empty() && self.peers.len() == 3 {
             self.peers.iter().map(|p| p.node_id).collect()
@@ -1744,26 +1766,7 @@ impl NodeRuntime {
         };
         let (nodes, voters, mode) = if let Some(replication) = &self.config.replication {
             (
-                replication
-                    .peers
-                    .iter()
-                    .map(|peer| {
-                        (
-                            peer.node_id,
-                            ControlNode {
-                                endpoint: origin(&peer.endpoint)
-                                    .expect("validated endpoint")
-                                    .to_string(),
-                                failure_domain: peer.failure_domain.clone(),
-                                certificate_pins: peer
-                                    .certificate_pins
-                                    .iter()
-                                    .map(|pin| pin.to_ascii_lowercase())
-                                    .collect(),
-                            },
-                        )
-                    })
-                    .collect(),
+                replication.control_nodes()?,
                 replication.voters()?,
                 Mode::Replicated,
             )
@@ -2795,6 +2798,34 @@ mod tests {
     }
 
     #[test]
+    fn replicated_control_origin_identity_matches_genesis_for_root_url_forms() {
+        for trailing_slash in [false, true] {
+            let mut config = example_config();
+            if trailing_slash {
+                for peer in &mut config.replication.as_mut().unwrap().peers {
+                    peer.endpoint.push('/');
+                }
+            }
+            let bootstrap = crate::control_genesis::bootstrap(&config).unwrap();
+            let kasumi_engine::ReplicatedGenesis::Control(genesis) = bootstrap.genesis else {
+                panic!("replicated Control enrollment lost its genesis");
+            };
+            for (id, node) in &genesis.topology.nodes {
+                assert_eq!(node.endpoint, format!("https://node-{id}.example:9446"));
+            }
+            let configured = kasumi_engine::control::ControlTopology {
+                nodes: config.replication.as_ref().unwrap().control_nodes().unwrap(),
+                tenants: genesis.topology.tenants.clone(),
+            };
+            validate_configured_topology(&genesis.topology, &configured).unwrap();
+            let mut substituted = configured;
+            substituted.nodes.get_mut(&2).unwrap().endpoint =
+                "https://different-node.example:9446".into();
+            assert!(validate_configured_topology(&genesis.topology, &substituted).is_err());
+        }
+    }
+
+    #[test]
     fn admin_client_requires_https_server_pin_and_runtime_token_reference() {
         let config = AdminClientConfig {
             endpoint: "https://localhost:9445".into(),
@@ -3795,13 +3826,41 @@ mod lifecycle_tests {
         include!("runtime_recovery_tests.rs");
     }
 
-    async fn replicated_runtime_fixture(with_spare: bool, bootstrap_fault: Option<BootstrapFault>) {
+    // Construct large fixture futures in separate frames and keep callers small.
+    fn replicated_runtime_fixture(
+        with_spare: bool,
+        bootstrap_fault: Option<BootstrapFault>,
+    ) -> impl std::future::Future<Output = ()> {
+        Box::pin(replicated_runtime_fixture_inner(with_spare, bootstrap_fault))
+    }
+
+    fn open_replicated_fixture_node(
+        config: RuntimeConfig,
+        credential: impl Fn(&str) -> Result<Zeroizing<String>> + Send + Sync + 'static,
+    ) -> impl std::future::Future<Output = Result<NodeRuntime>> {
+        Box::pin(NodeRuntime::open_using(config, credential))
+    }
+
+    // Construct operation futures outside the enclosing fixture poll frame.
+    fn fixture_operation<F: std::future::Future>(
+        make: impl FnOnce() -> F,
+    ) -> impl std::future::Future<Output = F::Output> {
+        Box::pin(make())
+    }
+
+    async fn replicated_runtime_fixture_inner(with_spare: bool, bootstrap_fault: Option<BootstrapFault>) {
         let _fixture = LIFECYCLE_GATE.lock().await;
         let canonical = !with_spare && bootstrap_fault.is_none();
         let recovery_credentials = recovery_fixture::Credentials::new();
         let recovery_jwks = recovery_credentials.jwks.clone();
         let node_count = if with_spare { 4 } else { 3 };
         let dir = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+        }
         let (mock_files, _) = certificate_files(dir.path());
         let mock_socket = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let kms_endpoint = format!(
@@ -3977,8 +4036,8 @@ mod lifecycle_tests {
                 }
             }
             if let Some(recovery) = &recovery {
-                recovery.configure(&mut config, node).await;
-                crate::data_node_enrollment::initialize(config.clone())
+                fixture_operation(|| recovery.configure(&mut config, node)).await;
+                fixture_operation(|| crate::data_node_enrollment::initialize(config.clone()))
                     .await
                     .unwrap();
             } else {
@@ -3995,7 +4054,7 @@ mod lifecycle_tests {
             request_id: uuid::Uuid::new_v4().to_string(),
         };
         let context = if let Some(recovery) = &recovery {
-            recovery.context(false).await
+            fixture_operation(|| recovery.context(false)).await
         } else {
             context
         };
@@ -4004,7 +4063,7 @@ mod lifecycle_tests {
             let mut servers = Vec::new();
             let (stop, shutdown) = watch::channel(false);
             for config in configurations {
-                let mut runtime = NodeRuntime::open_using(config, |_| {
+                let mut runtime = open_replicated_fixture_node(config, |_| {
                     Ok(Zeroizing::new("test-runtime-token".into()))
                 })
                 .await
@@ -4108,7 +4167,7 @@ mod lifecycle_tests {
         let mut cluster_networks = Vec::new();
         let mut recovery_handles = Vec::new();
         for config in configurations.iter().cloned() {
-            let runtime = NodeRuntime::open_using(config, move |path| {
+            let runtime = open_replicated_fixture_node(config, move |path| {
                 if canonical {
                     file_secret(path)
                 } else {
@@ -4188,8 +4247,30 @@ mod lifecycle_tests {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         })
-        .await
-        .unwrap();
+        .await;
+        let databases = match databases {
+            Ok(databases) => databases,
+            Err(elapsed) => {
+                let errors = registries
+                    .iter()
+                    .take(3)
+                    .map(|registry| registry.database(&context).map(|_| ()))
+                    .collect::<Vec<_>>();
+                let metrics = controls
+                    .iter()
+                    .map(|control| control.raft_group().raft().metrics().borrow().clone())
+                    .collect::<Vec<_>>();
+                let mut finished_tasks = Vec::new();
+                for (index, task) in tasks.iter_mut().enumerate() {
+                    if task.is_finished() {
+                        finished_tasks.push((index, task.await));
+                    }
+                }
+                panic!(
+                    "tenant registry readiness timed out: {elapsed:?}; registry errors: {errors:?}; control metrics: {metrics:?}; finished server tasks: {finished_tasks:?}"
+                );
+            }
+        };
         let leader = tokio::time::timeout(Duration::from_secs(20), async {
             loop {
                 for (i, database) in databases.iter().enumerate() {
@@ -4209,7 +4290,7 @@ mod lifecycle_tests {
         })
         .await
         .unwrap();
-        databases[leader]
+        fixture_operation(|| databases[leader]
             .administer(
                 context.clone(),
                 Operation::CreateCollection(CollectionDefinition {
@@ -4220,10 +4301,10 @@ mod lifecycle_tests {
                     indexes: Vec::new(),
                     strict_read_audit: false,
                 }),
-            )
+            ))
             .await
             .unwrap();
-        databases[leader]
+        fixture_operation(|| databases[leader]
             .mutate(
                 context.clone(),
                 MutationBatch {
@@ -4236,7 +4317,7 @@ mod lifecycle_tests {
                         expected: Precondition::Absent,
                     }],
                 },
-            )
+            ))
             .await
             .unwrap();
         tokio::time::timeout(Duration::from_secs(20), async {
@@ -4387,8 +4468,8 @@ mod lifecycle_tests {
             mock.await.unwrap().unwrap();
             return;
         }
-        databases[leader]
-            .administer(context.clone(), Operation::Suspend(true))
+        fixture_operation(|| databases[leader]
+            .administer(context.clone(), Operation::Suspend(true)))
             .await
             .unwrap();
         let backup = managers[leader]
@@ -4422,8 +4503,8 @@ mod lifecycle_tests {
         )
         .unwrap();
         let source_context = context.clone();
-        let checkpoint = databases[leader]
-            .verify_backup_checkpoint_named(context.clone(), "primary", backup_id)
+        let checkpoint = fixture_operation(|| databases[leader]
+            .verify_backup_checkpoint_named(context.clone(), "primary", backup_id))
             .await
             .unwrap()
             .checkpoint()
@@ -4444,7 +4525,7 @@ mod lifecycle_tests {
                 .prepare(source_context.clone(), M::Status {})
                 .unwrap();
             let source_release = source_status.response_fence().unwrap();
-            let retained_source_response = source_status.execute().await.unwrap();
+            let retained_source_response = fixture_operation(|| source_status.execute()).await.unwrap();
             assert_eq!(
                 retained_source_response["incarnation"],
                 databases[leader]
@@ -4455,7 +4536,7 @@ mod lifecycle_tests {
                     .incarnation
             );
             source_release.check_release().unwrap();
-            recovery.recover(&cluster_networks).await;
+            fixture_operation(|| recovery.recover(&cluster_networks)).await;
             // Keep the exact pre-activation database selection and request clock.
             // Target activation never upgrades this original source response fence.
             assert!(source_release.check_release().is_err());
@@ -4476,7 +4557,7 @@ mod lifecycle_tests {
         })
         .await
         .unwrap();
-        let context = recovery.context(true).await;
+        let context = fixture_operation(|| recovery.context(true)).await;
         tokio::time::timeout(Duration::from_secs(20), async {
             while !registries.iter().all(|registry| {
                 registry
@@ -4492,12 +4573,17 @@ mod lifecycle_tests {
         })
         .await
         .unwrap();
-        let restored_databases = recovery.databases().await;
+        let restored_databases = fixture_operation(|| recovery.databases()).await;
         let activation_facts = restored_databases
             .iter()
             .map(|database| {
                 let generation = database.engine().generation().unwrap();
-                let execution = generation.state.target_lifecycle.clone().unwrap();
+                let execution = generation
+                    .state
+                    .target_lifecycle
+                    .get(&generation.state.incarnation)
+                    .cloned()
+                    .unwrap();
                 assert_eq!(
                     execution.origin.materialization.request.source_incarnation,
                     source_incarnation
@@ -4521,7 +4607,7 @@ mod lifecycle_tests {
             );
         }
         let (resumed_leader, ()) =
-            on_quorum_leader(&restored_databases, "resume restored tenant", |index| {
+            fixture_operation(|| on_quorum_leader(&restored_databases, "resume restored tenant", |index| {
                 let context = context.clone();
                 let restored = &restored_databases[index];
                 async move {
@@ -4534,13 +4620,13 @@ mod lifecycle_tests {
                     }
                     Ok(())
                 }
-            })
+            }))
             .await;
         let restored = registries[resumed_leader].database(&context).unwrap();
         let (_, document) =
-            on_quorum_leader(&restored_databases, "read restored document", |index| {
+            fixture_operation(|| on_quorum_leader(&restored_databases, "read restored document", |index| {
                 restored_databases[index].get(&context, "docs", "a")
-            })
+            }))
             .await;
         assert_eq!(document.body["durable"], serde_json::json!(true));
         assert!(
@@ -4554,7 +4640,7 @@ mod lifecycle_tests {
         }
         drop(restored);
         drop(restored_databases);
-        recovery.close_targets().await;
+        fixture_operation(|| recovery.close_targets()).await;
         for stop in &stops {
             stop.send_replace(true);
         }
@@ -4583,14 +4669,14 @@ mod lifecycle_tests {
         let mut second_managers = Vec::new();
         let mut second_controls = Vec::new();
         let mut second_recovery_handles = Vec::new();
-        recovery
-            .enroll_tenant("beta", Uuid::parse_str(&beta_incarnation).unwrap())
+        fixture_operation(|| recovery
+            .enroll_tenant("beta", Uuid::parse_str(&beta_incarnation).unwrap()))
             .await;
-        recovery
+        fixture_operation(|| recovery
             .enroll_tenant(
                 "mismatched",
                 Uuid::parse_str(&mismatched_incarnation).unwrap(),
-            )
+            ))
             .await;
         // This remains a release assertion, not an ignored case: strict startup
         // must support explicit dormant tenant enrollment before these new
@@ -4622,7 +4708,7 @@ mod lifecycle_tests {
                 mismatched.initial_limits.max_documents -= 1;
             }
             config.tenants.push(mismatched);
-            let runtime = NodeRuntime::open_using(config, file_secret).await.unwrap();
+            let runtime = open_replicated_fixture_node(config, file_secret).await.unwrap();
             for tenant in ["beta", "mismatched"] {
                 assert!(
                     crate::node_enrollment::tenant_record(runtime.audit.store(), tenant)
@@ -4649,7 +4735,7 @@ mod lifecycle_tests {
             second_stops.push(stop);
             second_tasks.push(tokio::spawn(runtime.serve(shutdown)));
         }
-        recovery.reopen_targets(&second_recovery_handles).await;
+        fixture_operation(|| recovery.reopen_targets(&second_recovery_handles)).await;
         tokio::time::timeout(Duration::from_secs(20), async {
             loop {
                 for task in &mut second_tasks {
@@ -4683,7 +4769,7 @@ mod lifecycle_tests {
                     .unwrap()
                     .state
                     .target_lifecycle
-                    .as_ref(),
+                    .get(&incarnation.to_string()),
                 Some(&activation_facts[index])
             );
             let status = second_managers[index]
@@ -4763,12 +4849,12 @@ mod lifecycle_tests {
         })
         .await
         .unwrap();
-        exercise_provisioning(
+        fixture_operation(|| exercise_provisioning(
             &second_managers,
             &second_controls,
             &second_registries,
             operator.clone(),
-        )
+        ))
         .await;
         // Approving one replica's immutable configuration cannot authorize a
         // differently configured voter or create a partial two-voter group.
@@ -4852,7 +4938,7 @@ mod lifecycle_tests {
         })
         .await
         .unwrap();
-        recovery.close_targets().await;
+        fixture_operation(|| recovery.close_targets()).await;
         for stop in &second_stops {
             stop.send_replace(true);
         }
@@ -4866,7 +4952,7 @@ mod lifecycle_tests {
         second_recovery_handles.clear();
         // Release the issuer only after every source/target renewal owner drains.
         // Its retained activation is reused on restart, never synthesized again.
-        recovery.shutdown_issuer().await;
+        fixture_operation(|| recovery.shutdown_issuer()).await;
         mock_stop.send_replace(true);
         mock.await.unwrap().unwrap();
     }

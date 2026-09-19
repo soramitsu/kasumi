@@ -43,11 +43,6 @@ pub enum DestinationConfig {
     },
 }
 impl DestinationConfig {
-    fn max_bytes(&self) -> usize {
-        match self {
-            Self::Filesystem { max_bytes, .. } | Self::S3 { max_bytes, .. } => *max_bytes,
-        }
-    }
     pub(crate) fn validate(&self) -> Result<()> {
         match self {
             Self::Filesystem {
@@ -211,7 +206,7 @@ struct SelectedTenant {
 }
 impl SelectedTenant {
     fn new(database: Arc<Database>) -> Self {
-        let store = database.store().clone();
+        let store = database.raft_group().storage_domains().application().clone();
         Self { database, store }
     }
 }
@@ -413,16 +408,19 @@ impl Administration {
     }
 
     #[cfg(test)]
-    pub(crate) async fn execute_for_test(
+    pub(crate) fn execute_for_test(
         self: &Arc<Self>,
         context: RequestContext,
         command: ManagementCommand,
-    ) -> kasumi_types::Result<serde_json::Value> {
-        let invocation = self.prepare(context, command)?;
-        let fence = invocation.response_fence()?;
-        let result = invocation.execute().await?;
-        fence.check_release()?;
-        Ok(result)
+    ) -> impl std::future::Future<Output = kasumi_types::Result<serde_json::Value>> + '_ {
+        // Keep repeated administration futures out of large scenario test frames.
+        Box::pin(async move {
+            let invocation = self.prepare(context, command)?;
+            let fence = invocation.response_fence()?;
+            let result = invocation.execute().await?;
+            fence.check_release()?;
+            Ok(result)
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -651,21 +649,6 @@ impl Administration {
         provisioning: Option<&ProvisionSelection>,
     ) -> Result<serde_json::Value> {
         self.authorized(source, context, false).await?;
-        let _maintenance = match &command {
-            ManagementCommand::Backup { destination, .. } => {
-                let limit = self
-                    .config
-                    .backup_destinations
-                    .get(destination)
-                    .context("backup destination not configured")?
-                    .max_bytes();
-                Some(
-                    self.admission
-                        .reserve((limit as u64).saturating_mul(4), None)?,
-                )
-            }
-            _ => None,
-        };
         match command {
             ManagementCommand::ApprovePeerPool {
                 expected_topology_version,
@@ -738,11 +721,15 @@ impl Administration {
                 destination,
                 session_id,
             } => {
+                // The engine owns the bounded stream, verification and worker
+                // reservations. This layer retains only its response fences
+                // and serializes the returned backup UUID, not backup objects.
+                let destination = self.destination(&destination)?;
                 self.event(context, SecurityEventKind::Backup, SecurityOutcome::Started)
                     .await?;
                 let result = source
                     .database
-                    .backup(context.clone(), self.destination(&destination)?, session_id)
+                    .backup(context.clone(), destination, session_id)
                     .await;
                 self.event(
                     context,
@@ -999,26 +986,7 @@ impl Administration {
     }
     fn configured_nodes(&self) -> Result<BTreeMap<u64, kasumi_engine::control::ControlNode>> {
         if let Some(replication) = &self.config.replication {
-            Ok(replication
-                .peers
-                .iter()
-                .map(|peer| {
-                    (
-                        peer.node_id,
-                        kasumi_engine::control::ControlNode {
-                            endpoint: crate::runtime::origin(&peer.endpoint)
-                                .expect("validated peer")
-                                .to_string(),
-                            failure_domain: peer.failure_domain.clone(),
-                            certificate_pins: peer
-                                .certificate_pins
-                                .iter()
-                                .map(|p| p.to_ascii_lowercase())
-                                .collect(),
-                        },
-                    )
-                })
-                .collect())
+            replication.control_nodes()
         } else {
             Ok(self.committed_topology()?.nodes)
         }

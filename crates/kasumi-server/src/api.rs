@@ -370,6 +370,7 @@ mod tests {
     include!("api_routing_tests.rs");
     include!("api_tls_reload_tests.rs");
     include!("api_sdk_literal_tests.rs");
+    include!("rpc_ordered_seek_tests.rs");
     use super::*;
     use crate::{
         auth::{AuthConfig, Authenticator},

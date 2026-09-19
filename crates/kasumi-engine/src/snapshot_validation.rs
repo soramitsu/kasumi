@@ -206,7 +206,8 @@ impl ValidatedApplicationSnapshot {
                 && h.recovery_control.is_empty()
                 && self.index.count(18)? == 0
                 && self.index.count(19)? == 0
-                && self.index.count(20)? == 0,
+                && self.index.count(20)? == 0
+                && self.index.count(23)? == 0,
             "Control state cannot be an application backup"
         );
         ensure!(
@@ -421,13 +422,13 @@ impl ValidatedApplicationSnapshot {
                     QueryIndexes::build(&BTreeMap::from([(name.clone(), collection.clone())]))?;
                 current = Some((name.clone(), collection, validators));
             }
-            let (_, collection, _) = current.as_ref().context("snapshot collection missing")?;
+            let (_, collection, validators) = current.as_ref().context("snapshot collection missing")?;
             validate_name(&document.id)?;
             ensure!(
                 document.version <= collection.data_epoch,
                 "snapshot document version differs"
             );
-            validate_document(&collection.definition, &document.body)?;
+            validators.validate_document(&collection.definition, &document.body)?;
             let size = encoded_len(&document.body)? as u64;
             ensure!(
                 size <= h.limits.max_document_bytes as u64,
@@ -1469,7 +1470,7 @@ mod tests {
             advance(&mut header.mutation_receipt_head, row).unwrap();
             SnapshotImage::capture(&kasumi_store::ScratchDisk::fixture(), 128 << 20, |writer| {
                 let mut encoder = crate::snapshot_codec::Encoder::new(writer)?;
-                for kind in 0..21 {
+                for kind in (0..21).chain(std::iter::once(23)) {
                     if kind == 5 {
                         encoder.record(Record::Receipt(Box::new(row.clone())))?;
                     }

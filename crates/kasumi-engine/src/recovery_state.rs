@@ -12,6 +12,8 @@ mod source;
 pub(crate) use source::{issuer_action, retirement_request};
 #[path = "recovery_activation.rs"]
 pub(crate) mod activation;
+#[path = "recovery_attempts.rs"]
+pub(crate) mod attempts;
 #[path = "recovery_completion.rs"]
 pub(crate) mod completion;
 #[path = "recovery_receiver.rs"]
@@ -382,6 +384,7 @@ fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Result<RecoveryR
             issuer_preparation: None,
             initialization: None,
             completion_intent: None,
+            completion_predecessor: None,
             completion_preparation_attempt: None,
             completion_preparation: None,
             completion_resolution_attempt: None,
@@ -565,6 +568,7 @@ fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Result<RecoveryR
                 phase_id: *phase_id,
                 sequence: *expected_sequence,
                 phase: operation.phase,
+                completion_scope: attempts::prepared_scope(state, &operation, *phase_id, input)?,
                 previous_phase: operation.last_phase,
                 input: input.as_ref().clone(),
                 input_sha256: staged_digest(input)?.0,
@@ -761,7 +765,14 @@ pub(crate) fn expected_intent(
         }
         LifecyclePhase::Initialize => (quorum_input(state, operation)?.digest()?, None),
         LifecyclePhase::Complete => (
-            completion::completion_input(state, operation)?.digest()?,
+            if operation
+                .completion_intent
+                .is_some_and(|original| original != phase_id)
+            {
+                attempts::next_input(state, operation)?.digest()?
+            } else {
+                completion::completion_input(state, operation)?.digest()?
+            },
             None,
         ),
         LifecyclePhase::InspectCompletionAttempt => {
@@ -937,9 +948,7 @@ fn validate_input(
                 LifecyclePhase::ResumeMaterialize
             };
             if phase == LifecyclePhase::Complete && operation.completion_intent.is_some() {
-                return Err(conflict(
-                    "original completion intent must be resolved without replacing its identity",
-                ));
+                attempts::require_successor(state, operation)?;
             }
             if matches!(
                 phase,
@@ -1434,7 +1443,7 @@ fn validate_outcome(
     Ok(())
 }
 fn advance(
-    state: &TenantState,
+    state: &mut TenantState,
     operation: &mut RecoveryRecord,
     prepared: &RecoveryPhaseRecord,
     outcome: &RecoveryDispatchOutcome,
@@ -1513,17 +1522,13 @@ fn advance(
             operation.phase = RecoveryPhase::FenceSource;
         }
         (RecoveryDispatch::ControlIntent(request), RecoveryDispatchOutcome::ControlIntent(_)) => {
-            operation.current_intent = Some(prepared.phase_id);
+            if request.phase == LifecyclePhase::Complete {
+                attempts::install(state, operation, prepared)?;
+            } else {
+                operation.current_intent = Some(prepared.phase_id);
+            }
             if request.phase == LifecyclePhase::Materialize {
                 operation.materialization_intent = Some(prepared.phase_id);
-            }
-            if request.phase == LifecyclePhase::Complete {
-                if operation.completion_intent.is_some() {
-                    return Err(conflict(
-                        "permanent original completion identity already installed",
-                    ));
-                }
-                operation.completion_intent = Some(prepared.phase_id);
             }
         }
         (RecoveryDispatch::Target { node_id, .. }, RecoveryDispatchOutcome::Target(response)) => {
@@ -1735,11 +1740,13 @@ pub(crate) fn validate(state: &TenantState) -> Result<()> {
         // At most one selected pointer per installed voter; the full command
         // history stays in its phase records rather than this scheduling head.
         let mut latest_starts = BTreeMap::new();
+        let mut completion_cursor = operation.completion_intent;
         while let Some(id) = cursor {
             let record = phase(state, operation, id)?;
             if record.sequence != expected || expected == 0 {
                 return Err(conflict("recovery phase chain forked"));
             }
+            attempts::validate_chain_link(state, operation, record, &mut completion_cursor)?;
             if let RecoveryDispatch::Target { node_id, request } = &record.input
                 && quorum::established_start(&request.step)
             {
@@ -1751,8 +1758,10 @@ pub(crate) fn validate(state: &TenantState) -> Result<()> {
             expected -= 1;
             cursor = record.previous_phase;
         }
-        if expected != 0 {
-            return Err(conflict("recovery phase chain is incomplete"));
+        if expected != 0 || completion_cursor.is_some() {
+            return Err(conflict(
+                "recovery phase or completion predecessor chain is incomplete",
+            ));
         }
         if operation
             .voters
@@ -1783,6 +1792,11 @@ pub(crate) fn validate(state: &TenantState) -> Result<()> {
             intent(state, operation, id)?;
         }
         if let Some(id) = operation.completion_intent {
+            if phase(state, operation, id)?.completion_scope != attempts::scope(operation) {
+                return Err(conflict(
+                    "active completion cursor substituted its original scope",
+                ));
+            }
             let original = intent(state, operation, id)?;
             completion::validate_original_intent(
                 &origin(state, operation)?,
@@ -2024,11 +2038,13 @@ pub(crate) fn validate(state: &TenantState) -> Result<()> {
             None if retained.sequence == 1 => {}
             _ => return Err(conflict("recovery phase chain origin differs")),
         }
-        validate_frozen_input(state, operation, retained)?;
+        let context = attempts::for_phase(state, operation, retained)?;
+        validate_frozen_input(state, &context, retained)?;
         if let Some(outcome) = &retained.outcome {
-            validate_outcome(state, operation, retained, outcome)?;
+            validate_outcome(state, &context, retained, outcome)?;
         }
     }
+    attempts::validate_history(state)?;
     Ok(())
 }
 fn validate_frozen_input(
@@ -2191,6 +2207,7 @@ fn validate_frozen_input(
 /// Incoming consensus snapshots may advance unfinished phases, but cannot erase
 /// permanent command identities or substitute an already resolved outcome.
 pub(crate) fn validate_successor(previous: &TenantState, incoming: &TenantState) -> Result<()> {
+    attempts::history_unchanged(previous, incoming)?;
     for (key, id) in &previous.recovery_control.targets {
         if incoming.recovery_control.targets.get(key) != Some(id) {
             return Err(conflict(
@@ -2215,7 +2232,8 @@ pub(crate) fn validate_successor(previous: &TenantState, incoming: &TenantState)
         {
             return Err(conflict("snapshot substituted recovery operation identity"));
         }
-        if let Some(old_id) = old.completion_attempt {
+        let completion_advanced = attempts::cursor_advanced(previous, incoming, old, new)?;
+        if !completion_advanced && let Some(old_id) = old.completion_attempt {
             let new_id = new
                 .completion_attempt
                 .ok_or_else(|| conflict("snapshot removed original completion attempt"))?;
@@ -2231,19 +2249,29 @@ pub(crate) fn validate_successor(previous: &TenantState, incoming: &TenantState)
                 return Err(conflict("snapshot regressed original activation attempt"));
             }
         }
+        if !completion_advanced {
+            for (prior, retained) in [
+                (old.completion_intent, new.completion_intent),
+                (
+                    old.completion_preparation_attempt,
+                    new.completion_preparation_attempt,
+                ),
+                (old.completion_preparation, new.completion_preparation),
+                (
+                    old.completion_resolution_attempt,
+                    new.completion_resolution_attempt,
+                ),
+                (old.completion_terminal, new.completion_terminal),
+            ] {
+                if prior.is_some() && prior != retained {
+                    return Err(conflict(
+                        "snapshot substituted immutable current completion progress",
+                    ));
+                }
+            }
+        }
         for (old, new) in [
             (old.materialization_intent, new.materialization_intent),
-            (old.completion_intent, new.completion_intent),
-            (
-                old.completion_preparation_attempt,
-                new.completion_preparation_attempt,
-            ),
-            (old.completion_preparation, new.completion_preparation),
-            (
-                old.completion_resolution_attempt,
-                new.completion_resolution_attempt,
-            ),
-            (old.completion_terminal, new.completion_terminal),
             (old.issuer_preparation, new.issuer_preparation),
             (old.initialization, new.initialization),
             (old.completion, new.completion),

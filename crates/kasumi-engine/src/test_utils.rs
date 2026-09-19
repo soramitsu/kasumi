@@ -111,5 +111,8 @@ fn write_candidate(
             )))?;
         }
     }
+    for record in crate::snapshot_codec::records(state, 23, None)? {
+        encoder.record(record?)?;
+    }
     encoder.finish()
 }

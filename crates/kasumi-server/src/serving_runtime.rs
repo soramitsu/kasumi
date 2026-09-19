@@ -33,12 +33,30 @@ pub struct AuthorityEndpoint {
 #[serde(deny_unknown_fields)]
 pub struct ServingAuthorityConfig {
     pub manifest: AuthorityManifest,
+    #[serde(deserialize_with = "deserialize_endpoints")]
     pub endpoints: BTreeMap<u16, BTreeMap<u64, AuthorityEndpoint>>,
     pub tls: TlsFiles,
     pub server_ca: PathBuf,
     #[serde(deserialize_with = "deserialize_bearer_files")]
     pub bearer_files: BTreeMap<u16, String>,
     pub principal: String,
+}
+fn deserialize_endpoints<'de, D>(
+    deserializer: D,
+) -> std::result::Result<BTreeMap<u16, BTreeMap<u64, AuthorityEndpoint>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(transparent)]
+    struct Members(
+        #[serde(deserialize_with = "kasumi_types::deserialize_u64_map")]
+        BTreeMap<u64, AuthorityEndpoint>,
+    );
+    Ok(kasumi_types::deserialize_u16_map::<D, Members>(deserializer)?
+        .into_iter()
+        .map(|(partition, members)| (partition, members.0))
+        .collect())
 }
 fn deserialize_bearer_files<'de, D>(
     deserializer: D,
@@ -483,6 +501,57 @@ mod partition_credential_tests {
             );
             assert_ne!(replaced, encoded);
             assert!(serde_json::from_str::<ServingAuthorityConfig>(&replaced).is_err());
+        }
+    }
+
+    #[test]
+    fn enrollment_input_preserves_nested_authority_endpoints_and_serialized_identity() {
+        let mut configuration = crate::runtime::example_config();
+        configuration.serving_authorities.insert("storage-fence".into(), configured());
+        let input = crate::node_enrollment::Input::Data {
+            configuration: Box::new(configuration),
+        };
+        let bytes = serde_json::to_vec(&input).unwrap();
+        let from_bytes: crate::node_enrollment::Input = serde_json::from_slice(&bytes).unwrap();
+        let from_value: crate::node_enrollment::Input =
+            serde_json::from_value(serde_json::to_value(&input).unwrap()).unwrap();
+        for decoded in [from_bytes, from_value] {
+            assert_eq!(serde_json::to_vec(&decoded).unwrap(), bytes);
+            let crate::node_enrollment::Input::Data { configuration } = decoded else {
+                panic!("data enrollment changed kind");
+            };
+            configuration.serving_authorities["storage-fence"].validate().unwrap();
+        }
+    }
+
+    #[test]
+    fn enrollment_endpoint_decoder_rejects_aliases_duplicates_and_overflow_at_both_levels() {
+        let mut configuration = crate::runtime::example_config();
+        let authority = configured();
+        let endpoint = serde_json::to_string(&authority.endpoints[&0][&1]).unwrap();
+        let valid = serde_json::to_string(&authority.endpoints).unwrap();
+        configuration.serving_authorities.insert("storage-fence".into(), authority);
+        let encoded = serde_json::to_string(&crate::node_enrollment::Input::Data {
+            configuration: Box::new(configuration),
+        }).unwrap();
+        let member = format!("{{\"1\":{endpoint}}}");
+        let invalid = [
+            format!("{{\"00\":{member}}}"),
+            format!("{{\"0\":{member},\"0\":{member}}}"),
+            format!("{{\"65536\":{member}}}"),
+            format!("{{\"+0\":{member}}}"),
+            format!("{{\"0\":{{\"01\":{endpoint}}}}}"),
+            format!("{{\"0\":{{\"1\":{endpoint},\"1\":{endpoint}}}}}"),
+            format!("{{\"0\":{{\"18446744073709551616\":{endpoint}}}}}"),
+            format!("{{\"0\":{{\"+1\":{endpoint}}}}}"),
+        ];
+        for endpoints in invalid {
+            let replaced = encoded.replace(
+                &format!("\"endpoints\":{valid}"),
+                &format!("\"endpoints\":{endpoints}"),
+            );
+            assert_ne!(replaced, encoded);
+            assert!(serde_json::from_str::<crate::node_enrollment::Input>(&replaced).is_err());
         }
     }
 }

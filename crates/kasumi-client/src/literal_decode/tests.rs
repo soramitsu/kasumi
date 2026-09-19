@@ -70,6 +70,114 @@ fn query_wire(body: &Value, count: usize) -> Vec<u8> {
 fn raw<T: serde::Serialize>(value: &T) -> Vec<u8> {
     serde_json::to_vec(value).unwrap()
 }
+fn seek_fixture() -> (OrderedSeekRequest, Value) {
+    let request = OrderedSeekRequest {
+        collection: "docs".into(),
+        index: "ordered".into(),
+        prefix: vec![json!("partition")],
+        lower: None,
+        upper: None,
+        direction: kasumi_types::Direction::Asc,
+        limit: 1,
+        continuation: None,
+    };
+    let call = read_options().admit().unwrap();
+    let prepared = prepare_ordered_seek(&request, &call).unwrap();
+    let Kind::OrderedSeek { digest, .. } = &prepared.kind else {
+        unreachable!()
+    };
+    let cursor = json!({"revision":4,"tenant":"tenant-a","incarnation":"00000000-0000-0000-0000-000000000001",
+        "collection_epoch":3,"policy_epoch":2,"schema_epoch":1,"index_sha256":"a".repeat(64),
+        "request_sha256":digest,"after_key":["partition","id-a"]});
+    let mut response = cursor.clone();
+    response.as_object_mut().unwrap().remove("after_key");
+    response["observed_revision"] = json!(4);
+    response["index_entries_visited"] = json!(2);
+    response["rows"] = json!([{"id":"id-a","version":3,"score":null,"body":body()}]);
+    response["continuation"] = cursor;
+    (request, response)
+}
+#[test]
+fn ordered_seek_literal_values_exact_source_and_audit_only_revision_continuation() {
+    let (mut request, mut wire) = seek_fixture();
+    let options = read_options();
+    let call = options.admit().unwrap();
+    let prepared = prepare_ordered_seek(&request, &call).unwrap();
+    let response: OrderedSeekResponse = decode(&raw(&wire), &prepared, &call).unwrap();
+    assert_eq!(response.rows[0].body, body());
+    request.continuation = response.continuation;
+    wire["observed_revision"] = json!(9); // read auditing changed no source rows
+    wire["continuation"] = Value::Null;
+    wire["index_entries_visited"] = json!(1);
+    wire["rows"][0]["id"] = json!("id-b");
+    let next = prepare_ordered_seek(&request, &call).unwrap();
+    let response: OrderedSeekResponse = decode(&raw(&wire), &next, &call).unwrap();
+    assert_eq!((response.revision, response.observed_revision), (4, 9));
+    for field in [
+        "tenant",
+        "incarnation",
+        "collection_epoch",
+        "policy_epoch",
+        "schema_epoch",
+        "index_sha256",
+        "request_sha256",
+        "revision",
+    ] {
+        let mut changed = wire.clone();
+        changed[field] = if changed[field].is_string() {
+            json!("different")
+        } else {
+            json!(99)
+        };
+        assert!(
+            decode::<OrderedSeekResponse>(&raw(&changed), &next, &call).is_err(),
+            "{field}"
+        );
+    }
+    request.prefix = vec![json!("another-employee")];
+    assert!(matches!(
+        prepare_ordered_seek(&request, &call),
+        Err(ClientError::DecodeRejected {
+            code: tonic::Code::InvalidArgument,
+            reason: "ordered seek continuation request differs",
+        })
+    ));
+}
+#[test]
+fn ordered_seek_rejects_spoofed_metadata_duplicate_fields_and_over_budget_rows() {
+    let (request, wire) = seek_fixture();
+    let call = read_options().admit().unwrap();
+    let prepared = prepare_ordered_seek(&request, &call).unwrap();
+    for value in [
+        json!(4.0),
+        json!("4"),
+        json!({"$serde_json::private::Number":"4"}),
+        json!(-1),
+    ] {
+        let mut changed = wire.clone();
+        changed["revision"] = value;
+        assert!(decode::<OrderedSeekResponse>(&raw(&changed), &prepared, &call).is_err());
+    }
+    for changed in [
+        String::from_utf8(raw(&wire))
+            .unwrap()
+            .replacen("{", "{\"revision\":4,", 1),
+        String::from_utf8(raw(&wire))
+            .unwrap()
+            .replacen("{", "{\"unexpected\":null,", 1),
+    ] {
+        assert!(decode::<OrderedSeekResponse>(changed.as_bytes(), &prepared, &call).is_err());
+    }
+    let mut changed = wire.clone();
+    changed["rows"]
+        .as_array_mut()
+        .unwrap()
+        .push(wire["rows"][0].clone());
+    assert!(decode::<OrderedSeekResponse>(&raw(&changed), &prepared, &call).is_err());
+    let mut changed = wire;
+    changed["continuation"]["after_key"] = json!(["different", "id-a"]);
+    assert!(decode::<OrderedSeekResponse>(&raw(&changed), &prepared, &call).is_err());
+}
 #[test]
 fn ordinary_query_preserves_literal_keys_numbers_and_original_page_revision() {
     let options = read_options();

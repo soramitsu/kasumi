@@ -170,7 +170,7 @@ impl ControlGenesis {
                 definition: ControlPlane::topology_definition(),
                 data_epoch: 1,
                 documents: imbl::OrdMap::from_iter([(
-                    "current".into(),
+                    "current".to_owned(),
                     Arc::new(Document {
                         id: "current".into(),
                         version: 1,
