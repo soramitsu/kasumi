@@ -31,6 +31,26 @@ The ownership regression plan includes 110 mandatory cases across 20 gates;
 preparing that plan does not count as executing it. Any failure must remain in
 the evidence, with fixes validated on a newly frozen successor source.
 
+The [integrated `15e64dd` checkpoint](evidence/first-release-15e64dd-check-20260919/README.md)
+passed workspace compilation, formatting and the complete store library (143
+passed, zero failed, two ignored; all 48 mandatory store cases passed), then
+stopped on strict store lint. The ignored entries are the explicitly configured
+MinIO test and a subprocess helper exercised by its parent crash-recovery test.
+A subsequent store lint diagnostic at `654c074` found one more fixture UUID
+formatting issue. Both failed attempts remain preserved; `32825cf` fixes the
+known lint findings and adds retained authority enrollment plus mandatory
+explicit original-voter configuration. Its prepared combined plan now has 26
+gates and 124 mandatory cases. These statements do not qualify the still-unrun
+server, receipt, authority, capacity or final release gates.
+
+The separately scoped Python tooling suite at `055a9b6` passed all 44 tests in
+3.467 seconds, with unchanged source and a drained process group. Its raw
+evidence remains in
+`/Users/mtakemiya/dev/kasumi-release-evidence/20260919-055a9b6-python`.
+The storage diagnostic on that same source also passed 143 tests before the
+combined successor repeated those results. These are historical scoped results,
+not a substitute for final-source acceptance.
+
 The combined `3b932ee` source adds explicit singleton creation/reopening,
 standalone operator ownership from first lock through cleanup, and Control-approved
 HA tenant enrollment with dormant configuration templates. Its
