@@ -787,6 +787,12 @@ impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
     ) -> Result<Response<CustodyReceiptResponse>, Status> {
         self.execute_custody_rpc(request).await
     }
+    async fn read_custody_receipt(
+        &self,
+        request: Request<CustodyCommandRequest>,
+    ) -> Result<Response<CustodyReceiptResponse>, Status> {
+        self.read_custody_receipt_rpc(request).await
+    }
 
     async fn abort_retirement(
         &self,

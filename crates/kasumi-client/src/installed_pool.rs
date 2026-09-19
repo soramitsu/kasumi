@@ -14,6 +14,13 @@ use tokio::time::Instant;
 
 pub(crate) type Reply<'a, T> = Pin<Box<dyn Future<Output = Result<T, ClientError>> + Send + 'a>>;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Dispatch {
+    Retry,
+    Once,
+    Resolve,
+}
+
 pub(crate) trait RoutedClient: Clone + Send {
     type Context: Clone + Send;
     fn connect(
@@ -99,12 +106,58 @@ impl<C: RoutedClient> InstalledPool<C> {
         timeout: Duration,
         replay: bool,
         mut probe: P,
-        mut dispatch: F,
+        dispatch: F,
     ) -> Result<T, ClientError>
     where
         T: Send,
         F: for<'a> FnMut(&'a mut C, &'a str) -> Reply<'a, T>,
         P: for<'a> FnMut(&'a mut C, &'a str) -> Reply<'a, ()>,
+    {
+        self.request_inner(
+            timeout,
+            if replay {
+                Dispatch::Retry
+            } else {
+                Dispatch::Once
+            },
+            |client, bearer| {
+                let observation = probe(client, bearer);
+                Box::pin(async move { observation.await.map(|()| None) })
+            },
+            dispatch,
+        )
+        .await
+    }
+
+    /// A fresh, linearizable receipt observation selects a leader before the
+    /// sole effect dispatch. After ambiguity, only the original receipt is
+    /// observed; even a fresh absence cannot authorize another dispatch.
+    pub(crate) async fn request_with_resolution<T, F, P>(
+        &mut self,
+        timeout: Duration,
+        observe: P,
+        dispatch: F,
+    ) -> Result<T, ClientError>
+    where
+        T: Send,
+        F: for<'a> FnMut(&'a mut C, &'a str) -> Reply<'a, T>,
+        P: for<'a> FnMut(&'a mut C, &'a str) -> Reply<'a, Option<T>>,
+    {
+        self.request_inner(timeout, Dispatch::Resolve, observe, dispatch)
+            .await
+    }
+
+    async fn request_inner<T, F, P>(
+        &mut self,
+        timeout: Duration,
+        policy: Dispatch,
+        mut probe: P,
+        mut dispatch: F,
+    ) -> Result<T, ClientError>
+    where
+        T: Send,
+        F: for<'a> FnMut(&'a mut C, &'a str) -> Reply<'a, T>,
+        P: for<'a> FnMut(&'a mut C, &'a str) -> Reply<'a, Option<T>>,
     {
         let mut budget = RequestDeadline::new(timeout, Arc::new(SystemLeaseClock))?;
         // Renewal is a new logical invocation, never a failover side effect.
@@ -113,6 +166,7 @@ impl<C: RoutedClient> InstalledPool<C> {
         let mut members: Vec<_> = self.endpoints.keys().copied().collect();
         let preferred = members.iter().position(|id| *id == self.preferred).unwrap();
         members.rotate_left(preferred);
+        let mut attempted = false;
         loop {
             for member in &members {
                 let remaining = budget.remaining()?;
@@ -141,13 +195,23 @@ impl<C: RoutedClient> InstalledPool<C> {
                         .ok_or_else(deadline)?;
                     let client = self.clients.get_mut(member).unwrap();
                     client.set_deadline(probe_end);
-                    tokio::time::timeout_at(attempt_end.min(probe_end), probe(client, &bearer))
-                        .await
-                        .map_err(|_| deadline())??;
+                    let observation =
+                        tokio::time::timeout_at(attempt_end.min(probe_end), probe(client, &bearer))
+                            .await
+                            .map_err(|_| deadline())??;
+                    if let Some(reply) = observation {
+                        return Ok(reply);
+                    }
+                    if policy == Dispatch::Resolve && attempted {
+                        return Err(tonic::Status::unknown(
+                            "original mutation remains unresolved; no second effect was dispatched",
+                        )
+                        .into());
+                    }
                     let remaining = budget.remaining()?;
                     let operation_end =
                         Instant::now().checked_add(remaining).ok_or_else(deadline)?;
-                    let dispatch_end = if replay {
+                    let dispatch_end = if policy == Dispatch::Retry {
                         attempt_end.min(operation_end)
                     } else {
                         operation_end
@@ -158,6 +222,7 @@ impl<C: RoutedClient> InstalledPool<C> {
                     let client = self.clients.get_mut(member).unwrap();
                     client.set_deadline(operation_end);
                     dispatched = true;
+                    attempted = true;
                     tokio::time::timeout_at(dispatch_end, dispatch(client, &bearer))
                         .await
                         .map_err(|_| deadline())?
@@ -173,7 +238,7 @@ impl<C: RoutedClient> InstalledPool<C> {
                         self.clients.remove(member);
                         // Resume has a work limit, not an invocation command ID.
                         // Ambiguity must return to its owner without a second dispatch.
-                        if dispatched && !replay {
+                        if dispatched && policy == Dispatch::Once {
                             return Err(error);
                         }
                     }
@@ -418,6 +483,79 @@ mod tests {
             matches!(result, Err(ClientError::Transport(status)) if status.code() == tonic::Code::DeadlineExceeded)
         );
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(loads.load(Ordering::SeqCst), 1);
+    }
+    #[tokio::test]
+    async fn receipt_resolution_selects_leader_then_resolves_without_redispatch_or_renewal() {
+        let loads = Arc::new(AtomicU64::new(0));
+        let mut pool = pool(BTreeSet::new(), loads.clone());
+        let committed = Arc::new(AtomicU64::new(0));
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let observed = calls.clone();
+        let effect = committed.clone();
+        let observation = committed.clone();
+        let original = uuid::Uuid::new_v4();
+        let end = Instant::now() + Duration::from_secs(1);
+        let result = pool
+            .request_with_resolution(
+                Duration::from_secs(1),
+                |client, bearer| {
+                    let calls = observed.clone();
+                    let committed = observation.clone();
+                    Box::pin(async move {
+                        assert_eq!(bearer, "opaque-0");
+                        assert!(client.deadline.unwrap() <= end + Duration::from_millis(1));
+                        calls.lock().unwrap().push(("read", client.member));
+                        if client.member == 1 {
+                            return Err(tonic::Status::unavailable("follower").into());
+                        }
+                        Ok((committed.load(Ordering::SeqCst) == 1).then_some(original))
+                    })
+                },
+                |client, bearer| {
+                    let calls = calls.clone();
+                    let committed = effect.clone();
+                    Box::pin(async move {
+                        assert_eq!(bearer, "opaque-0");
+                        calls.lock().unwrap().push(("write", client.member));
+                        assert_eq!(committed.fetch_add(1, Ordering::SeqCst), 0);
+                        Err(tonic::Status::unknown("committed reply lost").into())
+                    })
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(result, original);
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![("read", 1), ("read", 2), ("write", 2), ("read", 3)]
+        );
+        assert_eq!(loads.load(Ordering::SeqCst), 1);
+    }
+    #[tokio::test]
+    async fn absent_receipt_after_ambiguity_never_authorizes_another_effect() {
+        let loads = Arc::new(AtomicU64::new(0));
+        let mut pool = pool(BTreeSet::new(), loads.clone());
+        let effects = Arc::new(AtomicU64::new(0));
+        let reads = Arc::new(AtomicU64::new(0));
+        let result: Result<(), ClientError> = pool
+            .request_with_resolution(
+                Duration::from_millis(40),
+                |_, _| {
+                    reads.fetch_add(1, Ordering::SeqCst);
+                    Box::pin(async { Ok(None) })
+                },
+                |_, _| {
+                    effects.fetch_add(1, Ordering::SeqCst);
+                    Box::pin(async { Err(tonic::Status::unknown("outcome lost").into()) })
+                },
+            )
+            .await;
+        assert!(
+            matches!(result, Err(ClientError::Transport(status)) if status.code() == tonic::Code::DeadlineExceeded)
+        );
+        assert_eq!(effects.load(Ordering::SeqCst), 1);
+        assert!(reads.load(Ordering::SeqCst) >= 3);
         assert_eq!(loads.load(Ordering::SeqCst), 1);
     }
     #[test]

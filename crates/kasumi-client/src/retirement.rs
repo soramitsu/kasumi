@@ -45,6 +45,31 @@ fn observed_status(
     Ok(status)
 }
 impl KasumiAdminClient {
+    /// Observe the original custody command on its exact retired source. A
+    /// missing receipt remains unknown and does not authorize a fresh effect.
+    pub async fn read_custody_receipt(
+        &mut self,
+        bearer: &str,
+        request: &kasumi_types::CustodyRequest,
+    ) -> Result<Option<kasumi_types::CustodyReceipt>, ClientError> {
+        request.validate().map_err(invalid)?;
+        let response = self
+            .inner
+            .read_custody_receipt(self.authorized(
+                bearer,
+                proto::CustodyCommandRequest {
+                    request_json: encode(request)?,
+                },
+            )?)
+            .await?
+            .into_inner();
+        let receipt: Option<kasumi_types::CustodyReceipt> =
+            serde_json::from_slice(&response.response_json)?;
+        if let Some(receipt) = &receipt {
+            verify_custody_receipt(request, receipt)?;
+        }
+        Ok(receipt)
+    }
     pub async fn read_custody(
         &mut self,
         bearer: &str,
@@ -87,12 +112,7 @@ impl KasumiAdminClient {
             .into_inner();
         let receipt: kasumi_types::CustodyReceipt =
             serde_json::from_slice(&response.response_json)?;
-        receipt.validate().map_err(invalid)?;
-        if receipt.command_id != request.command_id
-            || receipt.request_digest != request.digest().map_err(invalid)?
-        {
-            return Err(invalid("custody receipt identity differs"));
-        }
+        verify_custody_receipt(request, &receipt)?;
         Ok(receipt)
     }
 
@@ -203,4 +223,17 @@ impl KasumiAdminClient {
             .into_inner();
         verified(&response.response_json, reference)
     }
+}
+
+fn verify_custody_receipt(
+    request: &kasumi_types::CustodyRequest,
+    receipt: &kasumi_types::CustodyReceipt,
+) -> Result<(), ClientError> {
+    receipt.validate().map_err(invalid)?;
+    if receipt.command_id != request.command_id
+        || receipt.request_digest != request.digest().map_err(invalid)?
+    {
+        return Err(invalid("custody receipt identity differs"));
+    }
+    Ok(())
 }

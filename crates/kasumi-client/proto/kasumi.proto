@@ -62,6 +62,7 @@ service KasumiAdmin {
   rpc CredentialStatus(CredentialJsonRequest) returns (CredentialJsonResponse);
   rpc ReadCustody(RetirementReference) returns (CustodyStatusResponse);
   rpc ExecuteCustody(CustodyCommandRequest) returns (CustodyReceiptResponse);
+  rpc ReadCustodyReceipt(CustodyCommandRequest) returns (CustodyReceiptResponse);
   rpc AbortRetirement(RetireSourceRequest) returns (RetirementStatusResponse);
   rpc RetireSource(RetireSourceRequest) returns (RetirementReceiptResponse);
   rpc RetirementStatus(RetirementReference) returns (RetirementStatusResponse);

@@ -15,7 +15,11 @@ impl KasumiLifecycleClient {
     pub(crate) fn set_deadline(&mut self, deadline: tokio::time::Instant) {
         self.deadline = Some(deadline);
     }
-    fn authorized<T>(&self, bearer: &str, value: T) -> std::result::Result<tonic::Request<T>, ClientError> {
+    fn authorized<T>(
+        &self,
+        bearer: &str,
+        value: T,
+    ) -> std::result::Result<tonic::Request<T>, ClientError> {
         crate::authorized_until(bearer, value, self.deadline)
     }
     pub async fn connect(

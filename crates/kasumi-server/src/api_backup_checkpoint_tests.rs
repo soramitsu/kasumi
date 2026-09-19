@@ -351,6 +351,13 @@ async fn native_backup_proof_is_admin_only_configured_and_verified_through_secur
             "custodian".into()
         ])),
     };
+    assert!(
+        client
+            .read_custody_receipt(bearer, &rotation)
+            .await
+            .unwrap()
+            .is_none()
+    );
     let kasumi_client::ClientError::Transport(error) =
         client.execute_custody(bearer, &rotation).await.unwrap_err()
     else {
@@ -366,10 +373,42 @@ async fn native_backup_proof_is_admin_only_configured_and_verified_through_secur
     );
     let custodian_token = fixture.custody_token("custodian");
     let custodian_bearer = custodian_token.strip_prefix("Bearer ").unwrap();
+    assert!(
+        client
+            .read_custody_receipt(bearer, &rotation)
+            .await
+            .is_err()
+    );
+    let before_receipt = client
+        .read_custody(custodian_bearer, &reference)
+        .await
+        .unwrap();
+    let observed_receipt = client
+        .read_custody_receipt(custodian_bearer, &rotation)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        client
+            .read_custody(custodian_bearer, &reference)
+            .await
+            .unwrap()
+            .revision,
+        before_receipt.revision
+    );
+    let mut substituted = rotation.clone();
+    substituted.not_after_ms -= 1;
+    assert!(
+        client
+            .read_custody_receipt(custodian_bearer, &substituted)
+            .await
+            .is_err()
+    );
     let replay = client
         .execute_custody(custodian_bearer, &rotation)
         .await
         .unwrap();
+    assert_eq!(replay, observed_receipt);
     assert_eq!(replay.principal, "person");
     replay.outcome.unwrap();
     assert_eq!(
@@ -418,6 +457,13 @@ async fn native_backup_proof_is_admin_only_configured_and_verified_through_secur
     // source route. The old application Database and store are permanently sealed.
     fixture.db.shutdown().await.unwrap();
     assert!(fixture.db.engine().generation().is_err());
+    assert_eq!(
+        client
+            .read_custody_receipt(custodian_bearer, &rotation)
+            .await
+            .unwrap(),
+        Some(observed_receipt),
+    );
     assert_eq!(
         client
             .verify_retirement_receipt(custodian_bearer, &reference)

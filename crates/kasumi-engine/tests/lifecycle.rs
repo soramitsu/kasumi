@@ -917,6 +917,18 @@ async fn replicated_control_change_pins_all_partitions_freezes_issuance_and_reco
         )
         .await
         .unwrap();
+    let mut changed_replay = complete.clone();
+    changed_replay.stops.pop_first();
+    assert_eq!(
+        db.lifecycle_control(
+            f.context("replacement"),
+            LifecycleControlCommand::CompletePolicyChange(changed_replay),
+        )
+        .await
+        .unwrap_err()
+        .code,
+        ErrorCode::Conflict,
+    );
     assert_eq!(
         db.engine().generation().unwrap().state.policy_epoch,
         epoch + 1

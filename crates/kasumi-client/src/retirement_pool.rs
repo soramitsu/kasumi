@@ -50,9 +50,28 @@ impl KasumiRetirementPool {
         timeout: Duration,
     ) -> std::result::Result<CustodyReceipt, ClientError> {
         self.inner
-            .request(timeout, false, |client, bearer| {
+            .request_with_resolution(
+                timeout,
+                |client, bearer| {
+                    let request = request.clone();
+                    Box::pin(async move { client.read_custody_receipt(bearer, &request).await })
+                },
+                |client, bearer| {
+                    let request = request.clone();
+                    Box::pin(async move { client.execute_custody(bearer, &request).await })
+                },
+            )
+            .await
+    }
+    pub async fn read_custody_receipt(
+        &mut self,
+        request: &CustodyRequest,
+        timeout: Duration,
+    ) -> std::result::Result<Option<CustodyReceipt>, ClientError> {
+        self.inner
+            .request(timeout, true, |client, bearer| {
                 let request = request.clone();
-                Box::pin(async move { client.execute_custody(bearer, &request).await })
+                Box::pin(async move { client.read_custody_receipt(bearer, &request).await })
             })
             .await
     }

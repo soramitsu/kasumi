@@ -115,6 +115,17 @@ resource-bound custody operations used by planned recovery. See
 borrows one exact serving database for execution and response release. Renewing
 a credential or publishing a different route cannot redirect that invocation.
 
+The lifecycle and retirement SDK pools first read the exact command outcome on
+an installed member to select a current leader. After a lost mutation reply they
+only read that original outcome; an absent receipt never authorizes another
+dispatch in the invocation. Credential, clock and deadline remain unchanged
+across these reads. `ReadCustodyReceipt` accepts the complete original
+`CustodyRequest` and returns its immutable receipt or an unknown (absent) result
+without appending a custody command. The read requires current custody Admin,
+the exact retired source, a fresh quorum and response-release checks. A newly
+authorized custodian can recover the original actor's outcome after the original
+actor was revoked; renewing credentials starts a separate invocation.
+
 ## Adding configured tenants and peers
 
 New replicated control and tenant groups compare their persisted bootstrap

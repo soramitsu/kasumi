@@ -10,6 +10,12 @@ enum CustodyGroup {
     Closed(CustodyRaftGroup),
 }
 impl CustodyGroup {
+    fn receipt(&self, command_id: &str) -> anyhow::Result<Option<CustodyReceipt>> {
+        match self {
+            Self::Serving(group) => group.custody_receipt(command_id),
+            Self::Closed(group) => group.receipt(command_id),
+        }
+    }
     fn view(&self) -> anyhow::Result<CustodyView> {
         match self {
             Self::Serving(group) => group.custody_view(),
@@ -248,6 +254,51 @@ impl RetiredCustody {
     ) -> Result<CustodyReceipt> {
         let result = self.execute_inner(&context, request).await;
         self.denied(&context, result).await
+    }
+    /// Read an exact permanent command without proposing it again. An absence
+    /// is only an observation; it never fences a previously dispatched write.
+    pub async fn receipt(
+        &self,
+        context: &RequestContext,
+        request: &CustodyRequest,
+    ) -> Result<Option<CustodyReceipt>> {
+        let result = async {
+            let cancellation = QueryCancellation::default();
+            let _work = self.work.begin(cancellation)?;
+            let fence = self.response_fence(context)?;
+            request.validate()?;
+            // This audited observation checks the exact retirement and the
+            // current custodian before and after its actual quorum barriers.
+            self.retirement_status(context, &request.retirement).await?;
+            let receipt = self
+                .group
+                .receipt(&request.command_id)
+                .map_err(unavailable)?;
+            let view = self.check(context)?;
+            if let Some(receipt) = &receipt {
+                receipt.validate()?;
+                if receipt.command_id != request.command_id
+                    || receipt.request_digest != request.digest()?
+                {
+                    return Err(Error::new(
+                        ErrorCode::Conflict,
+                        "custody command identity differs",
+                    ));
+                }
+                if receipt.revision > view.revision() || receipt.policy_epoch > view.policy_epoch()
+                {
+                    return Err(Error::new(
+                        ErrorCode::Corruption,
+                        "custody receipt exceeds applied state",
+                    ));
+                }
+            }
+            self.group.barrier().await.map_err(unavailable)?;
+            fence.check()?;
+            Ok(receipt)
+        }
+        .await;
+        self.denied(context, result).await
     }
     async fn execute_inner(
         &self,
