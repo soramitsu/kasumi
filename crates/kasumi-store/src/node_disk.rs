@@ -183,8 +183,9 @@ impl std::fmt::Debug for NodeDisk {
 }
 
 type RootsKey = BTreeMap<String, Identity>;
-fn registry() -> &'static Mutex<Vec<(RootsKey, Arc<NodeDisk>)>> {
-    static REGISTRY: OnceLock<Mutex<Vec<(RootsKey, Arc<NodeDisk>)>>> = OnceLock::new();
+type RegisteredDisks = Mutex<Vec<(RootsKey, Arc<NodeDisk>)>>;
+fn registry() -> &'static RegisteredDisks {
+    static REGISTRY: OnceLock<RegisteredDisks> = OnceLock::new();
     REGISTRY.get_or_init(Default::default)
 }
 

@@ -106,10 +106,9 @@ impl Ticket {
             &prepared.application,
             &mut prepared.application_slot,
             prepared.application_weak,
-        ) {
-            if application.ownership == Ownership::New {
-                **slot = weak;
-            }
+        ) && application.ownership == Ownership::New
+        {
+            **slot = weak;
         }
         prepared.activate.send_replace(true);
         Ok(prepared.value)

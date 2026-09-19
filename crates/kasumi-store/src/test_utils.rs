@@ -16,7 +16,7 @@ use kasumi_clock::LeaseClock;
 /// Explicit fixture identity; production callers must retain their own installed
 /// UUID. Tests of identity mismatch select distinct UUIDs directly.
 pub const NODE_STORE_ID: uuid::Uuid =
-    uuid::Uuid::from_u128(0x5c8c_7c42_e708_452c_b92f_510a46734f2b);
+    uuid::Uuid::from_u128(0x5c8c_7c42_e708_452c_b92f_510a_4673_4f2b);
 
 /// Explicitly install an independent custody provider for a trusted test store.
 /// Production configuration must supply both providers through TenantStorageSet.
