@@ -5,12 +5,31 @@ release. An unchecked gate is unfinished. The September 5 baseline and later
 branch evidence remain historical records; they do not certify this integration.
 
 The explicit release goal remains active. The working integration is
-`/tmp/kasumi-production-strict-reconcile`; the main checkout is preserved for
-separate ongoing ordered-seek work. First-release API removal, permanent
+`codex/production-convergence-20260919`, in the durable external worktree
+`/Users/mtakemiya/dev/kasumi-worktrees/convergence-20260919`. The main checkout
+and its separate Git cleanup changes remain preserved. First-release API removal, permanent
 point-addressed receipts, explicit physical/catalog creation, retained startup and
 request owners, and canonical planned recovery are integrated in source. Persistent
 disk admission, native reservations, complete HA/local lifecycle, and final live,
 capacity, platform, endurance and artifact gates remain open.
+
+On September 19 the temporary worktrees and build targets from the previous
+session were absent. Committed source and tracked evidence survived; no old
+process or prepared plan is treated as a running or completed gate. The surviving
+91-file convergence was preserved byte-for-byte as `055a9b6` (tree
+`a3158704dcd09a0cbd65839fa9f391da0e9746f0`). It combines ordered seek, installed
+member endpoint pools, exact recovery attempt/completion identities, the single
+`KASUMIT7` snapshot format, and compiler/caller reconciliation. This is integrated
+source, not qualified release evidence. The original staged worktree is untouched.
+
+A [fresh checkpoint on the preceding `46ae68f` source](evidence/first-release-46ae68f-check-20260919/README.md)
+failed compilation in 218.329 seconds: engine dependency/type reconciliation and
+15 obsolete Raft fixture calls. Source stayed unchanged and all processes drained.
+Subsequent gates were withheld. The source fixes are included in `055a9b6`, whose
+new checkpoint preserves the original commands and deadlines.
+The ownership regression plan includes 110 mandatory cases across 20 gates;
+preparing that plan does not count as executing it. Any failure must remain in
+the evidence, with fixes validated on a newly frozen successor source.
 
 The combined `3b932ee` source adds explicit singleton creation/reopening,
 standalone operator ownership from first lock through cleanup, and Control-approved
