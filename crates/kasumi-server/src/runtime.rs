@@ -14,7 +14,9 @@ use anyhow::{Context, Result, ensure};
 use kasumi_engine::{Database, ReplicaPlacement, ReplicatedBootstrap};
 use kasumi_store::{NodeStore, TenantStorageSet, TenantStore, TransitConfig, TransitKeyProvider};
 use kasumi_transport::{CertificatePin, ClientAuthentication, TlsIdentity};
-use kasumi_types::{Action, Grant, Limits, Policy, Precondition, RequestContext};
+#[cfg(test)]
+use kasumi_types::Precondition;
+use kasumi_types::{Action, Grant, Limits, Policy, RequestContext};
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use std::sync::Mutex;
@@ -905,6 +907,29 @@ impl ServingTasks {
         self.listeners.spawn(listener);
     }
 
+    /// Initialization can wait indefinitely for other voters. Keep observing
+    /// its required listener while waiting, so a failed listener enters the
+    /// same retained cleanup path as a failure after startup. Only pass work
+    /// whose cancellation already leaves its owners in the runtime inventory.
+    async fn wait_for_startup<T, S>(
+        &mut self,
+        operation: impl std::future::Future<Output = Result<T>>,
+        shutdown: impl std::future::Future<Output = S>,
+    ) -> Result<Option<T>> {
+        tokio::select! {
+            biased;
+            _ = shutdown => Ok(None),
+            result = self.listeners.join_next(), if !self.listeners.is_empty() => {
+                match result {
+                    Some(Ok(Err(error))) => Err(error),
+                    Some(Err(error)) => Err(error.into()),
+                    _ => Err(anyhow::anyhow!("required listener stopped during startup")),
+                }
+            },
+            result = operation => result.map(Some),
+        }
+    }
+
     pub(crate) async fn shutdown(&mut self) -> kasumi_types::drain::DrainResult {
         self.data_stop.send_replace(true);
         self.cluster_stop.send_replace(true);
@@ -1711,24 +1736,43 @@ impl NodeRuntime {
                 tasks.cluster_stop.subscribe(),
             ));
         }
-        let startup=async {
-            tokio::select! { result=self.initialize_original(&self.control)=>result?, _=shutdown.changed()=>return Ok(false) };
-            let ready=tokio::select! { result=self.publish_control()=>result?, _=shutdown.changed()=>false };
-            if !ready { return Ok(false); }
-            if let Some(manager)=&self.administration {
+        let startup = async {
+            if tasks
+                .wait_for_startup(self.initialize_original(&self.control), shutdown.changed())
+                .await?
+                .is_none()
+            {
+                return Ok(false);
+            }
+            if !tasks
+                .wait_for_startup(self.publish_control(), shutdown.changed())
+                .await?
+                .unwrap_or(false)
+            {
+                return Ok(false);
+            }
+            if let Some(manager) = &self.administration {
                 let topology = manager.committed_topology()?;
                 for tenant in &self.tenants {
                     // Configuration may contain staged tenants. Only a durable
                     // route authorizes starting its original group automatically.
-                    if topology.tenants.contains_key(tenant.store.tenant()) {
-                        tokio::select! { result=self.initialize_original(tenant)=>result?, _=shutdown.changed()=>return Ok(false) };
+                    if topology.tenants.contains_key(tenant.store.tenant())
+                        && tasks
+                            .wait_for_startup(self.initialize_original(tenant), shutdown.changed())
+                            .await?
+                            .is_none()
+                    {
+                        return Ok(false);
                     }
                 }
                 manager.reconcile().await?;
             }
-            self.audit.record(lifecycle(SecurityEventKind::NodeStarted)).await?;
-            Ok::<_,anyhow::Error>(true)
-        }.await;
+            self.audit
+                .record(lifecycle(SecurityEventKind::NodeStarted))
+                .await?;
+            Ok::<_, anyhow::Error>(true)
+        }
+        .await;
         if !startup? {
             return Ok(());
         }
@@ -2814,7 +2858,12 @@ mod tests {
                 assert_eq!(node.endpoint, format!("https://node-{id}.example:9446"));
             }
             let configured = kasumi_engine::control::ControlTopology {
-                nodes: config.replication.as_ref().unwrap().control_nodes().unwrap(),
+                nodes: config
+                    .replication
+                    .as_ref()
+                    .unwrap()
+                    .control_nodes()
+                    .unwrap(),
                 tenants: genesis.topology.tenants.clone(),
             };
             validate_configured_topology(&genesis.topology, &configured).unwrap();
@@ -3831,7 +3880,10 @@ mod lifecycle_tests {
         with_spare: bool,
         bootstrap_fault: Option<BootstrapFault>,
     ) -> impl std::future::Future<Output = ()> {
-        Box::pin(replicated_runtime_fixture_inner(with_spare, bootstrap_fault))
+        Box::pin(replicated_runtime_fixture_inner(
+            with_spare,
+            bootstrap_fault,
+        ))
     }
 
     fn open_replicated_fixture_node(
@@ -3848,7 +3900,10 @@ mod lifecycle_tests {
         Box::pin(make())
     }
 
-    async fn replicated_runtime_fixture_inner(with_spare: bool, bootstrap_fault: Option<BootstrapFault>) {
+    async fn replicated_runtime_fixture_inner(
+        with_spare: bool,
+        bootstrap_fault: Option<BootstrapFault>,
+    ) {
         let _fixture = LIFECYCLE_GATE.lock().await;
         let canonical = !with_spare && bootstrap_fault.is_none();
         let recovery_credentials = recovery_fixture::Credentials::new();
@@ -3858,8 +3913,7 @@ mod lifecycle_tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
-                .unwrap();
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         }
         let (mock_files, _) = certificate_files(dir.path());
         let mock_socket = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -4290,8 +4344,8 @@ mod lifecycle_tests {
         })
         .await
         .unwrap();
-        fixture_operation(|| databases[leader]
-            .administer(
+        fixture_operation(|| {
+            databases[leader].administer(
                 context.clone(),
                 Operation::CreateCollection(CollectionDefinition {
                     retention_class: kasumi_types::CollectionRetentionClass::Operational,
@@ -4301,11 +4355,12 @@ mod lifecycle_tests {
                     indexes: Vec::new(),
                     strict_read_audit: false,
                 }),
-            ))
-            .await
-            .unwrap();
-        fixture_operation(|| databases[leader]
-            .mutate(
+            )
+        })
+        .await
+        .unwrap();
+        fixture_operation(|| {
+            databases[leader].mutate(
                 context.clone(),
                 MutationBatch {
                     read_set: Vec::new(),
@@ -4317,9 +4372,10 @@ mod lifecycle_tests {
                         expected: Precondition::Absent,
                     }],
                 },
-            ))
-            .await
-            .unwrap();
+            )
+        })
+        .await
+        .unwrap();
         tokio::time::timeout(Duration::from_secs(20), async {
             loop {
                 if databases.iter().all(|database| {
@@ -4468,10 +4524,11 @@ mod lifecycle_tests {
             mock.await.unwrap().unwrap();
             return;
         }
-        fixture_operation(|| databases[leader]
-            .administer(context.clone(), Operation::Suspend(true)))
-            .await
-            .unwrap();
+        fixture_operation(|| {
+            databases[leader].administer(context.clone(), Operation::Suspend(true))
+        })
+        .await
+        .unwrap();
         let backup = managers[leader]
             .execute_for_test(
                 context.clone(),
@@ -4503,12 +4560,13 @@ mod lifecycle_tests {
         )
         .unwrap();
         let source_context = context.clone();
-        let checkpoint = fixture_operation(|| databases[leader]
-            .verify_backup_checkpoint_named(context.clone(), "primary", backup_id))
-            .await
-            .unwrap()
-            .checkpoint()
-            .clone();
+        let checkpoint = fixture_operation(|| {
+            databases[leader].verify_backup_checkpoint_named(context.clone(), "primary", backup_id)
+        })
+        .await
+        .unwrap()
+        .checkpoint()
+        .clone();
         let recovery = recovery.as_mut().unwrap();
         let incarnation = recovery.target;
         recovery
@@ -4525,7 +4583,8 @@ mod lifecycle_tests {
                 .prepare(source_context.clone(), M::Status {})
                 .unwrap();
             let source_release = source_status.response_fence().unwrap();
-            let retained_source_response = fixture_operation(|| source_status.execute()).await.unwrap();
+            let retained_source_response =
+                fixture_operation(|| source_status.execute()).await.unwrap();
             assert_eq!(
                 retained_source_response["incarnation"],
                 databases[leader]
@@ -4606,8 +4665,8 @@ mod lifecycle_tests {
                     .is_err()
             );
         }
-        let (resumed_leader, ()) =
-            fixture_operation(|| on_quorum_leader(&restored_databases, "resume restored tenant", |index| {
+        let (resumed_leader, ()) = fixture_operation(|| {
+            on_quorum_leader(&restored_databases, "resume restored tenant", |index| {
                 let context = context.clone();
                 let restored = &restored_databases[index];
                 async move {
@@ -4620,14 +4679,16 @@ mod lifecycle_tests {
                     }
                     Ok(())
                 }
-            }))
-            .await;
+            })
+        })
+        .await;
         let restored = registries[resumed_leader].database(&context).unwrap();
-        let (_, document) =
-            fixture_operation(|| on_quorum_leader(&restored_databases, "read restored document", |index| {
+        let (_, document) = fixture_operation(|| {
+            on_quorum_leader(&restored_databases, "read restored document", |index| {
                 restored_databases[index].get(&context, "docs", "a")
-            }))
-            .await;
+            })
+        })
+        .await;
         assert_eq!(document.body["durable"], serde_json::json!(true));
         assert!(
             databases[leader]
@@ -4669,15 +4730,17 @@ mod lifecycle_tests {
         let mut second_managers = Vec::new();
         let mut second_controls = Vec::new();
         let mut second_recovery_handles = Vec::new();
-        fixture_operation(|| recovery
-            .enroll_tenant("beta", Uuid::parse_str(&beta_incarnation).unwrap()))
-            .await;
-        fixture_operation(|| recovery
-            .enroll_tenant(
+        fixture_operation(|| {
+            recovery.enroll_tenant("beta", Uuid::parse_str(&beta_incarnation).unwrap())
+        })
+        .await;
+        fixture_operation(|| {
+            recovery.enroll_tenant(
                 "mismatched",
                 Uuid::parse_str(&mismatched_incarnation).unwrap(),
-            ))
-            .await;
+            )
+        })
+        .await;
         // This remains a release assertion, not an ignored case: strict startup
         // must support explicit dormant tenant enrollment before these new
         // catalogs can be opened. The production enrollment path is a remaining
@@ -4708,7 +4771,9 @@ mod lifecycle_tests {
                 mismatched.initial_limits.max_documents -= 1;
             }
             config.tenants.push(mismatched);
-            let runtime = open_replicated_fixture_node(config, file_secret).await.unwrap();
+            let runtime = open_replicated_fixture_node(config, file_secret)
+                .await
+                .unwrap();
             for tenant in ["beta", "mismatched"] {
                 assert!(
                     crate::node_enrollment::tenant_record(runtime.audit.store(), tenant)
@@ -4849,12 +4914,14 @@ mod lifecycle_tests {
         })
         .await
         .unwrap();
-        fixture_operation(|| exercise_provisioning(
-            &second_managers,
-            &second_controls,
-            &second_registries,
-            operator.clone(),
-        ))
+        fixture_operation(|| {
+            exercise_provisioning(
+                &second_managers,
+                &second_controls,
+                &second_registries,
+                operator.clone(),
+            )
+        })
         .await;
         // Approving one replica's immutable configuration cannot authorize a
         // differently configured voter or create a partial two-voter group.

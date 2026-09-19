@@ -100,6 +100,102 @@ impl std::fmt::Display for ListenerFailure {
 impl std::error::Error for ListenerFailure {}
 
 #[tokio::test]
+async fn required_listener_failure_interrupts_pending_startup_before_retained_owner_drain() {
+    let mut tasks = ServingTasks::new();
+    let (fail, failing) = tokio::sync::oneshot::channel();
+    tasks.listeners.spawn(async move {
+        failing.await?;
+        Err(ListenerFailure.into())
+    });
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("pending-startup.redb");
+    let node = kasumi_store::NodeStore::create_new(
+        &path,
+        kasumi_store::test_utils::NODE_STORE_ID,
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
+    let weak = Arc::downgrade(&node);
+    let (release, retained) = tokio::sync::oneshot::channel();
+    tasks.maintenance.spawn(async move {
+        let _node = node;
+        retained.await?;
+        Ok(())
+    });
+
+    let (entered, mut started) = tokio::sync::oneshot::channel();
+    let mut startup = Box::pin(tasks.wait_for_startup(
+        async move {
+            entered.send(()).unwrap();
+            // Quorum/Control publication cannot finish while another voter is
+            // absent. Only the required listener failure can resolve this wait.
+            std::future::pending::<anyhow::Result<()>>().await
+        },
+        std::future::pending::<()>(),
+    ));
+    std::future::poll_fn(|cx| {
+        assert!(startup.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    started.try_recv().unwrap();
+    fail.send(()).unwrap();
+    let error = tokio::time::timeout(Duration::from_secs(5), startup)
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert!(error.is::<ListenerFailure>());
+    assert!(tasks.listeners.is_empty());
+
+    // Returning the startup failure must not discard the rest of the actual
+    // serving inventory. A cancelled cleanup still excludes physical reopen.
+    let mut drain = Box::pin(tasks.shutdown());
+    std::future::poll_fn(|cx| {
+        assert!(drain.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    drop(drain);
+    assert!(weak.upgrade().is_some());
+    assert!(
+        kasumi_store::NodeStore::open_existing(
+            &path,
+            kasumi_store::test_utils::NODE_STORE_ID,
+            kasumi_store::ScratchDisk::fixture(),
+        )
+        .is_err()
+    );
+    release.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), tasks.shutdown())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(weak.upgrade().is_none());
+    assert!(error.is::<ListenerFailure>());
+    let _reopened = kasumi_store::NodeStore::open_existing(
+        &path,
+        kasumi_store::test_utils::NODE_STORE_ID,
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn standalone_startup_without_cluster_listener_can_complete() {
+    let mut tasks = ServingTasks::new();
+    let (_stop, mut shutdown) = tokio::sync::watch::channel(false);
+    assert_eq!(
+        tasks
+            .wait_for_startup(async { Ok(37) }, shutdown.changed())
+            .await
+            .unwrap(),
+        Some(37)
+    );
+    tasks.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn serving_drain_keeps_every_panic_abort_and_returned_error() {
     let mut tasks = ServingTasks::new();
     let failed = tasks.maintenance.spawn(async {
