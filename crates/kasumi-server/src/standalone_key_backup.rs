@@ -228,7 +228,7 @@ mod tests {
     use super::*;
     #[tokio::test]
     async fn relocated_installed_keys_are_copied_and_inventory_detects_corruption() {
-        let root = tempfile::tempdir().unwrap();
+        let root = kasumi_store::test_utils::private_tempdir().unwrap();
         let installed = crate::standalone::initialize(&root.path().join("kasumi"), "a/tenant")
             .await
             .unwrap();

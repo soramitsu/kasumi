@@ -88,7 +88,7 @@ fn vote(source: u64) -> serde_json::Value {
 
 async fn store(path: &std::path::Path) -> Result<Arc<TenantStore>> {
     TenantStore::initialize_catalog_fixture(
-        NodeStore::create_new(
+        NodeStore::create_new_fixture(
             path,
             kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
@@ -102,7 +102,7 @@ async fn store(path: &std::path::Path) -> Result<Arc<TenantStore>> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn real_three_node_raft_replicates_over_pinned_mutual_tls_http() -> Result<()> {
     let ca = Authority::new()?;
-    let dir = tempfile::tempdir()?;
+    let dir = kasumi_store::test_utils::private_tempdir()?;
     let mut listeners = Vec::new();
     let mut identities = Vec::new();
     let mut peers = Vec::new();
@@ -150,7 +150,11 @@ async fn real_three_node_raft_replicates_over_pinned_mutual_tls_http() -> Result
             .await?,
             backend.clone(),
             network.clone(),
-            config,
+            kasumi_raft::RaftGroupConfig {
+                raft: config,
+                limits: kasumi_raft::RaftLimits::default(),
+            },
+            kasumi_raft::SnapshotBufferOwner::fixture(),
         )
         .await?;
         network.register_group(
@@ -240,7 +244,7 @@ async fn real_three_node_raft_replicates_over_pinned_mutual_tls_http() -> Result
 async fn peer_requests_bind_certificate_source_candidate_target_and_group_and_limit_body()
 -> Result<()> {
     let ca = Authority::new()?;
-    let dir = tempfile::tempdir()?;
+    let dir = kasumi_store::test_utils::private_tempdir()?;
     let identities = [
         ca.issue("127.0.0.1")?,
         ca.issue("node2.example")?,
@@ -283,7 +287,11 @@ async fn peer_requests_bind_certificate_source_candidate_target_and_group_and_li
         .await?,
         Arc::new(Backend::default()),
         network.clone(),
-        config,
+        kasumi_raft::RaftGroupConfig {
+            raft: config,
+            limits: kasumi_raft::RaftLimits::default(),
+        },
+        kasumi_raft::SnapshotBufferOwner::fixture(),
     )
     .await?;
     network.register_group(

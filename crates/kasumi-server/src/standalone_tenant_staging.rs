@@ -402,11 +402,11 @@ async fn stage_owned(
             if let Err(error) = created {
                 // Uncertain receipt writes must be resolved before assigning an
                 // outcome. No failed retry creates or adopts another keyring.
-                if let Some(observed) = load(owner, record.request.operation_id)? {
-                    if matches!(observed.outcome, Outcome::Dispatched) {
-                        record.outcome = Outcome::Failed;
-                        save(owner, &record)?;
-                    }
+                if let Some(observed) = load(owner, record.request.operation_id)?
+                    && matches!(observed.outcome, Outcome::Dispatched)
+                {
+                    record.outcome = Outcome::Failed;
+                    save(owner, &record)?;
                 }
                 return Err(error);
             }

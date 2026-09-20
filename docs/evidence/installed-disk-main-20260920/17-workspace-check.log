@@ -1,0 +1,45 @@
+    Checking kasumi-raft v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-raft)
+warning: method `matches_response_id` is never used
+   --> vendor/rmcp-3.2.0/src/model.rs:251:19
+    |
+236 | impl NumberOrString {
+    | ------------------- method in this implementation
+...
+251 |     pub(crate) fn matches_response_id(&self, response_id: &Self) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `set_client_request_metadata` is never used
+    --> vendor/rmcp-3.2.0/src/service.rs:1032:19
+     |
+ 806 | impl<R: ServiceRole> Peer<R> {
+     | ---------------------------- method in this implementation
+...
+1032 |     pub(crate) fn set_client_request_metadata(&self, metadata: ClientRequestMetadata) {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `is_authorization_required` is never used
+   --> vendor/rmcp-3.2.0/src/transport.rs:275:19
+    |
+249 | impl DynamicTransportError {
+    | -------------------------- method in this implementation
+...
+275 |     pub(crate) fn is_authorization_required(&self) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `rmcp` (lib) generated 3 warnings
+    Checking kasumi-store v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-store)
+    Checking kasumi-transport v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-transport)
+    Checking kasumi-engine v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-engine)
+    Checking kasumi-authority v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-authority)
+    Checking kasumi-client v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-client)
+    Checking kasumi-server v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-server)
+    Checking kasumi-bench v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-bench)
+error: queries overflow the depth limit!
+  |
+  = help: consider increasing the recursion limit by adding a `#![recursion_limit = "256"]` attribute to your crate (`retirement`)
+  = note: query depth increased by 130 when computing layout of `{async fn body of <impl at crates/kasumi-engine/tests/retirement.rs:74:1: 74:13>::request()}`
+
+error: could not compile `kasumi-engine` (test "retirement") due to 1 previous error
+warning: build failed, waiting for other jobs to finish...

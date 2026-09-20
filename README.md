@@ -44,8 +44,10 @@ the baseline's full platform and performance gates for the changed source.
 
 Each successful batch publishes its matching document and index generation
 together. Cursors continue a historical snapshot for at most 60 seconds and are
-bound to identity, policy, incarnation, query, and leadership term. Receipts are
-scoped to the principal and retained for 24 hours, including in snapshots.
+bound to identity, policy, incarnation, query, and leadership term. Ordinary
+mutation receipts retain their original tenant, incarnation, principal and command
+identity permanently in encrypted point-addressed storage under explicit byte
+budgets. Snapshots and restores preserve these receipts and their original scope.
 Staged transactions keep permanent terminal identities, publish all effects in
 one generation and support up to 100,000 mutations within explicit byte budgets.
 Read leases provide bounded coherent point and ID-ordered collection pages.

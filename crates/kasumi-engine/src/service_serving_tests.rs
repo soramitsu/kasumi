@@ -67,7 +67,7 @@ impl ServingFixture {
                 .collect(),
         };
         let mut fixture = Self {
-            directory: tempfile::tempdir().unwrap(),
+            directory: kasumi_store::test_utils::private_tempdir().unwrap(),
             databases: vec![],
             audits: vec![],
             signer,
@@ -141,13 +141,13 @@ impl ServingFixture {
                 .unwrap();
             let gate = kasumi_serving::ServingGate::new(lease).unwrap();
             let node = (if create {
-                NodeStore::create_new(
+                NodeStore::create_new_fixture(
                     self.directory.path().join(format!("node-{id}.redb")),
                     kasumi_store::test_utils::NODE_STORE_ID,
                     kasumi_store::ScratchDisk::fixture(),
                 )
             } else {
-                NodeStore::open_existing(
+                NodeStore::open_existing_fixture(
                     self.directory.path().join(format!("node-{id}.redb")),
                     kasumi_store::test_utils::NODE_STORE_ID,
                     kasumi_store::ScratchDisk::fixture(),
@@ -176,7 +176,7 @@ impl ServingFixture {
             // by a real NodeRuntime, including its maintenance reservation.
             let admission = crate::admission::NodeAdmission::new(Default::default()).unwrap();
             let archive = Arc::new(
-                kasumi_store::FilesystemAuditArchive::open(
+                kasumi_store::FilesystemAuditArchive::open_fixture(
                     audit_store
                         .durable_directory()
                         .unwrap()
@@ -343,7 +343,7 @@ async fn serving_expiry_suppresses_long_backup_verification_and_post_publication
         .await
         .unwrap();
     let destination = Arc::new(
-        kasumi_store::FilesystemBackupDestination::new(
+        kasumi_store::FilesystemBackupDestination::new_fixture(
             fixture.directory.path().join("backups"),
             32 << 20,
         )

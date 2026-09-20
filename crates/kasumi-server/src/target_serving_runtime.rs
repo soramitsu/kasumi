@@ -165,6 +165,7 @@ impl TargetRecoveryRuntime {
         g.node = Some(NodeStore::open_existing(
             path,
             self.journal.materialization_file_id(&key.0, key.1)?,
+            self.audit.store().persistent_disk().clone(),
             self.audit.store().scratch_disk().clone(),
         )?);
         self.placement(&projection.execution()?.origin.input)?;

@@ -1,0 +1,15 @@
+{
+  "transferred_utc": "2026-09-20T07:46:00.477254+00:00",
+  "upstream_commit": "8815cdba2826f74e848acef361ad03f93bb1c3f8",
+  "retained_checkpoint": "169b2497f0f80c56817ea37ea6523f899d519167",
+  "source_files": 598,
+  "source_bytes": 2594408,
+  "exact_previous_check": "29-auxiliary-unit-tests",
+  "dependency_activated": false,
+  "hashes": {
+    "replication-source.tar": "d73a5aaa7986b6917adcd21bf4178892bef4cdd563d5d22633de5c67f9604141",
+    "replication-full.patch": "62022857d3f6d2eabf92b06a1b6ddb18e312c3d65ed03e5b04163f00a0a3e24b",
+    "pending-auxiliary-transfer.patch": "79aa79fdde98b2d8675418cf1c11daa601e916463ff290eaf8e9bc6931d940c6",
+    "transfer-source.json": "d5d2ba771b5ebb0d6589b0cc9fcb3a549e9e899372d05eff96461d1f0cb5b4fc"
+  }
+}

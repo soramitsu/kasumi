@@ -5,6 +5,7 @@
 * Use immediately durable commits with prepared allocator snapshots; remove durability selection and post-commit metadata publication.
 * Add explicit fallible close, retained busy handles, and non-allocating destructor fallback.
 * Require a relocation byte allowance for bounded compaction batches.
+* Reject legacy type-name aliases and one-phase headers; use only exact current type identities and the authoritative winning root.
 
 ## 5.0.0 - 2026-XX-XX
 * Under the `experimental-api-5` feature flag, turning off the `std` feature now builds redb as a

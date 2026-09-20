@@ -958,8 +958,8 @@ impl Pending {
                 "unselected target terminal differs from exact original apply replay"
             ),
             (None, None) => storage.store.write_batch(&[
-                WriteOp::put(&storage.binding.namespace(), id, bytes),
-                WriteOp::put(&storage.binding.namespace(), ordinal, index),
+                WriteOp::put(storage.binding.namespace(), id, bytes),
+                WriteOp::put(storage.binding.namespace(), ordinal, index),
             ])?,
             _ => anyhow::bail!("partial target terminal row/index pair"),
         }

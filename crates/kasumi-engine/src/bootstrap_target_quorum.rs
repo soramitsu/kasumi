@@ -335,7 +335,11 @@ pub async fn open_target_replica(
             stores.clone(),
             engine.clone(),
             transport,
-            config.raft,
+            kasumi_raft::RaftGroupConfig {
+                raft: config.raft,
+                limits: kasumi_raft::RaftLimits::default(),
+            },
+            config.admission.snapshot_buffer_owner()?,
         )
         .await?;
         let database = Database::new_with_admission(

@@ -1,0 +1,117 @@
+   Compiling serde_json v1.0.151 (/Users/mtakemiya/dev/kasumi/vendor/serde_json-1.0.151)
+   Compiling tracing-core v0.1.36
+   Compiling tracing v0.1.44
+   Compiling tinystr v0.8.4
+   Compiling zerotrie v0.2.5
+   Compiling icu_locale_core v2.3.0
+   Compiling icu_collections v2.3.0
+   Compiling icu_provider v2.3.1
+   Compiling h2 v0.4.19
+   Compiling icu_properties v2.3.0
+   Compiling icu_normalizer v2.3.0
+   Compiling idna_adapter v1.2.2
+   Compiling idna v1.1.0
+   Compiling hyper v1.11.1
+   Compiling url v2.5.8
+   Compiling tower v0.5.3
+   Compiling hyper-util v0.1.20
+   Compiling axum-core v0.5.6
+   Compiling lindera-dictionary v5.3.0
+   Compiling axum v0.8.9
+   Compiling hyper-timeout v0.5.2
+   Compiling kasumi-types v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-types)
+   Compiling tonic v0.14.6
+   Compiling lindera-ipadic v5.3.0
+   Compiling kasumi-serving v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-serving)
+   Compiling hyper-rustls v0.27.9
+   Compiling kasumi-transport v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-transport)
+   Compiling tower-http v0.6.11
+   Compiling rusticata-macros v4.1.0
+   Compiling openraft-macros v0.9.25 (/Users/mtakemiya/dev/kasumi/vendor/openraft-0.9.25/macros)
+   Compiling asn1-rs v0.7.2
+   Compiling tantivy-query-grammar v0.26.0
+   Compiling lindera v5.3.0
+   Compiling reqwest v0.12.28
+   Compiling tracing-futures v0.2.5
+   Compiling lazy_static v1.5.0
+   Compiling tantivy v0.26.1
+   Compiling lindera-analysis v5.3.0
+   Compiling openraft v0.9.25 (/Users/mtakemiya/dev/kasumi/vendor/openraft-0.9.25/openraft)
+   Compiling jsonschema-value v0.52.1
+   Compiling referencing v0.52.1
+   Compiling kasumi-store v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-store)
+   Compiling kasumi-client v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-client)
+   Compiling jsonschema v0.52.1
+   Compiling kasumi-raft v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-raft)
+   Compiling tonic-prost v0.14.6
+   Compiling oid-registry v0.8.1
+   Compiling lindera-tantivy v5.0.1
+   Compiling der-parser v10.0.0
+   Compiling schemars v1.2.2
+   Compiling x509-parser v0.18.1
+   Compiling kasumi-query v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-query)
+   Compiling sharded-slab v0.1.7
+   Compiling rmcp-macros v3.2.0
+   Compiling tracing-serde v0.2.0
+   Compiling thread_local v1.1.10
+   Compiling rmcp v3.2.0 (/Users/mtakemiya/dev/kasumi/vendor/rmcp-3.2.0)
+   Compiling tracing-subscriber v0.3.23
+   Compiling rcgen v0.14.10
+   Compiling jsonwebtoken v9.3.1
+   Compiling kasumi-authority v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-authority)
+warning: method `matches_response_id` is never used
+   --> vendor/rmcp-3.2.0/src/model.rs:251:19
+    |
+236 | impl NumberOrString {
+    | ------------------- method in this implementation
+...
+251 |     pub(crate) fn matches_response_id(&self, response_id: &Self) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `set_client_request_metadata` is never used
+    --> vendor/rmcp-3.2.0/src/service.rs:1032:19
+     |
+ 806 | impl<R: ServiceRole> Peer<R> {
+     | ---------------------------- method in this implementation
+...
+1032 |     pub(crate) fn set_client_request_metadata(&self, metadata: ClientRequestMetadata) {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `is_authorization_required` is never used
+   --> vendor/rmcp-3.2.0/src/transport.rs:275:19
+    |
+249 | impl DynamicTransportError {
+    | -------------------------- method in this implementation
+...
+275 |     pub(crate) fn is_authorization_required(&self) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+   Compiling kasumi-engine v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-engine)
+warning: `rmcp` (lib) generated 3 warnings
+   Compiling kasumi-server v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-server)
+warning: linker stderr: ld: __eh_frame section too large (max 16MB) to encode dwarf unwind offsets in compact unwind table, performance of exception handling might be affected
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: `kasumi-server` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3m 28s
+     Running unittests src/lib.rs (target/debug/deps/kasumi_server-350e3232320ee659)
+
+running 12 tests
+test cluster::maintenance_tests::actual_tls_peer_readiness_enrolls_replaces_and_fences_revoked_member ... ok
+test readiness::tests::complete_coverage_exceeds_diagnostic_page_without_group_count_cutoff ... ok
+test readiness::tests::coverage_metadata_has_real_lifetime_charge_and_admission_rejection ... ok
+test readiness::tests::every_membership_epoch_component_fences_original_release_and_requires_new_sweep ... ok
+test readiness::tests::failure_beyond_detail_page_immediately_revokes_previous_complete_sweep ... ok
+test readiness::tests::membership_and_failure_epoch_saturation_permanently_fail_closed ... ok
+test readiness::tests::original_authority_expiry_clips_whole_coverage_even_outside_details ... ok
+test readiness::tests::partial_and_slow_complete_sweeps_do_not_certify_readiness ... ok
+test readiness::tests::refreshing_and_renewed_coverage_never_extend_original_release_deadline ... ok
+test readiness_probe::tests::cancelled_probe_drain_retains_original_future_charge_and_typed_failure ... ok
+test readiness_probe::tests::panicked_probe_keeps_original_payload_and_charge_until_core_shutdown ... ok
+test readiness_probe::tests::repeated_timeouts_keep_one_actual_queued_probe_and_its_charge ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 179 filtered out; finished in 9.00s
+

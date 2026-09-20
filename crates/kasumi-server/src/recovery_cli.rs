@@ -248,7 +248,7 @@ mod tests {
     #[test]
     fn recovery_attempt_binding_includes_every_installed_member_and_rejects_the_old_profile_shape()
     {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = kasumi_store::test_utils::private_tempdir().unwrap();
         let certificate = directory.path().join("client.pem");
         let key = directory.path().join("client-key.pem");
         // Public unit fixture only; no listener is opened with this key.

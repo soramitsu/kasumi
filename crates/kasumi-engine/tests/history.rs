@@ -32,13 +32,13 @@ async fn open(
     create: bool,
 ) -> (Arc<Database>, Arc<SecurityAudit>) {
     let node = (if create {
-        NodeStore::create_new(
+        NodeStore::create_new_fixture(
             path,
             kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
         )
     } else {
-        NodeStore::open_existing(
+        NodeStore::open_existing_fixture(
             path,
             kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
@@ -139,7 +139,7 @@ fn feed(start: ChangeFeedStart, limit: usize) -> ReadChangeFeed {
 
 #[tokio::test]
 async fn change_feed_is_atomic_ordered_resumable_and_detects_retention_gaps() {
-    let root = tempfile::tempdir().unwrap();
+    let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let mut limits = Limits::default();
     limits.history.max_feed_events = 4;
     let (db, audit) = open(&root.path().join("node.redb"), limits, true).await;
@@ -315,9 +315,9 @@ async fn change_feed_is_atomic_ordered_resumable_and_detects_retention_gaps() {
 
 #[tokio::test]
 async fn archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_restart() {
-    let root = tempfile::tempdir().unwrap();
+    let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let destination = Arc::new(
-        kasumi_store::FilesystemBackupDestination::new(
+        kasumi_store::FilesystemBackupDestination::new_fixture(
             root.path().join("history-objects"),
             16 << 20,
         )
@@ -582,13 +582,15 @@ async fn archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_res
 
 #[tokio::test]
 async fn chunked_full_backup_restores_cold_history_and_permanent_identity_without_source_objects() {
-    let root = tempfile::tempdir().unwrap();
+    let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let cold_path = root.path().join("cold");
     let backup_path = root.path().join("backup");
-    let cold =
-        Arc::new(kasumi_store::FilesystemBackupDestination::new(&cold_path, 16 << 20).unwrap());
-    let backups =
-        Arc::new(kasumi_store::FilesystemBackupDestination::new(&backup_path, 16 << 20).unwrap());
+    let cold = Arc::new(
+        kasumi_store::FilesystemBackupDestination::new_fixture(&cold_path, 16 << 20).unwrap(),
+    );
+    let backups = Arc::new(
+        kasumi_store::FilesystemBackupDestination::new_fixture(&backup_path, 16 << 20).unwrap(),
+    );
     let (db, audit) = open(&root.path().join("source.redb"), Limits::default(), true).await;
     db.install_archive_destination("cold".into(), cold).unwrap();
     collection(&db, "docs", CollectionRetentionClass::ArchivableHistory).await;
@@ -739,7 +741,7 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
     drop(db);
     drop(audit);
     std::fs::remove_dir_all(&cold_path).unwrap();
-    let node = NodeStore::create_new(
+    let node = NodeStore::create_new_fixture(
         root.path().join("restored.redb"),
         kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
@@ -865,7 +867,7 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
         } else if suffix == "missing" {
             std::fs::remove_file(&dependency_path).unwrap();
         }
-        let node = NodeStore::create_new(
+        let node = NodeStore::create_new_fixture(
             root.path().join(format!("{suffix}.redb")),
             kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
@@ -936,7 +938,7 @@ struct PendingDestination {
 
 #[tokio::test]
 async fn scoped_feed_advances_through_filtered_commit_tail_and_emits_only_real_deletions() {
-    let root = tempfile::tempdir().unwrap();
+    let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let (db, audit) = open(&root.path().join("node.redb"), Limits::default(), true).await;
     collection(&db, "docs", CollectionRetentionClass::Operational).await;
     collection(&db, "other", CollectionRetentionClass::Operational).await;
@@ -1057,7 +1059,7 @@ impl BackupDestination for PendingDestination {
 
 #[tokio::test]
 async fn shutdown_cancels_pending_archive_upload_and_keeps_source_rows_on_restart() {
-    let root = tempfile::tempdir().unwrap();
+    let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let path = root.path().join("node.redb");
     let (db, audit) = open(&path, Limits::default(), true).await;
     collection(&db, "docs", CollectionRetentionClass::ArchivableHistory).await;

@@ -88,12 +88,12 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> Self {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = kasumi_store::test_utils::private_tempdir().unwrap();
         let private = directory.path().join("private");
         private_files::create_directory(&private).unwrap();
         let signer = private.join("signer.json");
         initialize_signer(&signer).unwrap();
-        let node = NodeStore::create_new(
+        let node = NodeStore::create_new_fixture(
             private.join("node.redb"),
             kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),

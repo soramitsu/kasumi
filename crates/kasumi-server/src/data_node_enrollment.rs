@@ -41,12 +41,13 @@ async fn initialize_owned(config: RuntimeConfig) -> Result<Enrolled> {
         let (node, audit) = crate::node_provision::create(
             &config.database_path,
             config.database_id,
+            &config.persistent_disk,
             &config.scratch_disk,
             &config.security_audit,
             admission,
         )
         .await?;
-        pending.nodes.push(node.clone());
+        pending.owned_nodes.push(node.clone());
         pending.audits.push(audit.clone());
         #[cfg(test)]
         crate::startup_preparation::checkpoint(config.database_id, "ha-enrollment-node");
@@ -121,6 +122,7 @@ pub(crate) async fn provision(
                     .open(
                         domains,
                         credential.clone(),
+                        node.persistent_disk().clone(),
                         node.scratch_disk().clone(),
                         audit.admission().clone(),
                     )
@@ -294,7 +296,7 @@ async fn initialize_domain(
     credential: CredentialSource,
 ) -> Result<String> {
     let mut pending = crate::startup_resources::Resources::default();
-    pending.nodes.push(node.clone());
+    pending.borrowed_nodes.push(node.clone());
     let result = crate::startup_preparation::capture("HA domain enrollment", async {
         if let Some(grant) = grant {
             grant.check()?;

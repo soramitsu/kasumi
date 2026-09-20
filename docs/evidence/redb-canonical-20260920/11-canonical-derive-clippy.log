@@ -1,0 +1,3 @@
+    Checking redb v4.2.0 (/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0)
+    Checking redb-derive v0.1.0 (/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0/crates/redb-derive)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.98s

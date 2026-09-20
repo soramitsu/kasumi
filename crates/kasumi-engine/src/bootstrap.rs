@@ -194,7 +194,11 @@ pub async fn prepare_replicated_restore(
         targets.clone(),
         engine.clone(),
         transport,
-        replica.raft,
+        kasumi_raft::RaftGroupConfig {
+            raft: replica.raft,
+            limits: kasumi_raft::RaftLimits::default(),
+        },
+        replica.admission.snapshot_buffer_owner()?,
     )
     .await?;
     let database =
@@ -493,7 +497,11 @@ async fn open_replicated_inner<'a>(
         stores.clone(),
         engine.clone(),
         transport,
-        config,
+        kasumi_raft::RaftGroupConfig {
+            raft: config,
+            limits: kasumi_raft::RaftLimits::default(),
+        },
+        security_audit.admission().snapshot_buffer_owner()?,
     )
     .await?;
     let database = if runtime.maintenance() {
@@ -871,6 +879,7 @@ async fn start_prepared(
         format!("{}/{incarnation}", store.tenant()),
         stores.clone(),
         engine.clone(),
+        admission.snapshot_buffer_owner()?,
     )
     .await?;
     Ok(match runtime {

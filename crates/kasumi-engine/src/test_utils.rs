@@ -88,11 +88,11 @@ fn write_candidate(
 ) -> anyhow::Result<()> {
     let mut encoder = crate::snapshot_codec::Encoder::new(writer)?;
     for kind in 0..21 {
-        if kind == 5 {
-            if let Some(receipts) = receipts {
-                for row in receipts.records() {
-                    encoder.record(crate::snapshot_codec::Record::Receipt(Box::new(row?)))?;
-                }
+        if kind == 5
+            && let Some(receipts) = receipts
+        {
+            for row in receipts.records() {
+                encoder.record(crate::snapshot_codec::Record::Receipt(Box::new(row?)))?;
             }
         }
         for record in crate::snapshot_codec::records(state, kind, None)? {

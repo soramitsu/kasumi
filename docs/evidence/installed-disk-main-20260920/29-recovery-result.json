@@ -1,0 +1,16 @@
+{
+  "scope": "development diagnostic recovery receipt; original runner failed before terminal receipt",
+  "outcome": "failed; no terminal test result",
+  "original_runner_exit_code": 1,
+  "test_exit_code": null,
+  "process_group": 31804,
+  "observed_test_pid": 31834,
+  "deadline_seconds": 1200,
+  "elapsed_since_source_inventory_seconds": 1309.7738530635834,
+  "timeout_and_signals": "original runner did not persist these fields; its deadline and termination code are preserved, not reconstructed as observed events",
+  "drained": true,
+  "drain_verification": "fresh ps inventory contains neither original process group nor observed cargo/test PIDs",
+  "inventoried_source_unchanged_at_recovery": true,
+  "source_head": "c283fa4a2c2344fd359d1d58ea49a1664de72088",
+  "recovery_unix_time": 1789897398.756222
+}

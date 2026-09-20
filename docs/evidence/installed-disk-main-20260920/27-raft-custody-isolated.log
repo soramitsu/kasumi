@@ -1,0 +1,93 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.17s
+     Running unittests src/lib.rs (target/debug/deps/kasumi_raft-2f98ca7f4e0b7718)
+
+running 1 test
+test custody_capacity_tests::permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopens ... FAILED
+
+failures:
+
+---- custody_capacity_tests::permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopens stdout ----
+Error: invalid data
+
+Stack backtrace:
+   0: std::backtrace_rs::backtrace::libunwind::trace
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/../../backtrace/src/backtrace/libunwind.rs:117:9
+   1: std::backtrace_rs::backtrace::trace_unsynchronized::<<std::backtrace::Backtrace>::create::{closure#0}>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/../../backtrace/src/backtrace/mod.rs:66:14
+   2: <std::backtrace::Backtrace>::create
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/backtrace.rs:331:13
+   3: <anyhow::Error as core::convert::From<std::io::error::Error>>::from
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anyhow-1.0.104/src/backtrace.rs:10:14
+   4: <core::result::Result<(), anyhow::Error> as core::ops::try_trait::FromResidual<core::result::Result<core::convert::Infallible, std::io::error::Error>>>::from_residual
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/result.rs:2189:27
+   5: kasumi_raft::custody_capacity_tests::spool_record::<kasumi_raft::custody_state::CustodyAudit>
+             at ./src/custody_capacity_tests.rs:16:5
+   6: kasumi_raft::custody_capacity_tests::permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopens::{closure#0}::{closure#0}
+             at ./src/custody_capacity_tests.rs:73:13
+   7: <tokio::runtime::blocking::task::BlockingTask<kasumi_raft::custody_capacity_tests::permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopens::{closure#0}::{closure#0}> as core::future::future::Future>::poll
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/blocking/task.rs:42:21
+   8: <tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<kasumi_raft::custody_capacity_tests::permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopens::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll::{closure#0}
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/task/core.rs:380:24
+   9: <tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<tokio::runtime::blocking::task::BlockingTask<kasumi_raft::custody_capacity_tests::permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopens::{closure#0}::{closure#0}>>>>::with_mut::<core::task::poll::Poll<core::result::Result<(kasumi_raft::custody_tables::CustodyHead, kasumi_types::custody::CustodyRequest, kasumi_types::custody::CustodyReceipt, u64, kasumi_types::RequestContext), anyhow::Error>>, <tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<kasumi_raft::custody_capacity_tests::permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopens::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll::{closure#0}>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/loom/std/unsafe_cell.rs:16:9
+  10: <tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<kasumi_raft::custody_capacity_tests::permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopens::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/task/core.rs:369:30
+  11: tokio::runtime::task::harness::poll_future::<tokio::runtime::blocking::task::BlockingTask<kasumi_raft::custody_capacity_tests::permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopens::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>::{closure#0}
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/task/harness.rs:535:30
+  12: <core::panic::unwind_safe::AssertUnwindSafe<tokio::runtime::task::harness::poll_future<tokio::runtime::blocking::task::BlockingTask<kasumi_raft::custody_capacity_tests::permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopens::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>::{closure#0}> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panic/unwind_safe.rs:275:9
+  13: std::panicking::catch_unwind::do_call::<core::panic::unwind_safe::AssertUnwindSafe<tokio::runtime::task::harness::poll_future<tokio::runtime::blocking::task::BlockingTask<kasumi_raft::custody_capacity_tests::permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopens::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>::{closure#0}>, core::task::poll::Poll<core::result::Result<(kasumi_raft::custody_tables::CustodyHead, kasumi_types::custody::CustodyRequest, kasumi_types::custody::CustodyReceipt, u64, kasumi_types::RequestContext), anyhow::Error>>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:581:40
+  14: ___rust_try
+  15: std::panicking::catch_unwind::<core::task::poll::Poll<core::result::Result<(kasumi_raft::custody_tables::CustodyHead, kasumi_types::custody::CustodyRequest, kasumi_types::custody::CustodyReceipt, u64, kasumi_types::RequestContext), anyhow::Error>>, core::panic::unwind_safe::AssertUnwindSafe<tokio::runtime::task::harness::poll_future<tokio::runtime::blocking::task::BlockingTask<kasumi_raft::custody_capacity_tests::permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopens::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>::{closure#0}>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:544:19
+  16: std::panic::catch_unwind::<core::panic::unwind_safe::AssertUnwindSafe<tokio::runtime::task::harness::poll_future<tokio::runtime::blocking::task::BlockingTask<kasumi_raft::custody_capacity_tests::permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopens::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>::{closure#0}>, core::task::poll::Poll<core::result::Result<(kasumi_raft::custody_tables::CustodyHead, kasumi_types::custody::CustodyRequest, kasumi_types::custody::CustodyReceipt, u64, kasumi_types::RequestContext), anyhow::Error>>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panic.rs:359:14
+  17: tokio::runtime::task::harness::poll_future::<tokio::runtime::blocking::task::BlockingTask<kasumi_raft::custody_capacity_tests::permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopens::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/task/harness.rs:523:18
+  18: <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<kasumi_raft::custody_capacity_tests::permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopens::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll_inner
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/task/harness.rs:210:27
+  19: <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<kasumi_raft::custody_capacity_tests::permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopens::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/task/harness.rs:155:20
+  20: tokio::runtime::task::raw::poll::<tokio::runtime::blocking::task::BlockingTask<kasumi_raft::custody_capacity_tests::permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopens::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/task/raw.rs:343:13
+  21: <tokio::runtime::task::raw::RawTask>::poll
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/task/raw.rs:273:18
+  22: <tokio::runtime::task::UnownedTask<tokio::runtime::blocking::schedule::BlockingSchedule>>::run
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/task/mod.rs:565:13
+  23: <tokio::runtime::blocking::pool::Task>::run
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/blocking/pool.rs:161:19
+  24: <tokio::runtime::blocking::pool::Inner>::run
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/blocking/pool.rs:518:22
+  25: <tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}
+             at /Users/mtakemiya/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/blocking/pool.rs:474:47
+  26: std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/sys/backtrace.rs:166:18
+  27: std::thread::lifecycle::spawn_unchecked::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1}::{closure#0}
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/thread/lifecycle.rs:70:13
+  28: <core::panic::unwind_safe::AssertUnwindSafe<std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1}::{closure#0}> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panic/unwind_safe.rs:275:9
+  29: std::panicking::catch_unwind::do_call::<core::panic::unwind_safe::AssertUnwindSafe<std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1}::{closure#0}>, ()>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:581:40
+  30: ___rust_try
+  31: std::panicking::catch_unwind::<(), core::panic::unwind_safe::AssertUnwindSafe<std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1}::{closure#0}>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:544:19
+  32: std::panic::catch_unwind::<core::panic::unwind_safe::AssertUnwindSafe<std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1}::{closure#0}>, ()>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panic.rs:359:14
+  33: std::thread::lifecycle::spawn_unchecked::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1}
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/thread/lifecycle.rs:68:26
+  34: <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+  35: <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/alloc/src/boxed.rs:2275:9
+  36: <std::sys::thread::unix::Thread>::new::thread_start
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/sys/thread/unix.rs:118:17
+  37: __pthread_exit
+
+
+failures:
+    custody_capacity_tests::permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopens
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 72 filtered out; finished in 3.64s
+
+error: test failed, to rerun pass `-p kasumi-raft --lib`

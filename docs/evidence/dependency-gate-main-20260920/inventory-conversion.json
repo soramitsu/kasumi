@@ -1,0 +1,31 @@
+{
+  "old_hashes_preserved": 282,
+  "inventories": [
+    {
+      "path": "vendor/bitmaps-3.2.1",
+      "files": 11
+    },
+    {
+      "path": "vendor/lru-0.16.4",
+      "files": 8
+    },
+    {
+      "path": "vendor/serde_json-1.0.151",
+      "files": 90
+    },
+    {
+      "path": "vendor/rmcp-3.2.0",
+      "files": 173
+    },
+    {
+      "path": "vendor/redb-4.2.0",
+      "files": 97
+    },
+    {
+      "path": "vendor/openraft-0.9.25",
+      "files": 600
+    }
+  ],
+  "openraft_inventory_sha256": "70cce233f67865044d8550bd613c7696abfbe0b47f7fa0d436199a9a709bffa6",
+  "manifest_sha256": "7b196bbfde98b9c0e84aca1cafd010d3757aa4a50c03fc0bb7bfcd91da39a6fc"
+}

@@ -1,0 +1,7 @@
+    Checking serde_core v1.0.229
+    Checking serde v1.0.229
+    Checking serde_json v1.0.151
+    Checking anyerror v0.1.13
+    Checking validit v0.2.6
+    Checking openraft v0.9.25 (/Users/mtakemiya/dev/kasumi-release-evidence/openraft-upstream-20260920/openraft)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.05s

@@ -20,7 +20,6 @@ use std::{
     },
 };
 
-pub(crate) const MAX_GROUPS: usize = 128;
 const MAX_RESPONSE_BYTES: usize = 1 << 20;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -170,13 +169,18 @@ impl GroupObservation {
         self.routed
             && self.store_available
             && self.quorum == Some(true)
-            && (!self.authority_required || self.authority_remaining_seconds.is_some())
+            && (!self.authority_required
+                || self
+                    .authority_remaining_seconds
+                    .is_some_and(|remaining| remaining > 0.0))
     }
 }
 pub(crate) struct LocalObservation {
     pub admission: AdmissionSnapshot,
+    pub persistent_disk: kasumi_store::NodeDiskSnapshot,
     pub scratch_disk: kasumi_store::ScratchDiskSnapshot,
-    pub expected_groups: usize,
+    pub coverage: crate::readiness::Status,
+    pub coverage_token: Option<crate::readiness::Token>,
     pub groups: Vec<GroupObservation>,
     pub stores: Vec<Arc<TenantStore>>,
     pub standalone_recovery_pending: Option<bool>,
@@ -192,9 +196,9 @@ struct Observation {
     lifecycle: Lifecycle,
     ready: bool,
     admission: AdmissionSnapshot,
+    persistent_disk: kasumi_store::NodeDiskSnapshot,
     scratch_disk: kasumi_store::ScratchDiskSnapshot,
-    expected_groups: usize,
-    unexamined_groups: usize,
+    readiness_coverage: crate::readiness::Status,
     groups: Vec<GroupObservation>,
     service_audit: ServiceAuditObservation,
     standalone_recovery_pending: Option<bool>,
@@ -256,6 +260,10 @@ struct Fence<'a> {
     stores: Vec<Arc<TenantStore>>,
     telemetry: Arc<Telemetry>,
     lifecycle: Lifecycle,
+    disk_was_ready: bool,
+    management: Arc<Administration>,
+    coverage_epoch: crate::readiness::Epoch,
+    coverage_token: Option<crate::readiness::Token>,
     _workspace: kasumi_engine::admission::Reservation,
 }
 impl EncodedResponseFence for Fence<'_> {
@@ -263,13 +271,40 @@ impl EncodedResponseFence for Fence<'_> {
         if self.telemetry.lifecycle() != self.lifecycle {
             return Err(error(ErrorCode::Unavailable));
         }
+        if self.disk_was_ready
+            && !persistent_ready(&self.audit.store().persistent_disk().snapshot())
+        {
+            return Err(error(ErrorCode::Unavailable));
+        }
         self.audit.store().check_access().map_err(storage_error)?;
         for store in &self.stores {
             store.check_access().map_err(storage_error)?;
         }
-        self.control.check()
+        self.control.check()?;
+        let epoch = self.management.readiness_epoch().map_err(storage_error)?;
+        if epoch != self.coverage_epoch
+            || self.coverage_token.is_some_and(|token| {
+                !self
+                    .management
+                    .readiness
+                    .check(token, epoch, tokio::time::Instant::now())
+            })
+        {
+            return Err(error(ErrorCode::Unavailable));
+        }
+        Ok(())
     }
 }
+fn persistent_ready(disk: &kasumi_store::NodeDiskSnapshot) -> bool {
+    disk.phase == kasumi_store::NodeDiskPhase::Open
+        && disk.filesystem_admission_ready
+        && disk
+            .filesystem_min_free_bytes
+            .checked_add(disk.filesystem_pending_bytes)
+            .zip(disk.filesystem_available_bytes)
+            .is_some_and(|(required, available)| available >= required)
+}
+
 impl Service {
     async fn response(&self, request: axum::extract::Request, endpoint: Endpoint) -> Response {
         match self.observe(request, endpoint).await {
@@ -345,23 +380,23 @@ impl Service {
             .auth
             .audit_result(&context, audit.status().map_err(storage_error))
             .await?;
-        let unexamined_groups = observed
-            .expected_groups
-            .saturating_sub(observed.groups.len());
         let ready = lifecycle == Lifecycle::Serving
-            && unexamined_groups == 0
+            && observed.coverage.ready()
+            && observed.coverage_token.is_some()
             && observed.groups.iter().all(GroupObservation::ready)
+            && persistent_ready(&observed.persistent_disk)
             && observed.admission.sample_usable
             && !observed.admission.pressured
             && !service_audit.persistence_failed
             && observed.standalone_recovery_pending != Some(true);
+        let coverage_epoch = observed.coverage.membership_epoch;
         let observation = Observation {
             lifecycle,
             ready,
             admission: observed.admission,
+            persistent_disk: observed.persistent_disk,
             scratch_disk: observed.scratch_disk,
-            expected_groups: observed.expected_groups,
-            unexamined_groups,
+            readiness_coverage: observed.coverage,
             groups: observed.groups,
             service_audit: ServiceAuditObservation {
                 retention: RetentionObservation {
@@ -440,6 +475,10 @@ impl Service {
                 stores: observed.stores,
                 telemetry: self.telemetry.clone(),
                 lifecycle,
+                disk_was_ready: ready,
+                management: self.management.clone(),
+                coverage_epoch,
+                coverage_token: observed.coverage_token,
                 _workspace: workspace,
             },
             response,
@@ -476,12 +515,73 @@ impl Observation {
             )
             .unwrap();
         }
-        gauge!("local_groups_expected", self.expected_groups);
-        gauge!("local_groups_unexamined", self.unexamined_groups);
+        gauge!(
+            "readiness_coverage_complete",
+            u8::from(self.readiness_coverage.complete)
+        );
+        gauge!(
+            "readiness_coverage_fresh",
+            u8::from(self.readiness_coverage.fresh)
+        );
+        if let Some(expected) = self.readiness_coverage.expected_groups {
+            gauge!("readiness_groups_expected", expected);
+        }
+        gauge!(
+            "readiness_groups_examined",
+            self.readiness_coverage.examined_groups
+        );
+        gauge!(
+            "readiness_groups_healthy",
+            self.readiness_coverage.healthy_groups
+        );
+        gauge!(
+            "local_group_detail_limit",
+            self.readiness_coverage.detail_limit
+        );
+        gauge!("local_group_details", self.groups.len());
+        if let Some(age) = self.readiness_coverage.oldest_probe_age_seconds {
+            gauge!("readiness_oldest_probe_age_seconds", age);
+        }
         gauge!(
             "admission_sample_usable",
             u8::from(self.admission.sample_usable)
         );
+        gauge!(
+            "persistent_disk_admission_ready",
+            u8::from(persistent_ready(&self.persistent_disk))
+        );
+        gauge!("persistent_disk_max_bytes", self.persistent_disk.max_bytes);
+        gauge!(
+            "persistent_disk_maintenance_reserve_bytes",
+            self.persistent_disk.maintenance_reserve_bytes
+        );
+        gauge!(
+            "persistent_disk_charged_bytes",
+            self.persistent_disk.charged_bytes
+        );
+        gauge!(
+            "persistent_disk_pending_bytes",
+            self.persistent_disk.pending_bytes
+        );
+        gauge!(
+            "persistent_disk_files",
+            self.persistent_disk.persistent_files
+        );
+        gauge!(
+            "persistent_disk_open_files",
+            self.persistent_disk.open_files
+        );
+        gauge!(
+            "persistent_disk_filesystem_pending_bytes",
+            self.persistent_disk.filesystem_pending_bytes
+        );
+        gauge!(
+            "persistent_disk_filesystem_min_free_bytes",
+            self.persistent_disk.filesystem_min_free_bytes
+        );
+        if let Some(available) = self.persistent_disk.filesystem_available_bytes {
+            gauge!("persistent_disk_filesystem_available_bytes", available);
+        }
         gauge!("scratch_disk_max_bytes", self.scratch_disk.max_bytes);
         gauge!(
             "scratch_disk_min_free_bytes",

@@ -4,7 +4,10 @@ use kasumi_types::{Error, ErrorCode, RequestContext, Result};
 use serde::{Serialize, de::DeserializeOwned};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    sync::{Arc, RwLock},
+    sync::{
+        Arc, RwLock,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 pub const MAX_REQUEST_BYTES: usize = (8 << 20) + (64 << 10);
@@ -12,6 +15,8 @@ pub const MAX_RESPONSE_BYTES: usize = 16 << 20;
 
 #[derive(Clone, Default)]
 pub struct DatabaseRegistry {
+    route_epoch: Arc<AtomicU64>,
+    membership_epoch: Arc<crate::readiness::MembershipEpoch>,
     databases: Arc<RwLock<BTreeMap<String, Arc<Database>>>>,
     approved_nodes: Arc<RwLock<BTreeSet<u64>>>,
     retirement_sources:
@@ -19,6 +24,40 @@ pub struct DatabaseRegistry {
 }
 
 impl DatabaseRegistry {
+    pub(crate) fn membership_epoch(&self) -> Result<u64> {
+        self.membership_epoch.current()
+    }
+    pub(crate) fn observe_membership(&self, database: &Arc<Database>) -> Result<()> {
+        database
+            .raft_group()
+            .install_membership_observer(self.membership_epoch.clone())
+            .map_err(|_| {
+                Error::new(
+                    ErrorCode::Unavailable,
+                    "membership observer already belongs to another node",
+                )
+            })
+    }
+    pub(crate) fn route_epoch(&self) -> Result<u64> {
+        let epoch = self.route_epoch.load(Ordering::Acquire);
+        if epoch == u64::MAX {
+            return Err(Error::new(
+                ErrorCode::Unavailable,
+                "routing epoch exhausted",
+            ));
+        }
+        Ok(epoch)
+    }
+
+    // Called while the route write lock is held, before publication. Saturation
+    // permanently closes observation rather than allowing an ABA epoch wrap.
+    fn advance_route_epoch(&self) {
+        let _ = self
+            .route_epoch
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                Some(n.saturating_add(1))
+            });
+    }
     /// Read-only internal observation of one committed route. This neither
     /// authorizes a request nor transfers the installed runner's ownership.
     pub(crate) fn installed_generation(
@@ -32,11 +71,16 @@ impl DatabaseRegistry {
             .map_err(|_| Error::new(ErrorCode::Unavailable, "tenant registry unavailable"))?
             .get(tenant)
             .cloned();
-        match database {
-            Some(database) if database.engine().generation()?.state.incarnation == incarnation => {
-                Ok(Some(database))
-            }
-            _ => Ok(None),
+        let Some(database) = database else {
+            return Ok(None);
+        };
+        match database.engine().generation() {
+            Ok(generation) if generation.state.incarnation == incarnation => Ok(Some(database)),
+            Ok(_) => Ok(None),
+            // A sealed generation is an unavailable required group, not an
+            // excuse to stop counting the rest of the committed membership.
+            Err(error) if error.code == ErrorCode::Sealed => Ok(None),
+            Err(error) => Err(error),
         }
     }
 
@@ -147,9 +191,11 @@ impl DatabaseRegistry {
                 "tenant already registered",
             ));
         }
+        self.observe_membership(&database)?;
         self.install_retirement_source(kasumi_engine::InstalledRetirementSource::Serving(
             database.clone(),
         ))?;
+        self.advance_route_epoch();
         databases.insert(tenant, database);
         Ok(())
     }
@@ -174,6 +220,7 @@ impl DatabaseRegistry {
             .get(tenant)
             .is_some_and(|current| Arc::ptr_eq(current, database))
         {
+            self.advance_route_epoch();
             databases.remove(tenant);
         }
         let key = (tenant.to_owned(), incarnation.to_owned());
@@ -215,11 +262,14 @@ impl DatabaseRegistry {
     }
 
     pub fn remove(&self, tenant: &str) -> Result<Option<Arc<Database>>> {
-        Ok(self
+        let mut databases = self
             .databases
             .write()
-            .map_err(|_| Error::new(ErrorCode::Unavailable, "tenant registry unavailable"))?
-            .remove(tenant))
+            .map_err(|_| Error::new(ErrorCode::Unavailable, "tenant registry unavailable"))?;
+        if databases.contains_key(tenant) {
+            self.advance_route_epoch();
+        }
+        Ok(databases.remove(tenant))
     }
 
     /// Only a verified context selects the tenant. No data request has a tenant
@@ -395,8 +445,8 @@ mod tests {
             )
             .await;
             let key = EncodingKey::from_ed_pem(key.serialize_pem().as_bytes()).unwrap();
-            let dir = tempfile::tempdir().unwrap();
-            let node = NodeStore::create_new(
+            let dir = kasumi_store::test_utils::private_tempdir().unwrap();
+            let node = NodeStore::create_new_fixture(
                 dir.path().join("node.redb"),
                 kasumi_store::test_utils::NODE_STORE_ID,
                 kasumi_store::ScratchDisk::fixture(),
@@ -1863,7 +1913,7 @@ name: "docs".into(),
             strict_read_audit: true,
         };
         let provider = Arc::new(LocalKeyProvider::new([61; 32]));
-        let node = NodeStore::create_new(
+        let node = NodeStore::create_new_fixture(
             fixture._dir.path().join("control.redb"),
             kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),

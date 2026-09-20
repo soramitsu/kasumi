@@ -29,7 +29,7 @@ struct Fixture {
 impl Fixture {
     async fn new() -> Result<Self> {
         use std::os::unix::fs::PermissionsExt;
-        let directory = tempfile::tempdir()?;
+        let directory = kasumi_store::test_utils::private_tempdir()?;
         let root = directory.path();
         std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700))?;
         let keys = |name: &str| -> Result<KeyProviderSettings> {
@@ -110,14 +110,16 @@ impl Fixture {
             max_bytes: 64 << 20,
             min_free_bytes: 0,
         };
+        let persistent_disk = crate::persistent_disk::fixture_config(&root.join("data"));
         let signer_verifier = SignerVerifierConfig {
             identity: installed_verifiers[&1].clone(),
-            database_path: root.join("verifier.redb"),
+            database_path: root.join("data/verifier.redb"),
             keys: keys("verifier")?,
             max_background_workers: 64,
         };
         InitializeSignerVerifier {
             admission: Default::default(),
+            persistent_disk: persistent_disk.clone(),
             scratch_disk: scratch_disk.clone(),
             verifier: signer_verifier.clone(),
             initial_certificates: vec![operational.certificate.clone()],
@@ -161,8 +163,9 @@ impl Fixture {
             },
             resource_budget_bytes: 128 << 20,
             admission: Default::default(),
-            database_path: root.join("authority.redb"),
+            database_path: root.join("data/authority.redb"),
             database_id: Uuid::new_v4(),
+            persistent_disk,
             scratch_disk,
             operational_signer_file,
             signer_verifier,
@@ -209,7 +212,7 @@ impl Fixture {
         })
     }
     fn node(&self) -> Result<Arc<NodeStore>> {
-        NodeStore::open_existing(
+        NodeStore::open_existing_fixture(
             &self.config.database_path,
             self.config.database_id,
             ScratchDisk::open(self.config.scratch_disk.clone())?,
@@ -222,6 +225,7 @@ impl Fixture {
             .open(
                 BTreeMap::from([(domain.digest()?, domain)]),
                 Arc::new(crate::runtime::file_secret),
+                crate::persistent_disk::open(&self.config.persistent_disk)?,
                 ScratchDisk::open(self.config.scratch_disk.clone())?,
                 kasumi_engine::admission::NodeAdmission::new(Default::default())?,
             )

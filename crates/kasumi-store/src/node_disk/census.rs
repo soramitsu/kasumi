@@ -1,7 +1,7 @@
-use super::{CensusCancellation, Identity, NodeDiskConfig, extent};
+use super::{AccountedFile, CensusCancellation, Identity, NodeDiskConfig, extent};
 use anyhow::{Context, Result, ensure};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     ffi::{CStr, CString},
     fs::{File, Metadata, OpenOptions},
     io,
@@ -169,9 +169,13 @@ pub(super) fn lock_roots(roots: &BTreeMap<String, Root>, max_depth: u32) -> Resu
 }
 
 pub(super) fn lock(file: &File, kind: libc::c_int) -> Result<()> {
+    lock_nonallocating(file, kind).context("persistent storage ownership unavailable")
+}
+
+pub(super) fn lock_nonallocating(file: &File, kind: libc::c_int) -> io::Result<()> {
     // SAFETY: flock borrows a live descriptor. The owning File retains the lock.
     if unsafe { libc::flock(file.as_raw_fd(), kind | libc::LOCK_NB) } != 0 {
-        return Err(io::Error::last_os_error()).context("persistent storage ownership unavailable");
+        return Err(io::Error::last_os_error());
     }
     Ok(())
 }
@@ -290,6 +294,7 @@ pub(super) struct Totals {
     pub(super) bytes: u64,
     pub(super) pending: u64,
     pub(super) files: u64,
+    pub(super) accounted: HashMap<Identity, AccountedFile>,
 }
 
 pub(super) fn census(
@@ -344,6 +349,20 @@ pub(super) fn census(
                     "census inode changed"
                 );
                 let (bytes, pending) = extent(&verified, unit)?;
+                totals
+                    .accounted
+                    .try_reserve(1)
+                    .context("reserving census inode metadata")?;
+                ensure!(
+                    totals
+                        .accounted
+                        .insert(
+                            Identity::of(&verified),
+                            AccountedFile::durable(bytes, pending, verified.len()),
+                        )
+                        .is_none(),
+                    "persistent census repeated an enrolled physical inode"
+                );
                 totals.bytes = totals
                     .bytes
                     .checked_add(bytes)

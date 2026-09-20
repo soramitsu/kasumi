@@ -55,7 +55,7 @@ async fn entered(gate: &crate::rpc::AuditReleaseGate) {
 
 #[tokio::test]
 async fn audit_native_tls_fixed_history_and_original_authorization_release() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let installation = initialize(&directory.path().join("kasumi"), "tenant-a")
         .await
         .unwrap();

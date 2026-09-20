@@ -1,7 +1,9 @@
 use crate::command::sha256;
 use crate::control::{AppliedEntryContext, HEADERS, HeaderPayload, LogHeader, RetainedSeed, SEEDS};
 use crate::lifetime::{StorageHandle, StorageLease};
-use crate::{BasicNode, RaftLimits, SnapshotBuffer, StateMachineBackend, TypeConfig};
+use crate::{
+    BasicNode, RaftLimits, SnapshotBuffer, SnapshotBufferOwner, StateMachineBackend, TypeConfig,
+};
 use anyhow::{Context, Result, ensure};
 use kasumi_store::{EncryptedSpool, SnapshotImage};
 use kasumi_store::{TenantStorageSet, TenantStore, WriteOp};
@@ -872,6 +874,7 @@ pub struct StateMachine {
     backend: StorageHandle<dyn StateMachineBackend>,
     state: Arc<Mutex<AppliedState>>,
     snapshot_gate: Arc<tokio::sync::Mutex<()>>,
+    snapshot_buffers: Arc<SnapshotBufferOwner>,
     control_gate: Arc<Mutex<()>>,
     failed: Arc<AtomicBool>,
     limits: RaftLimits,
@@ -881,16 +884,18 @@ impl StateMachine {
     pub async fn open(
         domains: Arc<TenantStorageSet>,
         backend: Arc<dyn StateMachineBackend>,
+        snapshot_buffers: Arc<SnapshotBufferOwner>,
     ) -> Result<Self> {
-        Self::open_with_limits(domains, backend, RaftLimits::default()).await
+        Self::open_with_limits(domains, backend, RaftLimits::default(), snapshot_buffers).await
     }
 
     pub async fn open_with_limits(
         domains: Arc<TenantStorageSet>,
         backend: Arc<dyn StateMachineBackend>,
         limits: RaftLimits,
+        snapshot_buffers: Arc<SnapshotBufferOwner>,
     ) -> Result<Self> {
-        Self::open_inner(domains, backend, limits, None).await
+        Self::open_inner(domains, backend, limits, None, snapshot_buffers).await
     }
 
     pub(crate) async fn open_tracked(
@@ -898,8 +903,9 @@ impl StateMachine {
         backend: Arc<dyn StateMachineBackend>,
         limits: RaftLimits,
         lease: Arc<StorageLease>,
+        snapshot_buffers: Arc<SnapshotBufferOwner>,
     ) -> Result<Self> {
-        Self::open_inner(domains, backend, limits, Some(lease)).await
+        Self::open_inner(domains, backend, limits, Some(lease), snapshot_buffers).await
     }
 
     async fn open_inner(
@@ -907,6 +913,7 @@ impl StateMachine {
         backend: Arc<dyn StateMachineBackend>,
         limits: RaftLimits,
         lease: Option<Arc<StorageLease>>,
+        snapshot_buffers: Arc<SnapshotBufferOwner>,
     ) -> Result<Self> {
         let control_gate = control_gate(domains.custody())?;
         let store = StorageHandle::new(domains.application().clone(), lease.clone());
@@ -955,6 +962,7 @@ impl StateMachine {
             backend,
             state: Arc::new(Mutex::new(state)),
             snapshot_gate: Arc::new(tokio::sync::Mutex::new(())),
+            snapshot_buffers,
             control_gate,
             failed: Arc::new(AtomicBool::new(false)),
             limits,
@@ -1008,10 +1016,17 @@ fn load_snapshot(store: &TenantStore, limit: u64) -> Result<Option<SnapshotEnvel
         .transpose()
 }
 
-pub(crate) fn as_snapshot(snapshot: &SnapshotEnvelope, limit: u64) -> Result<Snapshot<TypeConfig>> {
+pub(crate) fn as_snapshot(
+    snapshot: &SnapshotEnvelope,
+    limit: u64,
+    snapshot_buffers: &Arc<SnapshotBufferOwner>,
+) -> Result<Snapshot<TypeConfig>> {
     Ok(Snapshot {
         meta: snapshot.meta.clone(),
-        snapshot: Box::new(SnapshotBuffer::from_image(snapshot.encode(limit)?)),
+        snapshot: Box::new(SnapshotBuffer::from_image(
+            snapshot.encode(limit)?,
+            snapshot_buffers,
+        )?),
     })
 }
 
@@ -1022,6 +1037,7 @@ impl RaftSnapshotBuilder<TypeConfig> for SnapshotBuilder {
         let domains = self.machine.domains.clone();
         let store = self.machine.store.clone();
         let limit = self.machine.limits.max_snapshot_bytes;
+        let snapshot_buffers = self.machine.snapshot_buffers.clone();
         let applied = self.machine.state.clone();
         let control = self.machine.control_gate.clone();
         let failed = self.machine.failure_flag();
@@ -1051,7 +1067,7 @@ impl RaftSnapshotBuilder<TypeConfig> for SnapshotBuilder {
                         captured.retirement.as_ref(),
                     )?;
                 }
-                let snapshot = as_snapshot(&current, limit)?;
+                let snapshot = as_snapshot(&current, limit, &snapshot_buffers)?;
                 failure.complete();
                 return Ok(snapshot);
             }
@@ -1065,7 +1081,7 @@ impl RaftSnapshotBuilder<TypeConfig> for SnapshotBuilder {
                 })?,
                 retirement: logical.retirement.clone(),
             };
-            let snapshot = as_snapshot(&captured, limit)?;
+            let snapshot = as_snapshot(&captured, limit, &snapshot_buffers)?;
             let mut pending =
                 stage_snapshot(&domains, &snapshot.snapshot.image()?, limit, &captured)?;
             pending
@@ -1235,8 +1251,12 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
     async fn begin_receiving_snapshot(&mut self) -> Result<Box<SnapshotBuffer>, StorageError<u64>> {
         self.store.check_access().map_err(err)?;
         Ok(Box::new(
-            SnapshotBuffer::new(self.store.scratch_disk(), self.limits.max_snapshot_bytes)
-                .map_err(err)?,
+            SnapshotBuffer::new(
+                self.store.scratch_disk(),
+                self.limits.max_snapshot_bytes,
+                &self.snapshot_buffers,
+            )
+            .map_err(err)?,
         ))
     }
 
@@ -1355,12 +1375,13 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
         let store = self.store.clone();
         let domains = self.domains.clone();
         let limit = self.limits.max_snapshot_bytes;
+        let snapshot_buffers = self.snapshot_buffers.clone();
         tokio::task::spawn_blocking(move || {
             domains.check_access()?;
             let result = load_snapshot(&store, limit)?
                 .map(|snapshot| {
                     validate_snapshot_coverage(&domains, &snapshot, limit)?;
-                    as_snapshot(&snapshot, limit)
+                    as_snapshot(&snapshot, limit, &snapshot_buffers)
                 })
                 .transpose()?;
             domains.check_access()?;

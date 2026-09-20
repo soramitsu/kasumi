@@ -81,6 +81,7 @@ struct FileCreation {
 /// An uncertain commit or lost creation response never becomes a new creator.
 pub struct MaterializationFile {
     operation: TargetOperation,
+    persistent_disk: Arc<kasumi_store::NodeDisk>,
     node_store_id: Uuid,
     create: bool,
 }
@@ -98,12 +99,24 @@ impl MaterializationFile {
     ) -> Result<MaterializationNode> {
         self.operation.check()?;
         let node = if self.create {
-            kasumi_store::NodeStore::create_new(path, self.node_store_id, scratch)
+            kasumi_store::NodeStore::create_new(
+                path,
+                self.node_store_id,
+                self.persistent_disk.clone(),
+                scratch,
+            )
         } else {
-            kasumi_store::NodeStore::open_existing(path, self.node_store_id, scratch)
+            kasumi_store::NodeStore::open_existing(
+                path,
+                self.node_store_id,
+                self.persistent_disk.clone(),
+                scratch,
+            )
         }
         .map_err(journal_unknown)?;
-        self.operation.check().map_err(journal_unknown)?;
+        // The runtime must first retain this physical owner, then recheck the
+        // operation before starting catalog work. A failed post-open fence here
+        // would discard the only explicit-close owner of the new file.
         Ok(if self.create {
             MaterializationNode::Created(node)
         } else {
@@ -568,6 +581,7 @@ impl TargetJournal {
             op.check()?;
             return Ok(MaterializationFile {
                 operation: op.clone(),
+                persistent_disk: self.store.persistent_disk().clone(),
                 node_store_id,
                 create: false,
             });
@@ -592,6 +606,7 @@ impl TargetJournal {
         op.check().map_err(journal_unknown)?;
         Ok(MaterializationFile {
             operation: op.clone(),
+            persistent_disk: self.store.persistent_disk().clone(),
             node_store_id,
             create: true,
         })

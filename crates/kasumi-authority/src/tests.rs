@@ -117,7 +117,7 @@ impl Fixture {
         controls: BTreeMap<Uuid, String>,
         ordinary_state_bytes: u64,
     ) -> Self {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = kasumi_store::test_utils::private_tempdir().unwrap();
         let router = Arc::new(InProcessRouter::default());
         let key = ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
             .unwrap();
@@ -153,7 +153,7 @@ impl Fixture {
         let mut services = Vec::new();
         let mut stores = Vec::new();
         for id in 1..=3 {
-            let node = NodeStore::create_new(
+            let node = NodeStore::create_new_fixture(
                 dir.path().join(format!("authority-{id}.redb")),
                 kasumi_store::test_utils::NODE_STORE_ID,
                 kasumi_store::ScratchDisk::fixture(),
@@ -196,6 +196,7 @@ impl Fixture {
                     ..Config::default()
                 },
                 request_budget(),
+                kasumi_raft::SnapshotBufferOwner::fixture(),
                 epoch.clone(),
             )
             .await
@@ -322,7 +323,7 @@ impl Fixture {
         self.router = Arc::new(InProcessRouter::default());
         self.readiness = Arc::new(TestMaintenanceTransport::default());
         for id in member_ids {
-            let node = NodeStore::open_existing(
+            let node = NodeStore::open_existing_fixture(
                 self._dir.path().join(format!("authority-{id}.redb")),
                 kasumi_store::test_utils::NODE_STORE_ID,
                 kasumi_store::ScratchDisk::fixture(),
@@ -358,6 +359,7 @@ impl Fixture {
                     ..Config::default()
                 },
                 request_budget(),
+                kasumi_raft::SnapshotBufferOwner::fixture(),
                 self.epoch.clone(),
             )
             .await
@@ -708,7 +710,7 @@ async fn actual_encrypted_source_materialization_is_fenced_but_independent_custo
     let lease_boot = boot(&fixture, source, 1);
     let gate = ServingGate::new(acquire(&fixture, &service, &lease_boot).await).unwrap();
     let path = fixture._dir.path().join("separate-municipality.redb");
-    let node = NodeStore::create_new(
+    let node = NodeStore::create_new_fixture(
         &path,
         kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
@@ -776,7 +778,7 @@ async fn actual_encrypted_source_materialization_is_fenced_but_independent_custo
     stores.shutdown().await.unwrap();
     drop(stores);
     drop(node);
-    let reopened = NodeStore::open_existing(
+    let reopened = NodeStore::open_existing_fixture(
         &path,
         kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),

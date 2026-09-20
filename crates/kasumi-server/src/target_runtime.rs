@@ -99,16 +99,15 @@ impl Generation {
                 }
             }
         }
-        if let Some((key, custody)) = &self.custody {
-            if let Err(error) = registry.detach_target_custody(&key.0, &key.1.to_string(), custody)
-            {
-                custody_route_closed = false;
-                retained = Some(DrainFailure::retained(self.report.record(
-                    "target custody route",
-                    0,
-                    error.into(),
-                )));
-            }
+        if let Some((key, custody)) = &self.custody
+            && let Err(error) = registry.detach_target_custody(&key.0, &key.1.to_string(), custody)
+        {
+            custody_route_closed = false;
+            retained = Some(DrainFailure::retained(self.report.record(
+                "target custody route",
+                0,
+                error.into(),
+            )));
         }
         if let Some(group) = &self.registered_group {
             match cluster.unregister_group(group) {
@@ -249,24 +248,28 @@ impl Generation {
                 }
             }
         }
-        if let Some(node) = &self.node {
-            if let Err(error) = node.drain_initializers().await {
-                self.report.record("target node initializers", 0, error);
+        if retained.is_none()
+            && let Some(node) = &self.node
+            && let Err(failure) = node.shutdown().await
+        {
+            self.report.merge(&failure);
+            if failure.completion() == DrainCompletion::Retained {
+                retained = Some(failure);
             }
         }
         self.fresh_catalogs = false;
-        if retained.is_none() {
-            if let Some(node) = self.node.take() {
-                match Arc::try_unwrap(node) {
-                    Ok(node) => drop(node),
-                    Err(node) => {
-                        self.node = Some(node);
-                        retained = Some(DrainFailure::retained(self.report.record(
-                            "target physical owner",
-                            0,
-                            anyhow::anyhow!("target file still has an actual detached owner"),
-                        )));
-                    }
+        if retained.is_none()
+            && let Some(node) = self.node.take()
+        {
+            match Arc::try_unwrap(node) {
+                Ok(node) => drop(node),
+                Err(node) => {
+                    self.node = Some(node);
+                    retained = Some(DrainFailure::retained(self.report.record(
+                        "target physical owner",
+                        0,
+                        anyhow::anyhow!("target file still has an actual detached owner"),
+                    )));
                 }
             }
         }
@@ -332,6 +335,7 @@ pub struct TargetRecoveryRuntime {
     installed: TargetRecoveryConfig,
     credential: CredentialSource,
     journal: Arc<TargetJournal>,
+    journal_node: Arc<NodeStore>,
     signer: TargetSigner,
     cleanup_key: Ed25519KeyPair,
     admission: Arc<NodeAdmission>,
@@ -436,11 +440,12 @@ impl TargetRecoveryRuntime {
                 installed.control_root.control_incarnation,
                 &installed.node.verifier,
             )?,
+            audit.store().persistent_disk().clone(),
             audit.store().scratch_disk().clone(),
         )?;
         let access = StorageAccess::target_journal(&installed.control_root, &installed.node)?;
         let store = TenantStore::open_existing(
-            node,
+            node.clone(),
             format!(
                 "kasumi.target.{}.{}",
                 installed.control_root.control_incarnation, installed.node.node_id
@@ -448,7 +453,18 @@ impl TargetRecoveryRuntime {
             provider,
             access,
         )
-        .await?;
+        .await;
+        let store = match store {
+            Ok(store) => store,
+            Err(error) => {
+                let mut pending = crate::startup_resources::Resources::default();
+                pending.owned_nodes.push(node);
+                return Err(match crate::startup_owner::finish(&mut pending).await {
+                    Ok(()) => error,
+                    Err(drain) => error.context(drain),
+                });
+            }
+        };
         let journal = TargetJournal::open_existing(
             store.clone(),
             TargetJournalInstallation {
@@ -461,9 +477,12 @@ impl TargetRecoveryRuntime {
         let journal = match journal {
             Ok(journal) => journal,
             Err(error) => {
-                return Err(match store.shutdown().await {
+                let mut pending = crate::startup_resources::Resources::default();
+                pending.owned_nodes.push(node);
+                pending.stores.push(store);
+                return Err(match crate::startup_owner::finish(&mut pending).await {
                     Ok(()) => error,
-                    Err(failure) => error.context(failure),
+                    Err(drain) => error.context(drain),
                 });
             }
         };
@@ -477,6 +496,7 @@ impl TargetRecoveryRuntime {
             installed,
             credential,
             journal,
+            journal_node: node,
             signer,
             cleanup_key,
             admission,
@@ -974,6 +994,7 @@ impl TargetRecoveryRuntime {
                 g.node = Some(NodeStore::open_existing(
                     path,
                     self.journal.materialization_file_id(&key.0, key.1)?,
+                    self.audit.store().persistent_disk().clone(),
                     scratch,
                 )?);
                 g.fresh_catalogs = false;
@@ -1352,15 +1373,17 @@ impl TargetRecoveryRuntime {
         if target_file_exists(&path)? {
             // Permanent journal stop and joined generation owners precede this
             // exact Prepared/Ready file claim. No redb or application keys open.
-            let node = NodeStore::claim_cleanup(&path, self.generation_file_id(key)?)?;
+            let node = NodeStore::claim_cleanup(
+                &path,
+                self.generation_file_id(key)?,
+                self.audit.store().persistent_disk().clone(),
+            )?;
             ensure!(
                 kasumi_store::private_files::file_identity(&path)? == *node.identity(),
                 "target cleanup path changed after ownership"
             );
             op.check()?;
-            std::fs::remove_file(&path)?;
-            std::fs::File::open(&self.root)?.sync_all()?;
-            drop(node);
+            node.delete()?;
         } else {
             std::fs::File::open(&self.root)?.sync_all()?;
         }
@@ -1447,6 +1470,14 @@ impl TargetRecoveryRuntime {
             }
         }
         if let Err(failure) = self.journal.shutdown().await {
+            report.merge(&failure);
+            if failure.completion() == DrainCompletion::Retained {
+                retained = Some(failure);
+            }
+        }
+        if retained.is_none()
+            && let Err(failure) = self.journal_node.shutdown().await
+        {
             report.merge(&failure);
             if failure.completion() == DrainCompletion::Retained {
                 retained = Some(failure);

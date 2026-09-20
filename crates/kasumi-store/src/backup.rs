@@ -11,7 +11,6 @@ use reqwest::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    io::{Read, Write},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -359,17 +358,30 @@ pub trait BackupDestination: Send + Sync {
 
 pub struct FilesystemBackupDestination {
     root: PathBuf,
+    disk: Arc<crate::NodeDisk>,
     sessions: Arc<crate::backup_sessions::filesystem::Directory>,
     max_bytes: usize,
 }
 impl FilesystemBackupDestination {
-    pub fn new(root: impl AsRef<Path>, max_bytes: usize) -> Result<Self> {
+    pub fn new(
+        root: impl AsRef<Path>,
+        max_bytes: usize,
+        disk: Arc<crate::NodeDisk>,
+    ) -> Result<Self> {
         ensure!(max_bytes > 0, "backup byte limit must be positive");
-        crate::durable_directory(root.as_ref())?;
+        disk.binding(&root.as_ref().join("backup-accounting-anchor"))?;
+        if !root.as_ref().exists() {
+            crate::private_files::create_directory(root.as_ref())?;
+        }
+        crate::private_files::check_directory(root.as_ref())?;
         let root = std::fs::canonicalize(root)?;
-        let sessions = Arc::new(crate::backup_sessions::filesystem::Directory::open(&root)?);
+        let sessions = Arc::new(crate::backup_sessions::filesystem::Directory::open(
+            &root,
+            disk.clone(),
+        )?);
         Ok(Self {
             root,
+            disk,
             sessions,
             max_bytes,
         })
@@ -432,36 +444,49 @@ impl BackupDestination for FilesystemBackupDestination {
             encrypted.len() <= self.max_bytes,
             "backup exceeds destination byte limit"
         );
-        let root = self.root.clone();
         let path = self.path(id);
+        let disk = self.disk.clone();
         tokio::task::spawn_blocking(move || -> Result<()> {
-            let mut file = tempfile::NamedTempFile::new_in(&root)?;
-            file.write_all(&encrypted)?;
-            file.as_file().sync_all()?;
-            file.persist_noclobber(path)
-                .context("publishing durable backup (already present or unavailable)")?;
-            std::fs::File::open(&root)?
-                .sync_all()
-                .context("syncing backup directory")?;
+            ensure!(!path.try_exists()?, "backup already published");
+            let temporary = path.with_file_name(format!("{id}.kasumi.pending"));
+            let (root, relative) = disk.binding(&temporary)?;
+            let mut file = if temporary.try_exists()? {
+                disk.open_file(root, relative)?
+            } else {
+                disk.create_file(root, relative, crate::DiskWork::Foreground)?
+            };
+            let before = file.observed_len()?;
+            let length = encrypted.len() as u64;
+            if before > length {
+                file.shrink(length)?;
+            } else {
+                file.reserve_growth(before, length, crate::DiskWork::Foreground)?;
+                file.grow_reserved(length)?;
+            }
+            file.write_all_at(&encrypted, 0)?;
+            file.sync_all_and_parent()?;
+            let (root, relative) = disk.binding(&path)?;
+            let published = disk.publish_file(file, root, relative)?;
+            drop(published);
             Ok(())
         })
         .await?
     }
     async fn get(&self, id: Uuid, max_bytes: usize) -> Result<Vec<u8>> {
         let path = self.path(id);
+        let disk = self.disk.clone();
         let limit = self.max_bytes.min(max_bytes);
         tokio::task::spawn_blocking(move || -> Result<Vec<u8>> {
-            let file = std::fs::File::open(path)?;
+            let (root, relative) = disk.binding(&path)?;
+            let file = disk.open_file(root, relative)?;
+            let length = file.observed_len()?;
             ensure!(
-                file.metadata()?.len() <= limit as u64,
+                length <= limit as u64,
                 "backup exceeds destination byte limit"
             );
-            let mut result = Vec::new();
-            file.take(limit as u64 + 1).read_to_end(&mut result)?;
-            ensure!(
-                result.len() <= limit,
-                "backup exceeds destination byte limit"
-            );
+            let mut result = vec![0; usize::try_from(length)?];
+            file.read_exact_at(&mut result, 0)?;
+            file.sync_all_and_parent()?;
             Ok(result)
         })
         .await?
@@ -784,10 +809,10 @@ mod tests {
 
     #[tokio::test]
     async fn encrypted_bundle_round_trip_filesystem_reopen_and_tamper_rejection() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_utils::private_tempdir().unwrap();
         let provider = Arc::new(LocalKeyProvider::new([17; 32]));
         let store = TenantStore::initialize_catalog_fixture_with_clock(
-            NodeStore::create_new(
+            NodeStore::create_new_fixture(
                 dir.path().join("db"),
                 crate::test_utils::NODE_STORE_ID,
                 crate::ScratchDisk::fixture(),
@@ -811,7 +836,7 @@ mod tests {
                 .any(|window| window == b"very-private")
         );
         let destination =
-            FilesystemBackupDestination::new(dir.path().join("backups"), 1 << 20).unwrap();
+            FilesystemBackupDestination::new_fixture(dir.path().join("backups"), 1 << 20).unwrap();
         destination.put(backup.id(), bytes.clone()).await.unwrap();
         assert!(destination.put(backup.id(), bytes.clone()).await.is_err());
         let read = destination.get(backup.id(), 16 << 20).await.unwrap();
@@ -846,10 +871,10 @@ mod tests {
 
     #[tokio::test]
     async fn historical_backup_keeps_original_key_dependencies_after_rewrap() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_utils::private_tempdir().unwrap();
         let provider = Arc::new(LocalKeyProvider::new([22; 32]));
         let store = TenantStore::initialize_catalog_fixture_with_clock(
-            NodeStore::create_new(
+            NodeStore::create_new_fixture(
                 dir.path().join("db"),
                 crate::test_utils::NODE_STORE_ID,
                 crate::ScratchDisk::fixture(),
@@ -875,10 +900,10 @@ mod tests {
 
     #[tokio::test]
     async fn removal_of_an_inactive_backup_key_dependency_breaks_authentication() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_utils::private_tempdir().unwrap();
         let provider = Arc::new(LocalKeyProvider::new([31; 32]));
         let store = TenantStore::initialize_catalog_fixture_with_clock(
-            NodeStore::create_new(
+            NodeStore::create_new_fixture(
                 dir.path().join("db"),
                 crate::test_utils::NODE_STORE_ID,
                 crate::ScratchDisk::fixture(),
@@ -909,8 +934,8 @@ mod tests {
 
     #[tokio::test]
     async fn destination_byte_limits_and_untrusted_format_are_rejected() {
-        let dir = tempfile::tempdir().unwrap();
-        let destination = FilesystemBackupDestination::new(dir.path(), 5).unwrap();
+        let dir = crate::test_utils::private_tempdir().unwrap();
+        let destination = FilesystemBackupDestination::new_fixture(dir.path(), 5).unwrap();
         let id = Uuid::new_v4();
         assert!(destination.put(id, vec![0; 6]).await.is_err());
         std::fs::write(destination.path(id), [0; 6]).unwrap();
@@ -965,7 +990,7 @@ mod s3_tests {
     #[cfg(unix)]
     fn s3_credentials_are_reloaded_as_one_atomic_bundle() {
         use std::{io::Write, os::unix::fs::PermissionsExt};
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_utils::private_tempdir().unwrap();
         let path = dir.path().join("s3.json");
         let publish = |id: &str, secret: &str, token: &str| {
             let mut file = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
@@ -1455,10 +1480,10 @@ mod s3_tests {
         };
         *state.signer.lock() = Some(S3BackupDestination::new(make()).unwrap());
         let destination = S3BackupDestination::new(make()).unwrap();
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_utils::private_tempdir().unwrap();
         let keys = Arc::new(crate::test_utils::LocalKeyProvider::new([77; 32]));
         let store = TenantStore::initialize_catalog_fixture(
-            crate::NodeStore::create_new(
+            crate::NodeStore::create_new_fixture(
                 directory.path().join("db"),
                 crate::test_utils::NODE_STORE_ID,
                 crate::ScratchDisk::fixture(),

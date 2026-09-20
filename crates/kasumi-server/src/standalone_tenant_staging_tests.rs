@@ -39,7 +39,7 @@ async fn entered(pause: &Pause) {
 #[tokio::test]
 async fn cancelled_staging_retains_exclusive_owner_until_configuration_and_workers_finish()
 -> Result<()> {
-    let directory = tempfile::tempdir()?;
+    let directory = kasumi_store::test_utils::private_tempdir()?;
     let installed = initialize(&directory.path().join("installed"), "tenant-a").await?;
     let config = RuntimeConfig::load(&installed.configuration)?;
     let request = request(&config);
@@ -56,7 +56,13 @@ async fn cancelled_staging_retains_exclusive_owner_until_configuration_and_worke
     .await;
     entered(&pause).await;
     drop(staged);
-    assert!(claim(&config).is_err());
+    assert!(
+        claim(
+            &config,
+            &crate::persistent_disk::open(&config.persistent_disk).unwrap()
+        )
+        .is_err()
+    );
     assert!(
         RuntimeConfig::load(&installed.configuration)?
             .tenants
@@ -98,7 +104,7 @@ async fn cancelled_staging_retains_exclusive_owner_until_configuration_and_worke
 
 #[tokio::test]
 async fn staging_replay_resolves_lost_configuration_outcome_without_replacing_keys() -> Result<()> {
-    let directory = tempfile::tempdir()?;
+    let directory = kasumi_store::test_utils::private_tempdir()?;
     let installed = initialize(&directory.path().join("installed"), "tenant-a").await?;
     let config = RuntimeConfig::load(&installed.configuration)?;
     let request = request(&config);
@@ -149,7 +155,7 @@ async fn staging_replay_resolves_lost_configuration_outcome_without_replacing_ke
 
 #[tokio::test]
 async fn interrupted_key_creation_never_adopts_files_or_reuses_its_dispatch() -> Result<()> {
-    let directory = tempfile::tempdir()?;
+    let directory = kasumi_store::test_utils::private_tempdir()?;
     let installed = initialize(&directory.path().join("installed"), "tenant-a").await?;
     let config = RuntimeConfig::load(&installed.configuration)?;
     let request = request(&config);

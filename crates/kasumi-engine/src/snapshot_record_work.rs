@@ -147,11 +147,15 @@ mod tests {
             meter.consume(&[*byte]).unwrap();
         }
         assert_eq!(meter.finish().unwrap(), measure(short).unwrap());
-        let mut overflow = Meter::default();
-        overflow.sites = u64::MAX;
+        let mut overflow = Meter {
+            sites: u64::MAX,
+            ..Default::default()
+        };
         assert!(overflow.consume(b"0").is_err());
-        let mut overflow = Meter::default();
-        overflow.sites = u64::MAX;
+        let overflow = Meter {
+            sites: u64::MAX,
+            ..Default::default()
+        };
         assert!(overflow.finish().is_err());
     }
 
@@ -167,7 +171,7 @@ mod tests {
             assert_eq!(meter.finish().unwrap(), expected);
         }
         assert!(expected > measure(br#"{"x":"a"}"#).unwrap());
-        assert!(measure(&vec![b'['; MAX_DEPTH + 1]).is_err());
+        assert!(measure(&[b'['; MAX_DEPTH + 1]).is_err());
         for invalid in [b"[}".as_slice(), b"\"open", b"[0", b""] {
             assert!(measure(invalid).is_err());
         }

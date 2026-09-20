@@ -22,6 +22,7 @@ async fn complete_domain_worker_budget_is_reserved_before_verifier_storage_open(
             .open(
                 BTreeMap::from([(domain.digest().unwrap(), domain)]),
                 Arc::new(file_secret),
+                crate::persistent_disk::open(&fixture.input.persistent_disk).unwrap(),
                 kasumi_store::ScratchDisk::open(fixture.input.scratch_disk.clone()).unwrap(),
                 admission,
             )
@@ -45,6 +46,7 @@ async fn complete_domain_worker_budget_is_reserved_before_verifier_storage_open(
         .open(
             BTreeMap::from([(domain.digest().unwrap(), domain)]),
             Arc::new(file_secret),
+            crate::persistent_disk::open(&fixture.input.persistent_disk).unwrap(),
             kasumi_store::ScratchDisk::open(fixture.input.scratch_disk.clone()).unwrap(),
             admission.clone(),
         )
@@ -74,7 +76,7 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = kasumi_store::test_utils::private_tempdir().unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let keys = directory.path().join("wrapping.json");
@@ -105,6 +107,9 @@ impl Fixture {
         Self {
             input: InitializeSignerVerifier {
                 admission: Default::default(),
+                persistent_disk: crate::persistent_disk::fixture_config(
+                    &directory.path().join("data"),
+                ),
                 scratch_disk: kasumi_store::ScratchDiskConfig {
                     directory: directory.path().join("scratch"),
                     max_bytes: 64 << 30,
@@ -116,7 +121,7 @@ impl Fixture {
                         installation_id: Uuid::new_v4(),
                         node_id: 1,
                     },
-                    database_path: directory.path().join("trust.redb"),
+                    database_path: directory.path().join("data/trust.redb"),
                     keys: KeyProviderSettings::File { path: keys },
                 },
                 initial_certificates: vec![certificate.clone()],
@@ -137,6 +142,7 @@ impl Fixture {
             .open(
                 BTreeMap::from([(domain.digest()?, domain)]),
                 Arc::new(file_secret),
+                crate::persistent_disk::open(&self.input.persistent_disk).unwrap(),
                 kasumi_store::ScratchDisk::open(self.input.scratch_disk.clone())?,
                 kasumi_engine::admission::NodeAdmission::new(Default::default())?,
             )
@@ -358,12 +364,13 @@ async fn explicit_encrypted_verifier_initialization_never_bootstraps_runtime_tru
 #[tokio::test]
 async fn partial_verifier_is_never_adopted_and_corrupt_complete_head_is_never_reseeded() {
     let f = Fixture::new();
-    let store = f
+    let (node, store) = f
         .input
         .verifier
         .store(
             Arc::new(file_secret),
             true,
+            crate::persistent_disk::open(&f.input.persistent_disk).unwrap(),
             kasumi_store::ScratchDisk::fixture(),
         )
         .await
@@ -383,18 +390,21 @@ async fn partial_verifier_is_never_adopted_and_corrupt_complete_head_is_never_re
         .unwrap();
     assert!(store.get(NS, b"installation").unwrap().is_none());
     store.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
+    drop(node);
     drop(store);
     assert!(f.open().await.is_err());
     assert!(
         f.input.initialize().await.is_err(),
         "partial installation cannot be adopted"
     );
-    let store = f
+    let (node, store) = f
         .input
         .verifier
         .store(
             Arc::new(file_secret),
             false,
+            crate::persistent_disk::open(&f.input.persistent_disk).unwrap(),
             kasumi_store::ScratchDisk::fixture(),
         )
         .await
@@ -408,17 +418,20 @@ async fn partial_verifier_is_never_adopted_and_corrupt_complete_head_is_never_re
         retained
     );
     store.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
+    drop(node);
     drop(store);
 
     // Independently completed installation: corruption must not reseed its head.
     let f = Fixture::new();
     f.input.initialize().await.unwrap();
-    let store = f
+    let (node, store) = f
         .input
         .verifier
         .store(
             Arc::new(file_secret),
             false,
+            crate::persistent_disk::open(&f.input.persistent_disk).unwrap(),
             kasumi_store::ScratchDisk::fixture(),
         )
         .await
@@ -432,16 +445,19 @@ async fn partial_verifier_is_never_adopted_and_corrupt_complete_head_is_never_re
         )])
         .unwrap();
     store.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
+    drop(node);
     drop(store);
     assert!(f.open().await.is_err());
     // A completion marker is not permission to reseed a damaged durable head.
     assert!(f.input.initialize().await.is_err());
-    let store = f
+    let (node, store) = f
         .input
         .verifier
         .store(
             Arc::new(file_secret),
             false,
+            crate::persistent_disk::open(&f.input.persistent_disk).unwrap(),
             kasumi_store::ScratchDisk::fixture(),
         )
         .await
@@ -454,6 +470,8 @@ async fn partial_verifier_is_never_adopted_and_corrupt_complete_head_is_never_re
         b"corrupt"
     );
     store.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
+    drop(node);
 }
 
 #[tokio::test]
@@ -479,6 +497,7 @@ async fn initialization_rejects_noninitial_and_mismatched_domains_without_publis
             .open(
                 BTreeMap::new(),
                 Arc::new(file_secret),
+                crate::persistent_disk::open(&f.input.persistent_disk).unwrap(),
                 kasumi_store::ScratchDisk::fixture(),
                 kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
             )
@@ -492,6 +511,7 @@ async fn initialization_rejects_noninitial_and_mismatched_domains_without_publis
             .open(
                 BTreeMap::from([(domain.digest().unwrap(), domain)]),
                 Arc::new(file_secret),
+                crate::persistent_disk::open(&f.input.persistent_disk).unwrap(),
                 kasumi_store::ScratchDisk::fixture(),
                 kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
             )
@@ -614,6 +634,7 @@ async fn panicked_verifier_initialization_drains_each_acquired_encrypted_owner()
         let node = NodeStore::open_existing(
             &fixture.input.verifier.database_path,
             id,
+            crate::persistent_disk::open(&fixture.input.persistent_disk).unwrap(),
             kasumi_store::ScratchDisk::open(fixture.input.scratch_disk.clone())?,
         )?;
         if phase != "verifier-storage-node" {
@@ -686,6 +707,7 @@ async fn cancelled_verifier_initialization_retains_physical_owner_and_unclaimed_
             NodeStore::open_existing(
                 &fixture.input.verifier.database_path,
                 id,
+                crate::persistent_disk::open(&fixture.input.persistent_disk).unwrap(),
                 kasumi_store::ScratchDisk::open(fixture.input.scratch_disk.clone())?,
             )
         };

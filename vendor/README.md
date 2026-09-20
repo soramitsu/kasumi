@@ -1,12 +1,14 @@
 # Reviewed dependency patches
 
-These directories contain the published crates with minimal security changes.
-The upstream versions are unchanged: scanners must continue to show the original
+These directories contain reviewed forks of the listed published crates and the
+complete OpenRaft workspace. The upstream versions are unchanged: scanners must continue to show the original
 advisory when one exists, and the release gate must verify the exact patched
 sources. Registry extraction markers and VCS directories are omitted; published
 `.cargo_vcs_info.json` provenance remains. Original licenses and notices remain.
-`patch-manifest.json` records the published archive checksums and every vendored
-input, including separate lockfiles used by the upstream regression suites.
+`patch-manifest.json` format 2 separates each complete source inventory from its
+selected Cargo packages. It records exact bytes, SHA-256 and file permissions,
+including executable scripts and ignored lockfiles. Published archive checksums
+remain recorded for crate distributions. There is no format-1 fallback.
 
 ## bitmaps 3.2.1
 
@@ -52,9 +54,37 @@ response. See [the ownership review](rmcp-terminal-ownership.md) for provenance,
 the exact ownership graph and required regression commands. The upstream
 Apache-2.0 license is retained.
 
+## redb 4.2.0
+
+The canonical first-release fork requires storage admission, fallible explicit
+close, and one canonical durable encoding. It rejects the removed legacy format
+and non-durable paths. The full 97-file tree includes the sibling derive crate,
+upstream notices and regression inputs. Its file hashes come from the preserved
+[provenance](../docs/evidence/redb-canonical-20260920/provenance.json), including
+published and companion archive identities. Both upstream licenses remain.
+The local disposition is [KASUMI_PATCH.md](redb-4.2.0/KASUMI_PATCH.md).
+
+## OpenRaft 0.9.25
+
+The complete 600-file workspace is retained; Cargo selects `openraft` from its
+`openraft/` package and `openraft-macros` from the sibling `macros/` package.
+The fork retains actual runtime children, incoming snapshot owners and original
+shutdown failures across cancellation, and exposes the membership observer used
+by readiness. Its bytes and permissions match the preserved
+[final custody checkpoint](../docs/evidence/openraft-canonical-20260920/custody-checkpoint.json)
+and final-49 inventory SHA-256
+`70cce233f67865044d8550bd613c7696abfbe0b47f7fa0d436199a9a709bffa6`.
+Upstream licenses and the workspace `Cargo.lock` remain inputs even though the
+upstream ignore rules omit that lockfile. Stage/package the recorded lockfile
+explicitly; do not recreate it during verification. The
+[custody evidence](../docs/evidence/openraft-canonical-20260920/README.md) qualifies
+that upstream checkpoint, not the integrated Kasumi release.
+
 ## Verification
 
 ```sh
+# Python 3.11 or newer is required.
+python3 -m unittest discover -s scripts -p test_check_dependency_patches.py -v
 python3 scripts/check_dependency_patches.py
 cargo test --manifest-path vendor/bitmaps-3.2.1/Cargo.toml --locked
 cargo test --manifest-path vendor/lru-0.16.4/Cargo.toml --locked
@@ -68,3 +98,13 @@ The release workflow must run every upstream suite above in addition to the work
 tests. Miri regression checks are supplementary evidence; they do not replace
 the production toolchain gates. Changing an input requires reviewing the diff
 and deliberately updating its hash. Do not regenerate the manifest in CI.
+
+The verifier requires the exact `[patch.crates-io]` roster and each selected
+package's local source, version, manifest path and resolved package identity.
+It checks the entire vendor tree, including hidden/ignored files and sibling
+packages; extra files, symlinks, special files and changed executable modes
+fail verification. Ordinary empty directories do not affect qualification because
+Git does not preserve them. Root-level support documents are inventoried too. The manifest
+is the reviewed policy input and is checked unchanged across Cargo metadata;
+its own bytes are not recursively hashed into itself. Verification never updates
+inventories or substitutes registry packages for missing local inputs.

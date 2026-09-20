@@ -1,0 +1,105 @@
+warning: method `matches_response_id` is never used
+   --> vendor/rmcp-3.2.0/src/model.rs:251:19
+    |
+236 | impl NumberOrString {
+    | ------------------- method in this implementation
+...
+251 |     pub(crate) fn matches_response_id(&self, response_id: &Self) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `set_client_request_metadata` is never used
+    --> vendor/rmcp-3.2.0/src/service.rs:1032:19
+     |
+ 806 | impl<R: ServiceRole> Peer<R> {
+     | ---------------------------- method in this implementation
+...
+1032 |     pub(crate) fn set_client_request_metadata(&self, metadata: ClientRequestMetadata) {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `is_authorization_required` is never used
+   --> vendor/rmcp-3.2.0/src/transport.rs:275:19
+    |
+249 | impl DynamicTransportError {
+    | -------------------------- method in this implementation
+...
+275 |     pub(crate) fn is_authorization_required(&self) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `rmcp` (lib) generated 3 warnings
+    Checking kasumi-server v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-server)
+    Checking kasumi-bench v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-bench)
+    Checking kasumi-engine v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-engine)
+error: items after a test module
+   --> crates/kasumi-engine/src/security_audit_jobs.rs:21:1
+    |
+ 21 | mod tests {
+    | ^^^^^^^^^
+...
+261 | pub(super) struct RecordFault {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+266 | impl SecurityAudit {
+    | ^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#items_after_test_module
+    = note: `-D clippy::items-after-test-module` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::items_after_test_module)]`
+    = help: move the items to before the test module was defined
+
+error: field assignment outside of initializer for an instance created with Default::default()
+   --> crates/kasumi-engine/src/snapshot_record_work.rs:151:9
+    |
+151 |         overflow.sites = u64::MAX;
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+note: consider initializing the variable with `snapshot_codec::record_work::Meter { sites: u64::MAX, ..Default::default() }` and removing relevant reassignments
+   --> crates/kasumi-engine/src/snapshot_record_work.rs:150:9
+    |
+150 |         let mut overflow = Meter::default();
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#field_reassign_with_default
+    = note: `-D clippy::field-reassign-with-default` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::field_reassign_with_default)]`
+
+error: field assignment outside of initializer for an instance created with Default::default()
+   --> crates/kasumi-engine/src/snapshot_record_work.rs:154:9
+    |
+154 |         overflow.sites = u64::MAX;
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+note: consider initializing the variable with `snapshot_codec::record_work::Meter { sites: u64::MAX, ..Default::default() }` and removing relevant reassignments
+   --> crates/kasumi-engine/src/snapshot_record_work.rs:153:9
+    |
+153 |         let mut overflow = Meter::default();
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#field_reassign_with_default
+
+error: items after a test module
+    --> crates/kasumi-engine/src/state.rs:2547:1
+     |
+2547 | mod restore_budget_tests {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+2639 | fn terminal_error(error: anyhow::Error) -> Error {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+2646 | fn staged_command_key(command: &Command) -> Result<Option<String>> {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#items_after_test_module
+     = help: move the items to before the test module was defined
+
+error: useless use of `vec!`
+   --> crates/kasumi-engine/src/snapshot_record_work.rs:170:25
+    |
+170 |         assert!(measure(&vec![b'['; MAX_DEPTH + 1]).is_err());
+    |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^ help: you can use a slice directly: `&[b'['; MAX_DEPTH + 1]`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#useless_vec
+    = note: `-D clippy::useless-vec` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::useless_vec)]`
+
+error: could not compile `kasumi-engine` (lib test) due to 5 previous errors
+warning: build failed, waiting for other jobs to finish...

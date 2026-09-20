@@ -47,6 +47,9 @@ pub(crate) fn capture<T>(
 }
 
 #[cfg(test)]
+pub(crate) use tests::{checkpoint, failure_checkpoint, install, pause_failure};
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::{
@@ -149,6 +152,3 @@ mod tests {
         assert!(!format!("{failure:?}").contains("29"));
     }
 }
-
-#[cfg(test)]
-pub(crate) use tests::{checkpoint, failure_checkpoint, install, pause_failure};

@@ -1,0 +1,13 @@
+{
+  "upstream": "https://github.com/databendlabs/openraft",
+  "upstream_commit": "8815cdba2826f74e848acef361ad03f93bb1c3f8",
+  "checkpoint": "169b2497f0f80c56817ea37ea6523f899d519167",
+  "patch_sha256": "62022857d3f6d2eabf92b06a1b6ddb18e312c3d65ed03e5b04163f00a0a3e24b",
+  "archive_sha256": "d73a5aaa7986b6917adcd21bf4178892bef4cdd563d5d22633de5c67f9604141",
+  "dependency_activated": false,
+  "checks": [
+    "24-frozen-replication-unit-tests",
+    "26-frozen-replication-integration-tests",
+    "27-frozen-replication-singlethreaded-check"
+  ]
+}

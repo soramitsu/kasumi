@@ -8,7 +8,10 @@ use crate::{
     serving_runtime::TenantServingConfig,
 };
 use anyhow::{Context, Result, ensure};
-use kasumi_store::{FileKeyProvider, NodeStore, StorageAccess, TenantStore, private_files};
+use kasumi_store::{
+    DiskWork, FileKeyProvider, NodeDisk, NodeDiskConfig, NodeDiskFile, NodeStore, StorageAccess,
+    TenantStore, private_files,
+};
 use kasumi_types::{Action, CreateCredential, CredentialResource, Grant, Policy};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -44,9 +47,49 @@ pub(crate) fn requires_provisioned(config: &RuntimeConfig) -> bool {
     true
 }
 
+/// Resolve only the caller's explicit installed root; never enroll a parent.
+pub(crate) fn open_installed_file(
+    config: &NodeDiskConfig,
+    disk: &Arc<NodeDisk>,
+    path: &Path,
+) -> Result<NodeDiskFile> {
+    let (root, relative) = config.binding(path)?;
+    Ok(disk.open_file(root, relative)?)
+}
+
+pub(crate) fn create_installed_file(
+    config: &NodeDiskConfig,
+    disk: &Arc<NodeDisk>,
+    path: &Path,
+    bytes: &[u8],
+    maximum: usize,
+) -> Result<NodeDiskFile> {
+    ensure!(
+        bytes.len() <= maximum,
+        "installed record exceeds size limit"
+    );
+    let (root, relative) = config.binding(path)?;
+    let file = disk.create_file(root, relative, DiskWork::Foreground)?;
+    file.reserve_growth(0, bytes.len() as u64, DiskWork::Foreground)?;
+    file.write_all_at(bytes, 0)?;
+    file.sync_all_and_parent()?;
+    Ok(file)
+}
+
+pub(crate) fn read_installed_file(file: &NodeDiskFile, maximum: usize) -> Result<Vec<u8>> {
+    let length = file.observed_len()?;
+    ensure!(
+        length <= maximum as u64,
+        "installed record exceeds size limit"
+    );
+    let mut bytes = vec![0; usize::try_from(length)?];
+    file.read_exact_at(&mut bytes, 0)?;
+    Ok(bytes)
+}
+
 /// The marker binds physical standalone ownership to this configured database.
 /// A process retains the returned lock until every serving/storage owner drains.
-pub(crate) fn claim(config: &RuntimeConfig) -> Result<Option<private_files::ExclusiveLock>> {
+pub(crate) fn claim(config: &RuntimeConfig, disk: &Arc<NodeDisk>) -> Result<Option<NodeDiskFile>> {
     if config.mode != DeploymentMode::Standalone {
         return Ok(None);
     }
@@ -62,13 +105,31 @@ pub(crate) fn claim(config: &RuntimeConfig) -> Result<Option<private_files::Excl
         .database_path
         .parent()
         .context("standalone database has no parent")?;
-    let lock = private_files::ExclusiveLock::acquire(&directory.join("installation.lock"))?;
-    let installed: Installation = serde_json::from_slice(&private_files::read(
-        &directory.join("installation.json"),
+    // Ordinary startup requires the original enrolled lock inode. A missing
+    // lock is an incomplete installation, never permission to create one.
+    let lock = open_installed_file(
+        &config.persistent_disk,
+        disk,
+        &directory.join("installation.lock"),
+    )?;
+    ensure!(
+        lock.observed_len()? == 0,
+        "installation lock contains unexpected data"
+    );
+    let installed: Installation = serde_json::from_slice(&read_installed_file(
+        &open_installed_file(
+            &config.persistent_disk,
+            disk,
+            &directory.join("installation.json"),
+        )?,
         16 << 10,
     )?)?;
-    let prepared: Installation = serde_json::from_slice(&private_files::read(
-        &directory.join("initialization.json"),
+    let prepared: Installation = serde_json::from_slice(&read_installed_file(
+        &open_installed_file(
+            &config.persistent_disk,
+            disk,
+            &directory.join("initialization.json"),
+        )?,
         16 << 10,
     )?)?;
     ensure!(
@@ -279,6 +340,7 @@ async fn operator_tenants(
                     NodeStore::open_existing(
                         active.directory.join("node.redb"),
                         active.database_id(config, &tenant.tenant)?,
+                        owner.node.persistent_disk().clone(),
                         owner.node.scratch_disk().clone(),
                     )?
                 }
@@ -830,9 +892,20 @@ async fn initialize_owned(
     let operator = directory.join("operator");
     let tls = directory.join("tls");
     let profiles = directory.join("profiles");
+    // Root directory creation remains the explicit installer boundary. Directory
+    // mutation/accounting below those roots still needs its own NodeDisk API.
+    let persistent_config = crate::persistent_disk::initial_config(BTreeMap::from([
+        ("data".into(), data.clone()),
+        ("backups".into(), directory.join("backups")),
+    ]));
+    let persistent_disk = crate::persistent_disk::open(&persistent_config)?;
     let mut pending = crate::startup_resources::Resources::default();
-    pending.standalone_lock = Some(private_files::ExclusiveLock::acquire(
+    pending.standalone_lock = Some(create_installed_file(
+        &persistent_config,
+        &persistent_disk,
         &data.join("installation.lock"),
+        &[],
+        0,
     )?);
     let prepared = async {
         let installation_id = Uuid::new_v4();
@@ -848,9 +921,12 @@ async fn initialize_owned(
         };
         // Freeze physical ownership before the database inode may be created. The
         // separate completion marker never authorizes adoption of an interrupted init.
-        private_files::create(
+        create_installed_file(
+            &persistent_config,
+            &persistent_disk,
             &data.join("initialization.json"),
             &serde_json::to_vec(&installation)?,
+            16 << 10,
         )?;
 
         for domain in [
@@ -900,7 +976,8 @@ async fn initialize_owned(
         config.replication = None;
         config.database_path = database_path.clone();
         config.database_id = installation.database_id;
-        config.scratch_disk.directory = data.join("scratch");
+        config.scratch_disk.directory = directory.join("scratch");
+        config.persistent_disk = persistent_config.clone();
         config.backup_destinations = std::collections::BTreeMap::from([(
             "local".into(),
             crate::administration::DestinationConfig::Filesystem {
@@ -941,9 +1018,10 @@ async fn initialize_owned(
         let node = NodeStore::create_new(
             &database_path,
             installation.database_id,
+            persistent_disk.clone(),
             kasumi_store::ScratchDisk::open(config.scratch_disk.clone())?,
         )?;
-        pending.nodes.push(node.clone());
+        pending.owned_nodes.push(node.clone());
         #[cfg(test)]
         ownership_tests::checkpoint(&database_path, "initialize-node").await?;
         let security_store = TenantStore::initialize_catalog(
@@ -957,10 +1035,11 @@ async fn initialize_owned(
         )
         .await?;
         pending.stores.push(security_store.clone());
-        let audit = config.security_audit.initialize(
-            security_store.clone(),
-            kasumi_engine::admission::NodeAdmission::new(config.admission.clone())?,
-        )?;
+        let admission = kasumi_engine::admission::NodeAdmission::new(config.admission.clone())?;
+        pending.owned_admissions.push(admission.clone());
+        let audit = config
+            .security_audit
+            .initialize(security_store.clone(), admission)?;
         pending.audits.push(audit.clone());
         #[cfg(test)]
         ownership_tests::checkpoint(&database_path, "initialize-audit").await?;
@@ -1052,12 +1131,17 @@ async fn initialize_owned(
     pending.databases.clear();
     pending.audits.clear();
     pending.stores.clear();
-    pending.nodes.clear();
+    pending.owned_nodes.clear();
+    pending.borrowed_nodes.clear();
+    pending.owned_admissions.clear();
     let configuration = directory.join("kasumi.json");
     private_files::create(&configuration, &serde_json::to_vec_pretty(&config)?)?;
-    private_files::create(
+    create_installed_file(
+        &persistent_config,
+        &persistent_disk,
         &data.join("installation.json"),
         &serde_json::to_vec(&installation)?,
+        16 << 10,
     )?;
     Ok(InitializedInstallation {
         configuration,
@@ -1178,7 +1262,7 @@ async fn provision_databases(
         )
     })) {
         let mut pending = crate::startup_resources::Resources::default();
-        pending.nodes.push(node.clone());
+        pending.borrowed_nodes.push(node.clone());
         let configured = async {
             let source = Arc::new(crate::runtime::file_secret);
             let stores = kasumi_store::TenantStorageSet::initialize_catalogs(
@@ -1305,3 +1389,7 @@ mod provision_tests;
 #[cfg(test)]
 #[path = "standalone_operator_tests.rs"]
 pub(crate) mod ownership_tests;
+
+#[cfg(test)]
+#[path = "standalone_storage_tests.rs"]
+mod storage_tests;

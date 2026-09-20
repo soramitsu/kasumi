@@ -18,6 +18,101 @@ use kasumi_clock::LeaseClock;
 pub const NODE_STORE_ID: uuid::Uuid =
     uuid::Uuid::from_u128(0x5c8c_7c42_e708_452c_b92f_510a_4673_4f2b);
 
+/// A fixture installation starts private; production constructors never repair
+/// permissions on a supplied directory.
+pub fn private_tempdir() -> std::io::Result<tempfile::TempDir> {
+    use std::os::unix::fs::PermissionsExt;
+    tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()
+}
+
+impl crate::NodeStore {
+    pub fn create_new_fixture(
+        path: impl AsRef<std::path::Path>,
+        id: uuid::Uuid,
+        scratch: std::sync::Arc<crate::ScratchDisk>,
+    ) -> Result<std::sync::Arc<Self>> {
+        let disk = crate::NodeDisk::fixture_for_path(path.as_ref())?;
+        Self::create_new(path, id, disk, scratch)
+    }
+
+    pub fn open_existing_fixture(
+        path: impl AsRef<std::path::Path>,
+        id: uuid::Uuid,
+        scratch: std::sync::Arc<crate::ScratchDisk>,
+    ) -> Result<std::sync::Arc<Self>> {
+        let disk = crate::NodeDisk::fixture_for_path(path.as_ref())?;
+        Self::open_existing(path, id, disk, scratch)
+    }
+
+    pub fn initialize_owned_empty_fixture(
+        path: impl AsRef<std::path::Path>,
+        identity: &crate::private_files::FileIdentity,
+        id: uuid::Uuid,
+        scratch: std::sync::Arc<crate::ScratchDisk>,
+    ) -> Result<std::sync::Arc<Self>> {
+        let disk = crate::NodeDisk::fixture_for_path(path.as_ref())?;
+        Self::initialize_owned_empty(path, identity, id, disk, scratch)
+    }
+
+    pub fn claim_cleanup_fixture(
+        path: impl AsRef<std::path::Path>,
+        id: uuid::Uuid,
+    ) -> Result<crate::NodeFileCleanup> {
+        let disk = crate::NodeDisk::fixture_for_path(path.as_ref())?;
+        Self::claim_cleanup(path, id, disk)
+    }
+}
+
+/// Bounded synthetic owner for the in-memory crash/fault backends used only by
+/// tests. Physical-file tests use NodeDisk instead. Failure remains latched in
+/// this exact owner; a restarted crash image needs an explicitly new fixture.
+#[derive(Debug, Default)]
+struct FixtureStorageAdmission {
+    failed: AtomicBool,
+    reserved: AtomicU64,
+}
+
+impl redb::StorageAdmission for FixtureStorageAdmission {
+    fn check_owner(&self) -> std::result::Result<(), redb::OwnerFailed> {
+        if self.failed.load(Ordering::Acquire) {
+            Err(redb::OwnerFailed)
+        } else {
+            Ok(())
+        }
+    }
+    fn reserve_growth(
+        &self,
+        current: u64,
+        requested: u64,
+    ) -> std::result::Result<(), redb::AdmissionError> {
+        self.check_owner()
+            .map_err(|_| redb::AdmissionError::OwnerFailed)?;
+        if requested < current || requested > 256 << 30 {
+            return Err(redb::AdmissionError::CapacityDenied);
+        }
+        self.reserved.fetch_max(requested, Ordering::AcqRel);
+        Ok(())
+    }
+    fn settle_growth(&self, actual: u64) -> std::result::Result<(), redb::OwnerFailed> {
+        self.check_owner()?;
+        if actual > 256 << 30 {
+            self.owner_failed();
+            return Err(redb::OwnerFailed);
+        }
+        self.reserved.store(actual, Ordering::Release);
+        Ok(())
+    }
+    fn owner_failed(&self) {
+        self.failed.store(true, Ordering::Release);
+    }
+}
+
+pub fn storage_admission() -> std::sync::Arc<dyn redb::StorageAdmission> {
+    std::sync::Arc::new(FixtureStorageAdmission::default())
+}
+
 /// Explicitly install an independent custody provider for a trusted test store.
 /// Production configuration must supply both providers through TenantStorageSet.
 pub async fn initialize_custody_fixture(
@@ -298,5 +393,30 @@ impl redb::StorageBackend for FaultBackend {
             .ok_or_else(|| std::io::Error::other("write outside storage"))?;
         target.copy_from_slice(data);
         Ok(())
+    }
+}
+
+impl crate::FilesystemAuditArchive {
+    pub fn open_fixture(root: impl AsRef<std::path::Path>) -> anyhow::Result<Self> {
+        let root = root.as_ref();
+        if !root.exists() {
+            crate::private_files::create_directory(root)?;
+        }
+        let disk = crate::NodeDisk::fixture_for_path(root.join("archive-accounting-anchor"))?;
+        Self::open(root, disk)
+    }
+}
+
+impl crate::FilesystemBackupDestination {
+    pub fn new_fixture(
+        root: impl AsRef<std::path::Path>,
+        max_bytes: usize,
+    ) -> anyhow::Result<Self> {
+        let root = root.as_ref();
+        if !root.exists() {
+            crate::private_files::create_directory(root)?;
+        }
+        let disk = crate::NodeDisk::fixture_for_path(root.join("backup-accounting-anchor"))?;
+        Self::new(root, max_bytes, disk)
     }
 }

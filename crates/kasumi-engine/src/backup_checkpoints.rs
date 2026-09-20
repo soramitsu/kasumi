@@ -135,7 +135,7 @@ impl Database {
     ) -> Result<VerifiedBackupCheckpoint> {
         let mut publication_admitted = false;
         let result = self
-            .session_work(async {
+            .session_work(|| async {
                 tokio::time::timeout(Duration::from_millis(BACKUP_OPERATION_TIMEOUT_MS), async {
                     let fence = self.response_fence(&context)?;
                     self.engine.authorize(&context, None, Action::Admin)?;

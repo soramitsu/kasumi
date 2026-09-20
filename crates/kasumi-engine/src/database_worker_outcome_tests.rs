@@ -50,9 +50,9 @@ struct Fixture {
 }
 impl Fixture {
     async fn new(admission: Arc<NodeAdmission>, name: &str) -> anyhow::Result<Self> {
-        let directory = tempfile::tempdir()?;
+        let directory = kasumi_store::test_utils::private_tempdir()?;
         let path = directory.path().join("node.redb");
-        let node = NodeStore::create_new(
+        let node = NodeStore::create_new_fixture(
             &path,
             kasumi_store::test_utils::NODE_STORE_ID,
             ScratchDisk::fixture(),
@@ -96,8 +96,14 @@ impl Fixture {
             Arc::new(LocalKeyProvider::new([73; 32])),
         )
         .await?;
-        let group =
-            RaftGroup::local(1, format!("{name}/{incarnation}"), stores, engine.clone()).await?;
+        let group = RaftGroup::local(
+            1,
+            format!("{name}/{incarnation}"),
+            stores,
+            engine.clone(),
+            kasumi_raft::SnapshotBufferOwner::fixture(),
+        )
+        .await?;
         let database = Database::new_with_admission(engine, group, store, admission, audit.clone());
         database
             .group
@@ -116,7 +122,7 @@ impl Fixture {
 
     fn assert_exclusive(&self) {
         assert!(
-            NodeStore::open_existing(
+            NodeStore::open_existing_fixture(
                 &self.path,
                 kasumi_store::test_utils::NODE_STORE_ID,
                 ScratchDisk::fixture()
@@ -133,7 +139,7 @@ impl Fixture {
         assert!(weak.upgrade().is_none());
         drop(self.audit);
         drop(self.node);
-        let node = NodeStore::open_existing(
+        let node = NodeStore::open_existing_fixture(
             &self.path,
             kasumi_store::test_utils::NODE_STORE_ID,
             ScratchDisk::fixture(),

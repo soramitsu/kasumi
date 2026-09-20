@@ -11,7 +11,7 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> Result<Self> {
-        let directory = tempfile::tempdir()?;
+        let directory = kasumi_store::test_utils::private_tempdir()?;
         let installed = TargetJournalInstallation {
             root: ControlSigningRoot {
                 control_incarnation: Uuid::new_v4(),
@@ -31,7 +31,7 @@ impl Fixture {
             installed.root.control_incarnation,
             &installed.node.verifier,
         )?;
-        let node = NodeStore::create_new(
+        let node = NodeStore::create_new_fixture(
             directory.path().join("journal.redb"),
             id,
             ScratchDisk::fixture(),
@@ -142,9 +142,11 @@ async fn installed_empty_journal_reopens_only_its_exact_node_after_owner_drain()
     drop(node);
     let path = directory.path().join("journal.redb");
     let bytes = std::fs::read(&path)?;
-    assert!(NodeStore::open_existing(&path, Uuid::new_v4(), ScratchDisk::fixture()).is_err());
+    assert!(
+        NodeStore::open_existing_fixture(&path, Uuid::new_v4(), ScratchDisk::fixture()).is_err()
+    );
     assert_eq!(std::fs::read(&path)?, bytes);
-    let node = NodeStore::open_existing(&path, id, ScratchDisk::fixture())?;
+    let node = NodeStore::open_existing_fixture(&path, id, ScratchDisk::fixture())?;
     let store = TenantStore::open_existing(
         node.clone(),
         format!("kasumi.target.{}.1", installed.root.control_incarnation),

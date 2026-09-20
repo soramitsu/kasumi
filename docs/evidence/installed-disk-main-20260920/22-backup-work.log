@@ -1,0 +1,10 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.47s
+     Running unittests src/lib.rs (target/debug/deps/kasumi_engine-dc6dca13bbdbe0d0)
+
+running 3 tests
+test service::backup_sessions::work_tests::additional_future_charge_denial_never_invokes_builder ... ok
+test service::backup_sessions::work_tests::future_charge_precedes_builder_and_outlives_box_on_cancel_and_error ... ok
+test service::backup_sessions::work_tests::oversized_future_is_denied_before_builder_or_charge ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 182 filtered out; finished in 0.00s
+

@@ -13,7 +13,7 @@ struct InstalledFixture {
 }
 impl InstalledFixture {
     async fn new() -> anyhow::Result<Self> {
-        let directory = tempfile::tempdir()?;
+        let directory = kasumi_store::test_utils::private_tempdir()?;
         let key = ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
             .map_err(|_| anyhow::anyhow!("fixture root generation failed"))?;
         let root = kasumi_serving::test_utils::FixtureSigningRoot::from_pkcs8(key.as_ref())?;
@@ -35,7 +35,7 @@ impl InstalledFixture {
         };
         let signing = root.install(installation.manifest.clone(), 0)?;
         let (bootstrap, settings) = test_settings(4 << 20, signing.signer.certificate().clone());
-        let node = NodeStore::create_new(
+        let node = NodeStore::create_new_fixture(
             directory.path().join("authority.redb"),
             kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
@@ -88,6 +88,7 @@ impl InstalledFixture {
             Arc::new(InProcessRouter::default()),
             Config::default(),
             request_budget(),
+            kasumi_raft::SnapshotBufferOwner::fixture(),
             EpochClock::system()?,
         )
         .await
@@ -152,7 +153,7 @@ impl InstalledFixture {
             signing,
         } = self;
         drop(stores);
-        let node = NodeStore::open_existing(
+        let node = NodeStore::open_existing_fixture(
             directory.path().join("authority.redb"),
             kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),

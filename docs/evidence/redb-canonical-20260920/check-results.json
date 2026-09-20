@@ -1,0 +1,128 @@
+{
+  "environment": {
+    "RUSTUP_TOOLCHAIN": "1.97.1",
+    "CARGO_TARGET_DIR": "/Users/mtakemiya/dev/kasumi-redb-admission-target",
+    "CARGO_BUILD_JOBS": "1"
+  },
+  "checks": [
+    {
+      "log": "05-canonical-strict-clippy.log",
+      "command": [
+        "cargo",
+        "clippy",
+        "--manifest-path",
+        "/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0/Cargo.toml",
+        "--locked",
+        "--offline",
+        "--all-features",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "environment_override": {},
+      "exit_code": 0,
+      "seconds": 4.904
+    },
+    {
+      "log": "06-canonical-all-features-tests.log",
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0/Cargo.toml",
+        "--locked",
+        "--offline",
+        "--all-features",
+        "--no-fail-fast",
+        "--",
+        "--test-threads=2"
+      ],
+      "environment_override": {},
+      "exit_code": 0,
+      "seconds": 295.536
+    },
+    {
+      "log": "07-default-strict-clippy.log",
+      "command": [
+        "cargo",
+        "clippy",
+        "--manifest-path",
+        "/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0/Cargo.toml",
+        "--locked",
+        "--offline",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "environment_override": {},
+      "exit_code": 0,
+      "seconds": 7.23
+    },
+    {
+      "log": "08-no-std-check.log",
+      "command": [
+        "cargo",
+        "check",
+        "--manifest-path",
+        "/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0/Cargo.toml",
+        "--locked",
+        "--offline",
+        "--no-default-features",
+        "--features",
+        "experimental-api-5"
+      ],
+      "environment_override": {
+        "RUSTFLAGS": "-C panic=abort"
+      },
+      "exit_code": 0,
+      "seconds": 1.466
+    },
+    {
+      "log": "09-canonical-fmt.log",
+      "command": [
+        "cargo",
+        "fmt",
+        "--manifest-path",
+        "/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0/Cargo.toml",
+        "--check"
+      ],
+      "environment_override": {},
+      "exit_code": 0,
+      "seconds": 0.323
+    },
+    {
+      "log": "10-canonical-derive-tests.log",
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0/crates/redb-derive/Cargo.toml",
+        "--locked",
+        "--offline"
+      ],
+      "environment_override": {},
+      "exit_code": 0,
+      "seconds": 8.758
+    },
+    {
+      "log": "11-canonical-derive-clippy.log",
+      "command": [
+        "cargo",
+        "clippy",
+        "--manifest-path",
+        "/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0/crates/redb-derive/Cargo.toml",
+        "--locked",
+        "--offline",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "environment_override": {},
+      "exit_code": 0,
+      "seconds": 2.042
+    }
+  ]
+}

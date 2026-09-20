@@ -104,13 +104,13 @@ impl StateMachineBackend for Backend {
 
 pub async fn store(path: &Path, create: bool) -> Result<Arc<kasumi_store::TenantStorageSet>> {
     let node = if create {
-        NodeStore::create_new(
+        NodeStore::create_new_fixture(
             path,
             kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
         )?
     } else {
-        NodeStore::open_existing(
+        NodeStore::open_existing_fixture(
             path,
             kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
@@ -146,4 +146,8 @@ pub fn config() -> Config {
         replication_lag_threshold: 10,
         ..Config::default()
     }
+}
+
+pub fn snapshot_owner() -> Arc<kasumi_raft::SnapshotBufferOwner> {
+    kasumi_raft::SnapshotBufferOwner::new(kasumi_raft::SNAPSHOT_BUFFER_SLOTS, Arc::new(())).unwrap()
 }

@@ -1,0 +1,23 @@
+{
+  "scope": "development combined workspace strict lint diagnostic, not final release qualification",
+  "command": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+    "clippy",
+    "--offline",
+    "--workspace",
+    "--all-targets",
+    "--all-features",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "head": "c283fa4a2c2344fd359d1d58ea49a1664de72088",
+  "process_group": 46633,
+  "exit_code": 101,
+  "timeout": false,
+  "signals": [],
+  "drained": true,
+  "elapsed_seconds": 45.14915990829468,
+  "inventoried_source_unchanged": true
+}

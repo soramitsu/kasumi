@@ -44,7 +44,7 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> Self {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_utils::private_tempdir().unwrap();
         let root = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
         let manifest = AuthorityManifest {
             authority_id: Uuid::new_v4(),
@@ -83,7 +83,7 @@ impl Fixture {
         };
         let clock = Arc::new(Clock(AtomicU64::new(0)));
         let store = TenantStore::initialize_catalog_fixture_with_clock_and_access(
-            NodeStore::create_new(
+            NodeStore::create_new_fixture(
                 directory.path().join("trust.redb"),
                 crate::test_utils::NODE_STORE_ID,
                 crate::ScratchDisk::fixture(),
@@ -549,7 +549,7 @@ async fn complete_file_reopen_retains_exact_trust_and_permanent_key_bindings() {
     store.shutdown().await.unwrap();
     drop(store);
     let reopened = TenantStore::open_existing(
-        NodeStore::open_existing(
+        NodeStore::open_existing_fixture(
             directory.path().join("trust.redb"),
             crate::test_utils::NODE_STORE_ID,
             crate::ScratchDisk::fixture(),

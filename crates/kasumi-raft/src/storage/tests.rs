@@ -38,10 +38,10 @@ async fn cancelled_log_future_retains_drain_lease_until_blocking_persistence_fin
         time::Duration,
     };
 
-    let directory = tempfile::tempdir()?;
+    let directory = kasumi_store::test_utils::private_tempdir()?;
     let path = directory.path().join("cancelled-persistence.redb");
     let store = TenantStore::initialize_catalog_fixture_with_clock(
-        NodeStore::create_new(
+        NodeStore::create_new_fixture(
             &path,
             kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
@@ -96,7 +96,7 @@ async fn cancelled_log_future_retains_drain_lease_until_blocking_persistence_fin
     drop(domains);
     drop(store);
     // An abandoned response does not detach persistence from its drain lease.
-    let reopened = NodeStore::open_existing(
+    let reopened = NodeStore::open_existing_fixture(
         &path,
         kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
@@ -156,7 +156,11 @@ impl StateMachineBackend for BytesBackend {
 
 async fn new_fault_store(disk: FaultBackend) -> Result<Arc<TenantStore>> {
     TenantStore::initialize_catalog_fixture_with_clock(
-        NodeStore::open_with_backend(disk, kasumi_store::ScratchDisk::fixture())?,
+        NodeStore::open_with_backend(
+            disk,
+            kasumi_store::test_utils::storage_admission(),
+            kasumi_store::ScratchDisk::fixture(),
+        )?,
         "snapshot-test".into(),
         Arc::new(LocalKeyProvider::new([7; 32])),
         Arc::new(ManualClock::new()),
@@ -166,7 +170,11 @@ async fn new_fault_store(disk: FaultBackend) -> Result<Arc<TenantStore>> {
 
 async fn existing_fault_store(disk: FaultBackend) -> Result<Arc<TenantStore>> {
     TenantStore::open_existing_fixture_with_clock(
-        NodeStore::open_with_backend(disk, kasumi_store::ScratchDisk::fixture())?,
+        NodeStore::open_with_backend(
+            disk,
+            kasumi_store::test_utils::storage_admission(),
+            kasumi_store::ScratchDisk::fixture(),
+        )?,
         "snapshot-test".into(),
         Arc::new(LocalKeyProvider::new([7; 32])),
         Arc::new(ManualClock::new()),
@@ -240,6 +248,7 @@ async fn applied_metadata_does_not_block_runtime_while_snapshot_capture_holds_st
             entered: Mutex::new(Some(entered)),
             release: Mutex::new(wait),
         }),
+        crate::SnapshotBufferOwner::fixture(),
     )
     .await?;
     let mut capturing = machine.clone();
@@ -297,6 +306,7 @@ async fn invalid_backend_snapshot_never_replaces_durable_recoverable_state() -> 
         )
         .await?,
         Arc::new(BytesBackend::default()),
+        crate::SnapshotBufferOwner::fixture(),
     )
     .await?;
     let valid = envelope(b"valid".to_vec());
@@ -307,6 +317,7 @@ async fn invalid_backend_snapshot_never_replaces_durable_recoverable_state() -> 
                 &kasumi_store::ScratchDisk::fixture(),
                 valid.encode(64 << 20)?.read_bounded(64 << 20)?,
                 1024,
+                &crate::SnapshotBufferOwner::fixture(),
             )?),
         )
         .await?;
@@ -318,7 +329,8 @@ async fn invalid_backend_snapshot_never_replaces_durable_recoverable_state() -> 
                 Box::new(SnapshotBuffer::from_bytes(
                     &kasumi_store::ScratchDisk::fixture(),
                     invalid.encode(64 << 20)?.read_bounded(64 << 20)?,
-                    1024
+                    1024,
+                    &crate::SnapshotBufferOwner::fixture()
                 )?)
             )
             .await
@@ -339,6 +351,7 @@ async fn invalid_backend_snapshot_never_replaces_durable_recoverable_state() -> 
         )
         .await?,
         restored.clone(),
+        crate::SnapshotBufferOwner::fixture(),
     )
     .await?;
     assert_eq!(*restored.0.lock().unwrap(), b"valid");
@@ -347,9 +360,9 @@ async fn invalid_backend_snapshot_never_replaces_durable_recoverable_state() -> 
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn snapshots_larger_than_store_record_limit_are_chunked_and_recovered() -> Result<()> {
-    let dir = tempfile::tempdir()?;
+    let dir = kasumi_store::test_utils::private_tempdir()?;
     let store = TenantStore::initialize_catalog_fixture(
-        NodeStore::create_new(
+        NodeStore::create_new_fixture(
             dir.path().join("large.redb"),
             kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
@@ -459,18 +472,18 @@ async fn snapshot_install_power_loss_at_every_storage_operation_keeps_whole_old_
 #[tokio::test]
 async fn eight_mib_command_uses_compact_log_record_and_replays_after_reopen() -> Result<()> {
     use openraft::storage::{RaftLogStorageExt, StorageHelper};
-    let dir = tempfile::tempdir()?;
+    let dir = kasumi_store::test_utils::private_tempdir()?;
     let path = dir.path().join("large-command.redb");
     let bytes = vec![171u8; (8 << 20) + (64 << 10)];
     async fn open(path: &std::path::Path, create: bool) -> Result<Arc<TenantStore>> {
         let node = (if create {
-            NodeStore::create_new(
+            NodeStore::create_new_fixture(
                 path,
                 kasumi_store::test_utils::NODE_STORE_ID,
                 kasumi_store::ScratchDisk::fixture(),
             )
         } else {
-            NodeStore::open_existing(
+            NodeStore::open_existing_fixture(
                 path,
                 kasumi_store::test_utils::NODE_STORE_ID,
                 kasumi_store::ScratchDisk::fixture(),
@@ -534,6 +547,7 @@ async fn eight_mib_command_uses_compact_log_record_and_replays_after_reopen() ->
         )
         .await?,
         backend.clone(),
+        crate::SnapshotBufferOwner::fixture(),
     )
     .await?;
     StorageHelper::new(&mut log, &mut machine)
@@ -610,6 +624,7 @@ async fn snapshot_materialization_releases_applied_lock_and_keeps_captured_root(
         )
         .await?,
         backend.clone(),
+        crate::SnapshotBufferOwner::fixture(),
     )
     .await?;
     let mut capturing = machine.clone();

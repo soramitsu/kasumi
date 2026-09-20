@@ -11,7 +11,7 @@ use kasumi_types::{Error, ErrorCode, Result};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock, Weak},
     time::Duration,
 };
 
@@ -209,6 +209,13 @@ struct State {
     next: u64,
     charges: HashMap<u64, Charge>,
 }
+#[derive(Default)]
+struct SnapshotStartups {
+    closed: bool,
+    // Each charged owner covers its inventory entry. Weak references avoid a
+    // cycle through the owner's Reservation back to this node governor.
+    owners: Vec<Weak<kasumi_raft::SnapshotBufferOwner>>,
+}
 pub struct NodeAdmission {
     config: AdmissionConfig,
     high: u64,
@@ -217,8 +224,70 @@ pub struct NodeAdmission {
     memory: Arc<dyn MemorySource>,
     clock: Arc<dyn LeaseClock>,
     state: Mutex<State>,
+    snapshot_startups: Mutex<SnapshotStartups>,
+    snapshot_startup_drain: tokio::sync::Mutex<kasumi_types::drain::DrainReport>,
 }
 impl NodeAdmission {
+    /// Reserve the complete fixed snapshot-child inventory before a group may
+    /// open. The same charge survives facade cancellation until actual drain.
+    pub fn snapshot_buffer_owner(
+        self: &Arc<Self>,
+    ) -> anyhow::Result<Arc<kasumi_raft::SnapshotBufferOwner>> {
+        let mut startups = self
+            .snapshot_startups
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        anyhow::ensure!(!startups.closed, "snapshot startup admission is closed");
+        let slots = kasumi_raft::SNAPSHOT_BUFFER_SLOTS;
+        let bytes = kasumi_raft::SnapshotBufferOwner::required_bytes(slots)?;
+        let mut charge = self.reserve(bytes, None)?;
+        charge.retain(bytes);
+        startups.owners.retain(|owner| owner.strong_count() != 0);
+        startups.owners.try_reserve(1)?;
+        let owner = kasumi_raft::SnapshotBufferOwner::new(slots, Arc::new(charge))?;
+        startups.owners.push(Arc::downgrade(&owner));
+        Ok(owner)
+    }
+
+    /// Seal new group startup admission and resume every cancelled/unclaimed
+    /// constructor retained by this node. Already delivered groups keep their
+    /// ordinary shutdown owner; this cannot close their live snapshot buffers.
+    pub async fn drain_snapshot_startups(&self) -> kasumi_types::drain::DrainResult {
+        use kasumi_types::drain::DrainCompletion;
+        let mut report = self.snapshot_startup_drain.lock().await;
+        let count = {
+            let mut startups = self
+                .snapshot_startups
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            startups.closed = true;
+            startups.owners.len()
+        };
+        let mut retained = None;
+        for index in 0..count {
+            let owner = {
+                let startups = self
+                    .snapshot_startups
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
+                startups.owners[index].upgrade()
+            };
+            if let Some(owner) = owner
+                && let Err(failure) = owner.drain_startup().await
+            {
+                report.merge(&failure);
+                if failure.completion() == DrainCompletion::Retained {
+                    retained = Some(failure);
+                }
+            }
+        }
+        self.snapshot_startups
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .owners
+            .retain(|owner| owner.strong_count() != 0);
+        report.outcome(retained)
+    }
     /// Deterministic memory observations for unit tests of ownership. This is
     /// unavailable in library and fixture-feature builds of the database.
     #[cfg(test)]
@@ -303,6 +372,8 @@ impl NodeAdmission {
                 next: 0,
                 charges: HashMap::new(),
             }),
+            snapshot_startups: Default::default(),
+            snapshot_startup_drain: Default::default(),
         });
         node.refresh();
         Ok(node)
@@ -937,6 +1008,31 @@ mod tests {
         .unwrap();
         assert_eq!(slots.available_permits(), 1);
     }
+    #[tokio::test]
+    async fn snapshot_startup_inventory_is_charged_without_a_governor_cycle() {
+        let node =
+            NodeAdmission::with_fixed_memory(AdmissionConfig::default(), 1 << 30, 0).unwrap();
+        let owner = node.snapshot_buffer_owner().unwrap();
+        let charge =
+            kasumi_raft::SnapshotBufferOwner::required_bytes(kasumi_raft::SNAPSHOT_BUFFER_SLOTS)
+                .unwrap();
+        assert_eq!(node.snapshot().reserved_bytes, charge);
+        let weak = Arc::downgrade(&owner);
+        drop(owner);
+        assert!(
+            weak.upgrade().is_none(),
+            "an idle inventory entry cannot retain its owner"
+        );
+        assert_eq!(node.snapshot().reserved_bytes, 0);
+        let owner = node.snapshot_buffer_owner().unwrap();
+        node.drain_snapshot_startups().await.unwrap();
+        assert!(node.snapshot_buffer_owner().is_err());
+        assert_eq!(node.snapshot().reserved_bytes, charge);
+        drop(owner);
+        node.drain_snapshot_startups().await.unwrap();
+        assert_eq!(node.snapshot().reserved_bytes, 0);
+    }
+
     #[test]
     fn real_process_rss_and_physical_capacity_are_measured() {
         assert!(ProcessMemory.resident_bytes().unwrap() > 0);

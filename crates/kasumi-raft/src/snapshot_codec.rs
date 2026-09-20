@@ -250,6 +250,7 @@ pub(crate) fn unvalidated_snapshot(
         meta: changed.meta.clone(),
         snapshot: Box::new(crate::SnapshotBuffer::from_image(
             changed.encode_records(limit, false)?,
-        )),
+            &crate::SnapshotBufferOwner::fixture(),
+        )?),
     })
 }

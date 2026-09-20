@@ -1,0 +1,38 @@
+   Compiling serde_json v1.0.151 (/Users/mtakemiya/dev/kasumi/vendor/serde_json-1.0.151)
+   Compiling h2 v0.4.19
+   Compiling hyper v1.11.1
+   Compiling hyper-util v0.1.20
+   Compiling lindera-dictionary v5.3.0
+   Compiling tower v0.5.3
+   Compiling lindera-ipadic v5.3.0
+   Compiling kasumi-types v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-types)
+   Compiling hyper-timeout v0.5.2
+   Compiling lru v0.16.4 (/Users/mtakemiya/dev/kasumi/vendor/lru-0.16.4)
+   Compiling tantivy-query-grammar v0.26.0
+   Compiling lindera v5.3.0
+   Compiling tonic v0.14.6
+   Compiling hyper-rustls v0.27.9
+   Compiling tower-http v0.6.11
+   Compiling lindera-analysis v5.3.0
+   Compiling reqwest v0.12.28
+   Compiling tantivy v0.26.1
+   Compiling kasumi-serving v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-serving)
+   Compiling jsonschema-value v0.52.1
+   Compiling referencing v0.52.1
+   Compiling kasumi-transport v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-transport)
+   Compiling jsonschema v0.52.1
+   Compiling openraft v0.9.25 (/Users/mtakemiya/dev/kasumi/vendor/openraft-0.9.25/openraft)
+   Compiling kasumi-store v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-store)
+   Compiling postcard v1.1.3
+   Compiling lindera-tantivy v5.0.1
+   Compiling kasumi-query v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-query)
+   Compiling kasumi-raft v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 15s
+     Running unittests src/lib.rs (target/debug/deps/kasumi_engine-dc6dca13bbdbe0d0)
+
+running 1 test
+test admission::tests::snapshot_startup_inventory_is_charged_without_a_governor_cycle ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 184 filtered out; finished in 0.00s
+

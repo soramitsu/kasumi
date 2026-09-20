@@ -184,7 +184,7 @@ async fn backup(root: &Path) -> (PathBuf, LocalRecoveryStart, ClientProfile) {
 
 #[tokio::test]
 async fn local_recovery_resumes_each_phase_and_fences_old_resources_after_activation() {
-    let root = tempfile::tempdir().unwrap();
+    let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let (configuration, request, old_profile) = backup(root.path()).await;
     let started = start(&configuration, request.clone()).await.unwrap();
     assert_eq!(started.phase, LocalRecoveryPhase::Materialize);
@@ -331,7 +331,7 @@ async fn local_recovery_resumes_each_phase_and_fences_old_resources_after_activa
 
 #[tokio::test]
 async fn local_cleanup_absence_requires_durable_parent_sync_after_operator_restart() {
-    let root = tempfile::tempdir().unwrap();
+    let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let (configuration, request, _) = backup(root.path()).await;
     start(&configuration, request.clone()).await.unwrap();
     let mut operator = Operator::open(&configuration).await.unwrap();
@@ -383,7 +383,7 @@ async fn local_cleanup_absence_requires_durable_parent_sync_after_operator_resta
 
 #[tokio::test]
 async fn local_stop_persists_identity_before_cleanup_and_rejects_unrelated_files() {
-    let root = tempfile::tempdir().unwrap();
+    let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let (configuration, request, _) = backup(root.path()).await;
     start(&configuration, request.clone()).await.unwrap();
     let mut operator = Operator::open(&configuration).await.unwrap();
@@ -400,7 +400,8 @@ async fn local_stop_persists_identity_before_cleanup_and_rejects_unrelated_files
     cache.publish_blocking(&segment).unwrap();
     cache.publish_blocking(&segment).unwrap();
     let shared =
-        kasumi_store::FilesystemAuditArchive::open(root.path().join("shared-archives")).unwrap();
+        kasumi_store::FilesystemAuditArchive::open_fixture(root.path().join("shared-archives"))
+            .unwrap();
     shared.publish_blocking(&segment).unwrap();
     let cache_directory = target.join("tenant-audit-archives");
     let archive = cache_directory.join(format!("{}.audit", segment.reference.object.object_id));
@@ -553,7 +554,7 @@ async fn cancelled_local_operator_retains_exclusive_installation_until_joined_dr
     let _serial = crate::standalone::ownership_tests::drain_serial()
         .lock()
         .await;
-    let root = tempfile::tempdir().unwrap();
+    let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let (configuration, request, _) = backup(root.path()).await;
     start(&configuration, request.clone()).await.unwrap();
     let pause = Arc::new(OpenPause::default());
@@ -598,7 +599,7 @@ async fn cancelled_local_operator_retains_exclusive_installation_until_joined_dr
 
 #[tokio::test]
 async fn local_creation_replay_never_creates_or_adopts_an_absent_or_empty_file() {
-    let root = tempfile::tempdir().unwrap();
+    let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let (configuration, request, _) = backup(root.path()).await;
     start(&configuration, request.clone()).await.unwrap();
     let mut operator = Operator::open(&configuration).await.unwrap();
@@ -642,7 +643,7 @@ async fn local_creation_replay_never_creates_or_adopts_an_absent_or_empty_file()
 
 #[tokio::test]
 async fn local_lost_file_binding_cleanup_requires_the_original_node_identity() {
-    let root = tempfile::tempdir().unwrap();
+    let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let (configuration, request, _) = backup(root.path()).await;
     start(&configuration, request.clone()).await.unwrap();
     let mut operator = Operator::open(&configuration).await.unwrap();
@@ -653,7 +654,7 @@ async fn local_lost_file_binding_cleanup_requires_the_original_node_identity() {
         .prepare_stage(&mut journal, TargetPreparation::CreationDispatched)
         .unwrap();
     let path = journal.target_directory.join("node.redb");
-    let node = kasumi_store::NodeStore::create_new(
+    let node = kasumi_store::NodeStore::create_new_fixture(
         &path,
         local_node_id(&journal).unwrap(),
         operator.store().scratch_disk().clone(),
@@ -671,7 +672,7 @@ async fn local_lost_file_binding_cleanup_requires_the_original_node_identity() {
     drop(operator);
     let preserved = root.path().join("original-node.redb");
     std::fs::rename(&path, &preserved).unwrap();
-    let other = kasumi_store::NodeStore::create_new(
+    let other = kasumi_store::NodeStore::create_new_fixture(
         &path,
         Uuid::new_v4(),
         kasumi_store::ScratchDisk::fixture(),
@@ -691,7 +692,7 @@ async fn local_lost_file_binding_cleanup_requires_the_original_node_identity() {
 
 #[tokio::test]
 async fn local_catalog_replay_resolves_complete_catalogs_without_reinitialization() {
-    let root = tempfile::tempdir().unwrap();
+    let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let (configuration, request, _) = backup(root.path()).await;
     start(&configuration, request.clone()).await.unwrap();
     let mut operator = Operator::open(&configuration).await.unwrap();
@@ -725,7 +726,7 @@ async fn local_catalog_replay_resolves_complete_catalogs_without_reinitializatio
 #[tokio::test]
 async fn local_incomplete_catalogs_or_dispatched_restore_never_restart_creation() {
     for dispatched in [false, true] {
-        let root = tempfile::tempdir().unwrap();
+        let root = kasumi_store::test_utils::private_tempdir().unwrap();
         let (configuration, request, _) = backup(root.path()).await;
         start(&configuration, request.clone()).await.unwrap();
         let mut operator = Operator::open(&configuration).await.unwrap();
@@ -779,7 +780,7 @@ async fn local_incomplete_catalogs_or_dispatched_restore_never_restart_creation(
 
 #[tokio::test]
 async fn activated_local_recovery_never_recreates_missing_control_topology() {
-    let root = tempfile::tempdir().unwrap();
+    let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let (configuration, request, _) = backup(root.path()).await;
     start(&configuration, request.clone()).await.unwrap();
     let mut operator = Operator::open(&configuration).await.unwrap();
@@ -849,7 +850,7 @@ async fn failed_restored_generation_startup_retains_alternate_node_through_cance
     let _serial = crate::standalone::ownership_tests::drain_serial()
         .lock()
         .await;
-    let root = tempfile::tempdir().unwrap();
+    let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let (configuration, request, _) = backup(root.path()).await;
     start(&configuration, request.clone()).await.unwrap();
     assert_eq!(
@@ -883,7 +884,7 @@ async fn failed_restored_generation_startup_retains_alternate_node_through_cance
     // Preparation already unwound. No custody, pair or database from the alternate
     // node returned yet; only the external pending inventory can retain it.
     assert!(
-        NodeStore::open_existing(
+        NodeStore::open_existing_fixture(
             &target_path,
             target_id,
             kasumi_store::ScratchDisk::open(config.scratch_disk.clone()).unwrap()
@@ -891,7 +892,7 @@ async fn failed_restored_generation_startup_retains_alternate_node_through_cance
         .is_err()
     );
     assert!(
-        NodeStore::open_existing(
+        NodeStore::open_existing_fixture(
             &config.database_path,
             config.database_id,
             kasumi_store::ScratchDisk::open(config.scratch_disk.clone()).unwrap()
@@ -907,7 +908,7 @@ async fn failed_restored_generation_startup_retains_alternate_node_through_cance
     .await;
     drop(drain);
     assert!(
-        NodeStore::open_existing(
+        NodeStore::open_existing_fixture(
             &target_path,
             target_id,
             kasumi_store::ScratchDisk::open(config.scratch_disk.clone()).unwrap()
@@ -932,7 +933,7 @@ async fn failed_restored_generation_startup_retains_alternate_node_through_cance
     );
     drop(fault);
     drop(pause);
-    let target = NodeStore::open_existing(
+    let target = NodeStore::open_existing_fixture(
         &target_path,
         target_id,
         kasumi_store::ScratchDisk::open(config.scratch_disk.clone()).unwrap(),

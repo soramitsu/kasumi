@@ -164,7 +164,7 @@ metadata contains a bounded policy head and history digest; typed records stream
 through encrypted indexes and closed snapshots publish chunks atomically with
 the applied position. Runtime custody transfer uses the installed tenant's
 `initial_limits.max_snapshot_bytes` (Control uses its own matching setting).
-Embedded callers supply `CustodyRaftConfig` with an explicit `RaftLimits` budget.
+Embedded callers supply `RaftGroupConfig` with an explicit `RaftLimits` budget.
 Configured disk capacity must cover retained state and snapshot maintenance.
 Per-file staging maxima are checked, but shared node temporary-disk admission
 remains unfinished and is not certified by these focused tests.

@@ -185,7 +185,10 @@ async fn install(machine: &mut StateMachine, image: &SnapshotEnvelope) -> Result
     machine
         .install_snapshot(
             &image.meta,
-            Box::new(SnapshotBuffer::from_image(image.encode(64 << 20)?)),
+            Box::new(SnapshotBuffer::from_image(
+                image.encode(64 << 20)?,
+                &crate::SnapshotBufferOwner::fixture(),
+            )?),
         )
         .await?;
     Ok(())
@@ -213,7 +216,12 @@ async fn open(
         )
         .await?
     };
-    let machine = StateMachine::open(domains, backend.clone()).await?;
+    let machine = StateMachine::open(
+        domains,
+        backend.clone(),
+        crate::SnapshotBufferOwner::fixture(),
+    )
+    .await?;
     Ok((store, backend, machine))
 }
 async fn selected(
@@ -295,8 +303,14 @@ async fn cancelled_joint_table_publication_seals_and_reopens_exact_committed_pre
     )
     .await?;
     let (drain, lease) = crate::lifetime::StorageDrain::new();
-    let mut machine =
-        StateMachine::open_tracked(domains, backend.clone(), RaftLimits::default(), lease).await?;
+    let mut machine = StateMachine::open_tracked(
+        domains,
+        backend.clone(),
+        RaftLimits::default(),
+        lease,
+        crate::SnapshotBufferOwner::fixture(),
+    )
+    .await?;
     install(&mut machine, &image(7, 3)).await?;
     let old = backend.current.lock().unwrap().clone();
     let new = image(9, 4);

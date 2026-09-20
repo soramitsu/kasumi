@@ -503,8 +503,7 @@ impl ReadOnlyDatabase {
             true,
         )?;
         let mem = Arc::new(mem);
-        // If the last transaction used 2-phase commit and updated the allocator state table, then
-        // we can just load the allocator state from there. Otherwise, we need a full repair
+        // Load the allocator snapshot for this winner, or rebuild it if absent or stale.
         if let Some(tree) = Database::get_allocator_state_table(&mem)? {
             mem.load_allocator_state(&tree)?;
         } else {
@@ -948,9 +947,8 @@ impl Database {
         Ok(())
     }
 
-    // Whether the primary slot's trees verify. A Corrupted error counts as "they do not", so that
-    // a torn slot carrying an invalid page number falls back to the secondary like any other bad
-    // primary, rather than aborting the repair. Other errors (e.g. I/O) still propagate.
+    // Collapse checksum and malformed-page failures into a failed winner validation.
+    // Physical owner failures retain their distinct typed result.
     fn primary_verifies(mem: &Arc<TransactionalMemory>) -> Result<bool> {
         match Self::verify_primary_checksums(mem.clone()) {
             Ok(verified) => Ok(verified),
@@ -964,29 +962,9 @@ impl Database {
         repair_callback: &(dyn Fn(&mut RepairSession) + 'static),
     ) -> Result<[Option<BtreeHeader>; 2], DatabaseError> {
         if !Self::primary_verifies(mem)? {
-            if mem.used_two_phase_commit() {
-                return Err(DatabaseError::Storage(StorageError::Corrupted(
-                    "Primary is corrupted despite 2-phase commit".to_string(),
-                )));
-            }
-
-            // 0.3 because the repair takes 3 full scans and the first is done now
-            let mut handle = RepairSession::new(0.3);
-            repair_callback(&mut handle);
-            if handle.aborted() {
-                return Err(DatabaseError::RepairAborted);
-            }
-
-            mem.repair_primary_corrupted();
-            // We need to invalidate the userspace cache, because walking the tree in verify_primary_checksums() may
-            // have poisoned it with pages that just got rolled back by repair_primary_corrupted(), since
-            // that rolls back a partially committed transaction.
-            mem.clear_read_cache();
-            if !Self::primary_verifies(mem)? {
-                return Err(DatabaseError::Storage(StorageError::Corrupted(
-                    "Failed to repair database. All roots are corrupted".to_string(),
-                )));
-            }
+            return Err(DatabaseError::Storage(StorageError::Corrupted(
+                "Winning root is corrupted".to_string(),
+            )));
         }
         // 0.6 because the repair takes 3 full scans and the second is done now
         let mut handle = RepairSession::new(0.6);
@@ -1101,8 +1079,7 @@ impl Database {
             )
             .into());
         }
-        // If the last transaction used 2-phase commit and updated the allocator state table, then
-        // we can just load the allocator state from there. Otherwise, we need a full repair
+        // Load the allocator snapshot for this winner, or rebuild it if absent or stale.
         let repaired_roots = if let Some(tree) = Self::get_allocator_state_table(&mem)? {
             #[cfg(feature = "logging")]
             debug!("Found valid allocator state, full repair not needed");
@@ -1163,11 +1140,6 @@ impl Database {
     fn get_allocator_state_table(
         mem: &Arc<TransactionalMemory>,
     ) -> Result<Option<AllocatorStateTree>> {
-        // The allocator state table is only valid if the primary was written using 2-phase commit
-        if !mem.used_two_phase_commit() {
-            return Ok(None);
-        }
-
         // See if it's present in the system table tree
         let resolver = PageResolver::new(mem.clone());
         let system_table_tree = TableTree::new(

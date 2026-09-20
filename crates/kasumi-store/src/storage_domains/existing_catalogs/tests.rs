@@ -9,8 +9,8 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> Result<Self> {
-        let directory = tempfile::tempdir()?;
-        let node = NodeStore::create_new(
+        let directory = crate::test_utils::private_tempdir()?;
+        let node = NodeStore::create_new_fixture(
             directory.path().join("existing.redb"),
             crate::test_utils::NODE_STORE_ID,
             ScratchDisk::fixture(),
@@ -57,7 +57,7 @@ impl Fixture {
         let Fixture { directory, node } = self;
         node.drain_initializers().await?;
         drop(node);
-        let node = NodeStore::open_existing(
+        let node = NodeStore::open_existing_fixture(
             directory.path().join("existing.redb"),
             crate::test_utils::NODE_STORE_ID,
             ScratchDisk::fixture(),
@@ -265,7 +265,7 @@ async fn missing_binding_rejects_new_custody_and_leaves_every_existing_byte_unch
     }
     let Fixture { directory, node } = fixture;
     drop(node);
-    let _node = NodeStore::open_existing(
+    let _node = NodeStore::open_existing_fixture(
         directory.path().join("existing.redb"),
         crate::test_utils::NODE_STORE_ID,
         ScratchDisk::fixture(),

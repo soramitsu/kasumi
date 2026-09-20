@@ -2,8 +2,6 @@ use crate::admission::{CancelOnDrop, NodeAdmission, Reservation, WorkFence, Work
 use crate::{SecurityAudit, SecurityEvent, SecurityEventKind, SecurityOutcome, TenantEngine};
 #[path = "audit_maintenance_service.rs"]
 mod audit_maintenance_service;
-#[path = "ordered_seek_service.rs"]
-mod ordered_seek_service;
 #[path = "control_administration.rs"]
 pub(crate) mod control_administration;
 #[cfg(test)]
@@ -215,6 +213,15 @@ impl ProposalWork {
             self.group.write(bytes).await
         };
         match response {
+            Err(error) if kasumi_raft::is_application_write_capacity_denied(&error) => {
+                // This typed API rejection precedes log publication. It is a
+                // recoverable request result, never a failed custody child or
+                // a rejection manufactured while applying a committed entry.
+                Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(Error::new(
+                    ErrorCode::ResourceExhausted,
+                    "replication task capacity is exhausted",
+                )))?)
+            }
             Err(error) if kasumi_raft::is_application_write_redirect(&error) => {
                 // Leadership changes are request outcomes. Preserve the existing
                 // uncertain-write contract: only original identity resolution
@@ -455,13 +462,13 @@ impl BackgroundWorkerExit {
 }
 impl Drop for BackgroundWorkerExit {
     fn drop(&mut self) {
-        if !self.completed {
-            if let Some(database) = self.database.upgrade() {
-                database.closing.store(true, Ordering::Release);
-                database.work.seal();
-                database.audit_work.seal();
-                database.background_stop.send_replace(true);
-            }
+        if !self.completed
+            && let Some(database) = self.database.upgrade()
+        {
+            database.closing.store(true, Ordering::Release);
+            database.work.seal();
+            database.audit_work.seal();
+            database.background_stop.send_replace(true);
         }
     }
 }
@@ -928,19 +935,18 @@ impl Database {
                 retained = Some(failure);
             }
         }
-        if !self.custody_detached.load(Ordering::Acquire) {
-            if let Err(failure) = self
+        if !self.custody_detached.load(Ordering::Acquire)
+            && let Err(failure) = self
                 .group
                 .storage_domains()
                 .custody()
                 .store()
                 .shutdown()
                 .await
-            {
-                report.merge(&failure);
-                if failure.completion() == DrainCompletion::Retained {
-                    retained = Some(failure);
-                }
+        {
+            report.merge(&failure);
+            if failure.completion() == DrainCompletion::Retained {
+                retained = Some(failure);
             }
         }
         self.engine.seal();
@@ -2391,8 +2397,8 @@ mod tests {
 
     #[tokio::test]
     async fn queued_deadlines_use_admission_time_and_survive_caller_cancellation() {
-        let directory = tempfile::tempdir().unwrap();
-        let node = NodeStore::create_new(
+        let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+        let node = NodeStore::create_new_fixture(
             directory.path().join("node.redb"),
             kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),

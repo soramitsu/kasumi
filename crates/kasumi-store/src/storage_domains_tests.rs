@@ -54,8 +54,8 @@ async fn existing_pair_fixture(node: Arc<NodeStore>) -> Result<Arc<TenantStorage
 
 #[tokio::test]
 async fn domains_require_distinct_actual_wrapping_policies_and_same_node() -> Result<()> {
-    let dir = tempfile::tempdir()?;
-    let node = NodeStore::create_new(
+    let dir = crate::test_utils::private_tempdir()?;
+    let node = NodeStore::create_new_fixture(
         dir.path().join("same.redb"),
         crate::test_utils::NODE_STORE_ID,
         crate::ScratchDisk::fixture(),
@@ -73,7 +73,7 @@ async fn domains_require_distinct_actual_wrapping_policies_and_same_node() -> Re
     assert!(TenantStorageSet::install(app.clone(), control.clone()).is_err());
     assert!(control.get(BINDING_NS, BINDING_KEY)?.is_none());
     let other = TenantStore::initialize_catalog_fixture(
-        NodeStore::create_new(
+        NodeStore::create_new_fixture(
             dir.path().join("other.redb"),
             crate::test_utils::NODE_STORE_ID,
             crate::ScratchDisk::fixture(),
@@ -83,7 +83,7 @@ async fn domains_require_distinct_actual_wrapping_policies_and_same_node() -> Re
     )
     .await?;
     assert!(TenantStorageSet::install(app, other).is_err());
-    let reserved = NodeStore::create_new(
+    let reserved = NodeStore::create_new_fixture(
         dir.path().join("reserved.redb"),
         crate::test_utils::NODE_STORE_ID,
         crate::ScratchDisk::fixture(),
@@ -107,11 +107,11 @@ async fn domains_require_distinct_actual_wrapping_policies_and_same_node() -> Re
 
 #[tokio::test]
 async fn control_reopens_without_any_application_key_probe_after_revocation() -> Result<()> {
-    let dir = tempfile::tempdir()?;
+    let dir = crate::test_utils::private_tempdir()?;
     let path = dir.path().join("revoked.redb");
     let app_provider = Arc::new(LocalKeyProvider::new([11; 32]));
     let control_provider = Arc::new(LocalKeyProvider::new([12; 32]));
-    let node = NodeStore::create_new(
+    let node = NodeStore::create_new_fixture(
         &path,
         crate::test_utils::NODE_STORE_ID,
         crate::ScratchDisk::fixture(),
@@ -148,7 +148,7 @@ async fn control_reopens_without_any_application_key_probe_after_revocation() ->
     drop(stores);
     drop(node);
     let reopened = CustodyStore::open(
-        NodeStore::open_existing(
+        NodeStore::open_existing_fixture(
             &path,
             crate::test_utils::NODE_STORE_ID,
             crate::ScratchDisk::fixture(),
@@ -172,6 +172,7 @@ async fn every_interrupted_domain_transaction_recovers_whole_old_or_whole_new() 
     let original = FaultBackend::new();
     let stores = initialize_pair_fixture(NodeStore::open_with_backend(
         original.clone(),
+        crate::test_utils::storage_admission(),
         crate::ScratchDisk::fixture(),
     )?)
     .await?;
@@ -187,6 +188,7 @@ async fn every_interrupted_domain_transaction_recovers_whole_old_or_whole_new() 
         let disk = starting.crash();
         let stores = existing_pair_fixture(NodeStore::open_with_backend(
             disk.clone(),
+            crate::test_utils::storage_admission(),
             crate::ScratchDisk::fixture(),
         )?)
         .await?;
@@ -200,6 +202,7 @@ async fn every_interrupted_domain_transaction_recovers_whole_old_or_whole_new() 
         drop(stores);
         let reopened = existing_pair_fixture(NodeStore::open_with_backend(
             crashed,
+            crate::test_utils::storage_admission(),
             crate::ScratchDisk::fixture(),
         )?)
         .await?;
@@ -225,7 +228,11 @@ async fn every_interrupted_domain_transaction_recovers_whole_old_or_whole_new() 
 #[tokio::test]
 async fn post_commit_domain_expiry_reports_uncertainty_and_retains_complete_write() -> Result<()> {
     let disk = FaultBackend::new();
-    let node = NodeStore::open_with_backend(disk.clone(), crate::ScratchDisk::fixture())?;
+    let node = NodeStore::open_with_backend(
+        disk.clone(),
+        crate::test_utils::storage_admission(),
+        crate::ScratchDisk::fixture(),
+    )?;
     let clock = Arc::new(ManualClock::new());
     let app = TenantStore::initialize_catalog_fixture_with_clock(
         node.clone(),
@@ -255,6 +262,7 @@ async fn post_commit_domain_expiry_reports_uncertainty_and_retains_complete_writ
     drop(stores);
     let reopened = existing_pair_fixture(NodeStore::open_with_backend(
         recovered,
+        crate::test_utils::storage_admission(),
         crate::ScratchDisk::fixture(),
     )?)
     .await?;
@@ -275,8 +283,8 @@ async fn post_commit_domain_expiry_reports_uncertainty_and_retains_complete_writ
 
 #[tokio::test]
 async fn combined_quota_and_substituted_catalog_binding_fail_before_publication() -> Result<()> {
-    let dir = tempfile::tempdir()?;
-    let node = NodeStore::create_new(
+    let dir = crate::test_utils::private_tempdir()?;
+    let node = NodeStore::create_new_fixture(
         dir.path().join("binding.redb"),
         crate::test_utils::NODE_STORE_ID,
         crate::ScratchDisk::fixture(),
@@ -303,9 +311,9 @@ async fn combined_quota_and_substituted_catalog_binding_fail_before_publication(
 
 #[tokio::test]
 async fn initial_state_rejects_unknown_records_in_either_complete_domain() -> Result<()> {
-    let directory = tempfile::tempdir()?;
+    let directory = crate::test_utils::private_tempdir()?;
     for custody in [false, true] {
-        let node = NodeStore::create_new(
+        let node = NodeStore::create_new_fixture(
             directory.path().join(format!("unknown-{custody}.redb")),
             crate::test_utils::NODE_STORE_ID,
             ScratchDisk::fixture(),
@@ -344,8 +352,8 @@ async fn initial_state_rejects_unknown_records_in_either_complete_domain() -> Re
 
 #[tokio::test]
 async fn initial_state_checks_and_joint_publication_have_one_concurrent_winner() -> Result<()> {
-    let directory = tempfile::tempdir()?;
-    let stores = initialize_pair_fixture(NodeStore::create_new(
+    let directory = crate::test_utils::private_tempdir()?;
+    let stores = initialize_pair_fixture(NodeStore::create_new_fixture(
         directory.path().join("first-publication.redb"),
         crate::test_utils::NODE_STORE_ID,
         ScratchDisk::fixture(),
@@ -398,9 +406,9 @@ async fn initial_state_checks_and_joint_publication_have_one_concurrent_winner()
 
 #[tokio::test]
 async fn initial_state_requires_the_exact_retained_custody_binding() -> Result<()> {
-    let directory = tempfile::tempdir()?;
+    let directory = crate::test_utils::private_tempdir()?;
     for missing in [false, true] {
-        let stores = initialize_pair_fixture(NodeStore::create_new(
+        let stores = initialize_pair_fixture(NodeStore::create_new_fixture(
             directory.path().join(format!("binding-{missing}.redb")),
             crate::test_utils::NODE_STORE_ID,
             ScratchDisk::fixture(),
@@ -434,8 +442,8 @@ async fn initial_state_requires_the_exact_retained_custody_binding() -> Result<(
 #[tokio::test]
 async fn initial_state_rejects_delete_only_publications_without_consuming_initialization()
 -> Result<()> {
-    let directory = tempfile::tempdir()?;
-    let stores = initialize_pair_fixture(NodeStore::create_new(
+    let directory = crate::test_utils::private_tempdir()?;
+    let stores = initialize_pair_fixture(NodeStore::create_new_fixture(
         directory.path().join("empty-initialization.redb"),
         crate::test_utils::NODE_STORE_ID,
         ScratchDisk::fixture(),

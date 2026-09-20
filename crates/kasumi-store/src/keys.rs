@@ -456,7 +456,7 @@ mod tests {
         use std::{io::Write, os::unix::fs::PermissionsExt};
         let state = Service::new();
         let fixture = TlsFixture::spawn(router(state.clone())).await;
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_utils::private_tempdir().unwrap();
         let path = dir.path().join("token");
         let publish = |value: &str| {
             let mut file = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
@@ -488,9 +488,9 @@ mod tests {
         let state = Service::new();
         let fixture = TlsFixture::spawn(router(state.clone())).await;
         let provider = Arc::new(TransitKeyProvider::new(config(&fixture)).unwrap());
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_utils::private_tempdir().unwrap();
         let store = TenantStore::initialize_catalog_fixture_with_clock(
-            NodeStore::create_new(
+            NodeStore::create_new_fixture(
                 dir.path().join("db"),
                 crate::test_utils::NODE_STORE_ID,
                 crate::ScratchDisk::fixture(),
@@ -580,9 +580,9 @@ mod tests {
         let state = Service::new();
         let fixture = TlsFixture::spawn(router(state.clone())).await;
         let provider = Arc::new(TransitKeyProvider::new(config(&fixture)).unwrap());
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_utils::private_tempdir().unwrap();
         let store = TenantStore::initialize_catalog_fixture_with_clock(
-            NodeStore::create_new(
+            NodeStore::create_new_fixture(
                 dir.path().join("db"),
                 crate::test_utils::NODE_STORE_ID,
                 crate::ScratchDisk::fixture(),

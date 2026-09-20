@@ -1,0 +1,74 @@
+{
+  "created_utc": "2026-09-20T08:21:07.121534+00:00",
+  "source_inventory_sha256": "70cce233f67865044d8550bd613c7696abfbe0b47f7fa0d436199a9a709bffa6",
+  "source_inventory": "49-frozen-fallible-transfer-clippy/after-source.json",
+  "source_files": 600,
+  "source_bytes": 2641267,
+  "source_archive_sha256": "8059ec9189b1d5b79fe7e7ebb781608be5ce3144271b6a216af5043ec60070b5",
+  "patch_base": "169b2497f0f80c56817ea37ea6523f899d519167",
+  "patch_sha256": "f03145d94226f991fbf20f710caafb438519665460b2de5a8c73fe0728c90a36",
+  "changed_paths_after_patch_base": [
+    "Cargo.lock",
+    "KASUMI-SHUTDOWN-REVIEW.md",
+    "memstore/src/lib.rs",
+    "openraft/README.md",
+    "openraft/src/config/config.rs",
+    "openraft/src/config/config_test.rs",
+    "openraft/src/config/error.rs",
+    "openraft/src/core/auxiliary.rs",
+    "openraft/src/core/auxiliary_test.rs",
+    "openraft/src/core/mod.rs",
+    "openraft/src/core/notify.rs",
+    "openraft/src/core/raft_core.rs",
+    "openraft/src/error.rs",
+    "openraft/src/network/snapshot_transport.rs",
+    "openraft/src/progress/entry/mod.rs",
+    "openraft/src/raft/incoming_snapshot_test.rs",
+    "openraft/src/raft/mod.rs",
+    "openraft/src/raft/raft_inner.rs",
+    "openraft/src/raft/shutdown_test.rs",
+    "tests/tests/fixtures/mod.rs",
+    "tests/tests/life_cycle/main.rs",
+    "tests/tests/life_cycle/t11_shutdown.rs",
+    "tests/tests/life_cycle/t14_auxiliary_custody.rs"
+  ],
+  "runner_sha256": "0a648655142288fb16ad0abaffa82fab2c158bdefb058e2e695110a344ac2d5d",
+  "checks": [
+    {
+      "attempt": "46-frozen-fallible-transfer-units",
+      "receipt_sha256": "3c018832d8b262694ace4604e30cf6ff39c893bc74d13abc0ac54f326f107d0e",
+      "process_group": 99354,
+      "elapsed_seconds": 6.801674999995157
+    },
+    {
+      "attempt": "47-frozen-fallible-transfer-integration",
+      "receipt_sha256": "30b9c684e61c169b37a4d78d2045e975938b0114b6931c9b9af33eae1fa26ed6",
+      "process_group": 99683,
+      "elapsed_seconds": 28.40506587503478
+    },
+    {
+      "attempt": "48-frozen-fallible-transfer-singlethreaded",
+      "receipt_sha256": "146bf02357b2d64a2ed957326f1051d53d32b4d7b2e64dc37b8f815e5b274ad7",
+      "process_group": 1226,
+      "elapsed_seconds": 1.794763999991119
+    },
+    {
+      "attempt": "49-frozen-fallible-transfer-clippy",
+      "receipt_sha256": "715cb42c22c63088880d6c8caa043681c44b363d8d8c4bad0df822e1241edde7",
+      "process_group": 2211,
+      "elapsed_seconds": 3.444967874966096
+    }
+  ],
+  "counts": {
+    "unit": 227,
+    "life_cycle": 23,
+    "client_api": 13,
+    "membership": 41,
+    "snapshot_streaming": 14
+  },
+  "platform": "aarch64-apple-darwin",
+  "compiler": "1.97.1",
+  "strict_clippy": "passed",
+  "singlethreaded_all_targets": "passed",
+  "release_qualified": false
+}

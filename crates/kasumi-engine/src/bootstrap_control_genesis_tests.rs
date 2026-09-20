@@ -206,8 +206,8 @@ fn retained(stores: &TenantStorageSet) -> anyhow::Result<String> {
 #[tokio::test]
 async fn control_genesis_rejects_wrong_storage_purpose_before_deployment_publication()
 -> anyhow::Result<()> {
-    let directory = tempfile::tempdir()?;
-    let node = NodeStore::create_new(
+    let directory = kasumi_store::test_utils::private_tempdir()?;
+    let node = NodeStore::create_new_fixture(
         directory.path().join("node.redb"),
         uuid::Uuid::new_v4(),
         kasumi_store::ScratchDisk::fixture(),
@@ -242,7 +242,7 @@ async fn control_genesis_rejects_wrong_storage_purpose_before_deployment_publica
     drop(first_audit);
     drop(pair);
     drop(node);
-    let node = NodeStore::create_new(
+    let node = NodeStore::create_new_fixture(
         directory.path().join("control.redb"),
         uuid::Uuid::new_v4(),
         kasumi_store::ScratchDisk::fixture(),
@@ -278,8 +278,8 @@ async fn control_genesis_rejects_wrong_storage_purpose_before_deployment_publica
 #[tokio::test]
 async fn strict_control_reopen_rejects_partial_genesis_without_catalog_or_raft_mutation()
 -> anyhow::Result<()> {
-    let directory = tempfile::tempdir()?;
-    let node = NodeStore::create_new(
+    let directory = kasumi_store::test_utils::private_tempdir()?;
+    let node = NodeStore::create_new_fixture(
         directory.path().join("node.redb"),
         uuid::Uuid::new_v4(),
         kasumi_store::ScratchDisk::fixture(),

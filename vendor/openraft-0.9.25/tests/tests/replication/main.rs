@@ -1,0 +1,17 @@
+#![cfg_attr(feature = "bt", feature(error_generic_member_access))]
+#![cfg_attr(feature = "bt", allow(unused_features))]
+
+#[macro_use]
+#[path = "../fixtures/mod.rs"]
+mod fixtures;
+
+mod t10_append_entries_partial_success;
+mod t20_empty_log_entries;
+mod t21_hung_replication_close;
+mod t50_append_entries_backoff;
+mod t50_append_entries_backoff_rejoin;
+mod t51_append_entries_too_large;
+#[cfg(feature = "loosen-follower-log-revert")]
+mod t60_feature_loosen_follower_log_revert;
+#[cfg(feature = "loosen-follower-log-revert")]
+mod t60_follower_clear_restart_recover;

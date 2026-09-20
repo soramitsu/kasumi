@@ -55,11 +55,11 @@ struct Fixture {
     closing: Arc<Notify>,
 }
 fn fixture(panic_run: bool, panic_close: bool) -> (Fixture, PhysicalOwner, Registration) {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let path = directory.path().join("serving.redb");
     let lock = directory.path().join("installation.lock");
-    let node = NodeStore::create_new(
+    let node = NodeStore::create_new_fixture(
         &path,
         kasumi_store::test_utils::NODE_STORE_ID,
         ScratchDisk::fixture(),
@@ -104,7 +104,7 @@ impl Fixture {
     fn still_owned(&self) {
         assert!(self.weak.upgrade().is_some());
         assert!(
-            NodeStore::open_existing(
+            NodeStore::open_existing_fixture(
                 &self.path,
                 kasumi_store::test_utils::NODE_STORE_ID,
                 ScratchDisk::fixture()
@@ -119,7 +119,7 @@ impl Fixture {
     fn reopened(&self) {
         assert!(self.weak.upgrade().is_none());
         let _lock = ExclusiveLock::acquire(&self.lock).unwrap();
-        let _node = NodeStore::open_existing(
+        let _node = NodeStore::open_existing_fixture(
             &self.path,
             kasumi_store::test_utils::NODE_STORE_ID,
             ScratchDisk::fixture(),
@@ -340,11 +340,11 @@ async fn panicking_owner_destructor_retains_unavailable_census_without_respawn_c
             panic!("actual owner destructor panic");
         }
     }
-    let directory = tempfile::tempdir().unwrap();
+    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let path = directory.path().join("destructor.redb");
     let lock = directory.path().join("installation.lock");
-    let node = NodeStore::create_new(
+    let node = NodeStore::create_new_fixture(
         &path,
         kasumi_store::test_utils::NODE_STORE_ID,
         ScratchDisk::fixture(),
@@ -395,7 +395,7 @@ async fn panicking_owner_destructor_retains_unavailable_census_without_respawn_c
     // Rust unwound this test owner's fields, so its physical files can reopen;
     // production still conservatively retains the unknown destructor census.
     let _lock = ExclusiveLock::acquire(&lock).unwrap();
-    let _node = NodeStore::open_existing(
+    let _node = NodeStore::open_existing_fixture(
         &path,
         kasumi_store::test_utils::NODE_STORE_ID,
         ScratchDisk::fixture(),

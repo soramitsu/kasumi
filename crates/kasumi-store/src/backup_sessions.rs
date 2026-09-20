@@ -321,10 +321,10 @@ mod tests {
         Arc<LocalKeyProvider>,
         FilesystemBackupDestination,
     ) {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_utils::private_tempdir().unwrap();
         let keys = Arc::new(LocalKeyProvider::new([71; 32]));
         let store = TenantStore::initialize_catalog_fixture(
-            NodeStore::create_new(
+            NodeStore::create_new_fixture(
                 dir.path().join("node"),
                 crate::test_utils::NODE_STORE_ID,
                 crate::ScratchDisk::fixture(),
@@ -335,7 +335,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let destination = FilesystemBackupDestination::new(
+        let destination = FilesystemBackupDestination::new_fixture(
             dir.path().join("backup"),
             crate::MAX_BACKUP_BUNDLE_BYTES,
         )
@@ -647,12 +647,20 @@ mod tests {
             .await
             .is_err()
         );
-        assert_eq!(
+        // Out-of-band extent corruption fences the entire physical owner;
+        // another object cannot escape through a still-retained destination.
+        assert!(
             destination
                 .session_get(proof.session_id(), BackupSessionSlot::Object(object), 1)
                 .await
-                .unwrap()
-                .unwrap(),
+                .is_err()
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join(format!(
+                "backup/sessions/{}/objects/{object}.kasumi",
+                proof.session_id()
+            )))
+            .unwrap(),
             [1]
         );
     }
@@ -844,13 +852,13 @@ mod tests {
     }
     #[tokio::test]
     async fn session_keeps_historical_source_purpose_separate_from_current_access() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_utils::private_tempdir().unwrap();
         let keys = Arc::new(LocalKeyProvider::new([81; 32]));
         let source_incarnation = Uuid::new_v4();
         let installation = Uuid::new_v4();
         let access = StorageAccess::standalone(installation, "tenant", source_incarnation).unwrap();
         let store = TenantStore::initialize_catalog_fixture_with_access(
-            NodeStore::create_new(
+            NodeStore::create_new_fixture(
                 dir.path().join("source"),
                 crate::test_utils::NODE_STORE_ID,
                 crate::ScratchDisk::fixture(),
@@ -862,7 +870,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let destination = FilesystemBackupDestination::new(
+        let destination = FilesystemBackupDestination::new_fixture(
             dir.path().join("backups"),
             crate::MAX_BACKUP_BUNDLE_BYTES,
         )

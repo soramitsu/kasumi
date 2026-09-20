@@ -447,7 +447,7 @@ mod tests {
     }
     #[tokio::test]
     async fn local_issuer_renewal_preserves_deadlines_and_revocation_fences_existing_requests() {
-        let root = tempfile::tempdir().unwrap();
+        let root = kasumi_store::test_utils::private_tempdir().unwrap();
         let private = root.path().join("operator");
         private_files::create_directory(&private).unwrap();
         let signer = private.join("signer.json");
@@ -456,7 +456,7 @@ mod tests {
             FileKeyProvider::initialize(&private.join("security.json"), "security").unwrap(),
         );
         let store = TenantStore::initialize_catalog(
-            NodeStore::create_new(
+            NodeStore::create_new_fixture(
                 root.path().join("database"),
                 kasumi_store::test_utils::NODE_STORE_ID,
                 kasumi_store::ScratchDisk::fixture(),

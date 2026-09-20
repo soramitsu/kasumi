@@ -158,11 +158,19 @@ impl RetiredCustody {
         node_id: u64,
         group: String,
         transport: Arc<dyn kasumi_raft::RaftTransport>,
-        config: kasumi_raft::CustodyRaftConfig,
+        config: kasumi_raft::RaftGroupConfig,
         admission: Arc<NodeAdmission>,
         audit: Arc<SecurityAudit>,
     ) -> anyhow::Result<Arc<Self>> {
-        let group = CustodyRaftGroup::open(node_id, group, custody, transport, config).await?;
+        let group = CustodyRaftGroup::open(
+            node_id,
+            group,
+            custody,
+            transport,
+            config,
+            admission.snapshot_buffer_owner()?,
+        )
+        .await?;
         Ok(Arc::new(Self {
             group: CustodyGroup::Closed(group),
             admission,

@@ -46,12 +46,13 @@ async fn initialize_owned(config: AuthorityRuntimeConfig) -> Result<Enrolled> {
         let (node, audit) = crate::node_provision::create(
             &config.database_path,
             config.database_id,
+            &config.persistent_disk,
             &config.scratch_disk,
             &config.security_audit,
             admission.clone(),
         )
         .await?;
-        pending.nodes.push(node.clone());
+        pending.owned_nodes.push(node.clone());
         pending.audits.push(audit.clone());
         #[cfg(test)]
         crate::startup_preparation::checkpoint(config.database_id, "authority-enrollment-node");
@@ -72,6 +73,7 @@ async fn initialize_owned(config: AuthorityRuntimeConfig) -> Result<Enrolled> {
             .open(
                 std::collections::BTreeMap::from([(domain.digest()?, domain.clone())]),
                 credential.clone(),
+                node.persistent_disk().clone(),
                 node.scratch_disk().clone(),
                 admission.clone(),
             )

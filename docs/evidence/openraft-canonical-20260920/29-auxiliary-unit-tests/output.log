@@ -1,0 +1,11 @@
+   Compiling openraft v0.9.25 (/Users/mtakemiya/dev/kasumi-release-evidence/openraft-upstream-20260920/openraft)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.56s
+     Running unittests src/lib.rs (/Users/mtakemiya/dev/kasumi-release-evidence/openraft-target-20260920/debug/deps/openraft-0f7d56f10aafc774)
+
+running 3 tests
+test core::auxiliary::tests::actual_abort_wakes_live_core_and_preserves_original_id ... ok
+test core::auxiliary::tests::successful_rounds_reuse_fixed_capacity_and_unspawned_reservation_drains ... ok
+test core::auxiliary::tests::cancelled_drain_retains_independent_collector_panics_and_election_capacity ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 206 filtered out; finished in 0.03s
+

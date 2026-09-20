@@ -59,12 +59,12 @@ impl StateMachineBackend for PausedSnapshot {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn shutdown_drains_snapshot_worker_before_releasing_group_or_file_ownership() -> Result<()> {
-    let directory = tempfile::tempdir()?;
+    let directory = kasumi_store::test_utils::private_tempdir()?;
     let path = directory.path().join("shutdown.redb");
     let (entered, ready) = tokio::sync::oneshot::channel();
     let (release, wait) = mpsc::channel();
     let store = TenantStore::initialize_catalog_fixture_with_clock(
-        NodeStore::create_new(
+        NodeStore::create_new_fixture(
             &path,
             kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
@@ -87,15 +87,21 @@ async fn shutdown_drains_snapshot_worker_before_releasing_group_or_file_ownershi
             entered: Mutex::new(Some(entered)),
             release: Mutex::new(wait),
         }),
+        common::snapshot_owner(),
     )
     .await?;
     group.write(b"acknowledged".to_vec()).await?;
     group.snapshot().await?;
     tokio::time::timeout(WAIT, ready).await??;
 
-    // Prove the upstream shutdown boundary directly: it returns while our
-    // snapshot callback is still paused. Kasumi must wait beyond that boundary.
-    tokio::time::timeout(WAIT, group.raft().shutdown()).await??;
+    // The vendored shutdown retains and joins the actual snapshot builder.
+    // Cancelling its waiter must leave that same child available to group drain.
+    let mut vendor_shutdown = Box::pin(group.raft().shutdown());
+    assert!(
+        poll_fn(|cx| Poll::Ready(vendor_shutdown.as_mut().poll(cx).is_pending())).await,
+        "vendor shutdown returned with a live snapshot worker"
+    );
+    drop(vendor_shutdown);
     let mut shutting_down = Box::pin(group.shutdown());
     let pending = poll_fn(|cx| Poll::Ready(shutting_down.as_mut().poll(cx).is_pending())).await;
     assert!(pending, "shutdown returned with a live snapshot worker");
@@ -109,6 +115,7 @@ async fn shutdown_drains_snapshot_worker_before_releasing_group_or_file_ownershi
             )
             .await?,
             Arc::new(common::Backend::default()),
+            common::snapshot_owner()
         )
         .await
         .is_err(),
@@ -129,6 +136,7 @@ async fn shutdown_drains_snapshot_worker_before_releasing_group_or_file_ownershi
         "tenant-a".into(),
         common::store(&path, false).await?,
         recovered.clone(),
+        common::snapshot_owner(),
     )
     .await?;
     assert_eq!(recovered.values(), vec![b"acknowledged".to_vec()]);

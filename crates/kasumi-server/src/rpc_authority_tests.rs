@@ -85,7 +85,7 @@ impl kasumi_authority::SignerPublicationTransport for CoverageTransport {
 
 #[tokio::test]
 async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_recovery() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = kasumi_store::test_utils::private_tempdir().unwrap();
     let (ca, server_identity, mut identities) = certificates();
     let issuer = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
     let keys = serde_json::from_value(json!({"keys":[{"kty":"OKP","crv":"Ed25519","alg":"EdDSA","use":"sig","kid":"identity-key","x":URL_SAFE_NO_PAD.encode(issuer.public_key_raw())}]})).unwrap();
@@ -103,7 +103,7 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
         keys,
     )
     .await;
-    let audit_node = NodeStore::create_new(
+    let audit_node = NodeStore::create_new_fixture(
         dir.path().join("audit.redb"),
         kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
@@ -190,14 +190,16 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
             kasumi_store::private_files::create_directory(&directory).unwrap();
             let keys = directory.join("keys.json");
             kasumi_store::FileKeyProvider::initialize(&keys, "signer-verifier").unwrap();
+            let persistent_disk = crate::persistent_disk::fixture_config(&directory.join("data"));
             let config = SignerVerifierConfig {
                 max_background_workers: 64,
                 identity: verifier,
-                database_path: directory.join("trust.redb"),
+                database_path: directory.join("data/trust.redb"),
                 keys: crate::runtime::KeyProviderSettings::File { path: keys },
             };
             InitializeSignerVerifier {
                 admission: Default::default(),
+                persistent_disk: persistent_disk.clone(),
                 scratch_disk: kasumi_store::ScratchDiskConfig {
                     directory: directory.join("scratch"),
                     max_bytes: 64 << 30,
@@ -213,6 +215,7 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
                 .open(
                     BTreeMap::from([(domain.digest().unwrap(), domain.clone())]),
                     Arc::new(crate::runtime::file_secret),
+                    crate::persistent_disk::open(&persistent_disk).unwrap(),
                     kasumi_store::ScratchDisk::open(kasumi_store::ScratchDiskConfig {
                         directory: directory.join("scratch"),
                         max_bytes: 64 << 30,
@@ -228,7 +231,7 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
             continue;
         }
         let store = TenantStore::initialize_catalog(
-            NodeStore::create_new(
+            NodeStore::create_new_fixture(
                 dir.path().join(format!("verifier-{node_id}.redb")),
                 kasumi_store::test_utils::NODE_STORE_ID,
                 kasumi_store::ScratchDisk::fixture(),
@@ -312,7 +315,7 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
     let mut services = Vec::new();
     let mut stores = Vec::new();
     for id in 1..=3 {
-        let node = NodeStore::create_new(
+        let node = NodeStore::create_new_fixture(
             dir.path().join(format!("authority-{id}.redb")),
             kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
@@ -358,6 +361,7 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
                 &kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
             )
             .unwrap(),
+            kasumi_raft::SnapshotBufferOwner::fixture(),
         )
         .await
         .unwrap();

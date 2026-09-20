@@ -146,6 +146,7 @@ pub(crate) fn load_snapshot(
 pub(crate) struct CustodyMachine {
     custody: StorageHandle<CustodyStore>,
     snapshot_limit: u64,
+    snapshot_buffers: Arc<crate::SnapshotBufferOwner>,
     control_gate: Arc<Mutex<()>>,
     failed: Arc<AtomicBool>,
     // Keep the same ownership claim alive even after public handles disappear.
@@ -157,11 +158,16 @@ impl CustodyMachine {
         lease: Arc<StorageLease>,
         ownership: Arc<AtomicBool>,
         snapshot_limit: u64,
+        snapshot_buffers: Arc<crate::SnapshotBufferOwner>,
     ) -> Result<Self> {
         let control_gate = crate::storage::control_gate(&custody)?;
         let store = custody.clone();
         let gate = control_gate.clone();
+        let startup_lease = lease.clone();
+        let startup_ownership = ownership.clone();
         tokio::task::spawn_blocking(move || -> Result<()> {
+            let _lease = startup_lease;
+            let _ownership = startup_ownership;
             let _gate = gate
                 .lock()
                 .map_err(|_| anyhow::anyhow!("control gate poisoned"))?;
@@ -174,6 +180,7 @@ impl CustodyMachine {
         Ok(Self {
             custody: StorageHandle::new(custody, Some(lease)),
             snapshot_limit,
+            snapshot_buffers,
             control_gate,
             failed: Arc::new(AtomicBool::new(false)),
             _ownership: ownership,
@@ -219,10 +226,10 @@ impl RaftSnapshotBuilder<TypeConfig> for CustodySnapshotBuilder {
                         snapshot.retirement.as_ref(),
                     )?;
                 }
-                return as_snapshot(&current, machine.snapshot_limit);
+                return as_snapshot(&current, machine.snapshot_limit, &machine.snapshot_buffers);
             }
             publish(&machine.custody, &snapshot, machine.snapshot_limit)?;
-            as_snapshot(&snapshot, machine.snapshot_limit)
+            as_snapshot(&snapshot, machine.snapshot_limit, &machine.snapshot_buffers)
         })
         .await
         .map_err(|error| self.machine.failure(error))?
@@ -322,8 +329,12 @@ impl RaftStateMachine<TypeConfig> for CustodyMachine {
     async fn begin_receiving_snapshot(&mut self) -> Result<Box<SnapshotBuffer>, StorageError<u64>> {
         self.custody.store().check_access().map_err(err)?;
         Ok(Box::new(
-            SnapshotBuffer::new(self.custody.store().scratch_disk(), self.snapshot_limit)
-                .map_err(err)?,
+            SnapshotBuffer::new(
+                self.custody.store().scratch_disk(),
+                self.snapshot_limit,
+                &self.snapshot_buffers,
+            )
+            .map_err(err)?,
         ))
     }
     async fn install_snapshot(
@@ -366,12 +377,13 @@ impl RaftStateMachine<TypeConfig> for CustodyMachine {
         let custody = self.custody.clone();
         let gate = self.control_gate.clone();
         let limit = self.snapshot_limit;
+        let snapshot_buffers = self.snapshot_buffers.clone();
         tokio::task::spawn_blocking(move || {
             let _gate = gate
                 .lock()
                 .map_err(|_| anyhow::anyhow!("control gate poisoned"))?;
             load_snapshot(&custody, limit)?
-                .map(|snapshot| as_snapshot(&snapshot, limit))
+                .map(|snapshot| as_snapshot(&snapshot, limit, &snapshot_buffers))
                 .transpose()
         })
         .await
@@ -499,7 +511,8 @@ mod tests {
             group(),
             domains.custody().clone(),
             router.clone(),
-            crate::CustodyRaftConfig::default(),
+            crate::RaftGroupConfig::default(),
+            crate::SnapshotBufferOwner::fixture(),
         )
         .await?;
         router.register(group(), 1, instance.raft().clone());
@@ -560,7 +573,8 @@ mod tests {
                 group(),
                 domains.custody().clone(),
                 router.clone(),
-                crate::CustodyRaftConfig::default(),
+                crate::RaftGroupConfig::default(),
+                crate::SnapshotBufferOwner::fixture(),
             )
             .await?;
             router.register(group(), node, instance.raft().clone());

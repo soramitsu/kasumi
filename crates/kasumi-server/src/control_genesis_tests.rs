@@ -39,7 +39,8 @@ fn config(root: &Path) -> Result<RuntimeConfig> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700))?;
     let mut config = crate::runtime::example_config();
-    config.database_path = root.join("node.redb");
+    config.persistent_disk = crate::persistent_disk::fixture_config(&root.join("data"));
+    config.database_path = root.join("data/node.redb");
     config.database_id = uuid::Uuid::new_v4();
     config.scratch_disk.directory = root.join("scratch");
     config.scratch_disk.min_free_bytes = 0;
@@ -115,7 +116,7 @@ fn config(root: &Path) -> Result<RuntimeConfig> {
 }
 
 async fn existing(config: &RuntimeConfig) -> Result<(Arc<NodeStore>, Arc<TenantStore>)> {
-    let node = NodeStore::open_existing(
+    let node = NodeStore::open_existing_fixture(
         &config.database_path,
         config.database_id,
         ScratchDisk::open(config.scratch_disk.clone())?,
@@ -137,7 +138,7 @@ async fn existing(config: &RuntimeConfig) -> Result<(Arc<NodeStore>, Arc<TenantS
 async fn cancelled_ha_genesis_retains_actual_node_and_error_until_acknowledged_drain() -> Result<()>
 {
     use std::{future::Future, task::Poll};
-    let directory = tempfile::tempdir()?;
+    let directory = kasumi_store::test_utils::private_tempdir()?;
     let config = config(directory.path())?;
     let pause = Arc::new(Pause::default());
     let _release = Release(pause.clone());
@@ -154,7 +155,7 @@ async fn cancelled_ha_genesis_retains_actual_node_and_error_until_acknowledged_d
     tokio::time::timeout(std::time::Duration::from_secs(10), pause.entered.notified()).await?;
     drop(opening);
     assert!(
-        NodeStore::open_existing(
+        NodeStore::open_existing_fixture(
             &config.database_path,
             config.database_id,
             ScratchDisk::open(config.scratch_disk.clone())?
@@ -169,7 +170,7 @@ async fn cancelled_ha_genesis_retains_actual_node_and_error_until_acknowledged_d
     .await;
     drop(drain);
     assert!(
-        NodeStore::open_existing(
+        NodeStore::open_existing_fixture(
             &config.database_path,
             config.database_id,
             ScratchDisk::open(config.scratch_disk.clone())?
@@ -232,7 +233,7 @@ async fn cancelled_ha_genesis_retains_actual_node_and_error_until_acknowledged_d
 #[tokio::test]
 async fn failed_control_genesis_drains_actual_pair_before_returning_enrollment_error() -> Result<()>
 {
-    let directory = tempfile::tempdir()?;
+    let directory = kasumi_store::test_utils::private_tempdir()?;
     let mut config = config(directory.path())?;
     config.control.initial_limits.max_document_bytes = 1;
     config.validate()?;
@@ -286,7 +287,7 @@ async fn panicked_ha_enrollment_drains_nested_node_audit_pair_and_database_owner
     .into_iter()
     .enumerate()
     {
-        let directory = tempfile::tempdir()?;
+        let directory = kasumi_store::test_utils::private_tempdir()?;
         let config = config(directory.path())?;
         let fault = crate::startup_preparation::install(config.database_id, phase);
         let error =
@@ -301,7 +302,7 @@ async fn panicked_ha_enrollment_drains_nested_node_audit_pair_and_database_owner
         );
         drop(fault);
         crate::runtime::NodeRuntime::drain_startups().await?;
-        let node = NodeStore::open_existing(
+        let node = NodeStore::open_existing_fixture(
             &config.database_path,
             config.database_id,
             ScratchDisk::open(config.scratch_disk.clone())?,

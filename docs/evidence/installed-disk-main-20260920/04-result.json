@@ -1,0 +1,23 @@
+{
+  "scope": "development store regression diagnostic, not final release qualification",
+  "command": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+    "test",
+    "--offline",
+    "-p",
+    "kasumi-store",
+    "--all-features",
+    "--lib",
+    "--",
+    "--test-threads=1"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "head": "c283fa4a2c2344fd359d1d58ea49a1664de72088",
+  "process_group": 97099,
+  "exit_code": 101,
+  "timeout": false,
+  "signals": [],
+  "drained": true,
+  "elapsed_seconds": 60.70437479019165,
+  "store_source_unchanged": true
+}

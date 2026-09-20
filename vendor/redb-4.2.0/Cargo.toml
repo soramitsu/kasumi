@@ -57,8 +57,8 @@ name = "special_values"
 path = "examples/special_values.rs"
 
 [[test]]
-name = "backward_compatibility"
-path = "tests/backward_compatibility.rs"
+name = "canonical_format"
+path = "tests/canonical_format.rs"
 
 [[test]]
 name = "basic_tests"

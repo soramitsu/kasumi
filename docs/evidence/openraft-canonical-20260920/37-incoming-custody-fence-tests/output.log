@@ -1,0 +1,26 @@
+   Compiling openraft v0.9.25 (/Users/mtakemiya/dev/kasumi/vendor/openraft-0.9.25/openraft)
+error[E0382]: use of moved value: `tx_notify`
+   --> openraft/src/raft/mod.rs:375:13
+    |
+290 |         let (tx_notify, rx_notify) = mpsc::unbounded_channel();
+    |              --------- move occurs because `tx_notify` has type `tokio::sync::mpsc::UnboundedSender<notify::Notify<C>>`, which does not implement the `Copy` trait
+...
+347 |             tx_notify,
+    |             --------- value moved here
+...
+375 |             tx_notify,
+    |             ^^^^^^^^^ value used here after move
+
+warning: variable does not need to be mutable
+   --> openraft/src/raft/mod.rs:620:17
+    |
+620 |             let mut guard = IncomingSnapshotGuard {
+    |                 ----^^^^^
+    |                 |
+    |                 help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+For more information about this error, try `rustc --explain E0382`.
+warning: `openraft` (lib test) generated 1 warning
+error: could not compile `openraft` (lib test) due to 1 previous error; 1 warning emitted

@@ -1,0 +1,17 @@
+ M KASUMI-SHUTDOWN-REVIEW.md
+ M openraft/src/config/config.rs
+ M openraft/src/config/config_test.rs
+ M openraft/src/config/error.rs
+ M openraft/src/core/raft_core.rs
+ M openraft/src/core/sm/tasks.rs
+ M openraft/src/error.rs
+ M openraft/src/raft/mod.rs
+ M openraft/src/raft/raft_inner.rs
+ M openraft/src/raft/shutdown_test.rs
+ M openraft/src/replication/mod.rs
+ M openraft/src/replication/response.rs
+ M tests/tests/fixtures/mod.rs
+ M tests/tests/life_cycle/main.rs
+?? openraft/src/replication/tasks.rs
+?? openraft/src/replication/tasks_test.rs
+?? tests/tests/life_cycle/t13_replication_custody.rs

@@ -388,7 +388,7 @@ impl Fixture {
                 let id = (index + 1) as u64;
                 let audit = SecurityAudit::initialize(
                     TenantStore::initialize_catalog_fixture(
-                        NodeStore::create_new(
+                        NodeStore::create_new_fixture(
                             directory.join(format!("issuer-audit-{id}.redb")),
                             Uuid::new_v4(),
                             kasumi_store::ScratchDisk::fixture(),
@@ -407,7 +407,7 @@ impl Fixture {
                 )
                 .unwrap();
                 let stores = TenantStorageSet::initialize_catalogs(
-                    NodeStore::create_new(
+                    NodeStore::create_new_fixture(
                         directory.join(format!("issuer-{id}.redb")),
                         Uuid::new_v4(),
                         kasumi_store::ScratchDisk::fixture(),
@@ -465,6 +465,7 @@ impl Fixture {
                         &kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
                     )
                     .unwrap(),
+                    kasumi_raft::SnapshotBufferOwner::fixture(),
                 )
                 .await
                 .unwrap();
@@ -679,11 +680,16 @@ impl Fixture {
             identity: self.verifier_ids[index].clone(),
             database_path: self
                 .directory
-                .join(format!("verifier-{}/trust.redb", index + 1)),
+                .join(format!("persistent/verifier-{}/trust.redb", index + 1)),
             keys,
         };
+        let verifier_root = verifier.database_path.parent().unwrap();
+        if !verifier_root.exists() {
+            private_files::create_directory(verifier_root).unwrap();
+        }
         crate::signer_runtime::InitializeSignerVerifier {
             admission: Default::default(),
+            persistent_disk: config.persistent_disk.clone(),
             scratch_disk: config.scratch_disk.clone(),
             verifier: verifier.clone(),
             initial_certificates: vec![self.signing.signer.certificate().clone()],
@@ -818,11 +824,11 @@ impl Fixture {
                     )]),
                     journal_path: self
                         .directory
-                        .join(format!("target-journal-{}.redb", index + 1)),
+                        .join(format!("persistent/target-journal-{}.redb", index + 1)),
                     journal_keys: target_key("journal"),
                     generation_root: self
                         .directory
-                        .join(format!("target-generations-{}", index + 1)),
+                        .join(format!("persistent/target-generations-{}", index + 1)),
                     tenants: BTreeMap::from([(
                         "acme".into(),
                         TargetTenantTemplate {
@@ -1058,7 +1064,14 @@ impl Fixture {
                 config
                     .backup_destinations
                     .iter()
-                    .map(|(alias, destination)| (alias.clone(), destination.open().unwrap()))
+                    .map(|(alias, destination)| {
+                        (
+                            alias.clone(),
+                            destination
+                                .open(handles[index].audit.store().persistent_disk().clone())
+                                .unwrap(),
+                        )
+                    })
                     .collect(),
                 handles[index].registry.clone(),
             )

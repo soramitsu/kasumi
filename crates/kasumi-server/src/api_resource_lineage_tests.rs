@@ -46,9 +46,10 @@ async fn native_resources_and_two_restore_hops_preserve_immutable_issuer_facts()
         "tenant-a",
         "kasumi:admin kasumi:read kasumi:write",
     );
-    let backup_dir = tempfile::tempdir().unwrap();
+    let backup_dir = kasumi_store::test_utils::private_tempdir().unwrap();
     let destination = Arc::new(
-        kasumi_store::FilesystemBackupDestination::new(backup_dir.path(), 16 << 20).unwrap(),
+        kasumi_store::FilesystemBackupDestination::new_fixture(backup_dir.path(), 16 << 20)
+            .unwrap(),
     );
     let mut current = fixture.db.clone();
     let mut current_key = Arc::new(LocalKeyProvider::new([3; 32]));
@@ -109,8 +110,8 @@ async fn native_resources_and_two_restore_hops_preserve_immutable_issuer_facts()
                 .await
                 .is_err()
         );
-        let dir = tempfile::tempdir().unwrap();
-        let node = NodeStore::create_new(
+        let dir = kasumi_store::test_utils::private_tempdir().unwrap();
+        let node = NodeStore::create_new_fixture(
             dir.path().join("node.redb"),
             kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
@@ -195,7 +196,7 @@ async fn native_resources_and_two_restore_hops_preserve_immutable_issuer_facts()
         drop(restored);
         drop(stores);
         let reopened_store = TenantStore::open_existing_fixture(
-            NodeStore::open_existing(
+            NodeStore::open_existing_fixture(
                 dir.path().join("node.redb"),
                 kasumi_store::test_utils::NODE_STORE_ID,
                 kasumi_store::ScratchDisk::fixture(),

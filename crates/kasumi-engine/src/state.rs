@@ -84,6 +84,13 @@ impl Generation {
     }
 }
 
+/// Terminal state prepared for the current command, before budget acceptance.
+struct PreparedTerminals<'a> {
+    applied: &'a crate::staged_terminal::AppliedIdentity,
+    pending: &'a crate::staged_terminal::Pending,
+    owner: &'a crate::staged_terminal::View,
+}
+
 /// Only ordered consensus application may publish generations.
 pub struct TenantEngine {
     current: ArcSwapOption<Generation>,
@@ -1166,16 +1173,13 @@ impl TenantEngine {
             &applied,
         )
         .map_err(terminal_error)?;
+        let terminals = PreparedTerminals {
+            applied: &applied,
+            pending: &terminal_pending,
+            owner: &terminal_owner,
+        };
         if let Err(error) = staging::validate_budget(&next, &next.limits) {
-            return self.reject_resource_budget(
-                &previous,
-                next,
-                &command,
-                Some(error),
-                &applied,
-                &terminal_pending,
-                &terminal_owner,
-            );
+            return self.reject_resource_budget(&previous, next, &command, Some(error), &terminals);
         }
         let changed = if changed_documents {
             operation_changes(&previous.state, &command)?
@@ -1187,15 +1191,7 @@ impl TenantEngine {
             && let Err(error) =
                 crate::change_feed_state::append(&previous.state, &mut next, &changed)
         {
-            return self.reject_resource_budget(
-                &previous,
-                next,
-                &command,
-                Some(error),
-                &applied,
-                &terminal_pending,
-                &terminal_owner,
-            );
+            return self.reject_resource_budget(&previous, next, &command, Some(error), &terminals);
         }
         let snapshot_accounting = previous.snapshot_accounting.updated(
             &previous.state,
@@ -1204,15 +1200,7 @@ impl TenantEngine {
             &staged_changes(&previous.state, &command)?,
         )?;
         if !snapshot_accounting.fits(&next)? || !lifecycle::completion_fits(&next)? {
-            return self.reject_resource_budget(
-                &previous,
-                next,
-                &command,
-                None,
-                &applied,
-                &terminal_pending,
-                &terminal_owner,
-            );
+            return self.reject_resource_budget(&previous, next, &command, None, &terminals);
         }
         let indexes = if changed_documents
             && !matches!(command.operation, Operation::PublishHistoryArchive(_))
@@ -1244,9 +1232,7 @@ impl TenantEngine {
         next: TenantState,
         command: &Command,
         failure: Option<Error>,
-        applied: &crate::staged_terminal::AppliedIdentity,
-        terminal_pending: &crate::staged_terminal::Pending,
-        terminal_owner: &crate::staged_terminal::View,
+        terminals: &PreparedTerminals<'_>,
     ) -> Result<Result<WriteReceipt>> {
         let revision = next.revision;
         let error = failure.unwrap_or_else(|| {
@@ -1272,7 +1258,7 @@ impl TenantEngine {
                     .staged_transactions
                     .get(&key)
                     .is_some_and(StagedTransaction::is_active)
-                    && let Some(completed) = terminal_pending.get(&key).map_err(terminal_error)?
+                    && let Some(completed) = terminals.pending.get(&key).map_err(terminal_error)?
                     && !completed.is_active()
                 {
                     let mut completed = completed.clone();
@@ -1290,10 +1276,10 @@ impl TenantEngine {
             event.outcome = "rejected".into();
             append_audit(&mut rejected, event)?;
             let rejected_terminals = crate::staged_terminal::Pending::prepare(
-                terminal_owner,
+                terminals.owner,
                 &previous.state,
                 &mut rejected,
-                applied,
+                terminals.applied,
             )
             .map_err(terminal_error)?;
             let accounting = previous.snapshot_accounting.updated(
@@ -2557,6 +2543,24 @@ fn validate_audits(state: &TenantState) -> Result<()> {
     Ok(())
 }
 
+fn terminal_error(error: anyhow::Error) -> Error {
+    error
+        .downcast_ref::<Error>()
+        .cloned()
+        .unwrap_or_else(|| Error::new(ErrorCode::Corruption, error.to_string()))
+}
+
+fn staged_command_key(command: &Command) -> Result<Option<String>> {
+    let id = match &command.operation {
+        Operation::BeginStaged(request) => &request.transaction_id,
+        Operation::AppendStaged(request) => &request.transaction.transaction_id,
+        Operation::FinalizeStaged(reference) => &reference.transaction_id,
+        Operation::StopStaged(request) => &request.original.transaction_id,
+        _ => return Ok(None),
+    };
+    Ok(Some(staging::identity(&command.context.principal, id)?))
+}
+
 #[cfg(test)]
 mod restore_budget_tests {
     use super::*;
@@ -2648,22 +2652,4 @@ mod restore_budget_tests {
         assert_eq!(outcome.unwrap_err().code, ErrorCode::QuotaExceeded);
         assert_eq!(engine.logical_snapshot(bytes.disk()).unwrap(), bytes);
     }
-}
-
-fn terminal_error(error: anyhow::Error) -> Error {
-    error
-        .downcast_ref::<Error>()
-        .cloned()
-        .unwrap_or_else(|| Error::new(ErrorCode::Corruption, error.to_string()))
-}
-
-fn staged_command_key(command: &Command) -> Result<Option<String>> {
-    let id = match &command.operation {
-        Operation::BeginStaged(request) => &request.transaction_id,
-        Operation::AppendStaged(request) => &request.transaction.transaction_id,
-        Operation::FinalizeStaged(reference) => &reference.transaction_id,
-        Operation::StopStaged(request) => &request.original.transaction_id,
-        _ => return Ok(None),
-    };
-    Ok(Some(staging::identity(&command.context.principal, id)?))
 }

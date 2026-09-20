@@ -42,7 +42,7 @@ impl Fixture {
         Self::configured(limits, max_state_bytes).await
     }
     async fn configured(limits: Limits, max_state_bytes: usize) -> Self {
-        let root = tempfile::tempdir().unwrap();
+        let root = kasumi_store::test_utils::private_tempdir().unwrap();
         let incarnation = Uuid::new_v4();
         let pkcs8 = Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new()).unwrap();
         let controlkey = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
@@ -190,13 +190,13 @@ impl Fixture {
     async fn open(&mut self, create: bool) {
         for id in 1..=3 {
             let node = (if create {
-                NodeStore::create_new(
+                NodeStore::create_new_fixture(
                     self.root.path().join(format!("{id}.redb")),
                     kasumi_store::test_utils::NODE_STORE_ID,
                     kasumi_store::ScratchDisk::fixture(),
                 )
             } else {
-                NodeStore::open_existing(
+                NodeStore::open_existing_fixture(
                     self.root.path().join(format!("{id}.redb")),
                     kasumi_store::test_utils::NODE_STORE_ID,
                     kasumi_store::ScratchDisk::fixture(),

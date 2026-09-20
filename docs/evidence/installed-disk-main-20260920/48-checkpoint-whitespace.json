@@ -1,0 +1,23 @@
+{
+  "full_command": [
+    "git",
+    "diff",
+    "--cached",
+    "--check"
+  ],
+  "full_exit_code": 2,
+  "violation_count": 2136,
+  "unexpected_paths": [],
+  "authored_command": [
+    "git",
+    "diff",
+    "--cached",
+    "--check",
+    "--",
+    ".",
+    ":(exclude)docs/evidence/**",
+    ":(exclude)vendor/openraft-0.9.25/**"
+  ],
+  "authored_exit_code": 0,
+  "excluded_reason": "Preserve exact raw evidence and pinned OpenRaft upstream vendor bytes. This exclusion is only a whitespace diagnostic, not a build/test waiver."
+}

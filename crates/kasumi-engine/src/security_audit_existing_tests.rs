@@ -15,7 +15,7 @@ struct Installation {
 }
 impl Installation {
     fn new() -> Result<Self> {
-        let directory = tempfile::tempdir()?;
+        let directory = kasumi_store::test_utils::private_tempdir()?;
         let private = directory.path().join("installation");
         private_files::create_directory(&private)?;
         let keys = private.join("audit-keys.json");
@@ -31,9 +31,9 @@ impl Installation {
     }
     async fn store(&self, create: bool) -> Result<Arc<TenantStore>> {
         let node = if create {
-            NodeStore::create_new(&self.path, self.id, self.disk.clone())?
+            NodeStore::create_new_fixture(&self.path, self.id, self.disk.clone())?
         } else {
-            NodeStore::open_existing(&self.path, self.id, self.disk.clone())?
+            NodeStore::open_existing_fixture(&self.path, self.id, self.disk.clone())?
         };
         let provider = Arc::new(FileKeyProvider::open(&self.keys)?);
         if create {

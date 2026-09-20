@@ -19,10 +19,16 @@ through an `f64` first has already lost precision.
 
 Storage installation and reopening are separate operations. Retain the exclusive
 node and installation owners through any cancelled acquisition and await
-`NodeStore::drain_initializers` before releasing them. A fresh physical node uses
-`NodeStore::create_new(path, installed_database_id, scratch_disk)`; an installed
-node uses `NodeStore::open_existing` with the same immutable identity and explicit
-scratch owner. Missing files, catalogs and genesis records never authorize repair
+`NodeStore::shutdown` after the tenant and consensus workers drain. Shutdown
+closes new access, joins initializers and explicitly closes the durable database;
+a retained drain result requires the same owner to remain alive for retry.
+A fresh physical node uses
+`NodeStore::create_new(path, installed_database_id, persistent_disk, scratch_disk)`;
+an installed node uses `NodeStore::open_existing` with the same immutable identity
+and explicit `Arc<NodeDisk>` and `Arc<ScratchDisk>` owners. Construct `NodeDisk`
+from an explicit `NodeDiskConfig` and completed bounded census of preinstalled
+private roots on one filesystem. Database paths never enroll their parent
+implicitly. Persistent roots must be disjoint from each other and from scratch. Missing files, catalogs and genesis records never authorize repair
 or initialization during ordinary startup.
 
 | Domain | Fresh installation | Existing installation |

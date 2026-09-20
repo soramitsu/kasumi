@@ -73,8 +73,12 @@ async fn pending(future: &mut std::pin::Pin<Box<impl Future>>) {
     .await;
 }
 fn physical_reopen(config: &RuntimeConfig) -> Result<()> {
-    let _lock = claim(config)?.context("missing standalone lock")?;
-    let node = NodeStore::open_existing(
+    let _lock = claim(
+        config,
+        &crate::persistent_disk::open(&config.persistent_disk)?,
+    )?
+    .context("missing standalone lock")?;
+    let node = NodeStore::open_existing_fixture(
         &config.database_path,
         config.database_id,
         kasumi_store::ScratchDisk::open(config.scratch_disk.clone())?,
@@ -83,9 +87,15 @@ fn physical_reopen(config: &RuntimeConfig) -> Result<()> {
     Ok(())
 }
 fn physical_reopen_rejected(config: &RuntimeConfig) {
-    assert!(claim(config).is_err());
     assert!(
-        NodeStore::open_existing(
+        claim(
+            config,
+            &crate::persistent_disk::open(&config.persistent_disk).unwrap()
+        )
+        .is_err()
+    );
+    assert!(
+        NodeStore::open_existing_fixture(
             &config.database_path,
             config.database_id,
             kasumi_store::ScratchDisk::open(config.scratch_disk.clone()).unwrap(),
@@ -98,7 +108,7 @@ fn physical_reopen_rejected(config: &RuntimeConfig) {
 async fn every_standalone_operator_retains_real_installation_through_cancelled_reply_and_drain()
 -> Result<()> {
     let _serial = drain_serial().lock().await;
-    let root = tempfile::tempdir()?;
+    let root = kasumi_store::test_utils::private_tempdir()?;
     let installed = initialize(&root.path().join("database"), "documents").await?;
     for operation in 0..5 {
         let config = RuntimeConfig::load(&installed.configuration)?;
@@ -143,7 +153,7 @@ async fn every_standalone_operator_retains_real_installation_through_cancelled_r
 async fn cancelled_initialization_remains_joinable_before_its_first_catalog_publication()
 -> Result<()> {
     let _serial = drain_serial().lock().await;
-    let root = tempfile::tempdir()?;
+    let root = kasumi_store::test_utils::private_tempdir()?;
     let directory = std::fs::canonicalize(root.path())?.join("database");
     let path = directory.join("data/node.redb");
     let paused = install(&path, "initialize-node", false);
@@ -160,13 +170,13 @@ async fn cancelled_initialization_remains_joinable_before_its_first_catalog_publ
     drop(first);
     paused.release.notify_one();
     tokio::time::timeout(Duration::from_secs(10), drain_operations()).await??;
-    physical_reopen(&RuntimeConfig::load(&directory.join("kasumi.json"))?)?;
+    physical_reopen(&RuntimeConfig::load(directory.join("kasumi.json"))?)?;
     Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn singleton_open_failure_drains_node_before_releasing_operator_lock() -> Result<()> {
-    let root = tempfile::tempdir()?;
+    let root = kasumi_store::test_utils::private_tempdir()?;
     let installed = initialize(&root.path().join("database"), "documents").await?;
     let config = RuntimeConfig::load(&installed.configuration)?;
     let mut rejected = config.clone();
@@ -194,7 +204,7 @@ async fn singleton_open_failure_drains_node_before_releasing_operator_lock() -> 
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn early_control_pair_error_retains_and_drains_both_catalogs() -> Result<()> {
-    let root = tempfile::tempdir()?;
+    let root = kasumi_store::test_utils::private_tempdir()?;
     let installed = initialize(&root.path().join("database"), "documents").await?;
     let config = RuntimeConfig::load(&installed.configuration)?;
     let failed = install(&config.database_path, "control-pair", true);
@@ -217,7 +227,7 @@ async fn early_control_pair_error_retains_and_drains_both_catalogs() -> Result<(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn early_initialization_audit_error_drains_without_publishing_completion() -> Result<()> {
-    let root = tempfile::tempdir()?;
+    let root = kasumi_store::test_utils::private_tempdir()?;
     let directory = std::fs::canonicalize(root.path())?.join("database");
     let failed = install(&directory.join("data/node.redb"), "initialize-audit", true);
     failed.release.notify_one();
@@ -229,7 +239,7 @@ async fn early_initialization_audit_error_drains_without_publishing_completion()
         &directory.join("data/initialization.json"),
         16 << 10,
     )?)?;
-    let node = NodeStore::open_existing(
+    let node = NodeStore::open_existing_fixture(
         &prepared.database_path,
         prepared.database_id,
         kasumi_store::ScratchDisk::fixture(),

@@ -6,7 +6,7 @@ use kasumi_store::TenantStorageSet;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn initialization_provisions_control_topology_and_application_before_completion_marker()
 -> Result<()> {
-    let root = tempfile::tempdir()?;
+    let root = kasumi_store::test_utils::private_tempdir()?;
     let installed = initialize(&root.path().join("database"), "documents").await?;
     let config = RuntimeConfig::load(&installed.configuration)?;
     let mut substituted = config.clone();
@@ -92,7 +92,7 @@ async fn initialization_provisions_control_topology_and_application_before_compl
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn failed_profile_publication_drains_owners_and_never_marks_partial_installation_complete()
 -> Result<()> {
-    let root = tempfile::tempdir()?;
+    let root = kasumi_store::test_utils::private_tempdir()?;
     let directory = root.path().join("database");
     let result = initialize_owned(
         &directory,
@@ -116,7 +116,7 @@ async fn failed_profile_publication_drains_owners_and_never_marks_partial_instal
         &directory.join("data/initialization.json"),
         16 << 10,
     )?)?;
-    let node = NodeStore::open_existing(
+    let node = NodeStore::open_existing_fixture(
         directory.join("data/node.redb"),
         prepared.database_id,
         kasumi_store::ScratchDisk::fixture(),
@@ -131,7 +131,7 @@ async fn failed_profile_publication_drains_owners_and_never_marks_partial_instal
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stopped_operator_reopen_never_recreates_missing_control_bootstrap() -> Result<()> {
-    let root = tempfile::tempdir()?;
+    let root = kasumi_store::test_utils::private_tempdir()?;
     let installed = initialize(&root.path().join("database"), "documents").await?;
     let config = RuntimeConfig::load(&installed.configuration)?;
     let mut owner = OperatorState::open(&config).await?;

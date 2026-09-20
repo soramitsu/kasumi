@@ -1,0 +1,12 @@
+   Compiling redb v4.2.0 (/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.17s
+     Running tests/canonical_format.rs (/Users/mtakemiya/dev/kasumi-redb-admission-target/debug/deps/canonical_format-6b288db715bbef05)
+
+running 4 tests
+test builtin_composite_does_not_alias_user_type ... ok
+test composite_of_user_type_does_not_alias_builtin ... ok
+test upstream_savepoints_do_not_enable_a_legacy_open ... ok
+test upstream_single_phase_files_are_rejected_without_migration ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.56s
+

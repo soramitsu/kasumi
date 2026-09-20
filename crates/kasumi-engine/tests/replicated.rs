@@ -52,13 +52,13 @@ async fn store(
     create: bool,
 ) -> (Arc<TenantStore>, Arc<kasumi_engine::SecurityAudit>) {
     let node = (if create {
-        NodeStore::create_new(
+        NodeStore::create_new_fixture(
             path,
             kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
         )
     } else {
-        NodeStore::open_existing(
+        NodeStore::open_existing_fixture(
             path,
             kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
@@ -147,7 +147,7 @@ fn batch() -> MutationBatch {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn replicated_service_preserves_batches_receipts_and_cursor_fences_across_partition_and_restart()
  {
-    let root = tempfile::tempdir().unwrap();
+    let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let bootstrap = bootstrap();
     let group = format!("tenant-a/{}", bootstrap.incarnation);
     let router = Arc::new(InProcessRouter::default());
@@ -416,7 +416,7 @@ async fn replicated_service_preserves_batches_receipts_and_cursor_fences_across_
 
 #[tokio::test]
 async fn deployment_modes_and_live_store_ownership_cannot_be_overridden() {
-    let root = tempfile::tempdir().unwrap();
+    let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let (store, audit) = store(&root.path().join("local.redb"), true).await;
     let bootstrap = bootstrap();
     let db = open_fixture(
@@ -496,7 +496,7 @@ async fn deployment_modes_and_live_store_ownership_cannot_be_overridden() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn replicated_restore_has_identical_genesis_and_requires_quorum_audit_before_activation() {
     use kasumi_engine::{ReplicaRestoreConfig, prepare_replicated_restore};
-    let root = tempfile::tempdir().unwrap();
+    let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let initial = bootstrap();
     let (source_store, source_audit) = store(&root.path().join("source.redb"), true).await;
     let source = open_fixture(
@@ -528,12 +528,16 @@ async fn replicated_restore_has_identical_genesis_and_requires_quorum_audit_befo
         .unwrap();
     let receipt = source.mutate(context(), batch()).await.unwrap();
     let backups = Arc::new(
-        kasumi_store::FilesystemBackupDestination::new(root.path().join("backups"), 16 << 20)
-            .unwrap(),
+        kasumi_store::FilesystemBackupDestination::new_fixture(
+            root.path().join("backups"),
+            16 << 20,
+        )
+        .unwrap(),
     );
     let cold_path = root.path().join("cold");
-    let cold =
-        Arc::new(kasumi_store::FilesystemBackupDestination::new(&cold_path, 16 << 20).unwrap());
+    let cold = Arc::new(
+        kasumi_store::FilesystemBackupDestination::new_fixture(&cold_path, 16 << 20).unwrap(),
+    );
     source
         .install_archive_destination("cold".into(), cold)
         .unwrap();

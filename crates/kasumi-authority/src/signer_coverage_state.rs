@@ -416,16 +416,15 @@ impl Backend {
                     self.record(&maintenance_state::operation_key(
                         dispatch.command.publication.command().operation_id,
                     ))?
-                {
-                    if let Err(error) = Self::retain_coverage_permission(
+                    && let Err(error) = Self::retain_coverage_permission(
                         &mut meta,
                         &dispatch,
                         &permission,
                         revision,
                         &mut additions,
-                    ) {
-                        return Ok(Err(conflict(&error.to_string())));
-                    }
+                    )
+                {
+                    return Ok(Err(conflict(&error.to_string())));
                 }
                 SignerCoverageStatus {
                     dispatch,

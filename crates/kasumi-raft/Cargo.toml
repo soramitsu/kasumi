@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 description = "Replicated state and durable command custody for Kasumi."
 
+[features]
+test-utils = []
+
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true

@@ -452,7 +452,6 @@ impl TransactionalMemory {
             let mut header = DatabaseHeader::new(layout, TransactionId::new(0));
 
             header.recovery_required = false;
-            header.two_phase_commit = true;
             storage
                 .write(0, DB_HEADER_SIZE, true)?
                 .mem_mut()
@@ -618,10 +617,6 @@ impl TransactionalMemory {
         self.storage.flush()
     }
 
-    pub(crate) fn used_two_phase_commit(&self) -> bool {
-        self.state.lock().unwrap().header.two_phase_commit
-    }
-
     pub(crate) fn allocator_hash(&self) -> u128 {
         self.state.lock().unwrap().allocators().xxh3_hash()
     }
@@ -631,11 +626,6 @@ impl TransactionalMemory {
     // previous storage error (e.g. WriteTransaction::drop).
     pub(crate) fn storage_failure(&self) -> bool {
         self.storage.check_io_errors().is_err()
-    }
-
-    pub(crate) fn repair_primary_corrupted(&self) {
-        let mut state = self.state.lock().unwrap();
-        state.header.swap_primary_slot();
     }
 
     // Replaces the in-memory allocator state with a fresh, empty one sized to the current
@@ -911,7 +901,6 @@ impl TransactionalMemory {
 
         let prepared_header = header.to_bytes(true);
         header.swap_primary_slot();
-        header.two_phase_commit = true;
         let winning_header = header.to_bytes(true);
         // Payload/cache bookkeeping can allocate; finish it before either header.
         self.storage.prepare_publication();

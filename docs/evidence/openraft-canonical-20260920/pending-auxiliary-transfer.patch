@@ -1,0 +1,1048 @@
+--- /dev/null
++++ b/openraft/README.md
+@@ -0,0 +1,175 @@
++<div align="center">
++    <h1>Openraft</h1>
++    <h4>
++        Advanced <a href="https://raft.github.io/">Raft</a> in 🦀 Rust using <a href="https://tokio.rs/">Tokio</a>. Please ⭐ on <a href="https://github.com/datafuselabs/openraft">github</a>!
++    </h4>
++
++
++[![Crates.io](https://img.shields.io/crates/v/openraft.svg)](https://crates.io/crates/openraft)
++[![docs.rs](https://docs.rs/openraft/badge.svg)](https://docs.rs/openraft)
++[![guides](https://img.shields.io/badge/guide-%E2%86%97-brightgreen)](https://docs.rs/openraft/latest/openraft/docs/index.html)
++[![Discord Chat](https://img.shields.io/discord/1015845055434588200?logo=discord)](https://discord.gg/ZKw3WG7FQ9)
++<br/>
++[![CI](https://github.com/datafuselabs/openraft/actions/workflows/ci.yaml/badge.svg)](https://github.com/datafuselabs/openraft/actions/workflows/ci.yaml)
++[![Coverage Status](https://coveralls.io/repos/github/databendlabs/openraft/badge.svg?branch=release-0.9)](https://coveralls.io/github/databendlabs/openraft?branch=release-0.9)
++![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)
++![Crates.io](https://img.shields.io/crates/d/openraft.svg)
++![Crates.io](https://img.shields.io/crates/dv/openraft.svg)
++
++</div>
++
++This project intends to improve raft as the next-generation consensus protocol for distributed data storage systems (SQL, NoSQL, KV, Streaming, Graph ... or maybe something more exotic).
++
++Currently, openraft is the consensus engine of meta-service cluster in [databend](https://github.com/datafuselabs/databend).
++
++
++- 🚀 **Get started**:
++    - [Openraft guide](https://docs.rs/openraft/latest/openraft/docs/getting_started/index.html) is the best place to get started,
++    - [Openraft docs](https://docs.rs/openraft/latest/openraft/docs/index.html) for more in-depth details,
++    - [Openraft FAQ](https://docs.rs/openraft/latest/openraft/docs/faq/index.html) explains some common questions.
++
++- 🙌 **Questions**?
++    - Why not take a peek at our [FAQ](https://docs.rs/openraft/latest/openraft/docs/faq/index.html)? You might find just what you need.
++    - Wanna chat? Come hang out with us on [Discord](https://discord.gg/ZKw3WG7FQ9)!
++    - Or start a new discussion over on [GitHub](https://github.com/datafuselabs/openraft/discussions/new).
++    - Or join our [Feishu group](https://applink.feishu.cn/client/chat/chatter/add_by_link?link_token=d20l9084-6d36-4470-bac5-4bad7378d003).
++    - And hey, if you're on WeChat, add us: `drmingdrmer`. Let's get the conversation started!
++
++Whatever your style, we're here to support you. 🚀 Let's make something awesome together!
++
++- Openraft is derived from [async-raft](https://docs.rs/crate/async-raft/latest) with several bugs fixed: [Fixed bugs](https://github.com/datafuselabs/openraft/blob/main/derived-from-async-raft.md).
++
++
++# Status
++
++- The features are almost complete for building an application.
++- Performance: Supports 70,000 writes/sec for single writer, and 1,000,000 writes/sec for 256 writers. See: [Performance](#performance)
++- Unit test coverage stands at 92%.
++- The chaos test has not yet been completed, and further testing is needed to ensure the application's robustness and reliability.
++
++
++## API status
++
++- **Openraft API is not stable yet**. Before `1.0.0`, an upgrade may contain incompatible changes.
++  Check our [change-log](https://github.com/datafuselabs/openraft/blob/main/change-log.md). A commit message starts with a keyword to indicate the modification type of the commit:
++
++  - `DataChange:` on-disk data types changes, which may require manual upgrade.
++  - `Change:` if it introduces incompatible changes.
++  - `Feature:` if it introduces compatible non-breaking new features.
++  - `Fix:` if it just fixes a bug.
++
++## Versions
++
++- **Branch main** has been under active development.
++    The main branch is for the [release-0.10](https://github.com/datafuselabs/openraft/tree/release-0.10).
++
++- **Branch [release-0.9](https://github.com/datafuselabs/openraft/tree/release-0.9)**:
++  Latest: ( [v0.9.0](https://github.com/datafuselabs/openraft/tree/v0.9.0) | [Change log](https://github.com/datafuselabs/openraft/blob/release-0.9/change-log.md#v090) );
++  Upgrade guide: ⬆️  [0.8 to 0.9](https://docs.rs/openraft/0.9.0/openraft/docs/upgrade_guide/upgrade_08_09/index.html);
++  `release-0.9` **Won't** accept new features but only bug fixes.
++
++- **Branch [release-0.8](https://github.com/datafuselabs/openraft/tree/release-0.8)**:
++  Latest: ( [v0.8.8](https://github.com/datafuselabs/openraft/tree/v0.8.8) | [Change log](https://github.com/datafuselabs/openraft/blob/release-0.8/change-log.md#v088) );
++  Upgrade guide: ⬆️  [0.7 to 0.8](https://docs.rs/openraft/0.8.4/openraft/docs/upgrade_guide/upgrade_07_08/index.html), ⬆️  [0.8.3 to 0.8.4](https://docs.rs/openraft/0.8.4/openraft/docs/upgrade_guide/upgrade_083_084/index.html);
++  `release-0.8` **Won't** accept new features but only bug fixes.
++
++- **Branch [release-0.7](https://github.com/datafuselabs/openraft/tree/release-0.7)**:
++  Latest: ( [v0.7.6](https://github.com/datafuselabs/openraft/tree/v0.7.6) | [Change log](https://github.com/datafuselabs/openraft/blob/release-0.7/change-log.md#v076) );
++  Upgrade guide: ⬆️  [0.6 to 0.7](https://docs.rs/openraft/0.8.4/openraft/docs/upgrade_guide/upgrade_06_07/index.html);
++  `release-0.7` **Won't** accept new features but only bug fixes.
++
++- **Branch [release-0.6](https://github.com/datafuselabs/openraft/tree/release-0.6)**:
++  Latest: ( [v0.6.8](https://github.com/datafuselabs/openraft/tree/v0.6.8) | [Change log](https://github.com/datafuselabs/openraft/blob/release-0.6/change-log.md) );
++  `release-0.6` **won't** accept new features but only bug fixes.
++
++# Roadmap
++
++- [x] **2022-10-31** [Extended joint membership](https://docs.rs/openraft/latest/openraft/docs/data/extended_membership/index.html)
++- [x] **2023-02-14** Minimize confliction rate when electing;
++  See: [Openraft Vote design](https://docs.rs/openraft/latest/openraft/docs/data/vote/index.html);
++  Or use standard raft mode with [feature flag `single-term-leader`](https://docs.rs/openraft/latest/openraft/docs/feature_flags/index.html).
++- [x] **2023-04-26** Goal performance is 1,000,000 put/sec.
++- [ ] Reduce the complexity of vote and pre-vote: [get rid of pre-vote RPC](https://github.com/datafuselabs/openraft/discussions/15);
++- [ ] Support flexible quorum, e.g.: [Hierarchical Quorums](https://zookeeper.apache.org/doc/r3.5.9/zookeeperHierarchicalQuorums.html)
++- [ ] Consider introducing read-quorum and write-quorum,
++  improve efficiency with a cluster with an even number of nodes.
++
++
++<!--
++   - - [ ] Consider to separate log storage and log order storage.
++   -   Leader only determines and replicates the index of log entries, not log
++   -   payload.
++      -->
++
++# Performance
++
++The benchmark is focused on the Openraft framework itself and is run on a
++minimized store and network. This is **NOT a real world** application benchmark!!!
++
++| clients | put/s         | ns/op      |
++| --:     | --:           | --:        |
++| 256     | **1,014,000** |      985   |
++|  64     |   **730,000** |    1,369   |
++|   1     |      70,000   | **14,273** |
++
++
++For benchmark detail, go to the [./cluster_benchmark](./cluster_benchmark) folder.
++
++# Features
++
++- **Async and Event-Driven**: Operates based on Raft events without reliance on periodic ticks, optimizing message batching for high throughput.
++- **Extensible Storage and Networking**: Customizable via `RaftLogStorage`, `RaftStateMachine` and `RaftNetwork` traits, allowing flexibility in choosing storage and network solutions.
++- **Unified Raft API**: Offers a single `Raft` type for creating and interacting with Raft tasks, with a straightforward API.
++- **Cluster Formation**: Provides strategies for initial cluster setup as detailed in the [cluster formation guide](https://docs.rs/openraft/latest/openraft/docs/cluster_control/cluster_formation/index.html).
++- **Built-In Tracing Instrumentation**: The codebase integrates [tracing](https://docs.rs/tracing/) for logging and distributed tracing, with the option to [set verbosity levels at compile time](https://docs.rs/tracing/latest/tracing/level_filters/index.html).
++
++## Functionality:
++
++- ✅ **Leader election**: by policy or manually([`trigger_elect()`][]).
++- ✅ **Non-voter(learner) Role**: refer to [`add_learner()`][].
++- ✅ **Log Compaction**(snapshot of state machine): by policy or manually([`trigger_snapshot()`]).
++- ✅ **Snapshot replication**.
++- ✅ **Dynamic Membership**: using joint membership config change. Refer to [dynamic membership](https://docs.rs/openraft/latest/openraft/docs/cluster_control/dynamic_membership/index.html)
++- ✅ **Linearizable read**: [`ensure_linearizable()`][].
++- ⛔️ **Wont support**: Single-step config change.  <!-- TODO: explain why -->
++- ✅ Toggle heartbeat / election: [`enable_heartbeat`][] / [`enable_elect`][].
++- ✅ Trigger snapshot / election manually: [`trigger_snapshot()`][] / [`trigger_elect()`][].
++- ✅ Purge log by policy or manually: [`purge_log()`][].
++
++
++# Who use it
++
++- [Databend](https://github.com/datafuselabs/databend)
++- [CnosDB](https://github.com/cnosdb/cnosdb)
++- [yuyang0/rrqlite](https://github.com/yuyang0/rrqlite)
++- [raymondshe/matchengine-raft](https://github.com/raymondshe/matchengine-raft)
++
++# Contributing
++
++Check out the [CONTRIBUTING.md](https://github.com/datafuselabs/openraft/blob/main/CONTRIBUTING.md)
++guide for more details on getting started with contributing to this project.
++
++## Contributors
++
++<a href="https://github.com/datafuselabs/openraft/graphs/contributors">
++  <img src="https://contrib.rocks/image?repo=datafuselabs/openraft"/>
++</a>
++
++Made with [contributors-img](https://contrib.rocks).
++
++# License
++
++Openraft is licensed under the terms of the [MIT License](https://en.wikipedia.org/wiki/MIT_License#License_terms)
++or the [Apache License 2.0](http://www.apache.org/licenses/LICENSE-2.0), at your choosing.
++
++
++[`change_membership()`]: https://docs.rs/openraft/latest/openraft/raft/struct.Raft.html#method.change_membership
++[`add_learner()`]: https://docs.rs/openraft/latest/openraft/raft/struct.Raft.html#method.add_learner
++[`purge_log()`]: https://docs.rs/openraft/latest/openraft/raft/struct.Raft.html#method.purge_log
++
++[`enable_heartbeat`]: https://docs.rs/openraft/latest/openraft/struct.Config.html#structfield.enable_heartbeat
++[`enable_elect`]: https://docs.rs/openraft/latest/openraft/struct.Config.html#structfield.enable_elect
++
++[`trigger_elect()`]: https://docs.rs/openraft/latest/openraft/raft/struct.Raft.html#method.trigger_elect
++[`trigger_snapshot()`]: https://docs.rs/openraft/latest/openraft/raft/struct.Raft.html#method.trigger_snapshot
++[`ensure_linearizable()`]: https://docs.rs/openraft/latest/openraft/raft/struct.Raft.html#method.ensure_linearizable
+--- a/openraft/src/config/config.rs
++++ b/openraft/src/config/config.rs
+@@ -38,7 +38,9 @@
+ 
+ impl SnapshotPolicy {
+     pub(crate) fn should_snapshot<NID>(&self, state: &impl Deref<Target = impl LogStateReader<NID>>) -> bool
+-    where NID: NodeId {
++    where
++        NID: NodeId,
++    {
+         match self {
+             SnapshotPolicy::LogsSinceLast(threshold) => {
+                 state.committed().next_index() >= state.snapshot_last_log_id().next_index() + threshold
+@@ -157,6 +159,12 @@
+     /// closes new leader work without evicting any child. Valid range: 1..=4096.
+     #[clap(long, default_value = "128")]
+     pub max_retained_replication_owners: usize,
++
++    /// Maximum retained leadership-read and vote-round collectors together.
++    /// Read admission leaves one slot reserved for election work. Unresolved or
++    /// failed collectors are never evicted. Valid range: 2..=4096.
++    #[clap(long, default_value = "128")]
++    pub max_retained_auxiliary_owners: usize,
+ 
+     /// The distance behind in log replication a follower must fall before it is considered lagging
+     ///
+@@ -315,6 +323,12 @@
+             });
+         }
+ 
++        if !(2..=4096).contains(&self.max_retained_auxiliary_owners) {
++            return Err(ConfigError::InvalidRetainedAuxiliaryOwners {
++                limit: self.max_retained_auxiliary_owners,
++            });
++        }
++
+         if self.max_payload_entries == 0 {
+             return Err(ConfigError::MaxPayloadIs0);
+         }
+--- a/openraft/src/config/config_test.rs
++++ b/openraft/src/config/config_test.rs
+@@ -40,10 +40,13 @@
+ 
+     let res = config.validate();
+     let err = res.unwrap_err();
+-    assert_eq!(err, ConfigError::ElectionTimeoutLTHeartBeat {
+-        election_timeout_min: 1000,
+-        heartbeat_interval: 1500
+-    });
++    assert_eq!(
++        err,
++        ConfigError::ElectionTimeoutLTHeartBeat {
++            election_timeout_min: 1000,
++            heartbeat_interval: 1500
++        }
++    );
+ }
+ 
+ #[test]
+@@ -184,3 +187,22 @@
+         .unwrap();
+     }
+ }
++
++#[test]
++fn retained_auxiliary_owner_limit_is_validated() {
++    assert_eq!(Config::default().max_retained_auxiliary_owners, 128);
++    for limit in [0, 1, 4097, usize::MAX] {
++        assert!(
++            matches!(Config { max_retained_auxiliary_owners: limit, ..Default::default() }.validate(),
++            Err(ConfigError::InvalidRetainedAuxiliaryOwners { limit: actual }) if actual == limit)
++        );
++    }
++    for limit in [2, 128, 4096] {
++        Config {
++            max_retained_auxiliary_owners: limit,
++            ..Default::default()
++        }
++        .validate()
++        .unwrap();
++    }
++}
+--- a/openraft/src/config/error.rs
++++ b/openraft/src/config/error.rs
+@@ -14,6 +14,9 @@
+     #[error("max_retained_replication_owners must be in 1..=4096, got {limit}")]
+     InvalidRetainedReplicationOwners { limit: usize },
+ 
++    #[error("max_retained_auxiliary_owners must be in 2..=4096, got {limit}")]
++    InvalidRetainedAuxiliaryOwners { limit: usize },
++
+     #[error("max_payload_entries must be > 0")]
+     MaxPayloadIs0,
+ 
+--- /dev/null
++++ b/openraft/src/core/auxiliary.rs
+@@ -0,0 +1,141 @@
++//! Bounded, retained collectors for leadership checks and election rounds.
++use std::sync::Arc;
++use std::sync::Mutex as StdMutex;
++use std::task::Context;
++use std::task::Poll;
++
++use tokio::sync::Mutex;
++
++use crate::core::sm::tasks::Task;
++use crate::core::sm::tasks::TaskError;
++use crate::error::AuxiliaryShutdownError;
++use crate::error::AuxiliaryTaskKind;
++use crate::error::TaskCapacity;
++use crate::type_config::alias::JoinErrorOf;
++use crate::RaftTypeConfig;
++
++pub(crate) struct Owner<C: RaftTypeConfig> {
++    id: u64,
++    kind: AuxiliaryTaskKind,
++    pub(crate) task: Mutex<Option<Task<C>>>,
++}
++
++struct Inventory<C: RaftTypeConfig> {
++    owners: Vec<Arc<Owner<C>>>,
++    next_id: u64,
++}
++
++pub(crate) struct Registry<C: RaftTypeConfig> {
++    limit: usize,
++    inventory: StdMutex<Inventory<C>>,
++}
++
++impl<C: RaftTypeConfig> Registry<C> {
++    pub(crate) fn new(limit: usize) -> Self {
++        Self {
++            limit,
++            inventory: StdMutex::new(Inventory {
++                owners: Vec::with_capacity(limit),
++                next_id: 0,
++            }),
++        }
++    }
++
++    fn poll_owner(owner: &Owner<C>, cx: &mut Context<'_>) -> Poll<Result<(), TaskError<C>>> {
++        let Ok(mut task) = owner.task.try_lock() else {
++            return Poll::Pending;
++        };
++        match task.as_mut() {
++            Some(task) => task.poll_join(cx),
++            None => Poll::Pending,
++        }
++    }
++
++    fn reap(&self) {
++        let mut cx = Context::from_waker(futures::task::noop_waker_ref());
++        self.inventory
++            .lock()
++            .unwrap()
++            .owners
++            .retain(|owner| !matches!(Self::poll_owner(owner, &mut cx), Poll::Ready(Ok(()))));
++    }
++
++    /// Leadership reads leave one slot exclusively available to vote rounds.
++    /// The sole producer is RaftCore; no producer races the synchronous check.
++    pub(crate) fn available(&self, kind: AuxiliaryTaskKind) -> Result<(), TaskCapacity> {
++        self.reap();
++        let inventory = self.inventory.lock().unwrap();
++        let limit = if kind == AuxiliaryTaskKind::LeadershipRead {
++            self.limit.saturating_sub(1)
++        } else {
++            self.limit
++        };
++        if inventory.owners.len() >= limit || inventory.next_id == u64::MAX {
++            Err(TaskCapacity { limit, needed: 1 })
++        } else {
++            Ok(())
++        }
++    }
++
++    pub(crate) fn reserve(&self, kind: AuxiliaryTaskKind) -> Result<Arc<Owner<C>>, TaskCapacity> {
++        self.available(kind)?;
++        let mut inventory = self.inventory.lock().unwrap();
++        let id = inventory.next_id;
++        inventory.next_id += 1;
++        let owner = Arc::new(Owner {
++            id,
++            kind,
++            task: Mutex::new(None),
++        });
++        inventory.owners.push(owner.clone());
++        Ok(owner)
++    }
++
++    /// The event loop joins the actual handles in place; no monitor is spawned.
++    pub(crate) async fn changed(&self) -> Result<(), TaskError<C>> {
++        std::future::poll_fn(|cx| {
++            let mut inventory = self.inventory.lock().unwrap();
++            for (index, owner) in inventory.owners.iter().enumerate() {
++                match Self::poll_owner(owner, cx) {
++                    Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
++                    Poll::Ready(Ok(())) => {
++                        inventory.owners.remove(index);
++                        return Poll::Ready(Ok(()));
++                    }
++                    Poll::Pending => {}
++                }
++            }
++            Poll::Pending
++        })
++        .await
++    }
++
++    /// Called after the producer core joins. Cancellation leaves every actual
++    /// handle/result in its cell; every later child is joined despite failures.
++    pub(crate) async fn shutdown(&self) -> Vec<AuxiliaryShutdownError<C::NodeId, JoinErrorOf<C>>> {
++        let owners = self.inventory.lock().unwrap().owners.clone();
++        let mut failures = Vec::new();
++        for owner in owners {
++            if let Some(task) = owner.task.lock().await.as_mut() {
++                if let Err(error) = task.join().await {
++                    failures.push(AuxiliaryShutdownError {
++                        owner_id: owner.id,
++                        kind: owner.kind,
++                        error,
++                    });
++                }
++            }
++        }
++        self.reap();
++        self.inventory
++            .lock()
++            .unwrap()
++            .owners
++            .retain(|owner| owner.task.try_lock().map_or(true, |task| task.is_some()));
++        failures
++    }
++}
++
++#[cfg(all(test, not(feature = "singlethreaded")))]
++#[path = "auxiliary_test.rs"]
++mod tests;
+--- /dev/null
++++ b/openraft/src/core/auxiliary_test.rs
+@@ -0,0 +1,93 @@
++use std::future::Future;
++use std::sync::Arc;
++use std::task::Poll;
++use std::time::Duration;
++
++use super::Registry;
++use crate::core::sm::tasks::Task;
++use crate::engine::testing::UTConfig;
++use crate::error::AuxiliaryTaskKind;
++
++#[tokio::test]
++async fn cancelled_drain_retains_independent_collector_panics_and_election_capacity() {
++    let registry = Registry::<UTConfig>::new(2);
++    let read = registry.reserve(AuxiliaryTaskKind::LeadershipRead).unwrap();
++    assert!(registry.reserve(AuxiliaryTaskKind::LeadershipRead).is_err());
++    let vote = registry.reserve(AuxiliaryTaskKind::VoteRound).unwrap();
++    let (release_read, wait_read) = tokio::sync::oneshot::channel();
++    let (release_vote, wait_vote) = tokio::sync::oneshot::channel();
++    let task = tokio::spawn(async move {
++        let _ = wait_read.await;
++        panic!("original read collector");
++    });
++    let read_id = task.id();
++    *read.task.lock().await = Some(Task::Running(task));
++    let task = tokio::spawn(async move {
++        let _ = wait_vote.await;
++        panic!("original vote collector");
++    });
++    let vote_id = task.id();
++    *vote.task.lock().await = Some(Task::Running(task));
++    let mut drain = Box::pin(registry.shutdown());
++    std::future::poll_fn(|cx| {
++        assert!(drain.as_mut().poll(cx).is_pending());
++        Poll::Ready(())
++    })
++    .await;
++    drop(drain);
++    release_read.send(()).unwrap();
++    assert!(tokio::time::timeout(Duration::from_millis(20), registry.shutdown()).await.is_err());
++    release_vote.send(()).unwrap();
++    let errors = registry.shutdown().await;
++    assert_eq!(errors.len(), 2);
++    assert_eq!(errors[0].kind, AuxiliaryTaskKind::LeadershipRead);
++    assert_eq!(errors[1].kind, AuxiliaryTaskKind::VoteRound);
++    assert_eq!(errors[0].error.join_error().unwrap().id(), read_id);
++    assert_eq!(errors[1].error.join_error().unwrap().id(), vote_id);
++    let original = [
++        Arc::downgrade(errors[0].error.join_error().unwrap()),
++        Arc::downgrade(errors[1].error.join_error().unwrap()),
++    ];
++    drop(errors);
++    let again = registry.shutdown().await;
++    for (index, error) in again.iter().enumerate() {
++        assert!(Arc::ptr_eq(
++            &original[index].upgrade().unwrap(),
++            error.error.join_error().unwrap()
++        ));
++    }
++    assert!(registry.reserve(AuxiliaryTaskKind::VoteRound).is_err());
++}
++
++#[tokio::test]
++async fn actual_abort_wakes_live_core_and_preserves_original_id() {
++    let registry = Registry::<UTConfig>::new(2);
++    let owner = registry.reserve(AuxiliaryTaskKind::VoteRound).unwrap();
++    let task = tokio::spawn(std::future::pending());
++    let id = task.id();
++    task.abort();
++    *owner.task.lock().await = Some(Task::Running(task));
++    let error = tokio::time::timeout(Duration::from_secs(1), registry.changed()).await.unwrap().unwrap_err();
++    assert!(error.join_error().unwrap().is_cancelled());
++    assert_eq!(error.join_error().unwrap().id(), id);
++    let again = registry.shutdown().await;
++    assert!(Arc::ptr_eq(
++        error.join_error().unwrap(),
++        again[0].error.join_error().unwrap()
++    ));
++}
++
++#[tokio::test]
++async fn successful_rounds_reuse_fixed_capacity_and_unspawned_reservation_drains() {
++    let registry = Registry::<UTConfig>::new(2);
++    for sequence in 0..128 {
++        let owner = registry.reserve(AuxiliaryTaskKind::LeadershipRead).unwrap();
++        assert_eq!(owner.id, sequence);
++        *owner.task.lock().await = Some(Task::Running(tokio::spawn(async { Ok(()) })));
++        registry.changed().await.unwrap();
++    }
++    let _unspawned = registry.reserve(AuxiliaryTaskKind::LeadershipRead).unwrap();
++    assert!(registry.reserve(AuxiliaryTaskKind::LeadershipRead).is_err());
++    assert!(registry.shutdown().await.is_empty());
++    registry.reserve(AuxiliaryTaskKind::LeadershipRead).unwrap();
++}
+--- a/openraft/src/core/mod.rs
++++ b/openraft/src/core/mod.rs
+@@ -4,6 +4,7 @@
+ //! Also it receives and execute `Command` emitted by `Engine` to apply raft state to underlying
+ //! storage or forward messages to other raft nodes.
+ 
++pub(crate) mod auxiliary;
+ pub(crate) mod balancer;
+ pub(crate) mod command_state;
+ pub(crate) mod notify;
+--- a/openraft/src/core/raft_core.rs
++++ b/openraft/src/core/raft_core.rs
+@@ -11,7 +11,6 @@
+ use anyerror::AnyError;
+ use futures::stream::FuturesUnordered;
+ use futures::StreamExt;
+-use futures::TryFutureExt;
+ use maplit::btreeset;
+ use tokio::select;
+ use tokio::sync::mpsc;
+@@ -46,6 +45,7 @@
+ use crate::engine::Respond;
+ use crate::entry::FromAppData;
+ use crate::entry::RaftEntry;
++use crate::error::AuxiliaryTaskKind;
+ use crate::error::ClientWriteError;
+ use crate::error::Fatal;
+ use crate::error::ForwardToLeader;
+@@ -187,6 +187,7 @@
+     /// A mapping of node IDs the replication state of the target node.
+     pub(crate) replications: BTreeMap<C::NodeId, ReplicationHandle<C>>,
+     pub(crate) replication_tasks: Arc<replication::tasks::Registry<C>>,
++    pub(crate) auxiliary_tasks: Arc<crate::core::auxiliary::Registry<C>>,
+     pub(crate) replication_capacity: Option<crate::error::TaskCapacity>,
+     /// At most one replacement intent and one current inflight per target.
+     /// Capacity pressure must never postpone already committed application work.
+@@ -322,7 +323,15 @@
+             return;
+         }
+ 
+-        // Spawn parallel requests, all with the standard timeout for heartbeats.
++        let owner = match self.auxiliary_tasks.reserve(AuxiliaryTaskKind::LeadershipRead) {
++            Ok(owner) => owner,
++            Err(capacity) => {
++                let _ = tx.send(Err(capacity.into()));
++                return;
++            }
++        };
++        // One retained collector polls the peer futures directly. Dropping a
++        // completed quorum's remaining futures cannot detach any peer task.
+         let mut pending = FuturesUnordered::new();
+ 
+         let voter_progresses = {
+@@ -375,22 +384,16 @@
+             };
+ 
+             let fu = fu.instrument(tracing::debug_span!("spawn_is_leader", target = target.to_string()));
+-            let task = C::AsyncRuntime::spawn(fu).map_err(move |err| (target, err));
+-
+-            pending.push(task);
++            pending.push(fu);
+         }
+ 
+         let waiting_fu = async move {
+             // Handle responses as they return.
+             while let Some(res) = pending.next().await {
+                 let (target, append_res) = match res {
+-                    Ok(Ok(res)) => res,
+-                    Ok(Err((target, err))) => {
++                    Ok(res) => res,
++                    Err((target, err)) => {
+                         tracing::error!(target=display(&target), error=%err, "timeout while confirming leadership for read request");
+-                        continue;
+-                    }
+-                    Err((target, err)) => {
+-                        tracing::error!(target = display(&target), "fail to join task: {}", err);
+                         continue;
+                     }
+                 };
+@@ -418,14 +421,14 @@
+                     // we are no longer leader so error out early
+                     let err = ForwardToLeader::empty();
+                     let _ = tx.send(Err(err.into()));
+-                    return;
++                    return Ok(());
+                 }
+ 
+                 granted.insert(target);
+ 
+                 if eff_mem.is_quorum(granted.iter()) {
+                     let _ = tx.send(Ok(resp));
+-                    return;
++                    return Ok(());
+                 }
+             }
+ 
+@@ -437,13 +440,10 @@
+                 got: granted,
+             }
+             .into()));
++            Ok(())
+         };
+-
+-        // TODO: do not spawn, manage read requests with a queue by RaftCore
+-
+-        // False positive lint warning(`non-binding `let` on a future`): https://github.com/rust-lang/rust-clippy/issues/9932
+-        #[allow(clippy::let_underscore_future)]
+-        let _ = C::AsyncRuntime::spawn(waiting_fu.instrument(tracing::debug_span!("spawn_is_leader_waiting")));
++        let task = C::AsyncRuntime::spawn(waiting_fu.instrument(tracing::debug_span!("leadership_read_collector")));
++        *owner.task.try_lock().expect("unpublished auxiliary cell") = Some(sm::tasks::Task::Running(task));
+     }
+ 
+     /// Submit change-membership by writing a Membership log entry.
+@@ -663,6 +663,10 @@
+     ) {
+         tracing::debug!(member_nodes = debug(&member_nodes), "{}", func_name!());
+ 
++        if let Err(capacity) = self.auxiliary_tasks.available(AuxiliaryTaskKind::VoteRound) {
++            let _ = tx.send(Err(InitializeError::TaskCapacity(capacity)));
++            return;
++        }
+         let peers = member_nodes.keys().filter(|id| *id != &self.id).count();
+         if let Err(capacity) = self.replication_tasks.available(peers.saturating_mul(2)) {
+             let _ = tx.send(Err(InitializeError::TaskCapacity(capacity)));
+@@ -990,6 +994,12 @@
+                     return Err(Fatal::Stopped);
+                 }
+ 
++                outcome = self.auxiliary_tasks.changed() => {
++                    if let Err(error) = outcome {
++                        return Err(sm::tasks::fatal::<C>(&error));
++                    }
++                }
++
+                 outcome = self.replication_tasks.changed() => {
+                     if let Err(error) = outcome {
+                         return Err(sm::tasks::fatal::<C>(&error));
+@@ -1116,73 +1126,71 @@
+         Ok(at_most)
+     }
+ 
+-    /// Spawn parallel vote requests to all cluster members.
++    /// One retained round polls vote RPC futures without detached peer tasks.
+     #[tracing::instrument(level = "trace", skip_all, fields(vote=vote_req.summary()))]
+     async fn spawn_parallel_vote_requests(&mut self, vote_req: &VoteRequest<C::NodeId>) {
++        let owner = match self.auxiliary_tasks.reserve(AuxiliaryTaskKind::VoteRound) {
++            Ok(owner) => owner,
++            Err(capacity) => {
++                // A skipped network round must not reject committed storage or
++                // application commands. Later election admission can retry.
++                tracing::warn!(%capacity, "vote round capacity unavailable");
++                return;
++            }
++        };
+         let members = self.engine.state.membership_state.effective().voter_ids();
+-
+-        let vote = vote_req.vote.clone();
+-
++        let mut pending = FuturesUnordered::new();
+         for target in members {
+             if target == self.id {
+                 continue;
+             }
+-
+             let req = vote_req.clone();
+-
+-            // Safe unwrap(): target must be in membership
++            let vote = vote_req.vote.clone();
+             let target_node = self.engine.state.membership_state.effective().get_node(&target).unwrap().clone();
+             let mut client = self.network.new_client(target.clone(), &target_node).await;
+-
+             let tx = self.tx_notify.clone();
+-
+             let ttl = Duration::from_millis(self.config.election_timeout_min);
+             let id = self.id.clone();
+             let option = RPCOption::new(ttl);
+-
+-            // False positive lint warning(`non-binding `let` on a future`): https://github.com/rust-lang/rust-clippy/issues/9932
+-            #[allow(clippy::let_underscore_future)]
+-            let _ = C::AsyncRuntime::spawn(
+-                {
+-                    let target = target.clone();
+-                    let vote = vote.clone();
+-
+-                    async move {
+-                        let tm_res = C::AsyncRuntime::timeout(ttl, client.vote(req, option)).await;
+-                        let res = match tm_res {
+-                            Ok(res) => res,
+-
+-                            Err(_timeout) => {
+-                                let timeout_err = Timeout {
+-                                    action: RPCTypes::Vote,
+-                                    id,
+-                                    target: target.clone(),
+-                                    timeout: ttl,
+-                                };
+-                                tracing::error!({error = %timeout_err, target = display(&target)}, "timeout");
+-                                return;
+-                            }
+-                        };
+-
+-                        match res {
+-                            Ok(resp) => {
+-                                let _ = tx.send(Notify::VoteResponse {
+-                                    target,
+-                                    resp,
+-                                    sender_vote: vote,
+-                                });
+-                            }
+-                            Err(err) => tracing::error!({error=%err, target=display(&target)}, "while requesting vote"),
++            let span = tracing::debug_span!(parent: &Span::current(), "send_vote_req", target = display(&target));
++            pending.push(
++                async move {
++                    let tm_res = C::AsyncRuntime::timeout(ttl, client.vote(req, option)).await;
++                    let res = match tm_res {
++                        Ok(res) => res,
++                        Err(_timeout) => {
++                            let timeout_err = Timeout {
++                                action: RPCTypes::Vote,
++                                id,
++                                target: target.clone(),
++                                timeout: ttl,
++                            };
++                            tracing::error!({error = %timeout_err, target = display(&target)}, "timeout");
++                            return;
+                         }
+-                    }
+-                }
+-                .instrument(tracing::debug_span!(
+-                    parent: &Span::current(),
+-                    "send_vote_req",
+-                    target = display(&target)
+-                )),
++                    };
++                    match res {
++                        Ok(resp) => {
++                            let _ = tx.send(Notify::VoteResponse {
++                                target,
++                                resp,
++                                sender_vote: vote,
++                            });
++                        }
++                        Err(err) => tracing::error!({error=%err, target=display(&target)}, "while requesting vote"),
++                    }
++                }
++                .instrument(span),
+             );
+         }
++        let task = C::AsyncRuntime::spawn(
++            async move {
++                while pending.next().await.is_some() {}
++                Ok(())
++            }
++            .instrument(tracing::debug_span!("vote_round_collector")),
++        );
++        *owner.task.try_lock().expect("unpublished auxiliary cell") = Some(sm::tasks::Task::Running(task));
+     }
+ 
+     #[tracing::instrument(level = "debug", skip_all)]
+@@ -1503,6 +1511,7 @@
+     fn election_custody_available(&self) -> bool {
+         let peers = self.engine.state.membership_state.effective().nodes().filter(|(id, _)| *id != &self.id).count();
+         self.replication_tasks.available(peers.saturating_mul(2)).is_ok()
++            && self.auxiliary_tasks.available(AuxiliaryTaskKind::VoteRound).is_ok()
+     }
+ 
+     fn handle_tick_election(&mut self) {
+@@ -1742,18 +1751,15 @@
+                     let leader_id = self.current_leader();
+                     let leader_node = self.get_leader_node(leader_id.clone());
+ 
+-                    // False positive lint warning(`non-binding `let` on a future`): https://github.com/rust-lang/rust-clippy/issues/9932
+-                    #[allow(clippy::let_underscore_future)]
+-                    let _ = C::spawn(async move {
+-                        for (log_index, tx) in removed.into_iter() {
+-                            tx.send(Err(ClientWriteError::ForwardToLeader(ForwardToLeader {
+-                                leader_id: leader_id.clone(),
+-                                leader_node: leader_node.clone(),
+-                            })));
+-
+-                            tracing::debug!("sent ForwardToLeader for log_index: {}", log_index,);
+-                        }
+-                    });
++                    // Responder::send is synchronous. Delivery belongs to the
++                    // core's actual outcome, including a responder panic.
++                    for (log_index, tx) in removed {
++                        tx.send(Err(ClientWriteError::ForwardToLeader(ForwardToLeader {
++                            leader_id: leader_id.clone(),
++                            leader_node: leader_node.clone(),
++                        })));
++                        tracing::debug!("sent ForwardToLeader for log_index: {}", log_index);
++                    }
+                 }
+             }
+             Command::SendVote { vote_req } => {
+--- a/openraft/src/error.rs
++++ b/openraft/src/error.rs
+@@ -35,7 +35,8 @@
+ #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+ #[allow(clippy::large_enum_variant)]
+ pub enum RaftError<NID, E = Infallible>
+-where NID: NodeId
++where
++    NID: NodeId,
+ {
+     #[error(transparent)]
+     APIError(E),
+@@ -120,7 +121,8 @@
+ }
+ 
+ impl<NID, E> From<StorageError<NID>> for RaftError<NID, E>
+-where NID: NodeId
++where
++    NID: NodeId,
+ {
+     fn from(se: StorageError<NID>) -> Self {
+         RaftError::Fatal(Fatal::from(se))
+@@ -132,7 +134,8 @@
+ #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize), serde(bound = ""))]
+ #[allow(clippy::large_enum_variant)]
+ pub enum Fatal<NID>
+-where NID: NodeId
++where
++    NID: NodeId,
+ {
+     #[error(transparent)]
+     StorageError(#[from] StorageError<NID>),
+@@ -162,6 +165,35 @@
+     pub limit: usize,
+     /// Number of additional owners required by the new operation.
+     pub needed: usize,
++}
++
++/// The network operation whose actual collector is retained.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum AuxiliaryTaskKind {
++    /// One leadership check owns all of its peer futures inline.
++    LeadershipRead,
++    /// One campaign owns all of its vote peer futures inline.
++    VoteRound,
++}
++
++/// Original failure of a retained leadership-read or vote-round collector.
++#[derive(Debug)]
++pub struct AuxiliaryShutdownError<NID: NodeId, J: Debug> {
++    /// Non-reused sequence within this Raft instance.
++    pub owner_id: u64,
++    /// Operation family of the actual task.
++    pub kind: AuxiliaryTaskKind,
++    /// Original terminal task error.
++    pub error: ShutdownTaskError<NID, J>,
++}
++impl<NID: NodeId, J: Debug> Clone for AuxiliaryShutdownError<NID, J> {
++    fn clone(&self) -> Self {
++        Self {
++            owner_id: self.owner_id,
++            kind: self.kind,
++            error: self.error.clone(),
++        }
++    }
+ }
+ 
+ /// Original terminal failures of one retained replication owner.
+@@ -241,7 +273,7 @@
+ /// cancelled while joining another task. Leadership-read/vote RPCs and other
+ /// resource families still require separate custody.
+ #[derive(Debug, thiserror::Error)]
+-#[error("raft shutdown failed (core: {core:?}, core join: {core_join_error:?}, ticker join: {ticker:?}, state machine: {state_machine:?}, snapshot builder: {snapshot_builder:?}, replications: {replications:?})")]
++#[error("raft shutdown failed (core: {core:?}, core join: {core_join_error:?}, ticker join: {ticker:?}, state machine: {state_machine:?}, snapshot builder: {snapshot_builder:?}, replications: {replications:?}, auxiliary: {auxiliary:?})")]
+ pub struct ShutdownError<NID: NodeId, J: Debug> {
+     pub(crate) core: Option<Fatal<NID>>,
+     pub(crate) core_join_error: Option<Arc<J>>,
+@@ -249,6 +281,7 @@
+     pub(crate) state_machine: Option<ShutdownTaskError<NID, J>>,
+     pub(crate) snapshot_builder: Option<ShutdownTaskError<NID, J>>,
+     pub(crate) replications: Vec<ReplicationShutdownError<NID, J>>,
++    pub(crate) auxiliary: Vec<AuxiliaryShutdownError<NID, J>>,
+ }
+ 
+ impl<NID: NodeId, J: Debug> Clone for ShutdownError<NID, J> {
+@@ -260,6 +293,7 @@
+             state_machine: self.state_machine.clone(),
+             snapshot_builder: self.snapshot_builder.clone(),
+             replications: self.replications.clone(),
++            auxiliary: self.auxiliary.clone(),
+         }
+     }
+ }
+@@ -299,6 +333,11 @@
+     }
+ 
+     /// Original failures from active or retired replication owners.
++    /// Original failures from leadership-read and vote-round collectors.
++    pub fn auxiliary(&self) -> &[AuxiliaryShutdownError<NID, J>] {
++        &self.auxiliary
++    }
++
+     pub fn replications(&self) -> &[ReplicationShutdownError<NID, J>] {
+         &self.replications
+     }
+@@ -473,7 +512,9 @@
+ {
+     /// Return a reference to ForwardToLeader error if Self::RemoteError contains one.
+     pub fn forward_to_leader(&self) -> Option<&ForwardToLeader<NID, N>>
+-    where E: TryAsRef<ForwardToLeader<NID, N>> {
++    where
++        E: TryAsRef<ForwardToLeader<NID, N>>,
++    {
+         match self {
+             RPCError::Timeout(_) => None,
+             RPCError::Unreachable(_) => None,
+--- a/openraft/src/raft/mod.rs
++++ b/openraft/src/raft/mod.rs
+@@ -202,13 +202,15 @@
+ /// calling `shutdown` will do the trick.
+ #[derive(Clone)]
+ pub struct Raft<C>
+-where C: RaftTypeConfig
++where
++    C: RaftTypeConfig,
+ {
+     inner: Arc<RaftInner<C>>,
+ }
+ 
+ impl<C> Raft<C>
+-where C: RaftTypeConfig
++where
++    C: RaftTypeConfig,
+ {
+     /// Create and spawn a new Raft task.
+     ///
+@@ -249,6 +251,16 @@
+             }
+             .into());
+         }
++        if !(2..=4096).contains(&config.max_retained_auxiliary_owners) {
++            return Err(crate::error::TaskCapacity {
++                limit: config.max_retained_auxiliary_owners,
++                needed: 2,
++            }
++            .into());
++        }
++        let auxiliary_tasks = Arc::new(crate::core::auxiliary::Registry::new(
++            config.max_retained_auxiliary_owners,
++        ));
+         let replication_tasks = Arc::new(crate::replication::tasks::Registry::new(
+             config.max_retained_replication_owners,
+         ));
+@@ -301,6 +313,7 @@
+ 
+             replications: Default::default(),
+             replication_tasks: replication_tasks.clone(),
++            auxiliary_tasks: auxiliary_tasks.clone(),
+             replication_capacity: None,
+             pending_replication: None,
+             leader_data: None,
+@@ -331,6 +344,7 @@
+             tick_handle,
+             state_machine_tasks,
+             replication_tasks,
++            auxiliary_tasks,
+             tx_api,
+             rx_metrics,
+             rx_data_metrics,
+@@ -868,7 +882,8 @@
+     /// If the API channel is already closed (Raft is in shutdown), then the request functor is
+     /// destroyed right away and not called at all.
+     pub fn external_request<F>(&self, req: F)
+-    where F: FnOnce(&RaftState<C::NodeId, C::Node, <C::AsyncRuntime as AsyncRuntime>::Instant>) + OptionalSend + 'static
++    where
++        F: FnOnce(&RaftState<C::NodeId, C::Node, <C::AsyncRuntime as AsyncRuntime>::Instant>) + OptionalSend + 'static,
+     {
+         let req: BoxCoreFn<C> = Box::new(req);
+         let _ignore_error = self.inner.tx_api.send(RaftMsg::ExternalCoreRequest { req });
+@@ -946,11 +961,13 @@
+         let ticker = self.inner.tick_handle.shutdown().await.err();
+         let (state_machine, snapshot_builder) = self.inner.state_machine_tasks.shutdown().await;
+         let replications = self.inner.replication_tasks.shutdown().await;
++        let auxiliary = self.inner.auxiliary_tasks.shutdown().await;
+         if core.is_some()
+             || ticker.is_some()
+             || state_machine.is_some()
+             || snapshot_builder.is_some()
+             || !replications.is_empty()
++            || !auxiliary.is_empty()
+         {
+             Err(ShutdownError {
+                 core,
+@@ -959,6 +976,7 @@
+                 state_machine,
+                 snapshot_builder,
+                 replications,
++                auxiliary,
+             })
+         } else {
+             Ok(())
+--- a/openraft/src/raft/raft_inner.rs
++++ b/openraft/src/raft/raft_inner.rs
+@@ -38,7 +38,8 @@
+ /// RaftInner is the internal handle and provides internally used APIs to communicate with
+ /// `RaftCore`.
+ pub(in crate::raft) struct RaftInner<C>
+-where C: RaftTypeConfig
++where
++    C: RaftTypeConfig,
+ {
+     pub(in crate::raft) id: C::NodeId,
+     pub(in crate::raft) config: Arc<Config>,
+@@ -46,6 +47,7 @@
+     pub(in crate::raft) membership_observer: Arc<crate::membership_observer::MembershipObserverSlot>,
+     pub(in crate::raft) tick_handle: TickHandle<C>,
+     pub(in crate::raft) replication_tasks: Arc<crate::replication::tasks::Registry<C>>,
++    pub(crate) auxiliary_tasks: Arc<crate::core::auxiliary::Registry<C>>,
+     pub(in crate::raft) state_machine_tasks: crate::core::sm::tasks::Tasks<C>,
+     pub(in crate::raft) tx_api: mpsc::UnboundedSender<RaftMsg<C>>,
+     pub(in crate::raft) rx_metrics: watch::Receiver<RaftMetrics<C::NodeId, C::Node>>,
+@@ -62,7 +64,8 @@
+ }
+ 
+ impl<C> RaftInner<C>
+-where C: RaftTypeConfig
++where
++    C: RaftTypeConfig,
+ {
+     /// Send a RaftMsg to RaftCore
+     pub(crate) async fn send_msg(&self, mes: RaftMsg<C>) -> Result<(), Fatal<C::NodeId>> {
+--- a/openraft/src/raft/shutdown_test.rs
++++ b/openraft/src/raft/shutdown_test.rs
+@@ -99,6 +99,7 @@
+         tick_handle: TickHandle::retain_test_task(ticker),
+         state_machine_tasks: crate::core::sm::tasks::Tasks::completed_test_tasks(),
+         replication_tasks: Arc::new(crate::replication::tasks::Registry::new(4)),
++        auxiliary_tasks: Arc::new(crate::core::auxiliary::Registry::new(2)),
+         tx_api: mpsc::unbounded_channel().0,
+         rx_metrics: watch::channel(RaftMetrics::new_initial(1)).1,
+         rx_data_metrics: watch::channel(RaftDataMetrics::default()).1,

@@ -293,7 +293,7 @@ pub(crate) fn active_generation(
             ),
         "active generation differs from committed recovery"
     );
-    check_binding(&journal)?;
+    check_binding(config, store.persistent_disk(), &journal)?;
     check_database_file(&journal)?;
     ensure!(
         active.directory.join("node.redb").is_file(),
@@ -782,21 +782,28 @@ fn binding(journal: &Journal) -> PhysicalBinding {
         coordinator: journal.database_path.clone(),
     }
 }
-fn check_binding(journal: &Journal) -> Result<()> {
+fn check_binding(
+    config: &RuntimeConfig,
+    disk: &Arc<kasumi_store::NodeDisk>,
+    journal: &Journal,
+) -> Result<kasumi_store::NodeDiskFile> {
     private_files::check_directory(&journal.target_directory)?;
     ensure!(
         std::fs::canonicalize(&journal.target_directory)? == journal.target_directory,
         "local generation has an aliased ancestor"
     );
-    let actual: PhysicalBinding = decode(&private_files::read(
+    let file = crate::standalone::open_installed_file(
+        &config.persistent_disk,
+        disk,
         &journal.target_directory.join("binding.json"),
-        MAX_RECORD,
-    )?)?;
+    )?;
+    let actual: PhysicalBinding =
+        decode(&crate::standalone::read_installed_file(&file, MAX_RECORD)?)?;
     ensure!(
         actual == binding(journal),
         "local recovery physical generation identity differs"
     );
-    Ok(())
+    Ok(file)
 }
 fn local_node_id(journal: &Journal) -> Result<Uuid> {
     kasumi_store::node_store_ids::local_generation(
@@ -887,6 +894,7 @@ impl Operator {
             let node = kasumi_store::NodeStore::create_new(
                 &path,
                 local_node_id(journal)?,
+                self.store().persistent_disk().clone(),
                 self.store().scratch_disk().clone(),
             )?;
             journal.database_file = Some(private_files::file_identity(&path)?);
@@ -910,6 +918,8 @@ impl Operator {
         Ok(created)
     }
     fn prepare_directory(&self, journal: &Journal) -> Result<()> {
+        // Directory creation remains pending an admitted NodeDisk directory API;
+        // all regular files under this root use the installed owner below.
         let parent = journal
             .target_directory
             .parent()
@@ -929,16 +939,25 @@ impl Operator {
                         .is_none(),
                     "unbound target directory is not empty"
                 );
-                private_files::create(&marker, &encoded(&binding(journal))?)?;
+                crate::standalone::create_installed_file(
+                    &self.config.persistent_disk,
+                    self.store().persistent_disk(),
+                    &marker,
+                    &encoded(&binding(journal))?,
+                    MAX_RECORD,
+                )?;
             }
         } else {
             private_files::create_directory(&journal.target_directory)?;
-            private_files::create(
+            crate::standalone::create_installed_file(
+                &self.config.persistent_disk,
+                self.store().persistent_disk(),
                 &journal.target_directory.join("binding.json"),
                 &encoded(&binding(journal))?,
+                MAX_RECORD,
             )?;
         }
-        check_binding(journal)
+        check_binding(&self.config, self.store().persistent_disk(), journal).map(drop)
     }
     async fn target(&self, journal: &mut Journal, mode: TargetOpen) -> Result<LocalTarget> {
         let mut pending = crate::startup_resources::Resources::default();
@@ -950,7 +969,7 @@ impl Operator {
             ensure!(journal.target_preparation == TargetPreparation::MaterializationDispatched, "local target materialization was never dispatched");
             None
         };
-        check_binding(journal)?;
+        check_binding(&self.config, self.store().persistent_disk(), journal)?;
         check_database_file(journal)?;
         let path = journal.target_directory.join("node.redb");
         let tenant = self.config.tenants.iter().find(|tenant| tenant.tenant == request.tenant).context("installed tenant missing")?;
@@ -965,9 +984,9 @@ impl Operator {
         let fresh = original_creation.is_some();
         let node = match original_creation {
             Some(node) => node,
-            None => kasumi_store::NodeStore::open_existing(&path, local_node_id(journal)?, self.store().scratch_disk().clone())?,
+            None => kasumi_store::NodeStore::open_existing(&path, local_node_id(journal)?, self.store().persistent_disk().clone(), self.store().scratch_disk().clone())?,
         };
-        pending.nodes.push(node.clone());
+        pending.owned_nodes.push(node.clone());
         let stores = if fresh {
             kasumi_store::TenantStorageSet::initialize_catalogs(node.clone(), request.tenant.clone(), application, custody, access).await?
         } else {
@@ -1017,7 +1036,7 @@ impl Operator {
                 .await?;
             let source = kasumi_engine::RestoreSource {
                 destination_alias: request.destination.clone(),
-                destination: self.config.backup_destinations[&request.destination].open()?,
+                destination: self.config.backup_destinations[&request.destination].open(self.store().persistent_disk().clone())?,
                 keys: request.source_keys.provider(Arc::new(crate::runtime::file_secret))?,
                 timeout_ms: request.phase_timeout_ms,
             };
@@ -1052,7 +1071,7 @@ impl Operator {
                 if !initialized && alias == &request.destination {
                     continue;
                 }
-                database.install_archive_destination(alias.clone(), destination.open()?)?;
+                database.install_archive_destination(alias.clone(), destination.open(self.store().persistent_disk().clone())?)?;
             }
             Ok::<_, anyhow::Error>(())
         })();
@@ -1180,7 +1199,16 @@ impl Operator {
         }
         Ok(())
     }
+    fn require_cleanup_disk(&self) -> Result<()> {
+        let disk = self.store().persistent_disk().snapshot();
+        ensure!(
+            disk.phase == kasumi_store::NodeDiskPhase::Open && disk.filesystem_admission_ready,
+            "persistent cleanup requires drained reconciliation after an uncertain operation"
+        );
+        Ok(())
+    }
     async fn cleanup(&self, journal: &mut Journal) -> Result<()> {
+        self.require_cleanup_disk()?;
         ensure!(
             journal.status.phase == LocalRecoveryPhase::Stopping,
             "local cleanup requires permanent stop first"
@@ -1201,9 +1229,15 @@ impl Operator {
         if journal.target_directory.try_exists()? {
             private_files::check_directory(&journal.target_directory)?;
             let marker = journal.target_directory.join("binding.json");
-            if marker.try_exists()? {
-                check_binding(journal)?;
-            }
+            let marker_owner = if marker.try_exists()? {
+                Some(check_binding(
+                    &self.config,
+                    self.store().persistent_disk(),
+                    journal,
+                )?)
+            } else {
+                None
+            };
             let mut entries = Vec::with_capacity(3);
             for entry in std::fs::read_dir(&journal.target_directory)? {
                 ensure!(
@@ -1225,7 +1259,7 @@ impl Operator {
                 );
             }
             ensure!(
-                marker.try_exists()? || entries.is_empty(),
+                marker_owner.is_some() || entries.is_empty(),
                 "nonempty target generation has lost its ownership binding"
             );
             let database = journal.target_directory.join("node.redb");
@@ -1240,8 +1274,11 @@ impl Operator {
                 // A lost file-binding commit can leave our exact Prepared or Ready
                 // envelope. Claim its deterministic generation identity without
                 // opening/repairing redb. Empty, torn or unrelated files stay intact.
-                let ownership =
-                    kasumi_store::NodeStore::claim_cleanup(&database, local_node_id(journal)?)?;
+                let ownership = kasumi_store::NodeStore::claim_cleanup(
+                    &database,
+                    local_node_id(journal)?,
+                    self.store().persistent_disk().clone(),
+                )?;
                 ensure!(
                     ownership.identity() == &private_files::file_identity(&database)?,
                     "local cleanup path changed during ownership handoff"
@@ -1253,18 +1290,19 @@ impl Operator {
             if !self.cleanup_archives(journal)? {
                 return Ok(());
             }
-            if database.try_exists()? {
-                std::fs::remove_file(&database)?;
-                private_files::sync_parent(&database)?;
+            if let Some(ownership) = ownership {
+                ownership.delete()?;
             }
-            drop(ownership);
-            if marker.try_exists()? {
-                std::fs::remove_file(&marker)?;
-                private_files::sync_parent(&marker)?;
+            if let Some(marker) = marker_owner {
+                self.store().persistent_disk().delete_file(marker)?;
             }
+            // Directory ownership/accounting remains a separate NodeDisk API
+            // gap. A failed managed file operation never reaches raw cleanup.
+            self.require_cleanup_disk()?;
             std::fs::remove_dir(&journal.target_directory)?;
         }
-        // Absence can be the visible result of an earlier removal whose parent
+        self.require_cleanup_disk()?;
+        // Directory absence can be the visible result of an earlier removal whose parent
         // sync failed. Resolve that uncertainty before publishing completion,
         // including after a stopped operator is reopened for a retry.
         #[cfg(test)]

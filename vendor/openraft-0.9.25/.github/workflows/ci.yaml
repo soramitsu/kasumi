@@ -1,0 +1,552 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  schedule: [cron: "40 1 * * *"]
+
+jobs:
+
+  test-release-build:
+    name: Build
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        include:
+          - toolchain: "nightly"
+            features: "bench,serde,bt,singlethreaded"
+
+    steps:
+      - name: Setup | Checkout
+        uses: actions/checkout@v4
+
+
+      - name: Setup | Toolchain
+        uses: actions-rs/toolchain@v1.0.6
+        with:
+          toolchain: "${{ matrix.toolchain }}"
+          override: true
+
+
+      - name: Build | Release Mode
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --release --features "${{ matrix.features }}" --manifest-path openraft/Cargo.toml
+
+
+  openraft-test-bench:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        include:
+          - toolchain: "nightly"
+
+    steps:
+      - name: Setup | Checkout
+        uses: actions/checkout@v4
+
+
+      - name: Setup | Toolchain
+        uses: actions-rs/toolchain@v1.0.6
+        with:
+          toolchain: "${{ matrix.toolchain }}"
+          override: true
+
+
+      - name: Test build for benchmark
+        uses: actions-rs/cargo@v1
+        with:
+          command: bench
+          args: --features bench nothing-to-run --manifest-path openraft/Cargo.toml
+
+
+  # Run feature specific test for crate openraft.
+  openraft-features:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - toolchain: "nightly"
+            features: "generic-snapshot-data"
+
+
+    steps:
+      - name: Setup | Checkout
+        uses: actions/checkout@v4
+
+
+      - name: Setup | Toolchain
+        uses: actions-rs/toolchain@v1.0.6
+        with:
+          toolchain: "${{ matrix.toolchain }}"
+          override: true
+
+
+      # - A store with defensive checks returns error when unexpected accesses are sent to RaftStore.
+      # - Raft should not depend on defensive error to work correctly.
+      - name: Test crate `openraft/`
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --features "${{ matrix.features }}" --manifest-path openraft/Cargo.toml
+        env:
+          # Parallel tests block each other and result in timeout.
+          RUST_TEST_THREADS: 2
+          RUST_LOG: debug
+          RUST_BACKTRACE: full
+
+
+  # Run `macros` crate unit test
+  macros-test:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - toolchain: "stable"
+            features: ""
+
+          - toolchain: "nightly"
+            features: ""
+
+
+    steps:
+      - name: Setup | Checkout
+        uses: actions/checkout@v4
+
+
+      - name: Setup | Toolchain
+        uses: actions-rs/toolchain@v1.0.6
+        with:
+          toolchain: "${{ matrix.toolchain }}"
+          override: true
+
+
+      - name: Install cargo-expand
+        run: cargo install cargo-expand
+
+
+      - name: Test crate `macros/`
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --features "${{ matrix.features }}" --manifest-path macros/Cargo.toml
+        env:
+          RUST_LOG: debug
+          RUST_BACKTRACE: full
+
+
+  # Run openraft unit test `openraft/` and integration test `tests/`.
+  openraft-test:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - toolchain: "stable"
+            send_delay: "0"
+            features: ""
+
+          # With network delay
+          - toolchain: "nightly"
+            send_delay: "30"
+            features: ""
+
+          # Feature-flag: Standard raft term
+          - toolchain: "nightly"
+            send_delay: "0"
+            features: "single-term-leader"
+
+
+    steps:
+      - name: Setup | Checkout
+        uses: actions/checkout@v4
+
+
+      - name: Setup | Toolchain
+        uses: actions-rs/toolchain@v1.0.6
+        with:
+          toolchain: "${{ matrix.toolchain }}"
+          override: true
+
+
+      - name: Install cargo-expand
+        run: cargo install cargo-expand
+
+
+      # - A store with defensive checks returns error when unexpected accesses are sent to RaftStore.
+      # - Raft should not depend on defensive error to work correctly.
+      - name: Test crate `openraft/`
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --features "${{ matrix.features }}" --manifest-path openraft/Cargo.toml
+        env:
+          # Parallel tests block each other and result in timeout.
+          RUST_TEST_THREADS: 2
+          RUST_LOG: debug
+          RUST_BACKTRACE: full
+          OPENRAFT_NETWORK_SEND_DELAY: ${{ matrix.send_delay }}
+
+
+      - name: Test crate `tests/`
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --features "${{ matrix.features }}" --manifest-path tests/Cargo.toml
+        env:
+          # Parallel tests block each other and result in timeout.
+          RUST_TEST_THREADS: 2
+          RUST_LOG: debug
+          RUST_BACKTRACE: full
+          OPENRAFT_NETWORK_SEND_DELAY: ${{ matrix.send_delay }}
+
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: "ut-${{ matrix.toolchain }}-${{ matrix.features }}-${{ matrix.send_delay }}"
+          path: |
+            openraft/_log/
+            tests/_log/
+
+
+  stores:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - store: "memstore"
+          - store: "rocksstore"
+          - store: "sledstore"
+
+    steps:
+      - name: Setup | Checkout
+        uses: actions/checkout@v4
+
+
+      - name: Setup | Toolchain
+        uses: actions-rs/toolchain@v1.0.6
+        with:
+          components: rustfmt, clippy
+          toolchain: "nightly"
+          override: true
+
+
+      # - A store with defensive checks returns error when unexpected accesses are sent to RaftStore.
+      # - Raft should not depend on defensive error to work correctly.
+      - name: Unit Tests, with defensive store
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --manifest-path "${{ matrix.store }}/Cargo.toml"
+        env:
+          # Parallel tests block each other and result in timeout.
+          RUST_TEST_THREADS: 2
+          RUST_LOG: debug
+          RUST_BACKTRACE: full
+          OPENRAFT_STORE_DEFENSIVE: on
+
+
+  # Test external stores that enable different openraft features.
+  external-stores:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - store: "stores/rocksstore-v2"
+
+    steps:
+      - name: Setup | Checkout
+        uses: actions/checkout@v4
+
+
+      - name: Setup | Toolchain
+        uses: actions-rs/toolchain@v1.0.6
+        with:
+          toolchain: "nightly"
+          override: true
+
+
+      - name: Unit Tests
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --manifest-path "${{ matrix.store }}/Cargo.toml"
+        env:
+          # Parallel tests block each other and result in timeout.
+          RUST_TEST_THREADS: 2
+          RUST_LOG: debug
+          RUST_BACKTRACE: full
+          OPENRAFT_STORE_DEFENSIVE: on
+
+  # Test external crate.
+  # cluster_benchmark is a standalone crate for benchmarking openraft cluster.
+  cluster-benchmark:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - crate: "cluster_benchmark"
+
+    steps:
+      - name: Setup | Checkout
+        uses: actions/checkout@v4
+
+
+      - name: Setup | Toolchain
+        uses: actions-rs/toolchain@v1.0.6
+        with:
+          toolchain: "nightly"
+          override: true
+
+
+      - name: Unit Tests
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --tests nothing --manifest-path "${{ matrix.crate }}/Cargo.toml"
+        env:
+          RUST_LOG: debug
+          RUST_BACKTRACE: full
+
+  # Feature "serde" will be enabled if one of the member crates enables
+  # "serde", such as `memstore`, when building a cargo workspace.
+  #
+  # To test openraft with "serde" off, it must not build other crates.
+  #
+  # This job only tests crate `openraft`.
+  openraft-feature-test:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # No feature flags are enabled
+          - toolchain: "nightly"
+            features: ""
+
+          # Enable "serde"
+          - toolchain: "nightly"
+            features: "serde"
+
+          # Some test requires feature single-term-leader on and serde off.
+          # This can only be tested without building another crate that enables
+          # `serde`.
+          # Move this test to unit-test when the snapshot API is upgraded to
+          # non-serde-dependent.
+          - toolchain: "nightly"
+            features: "single-term-leader"
+
+          - toolchain: "nightly"
+            features: "single-term-leader,serde,singlethreaded"
+
+
+    steps:
+      - name: Setup | Checkout
+        uses: actions/checkout@v4
+
+
+      - name: Setup | Toolchain
+        uses: actions-rs/toolchain@v1.0.6
+        with:
+          toolchain: "${{ matrix.toolchain }}"
+          override: true
+
+
+      - name: Test crate `openraft/`
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --features "${{ matrix.features }}" --manifest-path openraft/Cargo.toml
+        env:
+          # Parallel tests block each other and result in timeout.
+          RUST_TEST_THREADS: 2
+          RUST_LOG: debug
+          RUST_BACKTRACE: full
+
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: openraft-feature-test
+          path: |
+            openraft/_log/
+
+
+  # Integration tests with various features.
+  tests-feature-test:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - toolchain: "nightly"
+            features: ""
+
+          - toolchain: "nightly"
+            features: "single-term-leader"
+
+          - toolchain: "nightly"
+            features: "loosen-follower-log-revert"
+
+
+    steps:
+      - name: Setup | Checkout
+        uses: actions/checkout@v4
+
+
+      - name: Setup | Toolchain
+        uses: actions-rs/toolchain@v1.0.6
+        with:
+          toolchain: "${{ matrix.toolchain }}"
+          override: true
+
+
+      - name: Test crate `tests/`
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --features "${{ matrix.features }}" --manifest-path tests/Cargo.toml
+        env:
+          # Parallel tests block each other and result in timeout.
+          RUST_TEST_THREADS: 2
+          RUST_LOG: debug
+          RUST_BACKTRACE: full
+
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: tests-feature-test
+          path: |
+            tests/_log/
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rs/toolchain@v1.0.6
+        with:
+          components: rustfmt, clippy
+
+      - name: Format
+        uses: actions-rs/cargo@v1
+        with:
+          command: fmt
+          args: --all -- --check
+
+
+      - name: clippy
+        shell: bash
+        run: |
+          cargo clippy --no-deps --workspace --all-targets                -- -D warnings
+          cargo clippy --no-deps --workspace --all-targets --features "bt,serde,bench,single-term-leader,compat" -- -D warnings
+
+
+      - name: Build-doc
+        uses: actions-rs/cargo@v1
+        with:
+          command: doc
+          args: --all --no-deps
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+
+
+      - shell: bash
+        run: cargo install cargo-audit
+
+
+      - name: Audit dependencies
+        shell: bash
+        # if: "!contains(github.event.head_commit.message, 'skip audit')"
+        run: cargo audit --db ./target/advisory-db
+
+
+  examples:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain:
+          - "stable"
+          - "nightly"
+        example:
+          - "memstore"
+          - "raft-kv-memstore"
+          - "raft-kv-memstore-generic-snapshot-data"
+          - "raft-kv-memstore-opendal-snapshot-data"
+          - "raft-kv-memstore-singlethreaded"
+          - "raft-kv-rocksdb"
+
+    steps:
+      - uses: actions/checkout@v4
+
+
+      - uses: actions-rs/toolchain@v1.0.6
+        with:
+          toolchain: "${{ matrix.toolchain }}"
+          override: true
+          components: rustfmt, clippy
+
+
+      # Run the following steps in the exmple dir in order to reuse the `./target` dir.
+
+
+      - name: Test examples/${{ matrix.example }}
+        shell: bash
+        run: |
+          cd examples/${{ matrix.example }}
+          cargo test
+        env:
+          RUST_LOG: debug
+
+
+      - name: Test demo script of examples/${{ matrix.example }}
+        # The script is not meant for testing. Just to ensure it works but do not
+        # rely on it.
+        if: ${{ matrix.toolchain == 'stable' }}
+
+        shell: bash
+        run: |
+          cd examples/${{ matrix.example }}
+          ./test-cluster.sh
+
+
+      - name: Format
+        # clippy/format produces different result with stable and nightly. Only with nightly.
+        if: ${{ matrix.toolchain == 'nightly' }}
+
+        shell: bash
+        run: |
+          cd examples/${{ matrix.example }}
+          cargo fmt --all -- --check
+
+
+      - name: Clippy
+        # clippy/format produces different result with stable and nightly. Only with nightly.
+        if: ${{ matrix.toolchain == 'nightly' }}
+
+        shell: bash
+        run: |
+          cd examples/${{ matrix.example }}
+          cargo clippy --no-deps --all-targets -- -D warnings

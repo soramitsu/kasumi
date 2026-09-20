@@ -110,14 +110,13 @@ pub fn serve_tls(
     shutdown: watch::Receiver<bool>,
 ) -> ServingListener {
     let config = config.into();
-    let inventory = Arc::new(ListenerInventory::new(&limits));
+    let inventory = Arc::new(ListenerInventory::new(limits));
     ServingListener {
         inventory: inventory.clone(),
         running: Box::pin(serve_tls_source(
             listener,
             config,
             router,
-            limits,
             audit,
             shutdown,
             |socket| socket.set_nodelay(true),
@@ -150,11 +149,11 @@ pub(crate) struct ListenerInventory {
     connections: crate::tls_tasks::Tasks,
     streams: crate::tls_tasks::Tasks,
     stop: watch::Sender<bool>,
-    timeout: Duration,
+    limits: ListenerLimits,
     report: tokio::sync::Mutex<kasumi_types::drain::DrainReport>,
 }
 impl ListenerInventory {
-    fn new(limits: &ListenerLimits) -> Self {
+    fn new(limits: ListenerLimits) -> Self {
         Self {
             connections: crate::tls_tasks::Tasks::new(limits.max_connections),
             // Invalid/overflowing settings fail before accepting any socket.
@@ -169,19 +168,19 @@ impl ListenerInventory {
                     .unwrap_or(0),
             ),
             stop: watch::channel(false).0,
-            timeout: limits.drain_timeout,
+            limits,
             report: Default::default(),
         }
     }
     pub(crate) async fn drain(&self) -> kasumi_types::drain::DrainResult {
         self.stop.send_replace(true);
         let mut report = self.report.lock().await;
-        if let Err(failure) = self.connections.drain(self.timeout).await {
+        if let Err(failure) = self.connections.drain(self.limits.drain_timeout).await {
             report.merge(&failure);
         }
         // Connections have stopped dispatching new streams. Seal and join the
         // exact Hyper executor task inventory before declaring listener drain.
-        if let Err(failure) = self.streams.drain(self.timeout).await {
+        if let Err(failure) = self.streams.drain(self.limits.drain_timeout).await {
             report.merge(&failure);
         }
         report.complete()
@@ -204,7 +203,6 @@ async fn serve_tls_source(
     mut listener: impl ConnectionSource,
     config: impl Into<kasumi_transport::ReloadableServerConfig>,
     router: Router,
-    limits: ListenerLimits,
     audit: Arc<dyn TlsHandshakeAudit>,
     mut shutdown: watch::Receiver<bool>,
     configure_socket: impl Fn(&tokio::net::TcpStream) -> std::io::Result<()>
@@ -214,6 +212,7 @@ async fn serve_tls_source(
     + 'static,
     inventory: Arc<ListenerInventory>,
 ) -> Result<()> {
+    let limits = inventory.limits.clone();
     ensure!(
         limits.max_connections > 0
             && limits.max_connections <= Semaphore::MAX_PERMITS
@@ -407,9 +406,9 @@ mod lifecycle_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn accept_io_failure_drains_active_tls_request_before_releasing_node() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = kasumi_store::test_utils::private_tempdir().unwrap();
         let path = directory.path().join("accept-error.redb");
-        let node = NodeStore::create_new(
+        let node = NodeStore::create_new_fixture(
             &path,
             kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
@@ -448,11 +447,10 @@ mod lifecycle_tests {
             },
             server_config(&identity, ClientAuthentication::OAuth).unwrap(),
             router,
-            ListenerLimits::default(),
             Arc::new(Audit),
             shutdown,
             |socket| socket.set_nodelay(true),
-            Arc::new(ListenerInventory::new(&ListenerLimits::default())),
+            Arc::new(ListenerInventory::new(ListenerLimits::default())),
         ));
         let client = reqwest::Client::builder()
             .no_proxy()
@@ -505,7 +503,7 @@ mod lifecycle_tests {
         );
         assert!(weak.upgrade().is_none());
         drop(
-            NodeStore::open_existing(
+            NodeStore::open_existing_fixture(
                 &path,
                 kasumi_store::test_utils::NODE_STORE_ID,
                 kasumi_store::ScratchDisk::fixture(),
@@ -585,7 +583,6 @@ mod lifecycle_tests {
             },
             server_config(&identity, ClientAuthentication::OAuth).unwrap(),
             Router::new().route("/request", post(|| async { "listener remains available" })),
-            ListenerLimits::default(),
             Arc::new(RecordingAudit(events)),
             shutdown,
             move |socket| {
@@ -600,7 +597,7 @@ mod lifecycle_tests {
                 }
                 result
             },
-            Arc::new(ListenerInventory::new(&ListenerLimits::default())),
+            Arc::new(ListenerInventory::new(ListenerLimits::default())),
         ));
         let denied = tokio::time::timeout(Duration::from_secs(10), records.recv())
             .await

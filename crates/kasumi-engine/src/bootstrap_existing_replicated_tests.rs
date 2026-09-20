@@ -13,8 +13,8 @@ struct Replica {
 }
 impl Replica {
     async fn new() -> anyhow::Result<Self> {
-        let directory = tempfile::tempdir()?;
-        let node = NodeStore::create_new(
+        let directory = kasumi_store::test_utils::private_tempdir()?;
+        let node = NodeStore::create_new_fixture(
             directory.path().join("node.redb"),
             NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
@@ -35,7 +35,7 @@ impl Replica {
         })
     }
     async fn existing(directory: tempfile::TempDir) -> anyhow::Result<Self> {
-        let node = NodeStore::open_existing(
+        let node = NodeStore::open_existing_fixture(
             directory.path().join("node.redb"),
             NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),

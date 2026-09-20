@@ -1,15 +1,13 @@
 //! One canonical node-file envelope. The discriminator and checksum are not
 //! authentication: the caller supplies the expected installed identity before
 //! redb may repair the recognized payload. Tenant authentication follows later.
-use crate::private_files::{self, FileIdentity};
-use anyhow::{Context, Result, ensure};
+use crate::{DiskWork, NodeDisk, NodeDiskFile, private_files::FileIdentity};
+use anyhow::{Result, ensure};
 use parking_lot::RwLock;
-use redb::StorageBackend;
+use redb::{AdmissionError, OwnerFailed, StorageAdmission, StorageBackend};
 use sha2::{Digest, Sha256};
 use std::{
-    fs::{File, OpenOptions},
     io,
-    os::unix::fs::{FileExt, OpenOptionsExt},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -34,12 +32,26 @@ enum HeaderUse {
 /// permanent stop, issuer drain and worker/storage drain before deleting a file.
 /// Retain this guard through exact unlink and parent directory synchronization.
 pub struct NodeFileCleanup {
-    _owner: Arc<NodeFile>,
+    owner: Arc<NodeFile>,
     identity: FileIdentity,
 }
 impl NodeFileCleanup {
     pub fn identity(&self) -> &FileIdentity {
         &self.identity
+    }
+
+    /// Delete only this recognized, exclusively owned physical file. The
+    /// installed owner verifies the binding, unlinks it and syncs the parent
+    /// before returning any capacity. Authorization and worker drain are the
+    /// caller's independent prerequisites.
+    pub fn delete(self) -> Result<()> {
+        let owner = Arc::try_unwrap(self.owner)
+            .map_err(|_| anyhow::anyhow!("node cleanup owner is still retained"))?;
+        let file = owner
+            .file
+            .into_inner()
+            .ok_or_else(|| anyhow::anyhow!("node cleanup descriptor is closed"))?;
+        Ok(owner.disk.delete_file(file)?)
     }
 }
 
@@ -47,8 +59,8 @@ pub(crate) struct NodeFile {
     // Closing redb removes the actual descriptor even if an internal reader
     // retains its backend Arc. Already-running descriptor operations drain
     // under this lock before exclusive file ownership is released.
-    file: RwLock<Option<File>>,
-    parent: File,
+    file: RwLock<Option<NodeDiskFile>>,
+    disk: Arc<NodeDisk>,
     path: PathBuf,
     id: Uuid,
     #[cfg(test)]
@@ -56,10 +68,11 @@ pub(crate) struct NodeFile {
 }
 
 impl NodeFile {
-    pub(crate) fn create_new(path: &Path, id: Uuid) -> Result<Arc<Self>> {
+    pub(crate) fn create_new(path: &Path, id: Uuid, disk: Arc<NodeDisk>) -> Result<Arc<Self>> {
         ensure!(!id.is_nil(), "node store identity is nil");
-        let file = options().create_new(true).open(path)?;
-        let owner = Self::own(path, file, id)?;
+        let (root, relative) = disk.binding(path)?;
+        let file = disk.create_file(root, relative, DiskWork::Foreground)?;
+        let owner = Self::own(path, file, id, disk)?;
         owner.prepare()?;
         Ok(owner)
     }
@@ -68,32 +81,36 @@ impl NodeFile {
         path: &Path,
         identity: &FileIdentity,
         id: Uuid,
+        disk: Arc<NodeDisk>,
     ) -> Result<Arc<Self>> {
         ensure!(!id.is_nil(), "node store identity is nil");
-        let owner = Self::own(path, options().open(path)?, id)?;
+        let (root, relative) = disk.binding(path)?;
+        let owner = Self::own(path, disk.open_file(root, relative)?, id, disk)?;
         {
             let guard = owner.file.read();
             let file = present(&guard)?;
             ensure!(
-                &private_files::descriptor_identity(file)? == identity,
+                &file.identity()? == identity,
                 "prepared node file identity differs"
             );
-            ensure!(
-                file.metadata()?.len() == 0,
-                "prepared node file is not empty"
-            );
+            ensure!(file.observed_len()? == 0, "prepared node file is not empty");
         }
         owner.prepare()?;
         Ok(owner)
     }
 
-    pub(crate) fn open_existing(path: &Path, expected_id: Uuid) -> Result<Arc<Self>> {
+    pub(crate) fn open_existing(
+        path: &Path,
+        expected_id: Uuid,
+        disk: Arc<NodeDisk>,
+    ) -> Result<Arc<Self>> {
         ensure!(!expected_id.is_nil(), "node store identity is nil");
-        let owner = Self::own(path, options().open(path)?, expected_id)?;
+        let (root, relative) = disk.binding(path)?;
+        let owner = Self::own(path, disk.open_file(root, relative)?, expected_id, disk)?;
         {
             let guard = owner.file.read();
             let file = present(&guard)?;
-            let length = file.metadata()?.len();
+            let length = file.observed_len()?;
             ensure!(
                 length > HEADER_BYTES as u64 && length <= i64::MAX as u64,
                 "existing node payload length is invalid"
@@ -105,13 +122,18 @@ impl NodeFile {
         Ok(owner)
     }
 
-    pub(crate) fn claim_cleanup(path: &Path, expected_id: Uuid) -> Result<NodeFileCleanup> {
+    pub(crate) fn claim_cleanup(
+        path: &Path,
+        expected_id: Uuid,
+        disk: Arc<NodeDisk>,
+    ) -> Result<NodeFileCleanup> {
         ensure!(!expected_id.is_nil(), "node store identity is nil");
-        let owner = Self::own(path, options().open(path)?, expected_id)?;
+        let (root, relative) = disk.binding(path)?;
+        let owner = Self::own(path, disk.open_file(root, relative)?, expected_id, disk)?;
         let identity = {
             let guard = owner.file.read();
             let file = present(&guard)?;
-            let length = file.metadata()?.len();
+            let length = file.observed_len()?;
             ensure!(
                 length >= HEADER_BYTES as u64 && length <= i64::MAX as u64,
                 "node cleanup envelope length is invalid"
@@ -119,30 +141,19 @@ impl NodeFile {
             let mut bytes = [0; HEADER_BYTES];
             file.read_exact_at(&mut bytes, 0)?;
             validate_header(&bytes, expected_id, HeaderUse::Cleanup)?;
-            private_files::descriptor_identity(file)?
+            file.identity()?
         };
-        Ok(NodeFileCleanup {
-            _owner: owner,
-            identity,
-        })
+        Ok(NodeFileCleanup { owner, identity })
     }
 
-    fn own(path: &Path, file: File, id: Uuid) -> Result<Arc<Self>> {
-        // No unsupported-lock fallback. Validation and every later payload I/O
-        // use this one descriptor; no unlock/reopen handoff occurs.
-        file.try_lock()
-            .context("node file is already owned or cannot be locked")?;
-        private_files::descriptor_identity(&file)?;
-        let path = std::fs::canonicalize(path)?;
-        ensure!(
-            private_files::file_identity(&path)? == private_files::descriptor_identity(&file)?,
-            "node file path changed while opening"
-        );
-        let parent = File::open(path.parent().context("node file parent is absent")?)?;
+    fn own(path: &Path, file: NodeDiskFile, id: Uuid, disk: Arc<NodeDisk>) -> Result<Arc<Self>> {
+        // NodeDisk acquired this exact descriptor and every current ancestor.
+        // Envelope validation and all redb I/O retain that same physical owner.
+        file.check_owner()?;
         Ok(Arc::new(Self {
             file: RwLock::new(Some(file)),
-            parent,
-            path,
+            disk,
+            path: path.to_owned(),
             id,
             #[cfg(test)]
             after_write_check: Default::default(),
@@ -153,12 +164,13 @@ impl NodeFile {
         let guard = self.file.read();
         let file = present(&guard)?;
         ensure!(
-            file.metadata()?.len() == 0,
+            file.observed_len()? == 0,
             "node initialization requires an empty inode"
         );
+        file.reserve_growth(0, HEADER_BYTES as u64, DiskWork::Foreground)?;
+        file.grow_reserved(HEADER_BYTES as u64)?;
         file.write_all_at(&header(self.id, PREPARED), 0)?;
-        file.sync_all()?;
-        self.parent.sync_all()?;
+        file.sync_all_and_parent()?;
         Ok(())
     }
 
@@ -166,7 +178,7 @@ impl NodeFile {
         let guard = self.file.read();
         let file = present(&guard)?;
         ensure!(
-            file.metadata()?.len() > HEADER_BYTES as u64,
+            file.observed_len()? > HEADER_BYTES as u64,
             "node payload is absent"
         );
         // The initialized redb tables are durable before a ready discriminator
@@ -174,8 +186,7 @@ impl NodeFile {
         // it never authorizes truncation, recreation, or adoption on retry.
         file.sync_all()?;
         file.write_all_at(&header(self.id, READY), 0)?;
-        file.sync_all()?;
-        self.parent.sync_all()?;
+        file.sync_all_and_parent()?;
         Ok(())
     }
 
@@ -183,19 +194,13 @@ impl NodeFile {
         &self.path
     }
 
+    pub(crate) fn disk(&self) -> &Arc<NodeDisk> {
+        &self.disk
+    }
+
     pub(crate) fn backend(self: &Arc<Self>) -> NodeBackend {
         NodeBackend(self.clone())
     }
-}
-
-fn options() -> OpenOptions {
-    let mut options = OpenOptions::new();
-    options
-        .read(true)
-        .write(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
-    options
 }
 
 fn header(id: Uuid, state: u8) -> [u8; HEADER_BYTES] {
@@ -229,9 +234,9 @@ fn validate_header(bytes: &[u8; HEADER_BYTES], expected: Uuid, use_for: HeaderUs
     Ok(())
 }
 
-fn present(file: &Option<File>) -> io::Result<&File> {
+fn present(file: &Option<NodeDiskFile>) -> io::Result<&NodeDiskFile> {
     file.as_ref()
-        .ok_or_else(|| io::Error::other("node file is closed"))
+        .ok_or_else(|| io::ErrorKind::BrokenPipe.into())
 }
 
 fn physical_end(offset: u64, length: u64) -> io::Result<u64> {
@@ -239,10 +244,67 @@ fn physical_end(offset: u64, length: u64) -> io::Result<u64> {
         .checked_add(length)
         .and_then(|end| end.checked_add(HEADER_BYTES as u64))
         .filter(|end| *end <= i64::MAX as u64)
-        .ok_or_else(|| io::Error::other("node payload offset exceeds supported file bounds"))
+        .ok_or_else(|| io::ErrorKind::InvalidInput.into())
 }
 
 pub(crate) struct NodeBackend(Arc<NodeFile>);
+impl std::fmt::Debug for NodeFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NodeFile")
+            .field("id", &self.id)
+            .field("path", &self.path)
+            .finish_non_exhaustive()
+    }
+}
+
+impl StorageAdmission for NodeFile {
+    fn check_owner(&self) -> std::result::Result<(), OwnerFailed> {
+        let guard = self.file.read();
+        present(&guard)
+            .and_then(NodeDiskFile::check_owner)
+            .map_err(|_| OwnerFailed)
+    }
+
+    fn reserve_growth(
+        &self,
+        current_len: u64,
+        requested_len: u64,
+    ) -> std::result::Result<(), AdmissionError> {
+        let outcome = (|| -> io::Result<()> {
+            let current = physical_end(current_len, 0)?;
+            let requested = physical_end(requested_len, 0)?;
+            let guard = self.file.read();
+            present(&guard)?.reserve_growth(current, requested, DiskWork::Foreground)
+        })();
+        match outcome {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::StorageFull => {
+                Err(AdmissionError::CapacityDenied)
+            }
+            Err(_) => {
+                self.disk.fail();
+                Err(AdmissionError::OwnerFailed)
+            }
+        }
+    }
+
+    fn settle_growth(&self, actual_len: u64) -> std::result::Result<(), OwnerFailed> {
+        let outcome = (|| -> io::Result<()> {
+            let actual = physical_end(actual_len, 0)?;
+            let guard = self.file.read();
+            present(&guard)?.settle_growth(actual)
+        })();
+        outcome.map_err(|_| {
+            self.disk.fail();
+            OwnerFailed
+        })
+    }
+
+    fn owner_failed(&self) {
+        self.disk.fail();
+    }
+}
+
 impl std::fmt::Debug for NodeBackend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NodeBackend")
@@ -253,26 +315,23 @@ impl std::fmt::Debug for NodeBackend {
 impl StorageBackend for NodeBackend {
     fn len(&self) -> io::Result<u64> {
         let guard = self.0.file.read();
-        let length = present(&guard)?.metadata()?.len();
+        let length = present(&guard)?.observed_len()?;
         if length > i64::MAX as u64 {
-            return Err(io::Error::other("node file exceeds supported offsets"));
+            return Err(io::ErrorKind::InvalidData.into());
         }
         length
             .checked_sub(HEADER_BYTES as u64)
-            .ok_or_else(|| io::Error::other("node header was truncated"))
+            .ok_or_else(|| io::ErrorKind::InvalidData.into())
     }
 
     fn read(&self, offset: u64, out: &mut [u8]) -> io::Result<()> {
-        let end = physical_end(offset, u64::try_from(out.len()).map_err(io::Error::other)?)?;
+        let end = physical_end(offset, out.len() as u64)?;
         let guard = self.0.file.read();
         let file = present(&guard)?;
         // read_exact_at accepts empty buffers beyond EOF; the backend contract
         // requires the complete range check even when no bytes are requested.
-        if end > file.metadata()?.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "node read exceeds the allocated payload",
-            ));
+        if end > file.observed_len()? {
+            return Err(io::ErrorKind::UnexpectedEof.into());
         }
         file.read_exact_at(out, physical_end(offset, 0)?)
     }
@@ -282,24 +341,31 @@ impl StorageBackend for NodeBackend {
         // Drain checked reads/writes before changing their admitted extent. A
         // shared lock permits shrink between a write's range check and pwrite,
         // after which that write can silently extend the truncated payload.
-        let guard = self.0.file.write();
-        present(&guard)?.set_len(physical)
+        let mut guard = self.0.file.write();
+        let file = guard.as_mut().ok_or(io::ErrorKind::BrokenPipe)?;
+        let current = file.observed_len()?;
+        if physical < current {
+            // redb has already made the reduced extent's winning header
+            // durable. Complete the retained promise accounting before the
+            // exclusive, synchronized physical shrink credits any bytes.
+            file.settle_growth(current)?;
+            file.shrink(physical)
+        } else {
+            file.grow_reserved(physical)
+        }
     }
 
     fn sync_data(&self) -> io::Result<()> {
         let guard = self.0.file.read();
-        present(&guard)?.sync_data()
+        present(&guard)?.sync_all()
     }
 
     fn write(&self, offset: u64, bytes: &[u8]) -> io::Result<()> {
-        let end = physical_end(
-            offset,
-            u64::try_from(bytes.len()).map_err(io::Error::other)?,
-        )?;
+        let end = physical_end(offset, bytes.len() as u64)?;
         let guard = self.0.file.read();
         let file = present(&guard)?;
-        if end > file.metadata()?.len() {
-            return Err(io::Error::other("node write exceeds the allocated payload"));
+        if end > file.observed_len()? {
+            return Err(io::ErrorKind::InvalidInput.into());
         }
         #[cfg(test)]
         if let Some(pause) = self.0.after_write_check.lock().take() {

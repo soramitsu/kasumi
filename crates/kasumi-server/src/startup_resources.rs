@@ -8,7 +8,12 @@ use std::sync::Arc;
 #[derive(Default)]
 pub(crate) struct Resources {
     report: tokio::sync::Mutex<DrainReport>,
-    pub(crate) nodes: Vec<Arc<kasumi_store::NodeStore>>,
+    pub(crate) owned_nodes: Vec<Arc<kasumi_store::NodeStore>>,
+    pub(crate) borrowed_nodes: Vec<Arc<kasumi_store::NodeStore>>,
+    // Only governors freshly installed by this scope. A provisioning operation
+    // borrowing a live node must never close that node's startup admission.
+    pub(crate) owned_admissions: Vec<Arc<kasumi_engine::admission::NodeAdmission>>,
+    pub(crate) journals: Vec<Arc<kasumi_engine::TargetJournal>>,
     pub(crate) stores: Vec<Arc<kasumi_store::TenantStore>>,
     pub(crate) audits: Vec<Arc<kasumi_engine::SecurityAudit>>,
     pub(crate) verifiers: Vec<Arc<crate::signer_runtime::InstalledSignerVerifier>>,
@@ -17,7 +22,7 @@ pub(crate) struct Resources {
     pub(crate) authorities: Vec<Arc<kasumi_authority::IndependentAuthority>>,
     // Fields drop in declaration order: exclusive installation ownership must
     // outlive every retained worker and physical node handle.
-    pub(crate) standalone_lock: Option<kasumi_store::private_files::ExclusiveLock>,
+    pub(crate) standalone_lock: Option<kasumi_store::NodeDiskFile>,
 }
 impl Resources {
     pub(crate) async fn close(&self) -> DrainResult {
@@ -47,8 +52,24 @@ impl Resources {
                 }
             }
         }
+        for admission in &self.owned_admissions {
+            if let Err(failure) = admission.drain_snapshot_startups().await {
+                report.merge(&failure);
+                if failure.completion() == DrainCompletion::Retained {
+                    retained = Some(failure);
+                }
+            }
+        }
         for audit in &self.audits {
             if let Err(failure) = audit.shutdown().await {
+                report.merge(&failure);
+                if failure.completion() == DrainCompletion::Retained {
+                    retained = Some(failure);
+                }
+            }
+        }
+        for journal in &self.journals {
+            if let Err(failure) = journal.shutdown().await {
                 report.merge(&failure);
                 if failure.completion() == DrainCompletion::Retained {
                     retained = Some(failure);
@@ -71,11 +92,21 @@ impl Resources {
                 }
             }
         }
-        for (index, node) in self.nodes.iter().enumerate() {
+        for (index, node) in self.borrowed_nodes.iter().enumerate() {
             if let Err(error) = node.drain_initializers().await {
                 // This API returns a failure only after all registered handles
                 // have actually joined. Preserve it without retrying forever.
                 report.record("node initializers", index, error);
+            }
+        }
+        if retained.is_none() {
+            for node in &self.owned_nodes {
+                if let Err(failure) = node.shutdown().await {
+                    report.merge(&failure);
+                    if failure.completion() == DrainCompletion::Retained {
+                        retained = Some(failure);
+                    }
+                }
             }
         }
         report.outcome(retained)

@@ -527,8 +527,8 @@ mod tests {
         incarnation: &str,
         tenant: &str,
     ) -> (tempfile::TempDir, Arc<TenantEngine>, Arc<TenantStore>) {
-        let directory = tempfile::tempdir().unwrap();
-        let node = NodeStore::create_new(
+        let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+        let node = NodeStore::create_new_fixture(
             directory.path().join("node.redb"),
             kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),

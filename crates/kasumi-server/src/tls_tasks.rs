@@ -28,14 +28,14 @@ impl State {
         };
         self.aborts.remove(&id);
         let abort_requested = self.requested_aborts.remove(&id);
-        if let Err(error) = result {
-            if !(abort_requested && error.is_cancelled()) {
-                // First failure seals admission. At most the installed concurrent
-                // inventory can subsequently fail; successful history is discarded.
-                let slot = self.report.issues().len();
-                self.report.record("TLS task", slot, error.into());
-                self.sealed = true;
-            }
+        if let Err(error) = result
+            && !(abort_requested && error.is_cancelled())
+        {
+            // First failure seals admission. At most the installed concurrent
+            // inventory can subsequently fail; successful history is discarded.
+            let slot = self.report.issues().len();
+            self.report.record("TLS task", slot, error.into());
+            self.sealed = true;
         }
     }
     fn try_reap(&mut self) {

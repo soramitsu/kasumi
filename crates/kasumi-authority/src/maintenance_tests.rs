@@ -40,7 +40,7 @@ impl Fixture {
         let mut settings = self.settings.clone();
         settings.resource_budget_bytes = resource_budget_bytes;
         let stores = TenantStorageSet::initialize_catalogs(
-            NodeStore::create_new(
+            NodeStore::create_new_fixture(
                 self._dir.path().join("authority-4.redb"),
                 kasumi_store::test_utils::NODE_STORE_ID,
                 kasumi_store::ScratchDisk::fixture(),
@@ -81,6 +81,7 @@ impl Fixture {
                 ..Config::default()
             },
             request_budget(),
+            kasumi_raft::SnapshotBufferOwner::fixture(),
             self.epoch.clone(),
         )
         .await
@@ -527,6 +528,7 @@ async fn maintenance_store_cannot_reopen_as_another_member_identity() {
         fixture.router.clone(),
         Config::default(),
         request_budget(),
+        kasumi_raft::SnapshotBufferOwner::fixture(),
         fixture.epoch.clone(),
     )
     .await;
@@ -628,6 +630,7 @@ async fn maintenance_resource_acknowledgement_survives_lost_reply_before_admissi
         fixture.router.clone(),
         Config::default(),
         request_budget(),
+        kasumi_raft::SnapshotBufferOwner::fixture(),
         fixture.epoch.clone(),
     )
     .await;
@@ -780,6 +783,7 @@ async fn authority_signer_cannot_substitute_another_physical_verifier_with_the_s
         fixture.router.clone(),
         Config::default(),
         request_budget(),
+        kasumi_raft::SnapshotBufferOwner::fixture(),
         fixture.epoch.clone(),
     )
     .await;

@@ -11,13 +11,15 @@ are at most 1 MiB and carry `Cache-Control: no-store`. Each request reserves bou
 node workspace and retains its original credential deadline and Control policy
 fence through encoding and release. Renewal cannot extend that deadline. A
 revocation, policy change, lifecycle transition, or closure of an observed store
-can withhold the whole result. Authentication and authorization failures are
+can withhold the whole result. Membership changes or expiry/invalidation of the
+original readiness coverage also withhold the result. Authentication and authorization failures are
 audited. Failure responses contain no diagnostic state.
 
 `/health` reports whether startup completed and the daemon is serving. `/ready`
 additionally requires an accessible service audit store, usable unpressured node
-admission, complete local-group coverage, current store/serving authority, and a
-successful fresh quorum barrier for every examined local group. It returns 503
+admission, complete, fresh coverage of every locally assigned group, fresh diagnostic
+store/serving-authority observations, and a successful quorum barrier for each
+group in the completed sweep. It returns 503
 when these conditions do not hold. A listening socket or remembered leader alone
 does not establish readiness. Draining begins before listeners and workers stop.
 
@@ -29,21 +31,57 @@ administrative authorization. Treat a failed scrape as unavailable monitoring,
 not as zero load or an empty database. Admission pressure can likewise prevent a
 scrape from reserving its workspace and return 503.
 
-Each successful scrape examines up to 128 local groups, including Control, with a
-three-second total quorum-probe budget and a one-second per-group ceiling. The
-Control authorization barrier has its separate five-second ceiling. Unexamined
-groups are counted explicitly; timed-out/unperformed probes never establish
-readiness. At present, an installation with more than 128 locally assigned groups
-cannot pass this node-wide readiness check. Group samples are local observations
-collected during the request, not a consistent distributed snapshot. The Control
-topology is read from a shared document root; individual routes and observation
-rows are bounded, and scrapes do not serialize tenant data.
+A retained background worker probes every locally assigned group, including
+Control, sequentially with a one-second diagnostic deadline per group. There is
+no group-count cutoff. The worker retains one separately admitted Control topology document and
+one selected group at a time. Its fixed coverage metadata is charged to node
+admission; the document and bounded probe workspace have a separate lifetime
+charge. The existing serving task inventory owns and joins the worker during
+drain. Individual probes are awaited inline and do not spawn detached tasks. One fixed
+probe slot holds the actual Raft query and a separate 128 KiB admission charge.
+After a diagnostic timeout the cache becomes unavailable and the same query stays
+in that slot; a successor cannot add another message behind a stalled actor.
+Serving stop transfers observation to drain without dropping the query. The
+runtime first drains the selected tenant and Control Raft cores, then observes
+the retained query and releases its charge. A caught panic or fatal probe error
+keeps its original payload and charge until that shutdown boundary.
+
+A complete sweep is fresh for at most 30 seconds measured from its first probe,
+clipped by the earliest HA serving-lease expiry observed anywhere in the sweep.
+A sweep taking longer than that cannot establish readiness. The previous complete
+sweep remains available during a refresh at the same membership epoch; any newly
+observed failure immediately invalidates it. Partial, stale, unavailable, or
+membership-invalidated coverage never establishes readiness. A later sweep or
+lease renewal cannot extend an already encoded response's original deadline.
+
+The membership epoch covers the Control topology document, installed route
+mutations, and actual Raft effective membership changes. A synchronous observer in
+OpenRaft invalidates it before membership append, commit, truncation, and snapshot
+changes, including changes not yet published in Control. After each quorum
+barrier, an actor-ordered membership observation checks that membership is applied,
+nonjoint, contains this node, and agrees with the tenant's committed voters.
+Release checks the original epoch and coverage token in constant time without a
+whole-topology scan or a lagging metrics watch.
+
+Scrapes consume this cache and obtain fresh storage, capacity, retention and
+serving-authority details for at most 128 groups. The diagnostic limit does not
+limit readiness coverage. JSON's `readiness_coverage` reports expected, examined
+and healthy group counts, completeness, freshness, the age of the oldest probe,
+and the detail limit. Quorum details from partial or stale sweeps are unavailable;
+their remembered identities can still supply fresh storage diagnostics. These
+are bounded local samples, not a distributed snapshot or an authorization lease.
+The Control authorization barrier retains its separate five-second ceiling.
+Scrapes do not serialize tenant data.
 
 Available metrics include:
 
-- `kasumi_ready`, lifecycle, examined/unexamined local groups, and actual quorum
-  probe outcomes; per-group serving-authority remaining seconds only where an
-  admitted HA lease supplies them.
+- `kasumi_ready`, lifecycle, `kasumi_readiness_coverage_complete`,
+  `kasumi_readiness_coverage_fresh`, `kasumi_readiness_groups_expected`,
+  `kasumi_readiness_groups_examined`, `kasumi_readiness_groups_healthy`,
+  `kasumi_readiness_oldest_probe_age_seconds`, `kasumi_local_group_detail_limit`,
+  and `kasumi_local_group_details`. Per-group quorum values describe fresh cached
+  probes; serving-authority remaining seconds appear only where an admitted HA
+  lease supplies them.
 - Node admission reservations and operations, configured high/low memory marks,
   sample usability, and RSS/pressure when the memory sample is usable. JSON keeps
   the `sample_usable` flag alongside the last sample; do not interpret an unusable
@@ -117,16 +155,29 @@ this logging policy. Provider errors are represented by static operational event
 use the protected audit/maintenance interfaces for exact outcomes. Persist and
 rotate daemon logs using the host's service manager.
 
-Scratch storage observations are available only through the same protected
-routes. Health JSON includes `scratch_disk`; Prometheus exposes
+Persistent and scratch storage observations are available only through the same
+protected routes. Health JSON includes `persistent_disk`, with its owner phase,
+charged extents, pending growth, file counts, maintenance reserve and current
+filesystem observation. Prometheus exposes `kasumi_persistent_disk_admission_ready`,
+`kasumi_persistent_disk_max_bytes`, `kasumi_persistent_disk_maintenance_reserve_bytes`,
+`kasumi_persistent_disk_charged_bytes`, `kasumi_persistent_disk_pending_bytes`,
+`kasumi_persistent_disk_files`, `kasumi_persistent_disk_open_files`,
+`kasumi_persistent_disk_filesystem_pending_bytes`,
+`kasumi_persistent_disk_filesystem_min_free_bytes`, and the optional fresh
+`kasumi_persistent_disk_filesystem_available_bytes` sample. Readiness requires an
+open owner, usable filesystem admission and sufficient sampled free space for the
+shared pending growth and minimum-free reservation. Its response fence rechecks
+that requirement immediately before releasing a ready observation.
+
+ Health JSON includes `scratch_disk`; Prometheus exposes
 `kasumi_scratch_disk_max_bytes`, `kasumi_scratch_disk_min_free_bytes`,
 `kasumi_scratch_disk_charged_bytes`, `kasumi_scratch_disk_live_files`,
 `kasumi_scratch_disk_filesystem_pending_bytes`, and the optional fresh
 `kasumi_scratch_disk_filesystem_available_bytes` sample. Charged bytes include
 rounded encrypted spool extents and staging tables retained by active images or
-workers. Filesystem pending bytes include promises by other scratch owners on
-the same filesystem in this process. Persistent database/WAL/index and archive
-capacity is outside this temporary-workspace governor.
+workers. Filesystem pending bytes include promises by persistent and scratch
+owners on the same filesystem in this process; their installed extent limits
+remain separate.
 
 Each available tenant's protected capacity observation includes exact retained
 `schema_activation_bytes` and `retirement_bytes` and their configurable byte

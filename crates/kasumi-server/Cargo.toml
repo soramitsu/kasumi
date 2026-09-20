@@ -52,6 +52,7 @@ time = "0.3"
 tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["fmt", "json", "registry", "std"] }
 
 [dev-dependencies]
+kasumi-raft = { workspace = true, features = ["test-utils"] }
 reqwest = { version = "0.12", default-features = false, features = ["http2"] }
 kasumi-engine = { workspace = true, features = ["test-utils"] }
 kasumi-serving = { workspace = true, features = ["test-utils"] }

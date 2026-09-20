@@ -1,6 +1,6 @@
 //! The same installed Raft group reopened with only the custody key domain.
 use crate::lifetime::StorageDrain;
-use crate::{Config, ControlLog, CustodyCommand, LogId, Raft, RaftCommand, RaftTransport};
+use crate::{ControlLog, CustodyCommand, LogId, Raft, RaftCommand, RaftGroupConfig, RaftTransport};
 use anyhow::{Context, Result, ensure};
 use kasumi_store::CustodyStore;
 use openraft::storage::RaftLogStorage;
@@ -8,13 +8,6 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
-
-/// Operational capacity is installed separately from immutable retirement data.
-#[derive(Clone, Debug, Default)]
-pub struct CustodyRaftConfig {
-    pub raft: Config,
-    pub limits: crate::RaftLimits,
-}
 
 /// A validated local observation. It is not fresh quorum authority and cannot
 /// construct an engine/native verified retirement proof by deserialization.
@@ -49,6 +42,8 @@ pub struct CustodyRaftGroup {
     custody: Arc<CustodyStore>,
     machine_failed: Arc<AtomicBool>,
     storage_drain: StorageDrain,
+    snapshot_buffers: Arc<crate::SnapshotBufferOwner>,
+    shutdown_report: Arc<tokio::sync::Mutex<kasumi_types::drain::DrainReport>>,
     ownership: Arc<AtomicBool>,
 }
 impl CustodyRaftGroup {
@@ -59,7 +54,30 @@ impl CustodyRaftGroup {
         group: String,
         custody: Arc<CustodyStore>,
         transport: Arc<dyn RaftTransport>,
-        config: CustodyRaftConfig,
+        config: RaftGroupConfig,
+        snapshot_buffers: Arc<crate::SnapshotBufferOwner>,
+    ) -> Result<Self> {
+        let owner = snapshot_buffers.clone();
+        match owner
+            .start(async move {
+                Self::open_inner(id, group, custody, transport, config, snapshot_buffers)
+                    .await
+                    .map(crate::startup_owner::StartedGroup::Custody)
+            })
+            .await?
+        {
+            crate::startup_owner::StartedGroup::Custody(group) => Ok(group),
+            _ => unreachable!("custody startup result"),
+        }
+    }
+
+    async fn open_inner(
+        id: u64,
+        group: String,
+        custody: Arc<CustodyStore>,
+        transport: Arc<dyn RaftTransport>,
+        config: RaftGroupConfig,
+        snapshot_buffers: Arc<crate::SnapshotBufferOwner>,
     ) -> Result<Self> {
         let limits = config.limits;
         ensure!(
@@ -70,45 +88,65 @@ impl CustodyRaftGroup {
         raft_config.cluster_name = group.clone();
         let config = Arc::new(raft_config.validate()?);
         let ownership = crate::claim_custody(&custody)?;
-        let control = ControlLog::open(custody.clone(), id, group.clone())?;
-        ensure!(
-            tokio::task::spawn_blocking(move || control.recover_retired()).await??,
-            "source has no successful committed retirement"
-        );
         let (storage_drain, lease) = StorageDrain::new();
-        let machine = crate::custody_machine::CustodyMachine::open(
-            custody.clone(),
-            lease.clone(),
-            ownership.clone(),
-            limits.max_snapshot_bytes,
-        )
-        .await?;
-        let machine_failed = machine.failure_flag();
-        let mut log = crate::LogStore::open_custody(custody.clone(), id, lease.clone()).await?;
-        log.bind_group(group.clone()).await?;
-        let saved = crate::custody_machine::load_snapshot(&custody, limits.max_snapshot_bytes)?
-            .context("closed startup snapshot absent")?;
-        let floor = saved
-            .meta
-            .last_log_id
-            .context("closed startup has no log coverage")?;
-        // Only encrypted control headers/bodies are removed. The immutable
-        // retired municipal payload remains encrypted under its original key.
-        log.purge(floor).await?;
-        let raft = Raft::new(
-            id,
-            config,
-            crate::network::NetworkFactory::new(id, group, transport),
-            log,
-            machine,
-        )
-        .await?;
+        let opened = async {
+            let control = ControlLog::open(custody.clone(), id, group.clone())?;
+            let recovery_lease = lease.clone();
+            let recovery_ownership = ownership.clone();
+            ensure!(
+                tokio::task::spawn_blocking(move || {
+                    let _lease = recovery_lease;
+                    let _ownership = recovery_ownership;
+                    control.recover_retired()
+                })
+                .await??,
+                "source has no successful committed retirement"
+            );
+            let machine = crate::custody_machine::CustodyMachine::open(
+                custody.clone(),
+                lease.clone(),
+                ownership.clone(),
+                limits.max_snapshot_bytes,
+                snapshot_buffers.clone(),
+            )
+            .await?;
+            let machine_failed = machine.failure_flag();
+            let mut log = crate::LogStore::open_custody(custody.clone(), id, lease.clone()).await?;
+            log.bind_group(group.clone()).await?;
+            let saved = crate::custody_machine::load_snapshot(&custody, limits.max_snapshot_bytes)?
+                .context("closed startup snapshot absent")?;
+            let floor = saved
+                .meta
+                .last_log_id
+                .context("closed startup has no log coverage")?;
+            // Only encrypted control headers/bodies are removed. The immutable
+            // retired municipal payload remains encrypted under its original key.
+            log.purge(floor).await?;
+            let raft = Raft::new(
+                id,
+                config,
+                crate::network::NetworkFactory::new(id, group, transport),
+                log,
+                machine,
+            )
+            .await?;
+            Ok::<_, anyhow::Error>((raft, machine_failed))
+        }
+        .await;
         drop(lease);
+        let (raft, machine_failed) = match opened {
+            Ok(value) => value,
+            Err(error) => {
+                return Err(crate::failed_startup(error, &snapshot_buffers, &storage_drain).await);
+            }
+        };
         Ok(Self {
             raft,
             custody,
             machine_failed,
             storage_drain,
+            snapshot_buffers,
+            shutdown_report: Default::default(),
             ownership,
         })
     }
@@ -119,6 +157,7 @@ impl CustodyRaftGroup {
         &self.custody
     }
     pub fn check_access(&self) -> Result<()> {
+        self.snapshot_buffers.check()?;
         ensure!(
             self.ownership.load(Ordering::Acquire),
             "custody group has shut down"
@@ -168,9 +207,15 @@ impl CustodyRaftGroup {
         Ok(())
     }
     pub async fn shutdown(&self) -> Result<()> {
-        let result = self.raft.shutdown().await;
+        let mut report = self.shutdown_report.lock().await;
+        if let Err(error) = self.raft.shutdown().await {
+            report.record("OpenRaft custody runtime", 0, error.into());
+        }
+        if let Err(failure) = self.snapshot_buffers.drain_buffers().await {
+            report.merge(&failure);
+        }
         self.storage_drain.wait().await;
         self.ownership.store(false, Ordering::Release);
-        result.map_err(Into::into)
+        report.complete().map_err(Into::into)
     }
 }

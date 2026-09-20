@@ -26,9 +26,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("published_crate", type=Path)
     parser.add_argument("upstream_archive", type=Path)
+    parser.add_argument("--output-dir", type=Path)
     args = parser.parse_args()
     evidence = Path(__file__).resolve().parent
     repository = evidence.parents[2]
+    if args.output_dir is not None:
+        evidence = args.output_dir.resolve()
     vendor = repository / "vendor/redb-4.2.0"
     crate_sha = "de6c3b63e007e90ce536ec2ae4690826136a20ec8dbbbb400daef1bb999d2e36"
     upstream_sha = "3aabc11f3779daebfc463b077e4c63779c384adb4ea3a4a947f03ac3cc6a244f"

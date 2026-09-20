@@ -429,8 +429,8 @@ mod tests {
         Arc<TenantStore>,
         Arc<UncertainArchive>,
     ) {
-        let directory = tempfile::tempdir().unwrap();
-        let node = NodeStore::create_new(
+        let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+        let node = NodeStore::create_new_fixture(
             directory.path().join("node.redb"),
             kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
@@ -444,10 +444,12 @@ mod tests {
         .await
         .unwrap();
         let cache = Arc::new(
-            FilesystemAuditArchive::open(directory.path().join("tenant-audit-archives")).unwrap(),
+            FilesystemAuditArchive::open_fixture(directory.path().join("tenant-audit-archives"))
+                .unwrap(),
         );
         let archive = Arc::new(UncertainArchive {
-            archive: FilesystemAuditArchive::open(directory.path().join("external")).unwrap(),
+            archive: FilesystemAuditArchive::open_fixture(directory.path().join("external"))
+                .unwrap(),
             fail: AtomicBool::new(false),
         });
         store
@@ -621,7 +623,7 @@ mod tests {
         drop(engine);
         drop(store);
 
-        let node = NodeStore::open_existing(
+        let node = NodeStore::open_existing_fixture(
             directory.path().join("node.redb"),
             kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
@@ -637,8 +639,10 @@ mod tests {
         store
             .install_tenant_audit_archive(
                 Arc::new(
-                    FilesystemAuditArchive::open(directory.path().join("tenant-audit-archives"))
-                        .unwrap(),
+                    FilesystemAuditArchive::open_fixture(
+                        directory.path().join("tenant-audit-archives"),
+                    )
+                    .unwrap(),
                 ),
                 archive.clone(),
             )

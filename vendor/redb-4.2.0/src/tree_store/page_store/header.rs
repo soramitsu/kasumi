@@ -91,14 +91,12 @@ fn get_u64(data: &[u8]) -> u64 {
 pub(super) struct UnrepairedDatabaseHeader {
     inner: DatabaseHeader,
     primary_corrupted: bool,
-    secondary_corrupted: bool,
 }
 
 #[derive(Clone)]
 pub(super) struct DatabaseHeader {
     primary_slot: usize,
     pub(super) recovery_required: bool,
-    pub(super) two_phase_commit: bool,
     page_size: u32,
     region_header_pages: u32,
     region_max_data_pages: u32,
@@ -116,7 +114,12 @@ impl UnrepairedDatabaseHeader {
 
         let primary_slot = usize::from(data[GOD_BYTE_OFFSET] & PRIMARY_BIT != 0);
         let recovery_required = (data[GOD_BYTE_OFFSET] & RECOVERY_REQUIRED) != 0;
-        let two_phase_commit = (data[GOD_BYTE_OFFSET] & TWO_PHASE_COMMIT) != 0;
+        if data[GOD_BYTE_OFFSET] & TWO_PHASE_COMMIT == 0 {
+            return Err(StorageError::Corrupted(
+                "Unsupported one-phase database header".to_string(),
+            )
+            .into());
+        }
         let page_size = get_u32(&data[PAGE_SIZE_OFFSET..]);
         let region_header_pages = get_u32(&data[REGION_HEADER_PAGES_OFFSET..]);
         let region_max_data_pages = get_u32(&data[REGION_MAX_DATA_PAGES_OFFSET..]);
@@ -176,17 +179,16 @@ impl UnrepairedDatabaseHeader {
         let (slot1, slot1_corrupted) = TransactionHeader::from_bytes(
             &data[TRANSACTION_1_OFFSET..(TRANSACTION_1_OFFSET + TRANSACTION_SIZE)],
         )?;
-        let (primary_corrupted, secondary_corrupted) = if primary_slot == 0 {
-            (slot0_corrupted, slot1_corrupted)
+        let primary_corrupted = if primary_slot == 0 {
+            slot0_corrupted
         } else {
-            (slot1_corrupted, slot0_corrupted)
+            slot1_corrupted
         };
 
         Ok(Self {
             inner: DatabaseHeader {
                 primary_slot,
                 recovery_required,
-                two_phase_commit,
                 page_size,
                 region_header_pages,
                 region_max_data_pages,
@@ -195,7 +197,6 @@ impl UnrepairedDatabaseHeader {
                 transaction_slots: [slot0, slot1],
             },
             primary_corrupted,
-            secondary_corrupted,
         })
     }
 
@@ -210,10 +211,8 @@ impl UnrepairedDatabaseHeader {
         self.inner.recovery_required || self.inner.layout().len() != file_len
     }
 
-    // Consume self, reconcile the layout against the actual file length, and select a primary slot
-    // (repairing if necessary). Returns the usable DatabaseHeader along with a `clean` flag that is
-    // true only when nothing had to be reconciled: the primary was kept and the stored layout
-    // already matched `file_len`.
+    // Reconcile the physical layout and validate the authoritative winning slot.
+    // The returned clean flag says whether the stored layout already matched the file.
     pub(super) fn finalize(mut self, file_len: u64) -> Result<(DatabaseHeader, bool)> {
         if self.inner.recovery_required {
             // The region counts are unchecksummed and rewritten on every resize, so a crash
@@ -231,8 +230,8 @@ impl UnrepairedDatabaseHeader {
             let layout_matched = recalculated.num_full_regions() == self.inner.full_regions
                 && trailing_pages == self.inner.trailing_partial_region_pages;
             self.inner.set_layout(recalculated);
-            let kept_primary = self.select_primary_slot()?;
-            return Ok((self.inner, kept_primary && layout_matched));
+            self.validate_primary_slot()?;
+            return Ok((self.inner, layout_matched));
         }
 
         // Recovery isn't required, so the stored layout was written by a clean shutdown and is
@@ -250,8 +249,8 @@ impl UnrepairedDatabaseHeader {
             let recalculated = self.layout_from_file_len(file_len)?;
             self.inner.set_layout(recalculated);
         }
-        let kept_primary = self.select_primary_slot()?;
-        Ok((self.inner, kept_primary && !layout_stale))
+        self.validate_primary_slot()?;
+        Ok((self.inner, !layout_stale))
     }
 
     // Rebuild the database layout from the actual file length, trusting only the immutable region
@@ -295,40 +294,15 @@ impl UnrepairedDatabaseHeader {
         Ok(recalculated)
     }
 
-    fn select_primary_slot(&mut self) -> Result<bool> {
-        // Two-phase publication makes the winning slot authoritative. Corruption must
-        // fail closed rather than silently replace an acknowledged root with the older slot.
-        if self.inner.two_phase_commit {
-            if self.primary_corrupted {
-                return Err(StorageError::Corrupted(
-                    "Primary is corrupted despite 2-phase commit".to_string(),
-                ));
-            }
-            return Ok(true);
-        }
-
-        // Pick whichever slot is newer, assuming it has a valid checksum. This handles an edge case
-        // where we crash during fsync(), and the only data that got written to disk was the god byte
-        // update swapping the primary -- in that case, the primary contains a valid but out-of-date
-        // transaction, so we need to load from the secondary instead
+    fn validate_primary_slot(&self) -> Result<()> {
+        // The winning slot is authoritative. A damaged acknowledged root cannot
+        // be replaced with the older slot, even if that slot is readable.
         if self.primary_corrupted {
-            if self.secondary_corrupted {
-                return Err(StorageError::Corrupted(
-                    "Both commit slots are corrupted".to_string(),
-                ));
-            }
-            self.inner.swap_primary_slot();
-            return Ok(false);
+            return Err(StorageError::Corrupted(
+                "Primary is corrupted despite two-phase publication".to_string(),
+            ));
         }
-
-        let secondary_newer =
-            self.inner.secondary_slot().transaction_id > self.inner.primary_slot().transaction_id;
-        if secondary_newer && !self.secondary_corrupted {
-            self.inner.swap_primary_slot();
-            return Ok(false);
-        }
-
-        Ok(true)
+        Ok(())
     }
 }
 
@@ -343,7 +317,6 @@ impl DatabaseHeader {
         Self {
             primary_slot: 0,
             recovery_required: true,
-            two_phase_commit: false,
             page_size: layout.full_region_layout().page_size(),
             region_header_pages: layout.full_region_layout().get_header_pages(),
             region_max_data_pages: layout.full_region_layout().num_pages(),
@@ -428,9 +401,7 @@ impl DatabaseHeader {
         if self.recovery_required {
             result[GOD_BYTE_OFFSET] |= RECOVERY_REQUIRED;
         }
-        if self.two_phase_commit {
-            result[GOD_BYTE_OFFSET] |= TWO_PHASE_COMMIT;
-        }
+        result[GOD_BYTE_OFFSET] |= TWO_PHASE_COMMIT;
         result[PAGE_SIZE_OFFSET..(PAGE_SIZE_OFFSET + size_of::<u32>())]
             .copy_from_slice(&self.page_size.to_le_bytes());
         result[REGION_HEADER_PAGES_OFFSET..(REGION_HEADER_PAGES_OFFSET + size_of::<u32>())]
@@ -685,19 +656,7 @@ mod test {
         fn corrupt_primary_slot_checksum(&self) -> Result<(), std::io::Error> {
             let mut header = self.read_header_directly()?;
             header[GOD_BYTE_OFFSET] |= RECOVERY_REQUIRED;
-            // This deliberately simulates an untrusted interrupted single-phase
-            // header, outside the admitted writer's supported commit protocol.
-            header[GOD_BYTE_OFFSET] &= !TWO_PHASE_COMMIT;
             corrupt_primary_slot_checksum(&mut header);
-            self.write_header_directly(&header)?;
-
-            Ok(())
-        }
-
-        fn corrupt_all_slot_checksums(&self) -> Result<(), std::io::Error> {
-            let mut header = self.read_header_directly()?;
-            corrupt_slot_checksum(&mut header, TRANSACTION_0_OFFSET);
-            corrupt_slot_checksum(&mut header, TRANSACTION_1_OFFSET);
             self.write_header_directly(&header)?;
 
             Ok(())
@@ -736,7 +695,7 @@ mod test {
     }
 
     #[test]
-    fn repair_allocator_checksums() {
+    fn winning_checksum_corruption_fails_closed_after_io_error() {
         let tmpfile = crate::create_tempfile();
         let cloned = OpenOptions::new()
             .read(true)
@@ -769,52 +728,9 @@ mod test {
         drop(read_txn);
         drop(db);
 
-        let cloned = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(tmpfile.path())
-            .unwrap();
-        let db2_backend = FailingBackend::new(FileBackend::new(cloned).unwrap());
-        let db2_backend_control = db2_backend.clone();
-        let mut db2 = Database::builder(crate::test_admission())
-            .create_with_backend(db2_backend)
-            .unwrap();
-        {
-            let read_txn = db2.begin_read().unwrap();
-            let table = read_txn.open_table(X).unwrap();
-            assert_eq!(table.get_owned("hello").unwrap().unwrap().value(), "world");
-        }
-        let write_txn = db2.begin_write().unwrap();
-        {
-            let mut table = write_txn.open_table(X).unwrap();
-            table.insert("hello2", "world2").unwrap();
-        }
-        write_txn.commit().unwrap();
-
-        let mut header = db2_backend_control.read_header_directly().unwrap();
-        // Simulate a failed non-2PC commit where the primary bit reached disk, but
-        // the new primary slot did not. The old primary is now the valid secondary.
-        header[GOD_BYTE_OFFSET] ^= PRIMARY_BIT;
-        header[GOD_BYTE_OFFSET] |= RECOVERY_REQUIRED;
-        header[GOD_BYTE_OFFSET] &= !TWO_PHASE_COMMIT;
-        corrupt_primary_slot_checksum(&mut header);
-        db2_backend_control.write_header_directly(&header).unwrap();
-
-        assert!(!db2.check_integrity().unwrap());
-        {
-            let read_txn = db2.begin_read().unwrap();
-            let table = read_txn.open_table(X).unwrap();
-            assert_eq!(table.get_owned("hello").unwrap().unwrap().value(), "world");
-            assert_eq!(
-                table.get_owned("hello2").unwrap().unwrap().value(),
-                "world2"
-            );
-        }
-
-        db2_backend_control.corrupt_all_slot_checksums().unwrap();
         assert!(matches!(
-            db2.check_integrity().unwrap_err(),
-            DatabaseError::Storage(StorageError::Corrupted(_))
+            Database::open(tmpfile.path(), crate::test_admission()),
+            Err(DatabaseError::Storage(StorageError::Corrupted(_)))
         ));
     }
 
@@ -849,8 +765,8 @@ mod test {
             TRANSACTION_0_OFFSET
         };
 
-        // Fabricate a torn 1-phase commit in the secondary slot: copy the valid primary slot, give
-        // it a newer transaction id, then corrupt its checksum so it fails verification.
+        // Fabricate a torn prepared secondary slot. The winning primary remains
+        // authoritative even when the unreadable secondary has a newer transaction id.
         let primary_slot: [u8; super::TRANSACTION_SIZE] = header
             [primary_offset..primary_offset + super::TRANSACTION_SIZE]
             .try_into()
@@ -864,9 +780,7 @@ mod test {
             .copy_from_slice(&(primary_txn_id + 1).to_le_bytes());
         corrupt_slot_checksum(&mut header, secondary_offset);
 
-        // Require recovery, and mark it non-2PC so the full repair path (not quick-repair) runs.
         header[GOD_BYTE_OFFSET] |= RECOVERY_REQUIRED;
-        header[GOD_BYTE_OFFSET] &= !TWO_PHASE_COMMIT;
 
         let torn_secondary: [u8; super::TRANSACTION_SIZE] = header
             [secondary_offset..secondary_offset + super::TRANSACTION_SIZE]
@@ -878,14 +792,10 @@ mod test {
         file.sync_all().unwrap();
         drop(file);
 
-        // Open, but abort the repair before it commits a fresh secondary slot. This freezes the
-        // header in the exact state recovery leaves it in: after the header rewrite, but before any
-        // genuine commit could overwrite the torn slot.
-        let err = Database::builder(crate::test_admission())
-            .set_repair_callback(|handle| handle.abort())
-            .open(tmpfile.path())
-            .unwrap_err();
-        assert!(matches!(err, DatabaseError::RepairAborted));
+        // Opening may rewrite the recovery header, but it must preserve the torn
+        // secondary checksum until a real transaction prepares a replacement slot.
+        let db = Database::open(tmpfile.path(), crate::test_admission()).unwrap();
+        drop(db);
 
         // The torn secondary must be byte-for-byte unchanged -- in particular its checksum must not
         // have been recomputed into a valid one.
@@ -1446,21 +1356,17 @@ mod test {
     #[test]
     fn abort_repair() {
         let tmpfile = crate::create_tempfile();
-        let db = Database::builder(crate::test_admission())
-            .create(tmpfile.path())
-            .unwrap();
+        let db = Database::create(tmpfile.path(), crate::test_admission()).unwrap();
+        let mem = db.get_memory();
+        mem.commit(
+            mem.get_data_root(),
+            mem.get_system_root(),
+            mem.get_last_committed_transaction_id().unwrap().next(),
+            crate::tree_store::ShrinkPolicy::Default,
+        )
+        .unwrap();
+        drop(mem);
         drop(db);
-
-        let mut file = tmpfile.as_file();
-
-        file.seek(SeekFrom::Start(GOD_BYTE_OFFSET as u64)).unwrap();
-        let mut buffer = [0u8; 1];
-        file.read_exact(&mut buffer).unwrap();
-        file.seek(SeekFrom::Start(GOD_BYTE_OFFSET as u64)).unwrap();
-        buffer[0] |= RECOVERY_REQUIRED;
-        buffer[0] &= !TWO_PHASE_COMMIT;
-        file.write_all(&buffer).unwrap();
-
         let err = Database::builder(crate::test_admission())
             .set_repair_callback(|handle| handle.abort())
             .open(tmpfile.path())

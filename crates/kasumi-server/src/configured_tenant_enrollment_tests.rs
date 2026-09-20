@@ -23,7 +23,7 @@ async fn dormant_resident() -> (
     Arc<Administration>,
     RequestContext,
 ) {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let installation =
         crate::standalone::initialize(&directory.path().join("installed"), "tenant-a")
             .await
@@ -158,7 +158,7 @@ async fn closure_before_actual_enrollment_handoff_rejects_publication_and_preser
 #[tokio::test]
 async fn abandoned_fresh_standalone_preparation_drains_without_publication_and_retries_existing_state()
 -> Result<()> {
-    let directory = tempfile::tempdir()?;
+    let directory = kasumi_store::test_utils::private_tempdir()?;
     let installed =
         crate::standalone::initialize(&directory.path().join("installed"), "tenant-a").await?;
     let config = RuntimeConfig::load(&installed.configuration)?;

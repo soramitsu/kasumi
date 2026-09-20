@@ -74,6 +74,12 @@ contract; G14 requires the fully populated passing manifest for the final releas
 
 ### G02 — Physical storage ownership and admitted redb
 
+The next storage-accounting slice is specified in
+[installed storage admission](installed-storage-admission-plan.md). It remains
+unimplemented: share the durable memory governor across runtime facades, charge
+retained metadata before allocation, then account for directories and every
+affected parent during namespace mutation.
+
 - Require installed `NodeDisk` at every production storage constructor. Account
   for creation, growth, write, sync, shrink, deletion and directory publication
   through the same physical owner, including archives, journals and local backups
@@ -89,6 +95,11 @@ contract; G14 requires the fully populated passing manifest for the final releas
   rollback, interruption and owner failure.
 
 ### G03 — Streaming generations and bounded resources
+
+[Custody staging](custody-staging-plan.md) records the unimplemented bounded
+transaction writer identified by the failed capacity diagnostic. It depends on
+explicit memory admission and retained worker cleanup; the 4,200-command and
+8,400-audit workload, durability and original deadlines remain unchanged.
 
 - Replace whole-namespace replacement with generation-addressed typed records
   streamed into unpublished encrypted generations. Authenticate final checked
@@ -139,6 +150,11 @@ contract; G14 requires the fully populated passing manifest for the final releas
   Retirement requires complete authoritative coverage and a final race-safe check.
 
 ### G07 — Response fencing and retained task/drain ownership
+
+[Filesystem job ownership](filesystem-job-ownership-plan.md) records the remaining
+unimplemented archive/backup child registry, pre-open disk fence, output-charge
+handoff, constructor plumbing and shutdown order. A caller retaining a resource
+charge does not by itself retain the actual child outcome.
 
 - Materialize bounded terminal MCP responses under request ownership before the
   final credential/family check. Reject SSE. Withheld responses after mutation

@@ -146,11 +146,7 @@ async fn complete_recovery(
     activation_outcome: Option<bool>,
     inspect_completion: bool,
 ) -> Option<RoutePublicationFixture> {
-    let mut f = if activation_outcome == Some(true) {
-        Fixture::new().await
-    } else {
-        Fixture::new().await
-    };
+    let mut f = Fixture::new().await;
     let mut request = request(&f);
     let mut attestation = BTreeMap::new();
     for node in request.target_nodes.values_mut() {

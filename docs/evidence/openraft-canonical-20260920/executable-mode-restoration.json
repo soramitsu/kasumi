@@ -1,0 +1,68 @@
+[
+  {
+    "path": "examples/memstore/test-cluster.sh",
+    "before": "0o644",
+    "after": "0o755",
+    "upstream_archive_mode": "0o775"
+  },
+  {
+    "path": "examples/raft-kv-memstore-generic-snapshot-data/test-cluster.sh",
+    "before": "0o644",
+    "after": "0o755",
+    "upstream_archive_mode": "0o775"
+  },
+  {
+    "path": "examples/raft-kv-memstore-opendal-snapshot-data/test-cluster.sh",
+    "before": "0o644",
+    "after": "0o755",
+    "upstream_archive_mode": "0o775"
+  },
+  {
+    "path": "examples/raft-kv-memstore-singlethreaded/test-cluster.sh",
+    "before": "0o644",
+    "after": "0o755",
+    "upstream_archive_mode": "0o775"
+  },
+  {
+    "path": "examples/raft-kv-memstore/test-cluster.sh",
+    "before": "0o644",
+    "after": "0o755",
+    "upstream_archive_mode": "0o775"
+  },
+  {
+    "path": "examples/raft-kv-rocksdb/test-cluster.sh",
+    "before": "0o644",
+    "after": "0o755",
+    "upstream_archive_mode": "0o775"
+  },
+  {
+    "path": "scripts/build_change_log.py",
+    "before": "0o644",
+    "after": "0o755",
+    "upstream_archive_mode": "0o775"
+  },
+  {
+    "path": "scripts/check.kdl",
+    "before": "0o644",
+    "after": "0o755",
+    "upstream_archive_mode": "0o775"
+  },
+  {
+    "path": "scripts/mprocs-check.yaml",
+    "before": "0o644",
+    "after": "0o755",
+    "upstream_archive_mode": "0o775"
+  },
+  {
+    "path": "scripts/publish.sh",
+    "before": "0o644",
+    "after": "0o755",
+    "upstream_archive_mode": "0o775"
+  },
+  {
+    "path": "scripts/watch-doc.sh",
+    "before": "0o644",
+    "after": "0o755",
+    "upstream_archive_mode": "0o775"
+  }
+]

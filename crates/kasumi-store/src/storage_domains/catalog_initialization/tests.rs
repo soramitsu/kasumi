@@ -4,8 +4,8 @@ use redb::ReadableTable;
 use std::{future::Future, task::Poll};
 
 fn node() -> Result<(tempfile::TempDir, Arc<NodeStore>)> {
-    let directory = tempfile::tempdir()?;
-    let node = NodeStore::create_new(
+    let directory = crate::test_utils::private_tempdir()?;
+    let node = NodeStore::create_new_fixture(
         directory.path().join("catalogs.redb"),
         crate::test_utils::NODE_STORE_ID,
         ScratchDisk::fixture(),

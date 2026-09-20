@@ -1,0 +1,15 @@
+   Compiling openraft-macros v0.9.25 (/Users/mtakemiya/dev/kasumi/vendor/openraft-0.9.25/macros)
+    Checking openraft v0.9.25 (/Users/mtakemiya/dev/kasumi/vendor/openraft-0.9.25/openraft)
+error: this pattern is unneeded as the `..` pattern can match that element
+  --> openraft/src/progress/entry/mod.rs:85:34
+   |
+85 |             Inflight::Snapshot { last_log_id: _, .. } => false,
+   |                                  ^^^^^^^^^^^^^^^^ help: remove it
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unneeded_wildcard_pattern
+   = note: `-D clippy::unneeded-wildcard-pattern` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::unneeded_wildcard_pattern)]`
+
+error: could not compile `openraft` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `openraft` (lib test) due to 1 previous error

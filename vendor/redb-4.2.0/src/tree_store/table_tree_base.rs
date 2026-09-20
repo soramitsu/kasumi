@@ -127,6 +127,12 @@ impl InternalTableDefinition {
         table_type: TableType,
         name: &str,
     ) -> Result<(), TableError> {
+        if !self.private_key_type().is_supported() || !self.private_value_type().is_supported() {
+            return Err(crate::StorageError::Corrupted(
+                "Unsupported stored type classification".to_string(),
+            )
+            .into());
+        }
         if self.get_type() != table_type {
             return if self.get_type() == TableType::Multimap {
                 Err(TableError::TableIsMultimap(name.to_string()))
@@ -161,13 +167,8 @@ impl InternalTableDefinition {
 
         let stored_key = self.private_key_type();
         let stored_value = self.private_value_type();
-        // Accept the current type name, or the spelling an older redb version may have stored for
-        // the same type (see `TypeName::matches_legacy`).
-        let expected_key = K::type_name();
-        let expected_value = V::type_name();
-        let key_matches = stored_key == expected_key || expected_key.matches_legacy(&stored_key);
-        let value_matches =
-            stored_value == expected_value || expected_value.matches_legacy(&stored_value);
+        let key_matches = stored_key == K::type_name();
+        let value_matches = stored_value == V::type_name();
         if !key_matches || !value_matches {
             return Err(TableError::TableTypeMismatch {
                 table: name.to_string(),
@@ -515,5 +516,39 @@ impl Value for InternalTableDefinition {
 
     fn type_name() -> TypeName {
         TypeName::internal("redb::InternalTableDefinition")
+    }
+}
+
+#[cfg(test)]
+mod canonical_identity_tests {
+    use super::*;
+
+    #[test]
+    fn stored_legacy_composite_cannot_select_the_current_value_decoder() {
+        let mut definition =
+            InternalTableDefinition::new::<u64, Option<u32>>(TableType::Normal, None, 0);
+        let InternalTableDefinition::Normal { value_type, .. } = &mut definition else {
+            unreachable!()
+        };
+        // Actual pre-4.2 stored identity, deliberately paired with identical value width.
+        *value_type = TypeName::from_bytes(b"\x01Option<u32>");
+        assert!(matches!(
+            definition.check_match::<u64, Option<u32>>(TableType::Normal, "old"),
+            Err(TableError::TableTypeMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn unsupported_type_marker_is_rejected_even_by_untyped_open() {
+        let mut definition =
+            InternalTableDefinition::new::<u64, (u32, &str)>(TableType::Normal, None, 0);
+        let InternalTableDefinition::Normal { value_type, .. } = &mut definition else {
+            unreachable!()
+        };
+        *value_type = TypeName::from_bytes(b"\x03(u32,&str)");
+        assert!(matches!(
+            definition.check_match_untyped(TableType::Normal, "old"),
+            Err(TableError::Storage(crate::StorageError::Corrupted(_)))
+        ));
     }
 }

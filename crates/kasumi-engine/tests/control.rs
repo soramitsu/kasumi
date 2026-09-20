@@ -65,8 +65,8 @@ fn placement_rejects_shared_domains_unknown_nodes_duplicate_identities_and_clear
 }
 #[tokio::test]
 async fn control_updates_require_operator_authority_cas_and_survive_reopen() {
-    let root = tempfile::tempdir().unwrap();
-    let node = NodeStore::create_new(
+    let root = kasumi_store::test_utils::private_tempdir().unwrap();
+    let node = NodeStore::create_new_fixture(
         root.path().join("control.redb"),
         kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),

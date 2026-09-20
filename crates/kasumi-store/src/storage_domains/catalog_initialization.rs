@@ -138,6 +138,7 @@ async fn begin(input: Input) -> Result<oneshot::Receiver<Ticket>> {
     let (send, receive) = oneshot::channel();
     let node = input.node.clone();
     let mut tasks = node.initializers.lock().await;
+    ensure!(!node.db.is_stopped(), "node catalog admission is closed");
     // Reap only actual terminal tasks, so repeated installation does not retain
     // a lifetime history of JoinHandles. Unfinished owners stay registered.
     tasks.reap_finished().await?;
@@ -310,9 +311,7 @@ fn save_new_catalogs(application: &TenantStore, custody: &TenantStore) -> Result
         serde_json::to_vec(&*application_catalog)?,
         serde_json::to_vec(&*custody_catalog)?,
     ];
-    let mut tx = application.node.db.begin_write()?;
-    tx.set_durability(Durability::Immediate)?;
-    tx.set_two_phase_commit(true);
+    let tx = application.node.db.begin_write()?;
     {
         let mut catalogs = tx.open_table(CATALOG)?;
         let records = tx.open_table(RECORDS)?;

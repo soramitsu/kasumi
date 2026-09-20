@@ -25,8 +25,21 @@ recovery operation and target incarnation; active runtime and stopped operator
 opens use the same derivation. The UUID envelope does not replace encrypted
 tenant catalog authentication or permanent recovery fencing.
 
+The generated configuration requires `persistent_disk`. Its explicit `roots` map
+contains the installation's `data` and `backups` directories. These private roots
+share one filesystem and cannot overlap each other or `scratch`. The initial
+limits are `max_bytes: 137438953472` (128 GiB),
+`maintenance_reserve_bytes: 1073741824` (1 GiB),
+`min_free_bytes: 268435456` (256 MiB), `max_open_files: 4096`,
+`max_census_entries: 1000000`, `max_depth: 64`, and `max_name_bytes: 255`.
+The bounded startup census must finish before storage admission opens. Database,
+recovery generation, local archive and backup files use this retained owner;
+configuration never derives a persistent root from a database path. Install every
+root explicitly before opening it and use the same root map and budgets when
+initializing auxiliary stores. Unsupported or missing configuration is rejected.
+
 The generated configuration includes a required `scratch_disk` object with an
-absolute private `directory` at `data/scratch`, `max_bytes` of 68719476736
+absolute private `directory` at `scratch`, `max_bytes` of 68719476736
 (64 GiB), and `min_free_bytes` of 268435456 (256 MiB). Configure these values for
 the installation's workload and disk. The parent directory must exist. All
 snapshot transfer, backup verification, restore staging and temporary point
@@ -37,10 +50,11 @@ per-operation format and request bounds still apply. These are resource settings
 not a fixed aggregate backup-format ceiling. Reopening the same live scratch
 directory with different budgets is rejected.
 
-The scratch governor also checks fresh filesystem free space while reserving
-outstanding writes across scratch owners on that filesystem. It does not reserve
-persistent database, index, WAL, backup destination or archive space. External
-processes can consume disk after a check, so storage failures remain possible.
+Persistent and scratch owners share the filesystem's outstanding-growth
+accounting and fresh free-space checks, while maintaining separate installed
+capacity limits. The persistent maintenance reserve remains unavailable to
+foreground growth. External processes can consume disk after a check, so storage
+failures remain possible.
 Protected health and metrics expose the scratch charges and filesystem sample.
 
 The native endpoints require TLS 1.3, a client certificate issued by the installed CA, an exact installed server certificate pin, and a bearer token. `profiles/default.json` names the database credential; `profiles/control.json` names the separate Control administrator credential. Each token is bound to one explicit incarnation and purpose. A Control token cannot access the document API.

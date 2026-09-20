@@ -27,9 +27,9 @@ async fn journal(
     )
     .unwrap();
     let node = if create {
-        NodeStore::create_new(path, file_id, kasumi_store::ScratchDisk::fixture())
+        NodeStore::create_new_fixture(path, file_id, kasumi_store::ScratchDisk::fixture())
     } else {
-        NodeStore::open_existing(path, file_id, kasumi_store::ScratchDisk::fixture())
+        NodeStore::open_existing_fixture(path, file_id, kasumi_store::ScratchDisk::fixture())
     }
     .unwrap();
     let name = format!("kasumi.target.{}.{id}", f.control.root.control_incarnation);
@@ -140,7 +140,7 @@ impl Serving {
             .unwrap();
         fence.check().unwrap();
         let gate = ServingGate::new(attempt.verify(lease).unwrap()).unwrap();
-        let node = NodeStore::open_existing(
+        let node = NodeStore::open_existing_fixture(
             f.issuer._dir.path().join(format!("target-{id}.redb")),
             kasumi_store::node_store_ids::target_generation(
                 f.control.root.control_incarnation,

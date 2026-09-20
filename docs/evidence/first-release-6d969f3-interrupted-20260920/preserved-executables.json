@@ -1,0 +1,74 @@
+{
+  "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-6d969f3-ownership-disk-startup/preserved-executables/445e5d8a61b0cf2fa5709240a025ca8abfd98f537c76dacab8a67af8e2cb0bfa-rmcp-be9a77413837ead2": {
+    "sha256": "445e5d8a61b0cf2fa5709240a025ca8abfd98f537c76dacab8a67af8e2cb0bfa",
+    "bytes": 31408024,
+    "verified": true,
+    "gates": [
+      "rmcp-terminal-ownership"
+    ],
+    "cargo_target": "debug/deps/rmcp-be9a77413837ead2"
+  },
+  "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-6d969f3-ownership-disk-startup/preserved-executables/369f0511089400f84ac2b0dd700fc803081389da6b592ae0e9d5d8a923f9532b-test_streamable_http_json_response-a419c25f75fcf63d": {
+    "sha256": "369f0511089400f84ac2b0dd700fc803081389da6b592ae0e9d5d8a923f9532b",
+    "bytes": 45009248,
+    "verified": true,
+    "gates": [
+      "rmcp-upstream-protocol"
+    ],
+    "cargo_target": "debug/deps/test_streamable_http_json_response-a419c25f75fcf63d"
+  },
+  "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-6d969f3-ownership-disk-startup/preserved-executables/9437124110d6aa68f6c6c7f4f90263054cd1e72958acbbb29cbcc6ce588b3d49-test_protocol_version_negotiation-548906498a439f3f": {
+    "sha256": "9437124110d6aa68f6c6c7f4f90263054cd1e72958acbbb29cbcc6ce588b3d49",
+    "bytes": 29361584,
+    "verified": true,
+    "gates": [
+      "rmcp-upstream-protocol"
+    ],
+    "cargo_target": "debug/deps/test_protocol_version_negotiation-548906498a439f3f"
+  },
+  "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-6d969f3-ownership-disk-startup/preserved-executables/c490692790333602f55badcad32ee46c313d249eee9ee4dc5c525631f9ee5b8c-test_server_discover-f747e2bbdcd3c73e": {
+    "sha256": "c490692790333602f55badcad32ee46c313d249eee9ee4dc5c525631f9ee5b8c",
+    "bytes": 8827528,
+    "verified": true,
+    "gates": [
+      "rmcp-upstream-protocol"
+    ],
+    "cargo_target": "debug/deps/test_server_discover-f747e2bbdcd3c73e"
+  },
+  "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-6d969f3-ownership-disk-startup/preserved-executables/5abc9dc74b624de56e1a0c55df23ab3ef2301298c9c8cb7ad77291fb2cfa43f8-test_streamable_http_protocol_version-ef160af2be92561d": {
+    "sha256": "5abc9dc74b624de56e1a0c55df23ab3ef2301298c9c8cb7ad77291fb2cfa43f8",
+    "bytes": 45248888,
+    "verified": true,
+    "gates": [
+      "rmcp-upstream-protocol"
+    ],
+    "cargo_target": "debug/deps/test_streamable_http_protocol_version-ef160af2be92561d"
+  },
+  "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-6d969f3-ownership-disk-startup/preserved-executables/1d31c2db9fae53c7abd2bb335685a823bc2a0018ee91c18ddbb4930bc85f0364-test_stateless_protocol_version-187dc3bc4e722d88": {
+    "sha256": "1d31c2db9fae53c7abd2bb335685a823bc2a0018ee91c18ddbb4930bc85f0364",
+    "bytes": 44028848,
+    "verified": true,
+    "gates": [
+      "rmcp-upstream-protocol"
+    ],
+    "cargo_target": "debug/deps/test_stateless_protocol_version-187dc3bc4e722d88"
+  },
+  "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-6d969f3-ownership-disk-startup/preserved-executables/89cfc3c67011c4b233ee4525f57b3f5ecc9bf9ca7eab883c37b8d1aa72e39b27-test_streamable_http_standard_headers-3af1267ffc35ddba": {
+    "sha256": "89cfc3c67011c4b233ee4525f57b3f5ecc9bf9ca7eab883c37b8d1aa72e39b27",
+    "bytes": 37071864,
+    "verified": true,
+    "gates": [
+      "rmcp-upstream-protocol"
+    ],
+    "cargo_target": "debug/deps/test_streamable_http_standard_headers-3af1267ffc35ddba"
+  },
+  "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-6d969f3-ownership-disk-startup/preserved-executables/b09ea835b74bb7c549d75e4fb5e9307930ae6fc9be75aa292bc060effafc9eae-kasumi_raft-e65e0685d1bb4325": {
+    "sha256": "b09ea835b74bb7c549d75e4fb5e9307930ae6fc9be75aa292bc060effafc9eae",
+    "bytes": 46108192,
+    "verified": true,
+    "gates": [
+      "raft-application-write-classification"
+    ],
+    "cargo_target": "debug/deps/kasumi_raft-e65e0685d1bb4325"
+  }
+}

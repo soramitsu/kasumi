@@ -1,0 +1,8 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.19s
+     Running unittests src/lib.rs (target/debug/deps/kasumi_raft-2f98ca7f4e0b7718)
+
+running 1 test
+test snapshot_buffer::tests::cancelled_write_and_shutdown_join_actual_child_before_freezing ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 72 filtered out; finished in 0.05s
+

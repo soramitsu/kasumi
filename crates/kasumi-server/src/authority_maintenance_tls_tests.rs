@@ -122,7 +122,7 @@ async fn start(
 
 #[tokio::test]
 async fn actual_tls_peer_readiness_enrolls_replaces_and_fences_revoked_member() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = kasumi_store::test_utils::private_tempdir().unwrap();
     let (ca, identities) = certificates();
     let mut listeners = Vec::new();
     for _ in 0..4 {
@@ -211,7 +211,7 @@ async fn actual_tls_peer_readiness_enrolls_replaces_and_fences_revoked_member() 
         .unwrap();
         network.install_audit(Arc::new(TestAudit)).unwrap();
         let store = TenantStorageSet::initialize_catalogs(
-            NodeStore::create_new(
+            NodeStore::create_new_fixture(
                 dir.path().join(format!("node-{id}.redb")),
                 kasumi_store::test_utils::NODE_STORE_ID,
                 kasumi_store::ScratchDisk::fixture(),
@@ -254,6 +254,7 @@ async fn actual_tls_peer_readiness_enrolls_replaces_and_fences_revoked_member() 
                 &kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
             )
             .unwrap(),
+            kasumi_raft::SnapshotBufferOwner::fixture(),
         )
         .await
         .unwrap();

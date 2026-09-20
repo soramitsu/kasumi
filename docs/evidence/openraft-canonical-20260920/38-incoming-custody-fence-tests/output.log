@@ -1,0 +1,15 @@
+   Compiling openraft v0.9.25 (/Users/mtakemiya/dev/kasumi/vendor/openraft-0.9.25/openraft)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.53s
+     Running unittests src/lib.rs (target/openraft-qualification/debug/deps/openraft-0f7d56f10aafc774)
+
+running 7 tests
+test raft::incoming_snapshot_test::retained_failure_notifies_live_core_exactly_once ... ok
+test raft::incoming_snapshot_test::failed_stream_cannot_be_overwritten_by_replacement ... ok
+test raft::incoming_snapshot_test::unwound_data_poll_retains_uncertain_owner_without_polling_it_again ... ok
+test raft::incoming_snapshot_test::unwound_incoming_rpc_notifies_live_core_and_preserves_owner ... ok
+test raft::incoming_snapshot_test::cancelled_raft_shutdown_keeps_incoming_owner_until_actual_child_joins ... ok
+test raft::incoming_snapshot_test::cancelled_final_chunk_keeps_stream_until_successful_close_then_transfers_data ... ok
+test raft::incoming_snapshot_test::receive_and_close_failures_retain_independent_original_errors_and_owner ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 209 filtered out; finished in 0.03s
+

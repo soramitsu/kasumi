@@ -5,7 +5,7 @@ use std::{
 };
 
 fn installation() -> (tempfile::TempDir, NodeDiskConfig) {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::test_utils::private_tempdir().unwrap();
     let root = directory.path().join("owned");
     crate::private_files::create_directory(&root).unwrap();
     let config = NodeDiskConfig {
@@ -418,6 +418,7 @@ fn persistent_and_scratch_cannot_spend_the_same_filesystem_promise() {
 #[test]
 fn poisoned_shared_promises_cannot_be_reopened_by_either_owner() {
     let (directory, config) = installation();
+    let path = config.roots["data"].join("file");
     let disk = open(config);
     let scratch = crate::ScratchDisk::test_with_device(
         directory.path().join("scratch"),
@@ -427,17 +428,32 @@ fn poisoned_shared_promises_cannot_be_reopened_by_either_owner() {
     let file = disk
         .create_file("data", Path::new("file"), DiskWork::Foreground)
         .unwrap();
+    file.reserve_growth(0, disk.unit, DiskWork::Foreground)
+        .unwrap();
+    file.grow_reserved(disk.unit).unwrap();
+    file.sync_all().unwrap();
+    let before = disk.snapshot();
     let (scratch_file, mut charge) = scratch.file().unwrap();
     disk.device.poison();
     assert!(
-        file.reserve_growth(0, disk.unit, DiskWork::Foreground)
+        file.reserve_growth(disk.unit, 2 * disk.unit, DiskWork::Foreground)
             .is_err()
     );
     assert!(charge.grow(disk.unit).is_err());
-    assert_eq!(disk.snapshot().charged_bytes, 0);
+    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+    assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);
     assert_eq!(scratch.snapshot().charged_bytes, 0);
     assert!(!scratch.snapshot().filesystem_admission_ready);
-    drop(file);
+    assert!(disk.delete_file(file).is_err());
+    assert_eq!(disk.snapshot().open_files, 0);
+    assert_eq!(disk.snapshot().persistent_files, 1);
+    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+    assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+    let raw = std::fs::File::open(&path).unwrap();
+    raw.try_lock().unwrap();
+    assert_eq!(raw.metadata().unwrap().len(), disk.unit);
+    drop(raw);
     disk.reconcile(&CensusCancellation::default()).unwrap();
     assert!(
         !disk.snapshot().filesystem_admission_ready,
@@ -446,7 +462,20 @@ fn poisoned_shared_promises_cannot_be_reopened_by_either_owner() {
     assert!(charge.grow(disk.unit).is_err());
     drop(scratch_file);
     drop(charge);
-    clean(&disk, &["file"]);
+    assert_eq!(scratch.snapshot().live_files, 0);
+    assert_eq!(scratch.snapshot().charged_bytes, 0);
+    assert!(scratch.file().is_err());
+    assert!(
+        disk.create_file("data", Path::new("blocked"), DiskWork::Foreground)
+            .is_err()
+    );
+    assert_eq!(disk.snapshot().open_files, 0);
+    assert_eq!(disk.snapshot().persistent_files, 1);
+    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+    assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);
+    assert!(!disk.snapshot().filesystem_admission_ready);
+    // Shared poison requires process restart. Fixture teardown removes its
+    // private tree; managed cleanup must not reopen this owner to erase charges.
 }
 
 #[test]
@@ -877,4 +906,528 @@ fn uncertain_envelope_parent_sync_preserves_charges_through_close_and_census() {
     reopened.sync_all_and_parent().unwrap();
     drop(reopened);
     clean(&disk, &["node"]);
+}
+
+#[test]
+fn immutable_publication_preserves_the_inode_and_its_capacity_charge() {
+    let (_directory, config) = installation();
+    let disk = open(config.clone());
+    let file = disk
+        .create_file("data", Path::new("staged"), DiskWork::Maintenance)
+        .unwrap();
+    file.reserve_growth(0, 4096, DiskWork::Maintenance).unwrap();
+    file.grow_reserved(4096).unwrap();
+    file.write_all_at(&[41; 4096], 0).unwrap();
+    file.sync_all_and_parent().unwrap();
+    let identity = file.identity().unwrap();
+    let before = disk.snapshot();
+    let published = disk
+        .publish_file(file, "data", Path::new("published"))
+        .unwrap();
+    assert_eq!(published.identity().unwrap(), identity);
+    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+    assert_eq!(disk.snapshot().persistent_files, 1);
+    assert_eq!(disk.snapshot().open_files, 1);
+    assert!(!config.roots["data"].join("staged").exists());
+    let mut bytes = [0; 4096];
+    published.read_exact_at(&mut bytes, 0).unwrap();
+    assert_eq!(bytes, [41; 4096]);
+    disk.delete_file(published).unwrap();
+    assert_eq!(disk.snapshot().charged_bytes, 0);
+}
+
+#[test]
+fn publication_conflict_keeps_both_files_and_the_owner_usable() {
+    let (_directory, config) = installation();
+    let disk = open(config.clone());
+    let first = disk
+        .create_file("data", Path::new("first"), DiskWork::Foreground)
+        .unwrap();
+    let other = disk
+        .create_file("data", Path::new("published"), DiskWork::Foreground)
+        .unwrap();
+    let identity = other.identity().unwrap();
+    drop(other);
+    assert!(
+        disk.publish_file(first, "data", Path::new("published"))
+            .is_err()
+    );
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+    assert_eq!(disk.snapshot().persistent_files, 2);
+    assert!(config.roots["data"].join("first").exists());
+    let published = disk.open_file("data", Path::new("published")).unwrap();
+    assert_eq!(published.identity().unwrap(), identity);
+}
+
+#[test]
+fn publication_requires_actual_descriptor_clone_drain() {
+    let (_directory, config) = installation();
+    let disk = open(config.clone());
+    let first = disk
+        .create_file("data", Path::new("first"), DiskWork::Foreground)
+        .unwrap();
+    let retained = first.clone();
+    assert!(
+        disk.publish_file(first, "data", Path::new("published"))
+            .is_err()
+    );
+    assert_eq!(disk.snapshot().open_files, 1);
+    assert!(!config.roots["data"].join("published").exists());
+    disk.publish_file(retained, "data", Path::new("published"))
+        .unwrap();
+    assert_eq!(disk.snapshot().open_files, 0);
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+}
+
+#[test]
+fn raw_created_file_is_not_adopted_after_the_installed_census() {
+    let (_directory, config) = installation();
+    let disk = open(config.clone());
+    let retained = disk
+        .create_file("data", Path::new("retained"), DiskWork::Foreground)
+        .unwrap();
+    seed(&config, "raw", 64 << 10);
+    let before = disk.snapshot();
+    assert!(disk.open_file("data", Path::new("raw")).is_err());
+    let failed = disk.snapshot();
+    assert_eq!(failed.phase, NodeDiskPhase::Failed);
+    assert_eq!(failed.charged_bytes, before.charged_bytes);
+    assert_eq!(failed.persistent_files, 1);
+    assert_eq!(failed.open_files, 1);
+    assert!(!failed.filesystem_admission_ready);
+    assert!(disk.reconcile(&CensusCancellation::default()).is_err());
+    drop(retained);
+    disk.reconcile(&CensusCancellation::default()).unwrap();
+    assert_eq!(disk.snapshot().charged_bytes, 64 << 10);
+    assert_eq!(disk.snapshot().persistent_files, 2);
+    let raw = disk.open_file("data", Path::new("raw")).unwrap();
+    disk.delete_file(raw).unwrap();
+    let retained = disk.open_file("data", Path::new("retained")).unwrap();
+    disk.delete_file(retained).unwrap();
+    assert_eq!(disk.snapshot().charged_bytes, 0);
+    assert_eq!(disk.snapshot().persistent_files, 0);
+    disk.pause().unwrap();
+}
+
+#[test]
+fn raw_growth_of_a_closed_censused_inode_fences_without_rebasing_its_charge() {
+    let (_directory, config) = installation();
+    seed(&config, "file", 32 << 10);
+    let disk = open(config.clone());
+    drop(disk.open_file("data", Path::new("file")).unwrap());
+    let raw = std::fs::OpenOptions::new()
+        .write(true)
+        .open(config.roots["data"].join("file"))
+        .unwrap();
+    raw.set_len(128 << 10).unwrap();
+    raw.sync_all().unwrap();
+    drop(raw);
+    assert!(disk.open_file("data", Path::new("file")).is_err());
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+    assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
+    assert_eq!(disk.snapshot().persistent_files, 1);
+    assert_eq!(disk.snapshot().open_files, 0);
+    disk.reconcile(&CensusCancellation::default()).unwrap();
+    assert_eq!(disk.snapshot().charged_bytes, 128 << 10);
+    let file = disk.open_file("data", Path::new("file")).unwrap();
+    disk.delete_file(file).unwrap();
+    assert_eq!(disk.snapshot().charged_bytes, 0);
+    assert_eq!(disk.snapshot().persistent_files, 0);
+    disk.pause().unwrap();
+}
+
+#[test]
+fn enrolled_extents_survive_all_physical_updates_and_descriptor_reopens() {
+    let (_directory, config) = installation();
+    let disk = open(config.clone());
+    let mut file = disk
+        .create_file("data", Path::new("file"), DiskWork::Foreground)
+        .unwrap();
+    let identity = file.identity().unwrap();
+    file.reserve_growth(0, 256 << 10, DiskWork::Foreground)
+        .unwrap();
+    file.grow_reserved(128 << 10).unwrap();
+    file.write_all_at(&[7; 32 << 10], 0).unwrap();
+    file.settle_growth(128 << 10).unwrap();
+    let after_write = disk.snapshot();
+    drop(file);
+    for _ in 0..3 {
+        file = disk.open_file("data", Path::new("file")).unwrap();
+        assert_eq!(file.identity().unwrap(), identity);
+        assert_eq!(file.observed_len().unwrap(), 128 << 10);
+        assert_eq!(disk.snapshot().charged_bytes, after_write.charged_bytes);
+        assert_eq!(disk.snapshot().pending_bytes, after_write.pending_bytes);
+        assert_eq!(disk.snapshot().persistent_files, 1);
+        drop(file);
+    }
+    file = disk.open_file("data", Path::new("file")).unwrap();
+    file.shrink(64 << 10).unwrap();
+    drop(file);
+    file = disk.open_file("data", Path::new("file")).unwrap();
+    assert_eq!(disk.snapshot().charged_bytes, 64 << 10);
+    disk.shrink_file(file, 32 << 10).unwrap();
+    file = disk.open_file("data", Path::new("file")).unwrap();
+    assert_eq!(file.observed_len().unwrap(), 32 << 10);
+    file = disk
+        .publish_file(file, "data", Path::new("published"))
+        .unwrap();
+    assert_eq!(file.identity().unwrap(), identity);
+    drop(file);
+    file = disk.open_file("data", Path::new("published")).unwrap();
+    assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
+    assert_eq!(disk.snapshot().persistent_files, 1);
+    disk.delete_file(file).unwrap();
+    assert_eq!(disk.snapshot().charged_bytes, 0);
+    assert_eq!(disk.snapshot().pending_bytes, 0);
+    assert_eq!(disk.snapshot().persistent_files, 0);
+    assert!(disk.state.lock().unwrap().accounted.is_empty());
+    disk.pause().unwrap();
+}
+
+#[test]
+fn enrolled_file_metadata_limit_rejects_before_creating_an_untracked_inode() {
+    let (_directory, mut config) = installation();
+    config.max_census_entries = 3;
+    let disk = open(config.clone());
+    for name in ["one", "two", "three"] {
+        drop(
+            disk.create_file("data", Path::new(name), DiskWork::Foreground)
+                .unwrap(),
+        );
+    }
+    assert!(
+        disk.create_file("data", Path::new("four"), DiskWork::Foreground)
+            .is_err()
+    );
+    assert!(!config.roots["data"].join("four").exists());
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+    assert_eq!(disk.snapshot().persistent_files, 3);
+    assert_eq!(disk.state.lock().unwrap().accounted.len(), 3);
+    for name in ["one", "two", "three"] {
+        let file = disk.open_file("data", Path::new(name)).unwrap();
+        disk.delete_file(file).unwrap();
+    }
+    disk.pause().unwrap();
+    disk.reconcile(&CensusCancellation::default()).unwrap();
+}
+
+#[test]
+fn failed_direct_handles_never_release_bytes_or_restart_sync() {
+    for fail_shared_device in [false, true] {
+        let (_directory, config) = installation();
+        let disk = open(config);
+        let file = disk
+            .create_file("data", Path::new("file"), DiskWork::Foreground)
+            .unwrap();
+        file.reserve_growth(0, 4096, DiskWork::Foreground).unwrap();
+        file.grow_reserved(4096).unwrap();
+        file.write_all_at(&[71; 4096], 0).unwrap();
+        file.sync_all_and_parent().unwrap();
+        let before = disk.snapshot();
+        if fail_shared_device {
+            disk.device.lock().fail_owner();
+        } else {
+            disk.fail();
+        }
+        let mut out = [93; 32];
+        let (outcomes, allocations) = crate::allocation_tests::measure(|| {
+            (
+                file.read_exact_at(&mut out, 0),
+                file.sync_all(),
+                file.sync_all_and_parent(),
+            )
+        });
+        assert!(outcomes.0.is_err());
+        assert!(outcomes.1.is_err());
+        assert!(outcomes.2.is_err());
+        assert_eq!(out, [93; 32], "failed owner released file bytes");
+        assert_eq!(allocations, 0);
+        assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+        assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);
+        drop(file);
+        clean(&disk, &["file"]);
+    }
+}
+
+#[test]
+fn paused_direct_handles_can_finish_only_already_admitted_io() {
+    let (_directory, config) = installation();
+    let disk = open(config);
+    let file = disk
+        .create_file("data", Path::new("file"), DiskWork::Foreground)
+        .unwrap();
+    file.reserve_growth(0, 4096, DiskWork::Foreground).unwrap();
+    assert!(disk.pause().is_err());
+    file.grow_reserved(4096).unwrap();
+    file.write_all_at(&[53; 4096], 0).unwrap();
+    file.sync_all().unwrap();
+    file.sync_all_and_parent().unwrap();
+    let mut out = [0; 32];
+    file.read_exact_at(&mut out, 0).unwrap();
+    assert_eq!(out, [53; 32]);
+    assert!(
+        file.reserve_growth(4096, 8192, DiskWork::Foreground)
+            .is_err()
+    );
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Paused);
+    drop(file);
+    clean(&disk, &["file"]);
+}
+
+#[test]
+fn prepared_file_creation_registers_and_retires_without_allocating() {
+    let (_directory, config) = installation();
+    let disk = open(config.clone());
+    // Cross several hash-table growth boundaries: capacity must be acquired by
+    // prepare_file, before O_CREAT makes any of these inode names visible.
+    for index in 0..9 {
+        let name = format!("prepared-{index}");
+        let prepared = disk
+            .prepare_file("data", Path::new(&name), Some(DiskWork::Foreground))
+            .unwrap();
+        assert!(!config.roots["data"].join(&name).exists());
+        let (result, allocations) = crate::allocation_tests::measure(|| prepared.execute());
+        let file = result.unwrap();
+        assert_eq!(allocations, 0, "file creation allocated after preparation");
+        let (result, allocations) = crate::allocation_tests::measure(|| file.check_owner());
+        result.unwrap();
+        assert_eq!(allocations, 0, "new owner's first I/O allocated");
+        let ((), allocations) = crate::allocation_tests::measure(|| drop(file));
+        assert_eq!(allocations, 0);
+        assert_eq!(disk.snapshot().open_files, 0);
+        assert_eq!(disk.snapshot().persistent_files, index + 1);
+    }
+    for index in 0..9 {
+        let name = format!("prepared-{index}");
+        let file = disk.open_file("data", Path::new(&name)).unwrap();
+        disk.delete_file(file).unwrap();
+    }
+    assert_eq!(disk.snapshot().persistent_files, 0);
+}
+
+#[test]
+fn failed_creation_retains_provisional_enrollment_without_registered_drop() {
+    for failure in [
+        file::NamespaceFailure::CreateFileSync,
+        file::NamespaceFailure::CreateParentSync,
+    ] {
+        let (_directory, config) = installation();
+        let disk = open(config.clone());
+        let prepared = disk
+            .prepare_file("data", Path::new("created"), Some(DiskWork::Foreground))
+            .unwrap();
+        disk.namespace_failure
+            .store(failure as u8, Ordering::Relaxed);
+        let (result, allocations) = crate::allocation_tests::measure(|| prepared.execute());
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Other);
+        assert_eq!(allocations, 0, "failed creation allocated: {failure:?}");
+        let snapshot = disk.snapshot();
+        assert_eq!(snapshot.phase, NodeDiskPhase::Failed);
+        assert_eq!(snapshot.open_files, 0);
+        assert_eq!(snapshot.persistent_files, 1);
+        let path = config.roots["data"].join("created");
+        let raw = std::fs::File::open(&path).unwrap();
+        raw.try_lock().unwrap();
+        let identity = Identity::of(&raw.metadata().unwrap());
+        assert!(!disk.lock_state().accounted[&identity].settled);
+        drop(raw);
+        clean(&disk, &["created"]);
+    }
+}
+
+#[test]
+fn abandoned_namespace_preparation_releases_registration_without_deadlock() {
+    let (_directory, config) = installation();
+    let disk = open(config.clone());
+    let prepared = disk
+        .prepare_file("data", Path::new("absent"), Some(DiskWork::Foreground))
+        .unwrap();
+    let ((), allocations) = crate::allocation_tests::measure(|| drop(prepared));
+    assert_eq!(allocations, 0);
+    assert!(!config.roots["data"].join("absent").exists());
+    assert_eq!(disk.snapshot().open_files, 0);
+    assert_eq!(disk.snapshot().persistent_files, 0);
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+
+    let file = disk
+        .create_file("data", Path::new("source"), DiskWork::Foreground)
+        .unwrap();
+    let prepared = disk
+        .prepare_publication(file, "data", Path::new("destination"))
+        .unwrap();
+    let ((), allocations) = crate::allocation_tests::measure(|| drop(prepared));
+    assert_eq!(allocations, 0);
+    assert!(!config.roots["data"].join("destination").exists());
+    assert_eq!(disk.snapshot().open_files, 0);
+    assert_eq!(disk.snapshot().persistent_files, 1);
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+    let file = disk.open_file("data", Path::new("source")).unwrap();
+    disk.delete_file(file).unwrap();
+}
+
+#[test]
+fn prepared_cross_directory_publication_and_physical_reclaim_do_not_allocate() {
+    let (_directory, config) = installation();
+    let source = "s".repeat(200);
+    let destination = "d".repeat(200);
+    for name in [&source, &destination] {
+        crate::private_files::create_directory(&config.roots["data"].join(name)).unwrap();
+    }
+    let source = Path::new(&source).join("staged");
+    let destination = Path::new(&destination).join("published");
+    let disk = open(config.clone());
+    let file = disk
+        .create_file("data", &source, DiskWork::Foreground)
+        .unwrap();
+    file.reserve_growth(0, 32 << 10, DiskWork::Foreground)
+        .unwrap();
+    file.grow_reserved(32 << 10).unwrap();
+    file.write_all_at(&[17; 32 << 10], 0).unwrap();
+    file.sync_all_and_parent().unwrap();
+    let identity = file.identity().unwrap();
+    let prepared = disk
+        .prepare_publication(file, "data", &destination)
+        .unwrap();
+    let (result, allocations) = crate::allocation_tests::measure(|| prepared.execute());
+    let file = result.unwrap();
+    assert_eq!(allocations, 0);
+    assert_eq!(file.identity().unwrap(), identity);
+    assert!(!config.roots["data"].join(&source).exists());
+    assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
+    let (result, allocations) =
+        crate::allocation_tests::measure(|| disk.shrink_file(file, 16 << 10));
+    result.unwrap();
+    assert_eq!(allocations, 0);
+    assert_eq!(disk.snapshot().charged_bytes, 16 << 10);
+    assert_eq!(disk.snapshot().open_files, 0);
+    let file = disk.open_file("data", &destination).unwrap();
+    let (result, allocations) = crate::allocation_tests::measure(|| disk.delete_file(file));
+    result.unwrap();
+    assert_eq!(allocations, 0);
+    assert_eq!(disk.snapshot().charged_bytes, 0);
+    assert_eq!(disk.snapshot().persistent_files, 0);
+    assert_eq!(disk.snapshot().open_files, 0);
+}
+
+#[test]
+fn post_rename_failures_keep_the_charge_and_return_without_allocating() {
+    for failure in [
+        file::NamespaceFailure::PublishSourceSync,
+        file::NamespaceFailure::PublishDestinationSync,
+        file::NamespaceFailure::PublishVerify,
+    ] {
+        let (_directory, config) = installation();
+        let disk = open(config.clone());
+        let file = disk
+            .create_file("data", Path::new("source"), DiskWork::Foreground)
+            .unwrap();
+        file.reserve_growth(0, 32 << 10, DiskWork::Foreground)
+            .unwrap();
+        file.grow_reserved(32 << 10).unwrap();
+        file.write_all_at(&[19; 32 << 10], 0).unwrap();
+        file.sync_all_and_parent().unwrap();
+        let identity = file.identity().unwrap();
+        let prepared = disk
+            .prepare_publication(file, "data", Path::new("destination"))
+            .unwrap();
+        disk.namespace_failure
+            .store(failure as u8, Ordering::Relaxed);
+        let (result, allocations) = crate::allocation_tests::measure(|| prepared.execute());
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Other);
+        assert_eq!(allocations, 0, "post-rename error allocated: {failure:?}");
+        assert!(!config.roots["data"].join("source").exists());
+        assert_eq!(
+            crate::private_files::file_identity(&config.roots["data"].join("destination")).unwrap(),
+            identity
+        );
+        let snapshot = disk.snapshot();
+        assert_eq!(snapshot.phase, NodeDiskPhase::Failed);
+        assert_eq!(snapshot.open_files, 0);
+        assert_eq!(snapshot.persistent_files, 1);
+        assert_eq!(snapshot.charged_bytes, 32 << 10);
+        assert!(disk.open_file("data", Path::new("destination")).is_err());
+        let raw = std::fs::File::open(config.roots["data"].join("destination")).unwrap();
+        raw.try_lock().unwrap();
+        drop(raw);
+        clean(&disk, &["destination"]);
+    }
+}
+
+#[test]
+fn post_reclaim_failures_keep_credit_until_actual_drain_and_census_without_allocating() {
+    for (length, failure) in [
+        (Some(16 << 10), file::NamespaceFailure::ReclaimFileSync),
+        (Some(16 << 10), file::NamespaceFailure::ReclaimParentSync),
+        (None, file::NamespaceFailure::ReclaimParentSync),
+    ] {
+        let (_directory, config) = installation();
+        let disk = open(config.clone());
+        let file = disk
+            .create_file("data", Path::new("file"), DiskWork::Foreground)
+            .unwrap();
+        file.reserve_growth(0, 32 << 10, DiskWork::Foreground)
+            .unwrap();
+        file.grow_reserved(32 << 10).unwrap();
+        file.write_all_at(&[23; 32 << 10], 0).unwrap();
+        file.sync_all_and_parent().unwrap();
+        disk.namespace_failure
+            .store(failure as u8, Ordering::Relaxed);
+        let (result, allocations) = crate::allocation_tests::measure(|| match length {
+            Some(length) => disk.shrink_file(file, length),
+            None => disk.delete_file(file),
+        });
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Other);
+        assert_eq!(allocations, 0, "post-reclaim error allocated: {failure:?}");
+        let snapshot = disk.snapshot();
+        assert_eq!(snapshot.phase, NodeDiskPhase::Failed);
+        assert_eq!(snapshot.open_files, 0);
+        assert_eq!(snapshot.persistent_files, 1);
+        assert_eq!(snapshot.charged_bytes, 32 << 10);
+        let path = config.roots["data"].join("file");
+        if let Some(length) = length {
+            let raw = std::fs::File::open(&path).unwrap();
+            raw.try_lock().unwrap();
+            assert_eq!(raw.metadata().unwrap().len(), length);
+            drop(raw);
+        } else {
+            assert!(!path.exists());
+        }
+        disk.reconcile(&CensusCancellation::default()).unwrap();
+        assert_eq!(disk.snapshot().charged_bytes, length.unwrap_or(0));
+        if length.is_some() {
+            let file = disk.open_file("data", Path::new("file")).unwrap();
+            disk.delete_file(file).unwrap();
+        }
+        assert_eq!(disk.snapshot().charged_bytes, 0);
+        assert_eq!(disk.snapshot().persistent_files, 0);
+    }
+}
+
+#[test]
+fn prepared_publication_conflict_returns_inline_without_fencing_or_replacing() {
+    let (_directory, config) = installation();
+    let disk = open(config.clone());
+    let first = disk
+        .create_file("data", Path::new("first"), DiskWork::Foreground)
+        .unwrap();
+    let other = disk
+        .create_file("data", Path::new("destination"), DiskWork::Foreground)
+        .unwrap();
+    let identity = other.identity().unwrap();
+    drop(other);
+    let prepared = disk
+        .prepare_publication(first, "data", Path::new("destination"))
+        .unwrap();
+    let (result, allocations) = crate::allocation_tests::measure(|| prepared.execute());
+    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+    assert_eq!(allocations, 0);
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+    assert_eq!(disk.snapshot().open_files, 0);
+    assert_eq!(disk.snapshot().persistent_files, 2);
+    assert!(config.roots["data"].join("first").exists());
+    assert_eq!(
+        crate::private_files::file_identity(&config.roots["data"].join("destination")).unwrap(),
+        identity
+    );
+    clean(&disk, &["first", "destination"]);
 }

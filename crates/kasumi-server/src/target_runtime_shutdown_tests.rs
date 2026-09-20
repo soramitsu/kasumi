@@ -4,7 +4,7 @@ use std::{collections::BTreeSet, future::Future, task::Poll};
 #[tokio::test]
 async fn target_monitor_and_outer_owner_survive_cancelled_shutdown_until_journal_reopens() {
     tokio::time::timeout(std::time::Duration::from_secs(15), async {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = kasumi_store::test_utils::private_tempdir().unwrap();
         let path = directory.path().join("target-journal.redb");
 
         let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
@@ -31,7 +31,8 @@ async fn target_monitor_and_outer_owner_survive_cancelled_shutdown_until_journal
         )
         .unwrap();
         let node =
-            NodeStore::create_new(&path, node_id, kasumi_store::ScratchDisk::fixture()).unwrap();
+            NodeStore::create_new_fixture(&path, node_id, kasumi_store::ScratchDisk::fixture())
+                .unwrap();
         let weak_node = Arc::downgrade(&node);
         let provider = Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([41; 32]));
         let journal_tenant = format!("kasumi.target.{}.1", root.control_incarnation);
@@ -117,6 +118,7 @@ async fn target_monitor_and_outer_owner_survive_cancelled_shutdown_until_journal
             installed,
             credential: Arc::new(|_| anyhow::bail!("ownership fixture cannot request credentials")),
             journal,
+            journal_node: node.clone(),
             signer: TargetSigner::from_pkcs8(identity, &key.serialize_der()).unwrap(),
             cleanup_key: Ed25519KeyPair::from_pkcs8(&key.serialize_der()).unwrap(),
             admission,
@@ -133,7 +135,7 @@ async fn target_monitor_and_outer_owner_survive_cancelled_shutdown_until_journal
         // owner exists. Generation close must still join those store monitors.
         let partial_path = directory.path().join("partial-target.redb");
         let partial_id = Uuid::new_v4();
-        let partial_node = NodeStore::create_new(
+        let partial_node = NodeStore::create_new_fixture(
             &partial_path,
             partial_id,
             kasumi_store::ScratchDisk::fixture(),
@@ -193,7 +195,7 @@ async fn target_monitor_and_outer_owner_survive_cancelled_shutdown_until_journal
         assert!(weak_runtime.upgrade().is_none());
         assert!(weak_partial.upgrade().is_none());
         drop(
-            NodeStore::open_existing(
+            NodeStore::open_existing_fixture(
                 &partial_path,
                 partial_id,
                 kasumi_store::ScratchDisk::fixture(),
@@ -210,7 +212,8 @@ async fn target_monitor_and_outer_owner_survive_cancelled_shutdown_until_journal
         drop(node);
         assert!(weak_node.upgrade().is_none());
         let reopened =
-            NodeStore::open_existing(&path, node_id, kasumi_store::ScratchDisk::fixture()).unwrap();
+            NodeStore::open_existing_fixture(&path, node_id, kasumi_store::ScratchDisk::fixture())
+                .unwrap();
         let store = TenantStore::open_existing(reopened, journal_tenant, provider, access)
             .await
             .unwrap();
@@ -222,7 +225,7 @@ async fn target_monitor_and_outer_owner_survive_cancelled_shutdown_until_journal
 
 #[test]
 fn target_absence_requires_a_successful_filesystem_observation() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let path = directory.path().join("target.redb");
     assert!(!target_file_exists(&path).unwrap());
     std::fs::write(&path, b"owned").unwrap();
@@ -272,10 +275,11 @@ impl kasumi_store::KeyProvider for PausedCatalogProvider {
 #[tokio::test]
 async fn target_generation_close_joins_cancelled_catalog_initializers_before_file_cleanup() {
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = kasumi_store::test_utils::private_tempdir().unwrap();
         let path = directory.path().join("unpublished-target.redb");
         let id = Uuid::new_v4();
-        let node = NodeStore::create_new(&path, id, kasumi_store::ScratchDisk::fixture()).unwrap();
+        let node =
+            NodeStore::create_new_fixture(&path, id, kasumi_store::ScratchDisk::fixture()).unwrap();
         let weak = Arc::downgrade(&node);
         let provider = Arc::new(PausedCatalogProvider {
             inner: kasumi_store::test_utils::LocalKeyProvider::new([63; 32]),
@@ -331,13 +335,13 @@ async fn target_generation_close_joins_cancelled_catalog_initializers_before_fil
         drop(closing);
         assert!(generation.node.is_some());
         assert!(weak.upgrade().is_some());
-        assert!(NodeStore::claim_cleanup(&path, id).is_err());
+        assert!(NodeStore::claim_cleanup_fixture(&path, id).is_err());
         provider.release.notify_one();
         generation.close(&cluster, &registry).await.unwrap();
         assert!(generation.node.is_none());
         assert!(!generation.fresh_catalogs);
         assert!(weak.upgrade().is_none());
-        let ownership = NodeStore::claim_cleanup(&path, id).unwrap();
+        let ownership = NodeStore::claim_cleanup_fixture(&path, id).unwrap();
         std::fs::remove_file(&path).unwrap();
         kasumi_store::private_files::sync_parent(&path).unwrap();
         drop(ownership);

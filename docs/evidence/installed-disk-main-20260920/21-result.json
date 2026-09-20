@@ -1,0 +1,25 @@
+{
+  "scope": "development integrated snapshot-inventory diagnostic, not final release qualification",
+  "command": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+    "test",
+    "--offline",
+    "-p",
+    "kasumi-engine",
+    "--all-features",
+    "--lib",
+    "admission::tests::snapshot_startup_inventory_is_charged_without_a_governor_cycle",
+    "--",
+    "--exact",
+    "--test-threads=1"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "head": "c283fa4a2c2344fd359d1d58ea49a1664de72088",
+  "process_group": 34087,
+  "exit_code": 0,
+  "timeout": false,
+  "signals": [],
+  "drained": true,
+  "elapsed_seconds": 137.58516311645508,
+  "inventoried_source_unchanged": true
+}

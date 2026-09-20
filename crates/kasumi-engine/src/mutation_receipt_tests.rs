@@ -66,8 +66,8 @@ fn commit(
     (next, pending)
 }
 async fn durable() -> (tempfile::TempDir, Arc<TenantStore>, TenantState, View) {
-    let directory = tempfile::tempdir().unwrap();
-    let node = NodeStore::create_new(
+    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let node = NodeStore::create_new_fixture(
         directory.path().join("node.redb"),
         kasumi_store::test_utils::NODE_STORE_ID,
         ScratchDisk::fixture(),
@@ -137,7 +137,7 @@ async fn encrypted_reopen_keeps_unapplied_receipt_rows_hidden_until_exact_replay
     store.shutdown().await.unwrap();
     drop(store);
 
-    let reopened_node = NodeStore::open_existing(
+    let reopened_node = NodeStore::open_existing_fixture(
         directory.path().join("node.redb"),
         kasumi_store::test_utils::NODE_STORE_ID,
         disk,

@@ -1,0 +1,163 @@
+   Compiling redb v4.2.0 (/Users/mtakemiya/dev/kasumi-worktrees/redb-admission-20260920/vendor/redb-4.2.0)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.01s
+     Running unittests src/lib.rs (/Users/mtakemiya/dev/kasumi-redb-admission-target/debug/deps/redb-1a01cd164be5367b)
+
+running 126 tests
+test admission::tests::caught_capacity_denial_aborts_all_tables_and_keeps_pinned_read_root ... ok
+test admission::tests::commit_metadata_denial_rolls_back_before_winning_header ... ok
+test admission::tests::compaction_respects_relocation_allowance_and_retry_physically_shrinks ... ok
+test admission::tests::construction_denial_never_grows_or_fails_owner ... ok
+test admission::tests::deferred_close_and_empty_transaction_drop_do_not_allocate ... ok
+test admission::tests::explicit_close_propagates_failure_and_never_closes_backend_twice ... ok
+test admission::tests::explicit_close_returns_busy_owner_and_drop_does_not_reserve_checkpoint_growth ... ok
+test admission::tests::full_repair_publishes_its_allocator_snapshot_before_returning ... ok
+test admission::tests::persistent_savepoints_survive_explicit_close_but_borrowed_handles_block_it ... ok
+test admission::tests::publication_and_sync_uncertainty_fences_once_and_reopens_an_atomic_root ... ok
+test admission::tests::read_only_close_retains_busy_database_until_handles_drain ... ok
+test admission::tests::both_abort_forms_retain_successful_growth_and_permit_later_writes ... ok
+test admission::tests::repeated_reopen_reclaims_deleted_pages_without_leaking_capacity ... ok
+test admission::tests::rollback_and_savepoint_publication_do_not_allocate_after_their_fallible_work ... ok
+test admission::tests::uncertain_winning_header_failure_is_nonallocating_and_fences_once ... ok
+test admission::tests::winning_header_and_destructor_are_followed_by_no_heap_allocations ... ok
+test db::test::crash_regression4 ... ok
+test db::test::create_new_db_in_empty_file ... ok
+test admission::tests::repair_at_capacity_respects_admission_and_keeps_committed_root ... ok
+test db::test::open_empty_file ... ok
+test db::test::open_missing_file ... ok
+test db::test::small_pages ... ok
+test db::test::dynamic_shrink ... ok
+test db::test::small_pages2 ... ok
+test db::test::small_pages3 ... ok
+test db::test::small_pages4 ... ok
+test io::no_std::test::accepts_an_owned_message ... ok
+test io::no_std::test::display_is_the_message ... ok
+test sync::spin::test::condvar_wakes_waiter ... ok
+test sync::spin::test::mutex_debug ... ok
+test sync::spin::test::mutex_is_exclusive ... ok
+test sync::spin::test::mutex_try_lock ... ok
+test sync::spin::test::rwlock_readers_are_concurrent ... ok
+test sync::spin::test::rwlock_writer_is_exclusive ... ok
+test db::test::transient_io_error ... ok
+test transactions::test::committed_deletion_has_no_allocating_epilogue ... ok
+test transactions::test::discarded_allocator_state_poisons_database ... ok
+test tree_store::btree::tests::test_cycle_detection_in_btree ... ok
+test tree_store::btree::tests::test_page_path_cycle_detection ... ok
+test tree_store::btree::tests::test_verify_checksum_cycle_detection ... ok
+test transactions::test::transaction_id_persistence ... ok
+test tree_store::btree_base::tests::leaf_inplace_append_up_to_max_pairs ... ok
+test tree_store::btree_base::tests::leaf_inplace_insert_rejected_at_max_pairs ... ok
+test tree_store::btree_base::tests::leaf_split_respects_max_pairs ... ok
+test tree_store::btree_base::tests::branch_split_respects_max_keys_by_count ... ok
+test tree_store::btree_cursor::tests::cursor_mut_stays_parked_at_tree_edge ... ok
+test tree_store::btree_cursor::tests::cursor_preserves_boundary_gap_after_failed_next ... ok
+test tree_store::btree_cursor::tests::cursor_preserves_boundary_gap_after_failed_prev ... ok
+test tree_store::btree_cursor::tests::insert_tests::insert_run_after_rejects_unordered_keys ... ok
+test tree_store::btree_base::tests::leaf_split_respects_max_pairs_by_count ... ok
+test tree_store::btree_cursor::tests::insert_tests::insert_run_builds_tree_from_empty ... ok
+test tree_store::btree_cursor::tests::insert_tests::insert_run_descending_from_empty ... ok
+test tree_store::btree_cursor::tests::insert_tests::insert_run_into_leaf_middle ... ok
+test tree_store::btree_cursor::tests::insert_tests::insert_run_grows_multiple_levels ... ok
+test tree_store::btree_cursor::tests::insert_tests::insert_run_mixed_directions ... ok
+test tree_store::btree_cursor::tests::insert_tests::insert_run_rejects_unordered_keys ... ok
+test tree_store::btree_cursor::tests::insert_tests::insert_run_splits_root_leaf ... ok
+test tree_store::btree_cursor::tests::insert_tests::insert_run_into_middle_of_tall_tree ... ok
+test tree_store::btree_cursor::tests::poisoned_cursor_mut_re_raises ... ok
+test tree_store::btree_mutator::tests::branch_packing_fills_page_to_max_keys ... ok
+test tree_store::btree_mutator::tests::branch_packing_splits_at_max_keys ... ok
+test tree_store::page_store::base::test::last_page ... ok
+test tree_store::page_store::base::test::reserved_bits ... ok
+test tree_store::page_store::bitmap::test::all_space_used ... ok
+test tree_store::page_store::bitmap::test::alloc ... ok
+test tree_store::page_store::bitmap::test::find_free ... ok
+test tree_store::page_store::bitmap::test::free ... ok
+test tree_store::page_store::bitmap::test::random_pattern ... ok
+test tree_store::page_store::bitmap::test::record_alloc ... ok
+test tree_store::page_store::bitmap::test::resize_beyond_initial_capacity ... ok
+test tree_store::page_store::bitmap::test::reuse_lowest ... ok
+test tree_store::page_store::buddy_allocator::test::alloc_large ... ok
+test tree_store::page_store::buddy_allocator::test::buddy_merge ... ok
+test tree_store::page_store::buddy_allocator::test::record_alloc_buddy ... ok
+test tree_store::page_store::buddy_allocator::test::serialized_size ... ok
+test tree_store::page_store::cached_file::test::buffered_pages_spill_under_pressure ... ok
+test tree_store::page_store::cached_file::test::cache_leak ... ok
+test tree_store::page_store::cached_file::test::discard_write_buffer_drops_buffered_pages ... ok
+test tree_store::page_store::cached_file::test::resize_preserves_cached_pages ... ok
+test tree_store::page_store::cached_file::test::retained_pages_do_not_starve_read_cache ... ok
+test tree_store::page_store::cached_file::test::write_barrier_issues_no_file_writes ... ok
+test tree_store::page_store::cached_file::test::write_buffer_budget_enforced_across_stripes ... ok
+test tree_store::page_store::cached_file::test::zero_size_cache_stays_empty_after_reclaim ... ok
+test tree_store::page_store::header::test::abort_repair ... ok
+test tree_store::page_store::header::test::check_integrity_recomputes_root_lengths ... ok
+test tree_store::page_store::header::test::corrupt_header_layout_fields_are_rejected ... ok
+test tree_store::page_store::header::test::drop_releases_backend_without_clean_checkpoint ... ok
+test tree_store::page_store::header::test::externally_extended_file_is_rejected ... ok
+test tree_store::page_store::header::test::magic_number ... ok
+test tree_store::page_store::header::test::oversized_region_count_file_is_rejected ... ok
+test tree_store::page_store::header::test::oversized_root_page_order_is_reported_as_corruption ... ok
+test tree_store::page_store::header::test::oversized_system_root_page_order_is_reported_as_corruption_read_only ... ok
+test tree_store::page_store::header::test::recovery_does_not_launder_torn_slot ... ok
+test tree_store::page_store::header::test::repair_empty ... ok
+test tree_store::page_store::header::test::repair_insert_reserve_regression ... ok
+test tree_store::page_store::header::test::repair_rejects_invalid_primary_root_without_legacy_rollback ... ok
+test tree_store::page_store::header::test::torn_layout_fields_recover_from_file_length ... ok
+test tree_store::page_store::header::test::truncated_file_is_rejected ... ok
+test tree_store::page_store::header::test::winning_checksum_corruption_fails_closed_after_io_error ... ok
+test tree_store::page_store::page_manager::test::free_merge_remarks_region_tracker ... ok
+test tree_store::page_store::page_manager::test::invalidate_allocator_state_tolerates_poison ... ok
+test tree_store::page_store::page_manager::test::mark_page_allocated_rejects_corrupt_page_numbers ... ok
+test tree_store::btree_cursor::tests::insert_tests::insert_run_swaps_ancestors_in_place ... ok
+test tree_store::page_store::page_manager::test::oversized_page_order_is_rejected ... ok
+test tree_store::page_store::page_manager::test::panic ... ok
+test tree_store::page_store::savepoint::test::corrupted_record_errors ... ok
+test tree_store::page_store::xxh3::test::test_empty ... ok
+test tree_store::table_tree::test::round_trip ... ok
+test tuple_types::test::width ... ok
+test types::chrono_v0_4::tests::test_date_time_fixed_offset ... ok
+test types::chrono_v0_4::tests::test_datetime_fixed_offset_table ... ok
+test types::chrono_v0_4::tests::test_fixed_offset ... ok
+test types::chrono_v0_4::tests::test_fixed_offset_table ... ok
+test types::chrono_v0_4::tests::test_naive_date ... ok
+test types::chrono_v0_4::tests::test_naive_date_table ... ok
+test types::chrono_v0_4::tests::test_naive_date_time ... ok
+test types::chrono_v0_4::tests::test_naive_datetime_table ... ok
+test types::chrono_v0_4::tests::test_naive_time ... ok
+test types::chrono_v0_4::tests::test_naive_time_table ... ok
+test types::tests::builtin_composites_use_only_canonical_classification ... ok
+test types::tests::classification_is_readable_through_reconstruction ... ok
+test types::tests::composite_of_user_type_no_longer_collides_with_builtin ... ok
+test types::tests::legacy_composite_names_never_match_canonical_types ... ok
+test types::uuid::tests::test_uuid_ordering ... ok
+test types::uuid::tests::test_uuid_table ... ok
+test tree_store::page_store::page_manager::test::out_of_regions ... ok
+
+test result: ok. 126 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 33.79s
+
+     Running tests/canonical_format.rs (/Users/mtakemiya/dev/kasumi-redb-admission-target/debug/deps/canonical_format-6b288db715bbef05)
+
+running 4 tests
+test builtin_composite_does_not_alias_user_type ... ok
+test composite_of_user_type_does_not_alias_builtin ... ok
+test upstream_savepoints_do_not_enable_a_legacy_open ... FAILED
+test upstream_single_phase_files_are_rejected_without_migration ... FAILED
+
+failures:
+
+---- upstream_savepoints_do_not_enable_a_legacy_open stdout ----
+
+thread 'upstream_savepoints_do_not_enable_a_legacy_open' (2984313) panicked at tests/canonical_format.rs:80:5:
+assertion failed: redb::Database::open(file.path(), admission_support::admission()).is_err()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- upstream_single_phase_files_are_rejected_without_migration stdout ----
+
+thread 'upstream_single_phase_files_are_rejected_without_migration' (2984314) panicked at tests/canonical_format.rs:59:9:
+assertion failed: redb::Database::open(file.path(), admission_support::admission()).is_err()
+
+
+failures:
+    upstream_savepoints_do_not_enable_a_legacy_open
+    upstream_single_phase_files_are_rejected_without_migration
+
+test result: FAILED. 2 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.69s
+
+error: test failed, to rerun pass `--test canonical_format`

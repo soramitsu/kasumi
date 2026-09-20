@@ -32,8 +32,8 @@ async fn reopen(node: Arc<NodeStore>) -> Result<Arc<TenantStorageSet>> {
 #[tokio::test]
 async fn missing_catalogs_and_authenticated_binding_never_provision_during_reopen() -> Result<()> {
     for present in [0, 1, 2, 3] {
-        let directory = tempfile::tempdir()?;
-        let node = NodeStore::create_new(
+        let directory = crate::test_utils::private_tempdir()?;
+        let node = NodeStore::create_new_fixture(
             directory.path().join("partial.redb"),
             crate::test_utils::NODE_STORE_ID,
             ScratchDisk::fixture(),
@@ -75,8 +75,8 @@ async fn missing_catalogs_and_authenticated_binding_never_provision_during_reope
 async fn existing_catalog_admission_cannot_provision_after_waiting_for_the_open_gate() -> Result<()>
 {
     use std::{future::Future, task::Poll};
-    let directory = tempfile::tempdir()?;
-    let node = NodeStore::create_new(
+    let directory = crate::test_utils::private_tempdir()?;
+    let node = NodeStore::create_new_fixture(
         directory.path().join("gate.redb"),
         crate::test_utils::NODE_STORE_ID,
         ScratchDisk::fixture(),
@@ -119,8 +119,8 @@ async fn existing_catalog_admission_cannot_provision_after_waiting_for_the_open_
 
 #[tokio::test]
 async fn corrupt_or_authenticated_wrong_binding_is_never_repaired_by_reopen() -> Result<()> {
-    let directory = tempfile::tempdir()?;
-    let node = NodeStore::create_new(
+    let directory = crate::test_utils::private_tempdir()?;
+    let node = NodeStore::create_new_fixture(
         directory.path().join("binding.redb"),
         crate::test_utils::NODE_STORE_ID,
         ScratchDisk::fixture(),
@@ -159,10 +159,11 @@ async fn corrupt_or_authenticated_wrong_binding_is_never_repaired_by_reopen() ->
 
 #[tokio::test]
 async fn exact_standalone_binding_reopens_after_both_domains_close_and_drain() -> Result<()> {
-    let directory = tempfile::tempdir()?;
+    let directory = crate::test_utils::private_tempdir()?;
     let path = directory.path().join("installed.redb");
     let disk = ScratchDisk::fixture();
-    let node = NodeStore::create_new(&path, crate::test_utils::NODE_STORE_ID, disk.clone())?;
+    let node =
+        NodeStore::create_new_fixture(&path, crate::test_utils::NODE_STORE_ID, disk.clone())?;
     let installation = Uuid::new_v4();
     let incarnation = Uuid::new_v4();
     let access = StorageAccess::standalone(installation, "tenant", incarnation)?;
@@ -185,7 +186,7 @@ async fn exact_standalone_binding_reopens_after_both_domains_close_and_drain() -
     stores.shutdown().await.unwrap();
     drop(stores);
     drop(node);
-    let node = NodeStore::open_existing(&path, crate::test_utils::NODE_STORE_ID, disk)?;
+    let node = NodeStore::open_existing_fixture(&path, crate::test_utils::NODE_STORE_ID, disk)?;
     let unused = Arc::new(LocalKeyProvider::new([99; 32]));
     assert!(
         TenantStorageSet::open_existing(

@@ -18,21 +18,50 @@ fn status(session: &VerifiedBackupSession) -> Result<BackupSessionStatus> {
         source_purpose_sha256: staged_digest(session.source_purpose())?.0,
     })
 }
+const SESSION_WORKSPACE_BYTES: u64 = 16 << 20;
+const MAX_SESSION_FUTURE_BYTES: usize = 1 << 20;
+
+async fn admitted_session_work<T, F>(
+    fence: &Arc<WorkFence>,
+    admission: &Arc<NodeAdmission>,
+    build: impl FnOnce() -> F + Send,
+) -> Result<T>
+where
+    T: Send,
+    F: std::future::Future<Output = Result<T>> + Send,
+{
+    let future_bytes = std::mem::size_of::<F>();
+    if future_bytes > MAX_SESSION_FUTURE_BYTES {
+        return Err(Error::new(
+            ErrorCode::ResourceExhausted,
+            "backup session future exceeds its workspace bound",
+        ));
+    }
+    let cancellation = QueryCancellation::default();
+    let _cancel_on_drop = CancelOnDrop(cancellation.clone());
+    let _registration = fence.begin(cancellation.clone())?;
+    let mut reservation = admission.reserve(SESSION_WORKSPACE_BYTES, Some(cancellation.clone()))?;
+    // Charge the exact concrete future separately from the existing workspace,
+    // without consuming a second operation slot. Admission precedes even its
+    // construction, and the box drops before the reservation on every exit.
+    reservation.reserve_additional(future_bytes as u64)?;
+    let work: std::pin::Pin<Box<dyn std::future::Future<Output = Result<T>> + Send + '_>> =
+        Box::pin(build());
+    tokio::select! {
+        result = tokio::time::timeout(Duration::from_secs(300), work) => result.map_err(|_| Error::new(ErrorCode::UnknownOutcome, "backup session operation deadline expired; inspect its durable outcome"))?,
+        _ = cancelled(&cancellation) => Err(cancelled_error()),
+    }
+}
+
 impl Database {
-    pub(super) async fn session_work<T>(
-        &self,
-        work: impl std::future::Future<Output = Result<T>>,
-    ) -> Result<T> {
-        let cancellation = QueryCancellation::default();
-        let _cancel_on_drop = CancelOnDrop(cancellation.clone());
-        let _registration = self.work.begin(cancellation.clone())?;
-        let _reservation = self
-            .admission()
-            .reserve(16 << 20, Some(cancellation.clone()))?;
-        tokio::select! {
-            result = tokio::time::timeout(Duration::from_secs(300), work) => result.map_err(|_| Error::new(ErrorCode::UnknownOutcome, "backup session operation deadline expired; inspect its durable outcome"))?,
-            _ = cancelled(&cancellation) => Err(cancelled_error()),
-        }
+    pub(super) async fn session_work<T, F>(&self, build: impl FnOnce() -> F + Send) -> Result<T>
+    where
+        T: Send,
+        F: std::future::Future<Output = Result<T>> + Send,
+    {
+        // The caller retains only the builder's captures. Its concrete future
+        // is constructed after admission and erased before any work is polled.
+        admitted_session_work(&self.work, self.admission(), build).await
     }
 
     pub(super) async fn backup_session(
@@ -120,7 +149,7 @@ impl Database {
         request: BackupSessionRequest,
     ) -> Result<BackupSessionStatus> {
         let result = self
-            .session_work(async {
+            .session_work(|| async {
                 let destination = self.archive_destination(&request.destination)?;
                 let session = self
                     .backup_session(&context, destination.as_ref(), request.session_id)
@@ -139,7 +168,7 @@ impl Database {
         request: AbortBackupSession,
     ) -> Result<BackupSessionStatus> {
         let result = self
-            .session_work(async {
+            .session_work(|| async {
                 self.engine.authorize(&context, None, Action::Admin)?;
                 if request.reason.is_empty() || request.reason.len() > 1024 {
                     return Err(Error::new(
@@ -240,7 +269,7 @@ impl Database {
         request: CleanupBackupSession,
     ) -> Result<BackupCleanupResult> {
         let result = self
-            .session_work(async {
+            .session_work(|| async {
                 self.engine.authorize(&context, None, Action::Admin)?;
                 if !(1..=kasumi_store::MAX_SESSION_GC_OBJECTS).contains(&request.max_objects) {
                     return Err(Error::new(
@@ -313,5 +342,144 @@ impl Database {
             })
             .await;
         self.audit_write_result(&context, result).await
+    }
+}
+
+#[cfg(test)]
+mod work_tests {
+    use super::*;
+    use std::{
+        future::Future,
+        pin::Pin,
+        sync::atomic::AtomicUsize,
+        task::{Context, Poll},
+    };
+
+    fn admission(max_bytes: u64) -> Arc<NodeAdmission> {
+        NodeAdmission::with_fixed_memory(
+            crate::admission::AdmissionConfig {
+                max_inflight_bytes: Some(max_bytes),
+                ..Default::default()
+            },
+            1 << 30,
+            0,
+        )
+        .unwrap()
+    }
+    struct OversizeFuture([u8; MAX_SESSION_FUTURE_BYTES + 1]);
+    impl Future for OversizeFuture {
+        type Output = Result<()>;
+        fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+            std::hint::black_box(&self.0);
+            unreachable!("oversize future must never be built or polled")
+        }
+    }
+    #[tokio::test]
+    async fn oversized_future_is_denied_before_builder_or_charge() {
+        let node = admission(64 << 20);
+        let fence = Arc::new(WorkFence::default());
+        let builds = AtomicUsize::new(0);
+        let result = admitted_session_work(&fence, &node, || -> OversizeFuture {
+            builds.fetch_add(1, Ordering::AcqRel);
+            unreachable!("oversize builder must not run")
+        })
+        .await;
+        assert_eq!(result.unwrap_err().code, ErrorCode::ResourceExhausted);
+        assert_eq!(builds.load(Ordering::Acquire), 0);
+        assert_eq!(node.snapshot().reserved_bytes, 0);
+        assert_eq!(node.snapshot().inflight_operations, 0);
+    }
+
+    struct ObservedFuture {
+        node: Arc<NodeAdmission>,
+        bytes_at_drop: Arc<AtomicU64>,
+        fail: bool,
+        metadata: [u8; 257],
+    }
+    impl Future for ObservedFuture {
+        type Output = Result<()>;
+        fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+            std::hint::black_box(&self.metadata);
+            if self.fail {
+                Poll::Ready(Err(Error::new(
+                    ErrorCode::Conflict,
+                    "original session failure",
+                )))
+            } else {
+                Poll::Pending
+            }
+        }
+    }
+    impl Drop for ObservedFuture {
+        fn drop(&mut self) {
+            self.bytes_at_drop
+                .store(self.node.snapshot().reserved_bytes, Ordering::Release);
+        }
+    }
+    #[tokio::test]
+    async fn future_charge_precedes_builder_and_outlives_box_on_cancel_and_error() {
+        let future_bytes = std::mem::size_of::<ObservedFuture>() as u64;
+        for fail in [false, true] {
+            let node = admission(64 << 20);
+            let fence = Arc::new(WorkFence::default());
+            let bytes_at_drop = Arc::new(AtomicU64::new(0));
+            let mut operation = Box::pin(admitted_session_work(&fence, &node, || {
+                assert_eq!(
+                    node.snapshot().reserved_bytes,
+                    SESSION_WORKSPACE_BYTES + future_bytes
+                );
+                assert_eq!(node.snapshot().inflight_operations, 1);
+                ObservedFuture {
+                    node: node.clone(),
+                    bytes_at_drop: bytes_at_drop.clone(),
+                    fail,
+                    metadata: [0; 257],
+                }
+            }));
+            if fail {
+                assert_eq!(
+                    operation.as_mut().await.unwrap_err().code,
+                    ErrorCode::Conflict
+                );
+            } else {
+                std::future::poll_fn(|cx| {
+                    assert!(operation.as_mut().poll(cx).is_pending());
+                    Poll::Ready(())
+                })
+                .await;
+                assert_eq!(
+                    node.snapshot().reserved_bytes,
+                    SESSION_WORKSPACE_BYTES + future_bytes
+                );
+            }
+            drop(operation);
+            assert_eq!(
+                bytes_at_drop.load(Ordering::Acquire),
+                SESSION_WORKSPACE_BYTES + future_bytes
+            );
+            assert_eq!(node.snapshot().reserved_bytes, 0);
+            assert_eq!(node.snapshot().inflight_operations, 0);
+            tokio::time::timeout(Duration::from_secs(5), fence.drain())
+                .await
+                .unwrap();
+        }
+    }
+    #[tokio::test]
+    async fn additional_future_charge_denial_never_invokes_builder() {
+        let node = admission(SESSION_WORKSPACE_BYTES);
+        let fence = Arc::new(WorkFence::default());
+        let builds = AtomicUsize::new(0);
+        let result = admitted_session_work(&fence, &node, || -> ObservedFuture {
+            builds.fetch_add(1, Ordering::AcqRel);
+            unreachable!("unfunded builder must not run")
+        })
+        .await;
+        assert_eq!(result.unwrap_err().code, ErrorCode::ResourceExhausted);
+        assert_eq!(builds.load(Ordering::Acquire), 0);
+        assert_eq!(node.snapshot().reserved_bytes, 0);
+        assert_eq!(node.snapshot().inflight_operations, 0);
+        tokio::time::timeout(Duration::from_secs(5), fence.drain())
+            .await
+            .unwrap();
     }
 }

@@ -1,0 +1,11 @@
+   Compiling openraft v0.9.25 (/Users/mtakemiya/dev/kasumi/vendor/openraft-0.9.25/openraft)
+   Compiling openraft-memstore v0.9.25 (/Users/mtakemiya/dev/kasumi/vendor/openraft-0.9.25/memstore)
+   Compiling tests v0.9.25 (/Users/mtakemiya/dev/kasumi/vendor/openraft-0.9.25/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.93s
+     Running tests/life_cycle/main.rs (target/openraft-qualification/debug/deps/life_cycle-02d993864599bf3a)
+
+running 1 test
+test t11_shutdown::cancelled_initial_storage_load_has_no_spawned_children ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 22 filtered out; finished in 0.00s
+

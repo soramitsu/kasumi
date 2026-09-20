@@ -1,0 +1,110 @@
+    Checking kasumi-store v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-store)
+warning: method `matches_response_id` is never used
+   --> vendor/rmcp-3.2.0/src/model.rs:251:19
+    |
+236 | impl NumberOrString {
+    | ------------------- method in this implementation
+...
+251 |     pub(crate) fn matches_response_id(&self, response_id: &Self) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `set_client_request_metadata` is never used
+    --> vendor/rmcp-3.2.0/src/service.rs:1032:19
+     |
+ 806 | impl<R: ServiceRole> Peer<R> {
+     | ---------------------------- method in this implementation
+...
+1032 |     pub(crate) fn set_client_request_metadata(&self, metadata: ClientRequestMetadata) {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `is_authorization_required` is never used
+   --> vendor/rmcp-3.2.0/src/transport.rs:275:19
+    |
+249 | impl DynamicTransportError {
+    | -------------------------- method in this implementation
+...
+275 |     pub(crate) fn is_authorization_required(&self) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `rmcp` (lib) generated 3 warnings
+    Checking kasumi-raft v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-raft)
+error[E0275]: overflow evaluating the requirement `std::result::Result<Box<snapshot_buffer::SnapshotBuffer>, openraft::error::Infallible>: Send`
+   --> crates/kasumi-raft/src/custody_machine.rs:203:43
+    |
+203 |     async fn build_snapshot(&mut self) -> Result<Snapshot<TypeConfig>, StorageError<u64>> {
+    |                                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: required for `std::result::Result<Box<snapshot_buffer::SnapshotBuffer>, openraft::error::Infallible>` to implement `OptionalSend`
+note: required by a bound in `openraft::AsyncRuntime::OneshotSender`
+   --> vendor/openraft-0.9.25/openraft/src/async_runtime.rs:55:27
+    |
+ 55 |     type OneshotSender<T: OptionalSend>: AsyncOneshotSendExt<T> + OptionalSend + OptionalSync + Debug + Sized;
+    |                           ^^^^^^^^^^^^ required by this bound in `AsyncRuntime::OneshotSender`
+
+error[E0275]: overflow evaluating the requirement `std::result::Result<std::option::Option<openraft::Snapshot<TypeConfig>>, openraft::error::Infallible>: Send`
+   --> crates/kasumi-raft/src/custody_machine.rs:381:9
+    |
+381 | /         tokio::task::spawn_blocking(move || {
+382 | |             let _gate = gate
+383 | |                 .lock()
+384 | |                 .map_err(|_| anyhow::anyhow!("control gate poisoned"))?;
+...   |
+387 | |                 .transpose()
+388 | |         })
+    | |__________^
+    |
+    = note: required for `Result<Option<Snapshot<TypeConfig>>, Infallible>` to implement `OptionalSend`
+note: required by a bound in `openraft::AsyncRuntime::OneshotSender`
+   --> vendor/openraft-0.9.25/openraft/src/async_runtime.rs:55:27
+    |
+ 55 |     type OneshotSender<T: OptionalSend>: AsyncOneshotSendExt<T> + OptionalSend + OptionalSync + Debug + Sized;
+    |                           ^^^^^^^^^^^^ required by this bound in `AsyncRuntime::OneshotSender`
+    = note: the full name for the type has been written to '/Users/mtakemiya/dev/kasumi/target/debug/deps/kasumi_raft-6670c4897dd7b7e0.long-type-12777796253810386908.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+
+    Checking kasumi-engine v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-engine)
+error[E0275]: overflow evaluating the requirement `std::result::Result<Box<snapshot_buffer::SnapshotBuffer>, openraft::error::Infallible>: Send`
+    --> crates/kasumi-raft/src/storage.rs:1044:9
+     |
+1044 | /         tokio::task::spawn_blocking(move || -> Result<Snapshot<TypeConfig>> {
+1045 | |             let failure = StorageWorkFailure::new(failed.clone());
+1046 | |             let _gate = gate;
+1047 | |             ensure!(
+...    |
+1109 | |             Ok(snapshot)
+1110 | |         })
+     | |__________^
+     |
+     = note: required for `std::result::Result<Box<snapshot_buffer::SnapshotBuffer>, openraft::error::Infallible>` to implement `OptionalSend`
+note: required by a bound in `openraft::AsyncRuntime::OneshotSender`
+    --> vendor/openraft-0.9.25/openraft/src/async_runtime.rs:55:27
+     |
+  55 |     type OneshotSender<T: OptionalSend>: AsyncOneshotSendExt<T> + OptionalSend + OptionalSync + Debug + Sized;
+     |                           ^^^^^^^^^^^^ required by this bound in `AsyncRuntime::OneshotSender`
+
+error[E0275]: overflow evaluating the requirement `std::result::Result<std::option::Option<openraft::Snapshot<TypeConfig>>, openraft::error::Infallible>: Send`
+    --> crates/kasumi-raft/src/storage.rs:1379:9
+     |
+1379 | /         tokio::task::spawn_blocking(move || {
+1380 | |             domains.check_access()?;
+1381 | |             let result = load_snapshot(&store, limit)?
+1382 | |                 .map(|snapshot| {
+...    |
+1388 | |             Ok::<_, anyhow::Error>(result)
+1389 | |         })
+     | |__________^
+     |
+     = note: required for `Result<Option<Snapshot<TypeConfig>>, Infallible>` to implement `OptionalSend`
+note: required by a bound in `openraft::AsyncRuntime::OneshotSender`
+    --> vendor/openraft-0.9.25/openraft/src/async_runtime.rs:55:27
+     |
+  55 |     type OneshotSender<T: OptionalSend>: AsyncOneshotSendExt<T> + OptionalSend + OptionalSync + Debug + Sized;
+     |                           ^^^^^^^^^^^^ required by this bound in `AsyncRuntime::OneshotSender`
+     = note: the full name for the type has been written to '/Users/mtakemiya/dev/kasumi/target/debug/deps/kasumi_raft-6670c4897dd7b7e0.long-type-12777796253810386908.txt'
+     = note: consider using `--verbose` to print the full type name to the console
+
+For more information about this error, try `rustc --explain E0275`.
+error: could not compile `kasumi-raft` (lib test) due to 4 previous errors
+warning: build failed, waiting for other jobs to finish...

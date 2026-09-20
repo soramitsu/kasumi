@@ -2,10 +2,18 @@ use super::*;
 use kasumi_store::{NodeStore, ScratchDisk, StorageAccess, test_utils::LocalKeyProvider};
 
 async fn fixture() -> Result<(tempfile::TempDir, Arc<NodeStore>, Arc<TenantStore>, Input)> {
-    let directory = tempfile::tempdir()?;
+    let directory = kasumi_store::test_utils::private_tempdir()?;
     let mut configuration = crate::runtime::example_config();
-    configuration.database_path = directory.path().join("node.redb");
-    let node = NodeStore::create_new(
+    configuration.persistent_disk =
+        crate::persistent_disk::fixture_config(&directory.path().join("data"));
+    configuration.database_path = directory.path().join("data/node.redb");
+    configuration.scratch_disk.directory = directory.path().join("scratch");
+    configuration
+        .signer_verifier
+        .as_mut()
+        .unwrap()
+        .database_path = directory.path().join("data/trust.redb");
+    let node = NodeStore::create_new_fixture(
         &configuration.database_path,
         configuration.database_id,
         ScratchDisk::fixture(),

@@ -1,0 +1,127 @@
+     Locking 3 packages to latest compatible versions
+      Adding openraft v0.9.25 (/Users/mtakemiya/dev/kasumi/vendor/openraft-0.9.25/openraft)
+      Adding openraft-macros v0.9.25 (/Users/mtakemiya/dev/kasumi/vendor/openraft-0.9.25/macros)
+      Adding redb v4.2.0 (/Users/mtakemiya/dev/kasumi/vendor/redb-4.2.0)
+    Checking getrandom v0.2.17
+    Checking stable_deref_trait v1.2.1
+    Checking yoke v0.8.3
+    Checking tokio v1.53.1
+    Checking rand_core v0.6.4
+    Checking zerovec v0.11.8
+    Checking crypto-common v0.1.7
+    Checking hashbrown v0.17.1
+    Checking indexmap v2.14.1
+    Checking tokio-util v0.7.19
+    Checking tinystr v0.8.4
+    Checking potential_utf v0.1.6
+    Checking zerotrie v0.2.5
+    Checking icu_locale_core v2.3.0
+    Checking futures-task v0.3.34
+    Checking icu_collections v2.3.0
+    Checking icu_provider v2.3.1
+    Checking futures-util v0.3.34
+    Checking h2 v0.4.19
+    Checking ring v0.17.14
+    Checking futures-channel v0.3.34
+    Checking icu_normalizer v2.3.0
+    Checking icu_properties v2.3.0
+    Checking hyper v1.11.1
+    Checking idna_adapter v1.2.2
+   Compiling serde_json v1.0.151 (/Users/mtakemiya/dev/kasumi/vendor/serde_json-1.0.151)
+    Checking hyper-util v0.1.20
+    Checking serde v1.0.229
+    Checking digest v0.10.7
+    Checking idna v1.1.0
+    Checking tower v0.5.3
+    Checking rustls-webpki v0.103.15
+    Checking url v2.5.8
+    Checking bitmaps v3.2.1 (/Users/mtakemiya/dev/kasumi/vendor/bitmaps-3.2.1)
+    Checking rustls v0.23.43
+   Compiling time-macros v0.2.32
+    Checking imbl-sized-chunks v0.1.3
+    Checking tokio-rustls v0.26.5
+    Checking sha2 v0.10.9
+    Checking deranged v0.5.8
+    Checking serde_urlencoded v0.7.1
+    Checking imbl v7.0.1
+    Checking time v0.3.55
+    Checking thiserror v2.0.20
+    Checking cipher v0.4.4
+    Checking kasumi-clock v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-clock)
+    Checking hyper-timeout v0.5.2
+    Checking universal-hash v0.5.1
+    Checking tokio-stream v0.1.19
+   Compiling redb v4.2.0 (/Users/mtakemiya/dev/kasumi/vendor/redb-4.2.0)
+    Checking tonic v0.14.6
+    Checking poly1305 v0.8.0
+    Checking hyper-rustls v0.27.9
+    Checking kasumi-types v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-types)
+    Checking chacha20 v0.9.1
+    Checking tower-http v0.6.11
+    Checking aead v0.5.2
+    Checking kasumi-serving v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-serving)
+    Checking reqwest v0.12.28
+    Checking chacha20poly1305 v0.10.1
+    Checking kasumi-transport v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-transport)
+    Checking yasna v0.6.0
+    Checking hmac v0.12.1
+    Checking quick-xml v0.42.0
+    Checking axum v0.8.9
+    Checking rcgen v0.14.10
+    Checking kasumi-store v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-store)
+warning: unused import: `Read`
+  --> crates/kasumi-store/src/backup.rs:14:10
+   |
+14 |     io::{Read, Write},
+   |          ^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `Write`
+  --> crates/kasumi-store/src/backup.rs:14:16
+   |
+14 |     io::{Read, Write},
+   |                ^^^^^
+
+warning: function `durable_directory` is never used
+   --> crates/kasumi-store/src/lib.rs:137:15
+    |
+137 | pub(crate) fn durable_directory(path: &Path) -> Result<()> {
+    |               ^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `kasumi-store` (lib) generated 3 warnings
+error[E0061]: this function takes 4 arguments but 3 arguments were supplied
+   --> crates/kasumi-store/tests/openbao_live.rs:174:13
+    |
+174 |             NodeStore::create_new(
+    |             ^^^^^^^^^^^^^^^^^^^^^
+...
+177 |                 kasumi_store::ScratchDisk::fixture(),
+    |                 ------------------------------------ argument #3 of type `Arc<NodeDisk>` is missing
+    |
+note: associated function defined here
+   --> crates/kasumi-store/src/lib.rs:215:12
+    |
+215 |     pub fn create_new(
+    |            ^^^^^^^^^^
+help: provide the argument
+    |
+174 |             NodeStore::create_new(
+175 |                 root.path().join(format!("{key_name}.redb")),
+176 |                 kasumi_store::test_utils::NODE_STORE_ID,
+177 ~                 /* Arc<NodeDisk> */,
+178 ~                 kasumi_store::ScratchDisk::fixture(),
+    |
+
+For more information about this error, try `rustc --explain E0061`.
+error: could not compile `kasumi-store` (test "openbao_live") due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+warning: unused import: `ReadableDatabase`
+ --> crates/kasumi-store/src/node_file/tests.rs:4:22
+  |
+4 | use redb::{Database, ReadableDatabase, TableDefinition};
+  |                      ^^^^^^^^^^^^^^^^
+
+warning: `kasumi-store` (lib test) generated 4 warnings (3 duplicates)

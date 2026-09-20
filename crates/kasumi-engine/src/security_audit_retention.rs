@@ -689,11 +689,11 @@ mod tests {
     #[tokio::test]
     async fn uncertain_publication_survives_restart_and_repeated_hot_budget_crossings_preserve_complete_history()
      {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = kasumi_store::test_utils::private_tempdir().unwrap();
         let path = directory.path().join("security.redb");
         let provider = Arc::new(LocalKeyProvider::new([181; 32]));
         let archive = Arc::new(UncertainArchive {
-            inner: FilesystemAuditArchive::open(directory.path().join("archives")).unwrap(),
+            inner: FilesystemAuditArchive::open_fixture(directory.path().join("archives")).unwrap(),
             uncertain: AtomicBool::new(true),
             pause: AtomicBool::new(false),
             entered: tokio::sync::Notify::new(),
@@ -705,7 +705,7 @@ mod tests {
         };
         let admission = crate::admission::NodeAdmission::new(Default::default()).unwrap();
         let store = TenantStore::initialize_catalog_fixture(
-            NodeStore::create_new(
+            NodeStore::create_new_fixture(
                 &path,
                 kasumi_store::test_utils::NODE_STORE_ID,
                 kasumi_store::ScratchDisk::fixture(),
@@ -741,7 +741,7 @@ mod tests {
         drop(store);
 
         let store = TenantStore::open_existing_fixture(
-            NodeStore::open_existing(
+            NodeStore::open_existing_fixture(
                 &path,
                 kasumi_store::test_utils::NODE_STORE_ID,
                 kasumi_store::ScratchDisk::fixture(),

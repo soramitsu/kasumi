@@ -14,6 +14,15 @@ pub fn is_application_write_redirect(error: &anyhow::Error) -> bool {
     )
 }
 
+/// This exact API error is emitted before OpenRaft appends or dispatches the
+/// proposed entry. Fatal construction errors and other failures remain opaque.
+pub fn is_application_write_capacity_denied(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<RaftError<u64, ClientWriteError<u64, BasicNode>>>(),
+        Some(RaftError::APIError(ClientWriteError::TaskCapacity(_)))
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -55,6 +64,30 @@ mod tests {
         )));
         assert!(!is_application_write_redirect(&anyhow::anyhow!(
             "has to forward request to: None, None"
+        )));
+    }
+
+    #[test]
+    fn application_capacity_denial_recognizes_only_the_pre_log_api_error() {
+        use openraft::error::TaskCapacity;
+        let denied: RaftError<u64, ClientWriteError<u64, BasicNode>> =
+            RaftError::APIError(ClientWriteError::TaskCapacity(TaskCapacity {
+                limit: 4,
+                needed: 2,
+            }));
+        let denied = anyhow::Error::new(denied).context("application proposal");
+        assert!(is_application_write_capacity_denied(&denied));
+        assert!(!is_application_write_redirect(&denied));
+        let fatal: RaftError<u64, ClientWriteError<u64, BasicNode>> =
+            RaftError::Fatal(Fatal::TaskCapacity(TaskCapacity {
+                limit: 0,
+                needed: 1,
+            }));
+        assert!(!is_application_write_capacity_denied(&anyhow::Error::new(
+            fatal
+        )));
+        assert!(!is_application_write_capacity_denied(&anyhow::anyhow!(
+            "retained task capacity exhausted (limit: 4, needed: 2)"
         )));
     }
 }

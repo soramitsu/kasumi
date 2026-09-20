@@ -1,0 +1,32 @@
+{
+  "command": [
+    "/Users/mtakemiya/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+    "scripts/check_dependency_patches.py"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "toolchain_bin": "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin",
+  "rustup_toolchain": "1.97.1",
+  "cargo_target_dir": "/Users/mtakemiya/dev/kasumi/target",
+  "cargo_version": "cargo 1.97.1 (c980f4866 2026-06-30)",
+  "python_path": "/Users/mtakemiya/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3.12",
+  "python_version": "3.12.14 (main, Aug 25 2026, 13:50:33) [Clang 22.1.3 ]",
+  "python_sha256": "ac60cfe0268614638d0ffa35f3b0284fc7b3a11482723793455e17eeb278509e",
+  "started_unix": 1789893971.800896,
+  "elapsed_seconds": 0.764369010925293,
+  "exit_code": 0,
+  "inputs_before": {
+    "Cargo.toml": "248dcd5a42e5eb3128812ad82d9588485b5dca074af4ce37cb903b99190efea2",
+    "Cargo.lock": "57b0011ac527bb4d8f783c69ba9c03bb734a18cac1e8b5b5144aab9761c930af",
+    "scripts/check_dependency_patches.py": "1820ef0eb09c7a527af594ee906871126eb4d457561f65e3bd36e57c740ca47d",
+    "scripts/test_check_dependency_patches.py": "38a36aa20bac4bc9740d2f74a1df218e3971a7cff582f62171af710409c8b7b7",
+    "vendor/patch-manifest.json": "7b196bbfde98b9c0e84aca1cafd010d3757aa4a50c03fc0bb7bfcd91da39a6fc"
+  },
+  "inputs_after": {
+    "Cargo.toml": "248dcd5a42e5eb3128812ad82d9588485b5dca074af4ce37cb903b99190efea2",
+    "Cargo.lock": "57b0011ac527bb4d8f783c69ba9c03bb734a18cac1e8b5b5144aab9761c930af",
+    "scripts/check_dependency_patches.py": "1820ef0eb09c7a527af594ee906871126eb4d457561f65e3bd36e57c740ca47d",
+    "scripts/test_check_dependency_patches.py": "38a36aa20bac4bc9740d2f74a1df218e3971a7cff582f62171af710409c8b7b7",
+    "vendor/patch-manifest.json": "7b196bbfde98b9c0e84aca1cafd010d3757aa4a50c03fc0bb7bfcd91da39a6fc"
+  },
+  "log_sha256": "eb0dd3737aba60ccd80fde615f3eebe4d60bf632e9d01a1db97a80bf4bbec7c6"
+}

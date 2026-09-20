@@ -1,0 +1,7 @@
+verified bitmaps 3.2.1 (vendor/bitmaps-3.2.1)
+verified lru 0.16.4 (vendor/lru-0.16.4)
+verified serde_json 1.0.151 (vendor/serde_json-1.0.151)
+verified rmcp 3.2.0 (vendor/rmcp-3.2.0)
+verified redb 4.2.0 (vendor/redb-4.2.0)
+verified openraft 0.9.25 (vendor/openraft-0.9.25/openraft)
+verified openraft-macros 0.9.25 (vendor/openraft-0.9.25/macros)

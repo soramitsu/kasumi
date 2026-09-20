@@ -18,13 +18,13 @@ fn context() -> RequestContext {
 }
 async fn open(path: &Path, limits: Limits, create: bool) -> (Arc<Database>, Arc<SecurityAudit>) {
     let node = (if create {
-        NodeStore::create_new(
+        NodeStore::create_new_fixture(
             path,
             kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
         )
     } else {
-        NodeStore::open_existing(
+        NodeStore::open_existing_fixture(
             path,
             kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
@@ -199,7 +199,7 @@ async fn upload(db: &Database, original: &BeginStagedTransaction, chunk: &Staged
 
 #[tokio::test]
 async fn missing_stop_has_no_upload_lease_and_defeats_delayed_begin_after_encrypted_restart() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let path = directory.path().join("node.redb");
     let (db, audit) = open(&path, Limits::default(), true).await;
     let (original, chunk) = original(&db, "missing");
@@ -261,7 +261,7 @@ async fn missing_stop_has_no_upload_lease_and_defeats_delayed_begin_after_encryp
 
 #[tokio::test]
 async fn upload_stop_clears_payload_and_permanent_capacity_is_checked_without_active_reservation() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let mut limits = Limits::default();
     limits.atomic.max_active_transactions = 1;
     let (db, audit) = open(&directory.path().join("node.redb"), limits, true).await;
@@ -325,7 +325,7 @@ async fn upload_stop_clears_payload_and_permanent_capacity_is_checked_without_ac
 
 #[tokio::test]
 async fn committed_original_survives_receipt_absence_admission_failure_and_fresh_resolution() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let (db, audit) = open(&directory.path().join("node.redb"), Limits::default(), true).await;
     let (original, chunk) = original(&db, "committed");
     upload(&db, &original, &chunk).await;
@@ -371,7 +371,7 @@ async fn committed_original_survives_receipt_absence_admission_failure_and_fresh
 #[tokio::test]
 async fn stale_authority_cannot_create_stop_and_retained_terminal_release_checks_exact_read_scope()
 {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let (db, audit) = open(&directory.path().join("node.redb"), Limits::default(), true).await;
     let (original, _) = original(&db, "authority");
     let stale = stop(&db, &original);
@@ -417,7 +417,7 @@ async fn stale_authority_cannot_create_stop_and_retained_terminal_release_checks
 
 #[tokio::test]
 async fn final_response_fence_rechecks_authority_and_preserves_accepted_stop() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let (db, audit) = open(&directory.path().join("node.redb"), Limits::default(), true).await;
     let (original, _) = original(&db, "release");
     let request = stop(&db, &original);
@@ -442,7 +442,7 @@ async fn final_response_fence_rechecks_authority_and_preserves_accepted_stop() {
 
 #[tokio::test]
 async fn concurrent_original_and_stop_keep_exactly_one_permanent_outcome() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let (db, audit) = open(&directory.path().join("node.redb"), Limits::default(), true).await;
     for iteration in 0..4 {
         let name = format!("race-{iteration}");
@@ -475,7 +475,7 @@ async fn concurrent_original_and_stop_keep_exactly_one_permanent_outcome() {
 
 #[tokio::test]
 async fn malformed_fresh_admission_and_changed_manifest_cannot_accept_or_rebind_identity() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let (db, audit) = open(&directory.path().join("node.redb"), Limits::default(), true).await;
     let (original, chunk) = original(&db, "closed-input");
     let valid = stop(&db, &original);
@@ -535,7 +535,7 @@ async fn malformed_fresh_admission_and_changed_manifest_cannot_accept_or_rebind_
 
 #[tokio::test]
 async fn stopped_resolution_preserves_original_failed_finalize() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let (db, audit) = open(&directory.path().join("node.redb"), Limits::default(), true).await;
     let (original, chunk) = original(&db, "failed-finalize");
     upload(&db, &original, &chunk).await;
@@ -568,7 +568,7 @@ async fn stopped_resolution_preserves_original_failed_finalize() {
 
 #[tokio::test]
 async fn retained_snapshot_quota_rejects_missing_stop_without_leaving_partial_identity() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let (db, audit) = open(&directory.path().join("node.redb"), Limits::default(), true).await;
     let mut limits = db.engine().generation().unwrap().state.limits.clone();
     limits.max_snapshot_bytes = db.engine().snapshot_bytes().unwrap() as u64 + 8192;
@@ -606,7 +606,7 @@ async fn retained_snapshot_quota_rejects_missing_stop_without_leaving_partial_id
 
 #[tokio::test]
 async fn guarded_stop_orders_more_than_one_small_batch_of_authority_dependencies() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let (db, audit) = open(&directory.path().join("node.redb"), Limits::default(), true).await;
     for batch in 0..3 {
         db.mutate(
@@ -688,7 +688,7 @@ async fn guarded_stop_orders_more_than_one_small_batch_of_authority_dependencies
 
 #[tokio::test]
 async fn encrypted_restore_preserves_original_stage_scope_without_reviving_historical_uploads() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let (db, audit) = open(
         &directory.path().join("source.redb"),
         Limits::default(),
@@ -705,8 +705,11 @@ async fn encrypted_restore_preserves_original_stage_scope_without_reviving_histo
     live.ttl_ms = 86_400_000;
     upload(&db, &live, &chunk).await;
     let backups = Arc::new(
-        kasumi_store::FilesystemBackupDestination::new(directory.path().join("backups"), 8 << 20)
-            .unwrap(),
+        kasumi_store::FilesystemBackupDestination::new_fixture(
+            directory.path().join("backups"),
+            8 << 20,
+        )
+        .unwrap(),
     );
     let checkpoint = db
         .backup_checkpoint(context(), backups.as_ref(), uuid::Uuid::new_v4())
@@ -716,7 +719,7 @@ async fn encrypted_restore_preserves_original_stage_scope_without_reviving_histo
     close(db.clone(), audit.clone()).await;
     drop(db);
     drop(audit);
-    let node = NodeStore::create_new(
+    let node = NodeStore::create_new_fixture(
         directory.path().join("restored.redb"),
         kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),

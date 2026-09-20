@@ -293,13 +293,13 @@ impl Databases {
         for replica in 0..replicas {
             nodes.push(
                 (if create {
-                    NodeStore::create_new(
+                    NodeStore::create_new_fixture(
                         path.join(format!("replica-{replica}.redb")),
                         kasumi_store::test_utils::NODE_STORE_ID,
                         scratch_disk.clone(),
                     )
                 } else {
-                    NodeStore::open_existing(
+                    NodeStore::open_existing_fixture(
                         path.join(format!("replica-{replica}.redb")),
                         kasumi_store::test_utils::NODE_STORE_ID,
                         scratch_disk.clone(),

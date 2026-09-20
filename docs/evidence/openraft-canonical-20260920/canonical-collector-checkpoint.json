@@ -1,0 +1,15 @@
+{
+  "archive_sha256": "fcaf30aa877303ff950c8ea9ad6ae9352e8c0c6146e0f71deb6ce98b4fa5ae6c",
+  "source_inventory": "35-canonical-collector-clippy/after-source.json",
+  "source_inventory_sha256": "6917e85d29029016ce34572c37afab632c793fe4d6b5544a8d3ff74201390236",
+  "unit_passes": 210,
+  "integration_passes": 90,
+  "singlethreaded_all_targets": "passed",
+  "strict_clippy": "passed",
+  "post_behavioral_change": "only removed redundant last_log_id wildcard in Inflight::Snapshot pattern",
+  "failed_receipts_preserved": [
+    "30-canonical-auxiliary-cluster-tests",
+    "34-frozen-canonical-collector-clippy"
+  ],
+  "release_qualified": false
+}

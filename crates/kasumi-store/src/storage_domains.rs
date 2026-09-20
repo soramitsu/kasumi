@@ -187,9 +187,7 @@ impl TenantStorageSet {
                 "installed storage domain binding differs"
             );
         } else {
-            let mut tx = application.node.db.begin_write()?;
-            tx.set_durability(Durability::Immediate)?;
-            tx.set_two_phase_commit(true);
+            let tx = application.node.db.begin_write()?;
             write_domain(
                 &tx,
                 &custody,
@@ -336,9 +334,7 @@ impl TenantStorageSet {
             );
             validate_distinct_keys(&app_state, &custody_state)?;
         }
-        let mut tx = application.node.db.begin_write()?;
-        tx.set_durability(Durability::Immediate)?;
-        tx.set_two_phase_commit(true);
+        let tx = application.node.db.begin_write()?;
         if initialize {
             require_pristine_domain(&tx, application, None)?;
             let binding = serde_json::to_vec(&self.custody.binding)?;

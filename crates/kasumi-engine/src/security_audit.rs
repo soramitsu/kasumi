@@ -155,7 +155,10 @@ impl SecurityAudit {
         admission: Arc<crate::admission::NodeAdmission>,
     ) -> Result<Arc<Self>> {
         let root = store.durable_directory()?.join("audit-archives");
-        let destination = Arc::new(kasumi_store::FilesystemAuditArchive::open(root)?);
+        let destination = Arc::new(kasumi_store::FilesystemAuditArchive::open(
+            root,
+            store.persistent_disk().clone(),
+        )?);
         Self::initialize_with_archive(store, budget, destination, admission)
     }
 
@@ -176,7 +179,10 @@ impl SecurityAudit {
         admission: Arc<crate::admission::NodeAdmission>,
     ) -> Result<Arc<Self>> {
         let root = store.durable_directory()?.join("audit-archives");
-        let destination = Arc::new(kasumi_store::FilesystemAuditArchive::open(root)?);
+        let destination = Arc::new(kasumi_store::FilesystemAuditArchive::open(
+            root,
+            store.persistent_disk().clone(),
+        )?);
         Self::open_with_archive(store, budget, destination, admission)
     }
 
@@ -528,7 +534,7 @@ mod tests {
 
     fn audit_destination(store: &TenantStore) -> String {
         use kasumi_store::AuditArchiveDestination;
-        kasumi_store::FilesystemAuditArchive::open(
+        kasumi_store::FilesystemAuditArchive::open_fixture(
             store.durable_directory().unwrap().join("audit-archives"),
         )
         .unwrap()
@@ -547,9 +553,9 @@ mod tests {
 
     #[tokio::test]
     async fn archive_worker_before_registration_is_joined_through_cancelled_shutdown_and_reopen() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = kasumi_store::test_utils::private_tempdir().unwrap();
         let path = directory.path().join("worker-security.redb");
-        let node = NodeStore::create_new(
+        let node = NodeStore::create_new_fixture(
             &path,
             kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
@@ -608,7 +614,7 @@ mod tests {
         assert!(weak_node.upgrade().is_none());
 
         let reopened = TenantStore::open_existing_fixture(
-            NodeStore::open_existing(
+            NodeStore::open_existing_fixture(
                 &path,
                 kasumi_store::test_utils::NODE_STORE_ID,
                 kasumi_store::ScratchDisk::fixture(),
@@ -644,9 +650,9 @@ mod tests {
             .build()
             .unwrap();
         runtime.block_on(async {
-            let directory = tempfile::tempdir().unwrap();
+            let directory = kasumi_store::test_utils::private_tempdir().unwrap();
             let path = directory.path().join("security.redb");
-            let node = NodeStore::create_new(
+            let node = NodeStore::create_new_fixture(
                 &path,
                 kasumi_store::test_utils::NODE_STORE_ID,
                 kasumi_store::ScratchDisk::fixture(),
@@ -722,7 +728,7 @@ mod tests {
             assert!(weak_node.upgrade().is_none());
 
             let reopened = TenantStore::open_existing_fixture(
-                NodeStore::open_existing(
+                NodeStore::open_existing_fixture(
                     &path,
                     kasumi_store::test_utils::NODE_STORE_ID,
                     kasumi_store::ScratchDisk::fixture(),
@@ -755,9 +761,9 @@ mod tests {
 
     #[tokio::test]
     async fn live_opens_share_sequence_and_preserve_concurrent_records_through_reopen() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = kasumi_store::test_utils::private_tempdir().unwrap();
         let path = directory.path().join("shared-security.redb");
-        let node = NodeStore::create_new(
+        let node = NodeStore::create_new_fixture(
             &path,
             kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
@@ -825,7 +831,7 @@ mod tests {
         assert!(weak_node.upgrade().is_none());
 
         let reopened = TenantStore::open_existing_fixture(
-            NodeStore::open_existing(
+            NodeStore::open_existing_fixture(
                 &path,
                 kasumi_store::test_utils::NODE_STORE_ID,
                 kasumi_store::ScratchDisk::fixture(),
@@ -869,17 +875,22 @@ mod tests {
     #[tokio::test]
     async fn uncertain_audit_commit_fences_queued_writers_until_sequence_recovery() {
         use kasumi_store::test_utils::{FaultBackend, ManualClock};
-        let directory = tempfile::tempdir().unwrap();
+        let directory = kasumi_store::test_utils::private_tempdir().unwrap();
         let archive = Arc::new(
-            kasumi_store::FilesystemAuditArchive::open(directory.path().join("archive")).unwrap(),
+            kasumi_store::FilesystemAuditArchive::open_fixture(directory.path().join("archive"))
+                .unwrap(),
         );
         let admission = crate::admission::NodeAdmission::process_default();
         let disk = FaultBackend::new();
         let clock = Arc::new(ManualClock::new());
         let provider = Arc::new(LocalKeyProvider::new([84; 32]));
         let store = TenantStore::initialize_catalog_fixture_with_clock(
-            NodeStore::open_with_backend(disk.clone(), kasumi_store::ScratchDisk::fixture())
-                .unwrap(),
+            NodeStore::open_with_backend(
+                disk.clone(),
+                kasumi_store::test_utils::storage_admission(),
+                kasumi_store::ScratchDisk::fixture(),
+            )
+            .unwrap(),
             SECURITY_TENANT.into(),
             provider.clone(),
             clock.clone(),
@@ -913,8 +924,12 @@ mod tests {
         assert_eq!(store.scan("security.audit").unwrap().len(), 1);
 
         let recovered = TenantStore::open_existing_fixture_with_clock(
-            NodeStore::open_with_backend(disk.crash(), kasumi_store::ScratchDisk::fixture())
-                .unwrap(),
+            NodeStore::open_with_backend(
+                disk.crash(),
+                kasumi_store::test_utils::storage_admission(),
+                kasumi_store::ScratchDisk::fixture(),
+            )
+            .unwrap(),
             SECURITY_TENANT.into(),
             provider,
             clock,

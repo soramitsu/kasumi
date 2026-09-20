@@ -8,7 +8,7 @@ use std::{collections::BTreeSet, sync::Arc};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn full_shutdown_reopens_immediately_with_receipts_and_retained_plaintext() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let path = directory.path().join("node.redb");
     let provider = Arc::new(LocalKeyProvider::new([29; 32]));
     let context = RequestContext {
@@ -29,13 +29,13 @@ async fn full_shutdown_reopens_immediately_with_receipts_and_retained_plaintext(
     for round in 0..4 {
         // Reopening is immediate: no sleep, lock retry, or ignored open error.
         let node = (if round == 0 {
-            NodeStore::create_new(
+            NodeStore::create_new_fixture(
                 &path,
                 kasumi_store::test_utils::NODE_STORE_ID,
                 kasumi_store::ScratchDisk::fixture(),
             )
         } else {
-            NodeStore::open_existing(
+            NodeStore::open_existing_fixture(
                 &path,
                 kasumi_store::test_utils::NODE_STORE_ID,
                 kasumi_store::ScratchDisk::fixture(),
@@ -166,7 +166,7 @@ async fn full_shutdown_reopens_immediately_with_receipts_and_retained_plaintext(
         audit.shutdown().await.unwrap();
         drop(audit);
         drop(node);
-        let reopened = NodeStore::open_existing(
+        let reopened = NodeStore::open_existing_fixture(
             &path,
             kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),

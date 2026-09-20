@@ -1,7 +1,7 @@
 #[tokio::test]
 async fn canceled_queued_schema_activation_finishes_once_and_checks_receipt_release_authority() {
-    let root = tempfile::tempdir().unwrap();
-    let node = NodeStore::create_new(
+    let root = kasumi_store::test_utils::private_tempdir().unwrap();
+    let node = NodeStore::create_new_fixture(
         root.path().join("node.redb"),
         kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),

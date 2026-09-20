@@ -1,7 +1,7 @@
 async fn credential_custody_fixture() -> (CredentialFixture, Arc<RetiredCustody>, RetirementRef) {
     let fixture = CredentialFixture::new().await;
     let destination = Arc::new(
-        kasumi_store::FilesystemBackupDestination::new(
+        kasumi_store::FilesystemBackupDestination::new_fixture(
             fixture._directory.path().join("custody-backup"),
             32 << 20,
         )

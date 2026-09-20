@@ -188,8 +188,9 @@ impl SecurityAuditConfig {
         Ok(match &self.archive {
             None => Arc::new(kasumi_store::FilesystemAuditArchive::open(
                 store.durable_directory()?.join("audit-archives"),
+                store.persistent_disk().clone(),
             )?) as Arc<dyn kasumi_store::AuditArchiveDestination>,
-            Some(config) => config.open()?,
+            Some(config) => config.open(store.persistent_disk().clone())?,
         })
     }
 
@@ -250,6 +251,7 @@ pub struct RuntimeConfig {
     pub mode: DeploymentMode,
     pub database_path: PathBuf,
     pub database_id: Uuid,
+    pub persistent_disk: kasumi_store::NodeDiskConfig,
     pub scratch_disk: kasumi_store::ScratchDiskConfig,
     pub auth: AuthConfig,
     pub mcp: McpEndpoint,
@@ -288,6 +290,7 @@ impl RuntimeConfig {
         );
         self.admission.validate()?;
         self.scratch_disk.validate()?;
+        self.validate_persistent_disk()?;
         for (tenant, archive) in &self.tenant_audit_archives {
             kasumi_types::validate_name(tenant)?;
             ensure!(
@@ -995,11 +998,15 @@ impl crate::serving_owner::Owner for NodeServing {
                 &mut retained,
                 self.tasks.shutdown().await,
             );
-            crate::runtime_drain::observe(
-                &mut self.report,
-                &mut retained,
-                self.runtime.shutdown().await,
-            );
+            // The runtime owns the physical databases. Listener tasks must
+            // actually drain before those databases may release their files.
+            if retained.is_none() {
+                crate::runtime_drain::observe(
+                    &mut self.report,
+                    &mut retained,
+                    self.runtime.shutdown().await,
+                );
+            }
             self.report.outcome(retained)
         })
     }
@@ -1035,10 +1042,11 @@ pub struct NodeRuntime {
     tls_reload: Option<crate::tls_reload::RuntimeTlsReload>,
     // Scope-owned cached stores observed during startup, including custody probes.
     startup_stores: Vec<Arc<TenantStore>>,
+    owned_nodes: Vec<Arc<NodeStore>>,
     #[cfg(test)]
     audit_release_gate: Arc<tokio::sync::Mutex<Option<crate::rpc::AuditReleaseGate>>>,
     // The installation lock outlives every retained resource-bearing field.
-    _standalone_lock: Option<kasumi_store::private_files::ExclusiveLock>,
+    _standalone_lock: Option<kasumi_store::NodeDiskFile>,
 }
 
 impl NodeRuntime {
@@ -1077,9 +1085,11 @@ impl NodeRuntime {
         let mut retained_runtime: Option<Self> = None;
         let outcome = crate::startup_preparation::capture("data runtime", async {
         config.validate()?;
-        pending.standalone_lock = crate::standalone::claim(&config)?;
+        let persistent_disk = crate::persistent_disk::open(&config.persistent_disk)?;
+        pending.standalone_lock = crate::standalone::claim(&config, &persistent_disk)?;
         let scratch_disk = kasumi_store::ScratchDisk::open(config.scratch_disk.clone())?;
         let admission = kasumi_engine::admission::NodeAdmission::new(config.admission.clone())?;
+        pending.owned_admissions.push(admission.clone());
         let signer_verifier = if let Some(verifier) = &config.signer_verifier {
             let mut domains = BTreeMap::new();
             for authority in config.serving_authorities.values() {
@@ -1090,7 +1100,7 @@ impl NodeRuntime {
             }
             Some(
                 verifier
-                    .open(domains, credential.clone(), scratch_disk.clone(), admission.clone())
+                    .open(domains, credential.clone(), persistent_disk.clone(), scratch_disk.clone(), admission.clone())
                     .await?,
             )
         } else {
@@ -1128,7 +1138,7 @@ impl NodeRuntime {
         let destinations = config
             .backup_destinations
             .iter()
-            .map(|(name, destination)| Ok((name.clone(), destination.open()?)))
+            .map(|(name, destination)| Ok((name.clone(), destination.open(persistent_disk.clone())?)))
             .collect::<Result<BTreeMap<_, _>>>()?;
         // Validate all TLS/credential material and bind all sockets before a
         // durable bootstrap can be created. No listener serves until `serve`.
@@ -1182,9 +1192,10 @@ impl NodeRuntime {
         let node = NodeStore::open_existing(
             &config.database_path,
             config.database_id,
+            persistent_disk.clone(),
             scratch_disk.clone(),
         )?;
-        pending.nodes.push(node.clone());
+        pending.owned_nodes.push(node.clone());
         let security_store = TenantStore::open_existing(
             node.clone(),
             SECURITY_TENANT.into(),
@@ -1201,13 +1212,11 @@ impl NodeRuntime {
             return Err(error);
         }
         if crate::node_enrollment::required(&config) {
-            if let Err(error) = crate::node_enrollment::require_complete(
+            crate::node_enrollment::require_complete(
                 &security_store,
                 config.database_id,
                 crate::node_enrollment::Kind::Data,
-            ) {
-                return Err(error);
-            }
+            )?;
         }
         let selected_tenants = config.tenants.iter().map(|tenant| {
             let installed = !crate::node_enrollment::required(&config) || crate::node_enrollment::tenant_record(&security_store, &tenant.tenant)?.is_some_and(|record| record.stage == crate::node_enrollment::Stage::Prepared);
@@ -1270,6 +1279,7 @@ impl NodeRuntime {
             serving_registration: Some(serving_registration),
             telemetry: crate::observability::Telemetry::new(),
             _standalone_lock: None,
+            owned_nodes: pending.owned_nodes.clone(),
             startup_stores: pending.stores.iter().filter(|store| store.tenant() != SECURITY_TENANT).cloned().collect(),
             config: config.clone(),
             signer_verifier,
@@ -1328,12 +1338,13 @@ impl NodeRuntime {
                 let tenant_node = match &active {
                     Some(active) => {
                         tenant.incarnation = Some(active.incarnation.to_string());
-                        NodeStore::open_existing(active.directory.join("node.redb"), active.database_id(&config, &tenant.tenant)?, scratch_disk.clone())?
+                        NodeStore::open_existing(active.directory.join("node.redb"), active.database_id(&config, &tenant.tenant)?, persistent_disk.clone(), scratch_disk.clone())?
                     }
                     None => node.clone(),
                 };
                 if active.is_some() {
-                    pending.nodes.push(tenant_node.clone());
+                    pending.owned_nodes.push(tenant_node.clone());
+                    runtime.owned_nodes.push(tenant_node.clone());
                     #[cfg(test)]
                     crate::startup_preparation::checkpoint(config.database_id, "data-active-node");
                 }
@@ -1577,15 +1588,13 @@ impl NodeRuntime {
                 crate::startup_preparation::checkpoint(config.database_id, "data-database");
                 let group = format!("{}/{}", store.tenant(), opened.bootstrap.incarnation);
                 let bootstrap_store = store.clone();
-                if let Err(error) = network.register_group_with_bootstrap(
+                network.register_group_with_bootstrap(
                     group,
                     opened.database.raft_group().raft().clone(),
                     replication.peers.iter().map(|peer| peer.node_id).collect(),
                     fingerprint,
                     Arc::new(move || bootstrap_store.check_access()),
-                ) {
-                    return Err(error);
-                }
+                )?;
                 bootstrap = Some(opened.bootstrap);
                 opened.database
             } else if crate::standalone::requires_provisioned(config) {
@@ -1785,10 +1794,13 @@ impl NodeRuntime {
             ));
         }
         if let Some(manager) = self.administration.clone() {
+            tasks
+                .maintenance
+                .spawn(manager.clone().probe_readiness(tasks.data_stop.subscribe()));
             let mut stop = tasks.data_stop.subscribe();
             tasks.maintenance.spawn(async move { loop { tokio::select! { _=stop.changed()=>return Ok(()), _=tokio::time::sleep(Duration::from_millis(250))=>{ if manager.reconcile().await.is_err() { tracing::warn!("serving reconciliation unavailable; will retry"); } } } } });
         }
-        let result = if shutdown.requested() {
+        if shutdown.requested() {
             Ok(())
         } else {
             tokio::select! {
@@ -1796,8 +1808,7 @@ impl NodeRuntime {
                 result=tasks.listeners.join_next()=> match result { Some(Ok(Err(error)))=>Err(error),Some(Err(error))=>Err(error.into()),_=>Err(anyhow::anyhow!("required listener stopped unexpectedly")) },
                 result=tasks.maintenance.join_next(), if !tasks.maintenance.is_empty()=> match result { Some(Ok(Err(error)))=>Err(error),Some(Err(error))=>Err(error.into()),_=>Err(anyhow::anyhow!("required reconciliation stopped unexpectedly")) },
             }
-        };
-        result
+        }
     }
 
     fn expected_topology(&self) -> Result<kasumi_engine::control::ControlTopology> {
@@ -2044,6 +2055,23 @@ impl NodeRuntime {
                 );
             }
         }
+        observe(
+            &mut self.startup_drain,
+            &mut retained,
+            self.audit.admission().drain_snapshot_startups().await,
+        );
+        // A readiness timeout/stop retains its actual SDK query independently
+        // of the maintenance waiter. Only positively drained tenant/Control
+        // cores may release a query or caught-panic reservation.
+        if retained.is_none()
+            && let Some(manager) = &self.administration
+        {
+            observe(
+                &mut self.startup_drain,
+                &mut retained,
+                manager.readiness.probe.drain_after_group_shutdown().await,
+            );
+        }
         for store in &self.startup_stores {
             observe(
                 &mut self.startup_drain,
@@ -2062,6 +2090,15 @@ impl NodeRuntime {
                 &mut retained,
                 verifier.shutdown().await,
             );
+        }
+        if retained.is_none() {
+            for node in &self.owned_nodes {
+                observe(
+                    &mut self.startup_drain,
+                    &mut retained,
+                    node.shutdown().await,
+                );
+            }
         }
         if retained.is_none() {
             self.closed = true;
@@ -2208,6 +2245,13 @@ pub fn example_config() -> RuntimeConfig {
         strict_read_audit: false,
     };
     RuntimeConfig {
+        persistent_disk: crate::persistent_disk::initial_config(BTreeMap::from([
+            ("data".into(), "/var/lib/kasumi/data".into()),
+            ("verifier".into(), "/var/lib/kasumi/verifier".into()),
+            ("targets".into(), "/var/lib/kasumi/targets".into()),
+            ("archives".into(), "/var/lib/kasumi/archives".into()),
+            ("backups".into(), "/var/lib/kasumi/backups".into()),
+        ])),
         scratch_disk: kasumi_store::ScratchDiskConfig {
             directory: "/var/lib/kasumi/scratch".into(),
             max_bytes: 64 << 30,
@@ -2266,7 +2310,7 @@ pub fn example_config() -> RuntimeConfig {
         admission: kasumi_engine::admission::AdmissionConfig::default(),
         backup_destinations: BTreeMap::new(),
         mode: DeploymentMode::Replicated,
-        database_path: "/var/lib/kasumi/node.redb".into(),
+        database_path: "/var/lib/kasumi/data/node.redb".into(),
         database_id: Uuid::new_v4(),
         auth: AuthConfig {
             issuer: "https://identity.example".into(),
@@ -2411,6 +2455,7 @@ async fn create_fixture_node(config: &RuntimeConfig) {
     let node = NodeStore::create_new(
         &config.database_path,
         config.database_id,
+        crate::persistent_disk::open(&config.persistent_disk).unwrap(),
         kasumi_store::ScratchDisk::open(config.scratch_disk.clone()).unwrap(),
     )
     .unwrap();
@@ -2458,7 +2503,7 @@ async fn provision_local_fixture_domains(
     credential: crate::serving_runtime::CredentialSource,
 ) -> Result<()> {
     let mut pending = crate::startup_resources::Resources::default();
-    pending.nodes.push(node.clone());
+    pending.borrowed_nodes.push(node.clone());
     let mut control = None;
     let mut routes = BTreeMap::new();
     let outcome = crate::startup_preparation::capture("local fixture enrollment", async {
@@ -2716,9 +2761,9 @@ mod tests {
 
     #[tokio::test]
     async fn service_audit_survives_reopen_and_tenant_sealing_and_fails_closed_at_quota() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = kasumi_store::test_utils::private_tempdir().unwrap();
         let path = dir.path().join("node.redb");
-        let node = NodeStore::create_new(
+        let node = NodeStore::create_new_fixture(
             &path,
             kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
@@ -2775,7 +2820,7 @@ mod tests {
         drop(service);
         drop(tenant);
         let service = TenantStore::open_existing_fixture_with_clock(
-            NodeStore::open_existing(
+            NodeStore::open_existing_fixture(
                 &path,
                 kasumi_store::test_utils::NODE_STORE_ID,
                 kasumi_store::ScratchDisk::fixture(),
@@ -2806,7 +2851,7 @@ mod tests {
     #[test]
     fn private_key_file_permissions_are_checked_on_opened_file() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
+        let dir = kasumi_store::test_utils::private_tempdir().unwrap();
         let path = dir.path().join("key.pem");
         std::fs::write(&path, b"test private material").unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
@@ -3061,9 +3106,9 @@ mod lifecycle_tests {
         // Startup failure/cancellation drain only the cluster listener; ordinary
         // serving shutdown also drains data listeners and joins reconciliation.
         for startup in [true, false] {
-            let directory = tempfile::tempdir().unwrap();
+            let directory = kasumi_store::test_utils::private_tempdir().unwrap();
             let path = directory.path().join("listener.redb");
-            let node = NodeStore::create_new(
+            let node = NodeStore::create_new_fixture(
                 &path,
                 kasumi_store::test_utils::NODE_STORE_ID,
                 kasumi_store::ScratchDisk::fixture(),
@@ -3157,7 +3202,7 @@ mod lifecycle_tests {
             );
             // No delay or lock retry after the same drain used by every serve exit.
             drop(
-                NodeStore::open_existing(
+                NodeStore::open_existing_fixture(
                     &path,
                     kasumi_store::test_utils::NODE_STORE_ID,
                     kasumi_store::ScratchDisk::fixture(),
@@ -3517,7 +3562,7 @@ mod lifecycle_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn local_runtime_opens_real_transit_tls_publishes_control_serves_and_reopens_durable_state()
      {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = kasumi_store::test_utils::private_tempdir().unwrap();
         let (files, pem) = certificate_files(dir.path());
         let mock_socket = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let transit_endpoint = format!(
@@ -3538,7 +3583,8 @@ mod lifecycle_tests {
             mock_shutdown,
         ));
         let mut config = fixture_config();
-        config.database_path = dir.path().join("node.redb");
+        config.persistent_disk = crate::persistent_disk::fixture_config(&dir.path().join("data"));
+        config.database_path = dir.path().join("data/node.redb");
         config.scratch_disk.directory = dir.path().join("scratch");
         config.mcp.tls = files.clone();
         config.native.tls = files.clone();
@@ -3584,7 +3630,7 @@ mod lifecycle_tests {
         config.backup_destinations.insert(
             "primary".into(),
             crate::administration::DestinationConfig::Filesystem {
-                directory: dir.path().join("backups"),
+                directory: dir.path().join("data/backups"),
                 max_bytes: 32 << 20,
             },
         );
@@ -3938,7 +3984,7 @@ mod lifecycle_tests {
         let recovery_credentials = recovery_fixture::Credentials::new();
         let recovery_jwks = recovery_credentials.jwks.clone();
         let node_count = if with_spare { 4 } else { 3 };
-        let dir = tempfile::tempdir().unwrap();
+        let dir = kasumi_store::test_utils::private_tempdir().unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -4051,7 +4097,9 @@ mod lifecycle_tests {
         for node in 0..node_count {
             let mut config = fixture_config();
             config.mode = DeploymentMode::Replicated;
-            config.database_path = dir.path().join(format!("node{node}.redb"));
+            config.persistent_disk =
+                crate::persistent_disk::fixture_config(&dir.path().join("persistent"));
+            config.database_path = dir.path().join(format!("persistent/node{node}.redb"));
             config.scratch_disk.directory = dir.path().join(format!("scratch-{node}"));
             config.mcp.tls = files[node].clone();
             config.native.tls = files[node].clone();
@@ -4099,7 +4147,7 @@ mod lifecycle_tests {
             config.backup_destinations.insert(
                 "primary".into(),
                 crate::administration::DestinationConfig::Filesystem {
-                    directory: dir.path().join("backups"),
+                    directory: dir.path().join("persistent/backups"),
                     max_bytes: 32 << 20,
                 },
             );
@@ -5103,7 +5151,7 @@ pub(crate) async fn open_retired_source(
                 id,
                 group.clone(),
                 network.clone(),
-                kasumi_raft::CustodyRaftConfig {
+                kasumi_raft::RaftGroupConfig {
                     raft: kasumi_raft::server_config(),
                     limits: kasumi_raft::RaftLimits {
                         max_snapshot_bytes: snapshot_limit,
@@ -5140,7 +5188,7 @@ pub(crate) async fn open_retired_source(
                 id,
                 group.clone(),
                 router.clone(),
-                kasumi_raft::CustodyRaftConfig {
+                kasumi_raft::RaftGroupConfig {
                     raft: kasumi_raft::Config::default(),
                     limits: kasumi_raft::RaftLimits {
                         max_snapshot_bytes: snapshot_limit,

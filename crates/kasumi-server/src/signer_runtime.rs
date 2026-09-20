@@ -41,8 +41,9 @@ impl SignerVerifierConfig {
         &self,
         credential: CredentialSource,
         initialize: bool,
+        persistent_disk: Arc<kasumi_store::NodeDisk>,
         scratch_disk: Arc<kasumi_store::ScratchDisk>,
-    ) -> Result<Arc<TenantStore>> {
+    ) -> Result<(Arc<NodeStore>, Arc<TenantStore>)> {
         self.validate()?;
         private_files::check_directory(
             self.database_path
@@ -58,11 +59,21 @@ impl SignerVerifierConfig {
             let provider = self.keys.provider(credential)?;
             let access = StorageAccess::live_signer_trust(self.identity.clone())?;
             let node = if initialize {
-                NodeStore::create_new(&self.database_path, database_id, scratch_disk.clone())?
+                NodeStore::create_new(
+                    &self.database_path,
+                    database_id,
+                    persistent_disk.clone(),
+                    scratch_disk.clone(),
+                )?
             } else {
-                NodeStore::open_existing(&self.database_path, database_id, scratch_disk.clone())?
+                NodeStore::open_existing(
+                    &self.database_path,
+                    database_id,
+                    persistent_disk.clone(),
+                    scratch_disk.clone(),
+                )?
             };
-            pending.nodes.push(node.clone());
+            pending.owned_nodes.push(node.clone());
             #[cfg(test)]
             crate::startup_preparation::checkpoint(database_id, "verifier-storage-node");
             let store = if initialize {
@@ -81,7 +92,7 @@ impl SignerVerifierConfig {
             #[cfg(test)]
             crate::startup_preparation::checkpoint(database_id, "verifier-storage-catalog");
             node.drain_initializers().await?;
-            Ok(store)
+            Ok((node, store))
         })
         .await;
         match prepared {
@@ -104,6 +115,7 @@ impl SignerVerifierConfig {
         &self,
         domains: BTreeMap<String, SigningDomain>,
         credential: CredentialSource,
+        persistent_disk: Arc<kasumi_store::NodeDisk>,
         scratch_disk: Arc<kasumi_store::ScratchDisk>,
         admission: Arc<kasumi_engine::admission::NodeAdmission>,
     ) -> Result<Arc<InstalledSignerVerifier>> {
@@ -117,7 +129,9 @@ impl SignerVerifierConfig {
         let mut reserved = admission.reserve(bytes, None)?;
         reserved.retain(bytes);
         let charge: Arc<dyn Send + Sync> = Arc::new(reserved);
-        let store = self.store(credential, false, scratch_disk).await?;
+        let (node, store) = self
+            .store(credential, false, persistent_disk, scratch_disk)
+            .await?;
         let administrator = Arc::new(ScopedSignerAdministrator::default());
         let result = (|| -> Result<BTreeMap<String, Arc<LiveSignerTrust>>> {
             let installed: VerifierInstallation = serde_json::from_slice(
@@ -151,13 +165,17 @@ impl SignerVerifierConfig {
         let owners = match result {
             Ok(owners) => owners,
             Err(error) => {
-                return Err(match store.shutdown().await {
+                let mut pending = crate::startup_resources::Resources::default();
+                pending.owned_nodes.push(node);
+                pending.stores.push(store);
+                return Err(match crate::startup_owner::finish(&mut pending).await {
                     Ok(()) => error,
                     Err(failure) => error.context(failure),
                 });
             }
         };
         Ok(Arc::new(InstalledSignerVerifier {
+            node,
             store,
             owners,
             administrator,
@@ -166,6 +184,7 @@ impl SignerVerifierConfig {
     }
 }
 pub(crate) struct InstalledSignerVerifier {
+    node: Arc<NodeStore>,
     store: Arc<TenantStore>,
     owners: BTreeMap<String, Arc<LiveSignerTrust>>,
     administrator: Arc<ScopedSignerAdministrator>,
@@ -284,6 +303,17 @@ impl InstalledSignerVerifier {
                 retained = Some(error);
             }
         }
+        if retained.is_none()
+            && let Err(error) = self.node.shutdown().await
+        {
+            self.drain_report
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .merge(&error);
+            if error.completion() == DrainCompletion::Retained {
+                retained = Some(error);
+            }
+        }
         self.drain_report
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -356,6 +386,7 @@ impl VerifierInstallation {
 #[serde(deny_unknown_fields)]
 pub struct InitializeSignerVerifier {
     pub admission: kasumi_engine::admission::AdmissionConfig,
+    pub persistent_disk: kasumi_store::NodeDiskConfig,
     pub scratch_disk: kasumi_store::ScratchDiskConfig,
     pub verifier: SignerVerifierConfig,
     pub initial_certificates: Vec<SigningCertificate>,
@@ -388,7 +419,11 @@ impl InitializeSignerVerifier {
     }
     async fn initialize_owned(self) -> Result<InitializedVerifier> {
         self.verifier.validate()?;
-        self.scratch_disk.validate()?;
+        crate::persistent_disk::validate(
+            &self.persistent_disk,
+            &self.scratch_disk,
+            [self.verifier.database_path.as_path()],
+        )?;
         let admission = kasumi_engine::admission::NodeAdmission::new(self.admission.clone())?;
         let bytes = BackgroundWorkBudget::required_bytes(
             self.verifier.max_background_workers,
@@ -433,14 +468,16 @@ impl InitializeSignerVerifier {
         let database_id = kasumi_store::node_store_ids::signer_verifier(&self.verifier.identity)?;
         let mut pending = crate::startup_resources::Resources::default();
         let result = crate::startup_preparation::capture("signer verifier installation", async {
-            let store = self
+            let (node, store) = self
                 .verifier
                 .store(
                     Arc::new(file_secret),
                     true,
+                    crate::persistent_disk::open(&self.persistent_disk)?,
                     kasumi_store::ScratchDisk::open(self.scratch_disk.clone())?,
                 )
                 .await?;
+            pending.owned_nodes.push(node);
             pending.stores.push(store.clone());
             #[cfg(test)]
             crate::startup_preparation::checkpoint(database_id, "verifier-installation-store");

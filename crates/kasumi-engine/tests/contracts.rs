@@ -755,8 +755,8 @@ async fn database(
     Arc<TenantStore>,
     Arc<kasumi_engine::SecurityAudit>,
 ) {
-    let dir = tempfile::tempdir().unwrap();
-    let node = NodeStore::create_new(
+    let dir = kasumi_store::test_utils::private_tempdir().unwrap();
+    let node = NodeStore::create_new_fixture(
         dir.path().join("node.redb"),
         kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
@@ -1089,9 +1089,13 @@ async fn shared_get_uses_the_same_audit_and_authorization_and_keeps_historical_v
 #[tokio::test]
 async fn strict_empty_discovery_is_audited_and_failed_audit_persistence_blocks_results() {
     let backend = kasumi_store::test_utils::FaultBackend::new();
-    let node = NodeStore::open_with_backend(backend.clone(), kasumi_store::ScratchDisk::fixture())
-        .unwrap();
-    let audit_directory = tempfile::tempdir().unwrap();
+    let node = NodeStore::open_with_backend(
+        backend.clone(),
+        kasumi_store::test_utils::storage_admission(),
+        kasumi_store::ScratchDisk::fixture(),
+    )
+    .unwrap();
+    let audit_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let audit_store = TenantStore::initialize_catalog_fixture(
         node.clone(),
         kasumi_engine::SECURITY_TENANT.into(),
@@ -1103,8 +1107,10 @@ async fn strict_empty_discovery_is_audited_and_failed_audit_persistence_blocks_r
         audit_store,
         kasumi_types::AuditRetentionBudget::default(),
         Arc::new(
-            kasumi_store::FilesystemAuditArchive::open(audit_directory.path().join("archive"))
-                .unwrap(),
+            kasumi_store::FilesystemAuditArchive::open_fixture(
+                audit_directory.path().join("archive"),
+            )
+            .unwrap(),
         ),
         kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
     )
@@ -1264,9 +1270,10 @@ async fn logical_backup_restores_suspended_with_new_incarnation_and_increasing_r
         .state
         .incarnation
         .clone();
-    let backup_dir = tempfile::tempdir().unwrap();
+    let backup_dir = kasumi_store::test_utils::private_tempdir().unwrap();
     let destination = Arc::new(
-        kasumi_store::FilesystemBackupDestination::new(backup_dir.path(), 16 << 20).unwrap(),
+        kasumi_store::FilesystemBackupDestination::new_fixture(backup_dir.path(), 16 << 20)
+            .unwrap(),
     );
     source
         .install_archive_destination("backup".into(), destination.clone())
@@ -1299,8 +1306,8 @@ async fn logical_backup_restores_suspended_with_new_incarnation_and_increasing_r
         ErrorCode::Sealed
     );
 
-    let target_dir = tempfile::tempdir().unwrap();
-    let node = NodeStore::create_new(
+    let target_dir = kasumi_store::test_utils::private_tempdir().unwrap();
+    let node = NodeStore::create_new_fixture(
         target_dir.path().join("node.redb"),
         kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
@@ -1431,7 +1438,7 @@ async fn durable_engine_worker() {
         return;
     };
     let root = std::path::PathBuf::from(root);
-    let node = NodeStore::create_new(
+    let node = NodeStore::create_new_fixture(
         root.join("node.redb"),
         kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
@@ -1485,7 +1492,7 @@ async fn durable_engine_worker() {
 #[tokio::test]
 async fn killed_process_recovers_acknowledged_documents_receipts_and_bootstrap_policy() {
     use std::process::{Command, Stdio};
-    let dir = tempfile::tempdir().unwrap();
+    let dir = kasumi_store::test_utils::private_tempdir().unwrap();
     let mut child = Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "durable_engine_worker", "--nocapture"])
         .env("KASUMI_ENGINE_TEST_CRASH_PATH", dir.path())
@@ -1509,7 +1516,7 @@ async fn killed_process_recovers_acknowledged_documents_receipts_and_bootstrap_p
     child.wait().unwrap();
     let expected: WriteReceipt =
         serde_json::from_slice(&std::fs::read(dir.path().join("ack.json")).unwrap()).unwrap();
-    let node = NodeStore::open_existing(
+    let node = NodeStore::open_existing_fixture(
         dir.path().join("node.redb"),
         kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),

@@ -26,6 +26,11 @@ admission capability. Its original manifest is `crates/redb-derive/Cargo.toml.up
 Upstream licenses and authorship are retained. The evidence directory contains the
 file-level provenance manifest and patch against the original package.
 
+The admission checkpoint is commit `8fa529231e474e49572691028050fbe9477f4e2b`.
+The subsequent canonical-format cleanup has separate provenance and validation in
+`../../docs/evidence/redb-canonical-20260920/`; the admission evidence remains an
+immutable record of the earlier checkpoint.
+
 ## Canonical API
 
 Every writable or read-only constructor requires `Arc<dyn StorageAdmission>`.
@@ -52,6 +57,14 @@ that free space. Constructor repair and integrity repair stage recounted roots i
 the same transaction protocol. An unclean writable reopen verifies the winning
 user/system root checksums before accepting a matching allocator snapshot; allocator
 metadata alone cannot prove payload integrity.
+
+Stored table identities must match exactly. The inherited legacy classification
+metadata and matching rules have been removed; unsupported type tags cannot select
+a decoder even through an untyped table open. One-phase headers are rejected before
+mutation, and the reader never substitutes a secondary root for the winning root.
+The current canonical writer still emits slot version 3, a mandatory two-phase bit,
+and type tags 1/2/4. Byte-identical canonical data remains canonical regardless of
+its producer; there is no alternative decoder or migration selected for it.
 
 `Database::close` and `ReadOnlyDatabase::close` return `CloseError<T>`. A busy error
 returns the original database for retry after all borrowed handles drain. Stored
@@ -104,6 +117,6 @@ checkpoint checks; the input JSON manifests identify their source hashes. The un
 audit, and fuzz workflows remain unpassed gates. This commit is a component
 prerequisite, not G02 acceptance or authorization to ship.
 
-This admission checkpoint still inherits upstream type-name legacy aliases and
-one-phase-header interpretation. They are pending removal in the separate
-first-release canonical-format commit and are not accepted release behavior.
+The first-release no-compatibility contract supersedes upstream's instruction to
+preserve older file interpretations. Unsupported inputs are rejected; no migration
+or fallback is provided.

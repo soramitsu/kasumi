@@ -115,12 +115,7 @@ macro_rules! type_name_impl {
             let any_user_defined = <$head>::type_name().is_user_defined()
                 $(|| <$tail>::type_name().is_user_defined())+;
 
-            let natural = if Self::fixed_width().is_some() {
-                TypeName::internal(&result)
-            } else {
-                TypeName::internal2(&result)
-            };
-            natural.into_composite(any_user_defined)
+            TypeName::internal(&result).into_composite(any_user_defined)
         }
     };
 }

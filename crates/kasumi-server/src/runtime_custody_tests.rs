@@ -1,7 +1,7 @@
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn retired_runtime_reopens_current_custody_without_constructing_application_provider() {
     let _gate = LIFECYCLE_GATE.lock().await;
-    let dir = tempfile::tempdir().unwrap();
+    let dir = kasumi_store::test_utils::private_tempdir().unwrap();
     let (files, _) = certificate_files(dir.path());
     let mock_socket = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!(
@@ -23,7 +23,8 @@ async fn retired_runtime_reopens_current_custody_without_constructing_applicatio
         mock_shutdown,
     ));
     let mut config = fixture_config();
-    config.database_path = dir.path().join("node.redb");
+    config.persistent_disk = crate::persistent_disk::fixture_config(&dir.path().join("data"));
+    config.database_path = dir.path().join("data/node.redb");
     config.scratch_disk.directory = dir.path().join("scratch");
     config.mcp.tls = files.clone();
     config.native.tls = files.clone();
@@ -79,7 +80,7 @@ async fn retired_runtime_reopens_current_custody_without_constructing_applicatio
     .await
     .unwrap();
     let destination = Arc::new(
-        kasumi_store::FilesystemBackupDestination::new(dir.path().join("backup"), 32 << 20)
+        kasumi_store::FilesystemBackupDestination::new_fixture(dir.path().join("backup"), 32 << 20)
             .unwrap(),
     );
     db.install_archive_destination("approved".into(), destination.clone())

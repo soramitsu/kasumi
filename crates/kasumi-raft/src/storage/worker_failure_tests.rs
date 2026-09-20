@@ -102,6 +102,7 @@ async fn cancelled_publication_failure(panic: bool) -> Result<()> {
         backend.clone(),
         RaftLimits::default(),
         lease,
+        crate::SnapshotBufferOwner::fixture(),
     )
     .await?;
     let failed = machine.failure_flag();
@@ -112,7 +113,10 @@ async fn cancelled_publication_failure(panic: bool) -> Result<()> {
         meta: expected.meta.clone(),
     }
     .checkpoint_sha256()?;
-    let buffer = SnapshotBuffer::from_image(expected.encode(64 << 20)?);
+    let buffer = SnapshotBuffer::from_image(
+        expected.encode(64 << 20)?,
+        &crate::SnapshotBufferOwner::fixture(),
+    )?;
     let meta = expected.meta.clone();
     let mut installing = machine.clone();
     let waiter =
@@ -152,6 +156,7 @@ async fn cancelled_publication_failure(panic: bool) -> Result<()> {
         )
         .await?,
         recovered.clone(),
+        crate::SnapshotBufferOwner::fixture(),
     )
     .await?;
     assert_eq!(*recovered.0.lock().unwrap(), b"new-generation");

@@ -35,8 +35,8 @@ impl KeyProvider for WideReferences {
 
 #[tokio::test]
 async fn catalog_byte_quota_rejects_initialization_rotation_and_rewrap_before_persistence() {
-    let directory = tempfile::tempdir().unwrap();
-    let node = NodeStore::create_new(
+    let directory = crate::test_utils::private_tempdir().unwrap();
+    let node = NodeStore::create_new_fixture(
         directory.path().join("catalog.redb"),
         crate::test_utils::NODE_STORE_ID,
         crate::ScratchDisk::fixture(),
@@ -103,8 +103,8 @@ async fn catalog_byte_quota_rejects_initialization_rotation_and_rewrap_before_pe
 
 #[tokio::test]
 async fn exact_catalog_boundary_leaves_room_for_worst_case_manifest_tenant_encoding() {
-    let directory = tempfile::tempdir().unwrap();
-    let node = NodeStore::create_new(
+    let directory = crate::test_utils::private_tempdir().unwrap();
+    let node = NodeStore::create_new_fixture(
         directory.path().join("boundary.redb"),
         crate::test_utils::NODE_STORE_ID,
         crate::ScratchDisk::fixture(),
@@ -143,9 +143,7 @@ async fn exact_catalog_boundary_leaves_room_for_worst_case_manifest_tenant_encod
     assert!(node.save_catalog(&tenant, &catalog).is_err());
     // Untrusted/old on-disk metadata is checked before parsing or contacting KMS.
     let oversized = serde_json::to_vec(&catalog).unwrap();
-    let mut tx = node.db.begin_write().unwrap();
-    tx.set_durability(Durability::Immediate).unwrap();
-    tx.set_two_phase_commit(true);
+    let tx = node.db.begin_write().unwrap();
     tx.open_table(CATALOG)
         .unwrap()
         .insert(tenant_hash(&tenant).as_slice(), oversized.as_slice())

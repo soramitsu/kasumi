@@ -50,7 +50,7 @@ async fn reopen_custody(
         id,
         group.clone(),
         router.clone(),
-        kasumi_raft::CustodyRaftConfig::default(),
+        kasumi_raft::RaftGroupConfig::default(),
         audit.admission().clone(),
         audit,
     )
@@ -73,8 +73,8 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> Self {
-        let directory = tempfile::tempdir().unwrap();
-        let node = NodeStore::create_new(
+        let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+        let node = NodeStore::create_new_fixture(
             directory.path().join("node.redb"),
             kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
@@ -119,7 +119,8 @@ impl Fixture {
         .await
         .unwrap();
         let destination = Arc::new(
-            FilesystemBackupDestination::new(directory.path().join("backups"), 16 << 20).unwrap(),
+            FilesystemBackupDestination::new_fixture(directory.path().join("backups"), 16 << 20)
+                .unwrap(),
         );
         db.install_archive_destination("approved".into(), destination.clone())
             .unwrap();
@@ -221,7 +222,7 @@ async fn actual_retirement_seed_reopens_through_control_domain_without_loading_s
     // The custody opener has no application provider or Database parameter.
     // This observation is recovery input; it is not a fresh Admin proof.
     let custody = kasumi_store::CustodyStore::open(
-        NodeStore::open_existing(
+        NodeStore::open_existing_fixture(
             directory.path().join("node.redb"),
             kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
@@ -363,7 +364,7 @@ async fn exact_retirement_seals_source_once_and_retains_proof_after_encrypted_re
     drop(audit);
     drop(store);
     drop(destination);
-    let node = NodeStore::open_existing(
+    let node = NodeStore::open_existing_fixture(
         path,
         kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
@@ -902,7 +903,7 @@ async fn durable_retirement_stop_defeats_inflight_backup_verification_and_surviv
     drop(audit);
     drop(store);
     drop(destination);
-    let node = NodeStore::open_existing(
+    let node = NodeStore::open_existing_fixture(
         path,
         kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),

@@ -1,0 +1,9 @@
+{
+  "difference": "one fixture-generated log; no source changes",
+  "path": "tests/_log/ut.2026-09-20-07",
+  "sha256": "d96bbad7a0f82a95fe5f3b390037f76784e21cd1580143cb4bdd60b468b8902e",
+  "bytes": 1549,
+  "wrapper_exit_code": 1,
+  "cargo_exit_code": 0,
+  "original_receipt_unchanged": true
+}

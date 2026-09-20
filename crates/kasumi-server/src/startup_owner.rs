@@ -26,6 +26,7 @@ pub(crate) enum Kind {
     LocalOperator,
     TenantEnrollment,
     SignerVerifier,
+    TargetJournal,
 }
 
 fn tasks(kind: Kind) -> &'static Tasks {
@@ -33,6 +34,7 @@ fn tasks(kind: Kind) -> &'static Tasks {
     static AUTHORITY: OnceLock<Tasks> = OnceLock::new();
     static LOCAL_OPERATOR: OnceLock<Tasks> = OnceLock::new();
     static TENANT_ENROLLMENT: OnceLock<Tasks> = OnceLock::new();
+    static TARGET_JOURNAL: OnceLock<Tasks> = OnceLock::new();
     static SIGNER_VERIFIER: OnceLock<Tasks> = OnceLock::new();
     match kind {
         Kind::Data => &DATA,
@@ -40,6 +42,7 @@ fn tasks(kind: Kind) -> &'static Tasks {
         Kind::LocalOperator => &LOCAL_OPERATOR,
         Kind::TenantEnrollment => &TENANT_ENROLLMENT,
         Kind::SignerVerifier => &SIGNER_VERIFIER,
+        Kind::TargetJournal => &TARGET_JOURNAL,
     }
     .get_or_init(Default::default)
 }

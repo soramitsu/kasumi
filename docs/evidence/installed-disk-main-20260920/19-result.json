@@ -1,0 +1,23 @@
+{
+  "scope": "development integrated raft-lib diagnostic, not final release qualification",
+  "command": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+    "test",
+    "--offline",
+    "-p",
+    "kasumi-raft",
+    "--all-features",
+    "--lib",
+    "--",
+    "--test-threads=1"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "head": "c283fa4a2c2344fd359d1d58ea49a1664de72088",
+  "process_group": 24213,
+  "exit_code": 101,
+  "timeout": false,
+  "signals": [],
+  "drained": true,
+  "elapsed_seconds": 152.47103905677795,
+  "inventoried_source_unchanged": true
+}

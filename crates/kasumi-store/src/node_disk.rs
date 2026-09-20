@@ -1,5 +1,5 @@
-//! Persistent extent accounting. Production store constructors are not yet wired
-//! to this owner; using scratch admission or a raw redb handle does not enroll it.
+//! Installed persistent extent accounting with retained per-inode enrollment.
+//! Raw path writes never enroll files or replace an admitted owner's extent.
 use crate::device_disk::DeviceDisk;
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -32,7 +32,8 @@ pub struct NodeDiskConfig {
     pub min_free_bytes: u64,
     /// Simultaneous file owners. Each owner retains at most two descriptors.
     pub max_open_files: u32,
-    /// Bounds traversal work; an incomplete census never opens admission.
+    /// Bounds census traversal work and retained file-accounting entries.
+    /// An incomplete census never opens admission; new files require a free slot.
     pub max_census_entries: u64,
     /// Bounds traversal stack, ownership ancestor locks and path walk depth.
     pub max_depth: u32,
@@ -69,8 +70,40 @@ impl NodeDiskConfig {
                     && path.is_absolute(),
                 "invalid persistent root name or path"
             );
+            ensure!(
+                path.components().all(|part| matches!(
+                    part,
+                    std::path::Component::RootDir | std::path::Component::Normal(_)
+                )),
+                "persistent roots require canonical path components"
+            );
         }
         Ok(())
+    }
+
+    /// Resolve only an explicitly installed accounting root. This performs no
+    /// enrollment, filesystem mutation, symlink resolution, or parent fallback.
+    pub fn binding<'config, 'path>(
+        &'config self,
+        path: &'path std::path::Path,
+    ) -> Result<(&'config str, &'path std::path::Path)> {
+        ensure!(path.is_absolute(), "persistent file path must be absolute");
+        let mut selected = None;
+        for (name, root) in &self.roots {
+            let Ok(relative) = path.strip_prefix(root) else {
+                continue;
+            };
+            ensure!(selected.is_none(), "persistent path has overlapping roots");
+            ensure!(
+                !relative.as_os_str().is_empty()
+                    && relative
+                        .components()
+                        .all(|part| matches!(part, std::path::Component::Normal(_))),
+                "persistent file requires normal components below its root"
+            );
+            selected = Some((name.as_str(), relative));
+        }
+        selected.context("persistent file is outside installed accounting roots")
     }
 
     fn same_policy(&self, other: &Self) -> bool {
@@ -146,6 +179,29 @@ impl Identity {
     }
 }
 
+/// The admitted physical identity survives descriptor close. Reservations and
+/// observed extents update this existing entry without allocating during I/O.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AccountedFile {
+    bytes: u64,
+    pending: u64,
+    actual_len: u64,
+    reserved_len: u64,
+    settled: bool,
+}
+
+impl AccountedFile {
+    fn durable(bytes: u64, pending: u64, len: u64) -> Self {
+        Self {
+            bytes,
+            pending,
+            actual_len: len,
+            reserved_len: len,
+            settled: true,
+        }
+    }
+}
+
 struct State {
     phase: NodeDiskPhase,
     bytes: u64,
@@ -153,6 +209,7 @@ struct State {
     files: u64,
     open_files: u32,
     live: HashMap<Identity, Weak<file::FileOwner>>,
+    accounted: HashMap<Identity, AccountedFile>,
 }
 
 /// An installed owner outlives all service/database handles. The strong registry
@@ -177,6 +234,8 @@ pub struct NodeDisk {
     shrink_failure: Mutex<Option<file::ShrinkFailure>>,
     #[cfg(test)]
     parent_sync_failure: AtomicBool,
+    #[cfg(test)]
+    namespace_failure: std::sync::atomic::AtomicU8,
 }
 
 impl std::fmt::Debug for NodeDisk {
@@ -196,11 +255,18 @@ fn registry() -> &'static RegisteredDisks {
 }
 
 impl NodeDisk {
+    pub(crate) fn binding<'owner, 'path>(
+        &'owner self,
+        path: &'path std::path::Path,
+    ) -> Result<(&'owner str, &'path std::path::Path)> {
+        self.config.binding(path)
+    }
+
     pub fn open(config: NodeDiskConfig, cancel: &CensusCancellation) -> Result<Arc<Self>> {
         Self::open_inner(
             config,
             cancel,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-utils"))]
             None,
         )
     }
@@ -208,7 +274,7 @@ impl NodeDisk {
     fn open_inner(
         config: NodeDiskConfig,
         cancel: &CensusCancellation,
-        #[cfg(test)] test_device: Option<DeviceDisk>,
+        #[cfg(any(test, feature = "test-utils"))] test_device: Option<DeviceDisk>,
     ) -> Result<Arc<Self>> {
         config.validate()?;
         cancel.check()?;
@@ -238,12 +304,12 @@ impl NodeDisk {
         let ancestor_locks = census::lock_roots(&roots, config.max_depth)?;
         let root = roots.values().next().expect("validated roots");
         let (_, unit) = filesystem(&root.file)?;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-utils"))]
         let device = match test_device {
             Some(device) => device,
             None => DeviceDisk::open(root.identity.0, config.min_free_bytes)?,
         };
-        #[cfg(not(test))]
+        #[cfg(not(any(test, feature = "test-utils")))]
         let device = DeviceDisk::open(root.identity.0, config.min_free_bytes)?;
         let totals = census(&roots, &config, unit, cancel)?;
         cancel.check()?;
@@ -260,6 +326,7 @@ impl NodeDisk {
                 files: totals.files,
                 open_files: 0,
                 live: HashMap::new(),
+                accounted: totals.accounted,
             }),
             #[cfg(test)]
             available_override: Mutex::new(None),
@@ -271,6 +338,8 @@ impl NodeDisk {
             shrink_failure: Mutex::new(None),
             #[cfg(test)]
             parent_sync_failure: AtomicBool::new(false),
+            #[cfg(test)]
+            namespace_failure: std::sync::atomic::AtomicU8::new(0),
         });
         #[cfg(test)]
         {
@@ -289,6 +358,55 @@ impl NodeDisk {
         drop(promises);
         installed.push((key, disk.clone()));
         Ok(disk)
+    }
+
+    /// Test installations select their file's parent explicitly. This helper is
+    /// absent from production builds and retains the real private-path census,
+    /// descriptor identity checks and extent budgets. Its device ledger is
+    /// isolated so an intentional fault cannot seal an unrelated fixture.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn fixture_for_path(path: impl AsRef<std::path::Path>) -> Result<Arc<Self>> {
+        let existing = {
+            let installed = registry()
+                .lock()
+                .map_err(|_| anyhow::anyhow!("fixture registry poisoned"))?;
+            installed.iter().find_map(|(_, disk)| {
+                disk.config
+                    .binding(path.as_ref())
+                    .ok()
+                    .and_then(|(root, _)| disk.roots[root].verify().ok().map(|()| disk.clone()))
+            })
+        };
+        if let Some(owner) = existing {
+            if owner.snapshot().open_files == 0 {
+                owner.reconcile(&CensusCancellation::default())?;
+            }
+            return Ok(owner);
+        }
+        let root = path
+            .as_ref()
+            .parent()
+            .context("fixture file has no parent")?;
+        let owner = Self::open_inner(
+            NodeDiskConfig {
+                roots: BTreeMap::from([("fixture".into(), root.to_owned())]),
+                max_bytes: 256 << 30,
+                maintenance_reserve_bytes: 1 << 30,
+                min_free_bytes: 0,
+                max_open_files: 4096,
+                max_census_entries: 1_000_000,
+                max_depth: 64,
+                max_name_bytes: 255,
+            },
+            &CensusCancellation::default(),
+            Some(DeviceDisk::isolated(0)),
+        )?;
+        if owner.snapshot().open_files == 0 {
+            // A fixture may deliberately mutate raw bytes while stopped. A new
+            // fixture open completes a fresh census, never forgetting a live fd.
+            owner.reconcile(&CensusCancellation::default())?;
+        }
+        Ok(owner)
     }
 
     pub fn snapshot(&self) -> NodeDiskSnapshot {
@@ -360,13 +478,14 @@ impl NodeDisk {
         state.bytes = totals.bytes;
         state.pending = totals.pending;
         state.files = totals.files;
+        state.accounted = totals.accounted;
         state.live.clear();
         state.phase = NodeDiskPhase::Open;
         promises.reconcile_owner();
         Ok(())
     }
 
-    fn fail(&self) {
+    pub(crate) fn fail(&self) {
         let mut state = self.lock_state();
         self.fail_locked(&mut state);
     }

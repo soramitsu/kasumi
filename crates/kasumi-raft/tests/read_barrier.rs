@@ -47,7 +47,7 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> Result<Self> {
-        let dir = tempfile::tempdir()?;
+        let dir = kasumi_store::test_utils::private_tempdir()?;
         let transport = Arc::new(PausedTransport {
             router: InProcessRouter::default(),
             paused_until: Mutex::new(Instant::now()),
@@ -68,7 +68,11 @@ impl Fixture {
                 store.clone(),
                 Arc::new(common::Backend::default()),
                 transport.clone(),
-                config,
+                kasumi_raft::RaftGroupConfig {
+                    raft: config,
+                    limits: kasumi_raft::RaftLimits::default(),
+                },
+                common::snapshot_owner(),
             )
             .await?;
             transport

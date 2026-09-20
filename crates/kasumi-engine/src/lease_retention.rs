@@ -131,7 +131,7 @@ fn value_heap(value: &serde_json::Value, total: &mut usize, budget: usize) -> Re
         _ => Ok(()),
     }
 }
-fn document_heap(document: &Document, budget: usize) -> Result<usize> {
+pub(crate) fn document_heap(document: &Document, budget: usize) -> Result<usize> {
     let mut bytes = 128usize;
     add(&mut bytes, document.id.capacity(), budget)?;
     value_heap(&document.body, &mut bytes, budget)?;

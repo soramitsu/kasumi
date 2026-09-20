@@ -610,13 +610,13 @@ fn text_and_structured_indexes_publish_together_after_existing_documents_validat
 
 async fn open(path: &std::path::Path, create: bool) -> (Arc<Database>, Arc<SecurityAudit>) {
     let node = (if create {
-        NodeStore::create_new(
+        NodeStore::create_new_fixture(
             path,
             kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
         )
     } else {
-        NodeStore::open_existing(
+        NodeStore::open_existing_fixture(
             path,
             kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
@@ -670,7 +670,7 @@ async fn open(path: &std::path::Path, create: bool) -> (Arc<Database>, Arc<Secur
 
 #[tokio::test]
 async fn encrypted_restart_and_full_restore_preserve_permanent_activation_receipts() {
-    let root = tempfile::tempdir().unwrap();
+    let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let path = root.path().join("node.redb");
     let (db, audit) = open(&path, true).await;
     let names: Vec<_> = (0..32).map(|n| format!("financial_{n}")).collect();
@@ -726,8 +726,11 @@ async fn encrypted_restart_and_full_restore_preserve_permanent_activation_receip
         receipt
     );
     let destination = Arc::new(
-        kasumi_store::FilesystemBackupDestination::new(root.path().join("backups"), 16 << 20)
-            .unwrap(),
+        kasumi_store::FilesystemBackupDestination::new_fixture(
+            root.path().join("backups"),
+            16 << 20,
+        )
+        .unwrap(),
     );
     let backup = db
         .backup_checkpoint(context("owner"), destination.as_ref(), uuid::Uuid::new_v4())
@@ -763,7 +766,7 @@ async fn encrypted_restart_and_full_restore_preserve_permanent_activation_receip
     drop(db);
     drop(audit);
 
-    let node = NodeStore::create_new(
+    let node = NodeStore::create_new_fixture(
         root.path().join("restored.redb"),
         kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
@@ -827,7 +830,7 @@ async fn encrypted_restart_and_full_restore_preserve_permanent_activation_receip
 
 #[tokio::test]
 async fn cold_schema_change_rejects_whole_bundle_and_scoped_status_rechecks_authority() {
-    let root = tempfile::tempdir().unwrap();
+    let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let (db, audit) = open(&root.path().join("node.redb"), true).await;
     let mut history = definition("history");
     history.write_mode = CollectionWriteMode::AppendOnly;
@@ -861,8 +864,11 @@ async fn cold_schema_change_rejects_whole_bundle_and_scoped_status_rechecks_auth
     db.install_archive_destination(
         "cold".into(),
         Arc::new(
-            kasumi_store::FilesystemBackupDestination::new(root.path().join("cold"), 16 << 20)
-                .unwrap(),
+            kasumi_store::FilesystemBackupDestination::new_fixture(
+                root.path().join("cold"),
+                16 << 20,
+            )
+            .unwrap(),
         ),
     )
     .unwrap();
@@ -1129,7 +1135,7 @@ fn schema_effect_digest_binds_dependencies_and_current_read_permission_is_requir
 
 #[tokio::test]
 async fn encrypted_schema_lookup_checks_current_fences_without_rewriting_original_effect() {
-    let root = tempfile::tempdir().unwrap();
+    let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let path = root.path().join("schema-fences.redb");
     let (db, audit) = open(&path, true).await;
     let mut install = creates(db.engine(), "fenced-initial", &["guards", "journal"]);

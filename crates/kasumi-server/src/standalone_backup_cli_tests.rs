@@ -14,7 +14,7 @@ fn context() -> RequestContext {
 
 #[tokio::test]
 async fn backup_cli_persists_session_before_connect_and_resolves_original_completion() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let installation = initialize(&directory.path().join("kasumi"), "tenant-a")
         .await
         .unwrap();

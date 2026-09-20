@@ -25,9 +25,7 @@ impl TenantStore {
         let _access = AccessGuard(self);
         self.check_access()?;
         let _mutation = self.mutations.lock();
-        let mut tx = self.node.db.begin_write()?;
-        tx.set_durability(Durability::Immediate)?;
-        tx.set_two_phase_commit(true);
+        let tx = self.node.db.begin_write()?;
         replace_domain(&tx, self, replacements)?;
         {
             let state = self.state.read();

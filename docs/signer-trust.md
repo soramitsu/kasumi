@@ -152,7 +152,7 @@ exact union of all installed authority manifest partitions. Configured metadata
 and application files and their wrapping domains must differ.
 
 Before first HA startup, write an `InitializeSignerVerifier` JSON input containing
-that `verifier` config, explicit `admission` and `scratch_disk` settings, and the
+that `verifier` config, explicit `admission`, `persistent_disk` and `scratch_disk` settings, and the
 `initial_certificates` for every domain.
 Run `kasumid initialize-signer-verifier /absolute/path/input.json`. The initializer
 requires generation one, verifies each root certificate, opens exclusive
@@ -267,7 +267,12 @@ retirement completion are not exposed yet. These prerequisites are required
 before the release can claim complete distributed signer rotation.
 
 The authority runtime and signer-verifier initialization request require an
-explicit `scratch_disk` object: `directory` (absolute private leaf beneath an
+explicit `persistent_disk` object with the same installed roots and budgets used
+by the node runtime. The verifier database must lie beneath one of those private
+roots. Roots must be disjoint from one another and from scratch, share one
+filesystem, and pass a bounded census before admission opens. Initializing a
+verifier never enrolls its database parent implicitly. These inputs also require
+an explicit `scratch_disk` object: `directory` (absolute private leaf beneath an
 existing parent), `max_bytes`, and `min_free_bytes`. Use the same installed
 runtime scratch configuration when initializing its separate verifier store.
 Runtime opening passes the shared node owner to both stores; it does not create

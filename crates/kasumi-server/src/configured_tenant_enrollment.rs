@@ -473,7 +473,7 @@ impl Administration {
                 )
                 .await?;
                 prepared.lease = Some(lease.clone());
-                prepared.resources.nodes.push(self.node.clone());
+                prepared.resources.borrowed_nodes.push(self.node.clone());
                 self.check_enrollment(&prepared.invocation)?;
                 ensure!(
                     grant.identity().authority_epoch == 1
@@ -567,7 +567,7 @@ impl Administration {
             )
             .await?;
             prepared.lease = lease.clone();
-            prepared.resources.nodes.push(self.node.clone());
+            prepared.resources.borrowed_nodes.push(self.node.clone());
             let stores = TenantStorageSet::open_existing(
                 self.node.clone(),
                 name.clone(),

@@ -1,0 +1,98 @@
+   Compiling serde_json v1.0.151 (/Users/mtakemiya/dev/kasumi/vendor/serde_json-1.0.151)
+   Compiling displaydoc v0.2.7
+    Checking tracing-core v0.1.36
+    Checking tinystr v0.8.4
+    Checking tracing v0.1.44
+    Checking zerotrie v0.2.5
+    Checking icu_collections v2.3.0
+    Checking icu_locale_core v2.3.0
+    Checking h2 v0.4.19
+    Checking icu_provider v2.3.1
+    Checking icu_properties v2.3.0
+    Checking icu_normalizer v2.3.0
+    Checking idna_adapter v1.2.2
+    Checking hyper v1.11.1
+    Checking idna v1.1.0
+    Checking url v2.5.8
+    Checking hyper-util v0.1.20
+    Checking tower v0.5.3
+    Checking axum-core v0.5.6
+    Checking kasumi-types v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-types)
+    Checking axum v0.8.9
+    Checking hyper-timeout v0.5.2
+    Checking tonic v0.14.6
+    Checking kasumi-serving v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-serving)
+    Checking kasumi-transport v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-transport)
+    Checking hyper-rustls v0.27.9
+    Checking tower-http v0.6.11
+   Compiling lindera-dictionary v5.3.0
+    Checking reqwest v0.12.28
+    Checking kasumi-store v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-store)
+   Compiling openraft-macros v0.9.25 (/Users/mtakemiya/dev/kasumi/vendor/openraft-0.9.25/macros)
+    Checking tracing-futures v0.2.5
+    Checking openraft v0.9.25 (/Users/mtakemiya/dev/kasumi/vendor/openraft-0.9.25/openraft)
+   Compiling lindera-ipadic v5.3.0
+    Checking postcard v1.1.3
+    Checking lru v0.16.4 (/Users/mtakemiya/dev/kasumi/vendor/lru-0.16.4)
+    Checking tantivy-query-grammar v0.26.0
+    Checking kasumi-raft v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-raft)
+    Checking lindera v5.3.0
+    Checking referencing v0.52.1
+    Checking lindera-analysis v5.3.0
+    Checking tantivy v0.26.1
+    Checking jsonschema-value v0.52.1
+    Checking jsonschema v0.52.1
+    Checking rusticata-macros v4.1.0
+   Compiling asn1-rs-derive v0.6.0
+   Compiling asn1-rs-impl v0.2.0
+    Checking asn1-rs v0.7.2
+    Checking lindera-tantivy v5.0.1
+    Checking kasumi-query v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-query)
+    Checking kasumi-engine v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-engine)
+error[E0428]: the name `ordered_seek_service` is defined multiple times
+  --> crates/kasumi-engine/src/service.rs:15:1
+   |
+13 | mod ordered_seek_service;
+   | ------------------------- previous definition of the module `ordered_seek_service` here
+14 | #[path = "ordered_seek_service.rs"]
+15 | mod ordered_seek_service;
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^ `ordered_seek_service` redefined here
+   |
+   = note: `ordered_seek_service` must be defined only once in the type namespace of this module
+
+   Compiling oid-registry v0.8.1
+    Checking lazy_static v1.5.0
+   Compiling kasumi-client v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-client)
+error[E0592]: duplicate definitions with name `ordered_seek`
+   --> crates/kasumi-engine/src/ordered_seek_service.rs:159:5
+    |
+159 | /     pub async fn ordered_seek(
+160 | |         &self,
+161 | |         context: &RequestContext,
+162 | |         request: OrderedSeekRequest,
+163 | |     ) -> Result<OrderedSeekResponse> {
+    | |                                    ^
+    | |                                    |
+    | |____________________________________duplicate definitions for `ordered_seek`
+    |                                      other definition for `ordered_seek`
+
+error[E0592]: duplicate definitions with name `ordered_seek_inner`
+   --> crates/kasumi-engine/src/ordered_seek_service.rs:167:5
+    |
+167 | /     async fn ordered_seek_inner(
+168 | |         &self,
+169 | |         context: &RequestContext,
+170 | |         request: OrderedSeekRequest,
+171 | |     ) -> Result<OrderedSeekResponse> {
+    | |                                    ^
+    | |                                    |
+    | |____________________________________duplicate definitions for `ordered_seek_inner`
+    |                                      other definition for `ordered_seek_inner`
+
+    Checking der-parser v10.0.0
+    Checking tonic-prost v0.14.6
+    Checking x509-parser v0.18.1
+Some errors have detailed explanations: E0428, E0592.
+For more information about an error, try `rustc --explain E0428`.
+error: could not compile `kasumi-engine` (lib) due to 3 previous errors
+warning: build failed, waiting for other jobs to finish...

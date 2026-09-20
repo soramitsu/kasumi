@@ -1,7 +1,7 @@
 #[tokio::test]
 async fn panicked_cold_preparation_drains_actual_nodes_stores_and_partial_runtime() -> Result<()> {
     let _gate = LIFECYCLE_GATE.lock().await;
-    let directory = tempfile::tempdir()?;
+    let directory = kasumi_store::test_utils::private_tempdir()?;
     let installed =
         crate::standalone::initialize(&directory.path().join("installed"), "acme").await?;
     let mut config = RuntimeConfig::load(&installed.configuration)?;
@@ -26,8 +26,11 @@ async fn panicked_cold_preparation_drains_actual_nodes_stores_and_partial_runtim
         NodeRuntime::drain_startups().await?;
         // The same physical installation and its encrypted catalog must be usable
         // immediately, including after a complete Control database was retained.
-        let lock = crate::standalone::claim(&config)?;
-        let node = NodeStore::open_existing(
+        let lock = crate::standalone::claim(
+            &config,
+            &crate::persistent_disk::open(&config.persistent_disk)?,
+        )?;
+        let node = NodeStore::open_existing_fixture(
             &config.database_path,
             config.database_id,
             kasumi_store::ScratchDisk::open(config.scratch_disk.clone())?,
@@ -56,7 +59,7 @@ async fn panicked_cold_preparation_drains_actual_nodes_stores_and_partial_runtim
 async fn rejected_cold_audit_open_drains_storage_and_releases_the_standalone_installation()
 -> Result<()> {
     let _gate = LIFECYCLE_GATE.lock().await;
-    let directory = tempfile::tempdir()?;
+    let directory = kasumi_store::test_utils::private_tempdir()?;
     let installed =
         crate::standalone::initialize(&directory.path().join("installed"), "acme").await?;
     let mut config = RuntimeConfig::load(&installed.configuration)?;
@@ -68,8 +71,11 @@ async fn rejected_cold_audit_open_drains_storage_and_releases_the_standalone_ins
     config.admin.listen = admin;
     config.mcp.protocol = McpConfig::new(format!("https://localhost:{}/mcp", mcp.port()))?;
     let scratch = kasumi_store::ScratchDisk::open(config.scratch_disk.clone())?;
-    let node =
-        NodeStore::open_existing(&config.database_path, config.database_id, scratch.clone())?;
+    let node = NodeStore::open_existing_fixture(
+        &config.database_path,
+        config.database_id,
+        scratch.clone(),
+    )?;
     let store = TenantStore::open_existing(
         node.clone(),
         SECURITY_TENANT.into(),
@@ -91,9 +97,15 @@ async fn rejected_cold_audit_open_drains_storage_and_releases_the_standalone_ins
             .context("missing audit head was accepted")?;
         assert!(format!("{error:#}").contains("audit"));
         NodeRuntime::drain_startups().await?;
-        let owner = crate::standalone::claim(&config)?;
-        let node =
-            NodeStore::open_existing(&config.database_path, config.database_id, scratch.clone())?;
+        let owner = crate::standalone::claim(
+            &config,
+            &crate::persistent_disk::open(&config.persistent_disk)?,
+        )?;
+        let node = NodeStore::open_existing_fixture(
+            &config.database_path,
+            config.database_id,
+            scratch.clone(),
+        )?;
         let store = TenantStore::open_existing(
             node.clone(),
             SECURITY_TENANT.into(),
@@ -114,7 +126,7 @@ async fn rejected_cold_audit_open_drains_storage_and_releases_the_standalone_ins
 async fn completed_runtime_shutdown_failure_retains_diagnostic_and_installation_lock() -> Result<()>
 {
     let _gate = LIFECYCLE_GATE.lock().await;
-    let directory = tempfile::tempdir()?;
+    let directory = kasumi_store::test_utils::private_tempdir()?;
     let installed =
         crate::standalone::initialize(&directory.path().join("installed"), "acme").await?;
     let mut config = RuntimeConfig::load(&installed.configuration)?;
@@ -134,7 +146,13 @@ async fn completed_runtime_shutdown_failure_retains_diagnostic_and_installation_
         runtime.closed,
         "complete failure did not mark actual drain completion"
     );
-    assert!(crate::standalone::claim(&config).is_err());
+    assert!(
+        crate::standalone::claim(
+            &config,
+            &crate::persistent_disk::open(&config.persistent_disk)?
+        )
+        .is_err()
+    );
     // Repeated shutdown preserves every exact diagnostic and does not submit
     // the stopping audit again. The installation remains owned until drop.
     let second = runtime.shutdown().await.unwrap_err();
@@ -151,10 +169,19 @@ async fn completed_runtime_shutdown_failure_retains_diagnostic_and_installation_
             .zip(second.issues())
             .all(|(a, b)| Arc::ptr_eq(a, b))
     );
-    assert!(crate::standalone::claim(&config).is_err());
+    assert!(
+        crate::standalone::claim(
+            &config,
+            &crate::persistent_disk::open(&config.persistent_disk)?
+        )
+        .is_err()
+    );
     drop(runtime);
     NodeRuntime::drain_startups().await?;
-    let owner = crate::standalone::claim(&config)?;
+    let owner = crate::standalone::claim(
+        &config,
+        &crate::persistent_disk::open(&config.persistent_disk)?,
+    )?;
     drop(owner);
     Ok(())
 }
@@ -163,7 +190,7 @@ async fn completed_runtime_shutdown_failure_retains_diagnostic_and_installation_
 async fn actual_standalone_unpolled_serve_and_serving_panic_retain_installation_until_join()
 -> Result<()> {
     let _gate = LIFECYCLE_GATE.lock().await;
-    let directory = tempfile::tempdir()?;
+    let directory = kasumi_store::test_utils::private_tempdir()?;
     let installed =
         crate::standalone::initialize(&directory.path().join("installed"), "acme").await?;
     let mut config = RuntimeConfig::load(&installed.configuration)?;
@@ -183,9 +210,15 @@ async fn actual_standalone_unpolled_serve_and_serving_panic_retain_installation_
         // caller future cannot abandon the real initialized runtime.
         drop(waiter);
         tokio::time::timeout(Duration::from_secs(10), pause.entered()).await?;
-        assert!(crate::standalone::claim(&config).is_err());
         assert!(
-            NodeStore::open_existing(
+            crate::standalone::claim(
+                &config,
+                &crate::persistent_disk::open(&config.persistent_disk)?
+            )
+            .is_err()
+        );
+        assert!(
+            NodeStore::open_existing_fixture(
                 &config.database_path,
                 config.database_id,
                 kasumi_store::ScratchDisk::open(config.scratch_disk.clone())?
@@ -202,7 +235,13 @@ async fn actual_standalone_unpolled_serve_and_serving_panic_retain_installation_
         })
         .await;
         drop(first);
-        assert!(crate::standalone::claim(&config).is_err());
+        assert!(
+            crate::standalone::claim(
+                &config,
+                &crate::persistent_disk::open(&config.persistent_disk)?
+            )
+            .is_err()
+        );
         pause.release();
         let outcome = tokio::time::timeout(
             Duration::from_secs(10),
@@ -232,8 +271,11 @@ async fn actual_standalone_unpolled_serve_and_serving_panic_retain_installation_
         }
         drop(fault);
         drop(pause);
-        let lock = crate::standalone::claim(&config)?;
-        let node = NodeStore::open_existing(
+        let lock = crate::standalone::claim(
+            &config,
+            &crate::persistent_disk::open(&config.persistent_disk)?,
+        )?;
+        let node = NodeStore::open_existing_fixture(
             &config.database_path,
             config.database_id,
             kasumi_store::ScratchDisk::open(config.scratch_disk.clone())?,

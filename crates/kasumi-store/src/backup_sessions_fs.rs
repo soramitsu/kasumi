@@ -5,22 +5,46 @@ use std::{
     collections::BTreeSet,
     ffi::{CStr, CString},
     fs::File,
-    io::{Read, Write},
     os::fd::{AsRawFd, FromRawFd},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
-pub(crate) struct Directory(File);
+pub(crate) struct Directory(File, Arc<crate::NodeDisk>, PathBuf);
 impl Directory {
-    pub fn open(path: &Path) -> Result<Self> {
+    pub fn open(path: &Path, disk: Arc<crate::NodeDisk>) -> Result<Self> {
         use std::os::unix::fs::OpenOptionsExt;
         let file = std::fs::OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
             .open(path)?;
-        Ok(Self(file))
+        disk.binding(&path.join("session-accounting-anchor"))?;
+        Ok(Self(file, disk, path.to_owned()))
+    }
+    fn check(&self) -> Result<()> {
+        use std::os::unix::fs::MetadataExt;
+        let result = (|| -> Result<()> {
+            ensure!(
+                self.1.snapshot().phase == crate::NodeDiskPhase::Open,
+                "backup physical owner is unavailable"
+            );
+            let current = std::fs::symlink_metadata(&self.2)?;
+            let retained = self.0.metadata()?;
+            ensure!(
+                current.is_dir()
+                    && current.dev() == retained.dev()
+                    && current.ino() == retained.ino(),
+                "backup directory binding changed"
+            );
+            crate::private_files::check_directory(&self.2)?;
+            Ok(())
+        })();
+        if result.is_err() {
+            self.1.fail();
+        }
+        result
     }
     fn child(&self, name: &str, create: bool) -> Result<Option<Self>> {
+        self.check()?;
         use std::os::unix::fs::MetadataExt;
         let name = CString::new(name)?;
         if create && unsafe { libc::mkdirat(self.0.as_raw_fd(), name.as_ptr(), 0o700) } != 0 {
@@ -43,7 +67,11 @@ impl Directory {
             }
             return Err(error.into());
         }
-        let directory = Self(unsafe { File::from_raw_fd(fd) });
+        let directory = Self(
+            unsafe { File::from_raw_fd(fd) },
+            self.1.clone(),
+            self.2.join(name.to_str()?),
+        );
         let metadata = directory.0.metadata()?;
         ensure!(
             metadata.uid() == unsafe { libc::geteuid() } && metadata.mode() & 0o077 == 0,
@@ -63,51 +91,40 @@ impl Directory {
         sessions.child(&id.to_string(), create)
     }
     fn read(&self, name: &str, limit: usize) -> Result<Option<Vec<u8>>> {
-        let name = CString::new(name)?;
-        let fd = unsafe {
-            libc::openat(
-                self.0.as_raw_fd(),
-                name.as_ptr(),
-                libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK,
-            )
-        };
-        if fd == -1 {
-            let error = std::io::Error::last_os_error();
-            if error.kind() == std::io::ErrorKind::NotFound {
-                return Ok(None);
-            }
-            return Err(error.into());
+        self.check()?;
+        let path = self.2.join(name);
+        if !path.try_exists()? {
+            return Ok(None);
         }
-        let mut file = unsafe { File::from_raw_fd(fd) };
-        let metadata = file.metadata()?;
+        let (root, relative) = self.1.binding(&path)?;
+        let file = self.1.open_file(root, relative)?;
+        let length = file.observed_len()?;
         ensure!(
-            metadata.is_file() && metadata.len() <= limit as u64,
+            length <= limit as u64,
             "invalid or oversized backup session object"
         );
-        let mut bytes = Vec::new();
-        (&mut file).take(limit as u64 + 1).read_to_end(&mut bytes)?;
-        ensure!(bytes.len() <= limit, "backup session object exceeds limit");
-        // A prior create-only publication may have linked this name and then
-        // failed to synchronize its directory. Readback must establish actual
-        // durability before it can resolve completion or authorize reclamation.
-        // This also covers dependencies/root objects recovered after a lost PUT.
+        let mut bytes = vec![0; usize::try_from(length)?];
+        file.read_exact_at(&mut bytes, 0)?;
         #[cfg(test)]
-        test_sync::check(self, name.to_str()?, test_sync::Point::ReadFile)?;
+        test_sync::check(self, name, test_sync::Point::ReadFile)?;
         file.sync_all()?;
         #[cfg(test)]
-        test_sync::check(self, name.to_str()?, test_sync::Point::ReadDirectory)?;
-        self.0.sync_all()?;
+        test_sync::check(self, name, test_sync::Point::ReadDirectory)?;
+        file.sync_all_and_parent()?;
+        self.check()?;
         Ok(Some(bytes))
     }
     fn unlink(&self, name: &str) -> Result<()> {
-        let name = CString::new(name)?;
-        if unsafe { libc::unlinkat(self.0.as_raw_fd(), name.as_ptr(), 0) } != 0 {
-            let error = std::io::Error::last_os_error();
-            if error.kind() != std::io::ErrorKind::NotFound {
-                return Err(error.into());
-            }
+        self.check()?;
+        let path = self.2.join(name);
+        if !path.try_exists()? {
+            self.0.sync_all()?;
+            return Ok(());
         }
-        Ok(())
+        let (root, relative) = self.1.binding(&path)?;
+        let file = self.1.open_file(root, relative)?;
+        self.1.delete_file(file)?;
+        self.check()
     }
     pub fn put(&self, session: Uuid, slot: BackupSessionSlot, bytes: &[u8]) -> Result<()> {
         slot.relative(session)?;
@@ -117,59 +134,43 @@ impl Directory {
         let objects = session
             .child("objects", true)?
             .context("backup object directory absent")?;
-        // Every interrupted temporary upload is itself a UUID object inside the
-        // deletable namespace. Control records are atomically linked outside it.
+        // Interrupted uploads remain exact UUID objects in the authenticated
+        // aborted namespace. Publication moves the original accounted inode;
+        // it never creates a transient second hard link.
         let temporary = format!("{}.kasumi", Uuid::new_v4());
-        let temporary_c = CString::new(temporary.as_str())?;
-        let fd = unsafe {
-            libc::openat(
-                objects.0.as_raw_fd(),
-                temporary_c.as_ptr(),
-                libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-                0o600,
-            )
+        let path = objects.2.join(&temporary);
+        let (root, relative) = self.1.binding(&path)?;
+        let file = self
+            .1
+            .create_file(root, relative, crate::DiskWork::Foreground)?;
+        file.reserve_growth(0, bytes.len() as u64, crate::DiskWork::Foreground)?;
+        file.grow_reserved(bytes.len() as u64)?;
+        file.write_all_at(bytes, 0)?;
+        file.sync_all_and_parent()?;
+        let (destination, name) = match slot {
+            BackupSessionSlot::Intent => (&session, "intent.kasumi".to_owned()),
+            BackupSessionSlot::Outcome => (&session, "outcome.kasumi".to_owned()),
+            BackupSessionSlot::Object(id) => (&objects, format!("{id}.kasumi")),
         };
-        ensure!(
-            fd != -1,
-            "creating backup upload: {}",
-            std::io::Error::last_os_error()
-        );
-        let mut file = unsafe { File::from_raw_fd(fd) };
-        let result = (|| {
-            file.write_all(bytes)?;
-            file.sync_all()?;
-            let (destination, name) = match slot {
-                BackupSessionSlot::Intent => (&session, "intent.kasumi".to_owned()),
-                BackupSessionSlot::Outcome => (&session, "outcome.kasumi".to_owned()),
-                BackupSessionSlot::Object(id) => (&objects, format!("{id}.kasumi")),
-            };
-            let name = CString::new(name)?;
-            ensure!(
-                unsafe {
-                    libc::linkat(
-                        objects.0.as_raw_fd(),
-                        temporary_c.as_ptr(),
-                        destination.0.as_raw_fd(),
-                        name.as_ptr(),
-                        0,
-                    )
-                } == 0,
-                "publishing create-only backup session object: {}",
-                std::io::Error::last_os_error()
-            );
-            #[cfg(test)]
-            test_sync::check(
-                destination,
-                name.to_str()?,
-                test_sync::Point::PublishDirectory,
-            )?;
-            destination.0.sync_all()?;
-            Ok(())
-        })();
-        let cleanup = objects
-            .unlink(&temporary)
-            .and_then(|()| Ok(objects.0.sync_all()?));
-        result.and(cleanup)
+        destination.check()?;
+        let destination_path = destination.2.join(&name);
+        let (root, relative) = self.1.binding(&destination_path)?;
+        match self.1.publish_file(file, root, relative) {
+            Ok(published) => {
+                #[cfg(test)]
+                test_sync::check(destination, &name, test_sync::Point::PublishDirectory)?;
+                published.sync_all_and_parent()?;
+                Ok(())
+            }
+            Err(error) => {
+                // A definite create-only conflict did not publish this upload;
+                // remove only its exact temporary UUID through the same owner.
+                if error.kind() == std::io::ErrorKind::AlreadyExists {
+                    objects.unlink(&temporary)?;
+                }
+                Err(error.into())
+            }
+        }
     }
     pub fn get(
         &self,

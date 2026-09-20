@@ -46,7 +46,7 @@ async fn installation() -> Result<(
     InitializedInstallation,
     StageTenantRequest,
 )> {
-    let root = tempfile::tempdir()?;
+    let root = kasumi_store::test_utils::private_tempdir()?;
     let installed = initialize(&root.path().join("installed"), "tenant-a").await?;
     let mut config = RuntimeConfig::load(&installed.configuration)?;
     let listeners = (0..3)

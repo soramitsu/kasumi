@@ -1,8 +1,11 @@
 use super::*;
+use crate::private_files;
 use crate::{NodeStore, ScratchDisk};
-use redb::{Database, Durability, ReadableDatabase, TableDefinition};
+use redb::{Database, TableDefinition};
 use std::{
+    fs::{File, OpenOptions},
     io::Read,
+    os::unix::fs::{FileExt, OpenOptionsExt},
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
 };
@@ -11,24 +14,52 @@ const ID: Uuid = Uuid::from_u128(0xac08_d6b1_a41e_47f1_9a86_8bd6_c541_d550);
 const PROBE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("node_crash_probe");
 
 fn directory() -> tempfile::TempDir {
-    tempfile::tempdir().unwrap()
+    crate::test_utils::private_tempdir().unwrap()
 }
 
 fn raw_database(path: &Path) -> Database {
     let file = options().create_new(true).open(path).unwrap();
-    Database::builder().create_file(file).unwrap()
+    Database::builder(crate::test_utils::storage_admission())
+        .create_file(file)
+        .unwrap()
 }
 
-fn commit_probe(db: &Database) {
-    let mut transaction = db.begin_write().unwrap();
-    transaction.set_durability(Durability::Immediate).unwrap();
-    transaction.set_two_phase_commit(true);
+fn commit_probe(transaction: redb::WriteTransaction) {
     transaction
         .open_table(PROBE)
         .unwrap()
         .insert(b"key".as_slice(), b"durable value".as_slice())
         .unwrap();
     transaction.commit().unwrap();
+}
+
+fn options() -> OpenOptions {
+    let mut options = OpenOptions::new();
+    options
+        .read(true)
+        .write(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    options
+}
+
+fn create_node(path: &Path, id: Uuid) -> Arc<NodeFile> {
+    NodeFile::create_new(path, id, NodeDisk::fixture_for_path(path).unwrap()).unwrap()
+}
+
+fn open_node(path: &Path, id: Uuid) -> Result<Arc<NodeFile>> {
+    NodeFile::open_existing(path, id, NodeDisk::fixture_for_path(path)?)
+}
+
+fn resize(backend: &NodeBackend, len: u64) -> io::Result<()> {
+    let current = backend.len()?;
+    if len > current {
+        backend
+            .0
+            .reserve_growth(current, len)
+            .map_err(|_| io::ErrorKind::StorageFull)?;
+    }
+    backend.set_len(len)
 }
 
 #[test]
@@ -40,15 +71,15 @@ fn unrelated_clean_and_unclean_redb_rejection_is_byte_exact() {
             run_child(&path, "raw");
         } else {
             let db = raw_database(&path);
-            commit_probe(&db);
+            commit_probe(db.begin_write().unwrap());
             drop(db);
         }
         // These deliberately small test files permit a byte-for-byte witness;
         // production admission reads only the fixed 4096-byte envelope.
         let before = std::fs::read(&path).unwrap();
-        assert!(NodeStore::open_existing(&path, ID, ScratchDisk::fixture()).is_err());
+        assert!(NodeStore::open_existing_fixture(&path, ID, ScratchDisk::fixture()).is_err());
         assert_eq!(before, std::fs::read(&path).unwrap());
-        assert!(NodeStore::create_new(&path, ID, ScratchDisk::fixture()).is_err());
+        assert!(NodeStore::create_new_fixture(&path, ID, ScratchDisk::fixture()).is_err());
         assert_eq!(before, std::fs::read(&path).unwrap());
     }
 }
@@ -59,9 +90,12 @@ fn recognized_store_recovers_after_actual_process_exit_without_close() {
     let path = directory.path().join("owned");
     run_child(&path, "owned");
     let before = std::fs::read(&path).unwrap();
-    assert!(NodeStore::open_existing(&path, Uuid::from_u128(9), ScratchDisk::fixture()).is_err());
+    assert!(
+        NodeStore::open_existing_fixture(&path, Uuid::from_u128(9), ScratchDisk::fixture())
+            .is_err()
+    );
     assert_eq!(before, std::fs::read(&path).unwrap());
-    let node = NodeStore::open_existing(&path, ID, ScratchDisk::fixture()).unwrap();
+    let node = NodeStore::open_existing_fixture(&path, ID, ScratchDisk::fixture()).unwrap();
     let transaction = node.db.begin_read().unwrap();
     let table = transaction.open_table(PROBE).unwrap();
     assert_eq!(
@@ -70,9 +104,9 @@ fn recognized_store_recovers_after_actual_process_exit_without_close() {
     );
     drop(table);
     drop(transaction);
-    assert!(NodeStore::open_existing(&path, ID, ScratchDisk::fixture()).is_err());
+    assert!(NodeStore::open_existing_fixture(&path, ID, ScratchDisk::fixture()).is_err());
     drop(node);
-    let reopened = NodeStore::open_existing(&path, ID, ScratchDisk::fixture()).unwrap();
+    let reopened = NodeStore::open_existing_fixture(&path, ID, ScratchDisk::fixture()).unwrap();
     drop(reopened);
 }
 
@@ -80,9 +114,9 @@ fn recognized_store_recovers_after_actual_process_exit_without_close() {
 fn partial_envelopes_are_never_adopted_or_reinitialized() {
     let directory = directory();
     let path = directory.path().join("partial");
-    let owner = NodeFile::create_new(&path, ID).unwrap();
+    let owner = create_node(&path, ID);
     let identity = private_files::file_identity(&path).unwrap();
-    owner.backend().set_len(8192).unwrap();
+    resize(&owner.backend(), 8192).unwrap();
     owner
         .backend()
         .write(0, b"partly initialized payload")
@@ -90,11 +124,12 @@ fn partial_envelopes_are_never_adopted_or_reinitialized() {
     owner.backend().sync_data().unwrap();
     owner.backend().close().unwrap();
     let before = std::fs::read(&path).unwrap();
-    assert!(NodeStore::open_existing(&path, ID, ScratchDisk::fixture()).is_err());
+    assert!(NodeStore::open_existing_fixture(&path, ID, ScratchDisk::fixture()).is_err());
     assert!(
-        NodeStore::initialize_owned_empty(&path, &identity, ID, ScratchDisk::fixture()).is_err()
+        NodeStore::initialize_owned_empty_fixture(&path, &identity, ID, ScratchDisk::fixture())
+            .is_err()
     );
-    assert!(NodeStore::create_new(&path, ID, ScratchDisk::fixture()).is_err());
+    assert!(NodeStore::create_new_fixture(&path, ID, ScratchDisk::fixture()).is_err());
     assert_eq!(before, std::fs::read(&path).unwrap());
 
     for length in [0, 15, 31, 33, HEADER_BYTES - 1, HEADER_BYTES] {
@@ -103,7 +138,7 @@ fn partial_envelopes_are_never_adopted_or_reinitialized() {
         file.write_all_at(&header(ID, READY)[..length], 0).unwrap();
         drop(file);
         let before = std::fs::read(&path).unwrap();
-        assert!(NodeStore::open_existing(&path, ID, ScratchDisk::fixture()).is_err());
+        assert!(NodeStore::open_existing_fixture(&path, ID, ScratchDisk::fixture()).is_err());
         assert_eq!(before, std::fs::read(&path).unwrap());
     }
 }
@@ -113,7 +148,7 @@ fn existing_header_requires_exact_canonical_fields_and_checksum() {
     let directory = directory();
     for (index, replacement) in [(0, b'X'), (32, 3), (33, 1), (CHECKSUM_AT, 11)] {
         let path = directory.path().join(format!("bad-{index}"));
-        drop(NodeStore::create_new(&path, ID, ScratchDisk::fixture()).unwrap());
+        drop(NodeStore::create_new_fixture(&path, ID, ScratchDisk::fixture()).unwrap());
         let file = options().open(&path).unwrap();
         let replacement = if index == CHECKSUM_AT {
             std::fs::read(&path).unwrap()[index] ^ 0xff
@@ -124,7 +159,7 @@ fn existing_header_requires_exact_canonical_fields_and_checksum() {
         file.sync_all().unwrap();
         drop(file);
         let before = std::fs::read(&path).unwrap();
-        assert!(NodeStore::open_existing(&path, ID, ScratchDisk::fixture()).is_err());
+        assert!(NodeStore::open_existing_fixture(&path, ID, ScratchDisk::fixture()).is_err());
         assert_eq!(before, std::fs::read(&path).unwrap());
     }
 }
@@ -139,16 +174,19 @@ fn initialization_requires_exact_journal_owned_empty_inode() {
     let identity = private_files::file_identity(&path).unwrap();
     let foreign = private_files::file_identity(&other).unwrap();
     assert!(
-        NodeStore::initialize_owned_empty(&path, &foreign, ID, ScratchDisk::fixture()).is_err()
+        NodeStore::initialize_owned_empty_fixture(&path, &foreign, ID, ScratchDisk::fixture())
+            .is_err()
     );
     assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
     let node =
-        NodeStore::initialize_owned_empty(&path, &identity, ID, ScratchDisk::fixture()).unwrap();
+        NodeStore::initialize_owned_empty_fixture(&path, &identity, ID, ScratchDisk::fixture())
+            .unwrap();
     assert_eq!(private_files::file_identity(&path).unwrap(), identity);
     drop(node);
-    drop(NodeStore::open_existing(&path, ID, ScratchDisk::fixture()).unwrap());
+    drop(NodeStore::open_existing_fixture(&path, ID, ScratchDisk::fixture()).unwrap());
     assert!(
-        NodeStore::initialize_owned_empty(&path, &identity, ID, ScratchDisk::fixture()).is_err()
+        NodeStore::initialize_owned_empty_fixture(&path, &identity, ID, ScratchDisk::fixture())
+            .is_err()
     );
 }
 
@@ -156,26 +194,35 @@ fn initialization_requires_exact_journal_owned_empty_inode() {
 fn offset_io_preserves_header_and_retained_backend_cannot_outlive_close() {
     let directory = directory();
     let path = directory.path().join("offset");
-    let owner = NodeFile::create_new(&path, ID).unwrap();
+    let owner = create_node(&path, ID);
     let backend = owner.backend();
     let header_before = std::fs::read(&path).unwrap();
-    backend.set_len(8).unwrap();
+    resize(&backend, 8).unwrap();
     backend.write(0, b"12345678").unwrap();
     let mut read = [0; 8];
     backend.read(0, &mut read).unwrap();
     assert_eq!(read, *b"12345678");
     assert!(backend.write(8, b"outside allocated extent").is_err());
-    assert!(backend.set_len(i64::MAX as u64).is_err());
     assert!(backend.read(u64::MAX, &mut read).is_err());
     assert!(backend.write(u64::MAX, b"overflow").is_err());
-    backend.set_len(0).unwrap();
+    resize(&backend, 0).unwrap();
     assert_eq!(std::fs::read(&path).unwrap(), header_before);
-    assert!(NodeFile::open_existing(&path, ID).is_err());
+    assert!(open_node(&path, ID).is_err());
+    // This impossible redb admission is an owner failure, not a recoverable
+    // capacity denial. A later resize must not start I/O through that owner.
+    assert_eq!(
+        owner.reserve_growth(0, i64::MAX as u64),
+        Err(AdmissionError::OwnerFailed)
+    );
+    assert_eq!(owner.disk.snapshot().phase, crate::NodeDiskPhase::Failed);
+    assert!(resize(&backend, 0).is_err());
+    assert!(backend.sync_data().is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), header_before);
     backend.close().unwrap();
     assert!(backend.len().is_err());
     assert!(backend.read(0, &mut read).is_err());
     assert!(backend.write(0, b"closed").is_err());
-    assert!(backend.set_len(8).is_err());
+    assert!(resize(&backend, 8).is_err());
     assert!(backend.sync_data().is_err());
     let file = options().open(&path).unwrap();
     file.try_lock().unwrap();
@@ -185,7 +232,7 @@ fn offset_io_preserves_header_and_retained_backend_cannot_outlive_close() {
 fn canonical_header_rejects_nil_identity_without_creating_a_file() {
     let directory = directory();
     let path = directory.path().join("nil");
-    assert!(NodeStore::create_new(&path, Uuid::nil(), ScratchDisk::fixture()).is_err());
+    assert!(NodeStore::create_new_fixture(&path, Uuid::nil(), ScratchDisk::fixture()).is_err());
     assert!(!path.exists());
 }
 
@@ -194,34 +241,39 @@ fn validated_descriptor_handoff_never_reopens_a_substituted_path() {
     let directory = directory();
     let path = directory.path().join("candidate");
     let moved = directory.path().join("original-inode");
-    drop(NodeStore::create_new(&path, ID, ScratchDisk::fixture()).unwrap());
+    drop(NodeStore::create_new_fixture(&path, ID, ScratchDisk::fixture()).unwrap());
     let expected = private_files::file_identity(&path).unwrap();
-    let owner = NodeFile::open_existing(&path, ID).unwrap();
+    let owner = open_node(&path, ID).unwrap();
+    let disk = owner.disk.clone();
+    assert_eq!(disk.snapshot().open_files, 1);
     std::fs::rename(&path, &moved).unwrap();
     drop(raw_database(&path));
     let unrelated = std::fs::read(&path).unwrap();
+    let original = std::fs::read(&moved).unwrap();
 
-    let db = Database::builder()
-        .create_with_backend(owner.backend())
-        .unwrap();
-    commit_probe(&db);
+    assert!(
+        Database::builder(owner.clone())
+            .create_with_backend(owner.backend())
+            .is_err()
+    );
+    assert_eq!(original, std::fs::read(&moved).unwrap());
     assert_eq!(unrelated, std::fs::read(&path).unwrap());
     assert_eq!(private_files::file_identity(&moved).unwrap(), expected);
-    assert!(NodeStore::open_existing(&moved, ID, ScratchDisk::fixture()).is_err());
-    drop(db);
-    // Even this retained admission owner has no descriptor after redb close.
+    // Identity substitution fences this owner before any payload repair/write.
+    assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Failed);
+    assert!(owner.backend().write(0, b"must not write").is_err());
+    assert!(NodeStore::open_existing(&moved, ID, disk.clone(), ScratchDisk::fixture()).is_err());
+    // Failed database construction closes the actual backend even while this
+    // NodeFile Arc survives. Only an explicit drained census reopens admission.
+    assert_eq!(disk.snapshot().open_files, 0);
     assert!(owner.backend().len().is_err());
-    let reopened = NodeStore::open_existing(&moved, ID, ScratchDisk::fixture()).unwrap();
+    disk.reconcile(&crate::CensusCancellation::default())
+        .unwrap();
+    assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Open);
+    let reopened = NodeStore::open_existing(&moved, ID, disk, ScratchDisk::fixture()).unwrap();
+    assert!(owner.backend().write(0, b"closed after census").is_err());
     let tx = reopened.db.begin_read().unwrap();
-    assert_eq!(
-        tx.open_table(PROBE)
-            .unwrap()
-            .get(b"key".as_slice())
-            .unwrap()
-            .unwrap()
-            .value(),
-        b"durable value"
-    );
+    assert!(tx.open_table(PROBE).is_err());
     assert_eq!(unrelated, std::fs::read(&path).unwrap());
 }
 
@@ -235,18 +287,18 @@ fn cleanup_custody_accepts_only_exact_recognized_headers_and_holds_the_inode_loc
             "prepared-cleanup"
         });
         if ready {
-            drop(NodeStore::create_new(&path, ID, ScratchDisk::fixture()).unwrap());
+            drop(NodeStore::create_new_fixture(&path, ID, ScratchDisk::fixture()).unwrap());
         } else {
-            drop(NodeFile::create_new(&path, ID).unwrap());
+            drop(create_node(&path, ID));
         }
         let before = std::fs::read(&path).unwrap();
-        assert!(NodeStore::claim_cleanup(&path, Uuid::from_u128(10)).is_err());
+        assert!(NodeStore::claim_cleanup_fixture(&path, Uuid::from_u128(10)).is_err());
         assert_eq!(before, std::fs::read(&path).unwrap());
         let identity = private_files::file_identity(&path).unwrap();
-        let cleanup = NodeStore::claim_cleanup(&path, ID).unwrap();
+        let cleanup = NodeStore::claim_cleanup_fixture(&path, ID).unwrap();
         assert_eq!(cleanup.identity(), &identity);
         assert_eq!(before, std::fs::read(&path).unwrap());
-        assert!(NodeStore::claim_cleanup(&path, ID).is_err());
+        assert!(NodeStore::claim_cleanup_fixture(&path, ID).is_err());
         assert!(options().open(&path).unwrap().try_lock().is_err());
         let alias = directory.path().join(if ready {
             "ready-moved"
@@ -268,13 +320,13 @@ fn cleanup_custody_accepts_only_exact_recognized_headers_and_holds_the_inode_loc
         file.write_all_at(bytes, 0).unwrap();
         drop(file);
         let before = std::fs::read(&path).unwrap();
-        assert!(NodeStore::claim_cleanup(&path, ID).is_err());
+        assert!(NodeStore::claim_cleanup_fixture(&path, ID).is_err());
         assert_eq!(before, std::fs::read(&path).unwrap());
     }
     let path = directory.path().join("unrelated-cleanup");
     drop(raw_database(&path));
     let before = std::fs::read(&path).unwrap();
-    assert!(NodeStore::claim_cleanup(&path, ID).is_err());
+    assert!(NodeStore::claim_cleanup_fixture(&path, ID).is_err());
     assert_eq!(before, std::fs::read(&path).unwrap());
 }
 
@@ -351,7 +403,7 @@ fn crash_child() {
     {
         "raw" => {
             let db = raw_database(&path);
-            commit_probe(&db);
+            commit_probe(db.begin_write().unwrap());
             std::process::exit(77);
         }
         "owned" => {
@@ -363,8 +415,8 @@ fn crash_child() {
                 min_free_bytes: 0,
             })
             .unwrap();
-            let node = NodeStore::create_new(&path, ID, scratch).unwrap();
-            commit_probe(&node.db);
+            let node = NodeStore::create_new_fixture(&path, ID, scratch).unwrap();
+            commit_probe(node.db.begin_write().unwrap());
             std::process::exit(77);
         }
         _ => panic!("unexpected node crash child mode"),
@@ -375,9 +427,9 @@ fn crash_child() {
 fn reads_enforce_payload_bounds_even_for_empty_buffers() {
     let directory = directory();
     let path = directory.path().join("read-bounds");
-    let owner = NodeFile::create_new(&path, ID).unwrap();
+    let owner = create_node(&path, ID);
     let backend = owner.backend();
-    backend.set_len(8).unwrap();
+    resize(&backend, 8).unwrap();
     assert!(backend.read(8, &mut []).is_ok());
     assert_eq!(
         backend.read(9, &mut []).unwrap_err().kind(),
@@ -391,7 +443,7 @@ fn reads_enforce_payload_bounds_even_for_empty_buffers() {
         backend.read(7, &mut [0, 0]).unwrap_err().kind(),
         io::ErrorKind::UnexpectedEof
     );
-    backend.set_len(0).unwrap();
+    resize(&backend, 0).unwrap();
     assert!(backend.read(0, &mut []).is_ok());
     assert!(backend.read(1, &mut []).is_err());
     backend.close().unwrap();
@@ -402,9 +454,9 @@ fn resize_drains_a_write_after_its_extent_check_before_truncating() {
     use std::sync::mpsc::{self, RecvTimeoutError};
     let directory = directory();
     let path = directory.path().join("resize-drain");
-    let owner = NodeFile::create_new(&path, ID).unwrap();
+    let owner = create_node(&path, ID);
     let backend = owner.backend();
-    backend.set_len(8).unwrap();
+    resize(&backend, 8).unwrap();
     let expected_header = header(ID, PREPARED);
     let (entered, paused) = mpsc::channel();
     let (resume, released) = mpsc::channel();
@@ -421,7 +473,7 @@ fn resize_drains_a_write_after_its_extent_check_before_truncating() {
         // descriptor owner held. A resize must wait for that operation to drain.
         let resizer = scope.spawn(|| {
             attempted.send(()).unwrap();
-            finished.send(backend.set_len(0)).unwrap();
+            finished.send(resize(&backend, 0)).unwrap();
         });
         attempting.recv_timeout(Duration::from_secs(5)).unwrap();
         let before_release = completed.recv_timeout(Duration::from_millis(250));

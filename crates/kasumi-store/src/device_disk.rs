@@ -71,7 +71,7 @@ impl DeviceDisk {
         Self { device, id }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fn isolated(minimum_free_bytes: u64) -> Self {
         Self::register(Arc::new(Device::default()), minimum_free_bytes)
     }

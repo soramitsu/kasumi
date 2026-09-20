@@ -115,9 +115,7 @@ impl EncryptedTrust {
         let state = self.store.state.read();
         self.store.require_access(&state)?;
         let catalog = self.store.catalog.read();
-        let mut tx = self.store.node.db.begin_write()?;
-        tx.set_durability(Durability::Immediate)?;
-        tx.set_two_phase_commit(true);
+        let tx = self.store.node.db.begin_write()?;
         write_domain(&tx, &self.store, &state, &catalog, &operations)?;
         self.store.require_access(&state)?;
         tx.commit()

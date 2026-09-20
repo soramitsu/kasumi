@@ -1,0 +1,34 @@
+    Checking kasumi-clock v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-clock)
+    Checking kasumi-transport v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-transport)
+    Checking kasumi-types v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-types)
+    Checking kasumi-serving v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-serving)
+    Checking kasumi-store v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-store)
+error: items after a test module
+   --> crates/kasumi-store/src/node_database.rs:23:1
+    |
+ 23 | mod tests {
+    | ^^^^^^^^^
+...
+141 | struct ClosePanic(Mutex<Box<dyn Any + Send>>);
+    | ^^^^^^^^^^^^^^^^^
+142 | impl fmt::Debug for ClosePanic {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+147 | impl fmt::Display for ClosePanic {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+155 | impl std::error::Error for ClosePanic {}
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+156 |
+157 | pub(crate) struct NodeDatabase {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+163 | impl NodeDatabase {
+    | ^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#items_after_test_module
+    = note: `-D clippy::items-after-test-module` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::items_after_test_module)]`
+    = help: move the items to before the test module was defined
+
+error: could not compile `kasumi-store` (lib test) due to 1 previous error

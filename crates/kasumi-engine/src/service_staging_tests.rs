@@ -1,7 +1,7 @@
 #[tokio::test]
 async fn queued_staged_finalize_checks_fresh_time_and_canceled_callers_keep_durable_outcomes() {
-    let directory = tempfile::tempdir().unwrap();
-    let node = NodeStore::create_new(
+    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let node = NodeStore::create_new_fixture(
         directory.path().join("node.redb"),
         kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),

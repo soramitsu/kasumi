@@ -1,0 +1,10 @@
+2026-09-20T07:51:22.682773Z ERROR ThreadId(20) panicked at tests/tests/life_cycle/t14_auxiliary_custody.rs:119:21:
+actual retained vote collector panic backtrace=backtrace is disabled without --features 'bt' panic.file="tests/tests/life_cycle/t14_auxiliary_custody.rs" panic.line=119 panic.column=21
+2026-09-20T07:51:22.683431Z  WARN ThreadId(21) A message will be ignored because vote changed: msg sent by vote: T1-N0:committed; current my vote: None; when (VoteResponse)
+2026-09-20T07:51:22.683431Z  WARN ThreadId(32) A message will be ignored because vote changed: msg sent by vote: T1-N0:committed; current my vote: None; when (VoteResponse)
+2026-09-20T07:51:22.683431Z  WARN ThreadId(08) A message will be ignored because vote changed: msg sent by vote: T1-N0:committed; current my vote: None; when (VoteResponse)
+2026-09-20T07:51:22.683533Z  WARN ThreadId(28) membership_log_id changed: msg sent by: Some(T1-N0-2); curr: Some(T1-N0-3); ignore when (UpdateReplicationMatched)
+2026-09-20T07:51:22.683605Z  WARN ThreadId(18) A message will be ignored because vote changed: msg sent by vote: T1-N0:committed; current my vote: None; when (VoteResponse)
+2026-09-20T07:51:22.683671Z ERROR ThreadId(20) quit RaftCore::main on error error=panicked
+2026-09-20T07:51:22.708727Z ERROR ThreadId(12) panicked at tests/tests/life_cycle/t14_auxiliary_custody.rs:59:21:
+actual retained leadership collector panic backtrace=backtrace is disabled without --features 'bt' panic.file="tests/tests/life_cycle/t14_auxiliary_custody.rs" panic.line=59 panic.column=21

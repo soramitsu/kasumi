@@ -160,6 +160,7 @@ async fn begin(input: Input) -> Result<oneshot::Receiver<Ticket>> {
     let (send, receive) = oneshot::channel();
     let node = input.node.clone();
     let mut tasks = node.initializers.lock().await;
+    ensure!(!node.db.is_stopped(), "node catalog admission is closed");
     tasks.reap_finished().await?;
     tasks.handles.push(tokio::spawn(async move {
         let outcome = prepare(input, &send).await;
@@ -330,9 +331,7 @@ fn save_new_catalog(store: &TenantStore) -> Result<()> {
     catalog.validate(store.tenant())?;
     let bytes = serde_json::to_vec(&*catalog)?;
     let hash = tenant_hash(store.tenant());
-    let mut tx = store.node.db.begin_write()?;
-    tx.set_durability(Durability::Immediate)?;
-    tx.set_two_phase_commit(true);
+    let tx = store.node.db.begin_write()?;
     {
         let mut catalogs = tx.open_table(CATALOG)?;
         ensure!(

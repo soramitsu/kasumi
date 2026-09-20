@@ -1,7 +1,7 @@
 #[tokio::test]
 async fn fenced_source_startup_keeps_control_handle_without_constructing_application_provider() {
     let _gate = LIFECYCLE_GATE.lock().await;
-    let dir = tempfile::tempdir().unwrap();
+    let dir = kasumi_store::test_utils::private_tempdir().unwrap();
     let (files, _) = certificate_files(dir.path());
     let socket = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("https://localhost:{}", socket.local_addr().unwrap().port());
@@ -18,7 +18,8 @@ async fn fenced_source_startup_keeps_control_handle_without_constructing_applica
         stopped,
     ));
     let mut config = example_config();
-    config.database_path = dir.path().join("node.redb");
+    config.persistent_disk = crate::persistent_disk::fixture_config(&dir.path().join("data"));
+    config.database_path = dir.path().join("data/node.redb");
     config.scratch_disk.directory = dir.path().join("scratch");
     config.mcp.tls = files.clone();
     config.native.tls = files.clone();
@@ -87,7 +88,7 @@ async fn fenced_source_startup_keeps_control_handle_without_constructing_applica
     )
     .unwrap();
     let operational = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
-    let trust_directory = dir.path().join("signer-verifier");
+    let trust_directory = dir.path().join("data/signer-verifier");
     kasumi_store::private_files::create_directory(&trust_directory).unwrap();
     let wrapping = trust_directory.join("keys.json");
     kasumi_store::FileKeyProvider::initialize(&wrapping, "runtime-verifier").unwrap();
@@ -96,6 +97,7 @@ async fn fenced_source_startup_keeps_control_handle_without_constructing_applica
     verifier.keys = KeyProviderSettings::File { path: wrapping };
     crate::signer_runtime::InitializeSignerVerifier {
         admission: Default::default(),
+        persistent_disk: config.persistent_disk.clone(),
         scratch_disk: config.scratch_disk.clone(),
         verifier: verifier.clone(),
         initial_certificates: vec![
@@ -157,7 +159,7 @@ async fn fenced_source_startup_keeps_control_handle_without_constructing_applica
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn original_tenant_reopens_after_key_outage_without_reviving_retained_handles() {
     let _gate = LIFECYCLE_GATE.lock().await;
-    let dir = tempfile::tempdir().unwrap();
+    let dir = kasumi_store::test_utils::private_tempdir().unwrap();
     let (files, _) = certificate_files(dir.path());
     let socket = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("https://localhost:{}", socket.local_addr().unwrap().port());
@@ -177,7 +179,8 @@ async fn original_tenant_reopens_after_key_outage_without_reviving_retained_hand
     std::fs::create_dir(&public_dir).unwrap();
     let (public_files, _) = certificate_files(&public_dir);
     let mut config = fixture_config();
-    config.database_path = dir.path().join("node.redb");
+    config.persistent_disk = crate::persistent_disk::fixture_config(&dir.path().join("data"));
+    config.database_path = dir.path().join("data/node.redb");
     config.scratch_disk.directory = dir.path().join("scratch");
     config.mcp.tls = public_files.clone();
     config.native.tls = public_files.clone();

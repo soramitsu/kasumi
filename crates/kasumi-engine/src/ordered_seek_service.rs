@@ -48,8 +48,8 @@ fn source_identity(
         })?;
     let index_sha256 = content_hash(index)?;
     let request_sha256 = kasumi_query::ordered_seek_request_sha256(request)?;
-    if let Some(cursor) = &request.continuation {
-        if cursor.revision == 0
+    if let Some(cursor) = &request.continuation
+        && (cursor.revision == 0
             || cursor.revision > state.revision
             || cursor.tenant != state.tenant
             || cursor.incarnation != state.incarnation
@@ -57,10 +57,9 @@ fn source_identity(
             || cursor.policy_epoch != state.policy_epoch
             || cursor.schema_epoch != state.schema_epoch
             || cursor.index_sha256 != index_sha256
-            || cursor.request_sha256 != request_sha256
-        {
-            return Err(conflict("ordered seek continuation source changed"));
-        }
+            || cursor.request_sha256 != request_sha256)
+    {
+        return Err(conflict("ordered seek continuation source changed"));
     }
     Ok((collection.data_epoch, index_sha256, request_sha256))
 }

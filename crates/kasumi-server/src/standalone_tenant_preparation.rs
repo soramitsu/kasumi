@@ -68,7 +68,7 @@ impl Administration {
                 proposal.clone(),
                 prepared.invocation.context.request_id.clone(),
             )?;
-            prepared.resources.nodes.push(self.node.clone());
+            prepared.resources.borrowed_nodes.push(self.node.clone());
             let stores = TenantStorageSet::initialize_catalogs(
                 self.node.clone(),
                 tenant.clone(),
@@ -120,7 +120,7 @@ impl Administration {
             prepared.resources = Default::default();
         }
         self.check_enrollment(&prepared.invocation)?;
-        prepared.resources.nodes.push(self.node.clone());
+        prepared.resources.borrowed_nodes.push(self.node.clone());
         let stores = TenantStorageSet::open_existing(
             self.node.clone(),
             tenant.clone(),

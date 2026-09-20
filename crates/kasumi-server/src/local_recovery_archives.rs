@@ -2,7 +2,6 @@ use super::*;
 use kasumi_store::{AuditArchivePublicationObserver, FilesystemAuditArchive};
 use kasumi_types::AuditArchiveReference;
 use sha2::{Digest, Sha256};
-use std::io::Read;
 
 const OBJECTS: &str = "standalone-recovery-archive-objects";
 const CACHE: &str = "tenant-audit-archives";
@@ -166,21 +165,21 @@ impl Operator {
             "owned archive directory was substituted"
         );
         Ok(Arc::new(
-            FilesystemAuditArchive::open(&directory)?.with_publication_observer(Arc::new(
-                Observer {
+            FilesystemAuditArchive::open(&directory, self.audit.store().persistent_disk().clone())?
+                .with_publication_observer(Arc::new(Observer {
                     store: self.audit.store().clone(),
                     operation: journal.status.request.operation_id,
                     incarnation: journal.status.request.target_incarnation,
                     directory,
                     identity,
-                },
-            )),
+                })),
         ))
     }
 
     /// One bounded pass, under the stopped generation's exclusive database lock.
     /// Ownership rows and phase records remain in the original security store.
     pub(super) fn cleanup_archives(&self, journal: &Journal) -> Result<bool> {
+        self.require_cleanup_disk()?;
         let directory = journal.target_directory.join(CACHE);
         if !directory.try_exists()? {
             return Ok(true);
@@ -236,8 +235,13 @@ impl Operator {
                 "archive ownership identity differs"
             );
             let path = entry.path();
-            let mut file = private_files::open_read(&path)?;
-            let file_identity = private_files::descriptor_identity(&file)?;
+            let file = crate::standalone::open_installed_file(
+                &self.config.persistent_disk,
+                self.store().persistent_disk(),
+                &path,
+            )?;
+            let file_identity = file.identity()?;
+            let file_length = file.observed_len()?;
             if let Some(expected) = &object.staged {
                 ensure!(
                     &file_identity == expected,
@@ -247,12 +251,12 @@ impl Operator {
                 // A crash between exclusive empty-file creation and the first
                 // inode commit can leave only this prepared, empty staging name.
                 ensure!(
-                    pending && file.metadata()?.len() == 0 && object.published.is_none(),
+                    pending && file_length == 0 && object.published.is_none(),
                     "archive file appeared before its physical ownership commit"
                 );
             }
             ensure!(
-                file.metadata()?.len() <= object.reference.ciphertext_bytes,
+                file_length <= object.reference.ciphertext_bytes,
                 "archive staging file exceeds its committed dependency"
             );
             if !pending {
@@ -266,11 +270,9 @@ impl Operator {
                 let mut hash = Sha256::new();
                 let mut bytes = 0u64;
                 let mut buffer = [0u8; 64 << 10];
-                loop {
-                    let read = file.read(&mut buffer)?;
-                    if read == 0 {
-                        break;
-                    }
+                while bytes < file_length {
+                    let read = usize::try_from((file_length - bytes).min(buffer.len() as u64))?;
+                    file.read_exact_at(&mut buffer[..read], bytes)?;
                     bytes = bytes
                         .checked_add(read as u64)
                         .context("archive length overflow")?;
@@ -292,8 +294,7 @@ impl Operator {
                     && private_files::file_identity(&path)? == file_identity,
                 "archive ownership changed during cleanup"
             );
-            std::fs::remove_file(&path)?;
-            private_files::sync_parent(&path)?;
+            self.store().persistent_disk().delete_file(file)?;
         }
         if std::fs::read_dir(&directory)?.next().is_some() {
             return Ok(false);
@@ -302,6 +303,8 @@ impl Operator {
             private_files::directory_identity(&directory)? == identity,
             "archive directory changed during cleanup"
         );
+        // Exact directory mutation/accounting still needs a NodeDisk owner API.
+        self.require_cleanup_disk()?;
         std::fs::remove_dir(&directory)?;
         private_files::sync_parent(&directory)?;
         Ok(true)

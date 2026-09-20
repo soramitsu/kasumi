@@ -50,10 +50,15 @@ impl AuditDestinationConfig {
     pub(crate) fn validate(&self) -> Result<()> {
         self.bounded_destination().validate()
     }
-    pub(crate) fn open(&self) -> Result<Arc<dyn AuditArchiveDestination>> {
+    pub(crate) fn open(
+        &self,
+        persistent_disk: Arc<kasumi_store::NodeDisk>,
+    ) -> Result<Arc<dyn AuditArchiveDestination>> {
         self.validate()?;
         Ok(match self {
-            Self::Filesystem { directory } => Arc::new(FilesystemAuditArchive::open(directory)?),
+            Self::Filesystem { directory } => {
+                Arc::new(FilesystemAuditArchive::open(directory, persistent_disk)?)
+            }
             Self::S3 {
                 endpoint,
                 region,
@@ -96,10 +101,11 @@ impl crate::runtime::RuntimeConfig {
             Some(cache) => cache,
             None => Arc::new(FilesystemAuditArchive::open(
                 store.durable_directory()?.join("tenant-audit-archives"),
+                store.persistent_disk().clone(),
             )?),
         };
         let destination = match self.tenant_audit_archives.get(store.tenant()) {
-            Some(destination) => destination.open()?,
+            Some(destination) => destination.open(store.persistent_disk().clone())?,
             None => cache.clone() as Arc<dyn AuditArchiveDestination>,
         };
         store.install_tenant_audit_archive(cache, destination)?;
@@ -125,10 +131,10 @@ mod tests {
 
     #[tokio::test]
     async fn restart_requires_the_exact_installed_external_archive_and_supplied_cache() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = kasumi_store::test_utils::private_tempdir().unwrap();
         let path = directory.path().join("node.redb");
         let provider = Arc::new(LocalKeyProvider::new([73; 32]));
-        let node = NodeStore::create_new(
+        let node = NodeStore::create_new_fixture(
             &path,
             kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
@@ -141,8 +147,9 @@ mod tests {
         )
         .await
         .unwrap();
-        let cache =
-            Arc::new(FilesystemAuditArchive::open(directory.path().join("owned-cache")).unwrap());
+        let cache = Arc::new(
+            FilesystemAuditArchive::open_fixture(directory.path().join("owned-cache")).unwrap(),
+        );
         let mut installed = crate::runtime::example_config();
         installed.tenant_audit_archives.insert(
             "tenant".into(),
@@ -160,7 +167,7 @@ mod tests {
         store.shutdown().await.unwrap();
         drop(store);
         drop(node);
-        let node = NodeStore::open_existing(
+        let node = NodeStore::open_existing_fixture(
             &path,
             kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),

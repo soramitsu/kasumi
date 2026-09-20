@@ -8,9 +8,9 @@ use std::{collections::BTreeSet, sync::Arc};
 
 #[tokio::test]
 async fn encoded_response_is_fenced_by_policy_changes_and_actual_key_denial() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let keys = Arc::new(LocalKeyProvider::new([41; 32]));
-    let node = NodeStore::create_new(
+    let node = NodeStore::create_new_fixture(
         directory.path().join("node.redb"),
         kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),

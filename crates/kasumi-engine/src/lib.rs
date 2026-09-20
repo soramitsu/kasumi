@@ -63,6 +63,13 @@ pub use service::{
     CustodyResponseFence, Database, ResponseFence, RetiredCustody, RetirementResponseFence,
 };
 pub use state::{Generation, PreparedSnapshotRestore, TenantEngine};
+
+/// Conservative resident charge for retaining one immutable document across
+/// asynchronous work. Uses the same allocation accounting as coherent leases;
+/// callers must reserve this amount before cloning the shared document handle.
+pub fn retained_document_bytes(document: &kasumi_types::Document) -> kasumi_types::Result<usize> {
+    state::lease_retention::document_heap(document, usize::MAX)
+}
 mod change_feed_state;
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_utils;

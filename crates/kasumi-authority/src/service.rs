@@ -204,6 +204,7 @@ impl IndependentAuthority {
         transport: Arc<dyn RaftTransport>,
         config: Config,
         request_budget: BackgroundWorkBudget,
+        snapshot_buffers: Arc<kasumi_raft::SnapshotBufferOwner>,
     ) -> anyhow::Result<Arc<Self>> {
         Self::open_existing_with_clock(
             stores,
@@ -214,6 +215,7 @@ impl IndependentAuthority {
             transport,
             config,
             request_budget,
+            snapshot_buffers,
             EpochClock::system()?,
         )
         .await
@@ -228,6 +230,7 @@ impl IndependentAuthority {
         transport: Arc<dyn RaftTransport>,
         config: Config,
         request_budget: BackgroundWorkBudget,
+        snapshot_buffers: Arc<kasumi_raft::SnapshotBufferOwner>,
         clock: Arc<EpochClock>,
     ) -> anyhow::Result<Arc<Self>> {
         installation.validate()?;
@@ -291,7 +294,11 @@ impl IndependentAuthority {
             stores,
             backend.clone(),
             transport,
-            config,
+            kasumi_raft::RaftGroupConfig {
+                raft: config,
+                limits: kasumi_raft::RaftLimits::default(),
+            },
+            snapshot_buffers,
         )
         .await?;
         Ok(Arc::new(Self {

@@ -1,0 +1,436 @@
+{
+  "source": "6d969f3332befac76e15b686bb225da7e3f49725",
+  "tree": "e816699752212742e5246242f582c3d3cd1b3ad9",
+  "source_unchanged": true,
+  "status": "interrupted",
+  "raw_runner_status": "failed",
+  "interpretation": "Explicit SIGTERM interruption to comply with the user instruction to use only the main checkout on master; not a demonstrated code-test failure.",
+  "interruption_reason_provenance": "Coordinating release task reported user-directed interruption of runner PID 77801. Raw evidence independently records SIGTERM 15, process group 82510 and terminal process code -15; it does not record the runner PID or user intent.",
+  "runner_pid_reported_by_coordinator": 77801,
+  "started_at": "2026-09-20T07:27:36.849607+00:00",
+  "finished_at": "2026-09-20T07:35:09.001480+00:00",
+  "gate_counts": {
+    "passed": 4,
+    "failed": 1,
+    "not_run": 42
+  },
+  "interpreted_gate_counts": {
+    "passed": 4,
+    "interrupted": 1,
+    "not_run": 42
+  },
+  "mandatory_cases_in_plan": 252,
+  "completed_test_cases_passed": 69,
+  "completed_test_cases_failed": 0,
+  "interrupted_gate": {
+    "name": "raft-application-write-classification",
+    "process_group": 82510,
+    "process_exit_code": -15,
+    "process_record_exit_code": 143,
+    "received_signals": [
+      15
+    ],
+    "timed_out": false,
+    "test_summaries": [],
+    "code_test_result": "not established"
+  },
+  "drained_process_groups": [
+    77818,
+    81460,
+    81513,
+    82020,
+    82510
+  ],
+  "all_recorded_dispatched_process_groups_drained": true,
+  "preservation": {
+    "date": "2026-09-20",
+    "raw_files_copied": 9,
+    "external_executables_verified": 8,
+    "executable_bytes_copied": false,
+    "checked_against_source_git_objects": [
+      "Cargo.lock",
+      "scripts/gate_process.py"
+    ]
+  },
+  "gates": [
+    {
+      "name": "workspace-all-targets-check",
+      "status": "passed",
+      "duration_seconds": 258.057,
+      "test_summaries": [],
+      "required_test_count": 0
+    },
+    {
+      "name": "workspace-format",
+      "status": "passed",
+      "duration_seconds": 2.408,
+      "test_summaries": [],
+      "required_test_count": 0
+    },
+    {
+      "name": "rmcp-terminal-ownership",
+      "status": "passed",
+      "duration_seconds": 42.386,
+      "test_summaries": [
+        [
+          "ok",
+          "9",
+          "0",
+          "0"
+        ]
+      ],
+      "required_test_count": 9
+    },
+    {
+      "name": "rmcp-upstream-protocol",
+      "status": "passed",
+      "duration_seconds": 93.645,
+      "test_summaries": [
+        [
+          "ok",
+          "7",
+          "0",
+          "0"
+        ],
+        [
+          "ok",
+          "8",
+          "0",
+          "0"
+        ],
+        [
+          "ok",
+          "5",
+          "0",
+          "0"
+        ],
+        [
+          "ok",
+          "6",
+          "0",
+          "0"
+        ],
+        [
+          "ok",
+          "25",
+          "0",
+          "0"
+        ],
+        [
+          "ok",
+          "9",
+          "0",
+          "0"
+        ]
+      ],
+      "required_test_count": 60
+    },
+    {
+      "name": "raft-application-write-classification",
+      "status": "failed",
+      "duration_seconds": 50.277,
+      "test_summaries": [],
+      "required_test_count": 2
+    },
+    {
+      "name": "engine-proposal-registry",
+      "status": "not_run",
+      "duration_seconds": null,
+      "test_summaries": [],
+      "required_test_count": 6
+    },
+    {
+      "name": "engine-cancelled_submit_keeps_actual_proposal_until_original_identity_is_resolvable",
+      "status": "not_run",
+      "duration_seconds": null,
+      "test_summaries": [],
+      "required_test_count": 1
+    },
+    {
+      "name": "engine-cancelled_database_shutdown_joins_actual_proposal_panic_before_raft_shutdown",
+      "status": "not_run",
+      "duration_seconds": null,
+      "test_summaries": [],
+      "required_test_count": 1
+    },
+    {
+      "name": "engine-actual_raft_leadership_redirect_does_not_poison_proposal_custody",
+      "status": "not_run",
+      "duration_seconds": null,
+      "test_summaries": [],
+      "required_test_count": 1
+    },
+    {
+      "name": "engine-retirement_workspace_rejection_is_definite_and_does_not_poison_custody",
+      "status": "not_run",
+      "duration_seconds": null,
+      "test_summaries": [],
+      "required_test_count": 1
+    },
+    {
+      "name": "engine-queued_deadlines_use_admission_time_and_survive_caller_cancellation",
+      "status": "not_run",
+      "duration_seconds": null,
+      "test_summaries": [],
+      "required_test_count": 1
+    },
+    {
+      "name": "authority-request-child-custody",
+      "status": "not_run",
+      "duration_seconds": null,
+      "test_summaries": [],
+      "required_test_count": 8
+    },
+    {
+      "name": "engine-owned-response-fence",
+      "status": "not_run",
+      "duration_seconds": null,
+      "test_summaries": [],
+      "required_test_count": 1
+    },
+    {
+      "name": "server-mcp-response-fencing",
+      "status": "not_run",
+      "duration_seconds": null,
+      "test_summaries": [],
+      "required_test_count": 11
+    },
+    {
+      "name": "server-shared_adapter_release_audits_a_seal_after_response_encoding",
+      "status": "not_run",
+      "duration_seconds": null,
+      "test_summaries": [],
+      "required_test_count": 1
+    },
+    {
+      "name": "server-encoded_response_credential_expiry_is_audited_and_preserves_committed_receipt",
+      "status": "not_run",
+      "duration_seconds": null,
+      "test_summaries": [],
+      "required_test_count": 1
+    },
+    {
+      "name": "server-native_and_mcp_lost_committed_responses_resolve_without_reapplying",
+      "status": "not_run",
+      "duration_seconds": null,
+      "test_summaries": [],
+      "required_test_count": 1
+    },
+    {
+      "name": "complete-store-library",
+      "status": "not_run",
+      "duration_seconds": null,
+      "test_summaries": [],
+      "required_test_count": 58
+    },
+    {
+      "name": "strict-store",
+      "status": "not_run",
+      "duration_seconds": null,
+      "test_summaries": [],
+      "required_test_count": 0
+    },
+    {
+      "name": "complete-serving-library",
+      "status": "not_run",
+      "duration_seconds": null,
+      "test_summaries": [],
+      "required_test_count": 13
+    },
+    {
+      "name": "engine-database-worker-outcomes",
+      "status": "not_run",
+      "duration_seconds": null,
+      "test_summaries": [],
+      "required_test_count": 4
+    },
+    {
+      "name": "engine-audit-worker-outcomes",
+      "status": "not_run",
+      "duration_seconds": null,
+      "test_summaries": [],
+      "required_test_count": 2
+    },
+    {
+      "name": "engine-control-genesis",
+      "status": "not_run",
+      "duration_seconds": null,
+      "test_summaries": [],
+      "required_test_count": 5
+    },
+    {
+      "name": "server-serving-owner",
+      "status": "not_run",
+      "duration_seconds": null,
+      "test_summaries": [],
+      "required_test_count": 6
+    },
+    {
+      "name": "server-retired-source",
+      "status": "not_run",
+      "duration_seconds": null,
+      "test_summaries": [],
+      "required_test_count": 2
+    },
+    {
+      "name": "server-serving-task-drain",
+      "status": "not_run",
+      "duration_seconds": null,
+      "test_summaries": [],
+      "required_test_count": 5
+    },
+    {
+      "name": "server-bounded-startup-preparation",
+      "status": "not_run",
+      "duration_seconds": null,
+      "test_summaries": [],
+      "required_test_count": 2
+    },
+    {
+      "name": "server-control-genesis",
+      "status": "not_run",
+      "duration_seconds": null,
+      "test_summaries": [],
+      "required_test_count": 3
+    },
+    {
+      "name": "server-standalone-tenant-staging",
+      "status": "not_run",
+      "duration_seconds": null,
+      "test_summaries": [],
+      "required_test_count": 3
+    },
+    {
+      "name": "server-standalone-tenant-enrollment",
+      "status": "not_run",
+      "duration_seconds": null,
+      "test_summaries": [],
+      "required_test_count": 2
+    },
+    {
+      "name": "server-configured-tenant-enrollment",
+      "status": "not_run",
+      "duration_seconds": null,
+      "test_summaries": [],
+      "required_test_count": 3
+    },
+    {
+      "name": "server-runtime-lifecycle",
+      "status": "not_run",
+      "duration_seconds": null,
+      "test_summaries": [],
+      "required_test_count": 4
+    },
+    {
+      "name": "server-signer-runtime",
+      "status": "not_run",
+      "duration_seconds": null,
+      "test_summaries": [],
+      "required_test_count": 9
+    },
+    {
+      "name": "server-tls-lifecycle",
+      "status": "not_run",
+      "duration_seconds": null,
+      "test_summaries": [],
+      "required_test_count": 4
+    },
+    {
+      "name": "server-tls-task-custody",
+      "status": "not_run",
+      "duration_seconds": null,
+      "test_summaries": [],
+      "required_test_count": 1
+    },
+    {
+      "name": "server-local-recovery-generation-custody",
+      "status": "not_run",
+      "duration_seconds": null,
+      "test_summaries": [],
+      "required_test_count": 1
+    },
+    {
+      "name": "complete-client-library",
+      "status": "not_run",
+      "duration_seconds": null,
+      "test_summaries": [],
+      "required_test_count": 4
+    },
+    {
+      "name": "engine-custody-receipt",
+      "status": "not_run",
+      "duration_seconds": null,
+      "test_summaries": [],
+      "required_test_count": 1
+    },
+    {
+      "name": "engine-lifecycle-exact-completion",
+      "status": "not_run",
+      "duration_seconds": null,
+      "test_summaries": [],
+      "required_test_count": 1
+    },
+    {
+      "name": "native-custody-receipt",
+      "status": "not_run",
+      "duration_seconds": null,
+      "test_summaries": [],
+      "required_test_count": 1
+    },
+    {
+      "name": "authority-enrollment-ownership",
+      "status": "not_run",
+      "duration_seconds": null,
+      "test_summaries": [],
+      "required_test_count": 2
+    },
+    {
+      "name": "explicit-original-voters",
+      "status": "not_run",
+      "duration_seconds": null,
+      "test_summaries": [],
+      "required_test_count": 1
+    },
+    {
+      "name": "engine-audit-preproposal-outage",
+      "status": "not_run",
+      "duration_seconds": null,
+      "test_summaries": [],
+      "required_test_count": 2
+    },
+    {
+      "name": "engine-tenant-audit-local-apply",
+      "status": "not_run",
+      "duration_seconds": null,
+      "test_summaries": [],
+      "required_test_count": 3
+    },
+    {
+      "name": "engine-security-audit-repeated-retention",
+      "status": "not_run",
+      "duration_seconds": null,
+      "test_summaries": [],
+      "required_test_count": 1
+    },
+    {
+      "name": "engine-audit-snapshot-dependencies",
+      "status": "not_run",
+      "duration_seconds": null,
+      "test_summaries": [],
+      "required_test_count": 3
+    },
+    {
+      "name": "engine-audit-backup-source-unavailable",
+      "status": "not_run",
+      "duration_seconds": null,
+      "test_summaries": [],
+      "required_test_count": 1
+    }
+  ],
+  "limitations": [
+    "The interrupted gate produced no test summary; neither success nor a code-test failure is established.",
+    "The following 42 gates, including corrected allocation boundaries and Control genesis, did not run.",
+    "Historical source and binary hashes do not qualify the merged master source or final release.",
+    "Preserved executables remain only at their original external paths; original source worktree and runtime tool binaries were not reopened or executed during preservation."
+  ]
+}

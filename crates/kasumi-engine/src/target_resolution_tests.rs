@@ -70,8 +70,8 @@ fn position(record: &TargetResolutionRecord) -> kasumi_raft::AppliedEntryContext
     }
 }
 async fn durable() -> (tempfile::TempDir, Arc<TenantStore>, TenantState, View) {
-    let directory = tempfile::tempdir().unwrap();
-    let node = NodeStore::create_new(
+    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let node = NodeStore::create_new_fixture(
         directory.path().join("node.redb"),
         kasumi_store::test_utils::NODE_STORE_ID,
         ScratchDisk::fixture(),

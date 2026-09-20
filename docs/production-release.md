@@ -23,13 +23,95 @@ usable release artifacts or operating documentation.
 The [acceptance manifest verifier](release-acceptance-manifest.md) now validates
 the fixed native/domain/artifact roster, complete workload samples, process
 ownership and source identities. It deliberately rejects every domain whose
-semantic adapter remains unimplemented. The Python tooling suite passes 66
+semantic adapter remains unimplemented. The Python tooling suite passes 84
 tests, including counterexamples and remote-interpreter provenance. This is
 scoped tooling progress: G11, live runners, all final native gates and release
 acceptance remain open. Physical host observations in
 [Linux acceptance](linux-acceptance.md) are not resource reservations.
 
-## Latest combined checkpoint
+## Current development diagnostics on master
+
+The [installed-storage diagnostics](evidence/installed-disk-main-20260920/README.md)
+now pass the store library's enabled cases: 183 passed, zero failed, with the
+subprocess helper and external real-MinIO case ignored. The earlier compile
+failure, 101-failure run, four-failure successor and one-failure namespace
+successor are preserved. Process drain is recorded by the terminal receipts or,
+for attempt 29, an independent recovery audit. Scoped source stayed unchanged
+except in attempt 35, whose limitation is recorded below.
+These runs use pending master source;
+they are not a clean combined or final release checkpoint. Mandatory physical
+ownership and canonical redb are integrated. Installed server markers now use the
+same physical owner in source. Directory accounting, retained metadata charges,
+cancellation-safe filesystem jobs and full qualification remain open. The
+combined workspace check now passes all targets and features after admitted
+future boundaries corrected the type-depth failures. Those raw failures remain
+preserved alongside the successful successor, store and Python diagnostics.
+The earlier full Raft library attempt failed with 39 passes and 34 failures. An isolated
+run reproduces the first failure in an encrypted scratch append; one affected
+snapshot case passes alone. The failure trace proved speculative physical
+allocation beyond the admitted scratch extent. Scratch flush now prepares the
+admitted ciphertext EOF before payload write and verifies allocation before and
+afterward; both new regressions and the full store successor pass. Shared-device
+failure fencing remains unchanged.
+The isolated custody successor, attempt 29, produced no terminal test result after
+its 20-minute deadline and remains **failed/unresolved**. Its runner exited with
+status 1 when the post-run liveness probe raised `PermissionError`, before writing
+the original result receipt. Fresh process inventory independently confirmed the
+group drained, and the recovery source inventory matches the original exactly.
+The original timeout and signal fields were not persisted; neither an exact
+signal history nor absence of signals is asserted. The recovery receipt, stderr,
+runner, incomplete test log and diagnostic stack sample are preserved in the
+[installed-storage evidence](evidence/installed-disk-main-20260920/README.md).
+Six focused integration gates now pass: actual snapshot-child shutdown, startup
+inventory charges, three backup-future cases, 12 readiness cases, two installed
+marker cases and protected TLS observability covering 131 assigned groups. The
+complete Raft successor and original combined qualification cohort remain open.
+
+Later diagnostics preserve strict-lint failures 33 (one authority and eight
+engine lints) and 37 (one engine fixture and thirteen server lints). Formatting
+attempt 34 passes on unchanged inventoried source. Attempt 35 reports eight
+passing snapshot-buffer ownership tests, but its original receipt records
+`inventoried_source_unchanged: false`: six engine/authority files changed during
+mechanical edits. The inventoried Raft scope stayed unchanged, but this is **not
+a fixed-source qualifying pass**. The coordinated partial successor, attempt 38,
+passes all 72 selected library cases on unchanged source, with the separately
+failed custody-capacity case explicitly excluded. Cluster integration then passes
+six and fails one stale shutdown expectation after an injected snapshot failure;
+its other integration targets remain unrun. The failure is retained, and the
+successor must verify the original typed Complete drain and immediate recovery.
+Attempt 45 does so and passes all 18 Raft integration cases (seven cluster, five
+read-barrier, one actual-child shutdown and five storage-conformance cases).
+It preserves the failure and checks repeated issue identity plus immediate
+reopen/replay. This does not qualify the excluded custody-capacity workload. Attempts 33, 34, 35 and 37 drained their process groups
+within their deadlines without recorded signals; original logs, receipts,
+inventories and runners remain byte-exact. Further strict-lint attempts 39, 41 and
+42 failed on test-code findings and remain preserved. Attempt 43 now passes strict
+workspace Clippy across all targets and features on unchanged pending source;
+its process group drained without signals. Formatting attempt 44 and all four
+TLS listener lifecycle tests in attempt 40 also pass on unchanged source. The
+complete combined qualification remains open. After the fatal-shutdown test
+correction, attempts 46 and 47 pass strict workspace lint and formatting again
+on unchanged inventoried source, with their actual process groups drained.
+
+## Latest frozen combined checkpoint
+
+The [frozen `6d969f3` attempt](evidence/first-release-6d969f3-interrupted-20260920/README.md)
+passed four gates (workspace compilation, formatting, nine rmcp ownership tests
+and 60 upstream protocol tests). The fifth Raft classification gate was terminated
+with SIGTERM to comply with the user's main-checkout-only instruction; it did
+not produce a test result. The raw runner correctly remains failed, with 42
+later gates unrun. All five process groups drained, source stayed unchanged,
+and all eight preserved executables match their recorded hashes. This is an
+interrupted attempt, not evidence of a Raft assertion failure. The NodeDisk
+allocation correction and Control genesis stack correction remain unqualified.
+
+The release integration is now on master, with its prior public-repository and
+ordered-seek changes preserved. Pending mandatory storage-owner, canonical redb
+and caller changes have been transferred here for continued implementation.
+Transferred source and historical dependency passes do not qualify this combined
+source. G01–G14 remain open.
+
+## Preceding combined checkpoint
 
 The [frozen `c681ba3` successor](evidence/first-release-c681ba3-check-20260920/README.md)
 passed 17 gates before the store library reported 154 passes and three failed

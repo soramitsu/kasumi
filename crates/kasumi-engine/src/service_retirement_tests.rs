@@ -4,7 +4,7 @@ async fn retirement_input(
     deadline: u64,
 ) -> PreparedRetirement {
     let destination = Arc::new(
-        kasumi_store::FilesystemBackupDestination::new(
+        kasumi_store::FilesystemBackupDestination::new_fixture(
             fixture._directory.path().join(id),
             16 << 20,
         )
@@ -16,7 +16,11 @@ async fn retirement_input(
         .unwrap();
     let checkpoint = fixture
         .db
-        .backup_checkpoint(fixture.context.clone(), destination.as_ref(), uuid::Uuid::new_v4())
+        .backup_checkpoint(
+            fixture.context.clone(),
+            destination.as_ref(),
+            uuid::Uuid::new_v4(),
+        )
         .await
         .unwrap();
     let request = RetireSourceRequest {
@@ -153,12 +157,17 @@ async fn committed_retirement_with_expired_reply_has_fresh_authorized_receipt_re
     // retirement commits, irrespective of historical backup verification work.
     struct FrozenWall(u64);
     impl kasumi_clock::WallClock for FrozenWall {
-        fn now_ms(&self) -> anyhow::Result<u64> { Ok(self.0) }
+        fn now_ms(&self) -> anyhow::Result<u64> {
+            Ok(self.0)
+        }
     }
-    let epoch = Arc::new(kasumi_clock::EpochClock::new(
-        Arc::new(RetirementObservedClock(Arc::downgrade(&fixture.db.engine))),
-        Arc::new(FrozenWall(now_ms().unwrap())),
-    ).unwrap());
+    let epoch = Arc::new(
+        kasumi_clock::EpochClock::new(
+            Arc::new(RetirementObservedClock(Arc::downgrade(&fixture.db.engine))),
+            Arc::new(FrozenWall(now_ms().unwrap())),
+        )
+        .unwrap(),
+    );
     *fixture.db.command_clock.lock().unwrap() = Arc::new(FixtureCommandClock(epoch.clone()));
     let observation = epoch.observe().unwrap();
     let credential = RequestContext {
@@ -166,9 +175,13 @@ async fn committed_retirement_with_expired_reply_has_fresh_authorized_receipt_re
             observation.utc_ms() + 1000,
             &observation,
             CredentialResource::Database {
-                incarnation: uuid::Uuid::parse_str(&fixture.db.engine.generation().unwrap().state.incarnation).unwrap(),
+                incarnation: uuid::Uuid::parse_str(
+                    &fixture.db.engine.generation().unwrap().state.incarnation,
+                )
+                .unwrap(),
             },
-        ).unwrap(),
+        )
+        .unwrap(),
         ..fixture.context.clone()
     };
     assert_eq!(

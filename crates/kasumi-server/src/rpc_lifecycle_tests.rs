@@ -18,7 +18,7 @@ use uuid::Uuid;
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong_resource_and_partition()
  {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let (ca, server_identity, mut identities) = super::authority_tests::certificates();
     let jwtkey = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
     let jwks=serde_json::from_value(json!({"keys":[{"kty":"OKP","crv":"Ed25519","alg":"EdDSA","use":"sig","kid":"control-auth","x":URL_SAFE_NO_PAD.encode(jwtkey.public_key_raw())}]})).unwrap();
@@ -37,7 +37,7 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
     )
     .await;
     let audit_store = TenantStore::initialize_catalog(
-        NodeStore::create_new(
+        NodeStore::create_new_fixture(
             directory.path().join("audit.redb"),
             kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
@@ -94,7 +94,7 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
     let mut issuers = Vec::new();
     for id in 1..=3 {
         let stores = TenantStorageSet::initialize_catalogs(
-            NodeStore::create_new(
+            NodeStore::create_new_fixture(
                 directory.path().join(format!("issuer-{id}.redb")),
                 kasumi_store::test_utils::NODE_STORE_ID,
                 kasumi_store::ScratchDisk::fixture(),
@@ -174,6 +174,7 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
                 &kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
             )
             .unwrap(),
+            kasumi_raft::SnapshotBufferOwner::fixture(),
         )
         .await
         .unwrap();
@@ -259,7 +260,7 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
     let mut nodes = Vec::new();
     for id in 1..=3 {
         let stores = TenantStorageSet::initialize_catalogs(
-            NodeStore::create_new(
+            NodeStore::create_new_fixture(
                 directory.path().join(format!("node-{id}.redb")),
                 kasumi_store::test_utils::NODE_STORE_ID,
                 kasumi_store::ScratchDisk::fixture(),

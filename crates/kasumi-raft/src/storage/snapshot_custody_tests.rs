@@ -103,9 +103,17 @@ async fn same_position_reencoding_preserves_custody_and_reuses_verified_current_
     let original = accepted_snapshot().await?;
     let (domains, _, _, _) = fixture(FaultBackend::new(), true).await?;
     let backend = Arc::new(ClosedBackend::default());
-    let mut machine = StateMachine::open(domains.clone(), backend).await?;
+    let mut machine = StateMachine::open(
+        domains.clone(),
+        backend,
+        crate::SnapshotBufferOwner::fixture(),
+    )
+    .await?;
     machine
-        .install_snapshot(&original.meta, as_snapshot(&original, 1 << 20)?.snapshot)
+        .install_snapshot(
+            &original.meta,
+            as_snapshot(&original, 1 << 20, &crate::SnapshotBufferOwner::fixture())?.snapshot,
+        )
         .await?;
     let state: RetiredSnapshotState = serde_json::from_reader(original.backend.reader())?;
     let mut reencoded = original.clone();
@@ -116,7 +124,10 @@ async fn same_position_reencoding_preserves_custody_and_reuses_verified_current_
     )?;
     assert_ne!(original.backend.sha256(), reencoded.backend.sha256());
     machine
-        .install_snapshot(&reencoded.meta, as_snapshot(&reencoded, 1 << 20)?.snapshot)
+        .install_snapshot(
+            &reencoded.meta,
+            as_snapshot(&reencoded, 1 << 20, &crate::SnapshotBufferOwner::fixture())?.snapshot,
+        )
         .await?;
     let persisted = load_snapshot(domains.application(), 1 << 20)?.unwrap();
     assert_eq!(persisted.backend.sha256(), reencoded.backend.sha256());
@@ -145,9 +156,17 @@ async fn same_position_cannot_substitute_matching_backend_and_custody_policy() -
     for change_epoch in [false, true] {
         let (domains, _, _, _) = fixture(FaultBackend::new(), true).await?;
         let backend = Arc::new(ClosedBackend::default());
-        let mut machine = StateMachine::open(domains.clone(), backend.clone()).await?;
+        let mut machine = StateMachine::open(
+            domains.clone(),
+            backend.clone(),
+            crate::SnapshotBufferOwner::fixture(),
+        )
+        .await?;
         machine
-            .install_snapshot(&original.meta, as_snapshot(&original, 1 << 20)?.snapshot)
+            .install_snapshot(
+                &original.meta,
+                as_snapshot(&original, 1 << 20, &crate::SnapshotBufferOwner::fixture())?.snapshot,
+            )
             .await?;
         let mut changed = original.clone();
         changed.meta.snapshot_id = uuid::Uuid::new_v4().to_string();
@@ -178,8 +197,12 @@ async fn same_position_cannot_substitute_matching_backend_and_custody_policy() -
         // Reopen a healthy adapter so installation is rejected by its own
         // identity check, not the earlier builder's failure fence.
         drop(machine);
-        let mut machine =
-            StateMachine::open(domains.clone(), Arc::new(ClosedBackend::default())).await?;
+        let mut machine = StateMachine::open(
+            domains.clone(),
+            Arc::new(ClosedBackend::default()),
+            crate::SnapshotBufferOwner::fixture(),
+        )
+        .await?;
         assert!(
             machine
                 .install_snapshot(
@@ -204,9 +227,17 @@ async fn retired_snapshot_installs_without_original_log_and_recovers_with_only_c
     let disk = FaultBackend::new();
     let (domains, app_provider, custody_provider, mut log) = fixture(disk.clone(), true).await?;
     let backend = Arc::new(ClosedBackend::default());
-    let mut machine = StateMachine::open(domains.clone(), backend.clone()).await?;
+    let mut machine = StateMachine::open(
+        domains.clone(),
+        backend.clone(),
+        crate::SnapshotBufferOwner::fixture(),
+    )
+    .await?;
     machine
-        .install_snapshot(&snapshot.meta, as_snapshot(&snapshot, 1 << 20)?.snapshot)
+        .install_snapshot(
+            &snapshot.meta,
+            as_snapshot(&snapshot, 1 << 20, &crate::SnapshotBufferOwner::fixture())?.snapshot,
+        )
         .await?;
     assert_eq!(
         backend.0.lock().unwrap().as_ref().unwrap().administrators,
@@ -238,7 +269,11 @@ async fn retired_snapshot_installs_without_original_log_and_recovers_with_only_c
     drop(machine);
     drop(domains);
     let custody = kasumi_store::CustodyStore::open(
-        NodeStore::open_with_backend(crash, kasumi_store::ScratchDisk::fixture())?,
+        NodeStore::open_with_backend(
+            crash,
+            kasumi_store::test_utils::storage_admission(),
+            kasumi_store::ScratchDisk::fixture(),
+        )?,
         "tenant".into(),
         custody_provider,
     )
@@ -256,8 +291,12 @@ async fn snapshot_rejects_missing_substituted_stale_and_payload_custody_before_p
     let original = accepted_snapshot().await?;
     for case in 0..8 {
         let (domains, _, _, _) = fixture(FaultBackend::new(), true).await?;
-        let mut machine =
-            StateMachine::open(domains.clone(), Arc::new(ClosedBackend::default())).await?;
+        let mut machine = StateMachine::open(
+            domains.clone(),
+            Arc::new(ClosedBackend::default()),
+            crate::SnapshotBufferOwner::fixture(),
+        )
+        .await?;
         let mut changed = original.clone();
         match case {
             0 => changed.retirement = None,
@@ -323,10 +362,17 @@ async fn accepted_snapshot_supersedes_uncommitted_candidate_and_survives_late_tr
     // UUID-backed checkpoint differs, so this is a conflicting candidate.
     log.blocking_append([ordinary(0), retirement_entry()?])
         .await?;
-    let mut machine =
-        StateMachine::open(domains.clone(), Arc::new(ClosedBackend::default())).await?;
+    let mut machine = StateMachine::open(
+        domains.clone(),
+        Arc::new(ClosedBackend::default()),
+        crate::SnapshotBufferOwner::fixture(),
+    )
+    .await?;
     machine
-        .install_snapshot(&accepted.meta, as_snapshot(&accepted, 1 << 20)?.snapshot)
+        .install_snapshot(
+            &accepted.meta,
+            as_snapshot(&accepted, 1 << 20, &crate::SnapshotBufferOwner::fixture())?.snapshot,
+        )
         .await?;
     let view = ControlLog::open(domains.custody().clone(), 1, group())?;
     let expected: RetiredSnapshotState = serde_json::from_reader(accepted.backend.reader())?;
@@ -357,10 +403,17 @@ async fn nonretired_snapshot_discards_stale_candidate_coverage_without_retiremen
         .await?;
     let mut value = envelope(b"not-retired".to_vec());
     value.meta.last_log_id = Some(id(3));
-    let mut machine =
-        StateMachine::open(domains.clone(), Arc::new(ClosedBackend::default())).await?;
+    let mut machine = StateMachine::open(
+        domains.clone(),
+        Arc::new(ClosedBackend::default()),
+        crate::SnapshotBufferOwner::fixture(),
+    )
+    .await?;
     machine
-        .install_snapshot(&value.meta, as_snapshot(&value, 1 << 20)?.snapshot)
+        .install_snapshot(
+            &value.meta,
+            as_snapshot(&value, 1 << 20, &crate::SnapshotBufferOwner::fixture())?.snapshot,
+        )
         .await?;
     let view = ControlLog::open(domains.custody().clone(), 1, group())?;
     assert!(view.retirement_seed(1)?.is_none());
@@ -457,8 +510,12 @@ async fn equal_index_different_term_log_and_snapshot_coverage_is_rejected() -> R
 #[tokio::test]
 async fn old_snapshot_capture_cannot_regress_newer_accepted_cursor() -> Result<()> {
     let (domains, _, _, mut log) = fixture(FaultBackend::new(), true).await?;
-    let mut machine =
-        StateMachine::open(domains.clone(), Arc::new(BytesBackend::default())).await?;
+    let mut machine = StateMachine::open(
+        domains.clone(),
+        Arc::new(BytesBackend::default()),
+        crate::SnapshotBufferOwner::fixture(),
+    )
+    .await?;
     let one = ordinary(1);
     log.blocking_append([one.clone()]).await?;
     log.save_committed(Some(id(1))).await?;
@@ -485,8 +542,12 @@ async fn published_retirement_projection_substitution_fails_closed_after_reopen(
     let value = accepted_snapshot().await?;
     let disk = FaultBackend::new();
     let (domains, _, _, _) = fixture(disk.clone(), true).await?;
-    let mut machine =
-        StateMachine::open(domains.clone(), Arc::new(ClosedBackend::default())).await?;
+    let mut machine = StateMachine::open(
+        domains.clone(),
+        Arc::new(ClosedBackend::default()),
+        crate::SnapshotBufferOwner::fixture(),
+    )
+    .await?;
     let mut older_capture = machine.get_snapshot_builder().await;
     persist_snapshot(
         &domains,
@@ -513,9 +574,13 @@ async fn published_retirement_projection_substitution_fails_closed_after_reopen(
     );
     let (reopened, _, _, _) = fixture(disk.crash(), false).await?;
     assert!(
-        StateMachine::open(reopened.clone(), Arc::new(ClosedBackend::default()))
-            .await
-            .is_err()
+        StateMachine::open(
+            reopened.clone(),
+            Arc::new(ClosedBackend::default()),
+            crate::SnapshotBufferOwner::fixture()
+        )
+        .await
+        .is_err()
     );
     assert!(
         ControlLog::open(reopened.custody().clone(), 1, group())?

@@ -42,7 +42,7 @@ async fn ca_file(path: &Path) -> Result<Vec<u8>> {
 #[ignore = "requires KASUMI_OPENBAO_BIN pointing to a verified local OpenBao release"]
 async fn actual_openbao_transit_roundtrip_rotation_backups_and_warm_revocation() -> Result<()> {
     let binary = std::env::var_os("KASUMI_OPENBAO_BIN").context("set KASUMI_OPENBAO_BIN")?;
-    let root = tempfile::tempdir()?;
+    let root = kasumi_store::test_utils::private_tempdir()?;
     let certificate_dir = root.path().join("certificates");
     std::fs::create_dir(&certificate_dir)?;
     let port = std::net::TcpListener::bind("127.0.0.1:0")?
@@ -171,7 +171,7 @@ async fn actual_openbao_transit_roundtrip_rotation_backups_and_warm_revocation()
             );
         }
         let store = TenantStore::initialize_catalog_fixture(
-            NodeStore::create_new(
+            NodeStore::create_new_fixture(
                 root.path().join(format!("{key_name}.redb")),
                 kasumi_store::test_utils::NODE_STORE_ID,
                 kasumi_store::ScratchDisk::fixture(),

@@ -1,0 +1,16 @@
+   Compiling kasumi-raft v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-raft)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 24.02s
+     Running unittests src/lib.rs (target/debug/deps/kasumi_raft-2f98ca7f4e0b7718)
+
+running 8 tests
+test snapshot_buffer::tests::abandoned_facade_and_cancelled_owner_drain_keep_actual_panic_and_charge ... ok
+test snapshot_buffer::tests::cancelled_close_retains_the_actual_flush_child ... ok
+test snapshot_buffer::tests::cancelled_write_and_shutdown_join_actual_child_before_freezing ... ok
+test snapshot_buffer::tests::failed_startup_keeps_original_error_while_actual_child_drains ... ok
+test snapshot_buffer::tests::original_io_failure_survives_io_bridge_and_repeated_typed_drain ... ok
+test snapshot_buffer::tests::pending_child_holds_its_fixed_slot_until_actual_join ... ok
+test snapshot_buffer::tests::pending_read_is_joined_by_shutdown_and_cancelled_read_keeps_unread_bytes ... ok
+test snapshot_buffer::tests::unused_owner_releases_its_reservation_without_a_drain ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 65 filtered out; finished in 0.22s
+

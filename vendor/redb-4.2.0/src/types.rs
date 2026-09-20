@@ -16,9 +16,8 @@ mod uuid;
 enum TypeClassification {
     Internal,
     UserDefined,
-    // Used by variable width tuple encoding in version 3.0 and newer. This differentiates the encoding
-    // from the old encoding used previously
-    Internal2,
+    // Retained only to report unsupported input; no canonical type uses this tag.
+    Unsupported(u8),
     // Used by composite types written by version 4.2 and newer
     Internal3,
 }
@@ -28,7 +27,7 @@ impl TypeClassification {
         match self {
             TypeClassification::Internal => 1,
             TypeClassification::UserDefined => 2,
-            TypeClassification::Internal2 => 3,
+            TypeClassification::Unsupported(tag) => *tag,
             TypeClassification::Internal3 => 4,
         }
     }
@@ -37,33 +36,17 @@ impl TypeClassification {
         match value {
             1 => TypeClassification::Internal,
             2 => TypeClassification::UserDefined,
-            3 => TypeClassification::Internal2,
             4 => TypeClassification::Internal3,
-            _ => unreachable!(),
+            tag => TypeClassification::Unsupported(tag),
         }
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct TypeName {
     classification: TypeClassification,
     name: String,
-    // In-memory only; never serialized. For a composite (`Option`, `Vec`, tuple, array), this
-    // records the classification that older redb versions stored, so that their tables still
-    // match on open. That old spelling is ambiguous for colliding user and built-in composites.
-    // `None` for leaf types, flat user-defined types, and deserialized names.
-    legacy_classification: Option<TypeClassification>,
 }
-
-// Equality is on-disk identity: the auxiliary `legacy_classification` never participates, so a
-// freshly built name compares equal to the same name after a serialize/deserialize round trip.
-impl PartialEq for TypeName {
-    fn eq(&self, other: &Self) -> bool {
-        self.classification == other.classification && self.name == other.name
-    }
-}
-
-impl Eq for TypeName {}
 
 impl TypeName {
     /// It is recommended that `name` be prefixed with the crate name to minimize the chance of
@@ -72,7 +55,6 @@ impl TypeName {
         Self {
             classification: TypeClassification::UserDefined,
             name: name.to_string(),
-            legacy_classification: None,
         }
     }
 
@@ -80,15 +62,6 @@ impl TypeName {
         Self {
             classification: TypeClassification::Internal,
             name: name.to_string(),
-            legacy_classification: None,
-        }
-    }
-
-    pub(crate) fn internal2(name: &str) -> Self {
-        Self {
-            classification: TypeClassification::Internal2,
-            name: name.to_string(),
-            legacy_classification: None,
         }
     }
 
@@ -106,7 +79,6 @@ impl TypeName {
         Self {
             classification,
             name,
-            legacy_classification: None,
         }
     }
 
@@ -118,33 +90,20 @@ impl TypeName {
         matches!(self.classification, TypeClassification::UserDefined)
     }
 
-    // Classify a composite as user-defined when it wraps a user-defined type, and Internal3
-    // otherwise. The previous natural classification is retained so older databases still match.
-    pub(crate) fn into_composite(mut self, user_defined: bool) -> Self {
-        debug_assert!(matches!(
-            &self.classification,
-            TypeClassification::Internal | TypeClassification::Internal2
-        ));
-        self.legacy_classification = Some(self.classification.clone());
-        if user_defined {
-            self.classification = TypeClassification::UserDefined;
-        } else {
-            self.classification = TypeClassification::Internal3;
-        }
-        self
+    pub(crate) fn is_supported(&self) -> bool {
+        !matches!(self.classification, TypeClassification::Unsupported(_))
     }
 
-    // Whether `stored` (read from an existing database) is the spelling an older redb version
-    // wrote for this same composite. Composites were classified `Internal` (or `Internal2` for
-    // variable-width tuples); accepting that spelling keeps those databases readable, but cannot
-    // distinguish legacy colliding user composites from built-in composites. A flat user-defined
-    // type has no recorded legacy classification.
-    pub(crate) fn matches_legacy(&self, stored: &TypeName) -> bool {
-        if let Some(natural) = &self.legacy_classification {
-            *natural == stored.classification && self.name == stored.name
+    // The current writer emits only the exact composite identity; no earlier
+    // classification is recorded or accepted as an alias.
+    pub(crate) fn into_composite(mut self, user_defined: bool) -> Self {
+        debug_assert!(matches!(self.classification, TypeClassification::Internal));
+        self.classification = if user_defined {
+            TypeClassification::UserDefined
         } else {
-            false
-        }
+            TypeClassification::Internal3
+        };
+        self
     }
 }
 
@@ -743,11 +702,8 @@ mod tests {
         let samples = [
             TypeName::new("Plain"),
             TypeName::internal("Plain"),
-            TypeName::internal2("Plain"),
             TypeName::internal("Composite").into_composite(true),
             TypeName::internal("Composite").into_composite(false),
-            TypeName::internal2("Composite").into_composite(true),
-            TypeName::internal2("Composite").into_composite(false),
         ];
         for type_name in samples {
             assert_eq!(
@@ -797,7 +753,7 @@ mod tests {
     }
 
     #[test]
-    fn builtin_composites_use_internal3_and_match_legacy() {
+    fn builtin_composites_use_only_canonical_classification() {
         fn assert_internal3(name: TypeName) {
             assert!(matches!(name.classification, TypeClassification::Internal3));
         }
@@ -817,20 +773,17 @@ mod tests {
             <&[u8; 3] as Value>::type_name()
         );
 
-        // Built-in composites accept their pre-4.2 classifications. Variable-width tuples only
-        // accept Internal2, preserving the encoding distinction introduced in version 3.0.
-        assert!(
-            <Option<u32> as Value>::type_name().matches_legacy(&TypeName::internal("Option<u32>"))
+        assert_ne!(
+            <Option<u32> as Value>::type_name(),
+            TypeName::internal("Option<u32>")
         );
-        assert!(
-            <(u32, u64) as Value>::type_name().matches_legacy(&TypeName::internal("(u32,u64)"))
+        assert_ne!(
+            <(u32, u64) as Value>::type_name(),
+            TypeName::internal("(u32,u64)")
         );
-        assert!(
-            <(u32, &str) as Value>::type_name().matches_legacy(&TypeName::internal2("(u32,&str)"))
-        );
-        assert!(
-            !<(u32, &str) as Value>::type_name().matches_legacy(&TypeName::internal("(u32,&str)"))
-        );
+        let old_variable_tuple = TypeName::from_bytes(b"\x03(u32,&str)");
+        assert!(!old_variable_tuple.is_supported());
+        assert_ne!(<(u32, &str) as Value>::type_name(), old_variable_tuple);
     }
 
     #[test]
@@ -869,41 +822,27 @@ mod tests {
     }
 
     #[test]
-    fn legacy_matching_accepts_pre_bubbling_spelling() {
-        // Option/Vec/array/(T,) were stored as Internal in every prior version.
-        assert!(
-            <Option<FakeU32> as Value>::type_name()
-                .matches_legacy(&TypeName::internal("Option<u32>"))
+    fn legacy_composite_names_never_match_canonical_types() {
+        assert_ne!(
+            <Option<FakeU32> as Value>::type_name(),
+            TypeName::internal("Option<u32>")
         );
-        assert!(
-            <Vec<FakeU32> as Value>::type_name().matches_legacy(&TypeName::internal("Vec<u32>"))
+        assert_ne!(
+            <Vec<FakeU32> as Value>::type_name(),
+            TypeName::internal("Vec<u32>")
         );
-        assert!(<(FakeU32,) as Value>::type_name().matches_legacy(&TypeName::internal("(u32,)")));
-        // Fixed-width tuple: legacy spelling is Internal.
-        assert!(
-            <(FakeU32, u64) as Value>::type_name().matches_legacy(&TypeName::internal("(u32,u64)"))
+        assert_ne!(
+            <(FakeU32,) as Value>::type_name(),
+            TypeName::internal("(u32,)")
         );
-        // Variable-width tuple: legacy spelling is Internal2, NOT Internal. redb 2.6 used a
-        // different variable-width tuple encoding (it had no Internal2), so its Internal-tagged
-        // tables are deliberately not re-accepted.
-        assert!(
-            <(FakeU32, &str) as Value>::type_name()
-                .matches_legacy(&TypeName::internal2("(u32,&str)"))
+        assert_ne!(
+            <(FakeU32, u64) as Value>::type_name(),
+            TypeName::internal("(u32,u64)")
         );
-        assert!(
-            !<(FakeU32, &str) as Value>::type_name()
-                .matches_legacy(&TypeName::internal("(u32,&str)"))
+        assert_ne!(
+            <(FakeU32, &str) as Value>::type_name(),
+            TypeName::from_bytes(b"\x03(u32,&str)")
         );
-
-        // A legacy match must still agree on the name.
-        assert!(
-            !<Option<FakeU32> as Value>::type_name()
-                .matches_legacy(&TypeName::internal("Option<u64>"))
-        );
-
-        // Crucially, a flat user-defined type carries no legacy classification, so it never
-        // matches an `Internal` stored name -- this is what keeps a user type named "u32" from
-        // aliasing the built-in `u32` at the top level.
-        assert!(!<FakeU32 as Value>::type_name().matches_legacy(&TypeName::internal("u32")));
+        assert_ne!(<FakeU32 as Value>::type_name(), TypeName::internal("u32"));
     }
 }

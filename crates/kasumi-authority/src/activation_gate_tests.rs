@@ -464,7 +464,7 @@ async fn target_storage_retains_original_phase_and_cannot_install_late_renewal_o
     )
     .unwrap();
     let captured = phase.capture().unwrap();
-    let node_store = NodeStore::create_new(
+    let node_store = NodeStore::create_new_fixture(
         f._dir.path().join("actual-target.redb"),
         kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),

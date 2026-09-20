@@ -1,0 +1,7 @@
+   Compiling kasumi-store v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-store)
+   Compiling kasumi-raft v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-raft)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.49s
+     Running unittests src/lib.rs (target/debug/deps/kasumi_raft-2f98ca7f4e0b7718)
+
+running 1 test
+test custody_capacity_tests::permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopens ... 

@@ -1,0 +1,212 @@
+{
+  "status": "passed",
+  "source_unchanged": true,
+  "final_group_inventory_drained": [
+    78088,
+    82263,
+    82302,
+    82308,
+    82316,
+    82323,
+    82344
+  ],
+  "tools_unchanged": true,
+  "module_copies_unchanged": true,
+  "copied_files": {
+    "16-owned-all-features-tests.log": {
+      "source": "/Users/mtakemiya/dev/kasumi-release-evidence/redb-canonical-owned-20260920/16-owned-all-features-tests.log",
+      "sha256": "9f4372919ee083441d61c96b5fc8313c02a396df749e93d44f2356f1c0091463"
+    },
+    "17-owned-all-features-strict-clippy.log": {
+      "source": "/Users/mtakemiya/dev/kasumi-release-evidence/redb-canonical-owned-20260920/17-owned-all-features-strict-clippy.log",
+      "sha256": "524eef85ce995fe2e3ddb283748083a68fa32dc0a561bbf8d8f5237bfaa96d85"
+    },
+    "18-owned-default-strict-clippy.log": {
+      "source": "/Users/mtakemiya/dev/kasumi-release-evidence/redb-canonical-owned-20260920/18-owned-default-strict-clippy.log",
+      "sha256": "a069722c5c553a8b37db0eb1e41e4f66c5b7ec81a79a995f49002fde051500d1"
+    },
+    "19-owned-no-std-check.log": {
+      "source": "/Users/mtakemiya/dev/kasumi-release-evidence/redb-canonical-owned-20260920/19-owned-no-std-check.log",
+      "sha256": "ed12f3b1e084ba3e8b42217047829ce90e7b35b48ccd81f652d8cc250c016b5e"
+    },
+    "20-owned-fmt.log": {
+      "source": "/Users/mtakemiya/dev/kasumi-release-evidence/redb-canonical-owned-20260920/20-owned-fmt.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "21-owned-derive-tests.log": {
+      "source": "/Users/mtakemiya/dev/kasumi-release-evidence/redb-canonical-owned-20260920/21-owned-derive-tests.log",
+      "sha256": "52ac0a8493b6304d25da738385228e24c3cb7c79c74b9f7bf87040abe6066922"
+    },
+    "22-owned-derive-strict-clippy.log": {
+      "source": "/Users/mtakemiya/dev/kasumi-release-evidence/redb-canonical-owned-20260920/22-owned-derive-strict-clippy.log",
+      "sha256": "941d292c99b006ac5f098b1a7d9cacfdf56a54a7f81b62a0cae38420adcd2683"
+    },
+    "owned-artifact_helper.py": {
+      "source": "/Users/mtakemiya/dev/kasumi-release-evidence/redb-canonical-owned-20260920/artifact_helper.py",
+      "sha256": "ad3d647fbb73d9d32e04e4e202814f68aea2cb5aa80acbed03a10fa8a3855a6f"
+    },
+    "owned-evidence.json": {
+      "source": "/Users/mtakemiya/dev/kasumi-release-evidence/redb-canonical-owned-20260920/evidence.json",
+      "sha256": "3fea17874b14d22fbac8d2db38e9a4bf4d25361db0b960768e272eac889563a7"
+    },
+    "owned-gate_process.py": {
+      "source": "/Users/mtakemiya/dev/kasumi-release-evidence/redb-canonical-owned-20260920/gate_process.py",
+      "sha256": "6c8b255e5a69aa8985da8d70f5baa73337bcaeac7098bd756c4d6cc6472e58de"
+    },
+    "owned-source-after.json": {
+      "source": "/Users/mtakemiya/dev/kasumi-release-evidence/redb-canonical-owned-20260920/source-after.json",
+      "sha256": "51fa59411d0275b83550131b2e3d6ffaa9eee1f49b8efb1f74d7fb86c78d391a"
+    },
+    "owned-source-before.json": {
+      "source": "/Users/mtakemiya/dev/kasumi-release-evidence/redb-canonical-owned-20260920/source-before.json",
+      "sha256": "51fa59411d0275b83550131b2e3d6ffaa9eee1f49b8efb1f74d7fb86c78d391a"
+    },
+    "owned-validate_leaf.py": {
+      "source": "/Users/mtakemiya/dev/kasumi-release-evidence/redb-canonical-owned-20260920/validate_leaf.py",
+      "sha256": "439aaf655b6b533602b2a42193b03c5e23111821c23fea07bad40b676751f470"
+    }
+  },
+  "preserved_unique_executable_count": 18,
+  "gates": [
+    {
+      "name": "16-owned-all-features-tests",
+      "status": "passed",
+      "seconds": 302.628,
+      "test_summaries": [
+        [
+          "ok",
+          "128",
+          "0",
+          "0"
+        ],
+        [
+          "ok",
+          "112",
+          "0",
+          "0"
+        ],
+        [
+          "ok",
+          "5",
+          "0",
+          "0"
+        ],
+        [
+          "ok",
+          "5",
+          "0",
+          "0"
+        ],
+        [
+          "ok",
+          "1",
+          "0",
+          "0"
+        ],
+        [
+          "ok",
+          "1",
+          "0",
+          "0"
+        ],
+        [
+          "ok",
+          "1",
+          "0",
+          "0"
+        ],
+        [
+          "ok",
+          "37",
+          "0",
+          "0"
+        ],
+        [
+          "ok",
+          "109",
+          "0",
+          "0"
+        ],
+        [
+          "ok",
+          "21",
+          "0",
+          "0"
+        ],
+        [
+          "ok",
+          "4",
+          "0",
+          "0"
+        ],
+        [
+          "ok",
+          "6",
+          "0",
+          "0"
+        ]
+      ]
+    },
+    {
+      "name": "17-owned-all-features-strict-clippy",
+      "status": "passed",
+      "seconds": 4.953,
+      "test_summaries": []
+    },
+    {
+      "name": "18-owned-default-strict-clippy",
+      "status": "passed",
+      "seconds": 0.187,
+      "test_summaries": []
+    },
+    {
+      "name": "19-owned-no-std-check",
+      "status": "passed",
+      "seconds": 0.189,
+      "test_summaries": []
+    },
+    {
+      "name": "20-owned-fmt",
+      "status": "passed",
+      "seconds": 0.404,
+      "test_summaries": []
+    },
+    {
+      "name": "21-owned-derive-tests",
+      "status": "passed",
+      "seconds": 2.551,
+      "test_summaries": [
+        [
+          "ok",
+          "0",
+          "0",
+          "0"
+        ],
+        [
+          "ok",
+          "1",
+          "0",
+          "0"
+        ],
+        [
+          "ok",
+          "18",
+          "0",
+          "0"
+        ],
+        [
+          "ok",
+          "0",
+          "0",
+          "0"
+        ]
+      ]
+    },
+    {
+      "name": "22-owned-derive-strict-clippy",
+      "status": "passed",
+      "seconds": 0.247,
+      "test_summaries": []
+    }
+  ]
+}

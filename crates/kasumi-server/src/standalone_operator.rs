@@ -18,17 +18,20 @@ impl OperatorState {
         let mut pending = Resources::default();
         let opened = async {
             config.validate()?;
-            pending.standalone_lock =
-                Some(claim(config)?.context("operator requires standalone mode")?);
+            let persistent_disk = crate::persistent_disk::open(&config.persistent_disk)?;
+            pending.standalone_lock = Some(
+                claim(config, &persistent_disk)?.context("operator requires standalone mode")?,
+            );
             let AuthKeySource::Local { signer_file } = &config.auth.source else {
                 anyhow::bail!("operator requires a local issuer");
             };
             let node = NodeStore::open_existing(
                 &config.database_path,
                 config.database_id,
+                persistent_disk,
                 kasumi_store::ScratchDisk::open(config.scratch_disk.clone())?,
             )?;
-            pending.nodes.push(node.clone());
+            pending.owned_nodes.push(node.clone());
             #[cfg(test)]
             super::ownership_tests::checkpoint(&config.database_path, "node").await?;
             let store = TenantStore::open_existing(
@@ -42,10 +45,9 @@ impl OperatorState {
             )
             .await?;
             pending.stores.push(store.clone());
-            let audit = config.security_audit.open(
-                store.clone(),
-                kasumi_engine::admission::NodeAdmission::new(config.admission.clone())?,
-            )?;
+            let admission = kasumi_engine::admission::NodeAdmission::new(config.admission.clone())?;
+            pending.owned_admissions.push(admission.clone());
+            let audit = config.security_audit.open(store.clone(), admission)?;
             pending.audits.push(audit.clone());
             crate::node_enrollment::require_complete(
                 audit.store(),
@@ -79,7 +81,7 @@ impl OperatorState {
         self.resources
             .try_lock()
             .expect("exclusive operator acquisition")
-            .nodes
+            .owned_nodes
             .push(node);
     }
     pub(crate) fn retain_stores(&self, stores: &kasumi_store::TenantStorageSet) {

@@ -51,7 +51,7 @@ impl MaterialFixture {
     async fn new() -> Self {
         let control = ControlFixture::new();
         let issuer = control.issuer().await;
-        let node = NodeStore::create_new(
+        let node = NodeStore::create_new_fixture(
             issuer._dir.path().join("source.redb"),
             Uuid::new_v4(),
             kasumi_store::ScratchDisk::fixture(),
@@ -124,7 +124,8 @@ impl MaterialFixture {
             .await
             .unwrap();
         let destination = Arc::new(
-            FilesystemBackupDestination::new(issuer._dir.path().join("backups"), 16 << 20).unwrap(),
+            FilesystemBackupDestination::new_fixture(issuer._dir.path().join("backups"), 16 << 20)
+                .unwrap(),
         );
         let checkpoint = source_db
             .backup_checkpoint(context, destination.as_ref(), uuid::Uuid::new_v4())
@@ -306,9 +307,17 @@ impl MaterialFixture {
         let node = {
             let path = self.issuer._dir.path().join(format!("target-{id}.redb"));
             if first_creation {
-                NodeStore::create_new(path, node_store_id, kasumi_store::ScratchDisk::fixture())
+                NodeStore::create_new_fixture(
+                    path,
+                    node_store_id,
+                    kasumi_store::ScratchDisk::fixture(),
+                )
             } else {
-                NodeStore::open_existing(path, node_store_id, kasumi_store::ScratchDisk::fixture())
+                NodeStore::open_existing_fixture(
+                    path,
+                    node_store_id,
+                    kasumi_store::ScratchDisk::fixture(),
+                )
             }
             .unwrap()
         };
@@ -1060,7 +1069,7 @@ async fn exercise_target_activation(maintenance: bool) {
     )
     .unwrap();
     let journal_store = TenantStore::initialize_catalog(
-        NodeStore::create_new(
+        NodeStore::create_new_fixture(
             &journal_path,
             journal_file_id,
             kasumi_store::ScratchDisk::fixture(),
@@ -1180,7 +1189,7 @@ async fn exercise_target_activation(maintenance: bool) {
     // Reopen only the separately encrypted journal, independently of all app
     // providers. Exact signatures survive restart; substituted facts fail closed.
     let journal_store = TenantStore::open_existing(
-        NodeStore::open_existing(
+        NodeStore::open_existing_fixture(
             &journal_path,
             journal_file_id,
             kasumi_store::ScratchDisk::fixture(),
@@ -1515,7 +1524,8 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
         &installation.node.verifier,
     )
     .unwrap();
-    let node = NodeStore::create_new(&path, file_id, kasumi_store::ScratchDisk::fixture()).unwrap();
+    let node = NodeStore::create_new_fixture(&path, file_id, kasumi_store::ScratchDisk::fixture())
+        .unwrap();
     let tenant = format!("kasumi.target.{}.1", f.control.root.control_incarnation);
     let provider = Arc::new(LocalKeyProvider::new([238; 32]));
     let access = StorageAccess::target_journal(&installation.root, &installation.node).unwrap();
@@ -1583,7 +1593,7 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
     assert!(!file_path.exists());
     // A replacement node, even a canonical Kasumi file, cannot be adopted when
     // its installed UUID differs. The rejected replay must leave its bytes alone.
-    let unrelated = NodeStore::create_new(
+    let unrelated = NodeStore::create_new_fixture(
         &file_path,
         Uuid::new_v4(),
         kasumi_store::ScratchDisk::fixture(),
@@ -1743,7 +1753,8 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
     drop(store);
     drop(node);
     let node =
-        NodeStore::open_existing(path, file_id, kasumi_store::ScratchDisk::fixture()).unwrap();
+        NodeStore::open_existing_fixture(path, file_id, kasumi_store::ScratchDisk::fixture())
+            .unwrap();
     let store = TenantStore::open_existing(node, tenant, provider, access)
         .await
         .unwrap();
@@ -1897,7 +1908,7 @@ async fn target_file_creation_outcome_distinguishes_original_creation_from_stric
         node: nodes().first().unwrap().clone(),
     };
     let journal_path = f.issuer._dir.path().join("creation-outcome-journal.redb");
-    let node = NodeStore::create_new(
+    let node = NodeStore::create_new_fixture(
         &journal_path,
         kasumi_store::node_store_ids::target_journal(
             installation.root.control_incarnation,

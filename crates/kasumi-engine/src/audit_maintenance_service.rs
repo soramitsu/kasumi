@@ -210,9 +210,9 @@ mod tests {
     #[tokio::test]
     async fn tenant_audit_worker_keeps_its_owner_through_cancelled_shutdown() {
         tokio::time::timeout(std::time::Duration::from_secs(15), async {
-            let directory = tempfile::tempdir().unwrap();
+            let directory = kasumi_store::test_utils::private_tempdir().unwrap();
             let path = directory.path().join("node.redb");
-            let node = NodeStore::create_new(
+            let node = NodeStore::create_new_fixture(
                 &path,
                 kasumi_store::test_utils::NODE_STORE_ID,
                 kasumi_store::ScratchDisk::fixture(),
@@ -270,10 +270,15 @@ mod tests {
             )
             .await
             .unwrap();
-            let group =
-                RaftGroup::local(1, format!("tenant/{incarnation}"), stores, engine.clone())
-                    .await
-                    .unwrap();
+            let group = RaftGroup::local(
+                1,
+                format!("tenant/{incarnation}"),
+                stores,
+                engine.clone(),
+                kasumi_raft::SnapshotBufferOwner::fixture(),
+            )
+            .await
+            .unwrap();
             let database = Database::new_with_admission(
                 engine,
                 group,
@@ -330,7 +335,7 @@ mod tests {
             drop(node);
             assert!(weak_node.upgrade().is_none());
             // No delay or lock retry is allowed to hide a surviving file owner.
-            let reopened = NodeStore::open_existing(
+            let reopened = NodeStore::open_existing_fixture(
                 &path,
                 kasumi_store::test_utils::NODE_STORE_ID,
                 kasumi_store::ScratchDisk::fixture(),
@@ -360,8 +365,8 @@ mod tests {
     }
 
     async fn worker_drains_hot_history(outage: bool) {
-        let directory = tempfile::tempdir().unwrap();
-        let node = NodeStore::create_new(
+        let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+        let node = NodeStore::create_new_fixture(
             directory.path().join("node.redb"),
             kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
@@ -380,14 +385,16 @@ mod tests {
         .await
         .unwrap();
         let archive = Arc::new(UncertainArchive {
-            inner: FilesystemAuditArchive::open(directory.path().join("external")).unwrap(),
+            inner: FilesystemAuditArchive::open_fixture(directory.path().join("external")).unwrap(),
             fail: AtomicBool::new(outage),
         });
         store
             .install_tenant_audit_archive(
                 Arc::new(
-                    FilesystemAuditArchive::open(directory.path().join("tenant-audit-archives"))
-                        .unwrap(),
+                    FilesystemAuditArchive::open_fixture(
+                        directory.path().join("tenant-audit-archives"),
+                    )
+                    .unwrap(),
                 ),
                 archive.clone(),
             )
@@ -435,9 +442,15 @@ mod tests {
         )
         .await
         .unwrap();
-        let group = RaftGroup::local(1, format!("tenant/{incarnation}"), stores, engine.clone())
-            .await
-            .unwrap();
+        let group = RaftGroup::local(
+            1,
+            format!("tenant/{incarnation}"),
+            stores,
+            engine.clone(),
+            kasumi_raft::SnapshotBufferOwner::fixture(),
+        )
+        .await
+        .unwrap();
         let database = Database::new_with_admission(
             engine.clone(),
             group.clone(),

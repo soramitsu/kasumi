@@ -41,6 +41,7 @@ pub struct AuthorityRuntimeConfig {
     pub admission: kasumi_engine::admission::AdmissionConfig,
     pub database_path: PathBuf,
     pub database_id: Uuid,
+    pub persistent_disk: kasumi_store::NodeDiskConfig,
     pub scratch_disk: kasumi_store::ScratchDiskConfig,
     pub operational_signer_file: PathBuf,
     pub signer_verifier: crate::signer_runtime::SignerVerifierConfig,
@@ -111,6 +112,7 @@ impl AuthorityRuntimeConfig {
         )?;
 
         self.scratch_disk.validate()?;
+        self.validate_persistent_disk()?;
         self.admission.validate()?;
         if let Some(publications) = &self.signer_publications {
             publications.validate()?;
@@ -175,6 +177,7 @@ pub struct AuthorityRuntime {
     serving_registration: Option<crate::serving_owner::Registration>,
     startup_drain: kasumi_types::drain::DrainReport,
     config: AuthorityRuntimeConfig,
+    node: Arc<NodeStore>,
     authority: Arc<IndependentAuthority>,
     signer_verifier: Arc<crate::signer_runtime::InstalledSignerVerifier>,
     stores: Arc<TenantStorageSet>,
@@ -214,6 +217,7 @@ impl AuthorityRuntime {
             &self.audit,
             &self.audit_store,
             &self.signer_verifier,
+            &self.node,
         )
         .await
     }
@@ -225,14 +229,23 @@ impl AuthorityRuntime {
         audit: &Arc<SecurityAudit>,
         audit_store: &Arc<TenantStore>,
         verifier: &Arc<crate::signer_runtime::InstalledSignerVerifier>,
+        node: &Arc<NodeStore>,
     ) -> kasumi_types::drain::DrainResult {
         use crate::runtime_drain::observe;
         let mut retained = None;
         observe(report, &mut retained, authority.shutdown().await);
+        observe(
+            report,
+            &mut retained,
+            audit.admission().drain_snapshot_startups().await,
+        );
         observe(report, &mut retained, stores.shutdown().await);
         observe(report, &mut retained, audit.shutdown().await);
         observe(report, &mut retained, audit_store.shutdown().await);
         observe(report, &mut retained, verifier.shutdown().await);
+        if retained.is_none() {
+            observe(report, &mut retained, node.shutdown().await);
+        }
         report.outcome(retained)
     }
 
@@ -240,8 +253,10 @@ impl AuthorityRuntime {
         let mut pending = crate::startup_resources::Resources::default();
         let outcome = crate::startup_preparation::capture("authority runtime", async {
             config.validate()?;
+            let persistent_disk = crate::persistent_disk::open(&config.persistent_disk)?;
             let scratch_disk = kasumi_store::ScratchDisk::open(config.scratch_disk.clone())?;
             let admission = kasumi_engine::admission::NodeAdmission::new(config.admission.clone())?;
+            pending.owned_admissions.push(admission.clone());
             let auth = Authenticator::new(config.auth.clone())?;
             let native_tls = kasumi_transport::ReloadableServerConfig::new(config.native.load()?);
             let identity = config.replication.listener.tls.load()?;
@@ -278,6 +293,7 @@ impl AuthorityRuntime {
                 .open(
                     std::collections::BTreeMap::from([(domain.digest()?, domain)]),
                     Arc::new(file_secret),
+                    persistent_disk.clone(),
                     scratch_disk.clone(),
                     admission.clone(),
                 )
@@ -296,9 +312,10 @@ impl AuthorityRuntime {
             let node = NodeStore::open_existing(
                 &config.database_path,
                 config.database_id,
+                persistent_disk.clone(),
                 scratch_disk.clone(),
             )?;
-            pending.nodes.push(node.clone());
+            pending.owned_nodes.push(node.clone());
             let audit_store = TenantStore::open_existing(
                 node.clone(),
                 kasumi_engine::SECURITY_TENANT.into(),
@@ -307,13 +324,11 @@ impl AuthorityRuntime {
             )
             .await?;
             pending.stores.push(audit_store.clone());
-            if let Err(error) = crate::node_enrollment::require_complete(
+            crate::node_enrollment::require_complete(
                 &audit_store,
                 config.database_id,
                 crate::node_enrollment::Kind::Authority,
-            ) {
-                return Err(error);
-            }
+            )?;
             let audit = config
                 .security_audit
                 .open(audit_store.clone(), admission.clone())?;
@@ -321,7 +336,7 @@ impl AuthorityRuntime {
             auth.install_audit(audit.clone())?;
             network.install_audit(audit.clone())?;
             let stores = TenantStorageSet::open_existing(
-                node,
+                node.clone(),
                 config.installation.tenant(),
                 config.keys.provider(Arc::new(file_secret))?,
                 config.custody_keys.provider(Arc::new(file_secret))?,
@@ -342,13 +357,14 @@ impl AuthorityRuntime {
                 network.clone(),
                 kasumi_raft::server_config(),
                 request_budget(&admission)?,
+                admission.snapshot_buffer_owner()?,
             )
             .await?;
             pending.authorities.push(authority.clone());
             let group =
                 &config.installation.manifest.partitions[&config.installation.partition].group;
             let access = stores.clone();
-            if let Err(error) = network.register_group_with_bootstrap(
+            network.register_group_with_bootstrap(
                 group.clone(),
                 authority.raft_group().raft().clone(),
                 config
@@ -359,9 +375,7 @@ impl AuthorityRuntime {
                     .collect(),
                 authority.bootstrap_digest().into(),
                 Arc::new(move || access.check_access()),
-            ) {
-                return Err(error);
-            }
+            )?;
             let peer_authority = Arc::downgrade(&authority);
             network.install_group_peer_fence(
                 group,
@@ -397,6 +411,7 @@ impl AuthorityRuntime {
                 startup_drain: Default::default(),
                 tls_reload,
                 config,
+                node,
                 authority,
                 signer_verifier,
                 stores,
@@ -557,11 +572,15 @@ impl crate::serving_owner::Owner for AuthorityServing {
                 &mut retained,
                 self.tasks.shutdown().await,
             );
-            crate::runtime_drain::observe(
-                &mut self.report,
-                &mut retained,
-                self.runtime.shutdown().await,
-            );
+            // The runtime owns the physical databases. Listener tasks must
+            // actually drain before those databases may release their files.
+            if retained.is_none() {
+                crate::runtime_drain::observe(
+                    &mut self.report,
+                    &mut retained,
+                    self.runtime.shutdown().await,
+                );
+            }
             self.report.outcome(retained)
         })
     }

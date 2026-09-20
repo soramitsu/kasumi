@@ -197,7 +197,7 @@ mod tests {
     use super::*;
     #[tokio::test]
     async fn file_keyring_rotation_binding_fresh_reads_and_reopen() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::test_utils::private_tempdir().unwrap();
         let dir_path = root.path().join("private");
         private_files::create_directory(&dir_path).unwrap();
         let dir = dir_path.as_path();
@@ -242,13 +242,13 @@ mod tests {
     async fn standalone_catalog_binds_installation_tenant_and_generation() {
         use crate::{NodeStore, StorageAccess, TenantStore, WriteOp};
         use std::sync::Arc;
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::test_utils::private_tempdir().unwrap();
         let private = root.path().join("private");
         private_files::create_directory(&private).unwrap();
         let provider = Arc::new(
             FileKeyProvider::initialize(&private.join("key.json"), "application").unwrap(),
         );
-        let node = NodeStore::create_new(
+        let node = NodeStore::create_new_fixture(
             root.path().join("db"),
             crate::test_utils::NODE_STORE_ID,
             crate::ScratchDisk::fixture(),
@@ -308,7 +308,7 @@ mod tests {
     #[test]
     fn rejects_public_keyrings_symlinks_and_unsupported_formats() {
         use std::os::unix::fs::{PermissionsExt, symlink};
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::test_utils::private_tempdir().unwrap();
         let dir_path = root.path().join("private");
         private_files::create_directory(&dir_path).unwrap();
         let dir = dir_path.as_path();

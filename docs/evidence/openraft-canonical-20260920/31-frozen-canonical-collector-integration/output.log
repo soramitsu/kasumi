@@ -1,0 +1,116 @@
+   Compiling tests v0.9.25 (/Users/mtakemiya/dev/kasumi/vendor/openraft-0.9.25/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 19.06s
+     Running tests/client_api/main.rs (target/openraft-qualification/debug/deps/client_api-8e1911df67e65991)
+
+running 13 tests
+test t13_get_snapshot::get_snapshot ... ok
+test t16_with_raft_state::with_raft_state ... ok
+test t10_client_writes::client_write_ff ... ok
+test t13_begin_receiving_snapshot::begin_receiving_snapshot ... ok
+test t11_client_reads::client_reads ... ok
+test t13_install_full_snapshot::install_full_snapshot ... ok
+test t13_trigger_snapshot::trigger_snapshot ... ok
+test t10_client_writes::client_writes ... ok
+test t50_lagging_network_write::lagging_network_write ... ok
+test t11_client_reads::get_read_log_id ... ok
+test t51_write_when_leader_quit::write_when_leader_quit_and_log_revert ... ok
+test t51_write_when_leader_quit::write_when_leader_switched ... ok
+test t12_trigger_purge_log::trigger_purge_log ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.02s
+
+     Running tests/life_cycle/main.rs (target/openraft-qualification/debug/deps/life_cycle-02d993864599bf3a)
+
+running 22 tests
+test t10_initialization::initialize_err_not_allowed ... ok
+test t10_initialization::initialize_err_target_not_include_target ... ok
+test t11_shutdown::return_error_after_shutdown ... ok
+test t11_shutdown::return_error_after_panic ... ok
+test t11_shutdown::return_error_when_sm_worker_dies ... ok
+test t11_shutdown::cancelled_shutdown_retains_later_core_failure ... ok
+test t10_initialization::initialization ... ok
+test t11_shutdown::shutdown ... ok
+test t14_auxiliary_custody::actual_vote_round_panic_fences_live_core_and_remains_original ... ok
+test t12_membership_observer::remote_membership_append_invalidates_installed_observer ... ok
+test t13_replication_custody::actual_snapshot_sender_panic_fences_and_is_retained ... ok
+test t14_auxiliary_custody::full_read_capacity_keeps_existing_replication_and_application_running ... ok
+test t14_auxiliary_custody::quorum_completion_drops_remaining_inline_peer_future_in_same_actual_task ... ok
+test t50_single_leader_restart_re_apply_logs::single_leader_restart_re_apply_logs ... ok
+test t90_issue_920_non_voter_leader_restart::issue_920_non_member_leader_restart ... ok
+test t13_replication_custody::capacity_rejection_preserves_existing_consensus_and_application ... ok
+test t90_issue_607_single_restart::single_restart ... ok
+test t14_auxiliary_custody::abandoned_read_and_shutdown_keep_actual_collector_panic ... ok
+test t13_replication_custody::cancelled_shutdown_retains_actual_replication_panic ... ok
+test t50_single_follower_restart::single_follower_restart ... ok
+test t50_leader_restart_clears_state::leader_restart_clears_state ... ok
+test t50_follower_restart_does_not_interrupt::follower_restart_does_not_interrupt ... ok
+
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.58s
+
+     Running tests/membership/main.rs (target/openraft-qualification/debug/deps/membership-b8e0a3e89d046149)
+
+running 41 tests
+test t10_learner_restart::learner_restart ... ok
+test t11_add_learner::add_learner_with_set_nodes ... ok
+test t20_change_membership::change_with_turn_removed_voter_to_learner ... ok
+test t12_concurrent_write_and_add_learner::concurrent_write_and_add_learner ... ok
+test t20_change_membership::change_without_adding_learner ... ok
+test t20_change_membership::update_membership_state ... ok
+test t21_change_membership_cases::m012_remove_m ... ok
+test t11_add_learner::add_learner_non_blocking ... ok
+test t20_change_membership::change_with_new_learner_blocking ... ok
+test t21_change_membership_cases::m012_remove_m3 ... ok
+test t21_change_membership_cases::m01_add_m ... ok
+test t10_single_node::single_node ... ok
+test t11_add_learner::add_learner_basic ... ok
+test t11_add_learner::check_learner_after_leader_transferred ... ok
+test t11_add_learner::add_learner_when_previous_membership_not_committed ... ok
+test t21_change_membership_cases::m0_add_m01 ... ok
+test t21_change_membership_cases::m0_add_m12 ... ok
+test t21_change_membership_cases::m01234_change_m0123 ... ok
+test t21_change_membership_cases::m012_remove_m13 ... ok
+test t21_change_membership_cases::m01_change_m1 ... ok
+test t21_change_membership_cases::m01_change_m12 ... ok
+test t30_commit_joint_config::commit_joint_config_during_012_to_234 ... ok
+test t21_change_membership_cases::m012_remove_m01 ... ok
+test t21_change_membership_cases::m0_change_m12 ... ok
+test t30_commit_joint_config::commit_joint_config_during_0_to_012 ... ok
+test t31_remove_leader::remove_leader_access_new_cluster ... ok
+test t31_removed_follower::stop_replication_to_removed_follower ... ok
+test t51_remove_unreachable_follower::stop_replication_to_removed_unreachable_follower_network_failure ... ok
+test t52_change_membership_on_uninitialized_node::change_membership_on_uninitialized_node ... ok
+test t99_issue_471_adding_learner_uses_uninit_leader_id::adding_learner_do_not_use_matched_leader_id ... ok
+test t99_issue_584_replication_state_reverted::t99_issue_584_replication_state_reverted ... ok
+test t99_new_leader_auto_commit_uniform_config::new_leader_auto_commit_uniform_config ... ok
+test t21_change_membership_cases::m01_change_m2 ... ok
+test t30_elect_with_new_config::leader_election_after_changing_0_to_01234 ... ok
+test t21_change_membership_cases::m01_change_m3 ... ok
+test t21_change_membership_cases::m0_change_m123 ... ok
+test t31_add_remove_follower::add_remove_voter ... ok
+test t21_change_membership_cases::m012_change_m4 ... ok
+test t31_remove_leader::remove_leader_and_convert_to_learner ... ok
+test t21_change_membership_cases::m012_change_m456 ... ok
+test t31_remove_leader::remove_leader ... ok
+
+test result: ok. 41 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.04s
+
+     Running tests/snapshot_streaming/main.rs (target/openraft-qualification/debug/deps/snapshot_streaming-c3a5a5440ccd438e)
+
+running 14 tests
+test t10_api_install_snapshot_with_lower_vote::install_snapshot_lower_vote ... ok
+test t10_api_install_snapshot::snapshot_arguments ... ok
+test t50_snapshot_line_rate_to_snapshot::snapshot_line_rate_to_snapshot ... ok
+test t20_startup_snapshot::startup_build_snapshot ... ok
+test t60_snapshot_chunk_size::snapshot_chunk_size ... ok
+test t32_snapshot_uses_prev_snap_membership::snapshot_uses_prev_snap_membership ... ok
+test t31_snapshot_overrides_membership::snapshot_overrides_membership ... ok
+test t51_after_snapshot_add_learner_and_request_a_log::after_snapshot_add_learner_and_request_a_log ... ok
+test t90_issue_808_snapshot_to_unreachable_node_should_not_block::snapshot_to_unreachable_node_should_not_block ... ok
+test t50_snapshot_when_lacking_log::switch_to_snapshot_replication_when_lacking_log ... ok
+test t33_snapshot_delete_conflict_logs::snapshot_delete_conflicting_logs ... ok
+test t91_snapshot_retry_uses_latest_snapshot::snapshot_retry_uses_latest_snapshot ... ok
+test t34_replication_does_not_block_purge::replication_does_not_block_purge ... ok
+test t30_purge_in_snapshot_logs::purge_in_snapshot_logs ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.06s
+

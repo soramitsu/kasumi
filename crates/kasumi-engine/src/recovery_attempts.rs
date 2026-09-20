@@ -424,12 +424,12 @@ pub(crate) fn cursor_advanced(
     old: &RecoveryRecord,
     new: &RecoveryRecord,
 ) -> Result<bool> {
-    if let Some(id) = new.completion_intent {
-        if phase(incoming, new, id)?.completion_scope != scope(new) {
-            return Err(conflict(
-                "snapshot current completion scope differs from its committed birth",
-            ));
-        }
+    if let Some(id) = new.completion_intent
+        && phase(incoming, new, id)?.completion_scope != scope(new)
+    {
+        return Err(conflict(
+            "snapshot current completion scope differs from its committed birth",
+        ));
     }
     if old.completion_intent == new.completion_intent {
         if old.completion_predecessor != new.completion_predecessor {

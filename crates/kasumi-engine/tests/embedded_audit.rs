@@ -63,9 +63,9 @@ async fn fixture(
 
 #[tokio::test]
 async fn every_embedded_request_boundary_durably_audits_denials_and_sealed_tenants() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = kasumi_store::test_utils::private_tempdir().unwrap();
     let path = dir.path().join("node.redb");
-    let node = NodeStore::create_new(
+    let node = NodeStore::create_new_fixture(
         &path,
         kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
@@ -112,8 +112,9 @@ async fn every_embedded_request_boundary_durably_audits_denials_and_sealed_tenan
     denied!(db.administer(visitor.clone(), Operation::Suspend(true)));
     denied!(db.maintenance_audit(visitor.clone(), "backup", "started", 0));
     denied!(db.complete_restore(visitor.clone()));
-    let destination =
-        Arc::new(FilesystemBackupDestination::new(dir.path().join("backups"), 16 << 20).unwrap());
+    let destination = Arc::new(
+        FilesystemBackupDestination::new_fixture(dir.path().join("backups"), 16 << 20).unwrap(),
+    );
     denied!(db.backup(visitor.clone(), destination.as_ref(), uuid::Uuid::new_v4()));
     let mut cross_tenant = context("owner");
     cross_tenant.tenant = "other-tenant".into();
@@ -163,7 +164,7 @@ async fn every_embedded_request_boundary_durably_audits_denials_and_sealed_tenan
     drop(store);
     drop(audit);
     drop(node);
-    let reopened = NodeStore::open_existing(
+    let reopened = NodeStore::open_existing_fixture(
         &path,
         kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
@@ -185,9 +186,9 @@ fn cancelled_embedded_denial_writer_is_drained_before_shutdown_and_reopen() {
         .build()
         .unwrap();
     runtime.block_on(async {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = kasumi_store::test_utils::private_tempdir().unwrap();
         let path = dir.path().join("node.redb");
-        let node = NodeStore::create_new(
+        let node = NodeStore::create_new_fixture(
             &path,
             kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
@@ -233,7 +234,7 @@ fn cancelled_embedded_denial_writer_is_drained_before_shutdown_and_reopen() {
         drop(audit);
         drop(node);
         assert!(weak.upgrade().is_none());
-        let reopened = NodeStore::open_existing(
+        let reopened = NodeStore::open_existing_fixture(
             &path,
             kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
@@ -252,8 +253,8 @@ fn cancelled_embedded_denial_writer_is_drained_before_shutdown_and_reopen() {
 async fn standalone_restore_denials_are_audited_before_a_database_exists() {
     use kasumi_engine::{ReplicaPlacement, ReplicaRestoreConfig, prepare_replicated_restore};
     use kasumi_raft::{Config, InProcessRouter};
-    let dir = tempfile::tempdir().unwrap();
-    let source_node = NodeStore::create_new(
+    let dir = kasumi_store::test_utils::private_tempdir().unwrap();
+    let source_node = NodeStore::create_new_fixture(
         dir.path().join("source.redb"),
         kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
@@ -266,15 +267,16 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
         Arc::new(LocalKeyProvider::new([52; 32])),
     )
     .await;
-    let destination =
-        Arc::new(FilesystemBackupDestination::new(dir.path().join("backups"), 16 << 20).unwrap());
+    let destination = Arc::new(
+        FilesystemBackupDestination::new_fixture(dir.path().join("backups"), 16 << 20).unwrap(),
+    );
     let checkpoint = source
         .backup_checkpoint(context("owner"), destination.as_ref(), uuid::Uuid::new_v4())
         .await
         .unwrap();
     let backup = checkpoint.backup_id();
     let target_path = dir.path().join("target.redb");
-    let target_node = NodeStore::create_new(
+    let target_node = NodeStore::create_new_fixture(
         &target_path,
         kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),
@@ -420,7 +422,7 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
     drop(target_domains);
     drop(audit);
     drop(target_node);
-    let reopened = NodeStore::open_existing(
+    let reopened = NodeStore::open_existing_fixture(
         &target_path,
         kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),

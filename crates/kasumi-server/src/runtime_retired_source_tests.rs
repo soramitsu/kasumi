@@ -85,7 +85,7 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> Result<Self> {
-        let root = tempfile::tempdir()?;
+        let root = kasumi_store::test_utils::private_tempdir()?;
         let mut config = example_config();
         config.database_id = Uuid::new_v4();
         config.database_path = root.path().join("source-1.redb");
@@ -114,7 +114,7 @@ impl Fixture {
         let transport = Arc::new(kasumi_raft::InProcessRouter::default());
         let mut replicas = Vec::new();
         for id in 1..=3 {
-            let node = NodeStore::create_new(
+            let node = NodeStore::create_new_fixture(
                 root.path().join(format!("source-{id}.redb")),
                 if id == 1 {
                     config.database_id
@@ -177,7 +177,7 @@ impl Fixture {
             scopes: BTreeSet::from([Action::Read, Action::Write, Action::Admin]),
             request_id: "retired-source-startup".into(),
         };
-        let destination = Arc::new(kasumi_store::FilesystemBackupDestination::new(
+        let destination = Arc::new(kasumi_store::FilesystemBackupDestination::new_fixture(
             root.path().join("backup"),
             32 << 20,
         )?);

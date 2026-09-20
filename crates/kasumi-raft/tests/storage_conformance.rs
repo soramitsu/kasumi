@@ -16,10 +16,15 @@ struct Builder;
 impl StoreBuilder<TypeConfig, LogStore, StateMachine, TempDir> for Builder {
     async fn build(&self) -> Result<(TempDir, LogStore, StateMachine), StorageError<u64>> {
         async {
-            let dir = tempfile::tempdir()?;
+            let dir = kasumi_store::test_utils::private_tempdir()?;
             let store = common::store(&dir.path().join("node.redb"), true).await?;
             let log = LogStore::open(store.clone(), 1).await?;
-            let machine = StateMachine::open(store, Arc::new(common::Backend::default())).await?;
+            let machine = StateMachine::open(
+                store,
+                Arc::new(common::Backend::default()),
+                common::snapshot_owner(),
+            )
+            .await?;
             anyhow::Ok((dir, log, machine))
         }
         .await
@@ -42,7 +47,7 @@ fn entry(index: u64, data: &[u8]) -> Entry<TypeConfig> {
 
 #[tokio::test]
 async fn log_vote_and_committed_cursor_survive_full_reopen() -> Result<()> {
-    let dir = tempfile::tempdir()?;
+    let dir = kasumi_store::test_utils::private_tempdir()?;
     let path = dir.path().join("node.redb");
     {
         let store = common::store(&path, true).await?;
@@ -67,13 +72,14 @@ async fn log_vote_and_committed_cursor_survive_full_reopen() -> Result<()> {
 
 #[tokio::test]
 async fn snapshot_survives_reopen_and_failed_apply_makes_replica_unavailable() -> Result<()> {
-    let dir = tempfile::tempdir()?;
+    let dir = kasumi_store::test_utils::private_tempdir()?;
     let path = dir.path().join("node.redb");
     let snapshot_meta;
     {
         let store = common::store(&path, true).await?;
         let backend = Arc::new(common::Backend::default());
-        let mut machine = StateMachine::open(store, backend.clone()).await?;
+        let mut machine =
+            StateMachine::open(store, backend.clone(), common::snapshot_owner()).await?;
         machine.apply([entry(0, b"before")]).await?;
         snapshot_meta = machine
             .get_snapshot_builder()
@@ -90,7 +96,7 @@ async fn snapshot_survives_reopen_and_failed_apply_makes_replica_unavailable() -
     }
     let store = common::store(&path, false).await?;
     let backend = Arc::new(common::Backend::default());
-    let mut machine = StateMachine::open(store, backend.clone()).await?;
+    let mut machine = StateMachine::open(store, backend.clone(), common::snapshot_owner()).await?;
     assert!(!machine.failed());
     assert_eq!(machine.applied_state().await?.0, snapshot_meta.last_log_id);
     assert_eq!(backend.values(), vec![b"before".to_vec()]);
@@ -105,7 +111,11 @@ async fn snapshot_survives_reopen_and_failed_apply_makes_replica_unavailable() -
 async fn snapshot_buffer_caps_total_size_and_sparse_seeks() -> Result<()> {
     use std::io::SeekFrom;
     use tokio::io::{AsyncSeekExt, AsyncWriteExt};
-    let mut buffer = SnapshotBuffer::new(&kasumi_store::ScratchDisk::fixture(), 16)?;
+    let mut buffer = SnapshotBuffer::new(
+        &kasumi_store::ScratchDisk::fixture(),
+        16,
+        &common::snapshot_owner(),
+    )?;
     buffer.write_all(b"12345678").await?;
     assert!(buffer.seek(SeekFrom::Start(15)).await.is_err());
     buffer.write_all(b"1234567").await?;
@@ -115,7 +125,13 @@ async fn snapshot_buffer_caps_total_size_and_sparse_seeks() -> Result<()> {
     assert!(buffer.seek(SeekFrom::Start(17)).await.is_err());
     assert!(buffer.seek(SeekFrom::Current(i64::MIN)).await.is_err());
     assert!(
-        SnapshotBuffer::from_bytes(&kasumi_store::ScratchDisk::fixture(), vec![0; 17], 16).is_err()
+        SnapshotBuffer::from_bytes(
+            &kasumi_store::ScratchDisk::fixture(),
+            vec![0; 17],
+            16,
+            &common::snapshot_owner()
+        )
+        .is_err()
     );
     Ok(())
 }
@@ -130,7 +146,11 @@ async fn committed_log_replay_survives_every_append_and_commit_io_failure() -> R
     async fn open(disk: FaultBackend, create: bool) -> Result<Arc<kasumi_store::TenantStorageSet>> {
         let application = (if create {
             TenantStore::initialize_catalog_fixture_with_clock(
-                NodeStore::open_with_backend(disk, kasumi_store::ScratchDisk::fixture())?,
+                NodeStore::open_with_backend(
+                    disk,
+                    kasumi_store::test_utils::storage_admission(),
+                    kasumi_store::ScratchDisk::fixture(),
+                )?,
                 "log-crash".into(),
                 Arc::new(LocalKeyProvider::new([4; 32])),
                 Arc::new(ManualClock::new()),
@@ -138,7 +158,11 @@ async fn committed_log_replay_survives_every_append_and_commit_io_failure() -> R
             .await
         } else {
             TenantStore::open_existing_fixture_with_clock(
-                NodeStore::open_with_backend(disk, kasumi_store::ScratchDisk::fixture())?,
+                NodeStore::open_with_backend(
+                    disk,
+                    kasumi_store::test_utils::storage_admission(),
+                    kasumi_store::ScratchDisk::fixture(),
+                )?,
                 "log-crash".into(),
                 Arc::new(LocalKeyProvider::new([4; 32])),
                 Arc::new(ManualClock::new()),
@@ -186,7 +210,8 @@ async fn committed_log_replay_survives_every_append_and_commit_io_failure() -> R
         let store = open(disk.crash(), false).await?;
         let backend = Arc::new(common::Backend::default());
         let mut log = LogStore::open(store.clone(), 1).await?;
-        let mut machine = StateMachine::open(store, backend.clone()).await?;
+        let mut machine =
+            StateMachine::open(store, backend.clone(), common::snapshot_owner()).await?;
         StorageHelper::new(&mut log, &mut machine)
             .get_initial_state()
             .await?;

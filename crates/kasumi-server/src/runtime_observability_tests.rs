@@ -52,6 +52,29 @@ fn request(
     let request = client.get(endpoint).bearer_auth(token);
     tokio::spawn(async move { request.send().await.unwrap() })
 }
+async fn ready_response(
+    client: &reqwest::Client,
+    endpoint: &str,
+    token: &str,
+) -> reqwest::Response {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let response = client
+                .get(endpoint)
+                .bearer_auth(token)
+                .send()
+                .await
+                .unwrap();
+            if response.status().as_u16() == 200 {
+                return response;
+            }
+            assert_eq!(response.status().as_u16(), 503);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap()
+}
 async fn withheld(request: tokio::task::JoinHandle<reqwest::Response>, status: u16) {
     let response = request.await.unwrap();
     assert_eq!(response.status().as_u16(), status);
@@ -63,7 +86,7 @@ async fn withheld(request: tokio::task::JoinHandle<reqwest::Response>, status: u
 
 #[tokio::test]
 async fn protected_observability_tls_reports_actual_state_and_fences_release() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let installation = initialize(&directory.path().join("kasumi"), "tenant-a")
         .await
         .unwrap();
@@ -91,6 +114,8 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release() {
     drop(listeners);
     let runtime = NodeRuntime::open(config.clone()).await.unwrap();
     let telemetry = runtime.telemetry.clone();
+    let management = runtime.administration.as_ref().unwrap().clone();
+    let registry = runtime.registry.clone();
     assert_eq!(telemetry.lifecycle(), Lifecycle::Starting);
     let database = runtime.control.database.clone();
     let application = runtime.tenants[0].store.clone();
@@ -149,18 +174,16 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release() {
             .as_u16(),
         401
     );
-    let response = client
-        .get(&ready)
-        .bearer_auth(&*operator)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status().as_u16(), 200);
+    let response = ready_response(&client, &ready, &operator).await;
     assert_eq!(response.headers()["cache-control"], "no-store");
     let value: serde_json::Value = response.json().await.unwrap();
     assert_eq!(value["ready"], true);
-    assert_eq!(value["expected_groups"], 2);
-    assert_eq!(value["unexamined_groups"], 0);
+    assert_eq!(value["readiness_coverage"]["expected_groups"], 2);
+    assert_eq!(value["readiness_coverage"]["examined_groups"], 2);
+    assert_eq!(value["readiness_coverage"]["healthy_groups"], 2);
+    assert_eq!(value["readiness_coverage"]["complete"], true);
+    assert_eq!(value["readiness_coverage"]["fresh"], true);
+    assert_eq!(value["readiness_coverage"]["detail_limit"], 128);
     assert_eq!(value["standalone_recovery_pending"], false);
     assert_eq!(value["backup_requests"]["create"]["inflight"], 0);
     assert!(
@@ -205,6 +228,47 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release() {
             .as_u16(),
         200
     );
+
+    // Invalidate a held response through a real committed membership append.
+    // Control topology and data routing are unchanged, so their epochs alone
+    // would incorrectly release the old observation.
+    let original = management.readiness_epoch().unwrap();
+    let hold = gate(&telemetry).await;
+    let pending = request(&client, &ready, &operator);
+    entered(&hold).await;
+    database
+        .raft_group()
+        .raft()
+        .add_learner(2, kasumi_raft::BasicNode::new("127.0.0.1:9"), false)
+        .await
+        .unwrap();
+    let changed = management.readiness_epoch().unwrap();
+    assert_eq!(changed.topology_version, original.topology_version);
+    assert_eq!(changed.installed_routes, original.installed_routes);
+    assert!(changed.actual_membership > original.actual_membership);
+    hold.release.notify_one();
+    withheld(pending, 503).await;
+    ready_response(&client, &ready, &operator).await;
+
+    // A complete quorum probe cannot certify a different committed voter set.
+    let group = database.raft_group();
+    assert!(
+        !group
+            .readiness_probe(1, Some(BTreeSet::from([2])))
+            .await
+            .unwrap()
+    );
+
+    // Reinstalling the same physical route still invalidates the original
+    // response; a newer successful sweep must not repair an older release token.
+    let hold = gate(&telemetry).await;
+    let pending = request(&client, &ready, &operator);
+    entered(&hold).await;
+    let removed = registry.remove("tenant-a").unwrap().unwrap();
+    registry.insert(removed).unwrap();
+    ready_response(&client, &ready, &operator).await;
+    hold.release.notify_one();
+    withheld(pending, 503).await;
 
     // These counters describe actual adapter responses, not permanent outcomes.
     assert!(
@@ -369,6 +433,49 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release() {
     assert!(data["retention"].is_null());
     assert!(data["capacity"].is_null());
 
+    // Exercise the actual background sweep beyond the diagnostic page. Every
+    // locally assigned missing group must be counted, including the final row.
+    let plane = kasumi_engine::control::ControlPlane::new(database.clone()).unwrap();
+    let context = configured_control_context(&config.control).unwrap();
+    let mut topology = plane.topology(&context).await.unwrap().unwrap();
+    for index in 0..129 {
+        topology.topology.tenants.insert(
+            format!("missing-{index:03}"),
+            kasumi_engine::control::TenantRoute {
+                incarnation: Uuid::new_v4().to_string(),
+                mode: kasumi_engine::control::DeploymentMode::Local,
+                voters: BTreeSet::from([1]),
+            },
+        );
+    }
+    plane
+        .replace_topology(
+            context,
+            topology.topology,
+            Precondition::Version(topology.version),
+            "readiness-whole-coverage".into(),
+        )
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let coverage = management.readiness.snapshot(
+                management.readiness_epoch().unwrap(),
+                tokio::time::Instant::now(),
+            );
+            if coverage.status.complete {
+                assert_eq!(coverage.status.expected_groups, Some(131));
+                assert_eq!(coverage.status.examined_groups, 131);
+                assert_eq!(coverage.details.len(), 128);
+                assert!(!coverage.status.ready());
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+
     let hold = gate(&telemetry).await;
     let pending = request(&client, &metrics, &operator);
     entered(&hold).await;
@@ -388,7 +495,12 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release() {
         .unwrap();
     hold.release.notify_one();
     withheld(pending, 403).await;
+    let last_epoch = management.readiness_epoch().unwrap();
     stop.send(true).unwrap();
     serving.await.unwrap().unwrap();
     assert_eq!(telemetry.lifecycle(), Lifecycle::Closed);
+    let drained = management
+        .readiness
+        .snapshot(last_epoch, tokio::time::Instant::now());
+    assert!(!drained.status.complete && drained.token.is_none());
 }

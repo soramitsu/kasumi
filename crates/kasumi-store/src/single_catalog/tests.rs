@@ -4,8 +4,8 @@ use std::{future::Future, sync::atomic::AtomicUsize, task::Poll};
 
 const TENANT: &str = "__kasumi_security";
 fn node() -> Result<(tempfile::TempDir, Arc<NodeStore>)> {
-    let directory = tempfile::tempdir()?;
-    let node = NodeStore::create_new(
+    let directory = crate::test_utils::private_tempdir()?;
+    let node = NodeStore::create_new_fixture(
         directory.path().join("singleton.redb"),
         crate::test_utils::NODE_STORE_ID,
         ScratchDisk::fixture(),
@@ -483,7 +483,7 @@ async fn cancelling_during_singleton_key_preparation_retains_actual_node_until_p
     .await;
     drop(draining);
     assert!(
-        NodeStore::open_existing(
+        NodeStore::open_existing_fixture(
             directory.path().join("singleton.redb"),
             crate::test_utils::NODE_STORE_ID,
             ScratchDisk::fixture()
@@ -497,7 +497,7 @@ async fn cancelling_during_singleton_key_preparation_retains_actual_node_until_p
     drain(&node).await?;
     assert!(node.catalog(TENANT)?.is_none());
     drop(node);
-    let reopened = NodeStore::open_existing(
+    let reopened = NodeStore::open_existing_fixture(
         directory.path().join("singleton.redb"),
         crate::test_utils::NODE_STORE_ID,
         ScratchDisk::fixture(),

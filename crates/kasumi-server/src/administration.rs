@@ -84,13 +84,20 @@ impl DestinationConfig {
         }
         Ok(())
     }
-    pub(crate) fn open(&self) -> Result<Arc<dyn BackupDestination>> {
+    pub(crate) fn open(
+        &self,
+        persistent_disk: Arc<kasumi_store::NodeDisk>,
+    ) -> Result<Arc<dyn BackupDestination>> {
         self.validate()?;
         Ok(match self {
             Self::Filesystem {
                 directory,
                 max_bytes,
-            } => Arc::new(FilesystemBackupDestination::new(directory, *max_bytes)?),
+            } => Arc::new(FilesystemBackupDestination::new(
+                directory,
+                *max_bytes,
+                persistent_disk,
+            )?),
             Self::S3 {
                 endpoint,
                 region,
@@ -174,6 +181,8 @@ mod configured_tenant_enrollment;
 mod observability;
 #[path = "original_serving_runtime.rs"]
 mod original_serving_runtime;
+#[path = "administration_readiness.rs"]
+mod readiness;
 use configured_tenant_enrollment::ProvisionSelection;
 
 pub struct Administration {
@@ -196,6 +205,7 @@ pub struct Administration {
     shutdown_failure: tokio::sync::Mutex<DrainReport>,
     admission: Arc<kasumi_engine::admission::NodeAdmission>,
     credential: crate::serving_runtime::CredentialSource,
+    pub(crate) readiness: crate::readiness::Coverage,
 }
 /// Administrative selection borrows the already installed serving owner. It
 /// never constructs providers, starts renewal, reopens storage, or owns shutdown.
@@ -457,6 +467,8 @@ impl Administration {
             generations.insert((name, incarnation), tenant);
         }
         let control_context = crate::runtime::configured_control_context(&config.control)?;
+        registry.observe_membership(&control)?;
+        let readiness = crate::readiness::Coverage::new(&admission)?;
         Ok(Arc::new(Self {
             config,
             authority_trusts,
@@ -474,6 +486,7 @@ impl Administration {
             shutdown_failure: tokio::sync::Mutex::new(DrainReport::default()),
             admission,
             credential,
+            readiness,
         }))
     }
     fn current(&self, context: &RequestContext) -> Result<SelectedTenant> {
@@ -1409,18 +1422,18 @@ impl Administration {
                             .ok()
                             .map(|state| state.state.incarnation.clone())
                     });
-                if let Some(incarnation) = incarnation {
-                    if let Err(error) = network.unregister_group(&format!(
+                if let Some(incarnation) = incarnation
+                    && let Err(error) = network.unregister_group(&format!(
                         "{}/{}",
                         tenant.store.tenant(),
                         incarnation
-                    )) {
-                        retained = Some(DrainFailure::retained(report.record(
-                            "generation route",
-                            index,
-                            error,
-                        )));
-                    }
+                    ))
+                {
+                    retained = Some(DrainFailure::retained(report.record(
+                        "generation route",
+                        index,
+                        error,
+                    )));
                 }
             }
             if let Some(lease) = &tenant.lease

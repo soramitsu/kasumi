@@ -17,10 +17,31 @@ pub async fn initialize_from_file(path: &Path) -> Result<()> {
 /// its caller is cancelled. Existing, partial or uncertain files are not reset.
 pub async fn initialize(config: RuntimeConfig) -> Result<()> {
     config.validate()?;
-    tokio::spawn(async move { initialize_owned(config).await }).await?
+    crate::startup_owner::open(
+        crate::startup_owner::Kind::TargetJournal,
+        initialize_owned(config),
+    )
+    .await?;
+    Ok(())
 }
 
-async fn initialize_owned(config: RuntimeConfig) -> Result<()> {
+/// Join cancelled installation attempts and preserve their original failures.
+pub async fn drain_initializations() -> Result<()> {
+    crate::startup_owner::drain(crate::startup_owner::Kind::TargetJournal).await
+}
+
+struct Initialized;
+impl crate::startup_owner::Runtime for Initialized {
+    fn close(
+        &mut self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = kasumi_types::drain::DrainResult> + Send + '_>,
+    > {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+async fn initialize_owned(config: RuntimeConfig) -> Result<Initialized> {
     let installed: &TargetRecoveryConfig = config
         .target_recovery
         .as_ref()
@@ -31,54 +52,44 @@ async fn initialize_owned(config: RuntimeConfig) -> Result<()> {
         installed.control_root.control_incarnation,
         &installed.node.verifier,
     )?;
-    let node = NodeStore::create_new(&installed.journal_path, id, scratch)?;
-    let prepared = TenantStore::initialize_catalog(
-        node.clone(),
-        format!(
-            "kasumi.target.{}.{}",
-            installed.control_root.control_incarnation, installed.node.node_id
-        ),
-        installed.journal_keys.provider(Arc::new(file_secret))?,
-        StorageAccess::target_journal(&installed.control_root, &installed.node)?,
-    )
+    let mut pending = crate::startup_resources::Resources::default();
+    let prepared = crate::startup_preparation::capture("target journal installation", async {
+        let node = NodeStore::create_new(
+            &installed.journal_path,
+            id,
+            crate::persistent_disk::open(&config.persistent_disk)?,
+            scratch,
+        )?;
+        pending.owned_nodes.push(node.clone());
+        let store = TenantStore::initialize_catalog(
+            node.clone(),
+            format!(
+                "kasumi.target.{}.{}",
+                installed.control_root.control_incarnation, installed.node.node_id
+            ),
+            installed.journal_keys.provider(Arc::new(file_secret))?,
+            StorageAccess::target_journal(&installed.control_root, &installed.node)?,
+        )
+        .await?;
+        pending.stores.push(store.clone());
+        node.drain_initializers().await?;
+        let journal = TargetJournal::create_new(
+            store,
+            TargetJournalInstallation {
+                root: installed.control_root.clone(),
+                node: installed.node.clone(),
+            },
+            installed.limits.journal.clone(),
+            admission,
+        )?;
+        pending.journals.push(journal);
+        Ok(())
+    })
     .await;
-    let drained = node.drain_initializers().await;
-    let store = match (prepared, drained) {
-        (Ok(store), Ok(())) => store,
-        (Ok(store), Err(error)) => {
-            return Err(match store.shutdown().await {
-                Ok(()) => error,
-                Err(failure) => error.context(failure),
-            });
-        }
-        (Err(error), Ok(())) => return Err(error),
-        (Err(error), Err(drain)) => {
-            return Err(error.context(format!("singleton drain failed: {drain:#}")));
-        }
-    };
-    let result = TargetJournal::create_new(
-        store.clone(),
-        TargetJournalInstallation {
-            root: installed.control_root.clone(),
-            node: installed.node.clone(),
-        },
-        installed.limits.journal.clone(),
-        admission,
-    );
-    let mut report = kasumi_types::drain::DrainReport::default();
-    if let Ok(journal) = &result {
-        if let Err(failure) = journal.shutdown().await {
-            report.merge(&failure);
-        }
-    }
-    if let Err(failure) = store.shutdown().await {
-        report.merge(&failure);
-    }
-    drop(store);
-    drop(node);
-    match (result, report.complete()) {
-        (Ok(_), closed) => closed.map_err(Into::into),
-        (Err(error), Ok(())) => Err(error),
-        (Err(error), Err(failure)) => Err(error.context(failure)),
+    let drained = crate::startup_owner::finish(&mut pending).await;
+    match (prepared, drained) {
+        (Ok(()), Ok(())) => Ok(Initialized),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Err(error), Err(drain)) => Err(error.context(drain)),
     }
 }

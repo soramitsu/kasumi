@@ -1,5 +1,6 @@
-use super::{DiskWork, Identity, NodeDisk, NodeDiskPhase, census, extent, rounded};
-use anyhow::{Context, Result, ensure};
+use super::{
+    AccountedFile, DiskWork, Identity, NodeDisk, NodeDiskPhase, State, census, extent, rounded,
+};
 use std::{
     ffi::CString,
     fs::File,
@@ -17,7 +18,20 @@ struct Budget {
     bytes: u64,
     pending: u64,
     reserved_len: u64,
+    actual_len: u64,
     settled: bool,
+}
+
+impl Budget {
+    fn accounted(&self) -> AccountedFile {
+        AccountedFile {
+            bytes: self.bytes,
+            pending: self.pending,
+            actual_len: self.actual_len,
+            reserved_len: self.reserved_len,
+            settled: self.settled,
+        }
+    }
 }
 
 pub(super) struct FileOwner {
@@ -62,9 +76,299 @@ impl std::fmt::Debug for NodeDiskFile {
     }
 }
 
+// Preparation owns all heap storage before a file can become visible. The Arc
+// remains uninitialized on error, so provisional cleanup cannot run the live
+// owner's registration destructor while the state mutex is held.
+pub(super) struct PreparedFile<'a> {
+    disk: &'a Arc<NodeDisk>,
+    state: std::sync::MutexGuard<'a, State>,
+    allocation: Arc<std::mem::MaybeUninit<FileOwner>>,
+    root: String,
+    relative: PathBuf,
+    parent_names: Box<[CString]>,
+    parent: File,
+    name: CString,
+    device: u64,
+    create: bool,
+    budget: Mutex<Budget>,
+}
+
+impl PreparedFile<'_> {
+    pub(super) fn execute(mut self) -> io::Result<NodeDiskFile> {
+        let flags = libc::O_RDWR
+            | libc::O_NONBLOCK
+            | if self.create {
+                libc::O_CREAT | libc::O_EXCL
+            } else {
+                0
+            };
+        let file = match census::open_at(&self.parent, &self.name, flags) {
+            Ok(file) => file,
+            Err(error) => {
+                // A create-only conflict did not mutate the existing object.
+                if !self.create || error.kind() != io::ErrorKind::AlreadyExists {
+                    self.disk.fail_locked(&mut self.state);
+                }
+                return Err(error);
+            }
+        };
+        let mut already_owned = false;
+        let inspected = (|| -> io::Result<(Identity, AccountedFile)> {
+            let metadata = file.metadata()?;
+            census::regular_nonallocating(&metadata, self.device)?;
+            let identity = Identity::of(&metadata);
+            if self
+                .state
+                .live
+                .get(&identity)
+                .is_some_and(|owner| owner.strong_count() != 0)
+            {
+                // This is an exclusive open, never an implicit owner clone.
+                already_owned = true;
+                return Err(io::ErrorKind::WouldBlock.into());
+            }
+            census::lock_nonallocating(&file, libc::LOCK_EX)?;
+            let metadata = file.metadata()?;
+            census::regular_nonallocating(&metadata, self.device)?;
+            if Identity::of(&metadata) != identity {
+                return Err(io::ErrorKind::InvalidData.into());
+            }
+            let (bytes, pending) = extent(&metadata, self.disk.unit)?;
+            Ok((
+                identity,
+                AccountedFile::durable(bytes, pending, metadata.len()),
+            ))
+        })();
+        let (identity, enrolled) = match inspected {
+            Ok(value) => value,
+            Err(error) => {
+                // A still-live registered owner makes an attempted second open
+                // harmless; all physical verification failures seal admission.
+                if !already_owned || self.create {
+                    self.disk.fail_locked(&mut self.state);
+                }
+                return Err(error);
+            }
+        };
+        if self.create {
+            if self.state.accounted.contains_key(&identity) || enrolled.bytes != 0 {
+                self.disk.fail_locked(&mut self.state);
+                return Err(io::ErrorKind::InvalidData.into());
+            }
+            let Some(files) = self.state.files.checked_add(1) else {
+                self.disk.fail_locked(&mut self.state);
+                return Err(io::ErrorKind::InvalidData.into());
+            };
+            // Both tables have reserved capacity. Even this provisional inode
+            // survives a failed durability step in the retained census ledger.
+            self.state.accounted.insert(
+                identity,
+                AccountedFile {
+                    settled: false,
+                    ..enrolled
+                },
+            );
+            self.state.files = files;
+            let durable = (|| -> io::Result<()> {
+                #[cfg(test)]
+                self.disk
+                    .namespace_checkpoint(NamespaceFailure::CreateFileSync)?;
+                file.sync_all()?;
+                #[cfg(test)]
+                self.disk
+                    .namespace_checkpoint(NamespaceFailure::CreateParentSync)?;
+                self.parent.sync_all()
+            })();
+            if let Err(error) = durable {
+                self.disk.fail_locked(&mut self.state);
+                return Err(error);
+            }
+            *self
+                .state
+                .accounted
+                .get_mut(&identity)
+                .expect("new enrolled inode") = enrolled;
+        } else if self.state.accounted.get(&identity) != Some(&enrolled) {
+            self.disk.fail_locked(&mut self.state);
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        *self.budget.get_mut().expect("unpublished budget") = Budget {
+            file: Some(file),
+            bytes: enrolled.bytes,
+            pending: enrolled.pending,
+            reserved_len: enrolled.reserved_len,
+            actual_len: enrolled.actual_len,
+            settled: true,
+        };
+        Arc::get_mut(&mut self.allocation)
+            .expect("unpublished owner allocation")
+            .write(FileOwner {
+                disk: self.disk.clone(),
+                root: self.root,
+                relative: self.relative,
+                parent_names: self.parent_names,
+                parent: self.parent,
+                name: self.name,
+                identity,
+                budget: self.budget,
+            });
+        // SAFETY: the sole allocation was initialized exactly once above. No
+        // fallible work remains between initialization and live registration.
+        let owner = unsafe { self.allocation.assume_init() };
+        self.state.open_files += 1;
+        self.state.live.insert(identity, Arc::downgrade(&owner));
+        Ok(NodeDiskFile(owner))
+    }
+}
+
+// Keep the state guard before the registered Arc: abandoning prepared work must
+// unlock the registry before FileOwner::drop can retire the actual descriptor.
+pub(super) struct PreparedPublication<'a> {
+    disk: &'a Arc<NodeDisk>,
+    state: std::sync::MutexGuard<'a, State>,
+    retained: Arc<FileOwner>,
+    parent: File,
+    name: CString,
+    root: String,
+    relative: PathBuf,
+    parent_names: Box<[CString]>,
+}
+
+impl PreparedPublication<'_> {
+    pub(super) fn execute(self) -> io::Result<NodeDiskFile> {
+        let Self {
+            disk,
+            mut state,
+            mut retained,
+            parent,
+            name,
+            root,
+            relative,
+            parent_names,
+        } = self;
+        let mut renamed = false;
+        let result = (|| -> io::Result<()> {
+            let owner = Arc::get_mut(&mut retained).expect("sole prepared publication owner");
+            if state.phase != NodeDiskPhase::Open || !disk.device.lock().admission_ready() {
+                return Err(io::ErrorKind::Other.into());
+            }
+            {
+                let budget = owner
+                    .budget
+                    .lock()
+                    .map_err(|_| io::ErrorKind::InvalidData)?;
+                owner.check_enrollment(&mut state, &budget)?;
+                if !budget.settled {
+                    return Err(io::ErrorKind::InvalidData.into());
+                }
+                let actual = budget.file.as_ref().ok_or(io::ErrorKind::BrokenPipe)?;
+                owner.verify(actual)?;
+                let metadata = actual.metadata()?;
+                let (bytes, pending) = extent(&metadata, disk.unit)?;
+                if AccountedFile::durable(bytes, pending, metadata.len()) != budget.accounted() {
+                    return Err(io::ErrorKind::InvalidData.into());
+                }
+                actual.sync_all()?;
+            }
+            disk.roots[&root].verify_nonallocating()?;
+            #[cfg(target_os = "linux")]
+            let status = unsafe {
+                libc::renameat2(
+                    owner.parent.as_raw_fd(),
+                    owner.name.as_ptr(),
+                    parent.as_raw_fd(),
+                    name.as_ptr(),
+                    libc::RENAME_NOREPLACE,
+                )
+            };
+            #[cfg(target_os = "macos")]
+            let status = unsafe {
+                libc::renameatx_np(
+                    owner.parent.as_raw_fd(),
+                    owner.name.as_ptr(),
+                    parent.as_raw_fd(),
+                    name.as_ptr(),
+                    libc::RENAME_EXCL,
+                )
+            };
+            if status != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            renamed = true;
+            let old_parent = std::mem::replace(&mut owner.parent, parent);
+            owner.root = root;
+            owner.relative = relative;
+            owner.parent_names = parent_names;
+            owner.name = name;
+            // The descriptor now belongs to the new name even if durability or
+            // post-publication verification fails. Every error remains inline.
+            #[cfg(test)]
+            disk.namespace_checkpoint(NamespaceFailure::PublishSourceSync)?;
+            old_parent.sync_all()?;
+            #[cfg(test)]
+            disk.namespace_checkpoint(NamespaceFailure::PublishDestinationSync)?;
+            owner.parent.sync_all()?;
+            #[cfg(test)]
+            disk.namespace_checkpoint(NamespaceFailure::PublishVerify)?;
+            let budget = owner
+                .budget
+                .lock()
+                .expect("exclusive verified publication budget");
+            let actual = budget.file.as_ref().expect("live publication descriptor");
+            owner.verify(actual)?;
+            let metadata = actual.metadata()?;
+            let (bytes, pending) = extent(&metadata, disk.unit)?;
+            if AccountedFile::durable(bytes, pending, metadata.len()) != budget.accounted() {
+                return Err(io::ErrorKind::InvalidData.into());
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            if renamed || error.kind() != io::ErrorKind::AlreadyExists {
+                disk.fail_locked(&mut state);
+            }
+            drop(state);
+            drop(retained);
+            return Err(error);
+        }
+        *state
+            .live
+            .get_mut(&retained.identity)
+            .expect("retained publication slot") = Arc::downgrade(&retained);
+        drop(state);
+        Ok(NodeDiskFile(retained))
+    }
+}
+
+#[cfg(test)]
+#[repr(u8)]
+#[derive(Clone, Copy, Debug)]
+pub(super) enum NamespaceFailure {
+    CreateFileSync = 1,
+    CreateParentSync,
+    PublishSourceSync,
+    PublishDestinationSync,
+    PublishVerify,
+    ReclaimFileSync,
+    ReclaimParentSync,
+}
+
 impl NodeDisk {
-    pub fn open_file(self: &Arc<Self>, root: &str, relative: &Path) -> Result<NodeDiskFile> {
-        self.bind_file(root, relative, None)
+    #[cfg(test)]
+    fn namespace_checkpoint(&self, stage: NamespaceFailure) -> io::Result<()> {
+        use std::sync::atomic::Ordering;
+        if self
+            .namespace_failure
+            .compare_exchange(stage as u8, 0, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            return Err(io::ErrorKind::Other.into());
+        }
+        Ok(())
+    }
+
+    pub fn open_file(self: &Arc<Self>, root: &str, relative: &Path) -> io::Result<NodeDiskFile> {
+        self.prepare_file(root, relative, None)?.execute()
     }
 
     pub fn create_file(
@@ -72,200 +376,204 @@ impl NodeDisk {
         root: &str,
         relative: &Path,
         work: DiskWork,
-    ) -> Result<NodeDiskFile> {
-        self.bind_file(root, relative, Some(work))
+    ) -> io::Result<NodeDiskFile> {
+        self.prepare_file(root, relative, Some(work))?.execute()
     }
 
-    fn bind_file(
-        self: &Arc<Self>,
+    pub(super) fn prepare_file<'a>(
+        self: &'a Arc<Self>,
         root: &str,
         relative: &Path,
         create: Option<DiskWork>,
-    ) -> Result<NodeDiskFile> {
+    ) -> io::Result<PreparedFile<'a>> {
         let mut state = self.lock_state();
-        ensure!(
-            state.phase == NodeDiskPhase::Open,
-            "persistent admission is closed"
-        );
+        if state.phase != NodeDiskPhase::Open {
+            return Err(io::ErrorKind::Other.into());
+        }
         state.live.retain(|_, owner| owner.strong_count() != 0);
-        ensure!(
-            state.open_files < self.config.max_open_files,
-            "persistent open-file metadata budget exhausted"
-        );
+        if state.open_files >= self.config.max_open_files {
+            return Err(io::ErrorKind::StorageFull.into());
+        }
         if let Some(work) = create {
+            if state.accounted.len() as u64 >= self.config.max_census_entries {
+                return Err(io::ErrorKind::StorageFull.into());
+            }
             self.reserve(&mut state, 0, work)?;
+            state
+                .accounted
+                .try_reserve(1)
+                .map_err(|_| io::ErrorKind::OutOfMemory)?;
         }
-        let selected = self
-            .roots
-            .get(root)
-            .context("unknown installed persistent root")?;
-        let parent_names = {
-            use std::os::unix::ffi::OsStrExt;
-            let mut names = Vec::new();
-            for component in relative
-                .parent()
-                .context("persistent file parent absent")?
-                .components()
-            {
-                ensure!(
-                    names.len() + 1 < self.config.max_depth as usize,
-                    "persistent path depth exhausted"
-                );
-                let std::path::Component::Normal(name) = component else {
-                    anyhow::bail!("persistent paths must be relative normal components");
-                };
-                ensure!(
-                    name.len() <= self.config.max_name_bytes as usize,
-                    "persistent name exceeds budget"
-                );
-                names.push(CString::new(name.as_bytes())?);
-            }
-            names.into_boxed_slice()
-        };
-        let result = (|| -> Result<(File, CString, File)> {
-            let (parent, name) = census::parent(selected, relative, &self.config)?;
-            let flags = libc::O_RDWR
-                | libc::O_NONBLOCK
-                | if create.is_some() {
-                    libc::O_CREAT | libc::O_EXCL
-                } else {
-                    0
-                };
-            let file = census::open_at(&parent, &name, flags)?;
-            census::regular(&file.metadata()?, selected.identity.0)?;
-            Ok((parent, name, file))
-        })();
-        let (parent, name, file) = match result {
-            Ok(value) => value,
-            Err(error) => {
-                // A known create conflict does not mutate an existing object.
-                if create.is_none()
-                    || !error
-                        .downcast_ref::<io::Error>()
-                        .is_some_and(|error| error.kind() == io::ErrorKind::AlreadyExists)
-                {
-                    self.fail_locked(&mut state);
-                }
-                return Err(error);
-            }
-        };
-        let metadata = file
-            .metadata()
-            .inspect_err(|_| self.fail_locked(&mut state))?;
-        let identity = Identity::of(&metadata);
-        // Opening is an exclusive acquisition, never an implicit clone. Avoid
-        // upgrading the Weak under this mutex: dropping the last temporary Arc
-        // could otherwise run FileOwner::drop while its registration is locked.
-        ensure!(
-            !state
-                .live
-                .get(&identity)
-                .is_some_and(|owner| owner.strong_count() != 0),
-            "persistent file is already owned"
-        );
-        census::lock(&file, libc::LOCK_EX).inspect_err(|_| self.fail_locked(&mut state))?;
-        let (bytes, pending) =
-            extent(&metadata, self.unit).inspect_err(|_| self.fail_locked(&mut state))?;
-        if create.is_some() {
-            // The empty inode is enrolled before any payload operation. If sync
-            // is uncertain, keep it counted and require a stopped census.
-            state.files = state
-                .files
-                .checked_add(1)
-                .context("persistent file count overflow")?;
-            ensure!(bytes == 0, "new persistent file has an unexpected extent");
-            if let Err(error) = file.sync_all().and_then(|_| parent.sync_all()) {
-                self.fail_locked(&mut state);
-                return Err(error.into());
-            }
-        }
-        let owner = Arc::new(FileOwner {
-            disk: self.clone(),
+        state
+            .live
+            .try_reserve(1)
+            .map_err(|_| io::ErrorKind::OutOfMemory)?;
+        let selected = self.roots.get(root).ok_or(io::ErrorKind::InvalidInput)?;
+        let parent_names = prepare_parent_names(relative, &self.config)?;
+        let (parent, name) = census::parent(selected, relative, &self.config).map_err(|error| {
+            self.fail_locked(&mut state);
+            // Path preparation precedes every physical create/publication.
+            io::Error::other(error)
+        })?;
+        let budget = Mutex::new(Budget {
+            file: None,
+            bytes: 0,
+            pending: 0,
+            reserved_len: 0,
+            actual_len: 0,
+            settled: false,
+        });
+        // Darwin's native mutex may allocate on first lock. Preparation includes
+        // this initialization even when the first real operation is measured.
+        drop(budget.lock().expect("unpublished budget"));
+        Ok(PreparedFile {
+            disk: self,
+            state,
+            allocation: Arc::<FileOwner>::new_uninit(),
             root: root.to_owned(),
             relative: relative.to_owned(),
             parent_names,
             parent,
             name,
-            identity,
-            budget: Mutex::new(Budget {
-                file: Some(file),
-                bytes,
-                pending,
-                reserved_len: metadata.len(),
-                settled: true,
-            }),
-        });
-        state.open_files += 1;
-        state.live.insert(identity, Arc::downgrade(&owner));
-        Ok(NodeDiskFile(owner))
+            device: selected.identity.0,
+            create: create.is_some(),
+            budget,
+        })
     }
 
     /// Consume the sole descriptor owner, then unlink and synchronize its exact
     /// parent. An uncertain result keeps all bytes charged and seals admission.
-    pub fn delete_file(&self, file: NodeDiskFile) -> Result<()> {
+    pub fn delete_file(&self, file: NodeDiskFile) -> io::Result<()> {
         self.reclaim(file, None)
     }
 
     /// Explicit physical shrink after owner drain. Logical deletion/handle Drop
     /// never invokes this operation and never releases its reservation.
-    pub fn shrink_file(&self, file: NodeDiskFile, len: u64) -> Result<()> {
+    pub fn shrink_file(&self, file: NodeDiskFile, len: u64) -> io::Result<()> {
         self.reclaim(file, Some(len))
     }
 
-    fn reclaim(&self, file: NodeDiskFile, len: Option<u64>) -> Result<()> {
-        ensure!(
-            std::ptr::eq(self, Arc::as_ptr(&file.0.disk)),
-            "different persistent owner"
-        );
+    /// Publish the original inode under an immutable, create-only name. All
+    /// allocation precedes rename; errors after publication remain inline.
+    pub fn publish_file(
+        self: &Arc<Self>,
+        file: NodeDiskFile,
+        root: &str,
+        relative: &Path,
+    ) -> io::Result<NodeDiskFile> {
+        self.prepare_publication(file, root, relative)?.execute()
+    }
+
+    pub(super) fn prepare_publication<'a>(
+        self: &'a Arc<Self>,
+        file: NodeDiskFile,
+        root: &str,
+        relative: &Path,
+    ) -> io::Result<PreparedPublication<'a>> {
+        if !Arc::ptr_eq(self, &file.0.disk) {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        let selected = self.roots.get(root).ok_or(io::ErrorKind::InvalidInput)?;
+        let (parent, name) =
+            census::parent(selected, relative, &self.config).map_err(io::Error::other)?;
+        let parent_names = prepare_parent_names(relative, &self.config)?;
+        let root = root.to_owned();
+        let relative = relative.to_owned();
+        let state = self.lock_state();
+        let owner = match Arc::try_unwrap(file.0) {
+            Ok(owner) => owner,
+            Err(owner) => {
+                drop(state);
+                drop(owner);
+                return Err(io::ErrorKind::WouldBlock.into());
+            }
+        };
+        // The old weak slot stays registered under this mutex; moving its value
+        // after rename does not allocate or admit an intervening reopen.
+        let retained = Arc::new(owner);
+        Ok(PreparedPublication {
+            disk: self,
+            state,
+            retained,
+            parent,
+            name,
+            root,
+            relative,
+            parent_names,
+        })
+    }
+
+    fn reclaim(&self, file: NodeDiskFile, len: Option<u64>) -> io::Result<()> {
+        if !std::ptr::eq(self, Arc::as_ptr(&file.0.disk)) {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
         let mut state = self.lock_state();
         let owner = match Arc::try_unwrap(file.0) {
             Ok(owner) => owner,
             Err(owner) => {
-                // A concurrent final clone drop can make this the last Arc. Its
-                // destructor must run after releasing the registration mutex.
                 drop(state);
                 drop(owner);
-                anyhow::bail!("persistent file still has readers or backend owners");
+                return Err(io::ErrorKind::WouldBlock.into());
             }
         };
-        if owner.budget.is_poisoned() {
+        if owner.budget.is_poisoned()
+            || state.phase == NodeDiskPhase::Failed
+            || !self.device.lock().admission_ready()
+        {
             self.fail_locked(&mut state);
             drop(state);
             drop(owner);
-            anyhow::bail!("poisoned persistent file requires a drained census");
+            return Err(io::ErrorKind::Other.into());
         }
         let mut budget = owner
             .budget
             .lock()
             .expect("exclusive unpoisoned file owner");
+        if let Err(error) = owner.check_enrollment(&mut state, &budget) {
+            drop(budget);
+            drop(state);
+            drop(owner);
+            return Err(error);
+        }
+        budget.settled = false;
+        owner.record_enrollment(&mut state, &budget);
         let actual = budget.file.take().expect("live persistent descriptor");
-        let result = (|| -> Result<(u64, u64)> {
+        let result = (|| -> io::Result<(u64, u64)> {
             owner.verify(&actual)?;
             let current = actual.metadata()?.len();
+            if current != budget.actual_len {
+                return Err(io::ErrorKind::InvalidData.into());
+            }
             if let Some(len) = len {
-                ensure!(len <= current, "physical reclaim cannot grow a file");
+                if len > current {
+                    return Err(io::ErrorKind::InvalidInput.into());
+                }
                 actual.set_len(len)?;
+                #[cfg(test)]
+                self.namespace_checkpoint(NamespaceFailure::ReclaimFileSync)?;
                 actual.sync_all()?;
                 owner.verify(&actual)?;
-                ensure!(
-                    actual.metadata()?.len() == len,
-                    "physical shrink length changed"
-                );
+                if actual.metadata()?.len() != len {
+                    return Err(io::ErrorKind::InvalidData.into());
+                }
+                #[cfg(test)]
+                self.namespace_checkpoint(NamespaceFailure::ReclaimParentSync)?;
                 owner.parent.sync_all()?;
-                extent(&actual.metadata()?, self.unit).map_err(Into::into)
+                extent(&actual.metadata()?, self.unit)
             } else {
                 actual.sync_all()?;
-                // SAFETY: exact parent/name were revalidated while holding the
-                // registry mutex, so no managed reopen can race owner removal.
                 if unsafe { libc::unlinkat(owner.parent.as_raw_fd(), owner.name.as_ptr(), 0) } != 0
                 {
-                    return Err(io::Error::last_os_error().into());
+                    return Err(io::Error::last_os_error());
                 }
+                #[cfg(test)]
+                self.namespace_checkpoint(NamespaceFailure::ReclaimParentSync)?;
                 owner.parent.sync_all()?;
                 Ok((0, 0))
             }
         })();
-        // Close the actual descriptor before advertising ownership drain/credit.
+        // Close before advertising ownership drain or credit. Even failed
+        // reclamation retains its ledger entry and original capacity charge.
         drop(actual);
         state.open_files -= 1;
         state.live.remove(&owner.identity);
@@ -279,47 +587,104 @@ impl NodeDisk {
                     .pending
                     .checked_sub(budget.pending)
                     .and_then(|n| n.checked_add(pending));
-                match (next, own_next) {
-                    (Some(next), Some(own_next)) => match promises.set_pending(next) {
-                        Ok(()) => {
-                            state.pending = own_next;
-                            state.bytes -= budget.bytes - bytes;
-                            if len.is_none() {
-                                state.files -= 1;
+                let owned = state
+                    .bytes
+                    .checked_sub(budget.bytes)
+                    .and_then(|n| n.checked_add(bytes));
+                let files = if len.is_none() {
+                    state.files.checked_sub(1)
+                } else {
+                    Some(state.files)
+                };
+                match (next, own_next, owned, files) {
+                    (Some(next), Some(own_next), Some(owned), Some(files)) => {
+                        match promises.set_pending(next) {
+                            Ok(()) => {
+                                state.pending = own_next;
+                                state.bytes = owned;
+                                state.files = files;
+                                if let Some(len) = len {
+                                    *state
+                                        .accounted
+                                        .get_mut(&owner.identity)
+                                        .expect("validated reclaimed inode") =
+                                        AccountedFile::durable(bytes, pending, len);
+                                } else {
+                                    state.accounted.remove(&owner.identity);
+                                }
+                                Ok(())
                             }
-                            Ok(())
+                            Err(error) => {
+                                state.phase = NodeDiskPhase::Failed;
+                                Err(error)
+                            }
                         }
-                        Err(error) => {
-                            state.phase = NodeDiskPhase::Failed;
-                            Err(error.into())
-                        }
-                    },
+                    }
                     _ => {
                         state.phase = NodeDiskPhase::Failed;
                         promises.fail_owner();
-                        Err(anyhow::anyhow!("persistent reclaim accounting overflow"))
+                        Err(io::ErrorKind::InvalidData.into())
                     }
                 }
             }
             Ok(_) => {
                 self.fail_locked(&mut state);
-                Err(anyhow::anyhow!(
-                    "physical reclaim increased allocated extent"
-                ))
+                Err(io::ErrorKind::InvalidData.into())
             }
             Err(error) => {
                 self.fail_locked(&mut state);
                 Err(error)
             }
         };
-        // FileOwner::drop sees no file and performs no second accounting action.
         drop(budget);
         drop(owner);
         outcome
     }
 }
 
+fn prepare_parent_names(
+    relative: &Path,
+    config: &super::NodeDiskConfig,
+) -> io::Result<Box<[CString]>> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut names = Vec::new();
+    for component in relative
+        .parent()
+        .ok_or(io::ErrorKind::InvalidInput)?
+        .components()
+    {
+        if names.len() + 1 >= config.max_depth as usize {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        let std::path::Component::Normal(name) = component else {
+            return Err(io::ErrorKind::InvalidInput.into());
+        };
+        if name.len() > config.max_name_bytes as usize {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        names.push(CString::new(name.as_bytes()).map_err(|_| io::ErrorKind::InvalidInput)?);
+    }
+    Ok(names.into_boxed_slice())
+}
+
 impl FileOwner {
+    fn check_enrollment(&self, state: &mut State, budget: &Budget) -> io::Result<()> {
+        if state.accounted.get(&self.identity) != Some(&budget.accounted()) {
+            self.disk.fail_locked(state);
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        Ok(())
+    }
+
+    fn record_enrollment(&self, state: &mut State, budget: &Budget) {
+        // Every caller validated this existing slot while holding the state
+        // mutex, before any physical mutation. Updating it cannot allocate.
+        *state
+            .accounted
+            .get_mut(&self.identity)
+            .expect("validated enrolled inode") = budget.accounted();
+    }
+
     #[cfg(test)]
     fn shrink_checkpoint(&self, stage: ShrinkFailure) -> io::Result<()> {
         let mut fault = self.disk.shrink_failure.lock().unwrap();
@@ -382,6 +747,11 @@ impl FileOwner {
             .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
         let pending = bytes - allocated;
         let mut state = self.disk.lock_state();
+        self.check_enrollment(&mut state, budget)?;
+        if state.phase == NodeDiskPhase::Failed || !self.disk.device.lock().admission_ready() {
+            return Err(io::ErrorKind::Other.into());
+        }
+        let changed_length = metadata.len() != budget.actual_len;
         let mut promises = self.disk.device.lock();
         let Some(next) = promises
             .checked_sub(budget.pending)
@@ -414,8 +784,10 @@ impl FileOwner {
         budget.pending = pending;
         // Sync cannot convert an unused reservation into a physically present
         // extent. Closing it still requires a stopped, exclusive reconciliation.
-        budget.settled = metadata.len() == budget.reserved_len;
-        if extra != 0 || metadata.len() > budget.reserved_len {
+        budget.settled = metadata.len() == budget.reserved_len && !changed_length;
+        budget.actual_len = metadata.len();
+        self.record_enrollment(&mut state, budget);
+        if extra != 0 || metadata.len() > budget.reserved_len || changed_length {
             state.phase = NodeDiskPhase::Failed;
             promises.fail_owner();
             return Err(io::Error::from(io::ErrorKind::InvalidData));
@@ -431,7 +803,17 @@ impl NodeDiskFile {
         let budget = self.0.lock_budget()?;
         let file = budget.file.as_ref().ok_or(io::ErrorKind::BrokenPipe)?;
         self.0.check(file)?;
-        let state = self.0.disk.lock_state();
+        let mut state = self.0.disk.lock_state();
+        self.0.check_enrollment(&mut state, &budget)?;
+        if file
+            .metadata()
+            .inspect_err(|_| self.0.disk.fail_locked(&mut state))?
+            .len()
+            != budget.actual_len
+        {
+            self.0.disk.fail_locked(&mut state);
+            return Err(io::ErrorKind::InvalidData.into());
+        }
         if state.phase == NodeDiskPhase::Failed || !self.0.disk.device.lock().admission_ready() {
             return Err(io::ErrorKind::Other.into());
         }
@@ -455,6 +837,7 @@ impl NodeDiskFile {
         if state.phase == NodeDiskPhase::Failed || !self.0.disk.device.lock().admission_ready() {
             return Err(io::ErrorKind::Other.into());
         }
+        self.0.check_enrollment(&mut state, &budget)?;
         // Serialize the owner seal through physical verification and sync. A
         // previously failed owner must not initiate another backend operation.
         let outcome = (|| -> io::Result<(u64, u64)> {
@@ -464,6 +847,7 @@ impl NodeDiskFile {
             let metadata = file.metadata()?;
             let (bytes, pending) = extent(&metadata, self.0.disk.unit)?;
             if metadata.len() != actual_len
+                || actual_len != budget.actual_len
                 || actual_len > budget.reserved_len
                 || bytes > budget.bytes
             {
@@ -502,7 +886,9 @@ impl NodeDiskFile {
         budget.bytes = bytes;
         budget.pending = pending;
         budget.reserved_len = actual_len;
+        budget.actual_len = actual_len;
         budget.settled = true;
+        self.0.record_enrollment(&mut state, &budget);
         Ok(())
     }
 
@@ -545,6 +931,7 @@ impl NodeDiskFile {
                 return Err(io::Error::from(io::ErrorKind::InvalidData));
             }
         };
+        owner.check_enrollment(&mut state, &budget)?;
         if !budget.settled {
             return Err(io::Error::from(io::ErrorKind::InvalidData));
         }
@@ -553,12 +940,14 @@ impl NodeDiskFile {
             Ok(current) => current,
             Err(error) => {
                 budget.settled = false;
+                owner.record_enrollment(&mut state, &budget);
                 owner.disk.fail_locked(&mut state);
                 return Err(error);
             }
         };
-        if current != budget.reserved_len {
+        if current != budget.reserved_len || current != budget.actual_len {
             budget.settled = false;
+            owner.record_enrollment(&mut state, &budget);
             owner.disk.fail_locked(&mut state);
             return Err(io::Error::from(io::ErrorKind::InvalidData));
         }
@@ -568,6 +957,7 @@ impl NodeDiskFile {
         // From the first physical operation onward every error is uncertain.
         // Keep the previous budget until both syncs and exact observations pass.
         budget.settled = false;
+        owner.record_enrollment(&mut state, &budget);
         let outcome = (|| -> io::Result<(u64, u64)> {
             let file = budget.file.as_ref().expect("live persistent descriptor");
             #[cfg(test)]
@@ -635,7 +1025,9 @@ impl NodeDiskFile {
         budget.bytes = bytes;
         budget.pending = pending;
         budget.reserved_len = len;
+        budget.actual_len = len;
         budget.settled = true;
+        owner.record_enrollment(&mut state, &budget);
         Ok(())
     }
 
@@ -658,18 +1050,23 @@ impl NodeDiskFile {
         let file = budget.file.as_ref().expect("live persistent descriptor");
         self.0.check(file)?;
         let actual = file.metadata().inspect_err(|_| self.0.disk.fail())?;
-        if actual.len() != current_len || requested_len < current_len {
+        if actual.len() != current_len
+            || current_len != budget.actual_len
+            || requested_len < current_len
+        {
             self.0.disk.fail();
             return Err(io::Error::from(io::ErrorKind::InvalidData));
         }
         let bytes = rounded(requested_len, self.0.disk.unit)?;
         let delta = bytes.saturating_sub(budget.bytes);
         let mut state = self.0.disk.lock_state();
+        self.0.check_enrollment(&mut state, &budget)?;
         self.0.disk.reserve(&mut state, delta, work)?;
         budget.bytes += delta;
         budget.pending += delta;
         budget.reserved_len = budget.reserved_len.max(requested_len);
         budget.settled = false;
+        self.0.record_enrollment(&mut state, &budget);
         Ok(())
     }
 
@@ -687,12 +1084,22 @@ impl NodeDiskFile {
         {
             return Err(io::Error::from(io::ErrorKind::InvalidData));
         }
-        // Keep the admission seal serialized through the backend call.
-        if let Err(error) = file.set_len(len) {
+        self.0.check_enrollment(&mut state, &budget)?;
+        if current != budget.actual_len {
+            self.0.disk.fail_locked(&mut state);
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        // Keep the admission seal serialized through the backend call and
+        // retain uncertainty even if set_len changes the file before failing.
+        budget.settled = false;
+        self.0.record_enrollment(&mut state, &budget);
+        if let Err(error) = budget.file.as_ref().expect("live descriptor").set_len(len) {
             self.0.disk.fail_locked(&mut state);
             return Err(error);
         }
+        budget.actual_len = len;
         budget.settled = false;
+        self.0.record_enrollment(&mut state, &budget);
         Ok(())
     }
 
@@ -710,7 +1117,18 @@ impl NodeDiskFile {
         {
             return Err(io::Error::from(io::ErrorKind::InvalidData));
         }
+        self.0.check_enrollment(&mut state, &budget)?;
+        if file
+            .metadata()
+            .inspect_err(|_| self.0.disk.fail_locked(&mut state))?
+            .len()
+            != budget.actual_len
+        {
+            self.0.disk.fail_locked(&mut state);
+            return Err(io::ErrorKind::InvalidData.into());
+        }
         budget.settled = false;
+        self.0.record_enrollment(&mut state, &budget);
         if let Err(error) = budget
             .file
             .as_ref()
@@ -720,15 +1138,30 @@ impl NodeDiskFile {
             self.0.disk.fail_locked(&mut state);
             return Err(error);
         }
+        if !data.is_empty() {
+            budget.actual_len = budget.actual_len.max(end);
+        }
+        self.0.record_enrollment(&mut state, &budget);
         Ok(())
     }
 
     pub fn read_exact_at(&self, out: &mut [u8], offset: u64) -> io::Result<()> {
         let budget = self.0.lock_budget()?;
         let file = budget.file.as_ref().expect("live persistent descriptor");
-        self.0.check(file)?;
-        file.read_exact_at(out, offset)
-            .inspect_err(|_| self.0.disk.fail())
+        let mut state = self.0.disk.lock_state();
+        if state.phase == NodeDiskPhase::Failed || !self.0.disk.device.lock().admission_ready() {
+            return Err(io::ErrorKind::Other.into());
+        }
+        self.0.check_enrollment(&mut state, &budget)?;
+        let outcome = (|| -> io::Result<()> {
+            self.0.verify(file)?;
+            if file.metadata()?.len() != budget.actual_len {
+                return Err(io::ErrorKind::InvalidData.into());
+            }
+            file.read_exact_at(out, offset)?;
+            self.0.verify(file)
+        })();
+        outcome.inspect_err(|_| self.0.disk.fail_locked(&mut state))
     }
 
     /// Verified materialization retires only pending filesystem promises; the
@@ -736,8 +1169,21 @@ impl NodeDiskFile {
     pub fn sync_all(&self) -> io::Result<()> {
         let mut budget = self.0.lock_budget()?;
         let file = budget.file.as_ref().expect("live persistent descriptor");
-        self.0.check(file)?;
-        file.sync_all().inspect_err(|_| self.0.disk.fail())?;
+        let mut state = self.0.disk.lock_state();
+        if state.phase == NodeDiskPhase::Failed || !self.0.disk.device.lock().admission_ready() {
+            return Err(io::ErrorKind::Other.into());
+        }
+        self.0.check_enrollment(&mut state, &budget)?;
+        let outcome = (|| -> io::Result<()> {
+            self.0.verify(file)?;
+            if file.metadata()?.len() != budget.actual_len {
+                return Err(io::ErrorKind::InvalidData.into());
+            }
+            file.sync_all()?;
+            self.0.verify(file)
+        })();
+        outcome.inspect_err(|_| self.0.disk.fail_locked(&mut state))?;
+        drop(state);
         self.0.observe(&mut budget)
     }
 
@@ -751,10 +1197,15 @@ impl NodeDiskFile {
         if state.phase == NodeDiskPhase::Failed || !self.0.disk.device.lock().admission_ready() {
             return Err(io::Error::from(io::ErrorKind::InvalidData));
         }
+        self.0.check_enrollment(&mut state, &budget)?;
         budget.settled = false;
+        self.0.record_enrollment(&mut state, &budget);
         let file = budget.file.as_ref().expect("live persistent descriptor");
         let outcome = (|| -> io::Result<()> {
             self.0.verify(file)?;
+            if file.metadata()?.len() != budget.actual_len {
+                return Err(io::ErrorKind::InvalidData.into());
+            }
             file.sync_all()?;
             #[cfg(test)]
             if self
@@ -814,6 +1265,9 @@ impl Drop for FileOwner {
                 state.live.remove(&self.identity);
             }
             if !budget.settled {
+                if let Some(enrolled) = state.accounted.get_mut(&self.identity) {
+                    enrolled.settled = false;
+                }
                 self.disk.fail_locked(&mut state);
             }
         }

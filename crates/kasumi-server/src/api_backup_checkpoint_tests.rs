@@ -4,7 +4,7 @@ async fn native_backup_proof_is_admin_only_configured_and_verified_through_secur
     use kasumi_transport::{ClientAuthentication, TlsIdentity};
     let fixture = Fixture::new().await;
     let destination = Arc::new(
-        kasumi_store::FilesystemBackupDestination::new(
+        kasumi_store::FilesystemBackupDestination::new_fixture(
             fixture._dir.path().join("backup"),
             16 << 20,
         )
@@ -431,7 +431,7 @@ async fn native_backup_proof_is_admin_only_configured_and_verified_through_secur
         node_id,
         group.clone(),
         peer_router.clone(),
-        kasumi_raft::CustodyRaftConfig::default(),
+        kasumi_raft::RaftGroupConfig::default(),
         kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
         fixture.audit.clone(),
     )

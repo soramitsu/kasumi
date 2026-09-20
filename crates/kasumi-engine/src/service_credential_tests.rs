@@ -6,8 +6,8 @@ struct CredentialFixture {
 }
 impl CredentialFixture {
     async fn new() -> Self {
-        let directory = tempfile::tempdir().unwrap();
-        let node = NodeStore::create_new(
+        let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+        let node = NodeStore::create_new_fixture(
             directory.path().join("node.redb"),
             kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
@@ -471,7 +471,7 @@ async fn long_backup_verification_and_encoded_read_recheck_original_credential()
         .await
         .unwrap();
     let destination = Arc::new(
-        kasumi_store::FilesystemBackupDestination::new(
+        kasumi_store::FilesystemBackupDestination::new_fixture(
             fixture._directory.path().join("backups"),
             32 << 20,
         )

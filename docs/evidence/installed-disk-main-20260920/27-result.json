@@ -1,0 +1,25 @@
+{
+  "scope": "development integrated raft-custody-isolated diagnostic, not final release qualification",
+  "command": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+    "test",
+    "--offline",
+    "-p",
+    "kasumi-raft",
+    "--all-features",
+    "--lib",
+    "custody_capacity_tests::permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopens",
+    "--",
+    "--exact",
+    "--test-threads=1"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "head": "c283fa4a2c2344fd359d1d58ea49a1664de72088",
+  "process_group": 26429,
+  "exit_code": 101,
+  "timeout": false,
+  "signals": [],
+  "drained": true,
+  "elapsed_seconds": 3.940467357635498,
+  "inventoried_source_unchanged": true
+}

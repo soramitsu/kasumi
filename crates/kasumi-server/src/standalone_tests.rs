@@ -17,7 +17,7 @@ fn context(tenant: &str) -> RequestContext {
 
 #[tokio::test]
 async fn initialized_standalone_serves_native_mcp_and_durable_credential_lifecycle() {
-    let root = tempfile::tempdir().unwrap();
+    let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let installation = initialize(&root.path().join("kasumi"), "tenant-a")
         .await
         .unwrap();
@@ -347,7 +347,7 @@ async fn initialized_standalone_serves_native_mcp_and_durable_credential_lifecyc
 
 #[tokio::test]
 async fn offline_maintenance_and_administrator_recovery_require_exclusive_ownership() {
-    let root = tempfile::tempdir().unwrap();
+    let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let installation = initialize(&root.path().join("kasumi"), "tenant")
         .await
         .unwrap();

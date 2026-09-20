@@ -1,6 +1,7 @@
 //! Seekable scratch storage. Only independently authenticated ciphertext reaches
 //! the temporary file; the random key dies with the final spool owner.
-use crate::{ScratchDisk, SecretKey, decrypt, encrypt};
+use crate::{ScratchDisk, SecretKey};
+use chacha20poly1305::{KeyInit, Tag, XChaCha20Poly1305, XNonce, aead::AeadInPlace};
 use sha2::{Digest, Sha256};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::sync::{Arc, Mutex};
@@ -20,6 +21,7 @@ pub struct EncryptedSpool {
     limit: u64,
     cached_index: Option<u64>,
     cached: Zeroizing<Vec<u8>>,
+    ciphertext: Zeroizing<Vec<u8>>,
     dirty: bool,
     append_digest: Option<Sha256>,
 }
@@ -54,6 +56,7 @@ impl EncryptedSpool {
             limit,
             cached_index: None,
             cached: Zeroizing::new(vec![0; BLOCK]),
+            ciphertext: Zeroizing::new(vec![0; SLOT as usize]),
             dirty: false,
             append_digest: Some(Sha256::new()),
         })
@@ -71,10 +74,62 @@ impl EncryptedSpool {
         self.limit
     }
 
-    pub(crate) fn resize(&mut self, length: u64) -> io::Result<()> {
-        if length > self.limit {
-            return Err(io::Error::other("spool resize exceeds budget"));
+    pub(crate) fn check_owner(&self) -> io::Result<()> {
+        self.charge.check_owner(&self.file)
+    }
+
+    pub(crate) fn owner_failed(&self) {
+        self.charge.fail_owner();
+    }
+
+    pub(crate) fn reserve_growth(&mut self, current: u64, requested: u64) -> io::Result<()> {
+        self.check_owner()?;
+        if current != self.length || requested < current {
+            self.owner_failed();
+            return Err(io::Error::from(io::ErrorKind::InvalidData));
         }
+        self.reserve_length(requested)
+    }
+
+    fn reserve_length(&mut self, requested: u64) -> io::Result<()> {
+        self.check_owner()?;
+        if requested > self.limit {
+            return Err(io::Error::from(io::ErrorKind::StorageFull));
+        }
+        self.charge
+            .grow(Self::offset(requested.div_ceil(BLOCK as u64))?)
+    }
+
+    pub(crate) fn settle_growth(&mut self, actual: u64) -> io::Result<()> {
+        self.check_owner()?;
+        if actual != self.length {
+            self.owner_failed();
+            return Err(io::Error::from(io::ErrorKind::InvalidData));
+        }
+        self.flush_block()?;
+        self.charge
+            .shrink(&self.file, Self::offset(actual.div_ceil(BLOCK as u64))?)
+    }
+
+    pub(crate) fn sync_all(&mut self) -> io::Result<()> {
+        self.check_owner()?;
+        self.flush_block()?;
+        self.file.sync_all().inspect_err(|_| self.owner_failed())
+    }
+
+    pub(crate) fn close(mut self) -> io::Result<()> {
+        // The anonymous inode is physically released by the actual final file
+        // close even when sync failed; field order releases its charge afterward.
+        let result = self.sync_all();
+        drop(self);
+        result
+    }
+
+    pub(crate) fn resize(&mut self, length: u64) -> io::Result<()> {
+        self.check_owner()?;
+        // No cache flush, digest change, logical resize, or physical write occurs
+        // until the complete ciphertext resize has been admitted atomically.
+        self.reserve_length(length)?;
         self.append_digest = None;
         let saved = self.position;
         if length > self.length {
@@ -88,14 +143,17 @@ impl EncryptedSpool {
             self.flush_block()?;
             self.cached_index = None;
             let physical = Self::offset(length.div_ceil(BLOCK as u64))?;
-            self.file.set_len(physical)?;
+            self.file
+                .set_len(physical)
+                .inspect_err(|_| self.owner_failed())?;
             self.length = length;
-            self.charge.shrink(&self.file, physical)?;
             if !length.is_multiple_of(BLOCK as u64) {
                 self.block(length / BLOCK as u64)?;
                 self.cached[(length % BLOCK as u64) as usize..].fill(0);
                 self.dirty = true;
+                self.flush_block()?;
             }
+            self.charge.shrink(&self.file, physical)?;
         }
         self.position = saved.min(length);
         Ok(())
@@ -109,37 +167,91 @@ impl EncryptedSpool {
     fn offset(index: u64) -> io::Result<u64> {
         index
             .checked_mul(SLOT)
-            .ok_or_else(|| io::Error::other("spool offset overflow"))
+            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))
     }
     fn flush_block(&mut self) -> io::Result<()> {
+        self.check_owner()?;
         if self.dirty {
             let index = self.cached_index.expect("dirty spool has a cached block");
-            let ciphertext =
-                encrypt(&self.key, &self.cached, &self.aad(index)).map_err(io::Error::other)?;
-            self.file.seek(SeekFrom::Start(Self::offset(index)?))?;
-            self.file.write_all(&ciphertext)?;
+            let mut nonce = [0; 24];
+            getrandom::fill(&mut nonce).map_err(|_| {
+                self.owner_failed();
+                io::Error::from(io::ErrorKind::Other)
+            })?;
+            let aad = self.aad(index);
+            self.ciphertext[..24].copy_from_slice(&nonce);
+            self.ciphertext[24..24 + BLOCK].copy_from_slice(&self.cached);
+            let cipher = XChaCha20Poly1305::new(self.key.as_bytes().into());
+            let tag = cipher
+                .encrypt_in_place_detached(
+                    XNonce::from_slice(&nonce),
+                    &aad,
+                    &mut self.ciphertext[24..24 + BLOCK],
+                )
+                .map_err(|_| {
+                    self.owner_failed();
+                    io::Error::from(io::ErrorKind::InvalidData)
+                })?;
+            self.ciphertext[24 + BLOCK..].copy_from_slice(&tag);
+            let offset = Self::offset(index)?;
+            let end = offset
+                .checked_add(SLOT)
+                .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+            let physical = self.file.metadata().inspect_err(|_| self.owner_failed())?;
+            if physical.len() < end {
+                // Writing across EOF can trigger speculative filesystem allocation
+                // beyond the admitted ciphertext extent. Extend only this slot,
+                // validate its allocation, then write entirely within the new EOF.
+                // Reservation alone must not change EOF: unused growth can settle
+                // back to the prior authenticated extent without a physical resize.
+                self.file
+                    .set_len(end)
+                    .inspect_err(|_| self.owner_failed())?;
+                self.charge.observe(&self.file)?;
+            }
+            self.file
+                .seek(SeekFrom::Start(offset))
+                .inspect_err(|_| self.owner_failed())?;
+            self.file
+                .write_all(&self.ciphertext)
+                .inspect_err(|_| self.owner_failed())?;
             self.charge.observe(&self.file)?;
             self.dirty = false;
         }
         Ok(())
     }
     fn block(&mut self, index: u64) -> io::Result<()> {
+        self.check_owner()?;
         if self.cached_index == Some(index) {
             return Ok(());
         }
         self.flush_block()?;
+        self.cached_index = None;
         self.cached.fill(0);
         if index < self.length.div_ceil(BLOCK as u64) {
-            let mut ciphertext = vec![0; SLOT as usize];
-            self.file.seek(SeekFrom::Start(Self::offset(index)?))?;
-            self.file.read_exact(&mut ciphertext)?;
-            let plaintext = Zeroizing::new(
-                decrypt(&self.key, &ciphertext, &self.aad(index)).map_err(io::Error::other)?,
-            );
-            if plaintext.len() != BLOCK {
-                return Err(io::Error::other("invalid spool block"));
-            }
-            self.cached.copy_from_slice(&plaintext);
+            self.file
+                .seek(SeekFrom::Start(Self::offset(index)?))
+                .inspect_err(|_| self.owner_failed())?;
+            self.file
+                .read_exact(&mut self.ciphertext)
+                .inspect_err(|_| self.owner_failed())?;
+            let nonce: [u8; 24] = self.ciphertext[..24].try_into().expect("fixed nonce");
+            let tag: [u8; 16] = self.ciphertext[24 + BLOCK..].try_into().expect("fixed tag");
+            let aad = self.aad(index);
+            let cipher = XChaCha20Poly1305::new(self.key.as_bytes().into());
+            cipher
+                .decrypt_in_place_detached(
+                    XNonce::from_slice(&nonce),
+                    &aad,
+                    &mut self.ciphertext[24..24 + BLOCK],
+                    Tag::from_slice(&tag),
+                )
+                .map_err(|_| {
+                    self.owner_failed();
+                    io::Error::from(io::ErrorKind::InvalidData)
+                })?;
+            self.cached
+                .copy_from_slice(&self.ciphertext[24..24 + BLOCK]);
         }
         self.cached_index = Some(index);
         Ok(())
@@ -148,6 +260,7 @@ impl EncryptedSpool {
 
 impl Read for EncryptedSpool {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        self.check_owner()?;
         if self.position >= self.length || bytes.is_empty() {
             return Ok(0);
         }
@@ -165,6 +278,7 @@ impl Read for EncryptedSpool {
 }
 impl Write for EncryptedSpool {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.check_owner()?;
         if bytes.is_empty() {
             return Ok(0);
         }
@@ -173,17 +287,16 @@ impl Write for EncryptedSpool {
             .checked_add(bytes.len() as u64)
             .is_none_or(|end| end > self.limit)
         {
-            return Err(io::Error::other("spool byte budget exceeded"));
+            return Err(io::Error::from(io::ErrorKind::StorageFull));
         }
         // Seeking is bounded to the existing stream: sparse holes cannot turn
         // one peer's tiny write into unbounded allocation or disk work.
         let index = self.position / BLOCK as u64;
-        self.block(index)?;
         let offset = (self.position % BLOCK as u64) as usize;
         let count = bytes.len().min(BLOCK - offset);
         let end = self.length.max(self.position + count as u64);
-        self.charge
-            .grow(Self::offset(end.div_ceil(BLOCK as u64))?)?;
+        self.reserve_length(end)?;
+        self.block(index)?;
         self.cached[offset..offset + count].copy_from_slice(&bytes[..count]);
         if self.position == self.length {
             if let Some(digest) = &mut self.append_digest {
@@ -203,13 +316,14 @@ impl Write for EncryptedSpool {
 }
 impl Seek for EncryptedSpool {
     fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+        self.check_owner()?;
         let position = match position {
             SeekFrom::Start(value) => i128::from(value),
             SeekFrom::Current(value) => i128::from(self.position) + i128::from(value),
             SeekFrom::End(value) => i128::from(self.length) + i128::from(value),
         };
         if position < 0 || position > i128::from(self.length) {
-            return Err(io::Error::other("spool seek outside existing stream"));
+            return Err(io::Error::from(io::ErrorKind::InvalidInput));
         }
         self.position = position as u64;
         Ok(self.position)
@@ -337,9 +451,103 @@ impl Seek for SnapshotReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unused_reservation_and_denied_growth_preserve_authenticated_physical_extent() {
+        use std::os::unix::fs::FileExt;
+
+        let disk = ScratchDisk::isolated_fixture(256 << 10);
+        let mut spool = EncryptedSpool::new(&disk, 4 << 20).unwrap();
+        spool.write_all(b"original").unwrap();
+        spool.sync_all().unwrap();
+        let before_len = spool.file.metadata().unwrap().len();
+        let before_charge = disk.snapshot().charged_bytes;
+        let mut before = vec![0; before_len as usize];
+        spool.file.read_exact_at(&mut before, 0).unwrap();
+
+        spool
+            .reserve_growth(spool.len(), (2 * BLOCK) as u64)
+            .unwrap();
+        assert_eq!(spool.file.metadata().unwrap().len(), before_len);
+        assert_eq!(spool.len(), 8);
+        assert!(disk.snapshot().charged_bytes > before_charge);
+        spool.settle_growth(spool.len()).unwrap();
+        assert_eq!(disk.snapshot().charged_bytes, before_charge);
+        assert_eq!(spool.file.metadata().unwrap().len(), before_len);
+
+        assert_eq!(
+            spool.resize((4 * BLOCK) as u64).unwrap_err().kind(),
+            io::ErrorKind::StorageFull
+        );
+        assert_eq!(spool.file.metadata().unwrap().len(), before_len);
+        assert_eq!(spool.len(), 8);
+        assert_eq!(disk.snapshot().charged_bytes, before_charge);
+        let mut after = vec![0; before_len as usize];
+        spool.file.read_exact_at(&mut after, 0).unwrap();
+        assert_eq!(after, before);
+        spool.rewind().unwrap();
+        let mut plaintext = [0; 8];
+        spool.read_exact(&mut plaintext).unwrap();
+        assert_eq!(&plaintext, b"original");
+        spool.close().unwrap();
+        assert_eq!(disk.snapshot().charged_bytes, 0);
+        assert!(disk.snapshot().filesystem_admission_ready);
+    }
+
+    #[test]
+    fn interleaved_record_appends_preserve_admission_and_authentication() {
+        fn body(sequence: usize, bytes: &mut [u8; 1280]) -> &[u8] {
+            let length = 256 + sequence * 37 % 1024;
+            for (offset, byte) in bytes[..length].iter_mut().enumerate() {
+                *byte = ((sequence + offset * 13) % 251) as u8;
+            }
+            &bytes[..length]
+        }
+        fn append(spool: &mut EncryptedSpool, sequence: usize, bytes: &mut [u8; 1280]) {
+            let value = body(sequence, bytes);
+            spool
+                .write_all(&(value.len() as u64).to_be_bytes())
+                .unwrap();
+            spool.write_all(value).unwrap();
+        }
+        fn verify(spool: &mut EncryptedSpool, records: usize) {
+            spool.flush().unwrap();
+            spool.rewind().unwrap();
+            let mut expected = [0; 1280];
+            let mut actual = [0; 1280];
+            for sequence in 0..records {
+                let mut prefix = [0; 8];
+                spool.read_exact(&mut prefix).unwrap();
+                let value = body(sequence, &mut expected);
+                assert_eq!(u64::from_be_bytes(prefix), value.len() as u64);
+                spool.read_exact(&mut actual[..value.len()]).unwrap();
+                assert_eq!(&actual[..value.len()], value);
+            }
+            assert_eq!(spool.read(&mut actual).unwrap(), 0);
+        }
+
+        let disk = ScratchDisk::isolated_fixture(64 << 20);
+        let mut commands = EncryptedSpool::new(&disk, 16 << 20).unwrap();
+        let mut audit = EncryptedSpool::new(&disk, 16 << 20).unwrap();
+        let mut bytes = [0; 1280];
+        for sequence in 0..4200 {
+            append(&mut commands, sequence, &mut bytes);
+            append(&mut audit, sequence * 2, &mut bytes);
+            append(&mut audit, sequence * 2 + 1, &mut bytes);
+        }
+        assert!(commands.len() > 2 << 20);
+        assert!(audit.len() > 2 << 20);
+        verify(&mut commands, 4200);
+        verify(&mut audit, 8400);
+        commands.close().unwrap();
+        audit.close().unwrap();
+    }
+
     #[test]
     fn encrypted_spool_seek_overwrite_and_bounds() {
-        let mut spool = EncryptedSpool::new(&ScratchDisk::fixture(), (BLOCK * 3) as u64).unwrap();
+        let mut spool =
+            EncryptedSpool::new(&ScratchDisk::isolated_fixture(1 << 20), (BLOCK * 3) as u64)
+                .unwrap();
         let data: Vec<_> = (0..BLOCK * 2 + 31).map(|i| (i % 251) as u8).collect();
         spool.write_all(&data).unwrap();
         spool.seek(SeekFrom::Start(BLOCK as u64 - 5)).unwrap();
@@ -360,7 +568,9 @@ mod tests {
     }
     #[test]
     fn corrupted_or_reordered_blocks_fail_authentication() {
-        let mut spool = EncryptedSpool::new(&ScratchDisk::fixture(), (BLOCK * 3) as u64).unwrap();
+        let mut spool =
+            EncryptedSpool::new(&ScratchDisk::isolated_fixture(1 << 20), (BLOCK * 3) as u64)
+                .unwrap();
         spool.write_all(&vec![7; BLOCK * 2]).unwrap();
         spool.flush().unwrap();
         spool.file.rewind().unwrap();

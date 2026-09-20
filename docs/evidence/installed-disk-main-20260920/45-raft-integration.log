@@ -1,0 +1,44 @@
+   Compiling kasumi-raft v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-raft)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 15.35s
+     Running tests/cluster.rs (target/debug/deps/cluster-dd2981958edc8bd9)
+
+running 7 tests
+test acknowledged_one_voter_write_survives_sigkill_without_graceful_shutdown ... ok
+test fatal_snapshot_capture_blocks_even_local_generation_access ... ok
+test one_voter_acknowledgment_recovers_without_a_snapshot ... ok
+test oversized_replication_backlog_shrinks_and_catches_up_without_changing_membership ... ok
+test partition_rejects_minority_reads_and_writes_and_recovers_after_full_restart ... ok
+test raft_crash_worker ... ok
+test snapshot_catches_up_partitioned_follower_and_replaces_a_voter ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 36.45s
+
+     Running tests/read_barrier.rs (target/debug/deps/read_barrier-e0add124461c3b52)
+
+running 5 tests
+test custody_key_seal_interrupts_pending_probe_and_denies_new_writes ... ok
+test fresh_quorum_round_recovers_after_a_600ms_stall_within_original_deadline ... ok
+test higher_term_stops_retry_and_never_releases_a_stale_read ... ok
+test key_seal_interrupts_pending_quorum_probe_without_waiting_for_deadline ... ok
+test permanent_partition_exhausts_five_seconds_without_reducing_membership ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 16.69s
+
+     Running tests/shutdown.rs (target/debug/deps/shutdown-e247e032549f48e6)
+
+running 1 test
+test shutdown_drains_snapshot_worker_before_releasing_group_or_file_ownership ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.18s
+
+     Running tests/storage_conformance.rs (target/debug/deps/storage_conformance-46b92ceed2b6a8b8)
+
+running 5 tests
+test committed_log_replay_survives_every_append_and_commit_io_failure ... ok
+test log_vote_and_committed_cursor_survive_full_reopen ... ok
+test openraft_storage_conformance_suite ... ok
+test snapshot_buffer_caps_total_size_and_sparse_seeks ... ok
+test snapshot_survives_reopen_and_failed_apply_makes_replica_unavailable ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 38.67s
+

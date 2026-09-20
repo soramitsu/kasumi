@@ -1,8 +1,8 @@
 //! An archive is a bounded authenticated sequence, not a tenant snapshot. A
 //! destination confirms durable, identical ciphertext before a caller may prune.
 use crate::{
-    AccessGuard, BackupDestination, PROVIDER_TIMEOUT, S3BackupDestination, StoragePurpose,
-    TenantStore, WrappedKey, decrypt, encrypt,
+    AccessGuard, BackupDestination, DiskWork, NodeDisk, PROVIDER_TIMEOUT, S3BackupDestination,
+    StoragePurpose, TenantStore, WrappedKey, decrypt, encrypt,
 };
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
@@ -13,7 +13,6 @@ use kasumi_types::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    io::{Read, Write},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -614,6 +613,7 @@ impl TenantStore {
         }
         let cache = Arc::new(FilesystemAuditArchive::open(
             self.durable_directory()?.join("tenant-audit-archives"),
+            self.persistent_disk().clone(),
         )?);
         self.install_tenant_audit_archive(cache.clone(), cache)
     }
@@ -621,12 +621,14 @@ impl TenantStore {
 
 pub struct FilesystemAuditArchive {
     root: PathBuf,
+    disk: Arc<NodeDisk>,
     observer: Option<Arc<dyn AuditArchivePublicationObserver>>,
     publication: Arc<std::sync::Mutex<()>>,
 }
 impl FilesystemAuditArchive {
-    pub fn open(root: impl AsRef<Path>) -> Result<Self> {
+    pub fn open(root: impl AsRef<Path>, disk: Arc<NodeDisk>) -> Result<Self> {
         let root = root.as_ref();
+        disk.binding(&root.join("archive-accounting-anchor"))?;
         match std::fs::symlink_metadata(root) {
             Ok(_) => crate::private_files::check_directory(root)?,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -642,6 +644,7 @@ impl FilesystemAuditArchive {
         crate::private_files::sync_parent(root)?;
         Ok(Self {
             root: std::fs::canonicalize(root)?,
+            disk,
             observer: None,
             publication: Arc::new(std::sync::Mutex::new(())),
         })
@@ -650,7 +653,7 @@ impl FilesystemAuditArchive {
     /// For an already-owned blocking snapshot/apply worker. One bounded object
     /// is read and checked without network I/O or a nested async runtime.
     pub fn read_blocking(&self, link: &AuditArchiveLink) -> Result<Vec<u8>> {
-        read_file(&self.root, link, false)
+        read_file(&self.root, &self.disk, link, false)
     }
 
     /// Successful return includes file and directory synchronization and an
@@ -666,46 +669,68 @@ impl FilesystemAuditArchive {
         if let Some(observer) = &self.observer {
             return self.publish_observed(segment, observer.as_ref());
         }
+        let _publication = self
+            .publication
+            .lock()
+            .map_err(|_| anyhow::anyhow!("archive publication ownership unavailable"))?;
         let path = self
             .root
             .join(format!("{}.audit", segment.reference.object.object_id));
-        let mut temporary = tempfile::NamedTempFile::new_in(&self.root)?;
-        temporary.write_all(&segment.ciphertext)?;
-        temporary.as_file().sync_all()?;
-        if let Err(error) = temporary.persist_noclobber(path) {
-            ensure!(
-                error.error.kind() == std::io::ErrorKind::AlreadyExists,
-                "audit archive publication failed"
-            );
+        if path.try_exists()? {
+            read_file(&self.root, &self.disk, &segment.reference.object, true)?;
+            return Ok(());
         }
-        read_file(&self.root, &segment.reference.object, true)?;
+        let staged = self.root.join(format!(
+            "{}.audit.pending",
+            segment.reference.object.object_id
+        ));
+        let (root, relative) = self.disk.binding(&staged)?;
+        let mut file = if staged.try_exists()? {
+            self.disk.open_file(root, relative)?
+        } else {
+            self.disk
+                .create_file(root, relative, DiskWork::Maintenance)?
+        };
+        let old_length = file.observed_len()?;
+        let new_length = segment.ciphertext.len() as u64;
+        if old_length > new_length {
+            file.shrink(new_length)?;
+        } else {
+            file.reserve_growth(old_length, new_length, DiskWork::Maintenance)?;
+            file.grow_reserved(new_length)?;
+        }
+        file.write_all_at(&segment.ciphertext, 0)?;
+        file.sync_all_and_parent()?;
+        let (root, relative) = self.disk.binding(&path)?;
+        let published = self.disk.publish_file(file, root, relative)?;
+        drop(published);
+        read_file(&self.root, &self.disk, &segment.reference.object, true)?;
         Ok(())
     }
 }
 
-fn read_file(root: &Path, link: &AuditArchiveLink, durable: bool) -> Result<Vec<u8>> {
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(durable)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(root.join(format!("{}.audit", link.object_id)))?;
+fn read_file(
+    root: &Path,
+    disk: &Arc<NodeDisk>,
+    link: &AuditArchiveLink,
+    durable: bool,
+) -> Result<Vec<u8>> {
+    let path = root.join(format!("{}.audit", link.object_id));
+    let (root, relative) = disk.binding(&path)?;
+    let file = disk.open_file(root, relative)?;
+    let length = file.observed_len()?;
     ensure!(
-        file.metadata()?.is_file() && file.metadata()?.len() <= MAX_AUDIT_SEGMENT_BYTES as u64,
+        length <= MAX_AUDIT_SEGMENT_BYTES as u64,
         "invalid audit archive object"
     );
-    let mut bytes = Vec::new();
-    Read::by_ref(&mut file)
-        .take(MAX_AUDIT_SEGMENT_BYTES as u64 + 1)
-        .read_to_end(&mut bytes)?;
+    let mut bytes = vec![0; usize::try_from(length)?];
+    file.read_exact_at(&mut bytes, 0)?;
     ensure!(
-        bytes.len() <= MAX_AUDIT_SEGMENT_BYTES
-            && hex::encode(Sha256::digest(&bytes)) == link.ciphertext_sha256,
+        hex::encode(Sha256::digest(&bytes)) == link.ciphertext_sha256,
         "audit archive readback mismatch"
     );
     if durable {
-        file.sync_all()?;
-        std::fs::File::open(root)?.sync_all()?;
+        file.sync_all_and_parent()?;
     }
     Ok(bytes)
 }
@@ -725,6 +750,7 @@ impl AuditArchiveDestination for FilesystemAuditArchive {
         );
         let archive = Self {
             root: self.root.clone(),
+            disk: self.disk.clone(),
             observer: self.observer.clone(),
             publication: self.publication.clone(),
         };
@@ -736,8 +762,9 @@ impl AuditArchiveDestination for FilesystemAuditArchive {
     }
     async fn read(&self, link: &AuditArchiveLink) -> Result<Vec<u8>> {
         let root = self.root.clone();
+        let disk = self.disk.clone();
         let link = link.clone();
-        tokio::task::spawn_blocking(move || read_file(&root, &link, false)).await?
+        tokio::task::spawn_blocking(move || read_file(&root, &disk, &link, false)).await?
     }
 }
 
@@ -802,13 +829,13 @@ mod tests {
     async fn store(directory: &Path, create: bool) -> Arc<TenantStore> {
         let path = directory.join("audit.redb");
         let node = if create {
-            NodeStore::create_new(
+            NodeStore::create_new_fixture(
                 &path,
                 crate::test_utils::NODE_STORE_ID,
                 crate::ScratchDisk::fixture(),
             )
         } else {
-            NodeStore::open_existing(
+            NodeStore::open_existing_fixture(
                 &path,
                 crate::test_utils::NODE_STORE_ID,
                 crate::ScratchDisk::fixture(),
@@ -835,14 +862,18 @@ mod tests {
 
     #[tokio::test]
     async fn persisted_external_placement_never_falls_back_to_default_after_restart() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_utils::private_tempdir().unwrap();
+        // Install the common physical owner before enrolling either archive
+        // beneath it; independent nested owners must remain forbidden.
+        let original = store(directory.path(), true).await;
         let cache = Arc::new(
-            FilesystemAuditArchive::open(directory.path().join("tenant-audit-archives")).unwrap(),
+            FilesystemAuditArchive::open_fixture(directory.path().join("tenant-audit-archives"))
+                .unwrap(),
         );
         let external = Arc::new(
-            FilesystemAuditArchive::open(directory.path().join("installed-external")).unwrap(),
+            FilesystemAuditArchive::open_fixture(directory.path().join("installed-external"))
+                .unwrap(),
         );
-        let original = store(directory.path(), true).await;
         original
             .install_tenant_audit_archive(cache.clone(), external.clone())
             .unwrap();
@@ -852,6 +883,7 @@ mod tests {
                 .is_err()
         );
         original.shutdown().await.unwrap();
+        original.node.shutdown().await.unwrap();
         drop(original);
 
         let reopened = store(directory.path(), false).await;
@@ -871,11 +903,12 @@ mod tests {
             external.identity()
         );
         reopened.shutdown().await.unwrap();
+        reopened.node.shutdown().await.unwrap();
     }
 
     #[tokio::test]
     async fn verified_archive_is_private_immutable_contiguous_and_reopenable() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_utils::private_tempdir().unwrap();
         let store = store(directory.path(), true).await;
         let stream = Uuid::new_v4();
         let mut first = AuditSegmentBuilder::new(stream, 0, None).unwrap();
@@ -890,11 +923,11 @@ mod tests {
                 .any(|b| b == b"secret audit record")
         );
         let path = directory.path().join("archives");
-        let destination = FilesystemAuditArchive::open(&path).unwrap();
+        let destination = FilesystemAuditArchive::open_fixture(&path).unwrap();
         destination.publish(&first).await.unwrap();
         destination.publish(&first).await.unwrap();
         drop(destination);
-        let destination = FilesystemAuditArchive::open(&path).unwrap();
+        let destination = FilesystemAuditArchive::open_fixture(&path).unwrap();
         let bytes = destination.read(&first.reference.object).await.unwrap();
         let verified = store
             .decrypt_audit_segment(&bytes, &first.reference)
@@ -936,7 +969,7 @@ mod tests {
 
     #[tokio::test]
     async fn segment_capacity_is_bounded_and_positions_use_checked_u64() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_utils::private_tempdir().unwrap();
         let store = store(directory.path(), true).await;
         let first = u64::from(u32::MAX) + 100;
         let previous = AuditArchiveLink {
@@ -987,7 +1020,7 @@ mod tests {
 
     #[tokio::test]
     async fn authentication_and_final_record_counts_precede_any_release() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_utils::private_tempdir().unwrap();
         let store = store(directory.path(), true).await;
         let mut builder = AuditSegmentBuilder::new(Uuid::new_v4(), 0, None).unwrap();
         builder.push(0, b"one").unwrap();
@@ -1022,13 +1055,13 @@ mod tests {
 
     #[tokio::test]
     async fn object_symlink_cannot_read_or_overwrite_unrelated_files() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_utils::private_tempdir().unwrap();
         let store = store(directory.path(), true).await;
         let mut builder = AuditSegmentBuilder::new(Uuid::new_v4(), 0, None).unwrap();
         builder.push(0, b"one").unwrap();
         let segment = store.encrypt_audit_segment(builder).unwrap();
         let path = directory.path().join("archives");
-        let destination = FilesystemAuditArchive::open(&path).unwrap();
+        let destination = FilesystemAuditArchive::open_fixture(&path).unwrap();
         let unrelated = directory.path().join("unrelated");
         std::fs::write(&unrelated, &segment.ciphertext).unwrap();
         std::os::unix::fs::symlink(
@@ -1044,13 +1077,13 @@ mod tests {
 
     #[tokio::test]
     async fn historical_source_is_exact_and_does_not_reopen_a_live_generation() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_utils::private_tempdir().unwrap();
         let keys = Arc::new(LocalKeyProvider::new([31; 32]));
         let installation = Uuid::new_v4();
         let source =
             crate::StorageAccess::standalone(installation, "tenant", Uuid::new_v4()).unwrap();
         let store = TenantStore::initialize_catalog_fixture_with_access(
-            NodeStore::create_new(
+            NodeStore::create_new_fixture(
                 directory.path().join("source.redb"),
                 crate::test_utils::NODE_STORE_ID,
                 crate::ScratchDisk::fixture(),
@@ -1131,12 +1164,12 @@ mod tests {
     #[tokio::test]
     async fn reverse_archive_dependencies_are_bounded_and_require_exact_link_and_source_verification()
      {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_utils::private_tempdir().unwrap();
         let keys = Arc::new(LocalKeyProvider::new([33; 32]));
         let access =
             crate::StorageAccess::standalone(Uuid::new_v4(), "tenant", Uuid::new_v4()).unwrap();
         let store = TenantStore::initialize_catalog_fixture_with_access(
-            NodeStore::create_new(
+            NodeStore::create_new_fixture(
                 directory.path().join("source.redb"),
                 crate::test_utils::NODE_STORE_ID,
                 crate::ScratchDisk::fixture(),
@@ -1156,7 +1189,8 @@ mod tests {
             AuditSegmentBuilder::new(stream, 1, Some(first.reference.object.clone())).unwrap();
         second.push(1, b"second").unwrap();
         let second = store.encrypt_audit_segment(second).unwrap();
-        let destination = FilesystemAuditArchive::open(directory.path().join("archives")).unwrap();
+        let destination =
+            FilesystemAuditArchive::open_fixture(directory.path().join("archives")).unwrap();
         destination.publish(&first).await.unwrap();
         destination.publish(&second).await.unwrap();
         let verifier =
@@ -1216,12 +1250,12 @@ mod tests {
                 anyhow::bail!("unused")
             }
         }
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_utils::private_tempdir().unwrap();
         let keys = Arc::new(LocalKeyProvider::new([32; 32]));
         let access =
             crate::StorageAccess::standalone(Uuid::new_v4(), "tenant", Uuid::new_v4()).unwrap();
         let store = TenantStore::initialize_catalog_fixture_with_access(
-            NodeStore::create_new(
+            NodeStore::create_new_fixture(
                 directory.path().join("source.redb"),
                 crate::test_utils::NODE_STORE_ID,
                 crate::ScratchDisk::fixture(),
@@ -1280,14 +1314,14 @@ mod tests {
     #[test]
     fn existing_nonprivate_archive_directory_is_rejected_without_chmod() {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_utils::private_tempdir().unwrap();
         let root = directory.path().join("public");
         std::fs::create_dir(&root).unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(FilesystemAuditArchive::open(&root).is_err());
+        assert!(FilesystemAuditArchive::open_fixture(&root).is_err());
         assert_eq!(std::fs::metadata(&root).unwrap().mode() & 0o777, 0o755);
         let alias = directory.path().join("alias");
         std::os::unix::fs::symlink(directory.path(), &alias).unwrap();
-        assert!(FilesystemAuditArchive::open(&alias).is_err());
+        assert!(FilesystemAuditArchive::open_fixture(&alias).is_err());
     }
 }

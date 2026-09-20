@@ -1,0 +1,359 @@
+    Checking kasumi-engine v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-engine)
+warning: method `matches_response_id` is never used
+   --> vendor/rmcp-3.2.0/src/model.rs:251:19
+    |
+236 | impl NumberOrString {
+    | ------------------- method in this implementation
+...
+251 |     pub(crate) fn matches_response_id(&self, response_id: &Self) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `set_client_request_metadata` is never used
+    --> vendor/rmcp-3.2.0/src/service.rs:1032:19
+     |
+ 806 | impl<R: ServiceRole> Peer<R> {
+     | ---------------------------- method in this implementation
+...
+1032 |     pub(crate) fn set_client_request_metadata(&self, metadata: ClientRequestMetadata) {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `is_authorization_required` is never used
+   --> vendor/rmcp-3.2.0/src/transport.rs:275:19
+    |
+249 | impl DynamicTransportError {
+    | -------------------------- method in this implementation
+...
+275 |     pub(crate) fn is_authorization_required(&self) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `rmcp` (lib) generated 3 warnings
+    Checking kasumi-authority v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-authority)
+    Checking kasumi-store v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-store)
+    Checking kasumi-client v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-client)
+    Checking kasumi-query v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-query)
+    Checking kasumi-raft v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-raft)
+    Checking kasumi-server v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-server)
+error: this `if` has identical blocks
+   --> crates/kasumi-engine/tests/common/recovery_control.rs:149:53
+    |
+149 |       let mut f = if activation_outcome == Some(true) {
+    |  _____________________________________________________^
+150 | |         Fixture::new().await
+151 | |     } else {
+    | |_____^
+    |
+note: same as this
+   --> crates/kasumi-engine/tests/common/recovery_control.rs:151:12
+    |
+151 |       } else {
+    |  ____________^
+152 | |         Fixture::new().await
+153 | |     };
+    | |_____^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#if_same_then_else
+    = note: `-D clippy::if-same-then-else` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::if_same_then_else)]`
+
+error: could not compile `kasumi-engine` (test "lifecycle") due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: this `if` statement can be collapsed
+    --> crates/kasumi-server/src/administration.rs:1425:17
+     |
+1425 | /                 if let Some(incarnation) = incarnation {
+1426 | |                     if let Err(error) = network.unregister_group(&format!(
+1427 | |                         "{}/{}",
+1428 | |                         tenant.store.tenant(),
+...    |
+1437 | |                 }
+     | |_________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if
+     = note: `-D clippy::collapsible-if` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::collapsible_if)]`
+help: collapse nested if block
+     |
+1425 ~                 if let Some(incarnation) = incarnation
+1426 ~                     && let Err(error) = network.unregister_group(&format!(
+1427 |                         "{}/{}",
+ ...
+1435 |                         )));
+1436 ~                     }
+     |
+
+error: this block may be rewritten with the `?` operator
+   --> crates/kasumi-server/src/authority_runtime.rs:327:13
+    |
+327 | /             if let Err(error) = crate::node_enrollment::require_complete(
+328 | |                 &audit_store,
+329 | |                 config.database_id,
+330 | |                 crate::node_enrollment::Kind::Authority,
+331 | |             ) {
+332 | |                 return Err(error);
+333 | |             }
+    | |_____________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#question_mark
+    = note: `-D clippy::question-mark` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::question_mark)]`
+help: replace it with
+    |
+327 ~             crate::node_enrollment::require_complete(
+328 +                 &audit_store,
+329 +                 config.database_id,
+330 +                 crate::node_enrollment::Kind::Authority,
+331 +             )?;
+    |
+
+error: this block may be rewritten with the `?` operator
+   --> crates/kasumi-server/src/authority_runtime.rs:369:13
+    |
+369 | /             if let Err(error) = network.register_group_with_bootstrap(
+370 | |                 group.clone(),
+371 | |                 authority.raft_group().raft().clone(),
+372 | |                 config
+...   |
+381 | |                 return Err(error);
+382 | |             }
+    | |_____________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#question_mark
+help: replace it with
+    |
+369 ~             network.register_group_with_bootstrap(
+370 +                 group.clone(),
+371 +                 authority.raft_group().raft().clone(),
+372 +                 config
+373 +                     .replication
+374 +                     .peers
+375 +                     .iter()
+376 +                     .map(|peer| peer.node_id)
+377 +                     .collect(),
+378 +                 authority.bootstrap_digest().into(),
+379 +                 Arc::new(move || access.check_access()),
+380 +             )?;
+    |
+
+error: this `if` statement can be collapsed
+    --> crates/kasumi-server/src/runtime.rs:1214:9
+     |
+1214 | /         if crate::node_enrollment::required(&config) {
+1215 | |             if let Err(error) = crate::node_enrollment::require_complete(
+1216 | |                 &security_store,
+1217 | |                 config.database_id,
+...    |
+1222 | |         }
+     | |_________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if
+help: collapse nested if block
+     |
+1214 ~         if crate::node_enrollment::required(&config)
+1215 ~             && let Err(error) = crate::node_enrollment::require_complete(
+1216 |                 &security_store,
+ ...
+1220 |                 return Err(error);
+1221 ~             }
+     |
+
+error: this block may be rewritten with the `?` operator
+    --> crates/kasumi-server/src/runtime.rs:1215:13
+     |
+1215 | /             if let Err(error) = crate::node_enrollment::require_complete(
+1216 | |                 &security_store,
+1217 | |                 config.database_id,
+1218 | |                 crate::node_enrollment::Kind::Data,
+1219 | |             ) {
+1220 | |                 return Err(error);
+1221 | |             }
+     | |_____________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#question_mark
+help: replace it with
+     |
+1215 ~             crate::node_enrollment::require_complete(
+1216 +                 &security_store,
+1217 +                 config.database_id,
+1218 +                 crate::node_enrollment::Kind::Data,
+1219 +             )?;
+     |
+
+error: this block may be rewritten with the `?` operator
+    --> crates/kasumi-server/src/runtime.rs:1593:17
+     |
+1593 | /                 if let Err(error) = network.register_group_with_bootstrap(
+1594 | |                     group,
+1595 | |                     opened.database.raft_group().raft().clone(),
+1596 | |                     replication.peers.iter().map(|peer| peer.node_id).collect(),
+...    |
+1600 | |                     return Err(error);
+1601 | |                 }
+     | |_________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#question_mark
+help: replace it with
+     |
+1593 ~                 network.register_group_with_bootstrap(
+1594 +                     group,
+1595 +                     opened.database.raft_group().raft().clone(),
+1596 +                     replication.peers.iter().map(|peer| peer.node_id).collect(),
+1597 +                     fingerprint,
+1598 +                     Arc::new(move || bootstrap_store.check_access()),
+1599 +                 )?;
+     |
+
+error: returning the result of a `let` binding from a block
+    --> crates/kasumi-server/src/runtime.rs:1816:9
+     |
+1807 | /         let result = if shutdown.requested() {
+1808 | |             Ok(())
+1809 | |         } else {
+1810 | |             tokio::select! {
+...    |
+1815 | |         };
+     | |__________- unnecessary `let` binding
+1816 |           result
+     |           ^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#let_and_return
+     = note: `-D clippy::let-and-return` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::let_and_return)]`
+help: return the expression directly
+     |
+1807 ~         
+1808 ~         if shutdown.requested() {
+1809 +             Ok(())
+1810 +         } else {
+1811 +             tokio::select! {
+1812 +                 _=shutdown.changed()=>Ok(()),
+1813 +                 result=tasks.listeners.join_next()=> match result { Some(Ok(Err(error)))=>Err(error),Some(Err(error))=>Err(error.into()),_=>Err(anyhow::anyhow!("required listener stopped unexpectedly")) },
+1814 +                 result=tasks.maintenance.join_next(), if !tasks.maintenance.is_empty()=> match result { Some(Ok(Err(error)))=>Err(error),Some(Err(error))=>Err(error.into()),_=>Err(anyhow::anyhow!("required reconciliation stopped unexpectedly")) },
+1815 +             }
+1816 +         }
+     |
+
+error: this `if` statement can be collapsed
+   --> crates/kasumi-server/src/standalone_tenant_staging.rs:405:17
+    |
+405 | /                 if let Some(observed) = load(owner, record.request.operation_id)? {
+406 | |                     if matches!(observed.outcome, Outcome::Dispatched) {
+407 | |                         record.outcome = Outcome::Failed;
+408 | |                         save(owner, &record)?;
+409 | |                     }
+410 | |                 }
+    | |_________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+405 ~                 if let Some(observed) = load(owner, record.request.operation_id)?
+406 ~                     && matches!(observed.outcome, Outcome::Dispatched) {
+407 |                         record.outcome = Outcome::Failed;
+408 |                         save(owner, &record)?;
+409 ~                     }
+    |
+
+error: this function has too many arguments (8/7)
+   --> crates/kasumi-server/src/tls.rs:203:1
+    |
+203 | / async fn serve_tls_source(
+204 | |     mut listener: impl ConnectionSource,
+205 | |     config: impl Into<kasumi_transport::ReloadableServerConfig>,
+206 | |     router: Router,
+...   |
+215 | |     inventory: Arc<ListenerInventory>,
+216 | | ) -> Result<()> {
+    | |_______________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_arguments
+    = note: `-D clippy::too-many-arguments` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::too_many_arguments)]`
+
+error: this `if` statement can be collapsed
+  --> crates/kasumi-server/src/tls_tasks.rs:31:9
+   |
+31 | /         if let Err(error) = result {
+32 | |             if !(abort_requested && error.is_cancelled()) {
+...  |
+39 | |         }
+   | |_________^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if
+help: collapse nested if block
+   |
+31 ~         if let Err(error) = result
+32 ~             && !(abort_requested && error.is_cancelled()) {
+33 |                 // First failure seals admission. At most the installed concurrent
+...
+37 |                 self.sealed = true;
+38 ~             }
+   |
+
+error: this `if` statement can be collapsed
+   --> crates/kasumi-server/src/target_runtime.rs:102:9
+    |
+102 | /         if let Some((key, custody)) = &self.custody {
+103 | |             if let Err(error) = registry.detach_target_custody(&key.0, &key.1.to_string(), custody)
+104 | |             {
+105 | |                 custody_route_closed = false;
+...   |
+112 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+102 ~         if let Some((key, custody)) = &self.custody
+103 ~             && let Err(error) = registry.detach_target_custody(&key.0, &key.1.to_string(), custody)
+104 |             {
+...
+110 |                 )));
+111 ~             }
+    |
+
+error: this `if` statement can be collapsed
+   --> crates/kasumi-server/src/target_runtime.rs:252:9
+    |
+252 | /         if retained.is_none()
+253 | |             && let Some(node) = &self.node
+254 | |         {
+255 | |             if let Err(failure) = node.shutdown().await {
+...   |
+261 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+253 ~             && let Some(node) = &self.node
+254 ~             && let Err(failure) = node.shutdown().await {
+255 |                 self.report.merge(&failure);
+...
+258 |                 }
+259 ~             }
+    |
+
+error: this `if` statement can be collapsed
+   --> crates/kasumi-server/src/target_runtime.rs:263:9
+    |
+263 | /         if retained.is_none() {
+264 | |             if let Some(node) = self.node.take() {
+265 | |                 match Arc::try_unwrap(node) {
+266 | |                     Ok(node) => drop(node),
+...   |
+277 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+263 ~         if retained.is_none()
+264 ~             && let Some(node) = self.node.take() {
+265 |                 match Arc::try_unwrap(node) {
+...
+275 |                 }
+276 ~             }
+    |
+
+error: could not compile `kasumi-server` (lib) due to 13 previous errors

@@ -140,6 +140,7 @@ pub(super) async fn exercise(f: Fixture<'_>) {
     kasumi_store::FileKeyProvider::initialize(&wrapping, "remote-control-trust").unwrap();
     let initialization = InitializeSignerVerifier {
         admission: Default::default(),
+        persistent_disk: crate::persistent_disk::fixture_config(&directory.join("data")),
         scratch_disk: kasumi_store::ScratchDiskConfig {
             directory: directory.join("scratch"),
             max_bytes: 64 << 30,
@@ -148,7 +149,7 @@ pub(super) async fn exercise(f: Fixture<'_>) {
         verifier: SignerVerifierConfig {
             max_background_workers: 64,
             identity: physical.clone(),
-            database_path: directory.join("verifier.redb"),
+            database_path: directory.join("data/verifier.redb"),
             keys: KeyProviderSettings::File { path: wrapping },
         },
         initial_certificates: vec![f.initial_certificate.clone()],
@@ -161,6 +162,7 @@ pub(super) async fn exercise(f: Fixture<'_>) {
         .open(
             domains.clone(),
             Arc::new(file_secret),
+            crate::persistent_disk::open(&initialization.persistent_disk).unwrap(),
             scratch.clone(),
             kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
         )
@@ -556,6 +558,7 @@ pub(super) async fn exercise(f: Fixture<'_>) {
         .open(
             domains,
             Arc::new(file_secret),
+            crate::persistent_disk::open(&initialization.persistent_disk).unwrap(),
             scratch,
             kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap(),
         )

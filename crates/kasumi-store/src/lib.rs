@@ -24,6 +24,7 @@ pub use backup_sessions::{
 mod allocation_tests;
 mod device_disk;
 mod keys;
+mod node_database;
 mod node_disk;
 mod node_file;
 pub use node_file::NodeFileCleanup;
@@ -79,7 +80,7 @@ use chacha20poly1305::{
 };
 use hmac::{Hmac, Mac};
 use parking_lot::{Mutex, RwLock};
-use redb::{Database, Durability, ReadableDatabase, TableDefinition};
+use redb::{Database, ReadableDatabase, TableDefinition};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex as AsyncMutex, watch};
@@ -131,28 +132,6 @@ impl WriteOp {
     }
 }
 
-/// Create every missing directory and persist its entry in its parent. This is
-/// separate from syncing files within the leaf directory.
-pub(crate) fn durable_directory(path: &Path) -> Result<()> {
-    let mut missing = Vec::new();
-    for directory in path.ancestors() {
-        if directory.as_os_str().is_empty() || directory.exists() {
-            break;
-        }
-        missing.push(directory.to_owned());
-    }
-    std::fs::create_dir_all(path)?;
-    for directory in missing {
-        std::fs::File::open(&directory)?.sync_all()?;
-        let parent = directory
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
-        std::fs::File::open(parent)?.sync_all()?;
-    }
-    Ok(())
-}
-
 #[derive(Default)]
 struct InitializerRegistry {
     handles: Vec<tokio::task::JoinHandle<Result<()>>>,
@@ -186,20 +165,26 @@ impl InitializerRegistry {
 }
 
 pub struct NodeStore {
-    db: Database,
+    db: node_database::NodeDatabase,
+    persistent_disk: Option<Arc<NodeDisk>>,
     scratch_disk: Arc<ScratchDisk>,
     path: Option<PathBuf>,
     tenants: AsyncMutex<HashMap<String, Arc<AsyncMutex<Weak<TenantStore>>>>>,
     // Retain initialization tasks through rejected/cancelled result delivery.
     initializers: AsyncMutex<InitializerRegistry>,
+    shutdown_report: AsyncMutex<DrainReport>,
 }
 
 impl NodeStore {
     /// Claim an exact recognized Prepared or Ready inode for independently
     /// authorized cleanup. No redb open, initialization or repair takes place.
     /// This physical guard grants no authority to stop or delete a generation.
-    pub fn claim_cleanup(path: impl AsRef<Path>, expected_id: Uuid) -> Result<NodeFileCleanup> {
-        node_file::NodeFile::claim_cleanup(path.as_ref(), expected_id)
+    pub fn claim_cleanup(
+        path: impl AsRef<Path>,
+        expected_id: Uuid,
+        persistent_disk: Arc<NodeDisk>,
+    ) -> Result<NodeFileCleanup> {
+        node_file::NodeFile::claim_cleanup(path.as_ref(), expected_id, persistent_disk)
     }
 
     /// Initialize a new, exclusively created inode. Its parent must exist.
@@ -208,10 +193,11 @@ impl NodeStore {
     pub fn create_new(
         path: impl AsRef<Path>,
         node_store_id: Uuid,
+        persistent_disk: Arc<NodeDisk>,
         scratch_disk: Arc<ScratchDisk>,
     ) -> Result<Arc<Self>> {
         Self::initialize(
-            node_file::NodeFile::create_new(path.as_ref(), node_store_id)?,
+            node_file::NodeFile::create_new(path.as_ref(), node_store_id, persistent_disk)?,
             scratch_disk,
         )
     }
@@ -222,6 +208,7 @@ impl NodeStore {
         path: impl AsRef<Path>,
         expected_file: &private_files::FileIdentity,
         node_store_id: Uuid,
+        persistent_disk: Arc<NodeDisk>,
         scratch_disk: Arc<ScratchDisk>,
     ) -> Result<Arc<Self>> {
         Self::initialize(
@@ -229,6 +216,7 @@ impl NodeStore {
                 path.as_ref(),
                 expected_file,
                 node_store_id,
+                persistent_disk,
             )?,
             scratch_disk,
         )
@@ -238,12 +226,13 @@ impl NodeStore {
         file: Arc<node_file::NodeFile>,
         scratch_disk: Arc<ScratchDisk>,
     ) -> Result<Arc<Self>> {
-        let db = Database::builder().create_with_backend(file.backend())?;
+        let db = Database::builder(file.clone()).create_with_backend(file.backend())?;
         Self::initialize_tables(&db)?;
         file.publish_ready()?;
         Ok(Self::installed(
             db,
             Some(file.path().to_owned()),
+            Some(file.disk().clone()),
             scratch_disk,
         ))
     }
@@ -255,10 +244,11 @@ impl NodeStore {
     pub fn open_existing(
         path: impl AsRef<Path>,
         expected_id: Uuid,
+        persistent_disk: Arc<NodeDisk>,
         scratch_disk: Arc<ScratchDisk>,
     ) -> Result<Arc<Self>> {
-        let file = node_file::NodeFile::open_existing(path.as_ref(), expected_id)?;
-        let db = Database::builder().create_with_backend(file.backend())?;
+        let file = node_file::NodeFile::open_existing(path.as_ref(), expected_id, persistent_disk)?;
+        let db = Database::builder(file.clone()).create_with_backend(file.backend())?;
         {
             let tx = db.begin_read()?;
             tx.open_table(CATALOG)?;
@@ -267,6 +257,7 @@ impl NodeStore {
         Ok(Self::installed(
             db,
             Some(file.path().to_owned()),
+            Some(file.disk().clone()),
             scratch_disk,
         ))
     }
@@ -274,11 +265,42 @@ impl NodeStore {
     #[cfg(any(test, feature = "test-utils"))]
     pub fn open_with_backend(
         backend: impl redb::StorageBackend,
+        admission: Arc<dyn redb::StorageAdmission>,
         scratch_disk: Arc<ScratchDisk>,
     ) -> Result<Arc<Self>> {
-        let db = Database::builder().create_with_backend(backend)?;
+        let db = Database::builder(admission).create_with_backend(backend)?;
         Self::initialize_tables(&db)?;
-        Ok(Self::installed(db, None, scratch_disk))
+        Ok(Self::installed(db, None, None, scratch_disk))
+    }
+
+    /// Every production node has one mandatory installed physical owner.
+    pub fn persistent_disk(&self) -> &Arc<NodeDisk> {
+        self.persistent_disk
+            .as_ref()
+            .expect("synthetic backend fixture has no installed physical disk")
+    }
+
+    /// Stop new database work, join retained initializers, then explicitly close
+    /// redb. The caller first drains its tenant and Raft workers. Busy retains
+    /// the exact database and all physical charges for a later shutdown retry.
+    pub async fn shutdown(&self) -> DrainResult {
+        self.db.stop();
+        let mut report = self.shutdown_report.lock().await;
+        if let Err(error) = self.drain_initializers().await {
+            report.record("node catalog initialization", 0, error);
+        }
+        match self.db.close() {
+            Ok(()) => report.complete(),
+            Err(failure)
+                if failure.completion() == kasumi_types::drain::DrainCompletion::Retained =>
+            {
+                report.outcome(Some(failure))
+            }
+            Err(failure) => {
+                report.merge(&failure);
+                report.complete()
+            }
+        }
     }
 
     /// Every temporary image/table on this node shares this explicit owner.
@@ -287,9 +309,7 @@ impl NodeStore {
     }
 
     fn initialize_tables(db: &Database) -> Result<()> {
-        let mut tx = db.begin_write()?;
-        tx.set_durability(Durability::Immediate)?;
-        tx.set_two_phase_commit(true);
+        let tx = db.begin_write()?;
         {
             tx.open_table(CATALOG)?;
             tx.open_table(RECORDS)?;
@@ -298,13 +318,20 @@ impl NodeStore {
         Ok(())
     }
 
-    fn installed(db: Database, path: Option<PathBuf>, scratch_disk: Arc<ScratchDisk>) -> Arc<Self> {
+    fn installed(
+        db: Database,
+        path: Option<PathBuf>,
+        persistent_disk: Option<Arc<NodeDisk>>,
+        scratch_disk: Arc<ScratchDisk>,
+    ) -> Arc<Self> {
         Arc::new(Self {
-            db,
+            db: node_database::NodeDatabase::new(db, "node database"),
+            persistent_disk,
             scratch_disk,
             path,
             tenants: AsyncMutex::new(HashMap::new()),
             initializers: AsyncMutex::new(InitializerRegistry::default()),
+            shutdown_report: AsyncMutex::new(DrainReport::default()),
         })
     }
 
@@ -332,9 +359,7 @@ impl NodeStore {
     fn save_catalog(&self, tenant: &str, catalog: &KeyCatalog) -> Result<()> {
         catalog.validate(tenant)?;
         let bytes = serde_json::to_vec(catalog)?;
-        let mut tx = self.db.begin_write()?;
-        tx.set_durability(Durability::Immediate)?;
-        tx.set_two_phase_commit(true);
+        let tx = self.db.begin_write()?;
         {
             tx.open_table(CATALOG)?
                 .insert(tenant_hash(tenant).as_slice(), bytes.as_slice())?;
@@ -463,6 +488,10 @@ impl Drop for AccessGuard<'_> {
 }
 
 impl TenantStore {
+    pub fn persistent_disk(&self) -> &Arc<NodeDisk> {
+        self.node.persistent_disk()
+    }
+
     pub fn scratch_disk(&self) -> &Arc<ScratchDisk> {
         self.node.scratch_disk()
     }
@@ -902,9 +931,7 @@ impl TenantStore {
         let state = self.state.read();
         self.require_access(&state)?;
         let catalog = self.catalog.read();
-        let mut tx = self.node.db.begin_write()?;
-        tx.set_durability(Durability::Immediate)?;
-        tx.set_two_phase_commit(true);
+        let tx = self.node.db.begin_write()?;
         write_domain(&tx, self, &state, &catalog, operations)?;
         self.require_access(&state)?;
         tx.commit()

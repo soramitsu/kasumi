@@ -1,0 +1,41 @@
+{
+  "command": [
+    "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+    "test",
+    "--locked",
+    "--manifest-path",
+    "vendor/openraft-0.9.25/Cargo.toml",
+    "-p",
+    "openraft",
+    "--lib",
+    "raft::incoming_snapshot_test"
+  ],
+  "cwd": "/Users/mtakemiya/dev/kasumi",
+  "environment": {
+    "RUSTUP_TOOLCHAIN": "1.97.1",
+    "CARGO_TARGET_DIR": "/Users/mtakemiya/dev/kasumi/target/openraft-qualification",
+    "CARGO_BUILD_JOBS": "2"
+  },
+  "source_before": "77bc877ac754a8a3ce973b01219818d65bcac6d4c9478ae01e65eeccabfcaa97",
+  "started_utc": "2026-09-20T08:02:29.337492+00:00",
+  "deadline_seconds": 1200,
+  "rustc": {
+    "identity": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-apple-darwin\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+    "path": "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc",
+    "sha256": "210df6794001b73ec3d453878707fa1e0bdcb63c427024a6e6574bbe5615a4da"
+  },
+  "cargo": {
+    "identity": "cargo 1.97.1 (c980f4866 2026-06-30)\n",
+    "path": "/Users/mtakemiya/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo",
+    "sha256": "7672ead309d505577c018fff2cafb3433601f073e38cbe87359ac1f7b944bbf5"
+  },
+  "pid": 94981,
+  "process_group": 94981,
+  "exit_code": 0,
+  "elapsed_seconds": 14.802795082970988,
+  "finished_utc": "2026-09-20T08:02:44.225614+00:00",
+  "source_after": "77bc877ac754a8a3ce973b01219818d65bcac6d4c9478ae01e65eeccabfcaa97",
+  "log_sha256": "9c42b986b159b6bf112eb4a231ed7d7862945b92afdc5001acba591792d50309",
+  "remaining_process_group": [],
+  "process_group_drained": true
+}

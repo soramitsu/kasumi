@@ -1,0 +1,20 @@
+{
+  "scripts/check_dependency_patches.py": "1820ef0eb09c7a527af594ee906871126eb4d457561f65e3bd36e57c740ca47d",
+  "scripts/fetch_openbao.py": "f37cc5376d68f83fdc238609ef3a931ba686ac1d982596dea1f83b8371c540a1",
+  "scripts/gate_process.py": "a665a4fe4698a093d7e814d0952b79e76686ffcce125d8c6b3f4fb3b47f63daf",
+  "scripts/package_release.py": "25f78b8bcc2bb115b868a822869707c26637ac30db2c85825c5e4702f4a2972b",
+  "scripts/release_gate.py": "d09d6b82b5e63fe8a9e3198875a090f91ab163ee22bf723aa05eeafe0a4b3489",
+  "scripts/release_host.py": "0285c7f64ac95c8baad2d2d2df092909b17731e555cdf2ed772a14fd593d2bc5",
+  "scripts/report_benchmark_capacity.py": "e6b6d58f71e3de778158242b512aadda3e31768040c9d17f8c26a5b3c12158fe",
+  "scripts/run_benchmark_matrix.py": "06987e84f60390590e406f1c43671d8e4ede81915a05c959a4063326a5787b4f",
+  "scripts/small_native_smoke.py": "24d4bd6103843a93f947118c6f91aff1e8957bc6f774e799a6c45002cee6fa75",
+  "scripts/test_benchmark_matrix.py": "09620f51f78b4d86fc575e106bbe75aa70bcc9da7bf91e1a0a264c7a5a970fe2",
+  "scripts/test_check_dependency_patches.py": "38a36aa20bac4bc9740d2f74a1df218e3971a7cff582f62171af710409c8b7b7",
+  "scripts/test_package_release.py": "c03e6af24bae3f539d03e67ef5bea887f8595b6b0cde356f1c041e4af8a32452",
+  "scripts/test_release_gate.py": "fff944b27fa97d7c88416b049c99ceb67a6381930e2e4f12c2a0d17d4ca445a1",
+  "scripts/test_release_host.py": "ba040b12e020229eb353212f287bbb3dc6e4d25e69d3c6edb123410e4703bfb1",
+  "scripts/test_small_native_smoke.py": "9fff1263a9bbb44be3fb6c80433b1d1f72d9747d007639a9bb8ec5b34a18e3f5",
+  "scripts/test_verify_release_acceptance.py": "9dcecece915acd321748c533e5d2f27d31270629f978f516d63fc246706183e9",
+  "scripts/verify_release_acceptance.py": "377878450940cf1048144dc67d0ed601213e324230336129ee3792606e23ca67",
+  "vendor/patch-manifest.json": "7b196bbfde98b9c0e84aca1cafd010d3757aa4a50c03fc0bb7bfcd91da39a6fc"
+}

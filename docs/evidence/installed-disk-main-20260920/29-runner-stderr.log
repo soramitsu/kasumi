@@ -1,0 +1,6 @@
+Traceback (most recent call last):
+  File "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/test29.py", line 25, in <module>
+    if live():
+  File "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/test29.py", line 23, in live
+    try: os.killpg(process.pid,0); return True
+PermissionError: [Errno 1] Operation not permitted

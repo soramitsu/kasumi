@@ -1,0 +1,289 @@
+   Compiling futures-util v0.3.34
+   Compiling tokio-util v0.7.19
+   Compiling h2 v0.4.19
+   Compiling serde_json v1.0.151 (/Users/mtakemiya/dev/kasumi/vendor/serde_json-1.0.151)
+   Compiling hyper v1.11.1
+   Compiling tower v0.5.3
+   Compiling hyper-util v0.1.20
+   Compiling hyper-timeout v0.5.2
+   Compiling tokio-stream v0.1.19
+   Compiling hyper-rustls v0.27.9
+   Compiling tonic v0.14.6
+   Compiling kasumi-types v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-types)
+   Compiling tower-http v0.6.11
+   Compiling futures-executor v0.3.34
+   Compiling openraft-macros v0.9.25 (/Users/mtakemiya/dev/kasumi/vendor/openraft-0.9.25/macros)
+   Compiling kasumi-serving v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-serving)
+   Compiling reqwest v0.12.28
+   Compiling futures v0.3.34
+   Compiling kasumi-transport v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-transport)
+   Compiling openraft v0.9.25 (/Users/mtakemiya/dev/kasumi/vendor/openraft-0.9.25/openraft)
+   Compiling kasumi-store v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-store)
+   Compiling postcard v1.1.3
+   Compiling kasumi-raft v0.1.0 (/Users/mtakemiya/dev/kasumi/crates/kasumi-raft)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 50.66s
+     Running unittests src/lib.rs (target/debug/deps/kasumi_raft-2f98ca7f4e0b7718)
+
+running 73 tests
+test control::tests::accepted_boundary_and_exact_applied_position_publish_atomically_before_retained_purge ... ok
+test control::tests::committed_seed_reopens_before_any_projection_without_application_key_access ... ok
+test control::tests::exhausted_seed_completion_budget_cannot_promote_a_committed_candidate ... ok
+test control::tests::failed_or_already_applied_without_boundary_cannot_be_reinterpreted_as_retired ... ok
+test control::tests::interrupted_raft_append_never_persists_seed_without_matching_body_and_header ... ok
+test control::tests::ordinary_purge_deletes_bodies_and_nonretirement_overwrite_cannot_leave_a_seed ... ok
+test control::tests::reserved_committed_retirement_recovers_atomic_custody_after_crash_without_app_key ... ok
+test control::tests::retirement_recovery_crosses_former_seed_count_ceiling_without_promoting_a_tail ... ok
+test control::tests::retirement_recovery_never_selects_between_multiple_committed_successes ... ok
+test control::tests::retirement_reserves_full_width_audit_bytes_before_commitment ... ok
+test control::tests::retirement_reserves_permanent_bytes_before_a_positive_seed_can_commit ... ok
+test control::tests::substituted_seed_bootstrap_or_command_and_uncovered_commit_fail_closed ... ok
+test control::tests::truncation_permanently_removes_uncommitted_seed_before_overwrite_and_restart ... ok
+test custody_capacity_tests::permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopens ... FAILED
+test custody_machine::tests::canonical_custody_stream_authenticates_counts_digest_and_record_order ... FAILED
+test custody_machine::tests::closed_custody_requires_fresh_existing_quorum_after_isolation ... FAILED
+test custody_machine::tests::closed_snapshot_rejects_prior_format_without_rewriting_permanent_storage ... FAILED
+test custody_machine::tests::custody_point_head_receipt_audit_and_applied_cursor_survive_each_write_failure ... ok
+test custody_machine::tests::existing_quorum_runs_closed_commands_after_application_key_revocation ... FAILED
+test custody_machine::tests::same_entry_position_snapshot_cannot_substitute_rotated_custody_state ... FAILED
+test custody_machine::tests::streamed_custody_tables_and_snapshot_coverage_publish_at_one_crash_boundary ... FAILED
+test custody_state::tests::closed_request_rejects_payload_fields_and_cross_source_observations ... ok
+test custody_state::tests::custody_point_policy_preserves_large_administrator_sets_and_rejects_old_heads ... ok
+test custody_state::tests::exhausted_byte_budget_publishes_no_partial_policy ... ok
+test custody_state::tests::full_byte_budget_expands_without_discarding_retained_history ... ok
+test custody_state::tests::point_reducer_matches_full_history_through_replay_conflicts_and_budget_expansion ... ok
+test custody_state::tests::rotation_replay_requires_current_admin_and_preserves_exact_original_actor ... ok
+test custody_state::tests::stale_policy_is_a_permanent_exact_failure_and_changed_identity_conflicts ... ok
+test lifetime::tests::drain_is_not_released_until_the_last_resource_is_dropped ... ok
+test snapshot_buffer::tests::abandoned_facade_and_cancelled_owner_drain_keep_actual_panic_and_charge ... FAILED
+test snapshot_buffer::tests::cancelled_close_retains_the_actual_flush_child ... FAILED
+test snapshot_buffer::tests::cancelled_write_and_shutdown_join_actual_child_before_freezing ... FAILED
+test snapshot_buffer::tests::failed_startup_keeps_original_error_while_actual_child_drains ... FAILED
+test snapshot_buffer::tests::original_io_failure_survives_io_bridge_and_repeated_typed_drain ... FAILED
+test snapshot_buffer::tests::pending_child_holds_its_fixed_slot_until_actual_join ... FAILED
+test snapshot_buffer::tests::pending_read_is_joined_by_shutdown_and_cancelled_read_keeps_unread_bytes ... FAILED
+test snapshot_buffer::tests::unused_owner_releases_its_reservation_without_a_drain ... ok
+test startup_owner_tests::cancelled_local_initialization_drains_real_group_and_breaks_router_cycle ... ok
+test startup_owner_tests::cancelled_startup_and_drain_keep_actual_child_panic_and_charge ... ok
+test startup_owner_tests::cancelled_unclaimed_group_cleanup_keeps_same_actual_child ... ok
+test startup_owner_tests::cleanup_retained_result_cannot_be_promoted_to_complete_or_release_custody ... ok
+test startup_owner_tests::delivered_startup_is_not_closed_by_node_startup_census ... FAILED
+test startup_owner_tests::direct_abandoned_opening_poll_panic_is_never_repolled_by_drain ... ok
+test startup_owner_tests::direct_claim_poll_panic_keeps_original_payload_future_and_registry ... ok
+test startup_owner_tests::direct_cleanup_poll_panic_keeps_original_payload_and_exact_cleanup_future ... ok
+test startup_owner_tests::oversized_startup_is_rejected_before_polling_or_global_publication ... ok
+test startup_owner_tests::startup_census_closes_delivery_before_waiting_for_active_caller ... ok
+test startup_owner_tests::synchronous_enrollment_allows_census_before_the_claimant_is_polled ... ok
+test storage::tests::applied_metadata_does_not_block_runtime_while_snapshot_capture_holds_state_lock ... FAILED
+test storage::tests::cancelled_log_future_retains_drain_lease_until_blocking_persistence_finishes ... ok
+test storage::tests::eight_mib_command_uses_compact_log_record_and_replays_after_reopen ... ok
+test storage::tests::invalid_backend_snapshot_never_replaces_durable_recoverable_state ... FAILED
+test storage::tests::joint_publication_tests::cancelled_joint_table_publication_seals_and_reopens_exact_committed_prefix ... FAILED
+test storage::tests::joint_publication_tests::joint_immutable_table_snapshot_power_loss_selects_complete_old_or_new_prefix ... FAILED
+test storage::tests::snapshot_custody_tests::accepted_snapshot_supersedes_uncommitted_candidate_and_survives_late_truncation ... FAILED
+test storage::tests::snapshot_custody_tests::equal_index_different_term_log_and_snapshot_coverage_is_rejected ... FAILED
+test storage::tests::snapshot_custody_tests::nonretired_snapshot_discards_stale_candidate_coverage_without_retirement_projection ... FAILED
+test storage::tests::snapshot_custody_tests::old_snapshot_capture_cannot_regress_newer_accepted_cursor ... FAILED
+test storage::tests::snapshot_custody_tests::published_retirement_projection_substitution_fails_closed_after_reopen ... FAILED
+test storage::tests::snapshot_custody_tests::retired_snapshot_installs_without_original_log_and_recovers_with_only_custody_key ... FAILED
+test storage::tests::snapshot_custody_tests::retired_snapshot_power_loss_never_tears_image_seed_boundary_or_applied_cursor ... FAILED
+test storage::tests::snapshot_custody_tests::same_position_cannot_substitute_matching_backend_and_custody_policy ... FAILED
+test storage::tests::snapshot_custody_tests::same_position_reencoding_preserves_custody_and_reuses_verified_current_image ... FAILED
+test storage::tests::snapshot_custody_tests::snapshot_rejects_missing_substituted_stale_and_payload_custody_before_publication ... FAILED
+test storage::tests::snapshot_install_power_loss_at_every_storage_operation_keeps_whole_old_or_new_snapshot ... FAILED
+test storage::tests::snapshot_materialization_releases_applied_lock_and_keeps_captured_root ... FAILED
+test storage::tests::snapshots_larger_than_store_record_limit_are_chunked_and_recovered ... FAILED
+test storage::tests::worker_failure_tests::cancelled_snapshot_waiter_cannot_hide_failure_after_durable_publication ... FAILED
+test storage::tests::worker_failure_tests::cancelled_snapshot_waiter_cannot_hide_panic_after_durable_publication ... FAILED
+test timing::tests::replicated_timing_profile_satisfies_openraft_and_retains_safety_features ... ok
+test write_errors::tests::application_capacity_denial_recognizes_only_the_pre_log_api_error ... ok
+test write_errors::tests::application_redirect_never_reclassifies_fatal_or_other_api_errors ... ok
+test write_errors::tests::application_redirect_recognizes_exact_type_through_anyhow_context ... ok
+
+failures:
+
+---- custody_capacity_tests::permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopens stdout ----
+Error: invalid data
+
+---- custody_machine::tests::canonical_custody_stream_authenticates_counts_digest_and_record_order stdout ----
+Error: other error
+
+---- custody_machine::tests::closed_custody_requires_fresh_existing_quorum_after_isolation stdout ----
+Error: drain Complete; Raft startup[0]: other error
+
+Caused by:
+    other error
+
+---- custody_machine::tests::closed_snapshot_rejects_prior_format_without_rewriting_permanent_storage stdout ----
+Error: other error
+
+---- custody_machine::tests::existing_quorum_runs_closed_commands_after_application_key_revocation stdout ----
+Error: drain Complete; Raft startup[0]: other error
+
+Caused by:
+    other error
+
+---- custody_machine::tests::same_entry_position_snapshot_cannot_substitute_rotated_custody_state stdout ----
+Error: other error
+
+---- custody_machine::tests::streamed_custody_tables_and_snapshot_coverage_publish_at_one_crash_boundary stdout ----
+Error: other error
+
+---- snapshot_buffer::tests::abandoned_facade_and_cancelled_owner_drain_keep_actual_panic_and_charge stdout ----
+Error: other error
+
+---- snapshot_buffer::tests::cancelled_close_retains_the_actual_flush_child stdout ----
+Error: other error
+
+---- snapshot_buffer::tests::cancelled_write_and_shutdown_join_actual_child_before_freezing stdout ----
+Error: other error
+
+---- snapshot_buffer::tests::failed_startup_keeps_original_error_while_actual_child_drains stdout ----
+Error: other error
+
+---- snapshot_buffer::tests::original_io_failure_survives_io_bridge_and_repeated_typed_drain stdout ----
+Error: other error
+
+---- snapshot_buffer::tests::pending_child_holds_its_fixed_slot_until_actual_join stdout ----
+Error: other error
+
+---- snapshot_buffer::tests::pending_read_is_joined_by_shutdown_and_cancelled_read_keeps_unread_bytes stdout ----
+Error: other error
+
+---- startup_owner_tests::delivered_startup_is_not_closed_by_node_startup_census stdout ----
+Error: other error
+
+---- storage::tests::applied_metadata_does_not_block_runtime_while_snapshot_capture_holds_state_lock stdout ----
+Error: when Write Store: std::io::error::Error: other error
+
+Caused by:
+    std::io::error::Error: other error
+
+---- storage::tests::invalid_backend_snapshot_never_replaces_durable_recoverable_state stdout ----
+
+thread 'storage::tests::invalid_backend_snapshot_never_replaces_durable_recoverable_state' (3343962) panicked at crates/kasumi-raft/src/storage/tests.rs:293:10:
+called `Result::unwrap()` on an `Err` value: other error
+
+---- storage::tests::joint_publication_tests::cancelled_joint_table_publication_seals_and_reopens_exact_committed_prefix stdout ----
+
+thread 'storage::tests::joint_publication_tests::cancelled_joint_table_publication_seals_and_reopens_exact_committed_prefix' (3343964) panicked at crates/kasumi-raft/src/storage/tests.rs:293:10:
+called `Result::unwrap()` on an `Err` value: other error
+
+---- storage::tests::joint_publication_tests::joint_immutable_table_snapshot_power_loss_selects_complete_old_or_new_prefix stdout ----
+
+thread 'storage::tests::joint_publication_tests::joint_immutable_table_snapshot_power_loss_selects_complete_old_or_new_prefix' (3343968) panicked at crates/kasumi-raft/src/storage/tests.rs:293:10:
+called `Result::unwrap()` on an `Err` value: other error
+
+---- storage::tests::snapshot_custody_tests::accepted_snapshot_supersedes_uncommitted_candidate_and_survives_late_truncation stdout ----
+
+thread 'storage::tests::snapshot_custody_tests::accepted_snapshot_supersedes_uncommitted_candidate_and_survives_late_truncation' (3343969) panicked at crates/kasumi-raft/src/storage/tests.rs:293:10:
+called `Result::unwrap()` on an `Err` value: other error
+
+---- storage::tests::snapshot_custody_tests::equal_index_different_term_log_and_snapshot_coverage_is_rejected stdout ----
+
+thread 'storage::tests::snapshot_custody_tests::equal_index_different_term_log_and_snapshot_coverage_is_rejected' (3343971) panicked at crates/kasumi-raft/src/storage/tests.rs:293:10:
+called `Result::unwrap()` on an `Err` value: other error
+
+---- storage::tests::snapshot_custody_tests::nonretired_snapshot_discards_stale_candidate_coverage_without_retirement_projection stdout ----
+
+thread 'storage::tests::snapshot_custody_tests::nonretired_snapshot_discards_stale_candidate_coverage_without_retirement_projection' (3343980) panicked at crates/kasumi-raft/src/storage/tests.rs:293:10:
+called `Result::unwrap()` on an `Err` value: other error
+
+---- storage::tests::snapshot_custody_tests::old_snapshot_capture_cannot_regress_newer_accepted_cursor stdout ----
+Error: when Write Store: std::io::error::Error: other error
+
+Caused by:
+    std::io::error::Error: other error
+
+---- storage::tests::snapshot_custody_tests::published_retirement_projection_substitution_fails_closed_after_reopen stdout ----
+
+thread 'storage::tests::snapshot_custody_tests::published_retirement_projection_substitution_fails_closed_after_reopen' (3343985) panicked at crates/kasumi-raft/src/storage/tests.rs:293:10:
+called `Result::unwrap()` on an `Err` value: other error
+
+---- storage::tests::snapshot_custody_tests::retired_snapshot_installs_without_original_log_and_recovers_with_only_custody_key stdout ----
+
+thread 'storage::tests::snapshot_custody_tests::retired_snapshot_installs_without_original_log_and_recovers_with_only_custody_key' (3343987) panicked at crates/kasumi-raft/src/storage/tests.rs:293:10:
+called `Result::unwrap()` on an `Err` value: other error
+
+---- storage::tests::snapshot_custody_tests::retired_snapshot_power_loss_never_tears_image_seed_boundary_or_applied_cursor stdout ----
+
+thread 'storage::tests::snapshot_custody_tests::retired_snapshot_power_loss_never_tears_image_seed_boundary_or_applied_cursor' (3343989) panicked at crates/kasumi-raft/src/storage/tests.rs:293:10:
+called `Result::unwrap()` on an `Err` value: other error
+
+---- storage::tests::snapshot_custody_tests::same_position_cannot_substitute_matching_backend_and_custody_policy stdout ----
+
+thread 'storage::tests::snapshot_custody_tests::same_position_cannot_substitute_matching_backend_and_custody_policy' (3343991) panicked at crates/kasumi-raft/src/storage/tests.rs:293:10:
+called `Result::unwrap()` on an `Err` value: other error
+
+---- storage::tests::snapshot_custody_tests::same_position_reencoding_preserves_custody_and_reuses_verified_current_image stdout ----
+
+thread 'storage::tests::snapshot_custody_tests::same_position_reencoding_preserves_custody_and_reuses_verified_current_image' (3343993) panicked at crates/kasumi-raft/src/storage/tests.rs:293:10:
+called `Result::unwrap()` on an `Err` value: other error
+
+---- storage::tests::snapshot_custody_tests::snapshot_rejects_missing_substituted_stale_and_payload_custody_before_publication stdout ----
+
+thread 'storage::tests::snapshot_custody_tests::snapshot_rejects_missing_substituted_stale_and_payload_custody_before_publication' (3343995) panicked at crates/kasumi-raft/src/storage/tests.rs:293:10:
+called `Result::unwrap()` on an `Err` value: other error
+
+---- storage::tests::snapshot_install_power_loss_at_every_storage_operation_keeps_whole_old_or_new_snapshot stdout ----
+
+thread 'storage::tests::snapshot_install_power_loss_at_every_storage_operation_keeps_whole_old_or_new_snapshot' (3343997) panicked at crates/kasumi-raft/src/storage/tests.rs:293:10:
+called `Result::unwrap()` on an `Err` value: other error
+
+---- storage::tests::snapshot_materialization_releases_applied_lock_and_keeps_captured_root stdout ----
+Error: deadline has elapsed
+
+---- storage::tests::snapshots_larger_than_store_record_limit_are_chunked_and_recovered stdout ----
+
+thread 'storage::tests::snapshots_larger_than_store_record_limit_are_chunked_and_recovered' (3344137) panicked at crates/kasumi-raft/src/storage/tests.rs:293:10:
+called `Result::unwrap()` on an `Err` value: other error
+
+---- storage::tests::worker_failure_tests::cancelled_snapshot_waiter_cannot_hide_failure_after_durable_publication stdout ----
+
+thread 'storage::tests::worker_failure_tests::cancelled_snapshot_waiter_cannot_hide_failure_after_durable_publication' (3344143) panicked at crates/kasumi-raft/src/storage/tests.rs:293:10:
+called `Result::unwrap()` on an `Err` value: other error
+
+---- storage::tests::worker_failure_tests::cancelled_snapshot_waiter_cannot_hide_panic_after_durable_publication stdout ----
+
+thread 'storage::tests::worker_failure_tests::cancelled_snapshot_waiter_cannot_hide_panic_after_durable_publication' (3344147) panicked at crates/kasumi-raft/src/storage/tests.rs:293:10:
+called `Result::unwrap()` on an `Err` value: other error
+
+
+failures:
+    custody_capacity_tests::permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopens
+    custody_machine::tests::canonical_custody_stream_authenticates_counts_digest_and_record_order
+    custody_machine::tests::closed_custody_requires_fresh_existing_quorum_after_isolation
+    custody_machine::tests::closed_snapshot_rejects_prior_format_without_rewriting_permanent_storage
+    custody_machine::tests::existing_quorum_runs_closed_commands_after_application_key_revocation
+    custody_machine::tests::same_entry_position_snapshot_cannot_substitute_rotated_custody_state
+    custody_machine::tests::streamed_custody_tables_and_snapshot_coverage_publish_at_one_crash_boundary
+    snapshot_buffer::tests::abandoned_facade_and_cancelled_owner_drain_keep_actual_panic_and_charge
+    snapshot_buffer::tests::cancelled_close_retains_the_actual_flush_child
+    snapshot_buffer::tests::cancelled_write_and_shutdown_join_actual_child_before_freezing
+    snapshot_buffer::tests::failed_startup_keeps_original_error_while_actual_child_drains
+    snapshot_buffer::tests::original_io_failure_survives_io_bridge_and_repeated_typed_drain
+    snapshot_buffer::tests::pending_child_holds_its_fixed_slot_until_actual_join
+    snapshot_buffer::tests::pending_read_is_joined_by_shutdown_and_cancelled_read_keeps_unread_bytes
+    startup_owner_tests::delivered_startup_is_not_closed_by_node_startup_census
+    storage::tests::applied_metadata_does_not_block_runtime_while_snapshot_capture_holds_state_lock
+    storage::tests::invalid_backend_snapshot_never_replaces_durable_recoverable_state
+    storage::tests::joint_publication_tests::cancelled_joint_table_publication_seals_and_reopens_exact_committed_prefix
+    storage::tests::joint_publication_tests::joint_immutable_table_snapshot_power_loss_selects_complete_old_or_new_prefix
+    storage::tests::snapshot_custody_tests::accepted_snapshot_supersedes_uncommitted_candidate_and_survives_late_truncation
+    storage::tests::snapshot_custody_tests::equal_index_different_term_log_and_snapshot_coverage_is_rejected
+    storage::tests::snapshot_custody_tests::nonretired_snapshot_discards_stale_candidate_coverage_without_retirement_projection
+    storage::tests::snapshot_custody_tests::old_snapshot_capture_cannot_regress_newer_accepted_cursor
+    storage::tests::snapshot_custody_tests::published_retirement_projection_substitution_fails_closed_after_reopen
+    storage::tests::snapshot_custody_tests::retired_snapshot_installs_without_original_log_and_recovers_with_only_custody_key
+    storage::tests::snapshot_custody_tests::retired_snapshot_power_loss_never_tears_image_seed_boundary_or_applied_cursor
+    storage::tests::snapshot_custody_tests::same_position_cannot_substitute_matching_backend_and_custody_policy
+    storage::tests::snapshot_custody_tests::same_position_reencoding_preserves_custody_and_reuses_verified_current_image
+    storage::tests::snapshot_custody_tests::snapshot_rejects_missing_substituted_stale_and_payload_custody_before_publication
+    storage::tests::snapshot_install_power_loss_at_every_storage_operation_keeps_whole_old_or_new_snapshot
+    storage::tests::snapshot_materialization_releases_applied_lock_and_keeps_captured_root
+    storage::tests::snapshots_larger_than_store_record_limit_are_chunked_and_recovered
+    storage::tests::worker_failure_tests::cancelled_snapshot_waiter_cannot_hide_failure_after_durable_publication
+    storage::tests::worker_failure_tests::cancelled_snapshot_waiter_cannot_hide_panic_after_durable_publication
+
+test result: FAILED. 39 passed; 34 failed; 0 ignored; 0 measured; 0 filtered out; finished in 100.38s
+
+error: test failed, to rerun pass `-p kasumi-raft --lib`

@@ -1,0 +1,47 @@
+{
+  "evidence.json": {
+    "original": "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-6d969f3-ownership-disk-startup/evidence.json",
+    "sha256": "371192d6e295325e987f2e2db058aaf283496f6b16331f1e93b9b50dd4b53f86",
+    "bytes": 1102398
+  },
+  "plan.json": {
+    "original": "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-6d969f3-ownership-disk-startup/plan.json",
+    "sha256": "b6afeb3ac509a352eb7d0a4a4e5e6ac32c5e338ab4de858eb8d09a691dcfbd4d",
+    "bytes": 47814
+  },
+  "raft-application-write-classification.log": {
+    "original": "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-6d969f3-ownership-disk-startup/raft-application-write-classification.log",
+    "sha256": "b81cc5f8bc7168e187a0788dbe6c8cd0edd7516acab1b2cf22ddab9806d4f8cc",
+    "bytes": 207521
+  },
+  "rmcp-terminal-ownership.log": {
+    "original": "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-6d969f3-ownership-disk-startup/rmcp-terminal-ownership.log",
+    "sha256": "7492fba182ef7bbb853c01b8ea3cb77d685a725e622425479d9073d357740bb3",
+    "bytes": 150852
+  },
+  "rmcp-upstream-protocol.log": {
+    "original": "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-6d969f3-ownership-disk-startup/rmcp-upstream-protocol.log",
+    "sha256": "04f8906940f41bb6358ba9fcc9fb44509cd8f0dc284a170451d64418b7c5a05a",
+    "bytes": 190451
+  },
+  "runner.py": {
+    "original": "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-6d969f3-ownership-disk-startup/runner.py",
+    "sha256": "ad3d647fbb73d9d32e04e4e202814f68aea2cb5aa80acbed03a10fa8a3855a6f",
+    "bytes": 10765
+  },
+  "source-before.json": {
+    "original": "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-6d969f3-ownership-disk-startup/source-before.json",
+    "sha256": "61f5741e535611b93dfb6cb0c393cf793471141540593b3fcd33b78aacd73616",
+    "bytes": 379960
+  },
+  "workspace-all-targets-check.log": {
+    "original": "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-6d969f3-ownership-disk-startup/workspace-all-targets-check.log",
+    "sha256": "679ca242907edb18178d9b9b07a21613b7f1a645200bc681741226fbd38bb235",
+    "bytes": 495873
+  },
+  "workspace-format.log": {
+    "original": "/Users/mtakemiya/dev/kasumi-release-evidence/20260920-6d969f3-ownership-disk-startup/workspace-format.log",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  }
+}

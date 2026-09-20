@@ -11,8 +11,8 @@ struct Installation {
 }
 impl Installation {
     async fn new() -> anyhow::Result<Self> {
-        let directory = tempfile::tempdir()?;
-        let node = NodeStore::create_new(
+        let directory = kasumi_store::test_utils::private_tempdir()?;
+        let node = NodeStore::create_new_fixture(
             directory.path().join("node.redb"),
             kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
@@ -270,7 +270,7 @@ async fn existing_local_reopens_the_same_committed_standalone_after_complete_shu
     drop(stores);
     drop(audit);
     drop(node);
-    let node = NodeStore::open_existing(
+    let node = NodeStore::open_existing_fixture(
         directory.path().join("node.redb"),
         kasumi_store::test_utils::NODE_STORE_ID,
         kasumi_store::ScratchDisk::fixture(),

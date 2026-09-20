@@ -562,13 +562,13 @@ async fn open(
     Arc<kasumi_engine::SecurityAudit>,
 ) {
     let node = (if create {
-        NodeStore::create_new(
+        NodeStore::create_new_fixture(
             path,
             kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
         )
     } else {
-        NodeStore::open_existing(
+        NodeStore::open_existing_fixture(
             path,
             kasumi_store::test_utils::NODE_STORE_ID,
             kasumi_store::ScratchDisk::fixture(),
@@ -669,7 +669,7 @@ fn staged_crash_worker() {
 
 #[tokio::test]
 async fn killed_upload_recovers_encrypted_invisible_chunks_and_finishes_exactly_once() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let mut child = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "staged_crash_worker", "--nocapture"])
         .env("KASUMI_STAGED_CRASH_DIRECTORY", directory.path())
@@ -762,7 +762,7 @@ async fn killed_upload_recovers_encrypted_invisible_chunks_and_finishes_exactly_
 
 #[tokio::test]
 async fn coherent_lease_pages_cover_large_dependencies_and_scans_with_live_writes() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let (db, audit) = open(&directory.path().join("node.redb"), true).await;
     for name in ["docs", "ledger"] {
         db.administer(
@@ -972,7 +972,7 @@ async fn coherent_lease_pages_cover_large_dependencies_and_scans_with_live_write
 
 #[tokio::test]
 async fn small_lease_budget_shares_large_roots_and_expires_on_retained_version_pressure() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let (db, audit) = open(&directory.path().join("lease-delta.redb"), true).await;
     db.administer(
         context(),

@@ -31,7 +31,7 @@ impl FilesystemAuditArchive {
             .root
             .join(format!("{}.audit", segment.reference.object.object_id));
         if final_path.try_exists()? {
-            read_file(&self.root, &segment.reference.object, true)?;
+            read_file(&self.root, &self.disk, &segment.reference.object, true)?;
             return observer.published(
                 &segment.reference,
                 &private_files::file_identity(&final_path)?,
@@ -43,34 +43,33 @@ impl FilesystemAuditArchive {
             "{}.audit.pending",
             segment.reference.object.object_id
         ));
-        if !staged.try_exists()? {
-            private_files::create(&staged, b"")?;
-        }
-        let identity = private_files::file_identity(&staged)?;
+        let (root, relative) = self.disk.binding(&staged)?;
+        let mut file = if staged.try_exists()? {
+            self.disk.open_file(root, relative)?
+        } else {
+            self.disk
+                .create_file(root, relative, DiskWork::Maintenance)?
+        };
+        let identity = file.identity()?;
         observer.staged(&segment.reference, &identity)?;
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(&staged)?;
+        let old_length = file.observed_len()?;
+        let new_length = segment.ciphertext.len() as u64;
+        if old_length > new_length {
+            file.shrink(new_length)?;
+        } else {
+            file.reserve_growth(old_length, new_length, DiskWork::Maintenance)?;
+            file.grow_reserved(new_length)?;
+        }
+        file.write_all_at(&segment.ciphertext, 0)?;
+        file.sync_all_and_parent()?;
+        let (root, relative) = self.disk.binding(&final_path)?;
+        let published = self.disk.publish_file(file, root, relative)?;
         ensure!(
-            private_files::descriptor_identity(&file)? == identity,
-            "opened archive staging inode changed"
+            published.identity()? == identity,
+            "published archive inode changed"
         );
-        ensure!(
-            private_files::file_identity(&staged)? == identity,
-            "archive staging inode changed"
-        );
-        file.set_len(0)?;
-        file.write_all(&segment.ciphertext)?;
-        file.sync_all()?;
-        drop(file);
-        ensure!(
-            private_files::file_identity(&staged)? == identity,
-            "archive staging inode changed before publication"
-        );
-        private_files::rename_exclusive(&staged, &final_path)?;
-        read_file(&self.root, &segment.reference.object, true)?;
+        drop(published);
+        read_file(&self.root, &self.disk, &segment.reference.object, true)?;
         observer.published(
             &segment.reference,
             &private_files::file_identity(&final_path)?,
@@ -139,9 +138,9 @@ mod tests {
     #[tokio::test]
     async fn owned_publication_resolves_partial_writes_and_uncertain_rename_without_adopting_files()
     {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_utils::private_tempdir().unwrap();
         let store = TenantStore::initialize_catalog_fixture(
-            crate::NodeStore::create_new(
+            crate::NodeStore::create_new_fixture(
                 directory.path().join("node.redb"),
                 crate::test_utils::NODE_STORE_ID,
                 crate::ScratchDisk::fixture(),
@@ -157,7 +156,7 @@ mod tests {
         let segment = store.encrypt_audit_segment(builder).unwrap();
         let root = directory.path().join("owned");
         let observer = Arc::new(Recorded::default());
-        let archive = FilesystemAuditArchive::open(&root)
+        let archive = FilesystemAuditArchive::open_fixture(&root)
             .unwrap()
             .with_publication_observer(observer.clone());
         observer.fault.store(1, Ordering::Release);
@@ -170,7 +169,18 @@ mod tests {
             segment.reference.object.object_id
         ));
         let original = private_files::file_identity(&staged).unwrap();
-        std::fs::write(&staged, b"partial interrupted write").unwrap();
+        // Model an interrupted admitted writer, retaining its exact inode and
+        // capacity instead of injecting an unaccounted out-of-band extension.
+        let (root_name, relative) = archive.disk.binding(&staged).unwrap();
+        let partial = archive.disk.open_file(root_name, relative).unwrap();
+        let bytes = b"partial interrupted write";
+        partial
+            .reserve_growth(0, bytes.len() as u64, DiskWork::Maintenance)
+            .unwrap();
+        partial.grow_reserved(bytes.len() as u64).unwrap();
+        partial.write_all_at(bytes, 0).unwrap();
+        partial.sync_all_and_parent().unwrap();
+        drop(partial);
         observer.fault.store(3, Ordering::Release);
         assert!(archive.publish(&segment).await.is_err());
         assert!(!staged.exists());
@@ -188,6 +198,20 @@ mod tests {
         assert_eq!(std::fs::read(&final_path).unwrap(), segment.ciphertext);
         std::fs::remove_file(&final_path).unwrap();
         std::fs::rename(saved, &final_path).unwrap();
+        assert_eq!(archive.disk.snapshot().phase, crate::NodeDiskPhase::Failed);
+        assert!(archive.publish(&segment).await.is_err());
+        store.shutdown().await.unwrap();
+        if let Err(failure) = store.node.shutdown().await {
+            assert_eq!(
+                failure.completion(),
+                kasumi_types::drain::DrainCompletion::Complete
+            );
+        }
+        assert_eq!(archive.disk.snapshot().open_files, 0);
+        archive
+            .disk
+            .reconcile(&crate::CensusCancellation::default())
+            .unwrap();
         archive.publish(&segment).await.unwrap();
         observer.fault.store(4, Ordering::Release);
         assert!(archive.publish(&segment).await.is_err());
@@ -197,7 +221,7 @@ mod tests {
 
     #[test]
     fn exclusive_rename_preserves_an_existing_destination_and_the_source_inode() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_utils::private_tempdir().unwrap();
         let owned = directory.path().join("owned");
         private_files::create_directory(&owned).unwrap();
         let source = owned.join("prepared");

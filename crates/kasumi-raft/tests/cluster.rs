@@ -26,7 +26,7 @@ struct Cluster {
 impl Cluster {
     async fn new() -> Result<Self> {
         let mut cluster = Self {
-            dir: tempfile::tempdir()?,
+            dir: kasumi_store::test_utils::private_tempdir()?,
             router: Arc::new(InProcessRouter::default()),
             nodes: BTreeMap::new(),
         };
@@ -54,7 +54,11 @@ impl Cluster {
             store,
             backend.clone(),
             self.router.clone(),
-            common::config(),
+            kasumi_raft::RaftGroupConfig {
+                raft: common::config(),
+                limits: kasumi_raft::RaftLimits::default(),
+            },
+            common::snapshot_owner(),
         )
         .await?;
         self.router.register(GROUP.into(), id, group.raft().clone());
@@ -302,7 +306,7 @@ async fn snapshot_catches_up_partitioned_follower_and_replaces_a_voter() -> Resu
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn one_voter_acknowledgment_recovers_without_a_snapshot() -> Result<()> {
-    let dir = tempfile::tempdir()?;
+    let dir = kasumi_store::test_utils::private_tempdir()?;
     let path = dir.path().join("local.redb");
     {
         let backend = Arc::new(common::Backend::default());
@@ -311,6 +315,7 @@ async fn one_voter_acknowledgment_recovers_without_a_snapshot() -> Result<()> {
             GROUP.into(),
             common::store(&path, true).await?,
             backend.clone(),
+            common::snapshot_owner(),
         )
         .await?;
         assert_eq!(
@@ -326,6 +331,7 @@ async fn one_voter_acknowledgment_recovers_without_a_snapshot() -> Result<()> {
         GROUP.into(),
         common::store(&path, false).await?,
         backend.clone(),
+        common::snapshot_owner(),
     )
     .await?;
     assert_eq!(backend.values(), vec![b"durable-local".to_vec()]);
@@ -334,10 +340,18 @@ async fn one_voter_acknowledgment_recovers_without_a_snapshot() -> Result<()> {
 
 #[tokio::test]
 async fn fatal_snapshot_capture_blocks_even_local_generation_access() -> Result<()> {
-    let dir = tempfile::tempdir()?;
-    let store = common::store(&dir.path().join("fatal-snapshot.redb"), true).await?;
+    let dir = kasumi_store::test_utils::private_tempdir()?;
+    let path = dir.path().join("fatal-snapshot.redb");
+    let store = common::store(&path, true).await?;
     let backend = Arc::new(common::Backend::default());
-    let group = RaftGroup::local(1, GROUP.into(), store.clone(), backend.clone()).await?;
+    let group = RaftGroup::local(
+        1,
+        GROUP.into(),
+        store.clone(),
+        backend.clone(),
+        common::snapshot_owner(),
+    )
+    .await?;
     group.write(b"committed".to_vec()).await?;
     backend
         .fail_snapshot
@@ -356,8 +370,71 @@ async fn fatal_snapshot_capture_blocks_even_local_generation_access() -> Result<
     store.check_access()?;
     assert_eq!(backend.values(), vec![b"committed".to_vec()]);
     assert!(group.check_access().is_err());
-    group.shutdown().await?;
-    Ok(())
+    let failure = group.shutdown().await.unwrap_err();
+    let drain = failure
+        .downcast_ref::<kasumi_types::drain::DrainFailure>()
+        .context("typed Raft drain failure missing")?;
+    assert_eq!(
+        drain.completion(),
+        kasumi_types::drain::DrainCompletion::Complete
+    );
+    let issue = drain
+        .issues()
+        .iter()
+        .find(|issue| issue.component() == "OpenRaft runtime")
+        .context("original OpenRaft failure missing")?;
+    let original = issue
+        .error()
+        .downcast_ref::<openraft::error::ShutdownError<u64, tokio::task::JoinError>>()
+        .context("original typed OpenRaft shutdown error missing")?;
+    let snapshot_error = original
+        .snapshot_builder()
+        .and_then(|error| error.storage_error())
+        .context("actual snapshot worker error missing")?;
+    assert!(
+        snapshot_error
+            .to_string()
+            .contains("injected snapshot capture failure")
+    );
+    assert!(Arc::ptr_eq(
+        snapshot_error,
+        original
+            .state_machine()
+            .and_then(|error| error.storage_error())
+            .unwrap()
+    ));
+    assert!(original.core_join_error().is_none());
+    let repeated = group.shutdown().await.unwrap_err();
+    let repeated = repeated
+        .downcast_ref::<kasumi_types::drain::DrainFailure>()
+        .unwrap();
+    assert_eq!(
+        repeated.completion(),
+        kasumi_types::drain::DrainCompletion::Complete
+    );
+    assert_eq!(repeated.issues().len(), drain.issues().len());
+    assert!(
+        repeated
+            .issues()
+            .iter()
+            .any(|next| Arc::ptr_eq(next, issue))
+    );
+    drop(group);
+    drop(store);
+
+    // Complete drain releases actual file owners despite its retained failure.
+    // Reopen immediately, with no delay or retry, and replay the acknowledged row.
+    let recovered = Arc::new(common::Backend::default());
+    let reopened = RaftGroup::local(
+        1,
+        GROUP.into(),
+        common::store(&path, false).await?,
+        recovered.clone(),
+        common::snapshot_owner(),
+    )
+    .await?;
+    assert_eq!(recovered.values(), vec![b"committed".to_vec()]);
+    reopened.shutdown().await
 }
 
 #[tokio::test]
@@ -371,6 +448,7 @@ async fn raft_crash_worker() -> Result<()> {
         GROUP.into(),
         common::store(&path, true).await?,
         Arc::new(common::Backend::default()),
+        common::snapshot_owner(),
     )
     .await?;
     group.write(b"acknowledged-before-sigkill".to_vec()).await?;
@@ -385,7 +463,7 @@ async fn raft_crash_worker() -> Result<()> {
 async fn acknowledged_one_voter_write_survives_sigkill_without_graceful_shutdown() -> Result<()> {
     use std::process::Stdio;
     use tokio::io::{AsyncBufReadExt, BufReader};
-    let dir = tempfile::tempdir()?;
+    let dir = kasumi_store::test_utils::private_tempdir()?;
     let path = dir.path().join("killed.redb");
     let mut child = tokio::process::Command::new(std::env::current_exe()?)
         .args(["--exact", "raft_crash_worker", "--nocapture"])
@@ -411,6 +489,7 @@ async fn acknowledged_one_voter_write_survives_sigkill_without_graceful_shutdown
         GROUP.into(),
         common::store(&path, false).await?,
         backend.clone(),
+        common::snapshot_owner(),
     )
     .await?;
     assert_eq!(
@@ -448,7 +527,7 @@ async fn oversized_replication_backlog_shrinks_and_catches_up_without_changing_m
             self.router.send(group, source, target, node, request).await
         }
     }
-    let dir = tempfile::tempdir()?;
+    let dir = kasumi_store::test_utils::private_tempdir()?;
     let router = Arc::new(InProcessRouter::default());
     let transport = Arc::new(Limited {
         router: router.clone(),
@@ -472,7 +551,11 @@ async fn oversized_replication_backlog_shrinks_and_catches_up_without_changing_m
             common::store(&dir.path().join(format!("node-{id}.redb")), true).await?,
             backend.clone(),
             transport.clone(),
-            config,
+            kasumi_raft::RaftGroupConfig {
+                raft: config,
+                limits: kasumi_raft::RaftLimits::default(),
+            },
+            common::snapshot_owner(),
         )
         .await?;
         router.register(GROUP.into(), id, group.raft().clone());
