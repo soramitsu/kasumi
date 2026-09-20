@@ -20,6 +20,8 @@ pub use backup_sessions::{
     MAX_SESSION_GC_OBJECTS, MAX_SESSION_RECORD_BYTES, VerifiedBackupAbort, VerifiedBackupSession,
     verify_backup_session,
 };
+#[cfg(test)]
+mod allocation_tests;
 mod device_disk;
 mod keys;
 mod node_disk;

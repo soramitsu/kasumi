@@ -14,11 +14,36 @@ use std::{
 
 pub(super) struct Root {
     pub(super) path: PathBuf,
+    // Prepared before the owner is published. std path conversion may allocate
+    // for long paths and cannot be used after redb's winning commit header.
+    path_c: CString,
     pub(super) file: File,
     pub(super) identity: Identity,
 }
 
 impl Root {
+    pub(super) fn verify_nonallocating(&self) -> io::Result<()> {
+        // SAFETY: the prepared NUL-terminated path remains live; ownership of a
+        // successful descriptor transfers immediately into File.
+        let fd = unsafe {
+            libc::open(
+                self.path_c.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let observed = unsafe { File::from_raw_fd(fd) };
+        let metadata = observed.metadata()?;
+        directory_nonallocating(&metadata)?;
+        if Identity::of(&metadata) != self.identity
+            || Identity::of(&self.file.metadata()?) != self.identity
+        {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        Ok(())
+    }
     pub(super) fn verify(&self) -> Result<()> {
         let metadata = std::fs::symlink_metadata(&self.path)?;
         directory(&metadata)?;
@@ -55,6 +80,27 @@ pub(super) fn regular(metadata: &Metadata, device: u64) -> Result<()> {
     private(metadata)
 }
 
+pub(super) fn directory_nonallocating(metadata: &Metadata) -> io::Result<()> {
+    if !metadata.is_dir() {
+        return Err(io::ErrorKind::InvalidData.into());
+    }
+    private_nonallocating(metadata)
+}
+
+pub(super) fn regular_nonallocating(metadata: &Metadata, device: u64) -> io::Result<()> {
+    if !metadata.is_file() || metadata.nlink() != 1 || metadata.dev() != device {
+        return Err(io::ErrorKind::InvalidData.into());
+    }
+    private_nonallocating(metadata)
+}
+
+fn private_nonallocating(metadata: &Metadata) -> io::Result<()> {
+    if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o077 != 0 {
+        return Err(io::ErrorKind::PermissionDenied.into());
+    }
+    Ok(())
+}
+
 pub(super) fn open_roots(config: &NodeDiskConfig) -> Result<BTreeMap<String, Root>> {
     let mut roots = BTreeMap::new();
     let mut device = None;
@@ -79,6 +125,10 @@ pub(super) fn open_roots(config: &NodeDiskConfig) -> Result<BTreeMap<String, Roo
             name.clone(),
             Root {
                 path: path.clone(),
+                path_c: {
+                    use std::os::unix::ffi::OsStrExt;
+                    CString::new(path.as_os_str().as_bytes())?
+                },
                 file,
                 identity,
             },

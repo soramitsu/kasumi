@@ -166,9 +166,7 @@ impl DevicePromises<'_> {
         };
         let Some(owned_next) = owned_next else {
             self.state.poisoned = true;
-            return Err(std::io::Error::other(
-                "filesystem promise ownership mismatch",
-            ));
+            return Err(std::io::Error::from(std::io::ErrorKind::InvalidData));
         };
         self.state
             .owners

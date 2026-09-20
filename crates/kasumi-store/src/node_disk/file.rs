@@ -24,6 +24,9 @@ pub(super) struct FileOwner {
     disk: Arc<NodeDisk>,
     root: String,
     relative: PathBuf,
+    // Parent path names are validated and allocated once during acquisition.
+    // I/O verifies every current ancestor using these original names.
+    parent_names: Box<[CString]>,
     parent: File,
     name: CString,
     identity: Identity,
@@ -96,6 +99,29 @@ impl NodeDisk {
             .roots
             .get(root)
             .context("unknown installed persistent root")?;
+        let parent_names = {
+            use std::os::unix::ffi::OsStrExt;
+            let mut names = Vec::new();
+            for component in relative
+                .parent()
+                .context("persistent file parent absent")?
+                .components()
+            {
+                ensure!(
+                    names.len() + 1 < self.config.max_depth as usize,
+                    "persistent path depth exhausted"
+                );
+                let std::path::Component::Normal(name) = component else {
+                    anyhow::bail!("persistent paths must be relative normal components");
+                };
+                ensure!(
+                    name.len() <= self.config.max_name_bytes as usize,
+                    "persistent name exceeds budget"
+                );
+                names.push(CString::new(name.as_bytes())?);
+            }
+            names.into_boxed_slice()
+        };
         let result = (|| -> Result<(File, CString, File)> {
             let (parent, name) = census::parent(selected, relative, &self.config)?;
             let flags = libc::O_RDWR
@@ -157,6 +183,7 @@ impl NodeDisk {
             disk: self.clone(),
             root: root.to_owned(),
             relative: relative.to_owned(),
+            parent_names,
             parent,
             name,
             identity,
@@ -298,9 +325,7 @@ impl FileOwner {
         let mut fault = self.disk.shrink_failure.lock().unwrap();
         if *fault == Some(stage) {
             fault.take();
-            return Err(io::Error::other(format!(
-                "injected shrink failure at {stage:?}"
-            )));
+            return Err(io::ErrorKind::Other.into());
         }
         Ok(())
     }
@@ -308,32 +333,39 @@ impl FileOwner {
     fn lock_budget(&self) -> io::Result<std::sync::MutexGuard<'_, Budget>> {
         self.budget.lock().map_err(|_| {
             self.disk.fail();
-            io::Error::other("persistent file ownership is poisoned")
+            io::Error::from(io::ErrorKind::InvalidData)
         })
     }
-    fn verify(&self, file: &File) -> Result<()> {
+    fn verify(&self, file: &File) -> io::Result<()> {
         let root = &self.disk.roots[&self.root];
-        let (parent, name) = census::parent(root, &self.relative, &self.disk.config)?;
-        ensure!(
-            Identity::of(&parent.metadata()?) == Identity::of(&self.parent.metadata()?)
-                && name == self.name,
-            "persistent file parent was replaced"
-        );
-        let observed = census::open_at(&parent, &name, libc::O_RDONLY | libc::O_NONBLOCK)?;
+        root.verify_nonallocating()?;
+        let mut parent = root.file.try_clone()?;
+        for name in &self.parent_names {
+            let child = census::open_at(&parent, name, libc::O_RDONLY | libc::O_DIRECTORY)?;
+            let metadata = child.metadata()?;
+            census::directory_nonallocating(&metadata)?;
+            if metadata.dev() != root.identity.0 {
+                return Err(io::ErrorKind::InvalidData.into());
+            }
+            parent = child;
+        }
+        if Identity::of(&parent.metadata()?) != Identity::of(&self.parent.metadata()?) {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        let observed = census::open_at(&parent, &self.name, libc::O_RDONLY | libc::O_NONBLOCK)?;
         let metadata = observed.metadata()?;
-        census::regular(&metadata, self.identity.0)?;
-        ensure!(
-            Identity::of(&metadata) == self.identity
-                && Identity::of(&file.metadata()?) == self.identity,
-            "persistent file was replaced"
-        );
+        census::regular_nonallocating(&metadata, self.identity.0)?;
+        if Identity::of(&metadata) != self.identity
+            || Identity::of(&file.metadata()?) != self.identity
+        {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
         Ok(())
     }
 
     fn check(&self, file: &File) -> io::Result<()> {
-        self.verify(file).map_err(|error| {
+        self.verify(file).inspect_err(|_| {
             self.disk.fail();
-            io::Error::other(error)
         })
     }
 
@@ -347,7 +379,7 @@ impl FileOwner {
         let allocated = metadata
             .blocks()
             .checked_mul(512)
-            .ok_or_else(|| io::Error::other("persistent block count overflow"))?;
+            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
         let pending = bytes - allocated;
         let mut state = self.disk.lock_state();
         let mut promises = self.disk.device.lock();
@@ -357,7 +389,7 @@ impl FileOwner {
         else {
             state.phase = NodeDiskPhase::Failed;
             promises.fail_owner();
-            return Err(io::Error::other("persistent observation promise mismatch"));
+            return Err(io::Error::from(io::ErrorKind::InvalidData));
         };
         let Some(own_next) = state
             .pending
@@ -366,12 +398,12 @@ impl FileOwner {
         else {
             state.phase = NodeDiskPhase::Failed;
             promises.fail_owner();
-            return Err(io::Error::other("persistent observation owner mismatch"));
+            return Err(io::Error::from(io::ErrorKind::InvalidData));
         };
         let Some(owned) = state.bytes.checked_add(extra) else {
             state.phase = NodeDiskPhase::Failed;
             promises.fail_owner();
-            return Err(io::Error::other("persistent observed extent overflow"));
+            return Err(io::Error::from(io::ErrorKind::InvalidData));
         };
         promises
             .set_pending(next)
@@ -386,15 +418,94 @@ impl FileOwner {
         if extra != 0 || metadata.len() > budget.reserved_len {
             state.phase = NodeDiskPhase::Failed;
             promises.fail_owner();
-            return Err(io::Error::other(
-                "persistent file exceeded its reserved extent",
-            ));
+            return Err(io::Error::from(io::ErrorKind::InvalidData));
         }
         Ok(())
     }
 }
 
 impl NodeDiskFile {
+    /// The installed redb adapter uses this before every physical operation.
+    /// Failure is represented without allocating an error payload.
+    pub fn check_owner(&self) -> io::Result<()> {
+        let budget = self.0.lock_budget()?;
+        let file = budget.file.as_ref().ok_or(io::ErrorKind::BrokenPipe)?;
+        self.0.check(file)?;
+        let state = self.0.disk.lock_state();
+        if state.phase == NodeDiskPhase::Failed || !self.0.disk.device.lock().admission_ready() {
+            return Err(io::ErrorKind::Other.into());
+        }
+        Ok(())
+    }
+
+    /// Latch uncertain backend activity without allocating or forgetting extent
+    /// charges. Only a complete census after actual owner drain may reopen it.
+    pub fn owner_failed(&self) {
+        self.0.disk.fail();
+    }
+
+    /// Settle unused pre-I/O promises after a commit or aborted transaction.
+    /// Sync and verify the exact descriptor before crediting only the difference
+    /// between its retained reservation and its actual durable extent. This is
+    /// valid with live redb readers because no physical byte is removed.
+    pub fn settle_growth(&self, actual_len: u64) -> io::Result<()> {
+        let mut budget = self.0.lock_budget()?;
+        let file = budget.file.as_ref().ok_or(io::ErrorKind::BrokenPipe)?;
+        let mut state = self.0.disk.lock_state();
+        if state.phase == NodeDiskPhase::Failed || !self.0.disk.device.lock().admission_ready() {
+            return Err(io::ErrorKind::Other.into());
+        }
+        // Serialize the owner seal through physical verification and sync. A
+        // previously failed owner must not initiate another backend operation.
+        let outcome = (|| -> io::Result<(u64, u64)> {
+            self.0.verify(file)?;
+            file.sync_all()?;
+            self.0.verify(file)?;
+            let metadata = file.metadata()?;
+            let (bytes, pending) = extent(&metadata, self.0.disk.unit)?;
+            if metadata.len() != actual_len
+                || actual_len > budget.reserved_len
+                || bytes > budget.bytes
+            {
+                return Err(io::ErrorKind::InvalidData.into());
+            }
+            Ok((bytes, pending))
+        })();
+        let (bytes, pending) = outcome.inspect_err(|_| self.0.disk.fail_locked(&mut state))?;
+        let mut promises = self.0.disk.device.lock();
+        let next = promises
+            .checked_sub(budget.pending)
+            .and_then(|n| n.checked_add(pending));
+        let own_next = state
+            .pending
+            .checked_sub(budget.pending)
+            .and_then(|n| n.checked_add(pending));
+        let owned = state
+            .bytes
+            .checked_sub(budget.bytes)
+            .and_then(|n| n.checked_add(bytes));
+        let (Some(next), Some(own_next), Some(owned)) = (next, own_next, owned) else {
+            state.phase = NodeDiskPhase::Failed;
+            promises.fail_owner();
+            return Err(io::ErrorKind::InvalidData.into());
+        };
+        if !promises.admission_ready() {
+            state.phase = NodeDiskPhase::Failed;
+            promises.fail_owner();
+            return Err(io::ErrorKind::Other.into());
+        }
+        promises
+            .set_pending(next)
+            .inspect_err(|_| state.phase = NodeDiskPhase::Failed)?;
+        state.bytes = owned;
+        state.pending = own_next;
+        budget.bytes = bytes;
+        budget.pending = pending;
+        budget.reserved_len = actual_len;
+        budget.settled = true;
+        Ok(())
+    }
+
     /// Inspect the same physical identity used by installation/cleanup journals.
     /// The value grants no descriptor access or ownership; this handle retains
     /// the exclusive lock, and every observation verifies the installed binding.
@@ -419,12 +530,10 @@ impl NodeDiskFile {
         let owner = &self.0;
         let mut state = owner.disk.lock_state();
         if Arc::strong_count(owner) != 1 {
-            return Err(io::Error::other(
-                "persistent file still has readers or backend owners",
-            ));
+            return Err(io::Error::from(io::ErrorKind::InvalidData));
         }
         if state.phase == NodeDiskPhase::Failed || !owner.disk.device.lock().admission_ready() {
-            return Err(io::Error::other("persistent shrink admission is closed"));
+            return Err(io::Error::from(io::ErrorKind::InvalidData));
         }
         // Exclusive &mut plus the sole Arc and registration mutex guarantee
         // that no other file operation can wait for this budget while holding
@@ -433,13 +542,11 @@ impl NodeDiskFile {
             Ok(budget) => budget,
             Err(_) => {
                 owner.disk.fail_locked(&mut state);
-                return Err(io::Error::other("persistent file ownership is poisoned"));
+                return Err(io::Error::from(io::ErrorKind::InvalidData));
             }
         };
         if !budget.settled {
-            return Err(io::Error::other(
-                "persistent shrink requires settled growth",
-            ));
+            return Err(io::Error::from(io::ErrorKind::InvalidData));
         }
         let file = budget.file.as_ref().expect("live persistent descriptor");
         let current = match owner.verify(file).and_then(|()| Ok(file.metadata()?.len())) {
@@ -447,21 +554,21 @@ impl NodeDiskFile {
             Err(error) => {
                 budget.settled = false;
                 owner.disk.fail_locked(&mut state);
-                return Err(io::Error::other(error));
+                return Err(error);
             }
         };
         if current != budget.reserved_len {
             budget.settled = false;
             owner.disk.fail_locked(&mut state);
-            return Err(io::Error::other("persistent shrink extent changed"));
+            return Err(io::Error::from(io::ErrorKind::InvalidData));
         }
         if len > current {
-            return Err(io::Error::other("physical shrink cannot grow a file"));
+            return Err(io::Error::from(io::ErrorKind::InvalidData));
         }
         // From the first physical operation onward every error is uncertain.
         // Keep the previous budget until both syncs and exact observations pass.
         budget.settled = false;
-        let outcome = (|| -> Result<(u64, u64)> {
+        let outcome = (|| -> io::Result<(u64, u64)> {
             let file = budget.file.as_ref().expect("live persistent descriptor");
             #[cfg(test)]
             owner.shrink_checkpoint(ShrinkFailure::Truncate)?;
@@ -470,10 +577,9 @@ impl NodeDiskFile {
             owner.shrink_checkpoint(ShrinkFailure::FileSync)?;
             file.sync_all()?;
             owner.verify(file)?;
-            ensure!(
-                file.metadata()?.len() == len,
-                "physical shrink length changed"
-            );
+            if file.metadata()?.len() != len {
+                return Err(io::ErrorKind::InvalidData.into());
+            }
             #[cfg(test)]
             owner.shrink_checkpoint(ShrinkFailure::DirectorySync)?;
             owner.parent.sync_all()?;
@@ -481,20 +587,20 @@ impl NodeDiskFile {
             // the same physical file before any capacity is released.
             owner.verify(file)?;
             let metadata = file.metadata()?;
-            ensure!(metadata.len() == len, "physical shrink length changed");
-            extent(&metadata, owner.disk.unit).map_err(Into::into)
+            if metadata.len() != len {
+                return Err(io::ErrorKind::InvalidData.into());
+            }
+            extent(&metadata, owner.disk.unit)
         })();
         let (bytes, pending) = match outcome {
             Ok((bytes, pending)) if bytes <= budget.bytes => (bytes, pending),
             Ok(_) => {
                 owner.disk.fail_locked(&mut state);
-                return Err(io::Error::other(
-                    "physical shrink increased allocated extent",
-                ));
+                return Err(io::Error::from(io::ErrorKind::InvalidData));
             }
             Err(error) => {
                 owner.disk.fail_locked(&mut state);
-                return Err(io::Error::other(error));
+                return Err(error);
             }
         };
         let mut promises = owner.disk.device.lock();
@@ -512,12 +618,12 @@ impl NodeDiskFile {
         let (Some(next), Some(own_next), Some(owned)) = (next, own_next, owned) else {
             state.phase = NodeDiskPhase::Failed;
             promises.fail_owner();
-            return Err(io::Error::other("persistent shrink accounting overflow"));
+            return Err(io::Error::from(io::ErrorKind::InvalidData));
         };
         if !promises.admission_ready() {
             state.phase = NodeDiskPhase::Failed;
             promises.fail_owner();
-            return Err(io::Error::other("shared filesystem admission is closed"));
+            return Err(io::Error::from(io::ErrorKind::InvalidData));
         }
         if let Err(error) = promises.set_pending(next) {
             state.phase = NodeDiskPhase::Failed;
@@ -554,9 +660,7 @@ impl NodeDiskFile {
         let actual = file.metadata().inspect_err(|_| self.0.disk.fail())?;
         if actual.len() != current_len || requested_len < current_len {
             self.0.disk.fail();
-            return Err(io::Error::other(
-                "persistent growth does not match the exact current extent",
-            ));
+            return Err(io::Error::from(io::ErrorKind::InvalidData));
         }
         let bytes = rounded(requested_len, self.0.disk.unit)?;
         let delta = bytes.saturating_sub(budget.bytes);
@@ -581,7 +685,7 @@ impl NodeDiskFile {
             || len < current
             || len > budget.reserved_len
         {
-            return Err(io::Error::other("persistent resize is not admitted"));
+            return Err(io::Error::from(io::ErrorKind::InvalidData));
         }
         // Keep the admission seal serialized through the backend call.
         if let Err(error) = file.set_len(len) {
@@ -598,13 +702,13 @@ impl NodeDiskFile {
         self.0.check(file)?;
         let end = offset
             .checked_add(data.len() as u64)
-            .ok_or_else(|| io::Error::other("persistent write offset overflow"))?;
+            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
         let mut state = self.0.disk.lock_state();
         if state.phase == NodeDiskPhase::Failed
             || !self.0.disk.device.lock().admission_ready()
             || end > budget.reserved_len
         {
-            return Err(io::Error::other("persistent write is not admitted"));
+            return Err(io::Error::from(io::ErrorKind::InvalidData));
         }
         budget.settled = false;
         if let Err(error) = budget
@@ -645,30 +749,28 @@ impl NodeDiskFile {
         let mut budget = self.0.lock_budget()?;
         let mut state = self.0.disk.lock_state();
         if state.phase == NodeDiskPhase::Failed || !self.0.disk.device.lock().admission_ready() {
-            return Err(io::Error::other(
-                "persistent publication admission is closed",
-            ));
+            return Err(io::Error::from(io::ErrorKind::InvalidData));
         }
         budget.settled = false;
         let file = budget.file.as_ref().expect("live persistent descriptor");
-        let outcome = (|| -> Result<()> {
+        let outcome = (|| -> io::Result<()> {
             self.0.verify(file)?;
             file.sync_all()?;
             #[cfg(test)]
-            ensure!(
-                !self
-                    .0
-                    .disk
-                    .parent_sync_failure
-                    .load(std::sync::atomic::Ordering::Relaxed),
-                "injected parent sync failure"
-            );
+            if self
+                .0
+                .disk
+                .parent_sync_failure
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                return Err(io::ErrorKind::Other.into());
+            }
             self.0.parent.sync_all()?;
             self.0.verify(file)
         })();
         if let Err(error) = outcome {
             self.0.disk.fail_locked(&mut state);
-            return Err(io::Error::other(error));
+            return Err(error);
         }
         drop(state);
         self.0.observe(&mut budget)

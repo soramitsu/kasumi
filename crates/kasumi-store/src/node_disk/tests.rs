@@ -30,6 +30,102 @@ fn open(config: NodeDiskConfig) -> Arc<NodeDisk> {
     .unwrap()
 }
 
+#[test]
+fn retained_file_io_settlement_shrink_and_drop_do_not_allocate() {
+    let (_directory, config) = installation();
+    let mut relative = std::path::PathBuf::new();
+    for name in ["a".repeat(200), "b".repeat(200), "c".repeat(200)] {
+        relative.push(name);
+        crate::private_files::create_directory(&config.roots["data"].join(&relative)).unwrap();
+    }
+    relative.push("file");
+    let disk = open(config);
+    let mut file = disk
+        .create_file("data", &relative, DiskWork::Foreground)
+        .unwrap();
+    file.reserve_growth(0, 64 << 10, DiskWork::Foreground)
+        .unwrap();
+    file.grow_reserved(32 << 10).unwrap();
+    let (result, allocations) = crate::allocation_tests::measure(|| -> io::Result<()> {
+        file.check_owner()?;
+        file.write_all_at(&[31; 64], 0)?;
+        file.sync_all()?;
+        file.settle_growth(32 << 10)?;
+        assert_eq!(file.observed_len()?, 32 << 10);
+        let mut bytes = [0; 64];
+        file.read_exact_at(&mut bytes, 0)?;
+        assert_eq!(bytes, [31; 64]);
+        file.shrink(16 << 10)?;
+        file.sync_all_and_parent()?;
+        Ok(())
+    });
+    result.unwrap();
+    assert_eq!(
+        allocations, 0,
+        "admitted physical I/O allocated after preparation"
+    );
+    assert_eq!(disk.snapshot().charged_bytes, 16 << 10);
+    let ((), allocations) = crate::allocation_tests::measure(|| drop(file));
+    assert_eq!(allocations, 0, "descriptor retirement allocated");
+    let file = disk.open_file("data", &relative).unwrap();
+    disk.delete_file(file).unwrap();
+    disk.pause().unwrap();
+}
+
+#[test]
+fn identity_failure_and_uncertain_file_drop_fence_without_allocating() {
+    let (_directory, config) = installation();
+    let disk = open(config.clone());
+    let file = disk
+        .create_file("data", Path::new("file"), DiskWork::Foreground)
+        .unwrap();
+    file.reserve_growth(0, 32 << 10, DiskWork::Foreground)
+        .unwrap();
+    file.grow_reserved(32 << 10).unwrap();
+    file.sync_all().unwrap();
+    std::fs::rename(
+        config.roots["data"].join("file"),
+        config.roots["data"].join("moved"),
+    )
+    .unwrap();
+    seed(&config, "file", 16 << 10);
+    let (result, allocations) = crate::allocation_tests::measure(|| file.sync_all());
+    assert!(result.is_err());
+    assert_eq!(
+        allocations, 0,
+        "identity failure allocated an error payload"
+    );
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+    let ((), allocations) = crate::allocation_tests::measure(|| {
+        file.owner_failed();
+        drop(file);
+    });
+    assert_eq!(allocations, 0);
+    clean(&disk, &["file", "moved"]);
+}
+
+#[test]
+fn explicit_settlement_returns_only_unused_promises_and_requires_exact_extent() {
+    let (_directory, config) = installation();
+    let disk = open(config);
+    let file = disk
+        .create_file("data", Path::new("file"), DiskWork::Foreground)
+        .unwrap();
+    file.reserve_growth(0, 128 << 10, DiskWork::Foreground)
+        .unwrap();
+    file.grow_reserved(32 << 10).unwrap();
+    file.settle_growth(32 << 10).unwrap();
+    assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
+    assert!(file.grow_reserved(64 << 10).is_err());
+    let (result, allocations) = crate::allocation_tests::measure(|| file.settle_growth(0));
+    assert!(result.is_err());
+    assert_eq!(allocations, 0);
+    assert_eq!(disk.snapshot().charged_bytes, 32 << 10);
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+    drop(file);
+    clean(&disk, &["file"]);
+}
+
 fn seed(config: &NodeDiskConfig, name: &str, len: u64) {
     let file = std::fs::OpenOptions::new()
         .read(true)
@@ -567,7 +663,9 @@ fn live_shrink_failure_retains_charges_through_drop_and_fences_shared_device() {
         file.sync_all().unwrap();
         let before = disk.snapshot();
         *disk.shrink_failure.lock().unwrap() = Some(failure);
-        assert!(file.shrink(32 << 10).is_err());
+        let (result, allocations) = crate::allocation_tests::measure(|| file.shrink(32 << 10));
+        assert!(result.is_err());
+        assert_eq!(allocations, 0, "uncertain shrink allocated: {failure:?}");
         assert_eq!(
             file.observed_len().unwrap(),
             if failure == file::ShrinkFailure::Truncate {
@@ -587,7 +685,8 @@ fn live_shrink_failure_retains_charges_through_drop_and_fences_shared_device() {
         assert!(scratch_charge.grow(4096).is_err());
         assert!(disk.reconcile(&CensusCancellation::default()).is_err());
         assert!(file.shrink(0).is_err());
-        drop(file);
+        let ((), allocations) = crate::allocation_tests::measure(|| drop(file));
+        assert_eq!(allocations, 0, "uncertain descriptor drop allocated");
         assert_eq!(disk.snapshot().open_files, 0);
         assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
         assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);

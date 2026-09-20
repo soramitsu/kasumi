@@ -379,7 +379,7 @@ impl NodeDisk {
     fn available(&self) -> io::Result<u64> {
         #[cfg(test)]
         if self.available_error.load(Ordering::Relaxed) {
-            return Err(io::Error::other("injected filesystem observation failure"));
+            return Err(io::Error::from(io::ErrorKind::InvalidData));
         }
         #[cfg(test)]
         if let Some(value) = *self.available_override.lock().unwrap() {
@@ -390,7 +390,7 @@ impl NodeDisk {
 
     fn reserve(&self, state: &mut State, delta: u64, work: DiskWork) -> io::Result<()> {
         if state.phase != NodeDiskPhase::Open {
-            return Err(io::Error::other("persistent mutation admission is closed"));
+            return Err(io::Error::from(io::ErrorKind::InvalidData));
         }
         let maximum = match work {
             DiskWork::Foreground => self.config.max_bytes - self.config.maintenance_reserve_bytes,
@@ -403,7 +403,7 @@ impl NodeDisk {
             .ok_or_else(|| exhausted("persistent extent budget exhausted"))?;
         let mut promises = self.device.lock();
         if !promises.admission_ready() {
-            return Err(io::Error::other("shared filesystem admission is closed"));
+            return Err(io::Error::from(io::ErrorKind::InvalidData));
         }
         let next_promises = promises
             .checked_add(delta)
@@ -431,8 +431,8 @@ impl NodeDisk {
     }
 }
 
-fn exhausted(message: &'static str) -> io::Error {
-    io::Error::new(io::ErrorKind::StorageFull, message)
+fn exhausted(_message: &'static str) -> io::Error {
+    io::ErrorKind::StorageFull.into()
 }
 
 fn rounded(len: u64, unit: u64) -> io::Result<u64> {
@@ -445,7 +445,7 @@ fn extent(metadata: &std::fs::Metadata, unit: u64) -> io::Result<(u64, u64)> {
     let allocated = metadata
         .blocks()
         .checked_mul(512)
-        .ok_or_else(|| io::Error::other("persistent allocated blocks overflow"))?;
+        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
     let bytes = rounded(metadata.len().max(allocated), unit)?;
     Ok((bytes, bytes - allocated))
 }
@@ -459,10 +459,10 @@ pub(crate) fn filesystem(directory: &File) -> io::Result<(u64, u64)> {
     }
     let unit = stat.f_frsize as u64;
     if unit == 0 {
-        return Err(io::Error::other("filesystem allocation unit unavailable"));
+        return Err(io::Error::from(io::ErrorKind::InvalidData));
     }
     let available = (stat.f_bavail as u64)
         .checked_mul(unit)
-        .ok_or_else(|| io::Error::other("filesystem capacity overflow"))?;
+        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
     Ok((available, unit))
 }
