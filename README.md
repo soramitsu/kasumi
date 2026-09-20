@@ -1,10 +1,15 @@
 # Kasumi
 
-Kasumi is a Rust document database for multi-tenant applications. Documents and
-indexes reside in immutable memory generations; encrypted redb storage and
-OpenRaft provide persistence and ordered writes. JSON Schema validation, atomic
-batches, CAS, idempotency receipts, typed queries, and English/Japanese search
-share one authorization layer across Rust, native gRPC, and MCP.
+Kasumi is an open-source, Redis-like in-memory document database written in Rust
+for multi-tenant applications. It can run as a standalone server or be embedded
+in a Rust application. Documents and indexes reside in immutable memory
+generations; encrypted redb storage and OpenRaft provide persistence and ordered
+writes. JSON Schema validation, atomic batches, CAS, idempotency receipts, typed
+queries, and English/Japanese search share one authorization layer across Rust,
+native gRPC, and MCP.
+
+Kasumi uses its own APIs; it does not implement the Redis protocol. See the
+[standalone installation guide](docs/standalone.md) to run a local server.
 
 **Status:** the first production release is being implemented. The [active release ledger](docs/production-release.md) tracks the remaining implementation and acceptance gates. Kasumi is licensed under [Apache-2.0](LICENSE).
 

@@ -1,0 +1,194 @@
+title = "Kasumi public repository secret detection"
+
+# Keep every upstream detector enabled. Add exceptions only for independently
+# verified public test data, scoped to the exact rule, path and matched value.
+[extend]
+useDefault = true
+
+# The generic detector mistakes source-file names such as api.rs for credential
+# assignments in these reviewed, historical source checksum manifests. Match
+# only complete filename-to-SHA-256 JSON entries in the exact evidence files.
+[[rules]]
+id = "generic-api-key"
+
+[[rules.allowlists]]
+description = "Reviewed source-file SHA-256 entries in preserved evidence"
+condition = "AND"
+regexTarget = "line"
+regexes = ['''^\s*"[^"\r\n]+\.(?:rs|log|json|md|stderr|patch)":\s*"[a-f0-9]{64}"[,]?\s*$''']
+paths = [
+    '''(?:^|/)benchmarks/results/linux\-validation\-20260905/linux\-validation\-source\-before\.json$''',
+    '''(?:^|/)benchmarks/results/linux\-validation\-20260905/linux\-validation\-source\-final\-before\.json$''',
+    '''(?:^|/)benchmarks/results/linux\-validation\-20260905/linux\-validation\-source\-postformat\-before\.json$''',
+    '''(?:^|/)benchmarks/results/linux\-validation\-20260905/source\-after\-full\-gate\.json$''',
+    '''(?:^|/)benchmarks/results/listener\-startup\-20260905/source\-change\.json$''',
+    '''(?:^|/)benchmarks/results/network\-rerun\-macos\-arm64\-20260905\-listener/source\-manifest\.json$''',
+    '''(?:^|/)benchmarks/results/release\-cohort\-macos\-arm64\-20260905\-listener/completion\-evidence\.json$''',
+    '''(?:^|/)benchmarks/results/release\-matrix\-macos\-arm64\-20260905\-05/source\-manifest\.json$''',
+    '''(?:^|/)benchmarks/results/release\-matrix\-macos\-arm64\-20260905\-06/source\-manifest\.json$''',
+    '''(?:^|/)docs/evidence/backup\-checkpoint\-20260907\-a/verification\.json$''',
+    '''(?:^|/)docs/evidence/backup\-checkpoint\-20260907\-b/verification\.json$''',
+    '''(?:^|/)docs/evidence/chunked\-backup\-20260907/verification\.json$''',
+    '''(?:^|/)docs/evidence/combined\-27b0ebc\-initial\-20260909/source\-before\.json$''',
+    '''(?:^|/)docs/evidence/combined\-27b0ebc\-remainder\-20260909/source\-before\.json$''',
+    '''(?:^|/)docs/evidence/combined\-4e3a29d\-native\-20260909/4e3a29d/source\-before\.json$''',
+    '''(?:^|/)docs/evidence/combined\-4e3a29d\-native\-20260909/980daa4\-format/source\-before\.json$''',
+    '''(?:^|/)docs/evidence/combined\-61b5f0b\-first\-20260909/source\-before\.json$''',
+    '''(?:^|/)docs/evidence/combined\-61b5f0b\-native\-20260909/source\-before\.json$''',
+    '''(?:^|/)docs/evidence/combined\-prefix\-743754d\-20260909/source\-before\.json$''',
+    '''(?:^|/)docs/evidence/combined\-prefix\-8bf5e27\-check\-20260909/source\-before\.json$''',
+    '''(?:^|/)docs/evidence/combined\-prefix\-8bf5e27\-functional\-20260909/source\-before\.json$''',
+    '''(?:^|/)docs/evidence/combined\-t5\-1682a8f\-check\-20260909/source\-before\.json$''',
+    '''(?:^|/)docs/evidence/combined\-t5\-77bddb1\-check\-20260909/source\-before\.json$''',
+    '''(?:^|/)docs/evidence/combined\-t5\-a159ebc\-check\-20260909/source\-before\.json$''',
+    '''(?:^|/)docs/evidence/combined\-t5\-b17eaf5\-check\-20260909/source\-before\.json$''',
+    '''(?:^|/)docs/evidence/combined\-t5\-b17eaf5\-functional\-20260909/source\-before\.json$''',
+    '''(?:^|/)docs/evidence/combined\-t5\-b17eaf5\-remainder\-20260909/source\-before\.json$''',
+    '''(?:^|/)docs/evidence/control\-lifecycle\-20260907\-a/verification\.json$''',
+    '''(?:^|/)docs/evidence/control\-lifecycle\-20260907\-b/verification\.json$''',
+    '''(?:^|/)docs/evidence/control\-recovery\-preparation\-20260908/kasumi\-control\-recovery\-source\-files\.json$''',
+    '''(?:^|/)docs/evidence/control\-recovery\-quorum\-20260908/kasumi\-control\-recovery\-quorum\-source\-files\.json$''',
+    '''(?:^|/)docs/evidence/control\-source\-fencing\-20260908/kasumi\-control\-source\-fence\-source\-files\.json$''',
+    '''(?:^|/)docs/evidence/credential\-lifetime\-20260907\-a/verification\.json$''',
+    '''(?:^|/)docs/evidence/credential\-lifetime\-20260907\-b/verification\.json$''',
+    '''(?:^|/)docs/evidence/credential\-lifetime\-20260907\-c/verification\.json$''',
+    '''(?:^|/)docs/evidence/credential\-lineage\-20260907\-a/verification\.json$''',
+    '''(?:^|/)docs/evidence/credential\-lineage\-20260907\-b/verification\.json$''',
+    '''(?:^|/)docs/evidence/custody\-rotation\-20260907\-a/verification\.json$''',
+    '''(?:^|/)docs/evidence/custody\-rotation\-20260907\-b/verification\.json$''',
+    '''(?:^|/)docs/evidence/custody\-substrate\-20260907\-a/verification\.json$''',
+    '''(?:^|/)docs/evidence/custody\-substrate\-20260907\-b/verification\.json$''',
+    '''(?:^|/)docs/evidence/custody\-substrate\-20260907\-c/verification\.json$''',
+    '''(?:^|/)docs/evidence/expandable\-target\-journal\-20260908/evidence\.json$''',
+    '''(?:^|/)docs/evidence/first\-release\-055a9b6\-check\-20260919/source\-before\.json$''',
+    '''(?:^|/)docs/evidence/first\-release\-15e64dd\-check\-20260919/source\-before\.json$''',
+    '''(?:^|/)docs/evidence/first\-release\-1ff2fe2\-check\-20260909/source\-before\.json$''',
+    '''(?:^|/)docs/evidence/first\-release\-32825cf\-check\-20260919/source\-before\.json$''',
+    '''(?:^|/)docs/evidence/first\-release\-3b932ee\-check\-20260910/source\-before\.json$''',
+    '''(?:^|/)docs/evidence/first\-release\-46ae68f\-check\-20260919/source\-before\.json$''',
+    '''(?:^|/)docs/evidence/first\-release\-7a21995\-check\-20260909/source\-before\.json$''',
+    '''(?:^|/)docs/evidence/followon\-9814949\-check\-20260909/source\-before\.json$''',
+    '''(?:^|/)docs/evidence/followon\-f4a472f\-check\-20260909/source\-before\.json$''',
+    '''(?:^|/)docs/evidence/followon\-f4a472f\-functional\-20260909/source\-before\.json$''',
+    '''(?:^|/)docs/evidence/guarded\-staged\-stop\-20260907\-a/verification\.json$''',
+    '''(?:^|/)docs/evidence/history\-feed\-20260907/verification\.json$''',
+    '''(?:^|/)docs/evidence/independent\-authority\-20260907\-a/verification\.json$''',
+    '''(?:^|/)docs/evidence/large\-transactions\-20260906/verification\.json$''',
+    '''(?:^|/)docs/evidence/literal\-json\-upstream\-20260909/13fbbc1/source\-after\.json$''',
+    '''(?:^|/)docs/evidence/literal\-json\-upstream\-20260909/13fbbc1/source\-before\.json$''',
+    '''(?:^|/)docs/evidence/literal\-json\-upstream\-20260909/8f4cf74/source\-after\.json$''',
+    '''(?:^|/)docs/evidence/literal\-json\-upstream\-20260909/8f4cf74/source\-before\.json$''',
+    '''(?:^|/)docs/evidence/literal\-json\-upstream\-20260909/kasumi\-literal\-json\-13fbbc1\-source\-evidence\.json$''',
+    '''(?:^|/)docs/evidence/literal\-json\-upstream\-20260909/kasumi\-literal\-json\-8f4cf74\-source\-evidence\.json$''',
+    '''(?:^|/)docs/evidence/literal\-json\-upstream\-20260909/pristine\-baseline/source\-after\.json$''',
+    '''(?:^|/)docs/evidence/literal\-json\-upstream\-20260909/pristine\-baseline/source\-before\.json$''',
+    '''(?:^|/)docs/evidence/live\-benchmark\-credentials\-20260908/evidence\.json$''',
+    '''(?:^|/)docs/evidence/node\-disk\-f650b99\-20260909/source\-before\.json$''',
+    '''(?:^|/)docs/evidence/node\-initial\-state\-64c14aa\-check\-20260909/source\-before\.json$''',
+    '''(?:^|/)docs/evidence/partition\-credentials\-20260908/copied\-files\.json$''',
+    '''(?:^|/)docs/evidence/planned\-retirement\-20260907\-a/verification\.json$''',
+    '''(?:^|/)docs/evidence/planned\-retirement\-20260907\-b/verification\.json$''',
+    '''(?:^|/)docs/evidence/recovery\-bd42e74\-continuation\-20260909/source\-before\.json$''',
+    '''(?:^|/)docs/evidence/redb\-capacity\-leaf\-20260909/11a06d0/redb\-4\.2\.0\-capacity\-inputs\.json$''',
+    '''(?:^|/)docs/evidence/redb\-capacity\-leaf\-20260909/11a06d0/redb\-4\.2\.0\-upstream\.json$''',
+    '''(?:^|/)docs/evidence/redb\-capacity\-leaf\-20260909/1a816ac/redb\-4\.2\.0\-capacity\-inputs\.json$''',
+    '''(?:^|/)docs/evidence/redb\-capacity\-leaf\-20260909/1a816ac/redb\-4\.2\.0\-upstream\.json$''',
+    '''(?:^|/)docs/evidence/redb\-capacity\-leaf\-20260909/5c2a3bf/redb\-4\.2\.0\-capacity\-inputs\.json$''',
+    '''(?:^|/)docs/evidence/redb\-capacity\-leaf\-20260909/5c2a3bf/redb\-4\.2\.0\-upstream\.json$''',
+    '''(?:^|/)docs/evidence/redb\-capacity\-leaf\-20260909/76f79ac/redb\-4\.2\.0\-capacity\-inputs\.json$''',
+    '''(?:^|/)docs/evidence/redb\-capacity\-leaf\-20260909/76f79ac/redb\-4\.2\.0\-upstream\.json$''',
+    '''(?:^|/)docs/evidence/redb\-capacity\-leaf\-20260909/97ae207/redb\-4\.2\.0\-capacity\-inputs\.json$''',
+    '''(?:^|/)docs/evidence/redb\-capacity\-leaf\-20260909/97ae207/redb\-4\.2\.0\-upstream\.json$''',
+    '''(?:^|/)docs/evidence/redb\-owner\-failure\-4f62863\-20260909/source\-before\.json$''',
+    '''(?:^|/)docs/evidence/redb\-upstream\-metadata\-offline\-20260909/evidence\.json$''',
+    '''(?:^|/)docs/evidence/redb\-upstream\-metadata\-online\-20260909/evidence\.json$''',
+    '''(?:^|/)docs/evidence/redb\-upstream\-preparation\-20260909/kasumi\-redb\-bdde797\-verification\-source\.json$''',
+    '''(?:^|/)docs/evidence/schema\-activation\-20260907/verification\.json$''',
+    '''(?:^|/)docs/evidence/sdk\-metadata\-e17a5eb\-20260909/source\-before\.json$''',
+    '''(?:^|/)docs/evidence/snapshot\-custody\-20260907\-a/verification\.json$''',
+    '''(?:^|/)docs/evidence/snapshot\-custody\-20260907\-b/verification\.json$''',
+    '''(?:^|/)docs/evidence/snapshot\-custody\-20260907\-c/verification\.json$''',
+    '''(?:^|/)docs/evidence/stock\-json\-sdk\-3f88b44\-20260909/01\-dependency\-preparation/source\-after\.json$''',
+    '''(?:^|/)docs/evidence/stock\-json\-sdk\-3f88b44\-20260909/01\-dependency\-preparation/source\-before\.json$''',
+    '''(?:^|/)docs/evidence/stock\-json\-sdk\-3f88b44\-20260909/02\-selection\-failure/source\-after\.json$''',
+    '''(?:^|/)docs/evidence/stock\-json\-sdk\-3f88b44\-20260909/02\-selection\-failure/source\-before\.json$''',
+    '''(?:^|/)docs/evidence/stock\-json\-sdk\-3f88b44\-20260909/03\-compile\-only\-diagnostic/source\-after\.json$''',
+    '''(?:^|/)docs/evidence/stock\-json\-sdk\-3f88b44\-20260909/03\-compile\-only\-diagnostic/source\-before\.json$''',
+    '''(?:^|/)docs/evidence/stock\-json\-sdk\-3f88b44\-20260909/04\-functional\-pass/source\-after\.json$''',
+    '''(?:^|/)docs/evidence/stock\-json\-sdk\-3f88b44\-20260909/04\-functional\-pass/source\-before\.json$''',
+    '''(?:^|/)docs/evidence/stock\-json\-sdk\-3f88b44\-20260909/source/kasumi\-stock\-sdk\-consumer\-3f88b44\-source\-evidence\.json$''',
+    '''(?:^|/)docs/evidence/stock\-json\-sdk\-3f88b44\-20260909/source/kasumi\-stock\-sdk\-consumer\-e36f596\-source\-evidence\.json$''',
+    '''(?:^|/)vendor/patch\-manifest\.json$''',
+    '''(?:^|/)vendor/redb\-4\.2\.0\-capacity\-inputs\.json$''',
+    '''(?:^|/)vendor/redb\-4\.2\.0\-upstream\.json$''',
+    '''(?:^|/)vendor/redb\-4\.2\.0\-verification\-upstream\.json$''',
+]
+
+[[rules.allowlists]]
+description = "Reviewed backup verification key-lineage digest"
+condition = "AND"
+regexTarget = "line"
+regexes = ['''^\s*"key_lineage_digest":\s*"[a-f0-9]{64}"[,]?\s*$''']
+paths = [
+    '''(?:^|/)docs/evidence/linux\-image\-systemd\-smoke\-20260908/kasumi\-oci\-recipe\-42bf607\-backup\-verify\.log$''',
+]
+
+# File scanning splits large files into blocks. These exact reviewed checksum
+# fragments cross a block boundary, so the full JSON-line allowance cannot match.
+[[rules.allowlists]]
+description = "Exact reviewed SHA-256 fragment at a file scanner block boundary"
+condition = "AND"
+regexTarget = "match"
+regexes = ['''^kasumi\-benchmark\-credentials\-tests\.log":\ "d6a897de70ffe97ff5925ffeaa7f7b9ff66e63fa8c498e4f55f9cd2e93ff1374$''']
+paths = [
+    '''(?:^|/)docs/evidence/literal\-json\-upstream\-20260909/13fbbc1/source\-after\.json$''',
+    '''(?:^|/)docs/evidence/literal\-json\-upstream\-20260909/13fbbc1/source\-before\.json$''',
+    '''(?:^|/)docs/evidence/literal\-json\-upstream\-20260909/8f4cf74/source\-after\.json$''',
+    '''(?:^|/)docs/evidence/literal\-json\-upstream\-20260909/8f4cf74/source\-before\.json$''',
+]
+
+[[rules.allowlists]]
+description = "Exact reviewed SHA-256 fragment at a file scanner block boundary"
+condition = "AND"
+regexTarget = "match"
+regexes = ['''^kasumi\-runtime\-partition\-credentials\-clippy\.log":\ "0c4d10d11aa323d6fcd7350b85f473eb1839771f0e28b2ce944ade5e2fdfb345"$''']
+paths = [
+    '''(?:^|/)docs/evidence/node\-initial\-state\-64c14aa\-check\-20260909/source\-before\.json$''',
+]
+
+[[rules.allowlists]]
+description = "Exact reviewed SHA-256 fragment at a file scanner block boundary"
+condition = "AND"
+regexTarget = "match"
+regexes = ['''^serde\-json\-literal\-keys\.md":\ "5cff2e596183d42a9ba27441cbf1f0ce626a1022ba5c600100$''']
+paths = [
+    '''(?:^|/)docs/evidence/node\-initial\-state\-64c14aa\-check\-20260909/source\-before\.json$''',
+]
+
+[[rules.allowlists]]
+description = "Source-file checksum of the public TLS test fixture"
+condition = "AND"
+regexTarget = "line"
+regexes = ['''^\s*"crates/kasumi-client/src/installed-pool-test-key\.pem":\s*"[a-f0-9]{64}"[,]?\s*$''']
+paths = [
+    '''(?:^|/)docs/evidence/first-release-055a9b6-check-20260919/source-before\.json$''',
+    '''(?:^|/)docs/evidence/first-release-15e64dd-check-20260919/source-before\.json$''',
+    '''(?:^|/)docs/evidence/first-release-32825cf-check-20260919/source-before\.json$''',
+]
+
+# This exact key belongs to a self-signed TLS unit-test identity, loaded only
+# by the historical installed_pool.rs #[cfg(test)] module. The certificate CN is
+# installed-pool-unit-fixture and expired on 2026-09-11. No other key or path is
+# exempt. Certificate SHA-256 fingerprint:
+# 2098e3a50dc10d047dc8af9bd97e047c61067a232314695c53b17b77338ed7e1
+[[rules]]
+id = "private-key"
+
+[[rules.allowlists]]
+description = "Exact public, expired installed-pool TLS unit-test fixture"
+condition = "AND"
+regexTarget = "match"
+regexes = ['''\A\-\-\-\-\-BEGIN\ PRIVATE\ KEY\-\-\-\-\-\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQga2vmznub/pOKVNb5\ndyzlCefJmBfwrhSmY/qjh9XZu1KhRANCAAR3U06VfZfT27RLfo6ZxuQdovxN/Bl5\nyLmpI1UotAIjXVP59MAsp6XB7XaadPbVSAM6VsOFQ/g9nzBiAh2UVkq3\n\-\-\-\-\-END\ PRIVATE\ KEY\-\-\-\-\-\z''']
+paths = [
+    '''(?:^|/)crates/kasumi-client/src/installed-pool-test-key\.pem$''',
+]

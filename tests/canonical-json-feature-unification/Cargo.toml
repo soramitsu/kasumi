@@ -3,6 +3,7 @@ name = "kasumi-canonical-json-feature-check"
 version = "0.0.0"
 edition = "2024"
 rust-version = "1.97.1"
+license = "Apache-2.0"
 publish = false
 
 [workspace]

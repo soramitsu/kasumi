@@ -1,8 +1,12 @@
 # Contributing to Kasumi
 
-Kasumi is a Rust document database licensed under Apache-2.0. Contributions are
-submitted under the same license. Preserve third-party license and attribution
-notices when importing code or assets.
+Kasumi is an open-source, Redis-like in-memory document database written in Rust
+and licensed under Apache-2.0. Contributions are submitted under the same license.
+Preserve third-party license and attribution notices when importing code or assets.
+
+Run the [public repository checks](docs/public-repository.md) before submitting
+new fixtures, configuration or retained logs. Keep credentials and unrelated
+project material out of both files and commit messages.
 
 Install the toolchain selected by `rust-toolchain.toml`. Use a separate worktree
 and Cargo target directory for each independently changing checkout; generated

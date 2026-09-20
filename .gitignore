@@ -3,6 +3,29 @@
 debug
 target
 
+# Local benchmark checkout links
+/*-native-???????
+
+# Local credentials and deployment configuration
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.key
+*.pem
+*.p12
+*.pfx
+*.keystore
+id_rsa*
+id_ed25519*
+.aws/
+.ssh/
+.secrets/
+secrets/
+credentials.json
+credentials-*.json
+service-account*.json
+
 # Python benchmark and release helpers
 __pycache__/
 *.py[cod]

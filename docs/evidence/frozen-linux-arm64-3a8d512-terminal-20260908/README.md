@@ -25,7 +25,11 @@ or swap. Those counters include cache and are not isolated per-test measurements
 and the copied evidence archive. All copied log/resource hashes were checked
 against the frozen runner record. The source archive remains outside Git to
 avoid embedding another complete historical repository inside its own evidence.
-`copied-files.json` binds the retained files. Failed gates and preparatory-copy
+`copied-files.json` binds the retained files. The public copy of
+`host-demo-overlap-processes.txt` redacts unrelated project names, local paths
+and command arguments, retaining the observed process and resource columns.
+Its entry in `copied-files.json` hashes the redacted copy; it is not a byte-for-byte
+copy of the original host observation. Failed gates and preparatory-copy
 limitations remain explicit.
 
 An independent source review found an archive worker could upgrade its storage
